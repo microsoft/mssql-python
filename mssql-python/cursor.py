@@ -1,3 +1,5 @@
+from typing import Union
+
 class Cursor:
     """
     Represents a database cursor, which is used to manage the context of a fetch operation.
@@ -22,24 +24,24 @@ class Cursor:
         setoutputsize(size, column=None) -> None.
     """
 
-    def __init__(self, connection):
+    def __init__(self, connection_str: str) -> None:
         """
         Initialize the cursor with a database connection.
         
         Args:
-            connection: Database connection object.
+            connection_str (str): Database connection object.
         """
-        self.connection = connection
+        self.connection = connection_str
         self.description = None
         self.rowcount = -1
         self.arraysize = 1
 
-    def callproc(self, procname, parameters=None):
+    def callproc(self, procname: str, parameters: Union[None, list] = None) -> Union[None, list]:
         """
         Call a stored database procedure with the given name.
         
         Args:
-            procname: Name of the stored procedure.
+            procname (str): Name of the stored procedure.
             parameters: Sequence of parameters for the procedure.
         
         Returns:
@@ -47,7 +49,7 @@ class Cursor:
         """
         pass
 
-    def close(self):
+    def close(self) -> None:
         """
         Close the cursor now (rather than whenever __del__ is called).
         
@@ -56,12 +58,12 @@ class Cursor:
         """
         pass
 
-    def execute(self, operation, parameters=None):
+    def execute(self, operation: str, parameters: Union[None, list, dict] = None) -> None:
         """
         Prepare and execute a database operation (query or command).
         
         Args:
-            operation: SQL query or command.
+            operation (str): SQL query or command.
             parameters: Sequence or mapping of parameters.
         
         Raises:
@@ -69,7 +71,7 @@ class Cursor:
         """
         pass
 
-    def executemany(self, operation, seq_of_parameters):
+    def executemany(self, operation: str, seq_of_parameters: list) -> None:
         """
         Prepare a database operation and execute it against all parameter sequences.
         
@@ -82,7 +84,7 @@ class Cursor:
         """
         pass
 
-    def fetchone(self):
+    def fetchone(self) -> Union[None, tuple]:
         """
         Fetch the next row of a query result set.
         
@@ -94,7 +96,7 @@ class Cursor:
         """
         pass
 
-    def fetchmany(self, size=None):
+    def fetchmany(self, size: int =None) -> list:
         """
         Fetch the next set of rows of a query result.
         
@@ -109,7 +111,7 @@ class Cursor:
         """
         pass
 
-    def fetchall(self):
+    def fetchall(self) -> list:
         """
         Fetch all (remaining) rows of a query result.
         
@@ -121,7 +123,7 @@ class Cursor:
         """
         pass
 
-    def nextset(self):
+    def nextset(self) -> Union[None, bool]:
         """
         Skip to the next available result set.
         
@@ -133,7 +135,7 @@ class Cursor:
         """
         pass
 
-    def setinputsizes(self, sizes):
+    def setinputsizes(self, sizes: list) -> None:
         """
         Predefine memory areas for the operation’s parameters.
         
@@ -142,7 +144,7 @@ class Cursor:
         """
         pass
 
-    def setoutputsize(self, size, column=None):
+    def setoutputsize(self, size: int, column: int=None) -> None:
         """
         Set a column buffer size for fetches of large columns.
         

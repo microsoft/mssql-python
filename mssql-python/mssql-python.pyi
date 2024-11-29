@@ -1,7 +1,7 @@
 from typing import (
-    Any, Callable, Dict, Final, Generator, Iterable, Iterator,
-    List, Optional, Sequence, Tuple, Union,
+    Final, Union
 )
+import datetime
 
 # GLOBALS
 # Read-Only
@@ -10,19 +10,44 @@ paramstyle: Final[str] = 'qmark'
 threadsafety: Final[int] = 1
 
 # Type Objects
-STRING: str
-BINARY: str
-NUMBER: str
-DATETIME: str
-ROWID: str
+# https://www.python.org/dev/peps/pep-0249/#type-objects
+class STRING: 
+    """
+    This type object is used to describe columns in a database that are string-based (e.g. CHAR).
+    """
+    def __init__(self) -> None: ...
+
+class BINARY:
+    """
+    This type object is used to describe (long) binary columns in a database (e.g. LONG, RAW, BLOBs).
+    """
+    def __init__(self) -> None: ...
+
+class NUMBER:
+    """
+    This type object is used to describe numeric columns in a database.
+    """
+    def __init__(self) -> None: ...
+
+class DATETIME:
+    """
+    This type object is used to describe date/time columns in a database.
+    """
+    def __init__(self) -> None: ...
+
+class ROWID:
+    """
+    This type object is used to describe the “Row ID” column in a database.
+    """
+    def __init__(self) -> None: ...
 
 # Type Constructors
-def Date(year: int, month: int, day: int) -> str: ...
-def Time(hour: int, minute: int, second: int) -> str: ...
-def Timestamp(year: int, month: int, day: int, hour: int, minute: int, second: int) -> str: ...
-def DateFromTicks(ticks: int) -> str: ...
-def TimeFromTicks(ticks: int) -> str: ...
-def TimestampFromTicks(ticks: int) -> str: ...
+def Date(year: int, month: int, day: int) -> datetime.date: ...
+def Time(hour: int, minute: int, second: int) -> datetime.time: ...
+def Timestamp(year: int, month: int, day: int, hour: int, minute: int, second: int) -> datetime.datetime: ...
+def DateFromTicks(ticks: int) -> datetime.date: ...
+def TimeFromTicks(ticks: int) -> datetime.time: ...
+def TimestampFromTicks(ticks: int) -> datetime.datetime: ...
 def Binary(string: str) -> bytes: ...
 
 # Exceptions
@@ -145,7 +170,7 @@ class Cursor:
         ...
 
 # Module Functions
-def connect(database: str) -> Connection:
+def connect(connection_str: str) -> Connection:
     """
     Constructor for creating a connection to the database.
     """

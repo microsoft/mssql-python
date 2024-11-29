@@ -1,16 +1,46 @@
+import datetime
 import time
 
 # Type Objects
-STRING = "STRING"
-BINARY = "BINARY"
-NUMBER = "NUMBER"
-DATETIME = "DATETIME"
-ROWID = "ROWID"
+class STRING:
+    """
+    This type object is used to describe columns in a database that are string-based (e.g. CHAR).
+    """
+    def __init__(self) -> None:
+        self.type = "STRING"
+
+class BINARY:
+    """
+    This type object is used to describe (long) binary columns in a database (e.g. LONG, RAW, BLOBs).
+    """
+    def __init__(self) -> None:
+        self.type = "BINARY"
+
+class NUMBER:
+    """
+    This type object is used to describe numeric columns in a database.
+    """
+    def __init__(self) -> None:
+        self.type = "NUMBER"
+
+class DATETIME:
+    """
+    This type object is used to describe date/time columns in a database.
+    """
+    def __init__(self) -> None:
+        self.type = "DATETIME"
+
+class ROWID:
+    """
+    This type object is used to describe the “Row ID” column in a database.
+    """
+    def __init__(self) -> None:
+        self.type = "ROWID"
 
 # Type Constructors
-def Date(year, month, day):
+def Date(year: int, month: int, day: int) -> datetime.date:
     """
-    Generates a date string in the format YYYY-MM-DD.
+    Generates a date object.
 
     Args:
         year (int): The year component of the date.
@@ -18,13 +48,13 @@ def Date(year, month, day):
         day (int): The day component of the date.
 
     Returns:
-        str: A string representing the date in the format YYYY-MM-DD.
+        datetime.date: A date object representing the date.
     """
-    return f"{year}-{month}-{day}"
+    return datetime.date(year, month, day)
 
-def Time(hour, minute, second):
+def Time(hour: int, minute: int, second: int) -> datetime.time:
     """
-    Generates a time string in the format HH:MM:SS.
+    Generates a time object.
 
     Args:
         hour (int): The hour component of the time.
@@ -32,13 +62,13 @@ def Time(hour, minute, second):
         second (int): The second component of the time.
 
     Returns:
-        str: A string representing the time in the format HH:MM:SS.
+        datetime.time: A time object representing the time.
     """
-    return f"{hour}:{minute}:{second}"
+    return datetime.time(hour, minute, second)
 
-def Timestamp(year, month, day, hour, minute, second):
+def Timestamp(year: int, month: int, day: int, hour: int, minute: int, second: int) -> datetime.datetime:
     """
-    Generates a timestamp string in the format YYYY-MM-DD HH:MM:SS.
+    Generates a timestamp object.
 
     Args:
         year (int): The year component of the timestamp.
@@ -49,47 +79,47 @@ def Timestamp(year, month, day, hour, minute, second):
         second (int): The second component of the timestamp.
 
     Returns:
-        str: A string representing the timestamp in the format YYYY-MM-DD HH:MM:SS.
+        datetime.datetime: A datetime object representing the timestamp.
     """
-    return f"{year}-{month}-{day} {hour}:{minute}:{second}"
+    return datetime.datetime(year, month, day, hour, minute, second)
 
-def DateFromTicks(ticks):
+def DateFromTicks(ticks: int) -> datetime.date:
     """
-    Generates a date string from ticks.
+    Generates a date object from ticks.
 
     Args:
         ticks (int): The number of ticks since the epoch.
 
     Returns:
-        str: A string representing the date in the format YYYY-MM-DD.
+        datetime.date: A date object representing the date.
     """
-    return Date(*time.localtime(ticks)[:3])
+    return datetime.date.fromtimestamp(ticks)
 
-def TimeFromTicks(ticks):
+def TimeFromTicks(ticks: int) -> datetime.time:
     """
-    Generates a time string from ticks.
+    Generates a time object from ticks.
 
     Args:
         ticks (int): The number of ticks since the epoch.
 
     Returns:
-        str: A string representing the time in the format HH:MM:SS.
+        datetime.time: A time object representing the time.
     """
-    return Time(*time.localtime(ticks)[3:6])
+    return datetime.time(*time.localtime(ticks)[3:6])
 
-def TimestampFromTicks(ticks):
+def TimestampFromTicks(ticks: int) -> datetime.datetime:
     """
-    Generates a timestamp string from ticks.
+    Generates a timestamp object from ticks.
 
     Args:
         ticks (int): The number of ticks since the epoch.
 
     Returns:
-        str: A string representing the timestamp in the format YYYY-MM-DD HH:MM:SS.
+        datetime.datetime: A datetime object representing the timestamp.
     """
-    return Timestamp(*time.localtime(ticks)[:6])
+    return datetime.datetime.fromtimestamp(ticks)
 
-def Binary(string):
+def Binary(string: str) -> bytes:
     """
     Converts a string to bytes using UTF-8 encoding.
 

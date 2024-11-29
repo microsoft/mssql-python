@@ -1,11 +1,11 @@
 from connection import Connection 
 
-def connect(database: str) -> 'Connection':
+def connect(connection_str: str) -> 'Connection':
         """
         Constructor for creating a connection to the database.
 
         Args:
-            database (str): The name of the database to connect to.
+            connection_str (str): The connection_str to connect to.
 
         Returns:
             Connection: A new connection object to interact with the database.
@@ -18,6 +18,6 @@ def connect(database: str) -> 'Connection':
         be used to perform database operations such as executing queries, committing
         transactions, and closing the connection.
         """
-        conn = Connection(database)
+        conn = Connection(connection_str)
         conn._connect_to_db()
         return conn

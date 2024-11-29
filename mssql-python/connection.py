@@ -1,4 +1,4 @@
-
+from cursor import Cursor
 
 class Connection:
     """
@@ -11,7 +11,6 @@ class Connection:
     
     Methods:
         __init__(database: str) -> None:
-        connect(database: str) -> Connection:
         _connect_to_db() -> None:
         cursor() -> Cursor:
         commit() -> None:
@@ -19,18 +18,18 @@ class Connection:
         close() -> None:
     """
   
-    def __init__(self, database: str) -> None:
+    def __init__(self, connection_str: str) -> None:
         """
-        Initialize the connection object with the specified database name.
+        Initialize the connection object with the specified connection string.
 
         Args:
-            database (str): The name of the database to connect to.
+            connection_str (str): The connection_str to connect to.
 
         Returns:
             None
 
         Raises:
-            ValueError: If the database name is invalid or connection fails.
+            ValueError: If the connection_str is invalid or connection fails.
 
         This method sets up the initial state for the connection object, 
         preparing it for further operations such as connecting to the database, executing queries, etc.
