@@ -92,7 +92,11 @@ class Connection:
             DatabaseError: If there is an error while creating the cursor.
             InterfaceError: If there is an error related to the database interface. 
         """
-        pass
+        try:
+            return Cursor(self.connection_str)
+        except Exception as e:
+            logging.error("An error occurred while creating the cursor: %s", e)
+            raise Exception("DatabaseError: Failed to create the cursor") from e
 
     def commit(self) -> None:
         """
@@ -106,7 +110,14 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while committing the transaction.
         """
-        pass
+        try:
+            # Commit the current transaction
+            ret = self.odbc_initializer.odbc.SQLEndTran(const.SQL_HANDLE_DBC.value, self.odbc_initializer.hdbc, const.SQL_COMMIT.value)
+            self.odbc_initializer._check_ret(ret, const.SQL_HANDLE_DBC.value, self.odbc_initializer.hdbc)
+            logging.info("Transaction committed successfully.")
+        except Exception as e:
+            logging.error("An error occurred while committing the transaction: %s", e)
+            raise Exception("DatabaseError: Failed to commit the transaction") from e
 
     def rollback(self) -> None:
         """
@@ -119,7 +130,14 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while rolling back the transaction.
         """
-        pass
+        try:
+            # Roll back the current transaction
+            ret = self.odbc_initializer.odbc.SQLEndTran(const.SQL_HANDLE_DBC.value, self.odbc_initializer.hdbc, const.SQL_ROLLBACK.value)
+            self.odbc_initializer._check_ret(ret, const.SQL_HANDLE_DBC.value, self.odbc_initializer.hdbc)
+            logging.info("Transaction rolled back successfully.")
+        except Exception as e:
+            logging.error("An error occurred while rolling back the transaction: %s", e)
+            raise Exception("DatabaseError: Failed to roll back the transaction") from e
 
     def close(self) -> None:
         """

@@ -21,3 +21,5 @@ class ConstantsODBC(Enum):
     SQL_INVALID_HANDLE = -2
     SQL_NULL_HANDLE = 0
     SQL_OV_ODBC3 = 3
+    SQL_COMMIT = 0
+    SQL_ROLLBACK = 1
