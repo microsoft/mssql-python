@@ -6,7 +6,7 @@ import datetime
 # GLOBALS
 # Read-Only
 apilevel: Final[str] = '2.0'
-paramstyle: Final[str] = 'qmark'
+paramstyle: Final[str] = 'pyformat'
 threadsafety: Final[int] = 1
 
 # Type Objects
