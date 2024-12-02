@@ -1,4 +1,13 @@
+import ctypes
 from cursor import Cursor
+from helper import add_driver_to_connection_str
+from logging_config import setup_logging
+from utils import ODBCInitializer
+from constants import ConstantsODBC as const
+import logging
+
+# Setting up logging
+setup_logging()
 
 class Connection:
     """
@@ -34,7 +43,9 @@ class Connection:
         This method sets up the initial state for the connection object, 
         preparing it for further operations such as connecting to the database, executing queries, etc.
         """
-        pass
+        self.odbc_initializer = ODBCInitializer()
+        self.connection_str = add_driver_to_connection_str(connection_str)
+        
 
     def _connect_to_db(self) -> None:
         """
@@ -45,13 +56,28 @@ class Connection:
         details such as database name, user credentials, host, and port should be
         configured within the class or passed during the class instantiation.
 
-        Raises:
-            DatabaseError: If there is an error while trying to connect to the database.
-            InterfaceError: If there is an error related to the database interface.
         """
-        pass
+        try:
+            converted_connection_string = ctypes.c_wchar_p(self.connection_str)
+            out_connection_string = ctypes.create_unicode_buffer(1024)
+            out_connection_string_length = ctypes.c_short()
+            ret = self.odbc_initializer.odbc.SQLDriverConnectW(
+                self.odbc_initializer.hdbc,
+                None,
+                converted_connection_string,
+                len(self.connection_str),
+                out_connection_string,
+                1024,
+                ctypes.byref(out_connection_string_length),
+                const.SQL_DRIVER_NOPROMPT.value
+            )
+            self.odbc_initializer._check_ret(ret, const.SQL_HANDLE_DBC.value, self.hdbc)
+            logging.info("Connection established successfully.")
+        except Exception as e:
+            logging.error("An error occurred while connecting to the database: %s", e)
+            raise
 
-    def cursor(self) -> 'Cursor':
+    def cursor(self) -> Cursor:
         """
         Return a new Cursor object using the connection.
 
@@ -108,4 +134,20 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while closing the connection.
         """
-        pass
+        try:
+            # Disconnect from the database
+            ret = self.odbc_initializer.odbc.SQLDisconnect(self.odbc_initializer.hdbc)
+            self.odbc_initializer._check_ret(ret, const.SQL_HANDLE_DBC.value, self.odbc_initializer.hdbc)
+            
+            # Free the connection handle
+            ret = self.odbc_initializer.odbc.SQLFreeHandle(const.SQL_HANDLE_DBC.value, self.odbc_initializer.hdbc)
+            self.odbc_initializer._check_ret(ret, const.SQL_HANDLE_DBC.value, self.odbc_initializer.hdbc)
+            
+            # Free the environment handle
+            ret = self.odbc_initializer.odbc.SQLFreeHandle(const.SQL_HANDLE_ENV.value, self.odbc_initializer.henv)
+            self.odbc_initializer._check_ret(ret, const.SQL_HANDLE_ENV.value, self.odbc_initializer.henv)
+            
+            logging.info("Connection closed successfully.")
+        except Exception as e:
+            logging.error("An error occurred while closing the connection: %s", e)
+            raise Exception("DatabaseError: Failed to close the connection") from e
