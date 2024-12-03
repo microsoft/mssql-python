@@ -1,7 +1,7 @@
 from connection import Connection 
 import ctypes
 from helper import get_dll_path
-from constants import ConstantsODBC as const
+from constants import ConstantsODBC as odbc_sql_const, ConstantsSQLSTATE as sqlstate
 from exceptions import DatabaseError, InterfaceError
 import logging
 from logging_config import setup_logging
@@ -72,10 +72,10 @@ class ODBCInitializer:
             Exception: If an error is detected in the ODBC function call.
         """
         if return_code not in (
-            const.SQL_SUCCESS.value,
-            const.SQL_SUCCESS_WITH_INFO.value,
-            const.SQL_STILL_EXECUTING.value,
-            const.SQL_NO_DATA.value
+            odbc_sql_const.SQL_SUCCESS.value,
+            odbc_sql_const.SQL_SUCCESS_WITH_INFO.value,
+            odbc_sql_const.SQL_STILL_EXECUTING.value,
+            odbc_sql_const.SQL_NO_DATA.value
         ):
             sql_state = ctypes.create_unicode_buffer(6)
             native_error = ctypes.c_int()
@@ -85,7 +85,7 @@ class ODBCInitializer:
             diag_return_code = self.odbc.SQLGetDiagRecW(
                 handle_type,
                 handle,
-                1,
+                self.odbc.SQLSMALLINT(1),
                 sql_state,
                 ctypes.byref(native_error),
                 message_text,
@@ -93,14 +93,10 @@ class ODBCInitializer:
                 ctypes.byref(text_length)
             )
 
-            if diag_return_code in (const.SQL_SUCCESS.value, const.SQL_SUCCESS_WITH_INFO.value):
-                if sql_state.value == "01000":
+            if diag_return_code in (odbc_sql_const.SQL_SUCCESS.value, odbc_sql_const.SQL_SUCCESS_WITH_INFO.value):
+                if sql_state.value == sql_state.GENERAL_WARNING.value:
                     logging.info("General notification: %s", message_text.value)
                     return
-                logging.error("SQLGetDiagRecW return code: %d", diag_return_code)
-                logging.error("SQLSTATE: %s", sql_state.value)
-                logging.error("Native Error: %d", native_error.value)
-                logging.error("Message: %s", message_text.value)
                 raise Exception(f"ODBC error: {message_text.value} (SQL State: {sql_state.value})")
             else:
                 logging.error("SQLGetDiagRecW failed with return code: %d", diag_return_code)
@@ -110,19 +106,19 @@ class ODBCInitializer:
         """
         Allocate the ODBC environment handle.
         """
-        ret = self.odbc.SQLAllocHandle(const.SQL_HANDLE_ENV.value, None, ctypes.byref(self.henv))
-        self._check_ret(ret, const.SQL_HANDLE_ENV, self.henv)
+        ret = self.odbc.SQLAllocHandle(odbc_sql_const.SQL_HANDLE_ENV.value, None, ctypes.byref(self.henv))
+        self._check_ret(ret, odbc_sql_const.SQL_HANDLE_ENV, self.henv)
 
     def _set_environment_attributes(self):
         """
         Set the ODBC environment attributes.
         """
-        ret = self.odbc.SQLSetEnvAttr(self.henv, const.SQL_ATTR_ODBC_VERSION.value, ctypes.c_void_p(const.SQL_OV_ODBC3_80.value), 0)
-        self._check_ret(ret, const.SQL_HANDLE_ENV.value, self.henv)
+        ret = self.odbc.SQLSetEnvAttr(self.henv, odbc_sql_const.SQL_ATTR_ODBC_VERSION.value, ctypes.c_void_p(odbc_sql_const.SQL_OV_ODBC3_80.value), len(odbc_sql_const.SQL_OV_ODBC3_80.value))
+        self._check_ret(ret, odbc_sql_const.SQL_HANDLE_ENV.value, self.henv)
 
     def _allocate_connection_handle(self):
         """
         Allocate the ODBC connection handle.
         """
-        ret = self.odbc.SQLAllocHandle(const.SQL_HANDLE_DBC.value, self.henv, ctypes.byref(self.hdbc))
-        self._check_ret(ret, const.SQL_HANDLE_DBC.value, self.hdbc)
+        ret = self.odbc.SQLAllocHandle(odbc_sql_const.SQL_HANDLE_DBC.value, self.henv, ctypes.byref(self.hdbc))
+        self._check_ret(ret, odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc)

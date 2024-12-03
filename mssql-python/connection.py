@@ -59,7 +59,7 @@ class Connection:
         """
         try:
             converted_connection_string = ctypes.c_wchar_p(self.connection_str)
-            out_connection_string = ctypes.create_unicode_buffer(1024)
+            out_connection_string = ctypes.create_unicode_buffer(self.odbc_initializer.buffer_length)
             out_connection_string_length = ctypes.c_short()
             ret = self.odbc_initializer.odbc.SQLDriverConnectW(
                 self.odbc_initializer.hdbc,
@@ -67,7 +67,7 @@ class Connection:
                 converted_connection_string,
                 len(self.connection_str),
                 out_connection_string,
-                1024,
+                self.odbc_initializer.buffer_length,
                 ctypes.byref(out_connection_string_length),
                 const.SQL_DRIVER_NOPROMPT.value
             )
