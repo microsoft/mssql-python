@@ -1,4 +1,5 @@
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 
 def setup_logging(log_level=logging.INFO):
@@ -22,7 +23,7 @@ def setup_logging(log_level=logging.INFO):
         level=log_level,
         format='%(asctime)s - %(levelname)s - %(filename)s - %(message)s',
         handlers=[
-            logging.FileHandler(log_file),
+            RotatingFileHandler(log_file, maxBytes=10485760, backupCount=5),  # 10MB per file, keep 5 backups
             logging.StreamHandler()
         ]
     )

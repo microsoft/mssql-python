@@ -2,6 +2,8 @@ from .utils import connect
 from .constants import (
     ConstantsODBC
 )
+import sys
+from utils import get_odbc_dll_path
 
 # GLOBALS
 # Read-Only
@@ -27,3 +29,11 @@ from .connection import Connection
 
 # Cursor Objects
 from .cursor import Cursor
+
+# Loading ODBC DLL: to be changed post pybind11 integration
+if sys.platform == 'win32':
+    odbc = ctypes.windll.LoadLibrary(get_odbc_dll_path("msodbcsql18.dll"))
+elif sys.platform == 'darwin':
+    pass
+elif sys.platform == 'linux':
+    pass
