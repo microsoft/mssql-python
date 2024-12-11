@@ -11,7 +11,7 @@ class Cursor:
         arraysize: Number of rows to fetch at a time with fetchmany().
 
     Methods:
-        __init__(connection) -> None.
+        __init__(connection_str) -> None.
         callproc(procname, parameters=None) -> Modified copy of the input sequence with output parameters.
         close() -> None.
         execute(operation, parameters=None) -> None.
