@@ -6,6 +6,7 @@ from exceptions import DatabaseError, InterfaceError
 import logging
 from logging_config import setup_logging
 from mssql_python import odbc
+from exceptions import raise_exception, sqlstate_to_exception, Exception
 
 # Setting up logging
 setup_logging()
@@ -42,7 +43,7 @@ def connect(connection_str: str) -> Connection:
             logging.error(f"An error occurred while connecting to the database: {e}")
             raise Exception(f"An error occurred while connecting to the database: {e}")
 
-def get_odbc_dll_path(dll_name):
+def get_odbc_dll_path(dll_name) -> str:
     """
     Get the full path to the specified ODBC DLL.
     
@@ -73,7 +74,7 @@ def get_odbc_dll_path(dll_name):
     except Exception as e:
         raise Exception(f"An error occurred while getting the DLL path: {e}")
 
-def add_driver_to_connection_str(connection_str):
+def add_driver_to_connection_str(connection_str) -> str:
     """
     Add the ODBC driver to the connection string if not present.
 
@@ -113,7 +114,7 @@ def add_driver_to_connection_str(connection_str):
     
     return connection_str     
 
-def check_ret(self, return_code, handle_type, handle):
+def check_ret(self, return_code, handle_type, handle) -> None:
     """
     Check the return code from an ODBC function call and handle any errors.
 
@@ -148,10 +149,10 @@ def check_ret(self, return_code, handle_type, handle):
         )
 
         if diag_return_code in (odbc_sql_const.SQL_SUCCESS.value, odbc_sql_const.SQL_SUCCESS_WITH_INFO.value):
-            if sql_state.value == sql_state.GENERAL_WARNING.value:
+            if sql_state.value == sqlstate_to_exception.get('01000', None):
                 logging.info("General notification: %s", message_text.value)
                 return
-            raise Exception(f"ODBC error: {message_text.value} (SQL State: {sql_state.value})")
+            raise_exception(sql_state.value)
         else:
             logging.error("SQLGetDiagRecW failed with return code: %d", diag_return_code)
-            raise Exception(f"Failed to retrieve diagnostic information. Return code: {diag_return_code}, ODBC return code: {return_code}")    
+            raise Exception(f"Failed to retrieve diagnostic information. Return code: {diag_return_code}, ODBC return code: {return_code}")

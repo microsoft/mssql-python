@@ -4,6 +4,7 @@ from .constants import (
 )
 import sys
 from utils import get_odbc_dll_path
+import ctypes
 
 # GLOBALS
 # Read-Only
