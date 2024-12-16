@@ -18,3 +18,5 @@ steps:
 - script: |
     python -m pytest -v --capture=tee-sys
   displayName: 'Run tests'
+  env:
+    DB_CONNECTION_STRING: $(DB_CONNECTION_STRING)
