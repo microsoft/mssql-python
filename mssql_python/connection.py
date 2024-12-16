@@ -1,4 +1,4 @@
-from cursor import Cursor
+from .cursor import Cursor
 
 class Connection:
     """
