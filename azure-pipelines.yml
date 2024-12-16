@@ -1,4 +1,3 @@
-
 trigger:
 - main
 
@@ -17,5 +16,5 @@ steps:
   displayName: 'Install dependencies'
 
 - script: |
-    pytest -v --capture=tee-sys
+    python -m pytest -v --capture=tee-sys
   displayName: 'Run tests'
