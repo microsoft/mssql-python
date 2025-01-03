@@ -70,7 +70,7 @@ class Connection:
 
     https://www.python.org/dev/peps/pep-0249/#connection-objects
 
-    This class should not be instantiated directly, instead call pyodbc.connect() to
+    This class should not be instantiated directly, instead call mssql_python.connect() to
     create a Connection object.
     """
 

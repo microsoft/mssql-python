@@ -1,48 +1,15 @@
-from connection import Connection 
 import ctypes
 import os
-from constants import ConstantsODBC as odbc_sql_const, ConstantsSQLSTATE as sqlstate
-from exceptions import DatabaseError, InterfaceError
+from constants import ConstantsODBC as odbc_sql_const
 import logging
 from logging_config import setup_logging
 from mssql_python import odbc
+from exceptions import raise_exception, sqlstate_to_exception, Exception
 
 # Setting up logging
 setup_logging()
 
-def connect(connection_str: str) -> Connection:
-        """
-        Constructor for creating a connection to the database.
-
-        Args:
-            connection_str (str): The connection_str to connect to.
-
-        Returns:
-            Connection: A new connection object to interact with the database.
-
-        Raises:
-            DatabaseError: If there is an error while trying to connect to the database.
-            InterfaceError: If there is an error related to the database interface.
-
-        This function provides a way to create a new connection object, which can then
-        be used to perform database operations such as executing queries, committing
-        transactions, and closing the connection.
-        """
-        try:
-            conn = Connection(connection_str)
-            conn._connect_to_db()
-            return conn
-        except DatabaseError as e:
-            logging.error(f"Database error occurred while connecting to the database: {e}")
-            raise DatabaseError(f"Database error occurred while connecting to the database: {e}")
-        except InterfaceError as e:
-            logging.error(f"Interface error occurred while connecting to the database: {e}")
-            raise InterfaceError(f"Interface error occurred while connecting to the database: {e}")
-        except Exception as e:
-            logging.error(f"An error occurred while connecting to the database: {e}")
-            raise Exception(f"An error occurred while connecting to the database: {e}")
-
-def get_odbc_dll_path(dll_name):
+def get_odbc_dll_path(dll_name) -> str:
     """
     Get the full path to the specified ODBC DLL.
     
@@ -73,7 +40,7 @@ def get_odbc_dll_path(dll_name):
     except Exception as e:
         raise Exception(f"An error occurred while getting the DLL path: {e}")
 
-def add_driver_to_connection_str(connection_str):
+def add_driver_to_connection_str(connection_str) -> str:
     """
     Add the ODBC driver to the connection string if not present.
 
@@ -113,7 +80,7 @@ def add_driver_to_connection_str(connection_str):
     
     return connection_str     
 
-def check_ret(self, return_code, handle_type, handle):
+def check_ret(return_code, handle_type, handle) -> None:
     """
     Check the return code from an ODBC function call and handle any errors.
 
@@ -148,10 +115,10 @@ def check_ret(self, return_code, handle_type, handle):
         )
 
         if diag_return_code in (odbc_sql_const.SQL_SUCCESS.value, odbc_sql_const.SQL_SUCCESS_WITH_INFO.value):
-            if sql_state.value == sql_state.GENERAL_WARNING.value:
+            if sql_state.value == sqlstate_to_exception.get('01000', None):
                 logging.info("General notification: %s", message_text.value)
                 return
-            raise Exception(f"ODBC error: {message_text.value} (SQL State: {sql_state.value})")
+            raise_exception(sql_state.value)
         else:
             logging.error("SQLGetDiagRecW failed with return code: %d", diag_return_code)
-            raise Exception(f"Failed to retrieve diagnostic information. Return code: {diag_return_code}, ODBC return code: {return_code}")    
+            raise Exception(f"Failed to retrieve diagnostic information. Return code: {diag_return_code}, ODBC return code: {return_code}")
