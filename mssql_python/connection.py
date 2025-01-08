@@ -1,10 +1,21 @@
 import ctypes
-from cursor import Cursor
-from logging_config import setup_logging
-from constants import ConstantsODBC as odbc_sql_const
-from utils import check_ret, add_driver_to_connection_str
+from mssql_python.cursor import Cursor
+from mssql_python.logging_config import setup_logging
+from mssql_python.constants import ConstantsODBC as odbc_sql_const
+from mssql_python.utils import check_ret, add_driver_to_connection_str, get_odbc_dll_path
 import logging
-from mssql_python import odbc
+
+
+import ctypes, sys
+
+# Loading ODBC DLL: to be changed post pybind11 integration
+if sys.platform == 'win32':
+    odbc = ctypes.windll.LoadLibrary(get_odbc_dll_path("msodbcsql18.dll"))
+elif sys.platform == 'darwin':
+    pass
+elif sys.platform == 'linux':
+    pass
+
 
 # Setting up logging
 setup_logging()
@@ -49,6 +60,8 @@ class Connection:
         self.buffer = ctypes.create_string_buffer(self.buffer_length)
         self.indicator = ctypes.c_long()
         self.connection_str = add_driver_to_connection_str(connection_str)
+        self._initializer()
+        logging.info("Connecting to the database")
 
     def _initializer(self) -> None:
         """
@@ -58,14 +71,10 @@ class Connection:
         handles, allocating memory for them, and setting the necessary attributes.
         It should be called before establishing a connection to the database.
         """
-        try:
-            self._allocate_environment_handle()
-            self._set_environment_attributes()
-            self._allocate_connection_handle()
-        except Exception as e:
-            logging.error("An error occurred during initialization: %s", e)
+        self._allocate_environment_handle()
+        self._set_environment_attributes()
+        self._allocate_connection_handle()
         
-
     def _allocate_environment_handle(self):
         """
         Allocate the ODBC environment handle.
@@ -77,7 +86,7 @@ class Connection:
         """
         Set the ODBC environment attributes.
         """
-        ret = odbc.SQLSetEnvAttr(self.henv, odbc_sql_const.SQL_ATTR_ODBC_VERSION.value, ctypes.c_void_p(odbc_sql_const.SQL_OV_ODBC3_80.value), len(odbc_sql_const.SQL_OV_ODBC3_80.value))
+        ret = odbc.SQLSetEnvAttr(self.henv, odbc_sql_const.SQL_ATTR_ODBC_VERSION.value, ctypes.c_void_p(odbc_sql_const.SQL_OV_ODBC3_80.value), 0)
         check_ret(ret, odbc_sql_const.SQL_HANDLE_ENV.value, self.henv)
 
     def _allocate_connection_handle(self):

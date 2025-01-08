@@ -1,0 +1,3 @@
+C:\Users\sharmag\OneDrive - Microsoft\Desktop\mssql-python\mssql_python\pybind\pymsbuild\ddbc_mssql_python\ddbc_bindings.cp312-win_amd64.pyd
+C:\Users\sharmag\OneDrive - Microsoft\Desktop\mssql-python\mssql_python\pybind\pymsbuild\ddbc_mssql_python\__init__.py
+C:\Users\sharmag\OneDrive - Microsoft\Desktop\mssql-python\mssql_python\pybind\pymsbuild\build\temp\ddbc_mssql_python.writes.txt

@@ -1,46 +1,14 @@
-from connection import Connection 
 import ctypes
 import os
-from constants import ConstantsODBC as odbc_sql_const, ConstantsSQLSTATE as sqlstate
-from exceptions import DatabaseError, InterfaceError
+from mssql_python.constants import ConstantsODBC as odbc_sql_const, ConstantsSQLSTATE as sqlstate
+from mssql_python.exceptions import DatabaseError, InterfaceError
 import logging
-from logging_config import setup_logging
-from mssql_python import odbc
+from mssql_python.logging_config import setup_logging
+
+import ctypes, sys
 
 # Setting up logging
 setup_logging()
-
-def connect(connection_str: str) -> Connection:
-        """
-        Constructor for creating a connection to the database.
-
-        Args:
-            connection_str (str): The connection_str to connect to.
-
-        Returns:
-            Connection: A new connection object to interact with the database.
-
-        Raises:
-            DatabaseError: If there is an error while trying to connect to the database.
-            InterfaceError: If there is an error related to the database interface.
-
-        This function provides a way to create a new connection object, which can then
-        be used to perform database operations such as executing queries, committing
-        transactions, and closing the connection.
-        """
-        try:
-            conn = Connection(connection_str)
-            conn._connect_to_db()
-            return conn
-        except DatabaseError as e:
-            logging.error(f"Database error occurred while connecting to the database: {e}")
-            raise DatabaseError(f"Database error occurred while connecting to the database: {e}")
-        except InterfaceError as e:
-            logging.error(f"Interface error occurred while connecting to the database: {e}")
-            raise InterfaceError(f"Interface error occurred while connecting to the database: {e}")
-        except Exception as e:
-            logging.error(f"An error occurred while connecting to the database: {e}")
-            raise Exception(f"An error occurred while connecting to the database: {e}")
 
 def get_odbc_dll_path(dll_name):
     """
@@ -97,7 +65,7 @@ def add_driver_to_connection_str(connection_str):
         
         # Iterate through the attributes and exclude any existing driver attribute
         for attribute in connection_attributes:
-            if attribute.split('=').lower() == 'driver':
+            if attribute.lower().split('=') == 'driver':
                 continue
             final_connection_attributes.append(attribute)
         
@@ -113,7 +81,17 @@ def add_driver_to_connection_str(connection_str):
     
     return connection_str     
 
-def check_ret(self, return_code, handle_type, handle):
+
+# Loading ODBC DLL: to be changed post pybind11 integration
+if sys.platform == 'win32':
+    odbc = ctypes.windll.LoadLibrary(get_odbc_dll_path("msodbcsql18.dll"))
+elif sys.platform == 'darwin':
+    pass
+elif sys.platform == 'linux':
+    pass
+
+
+def check_ret(return_code, handle_type, handle):
     """
     Check the return code from an ODBC function call and handle any errors.
 
@@ -139,7 +117,7 @@ def check_ret(self, return_code, handle_type, handle):
         diag_return_code = odbc.SQLGetDiagRecW(
             handle_type,
             handle,
-            odbc.SQLSMALLINT(1),
+            1,
             sql_state,
             ctypes.byref(native_error),
             message_text,
