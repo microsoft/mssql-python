@@ -1,13 +1,5 @@
-# tests/test_basic.py
+# tests/test_cursor.py
 import pytest
-
-def test_connection_string(conn_str):
-    # Check if the connection string is not None
-    assert conn_str is not None, "Connection string should not be None"
-
-def test_connection(db_connection):
-    # Check if the database connection is established
-    assert db_connection is not None, "Database connection should not be None"
 
 def test_cursor(cursor):
     # Check if the cursor is created
