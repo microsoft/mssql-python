@@ -3,5 +3,9 @@ __pycache__/
 **/__pycache__/
 *.pyc
 
+# Ignore pytest cache
+.pytest_cache/
+**/.pytest_cache/
+
 # Ignore log files
 *.log
