@@ -28,7 +28,8 @@ def db_connection(conn_str):
         yield conn
     except Exception as e:
         if "Timeout error" in str(e):
-            time.sleep(30)
+            print(f"Database connection failed due to Timeout: {e}. Retrying in 60 seconds.")
+            time.sleep(60)
             conn = connect(conn_str)
             yield conn
         else:
