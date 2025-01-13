@@ -1,4 +1,13 @@
-# tests/test_cursor.py
+"""
+This file contains tests for the Cursor class.
+Functions:
+- test_cursor: Check if the cursor is created.
+- test_execute: Ensure test_cursor passed and execute a query to fetch database names and IDs.
+- test_fetch_data: Ensure test_cursor passed and fetch data from a query.
+- test_execute_invalid_query: Ensure test_cursor passed and check if executing an invalid query raises an exception.
+Note: The cursor function is not yet implemented, so related tests are commented out.
+"""
+
 import pytest
 
 def test_cursor(cursor):

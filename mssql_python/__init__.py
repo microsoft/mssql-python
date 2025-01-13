@@ -1,4 +1,3 @@
-from .utils import connect
 from .constants import (
     ConstantsODBC
 )
@@ -6,7 +5,7 @@ from .constants import (
 # GLOBALS
 # Read-Only
 apilevel = '2.0'
-paramstyle = 'pyformat'
+paramstyle = 'qmark'
 threadsafety = 1
 
 # Exceptions
@@ -27,3 +26,6 @@ from .connection import Connection
 
 # Cursor Objects
 from .cursor import Cursor
+
+from .db_connection import connect
+from .helpers import add_driver_to_connection_str, check_error

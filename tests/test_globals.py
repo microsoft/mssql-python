@@ -1,3 +1,11 @@
+"""
+This file contains tests for the global variables in the mssql_python package.
+Functions:
+- test_apilevel: Check if apilevel has the expected value.
+- test_threadsafety: Check if threadsafety has the expected value.
+- test_paramstyle: Check if paramstyle has the expected value.
+"""
+
 import pytest
 
 # Import global variables from the repository
@@ -13,4 +21,4 @@ def test_threadsafety():
 
 def test_paramstyle():
     # Check if paramstyle has the expected value
-    assert paramstyle == "pyformat", "paramstyle should be 'pyformat'"
+    assert paramstyle == "qmark", "paramstyle should be 'qmark'"
