@@ -5,7 +5,7 @@ from .constants import (
 # GLOBALS
 # Read-Only
 apilevel = '2.0'
-paramstyle = 'pyformat'
+paramstyle = 'qmark'
 threadsafety = 1
 
 # Exceptions
