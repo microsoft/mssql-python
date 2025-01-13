@@ -11,16 +11,21 @@ jobs:
   steps:
   - task: UsePythonVersion@0
     inputs:
-      versionSpec: '3.13.1'
+      versionSpec: '3.12.8'
       addToPath: true
 
   - script: |
-      python3 -m pip install --upgrade pip
+      python --version
+      python3 --version
+    displayName: 'Print Python version before tests'
+
+  - script: |
+      python -m pip install --upgrade pip
       pip install -r requirements.txt
     displayName: 'Install dependencies'
 
   - script: |
-      python3 -m pytest --cov=./ --cov-report=xml --cov-report=html -v --capture=tee-sys --cache-clear
+      python -m pytest --cov=./ --cov-report=xml --cov-report=html -v --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage'
     env:
       DB_CONNECTION_STRING: $(DB_CONNECTION_STRING)
@@ -31,3 +36,13 @@ jobs:
       summaryFileLocation: '$(System.DefaultWorkingDirectory)/coverage.xml'
       reportDirectory: '$(System.DefaultWorkingDirectory)/htmlcov'
       failIfCoverageEmpty: true
+
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.13.1'
+      addToPath: true
+    displayName: 'Install Python 3.13.1'
+
+  - script: |
+      python --version
+    displayName: 'Print Python version after installing 3.13.1'
