@@ -27,5 +27,5 @@ from .connection import Connection
 # Cursor Objects
 from .cursor import Cursor
 
-from .utils import connect
+from .db_connection import connect
 from .helpers import add_driver_to_connection_str, check_error

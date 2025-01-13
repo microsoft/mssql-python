@@ -123,3 +123,29 @@ Invoked with: 1, None, <cparam 'P' (0x000001B9BCD4C518)>
 2025-01-10 15:11:48,998 - INFO - connection.py - Connecting to the database
 2025-01-10 15:11:48,999 - INFO - utils.py - Connecting to the database
 2025-01-10 15:11:50,675 - INFO - connection.py - Connection established successfully.
+2025-01-10 15:54:31,151 - INFO - connection.py - Connection established successfully.
+2025-01-10 15:54:31,232 - INFO - connection.py - Connecting to the database
+2025-01-10 15:54:31,232 - INFO - utils.py - Connecting to the database
+2025-01-10 15:54:32,745 - INFO - connection.py - Connection established successfully.
+2025-01-10 15:59:23,752 - INFO - connection.py - Connection established successfully.
+2025-01-10 15:59:23,793 - INFO - connection.py - Connecting to the database
+2025-01-10 15:59:23,793 - INFO - db_connection.py - Connecting to the database
+2025-01-10 15:59:25,038 - INFO - connection.py - Connection established successfully.
+2025-01-10 15:59:39,948 - INFO - connection.py - Connection established successfully.
+2025-01-10 15:59:39,995 - INFO - connection.py - Connecting to the database
+2025-01-10 15:59:39,997 - INFO - db_connection.py - Connecting to the database
+2025-01-10 15:59:41,280 - INFO - connection.py - Connection established successfully.
+2025-01-10 16:00:35,454 - ERROR - connection.py - An error occurred while connecting to the database: Failed to allocate SQL connection handle. Error code: 
+2025-01-10 16:00:35,454 - ERROR - db_connection.py - An error occurred while connecting to the database: Failed to allocate SQL connection handle. Error code: 
+2025-01-10 16:01:13,537 - INFO - connection.py - Connection established successfully.
+2025-01-10 16:01:13,576 - INFO - connection.py - Connecting to the database
+2025-01-10 16:01:13,576 - INFO - db_connection.py - Connecting to the database
+2025-01-10 16:01:14,689 - INFO - connection.py - Connection established successfully.
+2025-01-10 16:01:31,463 - INFO - connection.py - Connection established successfully.
+2025-01-10 16:01:31,501 - INFO - connection.py - Connecting to the database
+2025-01-10 16:01:31,501 - INFO - db_connection.py - Connecting to the database
+2025-01-10 16:01:32,908 - INFO - connection.py - Connection established successfully.
+2025-01-10 16:15:41,109 - INFO - connection.py - Connection established successfully.
+2025-01-10 16:15:41,152 - INFO - connection.py - Connecting to the database
+2025-01-10 16:15:41,157 - INFO - db_connection.py - Connecting to the database
+2025-01-10 16:15:42,390 - INFO - connection.py - Connection established successfully.

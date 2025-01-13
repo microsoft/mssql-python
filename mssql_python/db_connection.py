@@ -1,9 +1,8 @@
-from mssql_python import ddbc_bindings
+
 import logging
 from mssql_python.logging_config import setup_logging
 from mssql_python.exceptions import DatabaseError, InterfaceError
 from mssql_python.connection import Connection
-from mssql_python.helpers import check_error
 
 # Setting up logging
 setup_logging()

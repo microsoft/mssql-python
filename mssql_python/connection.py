@@ -67,21 +67,34 @@ class Connection:
         """
         Allocate the ODBC environment handle.
         """
-        ret = ddbc_bindings.SQLAllocHandle(odbc_sql_const.SQL_HANDLE_ENV.value, 0, ctypes.cast(ctypes.pointer(self.henv), ctypes.c_void_p).value)
+        ret = ddbc_bindings.SQLAllocHandle(
+            odbc_sql_const.SQL_HANDLE_ENV.value, #SQL environment handle type
+            0, # SQL input handle
+            ctypes.cast(ctypes.pointer(self.henv), ctypes.c_void_p).value # SQL output handle pointer
+        )
         check_error(odbc_sql_const.SQL_HANDLE_ENV.value, self.henv.value, ret)
 
     def _set_environment_attributes(self):
         """
         Set the ODBC environment attributes.
         """
-        ret = ddbc_bindings.SQLSetEnvAttr(self.henv.value, odbc_sql_const.SQL_ATTR_ODBC_VERSION.value, odbc_sql_const.SQL_OV_ODBC3_80.value, 0)
+        ret = ddbc_bindings.SQLSetEnvAttr(
+            self.henv.value,  # Environment handle
+            odbc_sql_const.SQL_ATTR_ODBC_VERSION.value,  # Attribute
+            odbc_sql_const.SQL_OV_ODBC3_80.value, # String Length
+            0 # Null-terminated string
+        )
         check_error(odbc_sql_const.SQL_HANDLE_ENV.value, self.henv.value, ret)
 
     def _allocate_connection_handle(self):
         """
         Allocate the ODBC connection handle.
         """
-        ret = ddbc_bindings.SQLAllocHandle(odbc_sql_const.SQL_HANDLE_DBC.value, self.henv.value, ctypes.cast(ctypes.pointer(self.hdbc), ctypes.c_void_p).value)
+        ret = ddbc_bindings.SQLAllocHandle(
+            odbc_sql_const.SQL_HANDLE_DBC.value, # SQL connection handle type
+            self.henv.value, # SQL environment handle
+            ctypes.cast(ctypes.pointer(self.hdbc), ctypes.c_void_p).value # SQL output handle pointer
+        )
         check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
 
     def _connect_to_db(self) -> None:
@@ -96,9 +109,9 @@ class Connection:
         """
         try:
             ret = ddbc_bindings.SQLDriverConnect(
-                self.hdbc.value,
-                0,
-                self.connection_str
+                self.hdbc.value, # Connection handle
+                0, # Window handle
+                self.connection_str # Connection string
             )
             check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
             logging.info("Connection established successfully.")
@@ -184,8 +197,12 @@ class Connection:
         """
         try:
             # Commit the current transaction
-            # ret = odbc.SQLEndTran(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, odbc_sql_const.SQL_COMMIT.value)
-            # check_ret(ret, odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc)
+            ret = ddbc_bindings.SQLEndTran(
+                odbc_sql_const.SQL_HANDLE_DBC.value, # Handle type
+                self.hdbc, # Connection handle
+                odbc_sql_const.SQL_COMMIT.value # Commit the transaction
+            )
+            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
             logging.info("Transaction committed successfully.")
         except Exception as e:
             logging.error("An error occurred while committing the transaction: %s", e)
@@ -204,8 +221,12 @@ class Connection:
         """
         try:
             # Roll back the current transaction
-            # ret = odbc.SQLEndTran(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, odbc_sql_const.SQL_ROLLBACK.value)
-            # check_ret(ret, odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc)
+            ret = ddbc_bindings.SQLEndTran(
+                odbc_sql_const.SQL_HANDLE_DBC.value,  # Handle type
+                self.hdbc, # Connection handle
+                odbc_sql_const.SQL_ROLLBACK.value # Roll back the transaction
+            )
+            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
             logging.info("Transaction rolled back successfully.")
         except Exception as e:
             logging.error("An error occurred while rolling back the transaction: %s", e)

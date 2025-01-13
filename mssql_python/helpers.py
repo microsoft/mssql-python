@@ -1,4 +1,5 @@
 from mssql_python import ddbc_bindings
+from mssql_python.constants import ConstantsODBC
 
 def add_driver_to_connection_str(connection_str):
     """
@@ -52,6 +53,6 @@ def check_error(handle_type, handle, ret):
     Raises:
         RuntimeError: If an error is found.
     """
-    if ret < 0:
+    if ret == ConstantsODBC.SQL_ERROR.value:
         e = ddbc_bindings.CheckError(handle_type, handle, ret)
         raise RuntimeError(f"Failed to allocate SQL connection handle. Error code: {e}")
