@@ -4,29 +4,30 @@ trigger:
 pr:
 - main
 
-pool:
-  vmImage: 'windows-latest'
+jobs:
+- job: PytestOnWindows
+  pool:
+    vmImage: 'windows-latest'
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.x'
+      addToPath: true
 
-steps:
-- task: UsePythonVersion@0
-  inputs:
-    versionSpec: '3.x'
-    addToPath: true
+  - script: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+    displayName: 'Install dependencies'
 
-- script: |
-    python -m pip install --upgrade pip
-    pip install -r requirements.txt
-  displayName: 'Install dependencies'
+  - script: |
+      python -m pytest --cov=./ --cov-report=xml --cov-report=html -v --capture=tee-sys --cache-clear
+    displayName: 'Run tests with coverage'
+    env:
+      DB_CONNECTION_STRING: $(DB_CONNECTION_STRING)
 
-- script: |
-    python -m pytest --cov=./ --cov-report=xml --cov-report=html -v --capture=tee-sys --cache-clear
-  displayName: 'Run tests with coverage'
-  env:
-    DB_CONNECTION_STRING: $(DB_CONNECTION_STRING)
-
-- task: PublishCodeCoverageResults@2
-  inputs:
-    codeCoverageTool: 'Cobertura'
-    summaryFileLocation: '$(System.DefaultWorkingDirectory)/coverage.xml'
-    reportDirectory: '$(System.DefaultWorkingDirectory)/htmlcov'
-    failIfCoverageEmpty: true
+  - task: PublishCodeCoverageResults@2
+    inputs:
+      codeCoverageTool: 'Cobertura'
+      summaryFileLocation: '$(System.DefaultWorkingDirectory)/coverage.xml'
+      reportDirectory: '$(System.DefaultWorkingDirectory)/htmlcov'
+      failIfCoverageEmpty: true

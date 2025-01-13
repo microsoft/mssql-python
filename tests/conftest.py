@@ -23,7 +23,16 @@ def conn_str():
 
 @pytest.fixture(scope="module")
 def db_connection(conn_str):
-    conn = connect(conn_str)
+    try:
+        conn = connect(conn_str)
+        yield conn
+    except Exception as e:
+        if "Timeout error" in str(e):
+            time.sleep(30)
+            conn = connect(conn_str)
+            yield conn
+        else:
+            pytest.fail(f"Database connection failed: {e}")
     yield conn
 
 @pytest.fixture(scope="module")
