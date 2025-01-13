@@ -25,13 +25,11 @@ def conn_str():
 def db_connection(conn_str):
     try:
         conn = connect(conn_str)
-        yield conn
     except Exception as e:
         if "Timeout error" in str(e):
             print(f"Database connection failed due to Timeout: {e}. Retrying in 60 seconds.")
             time.sleep(60)
             conn = connect(conn_str)
-            yield conn
         else:
             pytest.fail(f"Database connection failed: {e}")
     yield conn
