@@ -1,21 +1,11 @@
-from .utils import connect
 from .constants import (
     ConstantsODBC
 )
-import sys
-from utils import get_odbc_dll_path
-import ctypes
-import logging
-from logging_config import setup_logging
-from exceptions import Exception
-
-# Setting up logging
-setup_logging()
 
 # GLOBALS
 # Read-Only
 apilevel = '2.0'
-paramstyle = 'pyformat'
+paramstyle = 'qmark'
 threadsafety = 1
 
 # Exceptions
@@ -37,42 +27,5 @@ from .connection import Connection
 # Cursor Objects
 from .cursor import Cursor
 
-# Loading ODBC DLL: to be changed post pybind11 integration
-if sys.platform == 'win32':
-    odbc = ctypes.windll.LoadLibrary(get_odbc_dll_path("msodbcsql18.dll"))
-elif sys.platform == 'darwin':
-    pass
-elif sys.platform == 'linux':
-    pass
-
-def connect(connection_str: str) -> Connection:
-    """
-    Constructor for creating a connection to the database.
-
-    Args:
-        connection_str (str): The connection_str to connect to.
-
-    Returns:
-        Connection: A new connection object to interact with the database.
-
-    Raises:
-        DatabaseError: If there is an error while trying to connect to the database.
-        InterfaceError: If there is an error related to the database interface.
-
-    This function provides a way to create a new connection object, which can then
-    be used to perform database operations such as executing queries, committing
-    transactions, and closing the connection.
-    """
-    try:
-        conn = Connection(connection_str)
-        conn._connect_to_db()
-        return conn
-    except DatabaseError as e:
-        logging.error(f"Database error occurred while connecting to the database: {e}")
-        raise DatabaseError(f"Database error occurred while connecting to the database: {e}")
-    except InterfaceError as e:
-        logging.error(f"Interface error occurred while connecting to the database: {e}")
-        raise InterfaceError(f"Interface error occurred while connecting to the database: {e}")
-    except Exception as e:
-        logging.error(f"An error occurred while connecting to the database: {e}")
-        raise Exception(f"An error occurred while connecting to the database: {e}")
+from .db_connection import connect
+from .helpers import add_driver_to_connection_str, check_error

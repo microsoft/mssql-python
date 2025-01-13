@@ -1,10 +1,10 @@
 import ctypes
-from cursor import Cursor
-from logging_config import setup_logging
-from constants import ConstantsODBC as odbc_sql_const
-from utils import check_ret, add_driver_to_connection_str
+from mssql_python.cursor import Cursor
+from mssql_python.logging_config import setup_logging
+from mssql_python.constants import ConstantsODBC as odbc_sql_const
+from mssql_python.helpers import add_driver_to_connection_str, check_error
 import logging
-from mssql_python import odbc
+from mssql_python import ddbc_bindings
 
 # Setting up logging
 setup_logging()
@@ -45,10 +45,9 @@ class Connection:
         """
         self.henv = ctypes.c_void_p()
         self.hdbc = ctypes.c_void_p()
-        self.buffer_length = 1024
-        self.buffer = ctypes.create_string_buffer(self.buffer_length)
-        self.indicator = ctypes.c_long()
         self.connection_str = add_driver_to_connection_str(connection_str)
+        self._initializer()
+        logging.info("Connecting to the database")
 
     def _initializer(self) -> None:
         """
@@ -58,34 +57,45 @@ class Connection:
         handles, allocating memory for them, and setting the necessary attributes.
         It should be called before establishing a connection to the database.
         """
-        try:
-            self._allocate_environment_handle()
-            self._set_environment_attributes()
-            self._allocate_connection_handle()
-        except Exception as e:
-            logging.error("An error occurred during initialization: %s", e)
+        self._allocate_environment_handle()
+        self._set_environment_attributes()
+        self._allocate_connection_handle()
+        self._connect_to_db()
+        self._get_data()
         
-
     def _allocate_environment_handle(self):
         """
         Allocate the ODBC environment handle.
         """
-        ret = odbc.SQLAllocHandle(odbc_sql_const.SQL_HANDLE_ENV.value, None, ctypes.byref(self.henv))
-        check_ret(ret, odbc_sql_const.SQL_HANDLE_ENV, self.henv)
+        ret = ddbc_bindings.SQLAllocHandle(
+            odbc_sql_const.SQL_HANDLE_ENV.value, #SQL environment handle type
+            0, # SQL input handle
+            ctypes.cast(ctypes.pointer(self.henv), ctypes.c_void_p).value # SQL output handle pointer
+        )
+        check_error(odbc_sql_const.SQL_HANDLE_ENV.value, self.henv.value, ret)
 
     def _set_environment_attributes(self):
         """
         Set the ODBC environment attributes.
         """
-        ret = odbc.SQLSetEnvAttr(self.henv, odbc_sql_const.SQL_ATTR_ODBC_VERSION.value, ctypes.c_void_p(odbc_sql_const.SQL_OV_ODBC3_80.value), len(odbc_sql_const.SQL_OV_ODBC3_80.value))
-        check_ret(ret, odbc_sql_const.SQL_HANDLE_ENV.value, self.henv)
+        ret = ddbc_bindings.SQLSetEnvAttr(
+            self.henv.value,  # Environment handle
+            odbc_sql_const.SQL_ATTR_ODBC_VERSION.value,  # Attribute
+            odbc_sql_const.SQL_OV_ODBC3_80.value, # String Length
+            0 # Null-terminated string
+        )
+        check_error(odbc_sql_const.SQL_HANDLE_ENV.value, self.henv.value, ret)
 
     def _allocate_connection_handle(self):
         """
         Allocate the ODBC connection handle.
         """
-        ret = odbc.SQLAllocHandle(odbc_sql_const.SQL_HANDLE_DBC.value, self.henv, ctypes.byref(self.hdbc))
-        check_ret(ret, odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc)
+        ret = ddbc_bindings.SQLAllocHandle(
+            odbc_sql_const.SQL_HANDLE_DBC.value, # SQL connection handle type
+            self.henv.value, # SQL environment handle
+            ctypes.cast(ctypes.pointer(self.hdbc), ctypes.c_void_p).value # SQL output handle pointer
+        )
+        check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
 
     def _connect_to_db(self) -> None:
         """
@@ -98,24 +108,59 @@ class Connection:
 
         """
         try:
-            converted_connection_string = ctypes.c_wchar_p(self.connection_str)
-            out_connection_string = ctypes.create_unicode_buffer(self.buffer_length)
-            out_connection_string_length = ctypes.c_short()
-            ret = odbc.SQLDriverConnectW(
-                self.hdbc,
-                None,
-                converted_connection_string,
-                len(self.connection_str),
-                out_connection_string,
-                self.buffer_length,
-                ctypes.byref(out_connection_string_length),
-                odbc_sql_const.SQL_DRIVER_NOPROMPT.value
+            ret = ddbc_bindings.SQLDriverConnect(
+                self.hdbc.value, # Connection handle
+                0, # Window handle
+                self.connection_str # Connection string
             )
-            check_ret(ret, odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc)
+            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
             logging.info("Connection established successfully.")
         except Exception as e:
             logging.error("An error occurred while connecting to the database: %s", e)
             raise
+
+    def _get_data(self) -> None:
+        """
+        Fetch data from the database using a SQL query.
+
+        This method allocates a statement handle, executes a SQL query, and fetches
+        the result set. It prints the column names and rows fetched from the database.
+        """
+        # Allocate connection statement handle
+        stmt_handle = ctypes.c_void_p()
+        result = ddbc_bindings.SQLAllocHandle(odbc_sql_const.SQL_HANDLE_STMT.value, self.hdbc.value, ctypes.cast(ctypes.pointer(stmt_handle), ctypes.c_void_p).value)
+        if result < 0:
+            print("Error:", ddbc_bindings.CheckError(odbc_sql_const.SQL_HANDLE_STMT.value, stmt_handle.value, result))
+            raise RuntimeError(f"Failed to allocate SQL Statement handle. Error code: {result}")
+
+        # Prepare and execute a SQL statement
+        sql_query = "SELECT name FROM sys.databases;"
+        result = ddbc_bindings.SQLExecDirect(stmt_handle.value, sql_query)
+        if result < 0:
+            print("Error:", ddbc_bindings.CheckError(odbc_sql_const.SQL_HANDLE_STMT.value, stmt_handle.value, result))
+            raise RuntimeError(f"Failed to execute query. Error code: {result}")
+
+        print("Fetching Data!")
+        while result != odbc_sql_const.SQL_NO_DATA.value:
+            print("Fetching resultset")
+            column_names = []  # Initialize an empty list to pass as a reference
+            retcode = ddbc_bindings.SQLDescribeCol(stmt_handle.value, column_names)
+            # Create a ctypes integer for the column count
+            column_count = ddbc_bindings.SQLNumResultCols(stmt_handle.value)
+            # Fetch rows
+            print(column_names)
+            rows = []
+            while ddbc_bindings.SQLFetch(stmt_handle.value) == 0:
+                # Assume 4 columns in the result set
+                row = ddbc_bindings.SQLGetData(stmt_handle.value, column_count)
+                rows.append(row)
+
+            # Print the results
+            for row in rows:
+                print(row)
+            # Call SQLMoreResults
+            result = ddbc_bindings.SQLMoreResults(stmt_handle.value)
+            print(result)
 
     def cursor(self) -> Cursor:
         """
@@ -152,8 +197,12 @@ class Connection:
         """
         try:
             # Commit the current transaction
-            ret = odbc.SQLEndTran(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, odbc_sql_const.SQL_COMMIT.value)
-            check_ret(ret, odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc)
+            ret = ddbc_bindings.SQLEndTran(
+                odbc_sql_const.SQL_HANDLE_DBC.value, # Handle type
+                self.hdbc, # Connection handle
+                odbc_sql_const.SQL_COMMIT.value # Commit the transaction
+            )
+            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
             logging.info("Transaction committed successfully.")
         except Exception as e:
             logging.error("An error occurred while committing the transaction: %s", e)
@@ -172,8 +221,12 @@ class Connection:
         """
         try:
             # Roll back the current transaction
-            ret = odbc.SQLEndTran(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, odbc_sql_const.SQL_ROLLBACK.value)
-            check_ret(ret, odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc)
+            ret = ddbc_bindings.SQLEndTran(
+                odbc_sql_const.SQL_HANDLE_DBC.value,  # Handle type
+                self.hdbc, # Connection handle
+                odbc_sql_const.SQL_ROLLBACK.value # Roll back the transaction
+            )
+            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
             logging.info("Transaction rolled back successfully.")
         except Exception as e:
             logging.error("An error occurred while rolling back the transaction: %s", e)
@@ -194,16 +247,16 @@ class Connection:
         """
         try:
             # Disconnect from the database
-            ret = odbc.SQLDisconnect(self.hdbc)
-            check_ret(ret, odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc)
+            ret = ddbc_bindings.SQLDisconnect(self.hdbc.value)
+            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
             
             # Free the connection handle
-            ret = odbc.SQLFreeHandle(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc)
-            check_ret(ret, odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc)
+            ret = ddbc_bindings.SQLFreeHandle(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value)
+            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
             
             # Free the environment handle
-            ret = odbc.SQLFreeHandle(odbc_sql_const.SQL_HANDLE_ENV.value, self.henv)
-            check_ret(ret, odbc_sql_const.SQL_HANDLE_ENV.value, self.henv)
+            ret = ddbc_bindings.SQLFreeHandle(odbc_sql_const.SQL_HANDLE_ENV.value, self.henv.value)
+            check_error(odbc_sql_const.SQL_HANDLE_ENV.value, self.henv.value, ret)
             
             logging.info("Connection closed successfully.")
         except Exception as e:
