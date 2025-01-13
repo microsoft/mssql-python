@@ -6,13 +6,16 @@ pr:
 
 jobs:
 - job: PytestOnWindows
+  
   pool:
     vmImage: 'windows-latest'
+  
   steps:
   - task: UsePythonVersion@0
     inputs:
-      versionSpec: '3.12.8'
+      versionSpec: '3.13'
       addToPath: true
+    displayName: 'Use Python 3.13'
 
   - script: |
       python --version
@@ -36,13 +39,4 @@ jobs:
       summaryFileLocation: '$(System.DefaultWorkingDirectory)/coverage.xml'
       reportDirectory: '$(System.DefaultWorkingDirectory)/htmlcov'
       failIfCoverageEmpty: true
-
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: '3.13.1'
-      addToPath: true
-    displayName: 'Install Python 3.13.1'
-
-  - script: |
-      python --version
-    displayName: 'Print Python version after installing 3.13.1'
+    displayName: 'Publish code coverage results'
