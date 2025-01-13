@@ -19,7 +19,7 @@ steps:
   displayName: 'Install dependencies'
 
 - script: |
-    python -m pytest --cov=./ --cov-report=xml --cov-report=html -v --capture=tee-sys
+    python -m pytest --cov=./ --cov-report=xml --cov-report=html -v --capture=tee-sys --cache-clear
   displayName: 'Run tests with coverage'
   env:
     DB_CONNECTION_STRING: $(DB_CONNECTION_STRING)
