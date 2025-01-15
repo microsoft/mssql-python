@@ -4,6 +4,11 @@ from mssql_python.logging_config import setup_logging
 from mssql_python.constants import ConstantsODBC as odbc_sql_const
 from mssql_python.helpers import add_driver_to_connection_str, check_error
 import logging
+import os
+
+# Change the current working directory to the directory of the script to import ddbc_bindings
+os.chdir(os.path.dirname(__file__))
+
 from mssql_python import ddbc_bindings
 
 # Setting up logging
@@ -20,7 +25,7 @@ class Connection:
     
     Methods:
         __init__(database: str) -> None:
-        _connect_to_db() -> None:
+        connect_to_db() -> None:
         cursor() -> Cursor:
         commit() -> None:
         rollback() -> None:
@@ -60,7 +65,7 @@ class Connection:
         self._allocate_environment_handle()
         self._set_environment_attributes()
         self._allocate_connection_handle()
-        self._connect_to_db()
+        self.connect_to_db()
         self._get_data()
         
     def _allocate_environment_handle(self):
@@ -97,7 +102,7 @@ class Connection:
         )
         check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
 
-    def _connect_to_db(self) -> None:
+    def connect_to_db(self) -> None:
         """
         Establish a connection to the database.
 
@@ -106,6 +111,9 @@ class Connection:
         details such as database name, user credentials, host, and port should be
         configured within the class or passed during the class instantiation.
 
+        Raises:
+            DatabaseError: If there is an error while trying to connect to the database.
+            InterfaceError: If there is an error related to the database interface.
         """
         try:
             ret = ddbc_bindings.SQLDriverConnect(
@@ -177,11 +185,7 @@ class Connection:
             DatabaseError: If there is an error while creating the cursor.
             InterfaceError: If there is an error related to the database interface. 
         """
-        try:
-            return Cursor(self.connection_str)
-        except Exception as e:
-            logging.error("An error occurred while creating the cursor: %s", e)
-            raise Exception("DatabaseError: Failed to create the cursor") from e
+        pass
 
     def commit(self) -> None:
         """
@@ -199,7 +203,7 @@ class Connection:
             # Commit the current transaction
             ret = ddbc_bindings.SQLEndTran(
                 odbc_sql_const.SQL_HANDLE_DBC.value, # Handle type
-                self.hdbc, # Connection handle
+                self.hdbc.value, # Connection handle
                 odbc_sql_const.SQL_COMMIT.value # Commit the transaction
             )
             check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
@@ -223,7 +227,7 @@ class Connection:
             # Roll back the current transaction
             ret = ddbc_bindings.SQLEndTran(
                 odbc_sql_const.SQL_HANDLE_DBC.value,  # Handle type
-                self.hdbc, # Connection handle
+                self.hdbc.value, # Connection handle
                 odbc_sql_const.SQL_ROLLBACK.value # Roll back the transaction
             )
             check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
@@ -254,9 +258,6 @@ class Connection:
             ret = ddbc_bindings.SQLFreeHandle(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value)
             check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
             
-            # Free the environment handle
-            ret = ddbc_bindings.SQLFreeHandle(odbc_sql_const.SQL_HANDLE_ENV.value, self.henv.value)
-            check_error(odbc_sql_const.SQL_HANDLE_ENV.value, self.henv.value, ret)
             
             logging.info("Connection closed successfully.")
         except Exception as e:

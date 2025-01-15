@@ -1,5 +1,11 @@
-# Ignore __pycache__ folders
+# Ignore pycache files and folders
 __pycache__/
+**/__pycache__/
+*.pyc
+
+# Ignore pytest cache
+.pytest_cache/
+**/.pytest_cache/
 
 # Ignore log files
 *.log

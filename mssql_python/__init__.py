@@ -28,4 +28,3 @@ from .connection import Connection
 from .cursor import Cursor
 
 from .db_connection import connect
-from .helpers import add_driver_to_connection_str, check_error

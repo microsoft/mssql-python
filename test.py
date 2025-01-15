@@ -5,3 +5,5 @@ conn_str = os.getenv("DB_CONNECTION_STRING")
 conn = connect(conn_str)
 
 print(conn)
+
+conn.close()

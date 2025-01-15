@@ -1,6 +1,6 @@
-from mssql_python import ddbc_bindings
 from mssql_python.constants import ConstantsODBC
-
+from mssql_python import ddbc_bindings
+    
 def add_driver_to_connection_str(connection_str):
     """
     Add the ODBC driver to the connection string if not present.

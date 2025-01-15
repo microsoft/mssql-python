@@ -1,4 +1,3 @@
-
 import logging
 from mssql_python.logging_config import setup_logging
 from mssql_python.exceptions import DatabaseError, InterfaceError
@@ -28,7 +27,7 @@ def connect(connection_str: str) -> Connection:
     try:
         conn = Connection(connection_str)
         logging.info(f"Connecting to the database")
-        conn._connect_to_db()
+        conn.connect_to_db()
         return conn
     except DatabaseError as e:
         logging.error(f"Database error occurred while connecting to the database: {e}")
