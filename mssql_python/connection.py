@@ -52,7 +52,6 @@ class Connection:
         self.hdbc = ctypes.c_void_p()
         self.connection_str = add_driver_to_connection_str(connection_str)
         self._initializer()
-        logging.info("Connecting to the database")
 
     def _initializer(self) -> None:
         """
@@ -65,8 +64,7 @@ class Connection:
         self._allocate_environment_handle()
         self._set_environment_attributes()
         self._allocate_connection_handle()
-        self.connect_to_db()
-        self._get_data()
+        self._connect_to_db()
         
     def _allocate_environment_handle(self):
         """
@@ -102,7 +100,7 @@ class Connection:
         )
         check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
 
-    def connect_to_db(self) -> None:
+    def _connect_to_db(self) -> None:
         """
         Establish a connection to the database.
 
@@ -115,6 +113,7 @@ class Connection:
             DatabaseError: If there is an error while trying to connect to the database.
             InterfaceError: If there is an error related to the database interface.
         """
+        logging.info("Connecting to the database")
         try:
             ret = ddbc_bindings.SQLDriverConnect(
                 self.hdbc.value, # Connection handle
@@ -126,49 +125,6 @@ class Connection:
         except Exception as e:
             logging.error("An error occurred while connecting to the database: %s", e)
             raise
-
-    def _get_data(self) -> None:
-        """
-        Fetch data from the database using a SQL query.
-
-        This method allocates a statement handle, executes a SQL query, and fetches
-        the result set. It prints the column names and rows fetched from the database.
-        """
-        # Allocate connection statement handle
-        stmt_handle = ctypes.c_void_p()
-        result = ddbc_bindings.SQLAllocHandle(odbc_sql_const.SQL_HANDLE_STMT.value, self.hdbc.value, ctypes.cast(ctypes.pointer(stmt_handle), ctypes.c_void_p).value)
-        if result < 0:
-            print("Error:", ddbc_bindings.CheckError(odbc_sql_const.SQL_HANDLE_STMT.value, stmt_handle.value, result))
-            raise RuntimeError(f"Failed to allocate SQL Statement handle. Error code: {result}")
-
-        # Prepare and execute a SQL statement
-        sql_query = "SELECT name FROM sys.databases;"
-        result = ddbc_bindings.SQLExecDirect(stmt_handle.value, sql_query)
-        if result < 0:
-            print("Error:", ddbc_bindings.CheckError(odbc_sql_const.SQL_HANDLE_STMT.value, stmt_handle.value, result))
-            raise RuntimeError(f"Failed to execute query. Error code: {result}")
-
-        print("Fetching Data!")
-        while result != odbc_sql_const.SQL_NO_DATA.value:
-            print("Fetching resultset")
-            column_names = []  # Initialize an empty list to pass as a reference
-            retcode = ddbc_bindings.SQLDescribeCol(stmt_handle.value, column_names)
-            # Create a ctypes integer for the column count
-            column_count = ddbc_bindings.SQLNumResultCols(stmt_handle.value)
-            # Fetch rows
-            print(column_names)
-            rows = []
-            while ddbc_bindings.SQLFetch(stmt_handle.value) == 0:
-                # Assume 4 columns in the result set
-                row = ddbc_bindings.SQLGetData(stmt_handle.value, column_count)
-                rows.append(row)
-
-            # Print the results
-            for row in rows:
-                print(row)
-            # Call SQLMoreResults
-            result = ddbc_bindings.SQLMoreResults(stmt_handle.value)
-            print(result)
 
     def cursor(self) -> Cursor:
         """
@@ -185,7 +141,11 @@ class Connection:
             DatabaseError: If there is an error while creating the cursor.
             InterfaceError: If there is an error related to the database interface. 
         """
-        pass
+        try:
+            return Cursor(self)
+        except Exception as e:
+            logging.error("An error occurred while creating the cursor: %s", e)
+            raise Exception("DatabaseError: Failed to create the cursor") from e
 
     def commit(self) -> None:
         """

@@ -1,0 +1,43 @@
+trigger:
+  branches:
+    include:
+    - pybind11_win_test
+  paths:
+    include:
+    - mssql_python/pybind/ddbc_bindings.cpp
+    - mssql_python/pybind/CMakeLists.txt
+    - pybuild-pipeline.yml
+
+jobs:
+- job: BuildOnWindows
+  pool:
+    vmImage: 'windows-latest'
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.13'
+      addToPath: true
+  - script: |
+      pip install pybind11
+    displayName: 'Install pybind11'
+  # @gaurav to check if we can pass a release/debug flag to the cmake command
+  - script: |
+      cd mssql_python\pybind
+      mkdir build
+      cd build  
+      cmake -DPython3_EXECUTABLE="python3" -DCMAKE_BUILD_TYPE=Debug ..
+      cmake --build . --config Debug
+      move /Y Debug\ddbc_bindings.pyd ..\..\ddbc_bindings.pyd
+    displayName: 'Build and move .pyd file'
+  - script: |
+      git config --global user.name "$(Build.RequestedFor)"
+      git config --global user.email "$(Build.RequestedForEmail)"
+      git config --global credential.helper store
+      echo "https://$(System.AccessToken):@dev.azure.com" > ~/.git-credentials
+      git checkout main
+      git add mssql_python/ddbc_bindings.pyd
+      git commit -m "ddbc_bindings.pyd - $(Build.RequestedFor)"
+      git push https://$(System.AccessToken)@dev.azure.com/sqlclientdrivers/mssql-python/_git/mssql-python HEAD:main
+    displayName: 'Commit and push .pyd file'
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
