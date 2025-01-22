@@ -1,8 +1,24 @@
 trigger:
-- '*'
+  branches:
+    include:
+    - '*'  # Trigger on any branch
+  paths:
+    # Excluding below files since changes on these will push a new PYD file to the repo which will then trigger the pipeline (should be running with the latest PYD file)
+    exclude:
+    - mssql_python/pybind/ddbc_bindings.cpp
+    - mssql_python/pybind/CMakeLists.txt
+    - pybuild-pipeline.yml
 
 pr:
-- main
+  branches:
+    include:
+    - main # Trigger on PRs to main branch
+  paths:
+    # Same as above, excluding the files that will trigger the pipeline
+    exclude:
+    - mssql_python/pybind/ddbc_bindings.cpp
+    - mssql_python/pybind/CMakeLists.txt
+    - pybuild-pipeline.yml
 
 jobs:
 - job: PytestOnWindows
@@ -15,12 +31,9 @@ jobs:
     inputs:
       versionSpec: '3.13'
       addToPath: true
+      # Added a never expire public repo read only Github token in ENV since the new python version is downloaded from GitHub
+      githubToken: $(GITHUB_TOKEN)
     displayName: 'Use Python 3.13'
-
-  - script: |
-      python --version
-      python3 --version
-    displayName: 'Print Python version before tests'
 
   - script: |
       python -m pip install --upgrade pip
@@ -28,15 +41,25 @@ jobs:
     displayName: 'Install dependencies'
 
   - script: |
-      python -m pytest --cov=./ --cov-report=xml --cov-report=html -v --capture=tee-sys --cache-clear
+      python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage'
     env:
       DB_CONNECTION_STRING: $(DB_CONNECTION_STRING)
+    
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFiles: '**/test-results.xml'
+      testRunTitle: 'Publish test results'
 
-  - task: PublishCodeCoverageResults@2
+  - task: PublishCodeCoverageResults@1
+    # Have to resort to using PublishCodeCoverageResults@1 because PublishCodeCoverageResults@2 does not use ReportGenerator 
+    # https://stackoverflow.com/questions/78200629/azure-publishcodecoverageresults2-issue-with-detailed-report-for-coverage
+    # https://devblogs.microsoft.com/devops/new-pccr-task/?commentid=4300#comment-4300
+    # There will be warnings in the logs about this, but the coverage report will still be published, and the pipeline will not fail
+    # @gaurav to keep an eye on this in case the v1 task is deprecated.
+    # Alternatively, we can use the ReportGenerator tool to generate the coverage report and then publish it using the v2 task.
     inputs:
       codeCoverageTool: 'Cobertura'
-      summaryFileLocation: '$(System.DefaultWorkingDirectory)/coverage.xml'
-      reportDirectory: '$(System.DefaultWorkingDirectory)/htmlcov'
-      failIfCoverageEmpty: true
+      summaryFileLocation: '$(System.DefaultWorkingDirectory)/**/coverage.xml'
     displayName: 'Publish code coverage results'
