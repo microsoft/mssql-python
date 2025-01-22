@@ -1,0 +1,40 @@
+# PyBind11 Binding Build Instructions
+
+This README provides instructions to build a project using PyBind11.
+
+## Prerequisites
+
+1. **Visual Studio C++ Installation**: Ensure you have Visual Studio installed with C++ support.
+2. **PyBind11**: Install PyBind11 using pip.
+    ```sh
+    pip install pybind11
+    ```
+3. **CMake**: Ensure CMake is installed on your system.
+
+## Build Instructions
+
+1. Create and navigate to the build directory:
+    ```sh
+    mkdir build
+    cd build
+    ```
+
+2. CMake Configuration commands:
+    - For Debug Build:
+        ```sh
+        cmake -DCMAKE_BUILD_TYPE=Debug ..
+        ```
+    - For Release Build:
+        ```sh
+        cmake -DCMAKE_BUILD_TYPE=Release ..
+        ```
+
+3. CMake Build Commands:
+    - For Debug Build:
+        ```sh
+        cmake --build . --config Debug
+        ```
+    - For Release Build:
+        ```sh
+        cmake --build . --config Release
+        ```

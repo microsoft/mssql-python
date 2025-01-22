@@ -1,4 +1,5 @@
 # Ignore all files in the pybind/build directory
+mssql_python/PyBind_Win/build/
 mssql_python/pybind/build/
 
 mssql_python/pybind/pymsbuild/build/
@@ -17,3 +18,4 @@ __pycache__/
 
 # Ignore log files
 *.log
+mssql_python/PyBind_Win/ddbc_bindings.pyd
