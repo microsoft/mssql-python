@@ -1,11 +1,10 @@
 # Ignore all files in the pybind/build directory
-mssql_python/PyBind_Win/build/
 mssql_python/pybind/build/
 
 mssql_python/pybind/pymsbuild/build/
 
-# @gaurav to check if this is needed or not
-# mssql_python/test_scripts_python/ddbc_bindings.pyd
+# Ignore pyd file
+mssql_python/ddbc_bindings.pyd
 
 # Ignore pycache files and folders
 __pycache__/
@@ -18,4 +17,10 @@ __pycache__/
 
 # Ignore log files
 *.log
-mssql_python/PyBind_Win/ddbc_bindings.pyd
+
+# Ignore Visual Studio files
+mssql_python/.vs
+
+# Ignore test-*.xml files
+test-*.xml
+**/test-**.xml

@@ -70,7 +70,7 @@ class Connection:
         """
         Allocate the ODBC environment handle.
         """
-        ret = ddbc_bindings.SQLAllocHandle(
+        ret = ddbc_bindings.DDBCSQLAllocHandle(
             odbc_sql_const.SQL_HANDLE_ENV.value, #SQL environment handle type
             0, # SQL input handle
             ctypes.cast(ctypes.pointer(self.henv), ctypes.c_void_p).value # SQL output handle pointer
@@ -81,7 +81,7 @@ class Connection:
         """
         Set the ODBC environment attributes.
         """
-        ret = ddbc_bindings.SQLSetEnvAttr(
+        ret = ddbc_bindings.DDBCSQLSetEnvAttr(
             self.henv.value,  # Environment handle
             odbc_sql_const.SQL_ATTR_ODBC_VERSION.value,  # Attribute
             odbc_sql_const.SQL_OV_ODBC3_80.value, # String Length
@@ -93,7 +93,7 @@ class Connection:
         """
         Allocate the ODBC connection handle.
         """
-        ret = ddbc_bindings.SQLAllocHandle(
+        ret = ddbc_bindings.DDBCSQLAllocHandle(
             odbc_sql_const.SQL_HANDLE_DBC.value, # SQL connection handle type
             self.henv.value, # SQL environment handle
             ctypes.cast(ctypes.pointer(self.hdbc), ctypes.c_void_p).value # SQL output handle pointer
@@ -115,7 +115,7 @@ class Connection:
         """
         logging.info("Connecting to the database")
         try:
-            ret = ddbc_bindings.SQLDriverConnect(
+            ret = ddbc_bindings.DDBCSQLDriverConnect(
                 self.hdbc.value, # Connection handle
                 0, # Window handle
                 self.connection_str # Connection string
@@ -161,7 +161,7 @@ class Connection:
         """
         try:
             # Commit the current transaction
-            ret = ddbc_bindings.SQLEndTran(
+            ret = ddbc_bindings.DDBCSQLEndTran(
                 odbc_sql_const.SQL_HANDLE_DBC.value, # Handle type
                 self.hdbc.value, # Connection handle
                 odbc_sql_const.SQL_COMMIT.value # Commit the transaction
@@ -185,7 +185,7 @@ class Connection:
         """
         try:
             # Roll back the current transaction
-            ret = ddbc_bindings.SQLEndTran(
+            ret = ddbc_bindings.DDBCSQLEndTran(
                 odbc_sql_const.SQL_HANDLE_DBC.value,  # Handle type
                 self.hdbc.value, # Connection handle
                 odbc_sql_const.SQL_ROLLBACK.value # Roll back the transaction
@@ -211,11 +211,11 @@ class Connection:
         """
         try:
             # Disconnect from the database
-            ret = ddbc_bindings.SQLDisconnect(self.hdbc.value)
+            ret = ddbc_bindings.DDBCSQLDisconnect(self.hdbc.value)
             check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
             
             # Free the connection handle
-            ret = ddbc_bindings.SQLFreeHandle(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value)
+            ret = ddbc_bindings.DDBCSQLFreeHandle(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value)
             check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
             
             

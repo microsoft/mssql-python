@@ -13,56 +13,83 @@ using namespace std;
 
 namespace py = pybind11;
 
+// Struct to hold parameter information for binding. Used by SQLBindParameter.
+struct ParamInfo {
+    SQLSMALLINT paramCType;
+    SQLSMALLINT paramSQLType;
+};
+
+// TODO: Handle both UTF-8 and UTF-16 strings
+#ifndef NDEBUG
+#define DEBUG_LOG(formatString, ...) \
+	do { \
+		printf(formatString, __VA_ARGS__); \
+		printf("\n"); \
+	} while (0)
+#else
+#define DEBUG_LOG(x) (void)0
+#endif
 
 // Function pointer typedefs for the Handle APIs
 typedef SQLRETURN (*SQLAllocHandleFunc)(SQLSMALLINT, SQLHANDLE, SQLHANDLE*);
 typedef SQLRETURN (*SQLSetEnvAttrFunc)(SQLHANDLE, SQLINTEGER, SQLPOINTER, SQLINTEGER);
 typedef SQLRETURN (*SQLSetConnectAttrFunc)(SQLHDBC, SQLINTEGER, SQLPOINTER, SQLINTEGER);
 typedef SQLRETURN (*SQLSetStmtAttrFunc)(SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER);
+typedef SQLRETURN (*SQLGetConnectAttrFunc)(SQLHDBC, SQLINTEGER, SQLPOINTER, SQLINTEGER, SQLINTEGER*);
 
 // Connection and statement function typedefs
 typedef SQLRETURN (*SQLDriverConnectFunc)(SQLHANDLE, SQLHWND, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*, SQLUSMALLINT);
 typedef SQLRETURN (*SQLExecDirectFunc)(SQLHANDLE, SQLWCHAR*, SQLINTEGER);
+typedef SQLRETURN (*SQLPrepareFunc)(SQLHANDLE, SQLWCHAR*, SQLINTEGER);
+typedef SQLRETURN (*SQLBindParameterFunc)(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLSMALLINT,
+    SQLSMALLINT, SQLULEN, SQLSMALLINT, SQLPOINTER, SQLLEN, SQLLEN*);
+typedef SQLRETURN (*SQLExecuteFunc)(SQLHANDLE);
 
 // Fetch and data retrieval function typedefs
 typedef SQLRETURN (*SQLFetchFunc)(SQLHANDLE);
 typedef SQLRETURN (*SQLGetDataFunc)(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER, SQLLEN, SQLLEN*);
 typedef SQLRETURN (*SQLNumResultColsFunc)(SQLHSTMT, SQLSMALLINT*);
+typedef SQLRETURN (*SQLBindColFunc)(SQLHSTMT, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER, SQLLEN, SQLLEN*);
 typedef SQLRETURN (*SQLDescribeColFunc)(SQLHSTMT, SQLUSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*, SQLSMALLINT*, SQLULEN*, SQLSMALLINT*, SQLSMALLINT*);
 typedef SQLRETURN (*SQLMoreResultsFunc)(SQLHSTMT);
 typedef SQLRETURN (*SQLColAttributeFunc)(SQLHSTMT, SQLUSMALLINT, SQLUSMALLINT, SQLPOINTER, SQLSMALLINT, SQLSMALLINT*, SQLPOINTER);
+
+// Transaction function typedefs
+typedef SQLRETURN (*SQLEndTranFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT);
 
 // Free handles, disconnect and free function typedefs
 typedef SQLRETURN (*SQLFreeHandleFunc)(SQLSMALLINT, SQLHANDLE);
 typedef SQLRETURN (*SQLDisconnectFunc)(SQLHDBC);
 
+
 // Diagnostic record function typedef
 typedef SQLRETURN (*SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLWCHAR*, SQLINTEGER*, SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*);
-
-// Additional function typedefs
-typedef SQLRETURN (*SQLPrepareFunc)(SQLHSTMT, SQLWCHAR*, SQLINTEGER);
-typedef SQLRETURN (*SQLExecuteFunc)(SQLHSTMT);
-typedef SQLRETURN (*SQLEndTranFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT);
-typedef SQLRETURN (*SQLBindColFunc)(SQLHSTMT, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER, SQLLEN, SQLLEN*);
-typedef SQLRETURN (*SQLBindParameterFunc)(SQLHSTMT, SQLUSMALLINT, SQLSMALLINT, SQLSMALLINT, SQLSMALLINT, SQLULEN, SQLSMALLINT, SQLPOINTER, SQLLEN, SQLLEN*);
 
 // Function pointers for the handles functions pointers
 SQLAllocHandleFunc SQLAllocHandle_ptr = nullptr;
 SQLSetEnvAttrFunc SQLSetEnvAttr_ptr = nullptr;
 SQLSetConnectAttrFunc SQLSetConnectAttr_ptr = nullptr;
 SQLSetStmtAttrFunc SQLSetStmtAttr_ptr = nullptr;
+SQLGetConnectAttrFunc SQLGetConnectAttr_ptr = nullptr;
 
 // Connection and statement function pointer
 SQLDriverConnectFunc SQLDriverConnect_ptr = nullptr;
 SQLExecDirectFunc SQLExecDirect_ptr = nullptr;
+SQLPrepareFunc SQLPrepare_ptr = nullptr;
+SQLBindParameterFunc SQLBindParameter_ptr = nullptr;
+SQLExecuteFunc SQLExecute_ptr = nullptr;
 
 // Fetch and data retrieval function pointer
 SQLFetchFunc SQLFetch_ptr = nullptr;
 SQLGetDataFunc SQLGetData_ptr = nullptr;
 SQLNumResultColsFunc SQLNumResultCols_ptr = nullptr;
+SQLBindColFunc SQLBindCol_ptr = nullptr;
 SQLDescribeColFunc SQLDescribeCol_ptr = nullptr;
 SQLMoreResultsFunc SQLMoreResults_ptr = nullptr;
 SQLColAttributeFunc SQLColAttribute_ptr = nullptr;
+
+// Transaction function pointers
+SQLEndTranFunc SQLEndTran_ptr = nullptr;
 
 // Free handles, disconnect and free function pointer
 SQLFreeHandleFunc SQLFreeHandle_ptr = nullptr;
@@ -71,23 +98,15 @@ SQLDisconnectFunc SQLDisconnect_ptr = nullptr;
 // Diagnostic record function pointer
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
 
-// Additional function pointers
-SQLPrepareFunc SQLPrepare_ptr = nullptr;
-SQLExecuteFunc SQLExecute_ptr = nullptr;
-SQLEndTranFunc SQLEndTran_ptr = nullptr;
-SQLBindColFunc SQLBindCol_ptr = nullptr;
-SQLBindParameterFunc SQLBindParameter_ptr = nullptr;
-
 // Helper to load the driver
 bool LoadDriver() {
-    // Set the DLL directory to the current directory
+    // Get the DLL directory to the current directory
     wchar_t currentDir[MAX_PATH];
     GetCurrentDirectoryW(MAX_PATH, currentDir);
-    std::wstring dllDir = std::wstring(currentDir) + L"\\DLLs";
-    SetDllDirectoryW(dllDir.c_str());
+    std::wstring dllDir = std::wstring(currentDir) + L"\\DLLs\\msodbcsql18.dll";
 
     // Load the DLL from the specified path
-    HMODULE hModule = LoadLibraryW(L"msodbcsql18.dll");
+    HMODULE hModule = LoadLibraryW(dllDir.c_str());
 
     if (!hModule) {
         std::cerr << "Failed to load driver." << std::endl;
@@ -99,18 +118,26 @@ bool LoadDriver() {
     SQLSetEnvAttr_ptr = (SQLSetEnvAttrFunc)GetProcAddress(hModule, "SQLSetEnvAttr");
     SQLSetConnectAttr_ptr = (SQLSetConnectAttrFunc)GetProcAddress(hModule, "SQLSetConnectAttrW");
     SQLSetStmtAttr_ptr = (SQLSetStmtAttrFunc)GetProcAddress(hModule, "SQLSetStmtAttrW");
+    SQLGetConnectAttr_ptr = (SQLGetConnectAttrFunc)GetProcAddress(hModule, "SQLGetConnectAttrW");
 
     // Connection and statement function Loading
     SQLDriverConnect_ptr = (SQLDriverConnectFunc)GetProcAddress(hModule, "SQLDriverConnectW");
     SQLExecDirect_ptr = (SQLExecDirectFunc)GetProcAddress(hModule, "SQLExecDirectW");
+    SQLPrepare_ptr = (SQLPrepareFunc)GetProcAddress(hModule, "SQLPrepareW");
+    SQLBindParameter_ptr = (SQLBindParameterFunc)GetProcAddress(hModule, "SQLBindParameter");
+    SQLExecute_ptr = (SQLExecuteFunc)GetProcAddress(hModule, "SQLExecute");
 
     // Fetch and data retrieval function Loading
     SQLFetch_ptr = (SQLFetchFunc)GetProcAddress(hModule, "SQLFetch");
     SQLGetData_ptr = (SQLGetDataFunc)GetProcAddress(hModule, "SQLGetData");
     SQLNumResultCols_ptr = (SQLNumResultColsFunc)GetProcAddress(hModule, "SQLNumResultCols");
+    SQLBindCol_ptr = (SQLBindColFunc)GetProcAddress(hModule, "SQLBindCol");
     SQLDescribeCol_ptr = (SQLDescribeColFunc)GetProcAddress(hModule, "SQLDescribeColW");
     SQLMoreResults_ptr = (SQLMoreResultsFunc)GetProcAddress(hModule, "SQLMoreResults");
     SQLColAttribute_ptr = (SQLColAttributeFunc)GetProcAddress(hModule, "SQLColAttributeW");
+
+    // Transaction functions loading
+    SQLEndTran_ptr = (SQLEndTranFunc)GetProcAddress(hModule, "SQLEndTran");
 
     // Free handles, disconnect and free function Loading
     SQLFreeHandle_ptr = (SQLFreeHandleFunc)GetProcAddress(hModule, "SQLFreeHandle");
@@ -119,23 +146,15 @@ bool LoadDriver() {
     // Diagnostic record function Loading
     SQLGetDiagRec_ptr = (SQLGetDiagRecFunc)GetProcAddress(hModule, "SQLGetDiagRecW");
 
-    // Load additional functions
-    SQLPrepare_ptr = (SQLPrepareFunc)GetProcAddress(hModule, "SQLPrepareW");
-    SQLExecute_ptr = (SQLExecuteFunc)GetProcAddress(hModule, "SQLExecute");
-    SQLEndTran_ptr = (SQLEndTranFunc)GetProcAddress(hModule, "SQLEndTran");
-    SQLBindCol_ptr = (SQLBindColFunc)GetProcAddress(hModule, "SQLBindCol");
-    SQLBindParameter_ptr = (SQLBindParameterFunc)GetProcAddress(hModule, "SQLBindParameter");
-
     #ifdef _DEBUG
         cout << "Driver loaded successfully." << std::endl;
     #endif
 
-    return SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr && SQLSetStmtAttr_ptr
-    && SQLDriverConnect_ptr && SQLExecDirect_ptr 
-    && SQLFetch_ptr && SQLGetData_ptr && SQLNumResultCols_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr
-    && SQLFreeHandle_ptr && SQLDisconnect_ptr
-    && SQLGetDiagRec_ptr
-    && SQLPrepare_ptr && SQLExecute_ptr && SQLEndTran_ptr && SQLBindCol_ptr && SQLBindParameter_ptr;
+    return SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr && SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr
+    && SQLDriverConnect_ptr && SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr
+    && SQLFetch_ptr && SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr
+    && SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr && SQLDisconnect_ptr
+    && SQLGetDiagRec_ptr;
 }
 
 
@@ -147,7 +166,7 @@ SQLRETURN SQLAllocHandle_wrap(SQLSMALLINT HandleType, intptr_t InputHandle, intp
     }
 
     #ifdef _DEBUG
-        // cout << "Allocate SQL Handle" << std::endl;
+        cout << "Allocate SQL Handle" << std::endl;
     #endif
 
     SQLHANDLE* pOutputHandle = reinterpret_cast<SQLHANDLE*>(OutputHandle);
@@ -161,7 +180,7 @@ SQLRETURN SQLSetEnvAttr_wrap(intptr_t EnvHandle, SQLINTEGER Attribute, intptr_t 
     }
 
     #ifdef _DEBUG
-        // cout << "Set SQL environment Attribute" << std::endl;
+        cout << "Set SQL environment Attribute" << std::endl;
     #endif
 
     return SQLSetEnvAttr_ptr(reinterpret_cast<SQLHANDLE>(EnvHandle), Attribute, reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
@@ -174,7 +193,7 @@ SQLRETURN SQLSetConnectAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER Attribute
     }
 
     #ifdef _DEBUG
-        // cout << "Set SQL Connection Attribute" << std::endl;
+        cout << "Set SQL Connection Attribute" << std::endl;
     #endif
 
     return SQLSetConnectAttr_ptr(reinterpret_cast<SQLHDBC>(ConnectionHandle), Attribute, reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
@@ -187,13 +206,37 @@ SQLRETURN SQLSetStmtAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER Attribute, i
     }
 
     #ifdef _DEBUG
-        // cout << "Set SQL Statement Attribute" << std::endl;
+        cout << "Set SQL Statement Attribute" << std::endl;
     #endif
     return SQLSetStmtAttr_ptr(reinterpret_cast<SQLHSTMT>(ConnectionHandle), Attribute, reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
 }
 
+SQLINTEGER SQLGetConnectionAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER attribute) {
+    if (!SQLGetConnectAttr_ptr && !LoadDriver()) {
+        return -1;
+    }
+
+    SQLINTEGER stringLength;
+    SQLINTEGER intValue;
+
+    #ifdef _DEBUG
+        cout << "Set SQL Statement Attribute" << std::endl;
+    #endif
+
+    // Try to get the attribute as an integer
+   SQLGetConnectAttr_ptr(
+        reinterpret_cast<SQLHANDLE>(ConnectionHandle),
+        attribute, 
+        &intValue, 
+        sizeof(SQLINTEGER),
+        &stringLength
+    );
+    return intValue;
+}
+
 // Helper function to check for driver errors
-std::wstring CheckError(SQLSMALLINT handleType, intptr_t handle, SQLRETURN retcode) {
+std::wstring SQLCheckError_Wrap(SQLSMALLINT handleType, intptr_t handle, SQLRETURN retcode) {
+    // TODO: Add check for when handle is a nullptr0?
     if (!SQL_SUCCEEDED(retcode)) {
         if (!SQLGetDiagRec_ptr && !LoadDriver()) {
             std::cerr << "Failed to load SQLGetDiagRecW function." << std::endl;
@@ -242,11 +285,112 @@ SQLRETURN SQLExecDirect_wrap(intptr_t StatementHandle, const std::wstring& Query
     }
 
     #ifdef _DEBUG
-        // cout << "Execute SQL Query" << std::endl;
+        cout << "Execute SQL Query" << std::endl;
     #endif
 
     return SQLExecDirect_ptr(reinterpret_cast<SQLHANDLE>(StatementHandle),
                               const_cast<SQLWCHAR*>(Query.c_str()), SQL_NTS);
+}
+
+// Executes the provided query. If the query is parametrized, it prepares the statement and
+// binds the parameters. Otherwise, it executes the query directly.
+// usePrepare parameter can be used to disable the prepare step for queries that might already
+// be prepared in a previous call.
+SQLRETURN SQLExecute_wrap(const intptr_t statementHandle, const std::wstring& query,
+    const py::list& params, const std::vector<ParamInfo>& paramInfo,
+    const bool usePrepare = true)
+{
+    if (!SQLPrepare_ptr && !LoadDriver()) {
+		// TODO: Error needs to be relayed to application via exception
+		std::cout << "DDBCSQLExecute: Could not load ODBC library" << std::endl;
+        return SQL_ERROR;
+    }
+    assert(SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr && SQLExecDirect_ptr);
+
+	if (params.size() != paramInfo.size()) {
+		// TODO: Error needs to be relayed to application via exception
+		std::cout << "DDBCSQLExecute: Number of parameters and paramInfo do not match." << std::endl;
+		return SQL_ERROR;
+	}
+
+	DEBUG_LOG("DDBCSQLExecute: Executing SQL Query - %ls", query.c_str());
+ 
+    RETCODE rc;
+    SQLHANDLE hStmt = reinterpret_cast<SQLHANDLE>(statementHandle);
+    SQLWCHAR* queryPtr = const_cast<SQLWCHAR*>(query.c_str());
+    if (params.size() == 0) {
+        // Execute statement directly if the statement is not parametrized. This is the
+        // fastest way to submit a SQL statement for one-time execution according to
+        // ODBC documentation - https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function?view=sql-server-ver16
+        rc = SQLExecDirect_ptr(hStmt, queryPtr, SQL_NTS);
+        if (!SQL_SUCCEEDED(rc)) {
+			DEBUG_LOG("DDBCSQLExecute: Error during direct execution of the statement");
+        }
+		return rc;
+    }
+    else {
+        if (usePrepare) {
+            rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
+            if (!SQL_SUCCEEDED(rc)) {
+				DEBUG_LOG("DDBCSQLExecute: Error while preparing the statement");
+                return rc;
+            }
+        }
+
+		// This vector manages the heap memory allocated for parameter buffers
+		std::vector<std::shared_ptr<void>> paramBuffers;
+        for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
+			const auto& param = params[paramIndex];
+			SQLULEN columnSize = 0;
+            void* dataPtr = nullptr;
+            // TODO: Add more data types like wide string, date time, TVPs etc.
+            if (py::isinstance<py::str>(param) || py::isinstance<py::bytearray>(param) ||
+                py::isinstance<py::bytes>(param)) {
+                // TODO: Use wide string?
+                paramBuffers.push_back(std::shared_ptr<void>(new std::string(param.cast<std::string>()),
+                    std::default_delete<std::string>()));
+                const string& strParam = *static_cast<std::string*>(paramBuffers.back().get());
+                dataPtr = const_cast<void*>(static_cast<const void*>(strParam.c_str()));
+                columnSize = strParam.size();
+            }
+            else if (py::isinstance<py::int_>(param)) {
+				// TODO: Integers in python are mostly longs. Avoid narrowing conversions here
+				paramBuffers.push_back(std::shared_ptr<void>(new int(param.cast<int>()),
+                                                             std::default_delete<int>()));
+				dataPtr = paramBuffers.back().get();
+			}
+			else if (py::isinstance<py::float_>(param)) {
+				paramBuffers.push_back(std::shared_ptr<void>(new float(param.cast<float>()),
+                                                             std::default_delete<float>()));
+				dataPtr = paramBuffers.back().get();
+			}
+			else if (py::isinstance<py::bool_>(param)) {
+				paramBuffers.push_back(std::shared_ptr<void>(new bool(param.cast<bool>()),
+                                                             std::default_delete<bool>()));
+				dataPtr = paramBuffers.back().get();
+			}
+            else {
+				// TODO: Error needs to be relayed to application via exception
+                std::cout << "DDBCSQLExecute: Unsupported parameter type for parameter - " << paramIndex << std::endl;
+            }
+            rc = SQLBindParameter_ptr(hStmt, paramIndex + 1 /* 1-based indexing */,
+                     SQL_PARAM_INPUT /* TODO: Handle other types of parameters */,
+                     paramInfo[paramIndex].paramCType,
+                     paramInfo[paramIndex].paramSQLType,
+                     columnSize /* Column size */,
+                     0, dataPtr, 0, nullptr);
+            if (!SQL_SUCCEEDED(rc)) {
+				DEBUG_LOG("DDBCSQLExecute: Error when binding parameter - %d", paramIndex);
+				return rc;
+			}
+        }
+
+        rc = SQLExecute_ptr(hStmt);
+        if (!SQL_SUCCEEDED(rc)) {
+			DEBUG_LOG("DDBCSQLExecute: Error during execution of the statement");
+        }
+		return rc;
+    }
 }
 
 // Wrap SQLNumResultCols
@@ -256,7 +400,7 @@ SQLSMALLINT SQLNumResultCols_wrap(intptr_t StatementHandle) {
     }
 
     #ifdef _DEBUG
-        // cout << "Get Number of Columns" << std::endl;
+        cout << "Get Number of Columns" << std::endl;
     #endif
 
     SQLSMALLINT* ColumnCount = new SQLSMALLINT;
@@ -282,7 +426,7 @@ SQLRETURN SQLDescribeCol_wrap(
     }
 
     #ifdef _DEBUG
-        // cout << "Get Columns name\n";
+        cout << "Get Columns name\n";
     #endif
 
     for (SQLUSMALLINT i = 1; i <= ColumnCount; ++i) {
@@ -314,7 +458,7 @@ SQLRETURN SQLFetch_wrap(intptr_t StatementHandle) {
     }
 
     #ifdef _DEBUG
-        // cout << "Fetch next row\n";
+        cout << "Fetch next row\n";
     #endif
 
     return SQLFetch_ptr(reinterpret_cast<SQLHANDLE>(StatementHandle));
@@ -326,7 +470,7 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
         return SQL_ERROR;
     }
     #ifdef _DEBUG
-        // cout << "Get data from columns\n";
+        cout << "Get data from columns\n";
     #endif
 
     SQLRETURN ret;
@@ -341,6 +485,11 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
             SQLSMALLINT nullable;
 
             ret = SQLDescribeCol_ptr(hStmt, i, columnName, sizeof(columnName) / sizeof(SQLWCHAR), &columnNameLen, &dataType, &columnSize, &decimalDigits, &nullable);
+            if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO) {
+                std::wcerr << L"Error retrieving data for column: " << columnName << L" Type: " << dataType << L" Error code: " << ret << std::endl;
+                row.append(py::none());
+                continue;
+            }
 
 
             switch (dataType) {
@@ -356,10 +505,7 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                         if (dataLen > 0 && dataLen < sizeof(dataBuffer)) {
                             dataBuffer[dataLen / sizeof(SQLWCHAR)] = L'\0'; // Null-terminate
                         }
-                        std::wstring wstrData(dataBuffer);
-                        // std::string strData(wstrData.begin(), wstrData.end());
-                        // cout << "Data (WCHAR/WVARCHAR/CHAR/VARCHAR): " << strData << endl;
-                        row.append(py::cast(wstrData)); // Correct conversion
+                        row.append(std::wstring(dataBuffer)); // Append to row
                     } else {
                         row.append(py::none());
                     }
@@ -597,6 +743,19 @@ SQLRETURN SQLMoreResults_wrap(intptr_t StatementHandle) {
     return SQLMoreResults_ptr(reinterpret_cast<SQLHANDLE>(StatementHandle));
 }
 
+// Wrap SQLEndTran
+SQLRETURN SQLEndTran_wrap(SQLSMALLINT HandleType, intptr_t Handle, SQLSMALLINT CompletionType) {
+    if (!SQLEndTran_ptr && !LoadDriver()) {
+        return SQL_ERROR;
+    }
+
+#ifdef _DEBUG
+    cout << "End SQL Transaction" << std::endl;
+#endif
+
+    return SQLEndTran_ptr(HandleType, reinterpret_cast<SQLHANDLE>(Handle), CompletionType);
+}
+
 // Wrap SQLFreeHandle
 SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, intptr_t Handle) {
     if (!SQLAllocHandle_ptr && !LoadDriver()) { // SQLAllocHandle_ptr ensures driver is loaded
@@ -622,37 +781,31 @@ SQLRETURN SQLDisconnect_wrap(intptr_t ConnectionHandle) {
     return SQLDisconnect_ptr(reinterpret_cast<SQLHDBC>(ConnectionHandle));
 }
 
-// Wrap SQLEndTran
-SQLRETURN SQLEndTran_wrap(SQLSMALLINT HandleType, intptr_t Handle, SQLSMALLINT CompletionType) {
-    if (!SQLEndTran_ptr && !LoadDriver()) {
-        return SQL_ERROR;
-    }
-
-    #ifdef _DEBUG
-        cout << "End SQL Transaction" << std::endl;
-    #endif
-
-    return SQLEndTran_ptr(HandleType, reinterpret_cast<SQLHANDLE>(Handle), CompletionType);
-}
-
 // Bind the functions to the module
 PYBIND11_MODULE(ddbc_bindings, m) {
     m.doc() = "msodbcsql driver api bindings for Python"; // optional module docstring
 
-    m.def("SQLAllocHandle", &SQLAllocHandle_wrap, "Allocate an environment, connection, statement, or descriptor handle");
-    m.def("SQLSetEnvAttr", &SQLSetEnvAttr_wrap, "Set an attribute that governs aspects of environments");
-    m.def("SQLSetConnectAttr", &SQLSetConnectAttr_wrap, "Set an attribute that governs aspects of connections");
-    m.def("SQLSetStmtAttr", &SQLSetStmtAttr_wrap, "Set an attribute that governs aspects of statements");
-    m.def("SQLDriverConnect", &SQLDriverConnect_wrap, "Connect to a data source with a connection string");
-    m.def("SQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
-    m.def("SQLFetch", &SQLFetch_wrap, "Fetch the next row from the result set");
-    m.def("SQLNumResultCols", &SQLNumResultCols_wrap, "Get the number of columns in the result set");
-    m.def("SQLDescribeCol", &SQLDescribeCol_wrap, "Get information about a column in the result set");
-    m.def("SQLGetData", &SQLGetData_wrap, "Retrieve data from the result set");
-    m.def("SQLMoreResults", &SQLMoreResults_wrap, "Check for more results in the result set");
-    m.def("FetchOne", &FetchOne_wrap, "Fetch one row from the result set");
-    m.def("SQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
-    m.def("SQLDisconnect", &SQLDisconnect_wrap, "Disconnect from a data source");
-    m.def("CheckError", &CheckError, "Check for driver errors");
-    m.def("SQLEndTran", &SQLEndTran_wrap, "End a transaction on a connection or environment");
+    py::class_<ParamInfo>(m, "ParamInfo")
+        .def(py::init<>())
+        .def_readwrite("paramCType", &ParamInfo::paramCType)
+        .def_readwrite("paramSQLType", &ParamInfo::paramSQLType);
+
+    m.def("DDBCSQLAllocHandle", &SQLAllocHandle_wrap, "Allocate an environment, connection, statement, or descriptor handle");
+    m.def("DDBCSQLSetEnvAttr", &SQLSetEnvAttr_wrap, "Set an attribute that governs aspects of environments");
+    m.def("DDBCSQLSetConnectAttr", &SQLSetConnectAttr_wrap, "Set an attribute that governs aspects of connections");
+    m.def("DDBCSQLSetStmtAttr", &SQLSetStmtAttr_wrap, "Set an attribute that governs aspects of statements");
+    m.def("DDBCSQLGetConnectionAttr", &SQLGetConnectionAttr_wrap, "Get an attribute that governs aspects of connections");
+    m.def("DDBCSQLDriverConnect", &SQLDriverConnect_wrap, "Connect to a data source with a connection string");
+    m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
+    m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");
+    m.def("DDBCSQLFetch", &SQLFetch_wrap, "Fetch the next row from the result set");
+    m.def("DDBCSQLNumResultCols", &SQLNumResultCols_wrap, "Get the number of columns in the result set");
+    m.def("DDBCSQLDescribeCol", &SQLDescribeCol_wrap, "Get information about a column in the result set");
+    m.def("DDBCSQLGetData", &SQLGetData_wrap, "Retrieve data from the result set");
+    m.def("DDBCSQLMoreResults", &SQLMoreResults_wrap, "Check for more results in the result set");
+    m.def("DDBCSQLFetchOne", &FetchOne_wrap, "Fetch one row from the result set");
+    m.def("DDBCSQLEndTran", &SQLEndTran_wrap, "End a transaction");
+    m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
+    m.def("DDBCSQLDisconnect", &SQLDisconnect_wrap, "Disconnect from a data source");
+    m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
 }

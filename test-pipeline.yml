@@ -3,22 +3,20 @@ trigger:
     include:
     - '*'  # Trigger on any branch
   paths:
-    # Excluding below files since changes on these will push a new PYD file to the repo which will then trigger the pipeline (should be running with the latest PYD file)
+    # Excluding below files since they are static and do not need to trigger the pipeline.
     exclude:
-    - mssql_python/pybind/ddbc_bindings.cpp
-    - mssql_python/pybind/CMakeLists.txt
-    - pybuild-pipeline.yml
+    - README.md
+    - mssql_python/pybind/README.md
 
 pr:
   branches:
     include:
     - main # Trigger on PRs to main branch
   paths:
-    # Same as above, excluding the files that will trigger the pipeline
+    # Excluding the files that are static and do not need to trigger the pipeline.
     exclude:
-    - mssql_python/pybind/ddbc_bindings.cpp
-    - mssql_python/pybind/CMakeLists.txt
-    - pybuild-pipeline.yml
+    - README.md
+    - mssql_python/pybind/README.md
 
 jobs:
 - job: PytestOnWindows
@@ -39,6 +37,16 @@ jobs:
       python -m pip install --upgrade pip
       pip install -r requirements.txt
     displayName: 'Install dependencies'
+
+  # Build before testing for now - @gaurav to change this to use the latest PYD file from the build artifacts
+  - script: |
+      cd mssql_python\pybind
+      mkdir build
+      cd build  
+      cmake -DPython3_EXECUTABLE="python3" -DCMAKE_BUILD_TYPE=Debug ..
+      cmake --build . --config Debug
+      copy Debug\ddbc_bindings.pyd ..\..\ddbc_bindings.pyd
+    displayName: 'Build and copy .pyd file'
 
   - script: |
       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
