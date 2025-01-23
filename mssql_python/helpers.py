@@ -18,6 +18,7 @@ def add_driver_to_connection_str(connection_str):
     try:
         # Strip any leading or trailing whitespace from the connection string
         connection_str = connection_str.strip()
+        connection_str = add_driver_name_to_app_parameter(connection_str)
         
         # Split the connection string into individual attributes
         connection_attributes = connection_str.split(';')
@@ -56,3 +57,38 @@ def check_error(handle_type, handle, ret):
     if ret == ConstantsODBC.SQL_ERROR.value:
         e = ddbc_bindings.CheckError(handle_type, handle, ret)
         raise RuntimeError(f"Failed to allocate SQL connection handle. Error code: {e}")
+    
+def add_driver_name_to_app_parameter(connection_string):
+    """
+    Modifies the input connection string by appending the APP name.
+
+    Args:
+        connection_string (str): The input connection string.
+
+    Returns:
+        str: The modified connection string.
+    """
+    # Split the input string into key-value pairs
+    parameters = connection_string.split(';')
+
+    # Initialize variables
+    app_found = False
+    modified_parameters = []
+
+    # Iterate through the key-value pairs
+    for param in parameters:
+        if param.lower().startswith("app="):
+            # Overwrite the value with 'MSSQL-Python'
+            app_found = True
+            key, value = param.split('=', 1)
+            modified_parameters.append(f"{key}=MSSQL-Python")
+        else:
+            # Keep other parameters as is
+            modified_parameters.append(param)
+
+    # If APP key is not found, append it
+    if not app_found:
+        modified_parameters.append("APP=MSSQL-Python")
+
+    # Join the parameters back into a connection string
+    return ';'.join(modified_parameters) + ';'   
