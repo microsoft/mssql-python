@@ -1,0 +1,6 @@
+[run]
+omit =
+    mssql_python/testing_ddbc_bindings.py
+
+[report]
+# Add any report-specific settings here, if needed

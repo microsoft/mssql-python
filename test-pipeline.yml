@@ -1,26 +1,7 @@
-trigger:
-  branches:
-    include:
-    - '*'  # Trigger on any branch
-  paths:
-    # Excluding below files since they are static and do not need to trigger the pipeline.
-    exclude:
-    - README.md
-    - mssql_python/pybind/README.md
-
-pr:
-  branches:
-    include:
-    - main # Trigger on PRs to main branch
-  paths:
-    # Excluding the files that are static and do not need to trigger the pipeline.
-    exclude:
-    - README.md
-    - mssql_python/pybind/README.md
+name: test-pipeline
 
 jobs:
 - job: PytestOnWindows
-  
   pool:
     vmImage: 'windows-latest'
   
@@ -38,7 +19,6 @@ jobs:
       pip install -r requirements.txt
     displayName: 'Install dependencies'
 
-  # Build before testing for now - @gaurav to change this to use the latest PYD file from the build artifacts
   - script: |
       cd mssql_python\pybind
       mkdir build
@@ -46,14 +26,21 @@ jobs:
       cmake -DPython3_EXECUTABLE="python3" -DCMAKE_BUILD_TYPE=Debug ..
       cmake --build . --config Debug
       copy Debug\ddbc_bindings.pyd ..\..\ddbc_bindings.pyd
-    displayName: 'Build and copy .pyd file'
+    displayName: 'Build .pyd file'
 
   - script: |
       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage'
     env:
       DB_CONNECTION_STRING: $(DB_CONNECTION_STRING)
-    
+
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: 'mssql_python/ddbc_bindings.pyd'
+      ArtifactName: 'ddbc_bindings'
+      publishLocation: 'Container'
+    displayName: 'Publish pyd file as artifact'
+
   - task: PublishTestResults@2
     condition: succeededOrFailed()
     inputs:

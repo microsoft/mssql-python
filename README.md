@@ -4,11 +4,12 @@ This repository contains the source code for the MSSQL-Python project, which pro
 
 ## Build Status (`main`)
 
-### Python Tests Pipeline
+### Python Tests
 [![Build Status](https://sqlclientdrivers.visualstudio.com/mssql-python/_apis/build/status%2FPython%20Tests?branchName=main)](https://sqlclientdrivers.visualstudio.com/mssql-python/_build/latest?definitionId=2024&branchName=main)
 
-### PYD Build Pipeline
+### PYD Build
 [![Build Status](https://sqlclientdrivers.visualstudio.com/mssql-python/_apis/build/status%2FBuild%20DDBC%20Bindings%20PYD?branchName=main)](https://sqlclientdrivers.visualstudio.com/mssql-python/_build/latest?definitionId=2041&branchName=main)
+
 
 ## Requirements
 
