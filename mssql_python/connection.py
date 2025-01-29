@@ -32,7 +32,7 @@ class Connection:
         close() -> None:
     """
   
-    def __init__(self, connection_str: str) -> None:
+    def __init__(self, connection_str: str, autocommit: bool = True) -> None:
         """
         Initialize the connection object with the specified connection string.
 
@@ -52,6 +52,8 @@ class Connection:
         self.hdbc = ctypes.c_void_p()
         self.connection_str = add_driver_to_connection_str(connection_str)
         self._initializer()
+        self._autocommit = autocommit
+        self.setautocommit(autocommit)
 
     def _initializer(self) -> None:
         """
@@ -125,6 +127,49 @@ class Connection:
         except Exception as e:
             logging.error("An error occurred while connecting to the database: %s", e)
             raise
+
+    @property
+    def autocommit(self) -> bool:
+        """
+        Return the current autocommit mode of the connection.
+        Returns:
+            bool: True if autocommit is enabled, False otherwise.
+        """
+        try:
+            autocommit_mode = ddbc_bindings.DDBCSQLGetConnectionAttr(
+                self.hdbc.value,  # Connection handle
+                odbc_sql_const.SQL_ATTR_AUTOCOMMIT.value,  # Attribute
+            )
+            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, autocommit_mode)
+            return autocommit_mode == odbc_sql_const.SQL_AUTOCOMMIT_ON.value
+        except Exception as e:
+            logging.error("An error occurred while getting autocommit mode: %s", e)
+            raise Exception("DatabaseError: Failed to get autocommit mode") from e
+        
+    def setautocommit(self, value: bool) -> None:
+        """
+        Set the autocommit mode of the connection.
+        Args:
+            value (bool): True to enable autocommit, False to disable it.
+        Returns:
+            None
+        Raises:
+            DatabaseError: If there is an error while setting the autocommit mode.
+        """
+        try:
+            ret = ddbc_bindings.DDBCSQLSetConnectAttr(
+                self.hdbc.value,  # Connection handle
+                odbc_sql_const.SQL_ATTR_AUTOCOMMIT.value,  # Attribute
+                odbc_sql_const.SQL_AUTOCOMMIT_ON.value if value else odbc_sql_const.SQL_AUTOCOMMIT_OFF.value,  # Value
+                0  # String length
+            )
+            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
+            self._autocommit = value
+            logging.info("Autocommit mode set to %s.", value)
+        except Exception as e:
+            logging.error("An error occurred while setting autocommit mode: %s", e)
+            raise Exception("DatabaseError: Failed to set autocommit mode") from e
+
 
     def cursor(self) -> Cursor:
         """

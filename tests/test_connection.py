@@ -40,6 +40,11 @@ def test_commit(db_connection):
 #     finally:
 #         cursor.execute("DROP TABLE test_commit;")
 
+def test_autocommit(db_connection):
+    assert db_connection.autocommit is True, "Autocommit should be True by default"
+    db_connection.setautocommit(False)
+    assert db_connection.autocommit is False, "Autocommit failed: Autocommit should be False"
+
 def test_rollback(db_connection):
     db_connection.rollback()
 #     # Make a transaction and rollback
