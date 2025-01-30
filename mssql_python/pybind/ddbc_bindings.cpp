@@ -594,7 +594,7 @@ SQLRETURN SQLExecute_wrap(const intptr_t statementHandle, const std::wstring& qu
                 }
                 case SQL_C_NUMERIC:
                {
-                    if (!py::isinstance<py::class_<NumericData>>(param)) {
+                    if (!py::isinstance<NumericData>(param)) {
                         ThrowStdException(MakeParamMismatchErrorStr("SQL_C_NUMERIC", paramIndex));
                     }
                     NumericData decimalParam = param.cast<NumericData>();
