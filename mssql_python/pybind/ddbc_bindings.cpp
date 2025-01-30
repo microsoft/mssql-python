@@ -138,7 +138,7 @@ bool LoadDriver() {
     // Get the DLL directory to the current directory
     wchar_t currentDir[MAX_PATH];
     GetCurrentDirectoryW(MAX_PATH, currentDir);
-    std::wstring dllDir = std::wstring(currentDir) + L"\\DLLs\\msodbcsql18.dll";
+    std::wstring dllDir = std::wstring(currentDir) + L"\\libs\\win\\msodbcsql18.dll";
 
     // Load the DLL from the specified path
     HMODULE hModule = LoadLibraryW(dllDir.c_str());
