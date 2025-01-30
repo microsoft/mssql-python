@@ -33,6 +33,38 @@ def ddbc_sql_execute(stmt_handle, query, params, param_info_list, use_prepare=Tr
         raise RuntimeError(f"Failed to execute query. Error code: {result}")
     return result
 
+def fetch_data_onebyone(stmt_handle):
+    rows = []
+    ret = 1
+    while ret != SQL_NO_DATA:
+        row = []
+        ret = ddbc_bindings.DDBCSQLFetchOne(stmt_handle.value, row)
+        if ret < 0:
+            print("Error:", ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_STMT, stmt_handle.value, ret))
+            raise RuntimeError(f"Failed to fetch data. Error code: {ret}")
+        print(row)
+        rows.append(row)
+    return rows
+
+def fetch_data_many(stmt_handle):
+    rows = []
+    ret = 1
+    while ret != SQL_NO_DATA:
+        ret = ddbc_bindings.DDBCSQLFetchMany(stmt_handle.value, rows, 10)
+        if ret < 0:
+            print("Error:", ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_STMT, stmt_handle.value, ret))
+            raise RuntimeError(f"Failed to fetch data. Error code: {ret}")
+    return rows
+
+def fetch_data_all(stmt_handle):
+    rows = []
+    ret = 1
+    ret = ddbc_bindings.DDBCSQLFetchAll(stmt_handle.value, rows)
+    if ret != SQL_NO_DATA:
+        print("Error:", ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_STMT, stmt_handle.value, ret))
+        raise RuntimeError(f"Failed to fetch data. Error code: {ret}")
+    return rows
+
 def fetch_data(stmt_handle):
     rows = []
     column_count = ddbc_bindings.DDBCSQLNumResultCols(stmt_handle.value)
@@ -101,21 +133,22 @@ if __name__ == "__main__":
     );
     '''
     # Test DDBCSQLExecute for INSERT query
-    print("Test DDBCSQLExecute insert")
-    insert_sql_query = "INSERT INTO customers (name, email) VALUES (?, ?);"
-    params = ['gaurav', 'gaurav@gaurav.com']
-    param_info_list = []
-    for i in params:
-        paraminfo = ParamInfo()
-        paraminfo.paramCType = 1
-        paraminfo.paramSQLType = 12
-        param_info_list.append(paraminfo)
-    result = ddbc_sql_execute(stmt_handle, insert_sql_query, params, param_info_list, True)
-    print("DDBCSQLExecute result:", result)
+    if False:
+        print("Test DDBCSQLExecute insert")
+        insert_sql_query = "INSERT INTO customers (name, email) VALUES (?, ?);"
+        params = ['gaurav', 'gaurav@gaurav.com']
+        param_info_list = []
+        for i in params:
+            paraminfo = ParamInfo()
+            paraminfo.paramCType = 1
+            paraminfo.paramSQLType = 12
+            param_info_list.append(paraminfo)
+        result = ddbc_sql_execute(stmt_handle, insert_sql_query, params, param_info_list, True)
+        print("DDBCSQLExecute result:", result)
 
     # Test DDBCSQLExecute for SELECT query
     print("Test DDBCSQLExecute select")
-    select_sql_query = "SELECT * FROM customers;"
+    select_sql_query = "SELECT * FROM Students; SELECT * from Employee;"
     params = []
     param_info_list = []
     result = ddbc_sql_execute(stmt_handle, select_sql_query, params, param_info_list, False)
@@ -124,12 +157,15 @@ if __name__ == "__main__":
     print("Fetching Data for DDBCSQLExecute!")
     column_names = describe_columns(stmt_handle)
     print(column_names)
-    if column_names:
-        rows = fetch_data(stmt_handle)
-        for row in rows:
-            print(row)
-    else:
-        print("No columns to fetch data from.")
+    ret = 1
+    while ret != SQL_NO_DATA:
+        if column_names:
+            rows = fetch_data_all(stmt_handle)
+            for row in rows:
+                print(row)
+        else:
+            print("No columns to fetch data from.")
+        ret = ddbc_bindings.DDBCSQLMoreResults(stmt_handle.value)
 
     # Free the statement handle
     free_handle(SQL_HANDLE_STMT, stmt_handle)
