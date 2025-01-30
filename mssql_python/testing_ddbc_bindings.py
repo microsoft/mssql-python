@@ -133,22 +133,21 @@ if __name__ == "__main__":
     );
     '''
     # Test DDBCSQLExecute for INSERT query
-    if False:
-        print("Test DDBCSQLExecute insert")
-        insert_sql_query = "INSERT INTO customers (name, email) VALUES (?, ?);"
-        params = ['gaurav', 'gaurav@gaurav.com']
-        param_info_list = []
-        for i in params:
-            paraminfo = ParamInfo()
-            paraminfo.paramCType = 1
-            paraminfo.paramSQLType = 12
-            param_info_list.append(paraminfo)
-        result = ddbc_sql_execute(stmt_handle, insert_sql_query, params, param_info_list, True)
-        print("DDBCSQLExecute result:", result)
+    print("Test DDBCSQLExecute insert")
+    insert_sql_query = "INSERT INTO customers (name, email) VALUES (?, ?);"
+    params = ['gaurav', 'gaurav@gaurav.com']
+    param_info_list = []
+    for i in params:
+        paraminfo = ParamInfo()
+        paraminfo.paramCType = 1
+        paraminfo.paramSQLType = 12
+        param_info_list.append(paraminfo)
+    result = ddbc_sql_execute(stmt_handle, insert_sql_query, params, param_info_list, True)
+    print("DDBCSQLExecute result:", result)
 
     # Test DDBCSQLExecute for SELECT query
     print("Test DDBCSQLExecute select")
-    select_sql_query = "SELECT * FROM Students; SELECT * from Employee;"
+    select_sql_query = "SELECT * FROM customers;"
     params = []
     param_info_list = []
     result = ddbc_sql_execute(stmt_handle, select_sql_query, params, param_info_list, False)

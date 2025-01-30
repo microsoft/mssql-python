@@ -4,22 +4,51 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/complex.h>
-#include<pybind11/functional.h>
+#include <pybind11/functional.h>
 #include <pybind11/chrono.h>
 #include <windows.h>
 #include <sqlext.h>
 #include <sql.h>
 #include <iostream>
+#include <cstdint>
 #include <string>
 #include <iomanip> // For std::setw and std::setfill
 
 namespace py = pybind11;
 using namespace pybind11::literals;
 
+// Log data to stdout only in debug builds
+// TODO: Handle both UTF-8 and UTF-16 strings
+#ifndef NDEBUG
+#define DEBUG_LOG(formatString, ...) \
+	do { \
+		printf(formatString, __VA_ARGS__); \
+		printf("\n"); \
+	} while (0)
+#else
+#define DEBUG_LOG(x) (void)0
+#endif
+
+
 // Struct to hold parameter information for binding. Used by SQLBindParameter.
 struct ParamInfo {
+    SQLSMALLINT inputOutputType;
     SQLSMALLINT paramCType;
     SQLSMALLINT paramSQLType;
+    SQLULEN columnSize;
+    SQLSMALLINT decimalDigits;
+    // py::object* dataPtr; // Stores pointer to the python object
+                         // that holds parameter value
+                         // TODO: See if we can reuse python buffer in some cases
+};
+
+// Mirrors the SQL_NUMERIC_STRUCT. But redefined to replace val char array
+// with std::string, because pybind doesn't allow binding char array
+struct NumericData {
+    SQLCHAR precision;
+    SQLSCHAR scale;
+    SQLCHAR	sign; /* 1=pos 0=neg */
+    std::string val;
 };
 
 // Struct to hold data buffers and indicators for each column
@@ -37,7 +66,7 @@ struct ColumnBuffers {
     std::vector<std::vector<SQLGUID>> guidBuffers;
     std::vector<std::vector<SQLLEN>> indicators;
 
-    ColumnBuffers(SQLSMALLINT numCols, int fetchSize) 
+    ColumnBuffers(SQLSMALLINT numCols, int fetchSize)
         : charBuffers(numCols),
           wcharBuffers(numCols),
           intBuffers(numCols),
@@ -51,17 +80,6 @@ struct ColumnBuffers {
           guidBuffers(numCols),
           indicators(numCols, std::vector<SQLLEN>(fetchSize)) {}
 };
-
-// TODO: Handle both UTF-8 and UTF-16 strings
-#ifndef NDEBUG
-#define DEBUG_LOG(formatString, ...) \
-	do { \
-		printf(formatString, __VA_ARGS__); \
-		printf("\n"); \
-	} while (0)
-#else
-#define DEBUG_LOG(x) (void)0
-#endif
 
 // Function pointer typedefs for the Handle APIs
 typedef SQLRETURN (*SQLAllocHandleFunc)(SQLSMALLINT, SQLHANDLE, SQLHANDLE*);
@@ -94,6 +112,7 @@ typedef SQLRETURN (*SQLEndTranFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT);
 // Free handles, disconnect and free function typedefs
 typedef SQLRETURN (*SQLFreeHandleFunc)(SQLSMALLINT, SQLHANDLE);
 typedef SQLRETURN (*SQLDisconnectFunc)(SQLHDBC);
+typedef SQLRETURN (*SQLFreeStmtFunc)(SQLHSTMT, SQLUSMALLINT);
 
 
 // Diagnostic record function typedef
@@ -129,6 +148,7 @@ SQLEndTranFunc SQLEndTran_ptr = nullptr;
 // Free handles, disconnect and free function pointer
 SQLFreeHandleFunc SQLFreeHandle_ptr = nullptr;
 SQLDisconnectFunc SQLDisconnect_ptr = nullptr;
+SQLFreeStmtFunc SQLFreeStmt_ptr = nullptr;
 
 // Diagnostic record function pointer
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
@@ -178,6 +198,7 @@ bool LoadDriver() {
     // Free handles, disconnect and free function Loading
     SQLFreeHandle_ptr = (SQLFreeHandleFunc)GetProcAddress(hModule, "SQLFreeHandle");
     SQLDisconnect_ptr = (SQLDisconnectFunc)GetProcAddress(hModule, "SQLDisconnect");
+    SQLFreeStmt_ptr  = (SQLFreeStmtFunc)GetProcAddress(hModule, "SQLFreeStmt");
 
     // Diagnostic record function Loading
     SQLGetDiagRec_ptr = (SQLGetDiagRecFunc)GetProcAddress(hModule, "SQLGetDiagRecW");
@@ -188,12 +209,21 @@ bool LoadDriver() {
 
     return SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr && SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr
     && SQLDriverConnect_ptr && SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr
-    && SQLFetch_ptr && SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr
-    && SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr && SQLDisconnect_ptr
+    && SQLFetch_ptr && SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr
+    && SQLColAttribute_ptr && SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr && SQLDisconnect_ptr && SQLFreeStmt_ptr
     && SQLGetDiagRec_ptr;
 }
 
+// TODO: Add more nuanced exception classes
+void ThrowStdException(const std::string& message) {
+    throw std::runtime_error(message);
+}
 
+std::string MakeParamMismatchErrorStr(const std::string& cType, const int paramIndex) {
+    std::string errorString = "Parameter's object type does not match parameter's C type. C type - " +
+                              cType + ", paramIndex - " + std::to_string(paramIndex);
+    return errorString;
+}
 
 // Wrap SQLAllocHandle
 SQLRETURN SQLAllocHandle_wrap(SQLSMALLINT HandleType, intptr_t InputHandle, intptr_t OutputHandle) {
@@ -332,8 +362,8 @@ SQLRETURN SQLExecDirect_wrap(intptr_t StatementHandle, const std::wstring& Query
 // binds the parameters. Otherwise, it executes the query directly.
 // usePrepare parameter can be used to disable the prepare step for queries that might already
 // be prepared in a previous call.
-SQLRETURN SQLExecute_wrap(const intptr_t statementHandle, const std::wstring& query,
-    const py::list& params, const std::vector<ParamInfo>& paramInfo,
+SQLRETURN SQLExecute_wrap(const intptr_t statementHandle, const std::wstring& query /* TODO: Use SQLTCHAR? */,
+    const py::list& params, const std::vector<ParamInfo>& paramInfos,
     const bool usePrepare = true)
 {
     if (!SQLPrepare_ptr && !LoadDriver()) {
@@ -343,9 +373,9 @@ SQLRETURN SQLExecute_wrap(const intptr_t statementHandle, const std::wstring& qu
     }
     assert(SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr && SQLExecDirect_ptr);
 
-	if (params.size() != paramInfo.size()) {
+	if (params.size() != paramInfos.size()) {
 		// TODO: Error needs to be relayed to application via exception
-		std::cout << "DDBCSQLExecute: Number of parameters and paramInfo do not match." << std::endl;
+		std::cout << "DDBCSQLExecute: Number of parameters and paramInfos do not match." << std::endl;
 		return SQL_ERROR;
 	}
 
@@ -359,7 +389,7 @@ SQLRETURN SQLExecute_wrap(const intptr_t statementHandle, const std::wstring& qu
         // fastest way to submit a SQL statement for one-time execution according to
         // ODBC documentation - https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function?view=sql-server-ver16
         rc = SQLExecDirect_ptr(hStmt, queryPtr, SQL_NTS);
-        if (!SQL_SUCCEEDED(rc)) {
+        if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
 			DEBUG_LOG("DDBCSQLExecute: Error during direct execution of the statement");
         }
 		return rc;
@@ -377,44 +407,230 @@ SQLRETURN SQLExecute_wrap(const intptr_t statementHandle, const std::wstring& qu
 		std::vector<std::shared_ptr<void>> paramBuffers;
         for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
 			const auto& param = params[paramIndex];
-			SQLULEN columnSize = 0;
+			const ParamInfo& paramInfo = paramInfos[paramIndex];
             void* dataPtr = nullptr;
-            // TODO: Add more data types like wide string, date time, TVPs etc.
-            if (py::isinstance<py::str>(param) || py::isinstance<py::bytearray>(param) ||
-                py::isinstance<py::bytes>(param)) {
-                // TODO: Use wide string?
-                paramBuffers.push_back(std::shared_ptr<void>(new std::string(param.cast<std::string>()),
-                    std::default_delete<std::string>()));
-                const std::string& strParam = *static_cast<std::string*>(paramBuffers.back().get());
-                dataPtr = const_cast<void*>(static_cast<const void*>(strParam.c_str()));
-                columnSize = strParam.size();
+            SQLLEN bufferLength = 0;
+            SQLLEN* strLenOrIndPtr = new SQLLEN();
+            paramBuffers.push_back(std::shared_ptr<void>(strLenOrIndPtr,
+                                                         std::default_delete<SQLLEN>()));
+
+            // TODO: Add more data types like money, guid, interval, TVPs etc.
+            switch (paramInfo.paramCType) {
+                case SQL_C_CHAR:
+                case SQL_C_BINARY:
+                {
+                    if (!py::isinstance<py::str>(param) && !py::isinstance<py::bytearray>(param) &&
+                        !py::isinstance<py::bytes>(param)) {
+                        ThrowStdException(MakeParamMismatchErrorStr("SQL_C_CHAR", paramIndex));
+                    }
+                    paramBuffers.push_back(std::shared_ptr<void>( new std::string(param.cast<std::string>()),
+                                                                  std::default_delete<std::string>()));
+                    std::string* strParam = static_cast<std::string*>(paramBuffers.back().get());
+                    if (strParam->size() > 8192 /* TODO: Fix max length */) {
+                        // TODO: throw error to python code. It should have done this check (to avoid copying huge data in C++)
+                        // Python code must give user error that streaming is not yet supported
+                    }
+                    dataPtr = const_cast<void*>(static_cast<const void*>(strParam->c_str()));
+                    bufferLength = strParam->size() + 1 /* null terminator */;
+                    *strLenOrIndPtr = SQL_NTS;
+                    break;
+                }
+                case SQL_C_WCHAR:
+                {
+                    if (!py::isinstance<py::str>(param) && !py::isinstance<py::bytearray>(param) &&
+                        !py::isinstance<py::bytes>(param)) {
+                        ThrowStdException(MakeParamMismatchErrorStr("SQL_C_WCHAR", paramIndex));
+                    }
+                    paramBuffers.push_back(std::shared_ptr<void>(new std::wstring(param.cast<std::wstring>()),
+                                                                 std::default_delete<std::wstring>()));
+                    std::wstring* strParam = static_cast<std::wstring*>(paramBuffers.back().get());
+                    if (strParam->size() > 8192 /* TODO: Fix max length */) {
+                        // TODO: throw error to python code. It should have done this check (to avoid copying huge data in C++)
+                        // Python code must give user error that streaming is not yet supported
+                    }
+                    dataPtr = const_cast<void*>(static_cast<const void*>(strParam->c_str()));
+                    bufferLength = (strParam->size() + 1 /* null terminator */) * sizeof(wchar_t);
+                    *strLenOrIndPtr = SQL_NTS;
+                    break;
+                }
+                case SQL_C_BIT:
+                {
+                    if (!py::isinstance<py::bool_>(param)) {
+                        ThrowStdException(MakeParamMismatchErrorStr("SQL_C_BIT", paramIndex));
+                    }
+                    paramBuffers.push_back(std::shared_ptr<void>(new bool(param.cast<bool>()),
+                        std::default_delete<bool>()));
+                    dataPtr = paramBuffers.back().get();
+                    break;
+                }
+                case SQL_C_DEFAULT:
+                {
+                    if (!py::isinstance<py::none>(param)) {
+                        ThrowStdException(MakeParamMismatchErrorStr("SQL_C_DEFAULT", paramIndex));
+                    }
+                    dataPtr = nullptr;
+                    *strLenOrIndPtr = SQL_NULL_DATA;
+                    break;
+                }
+                case SQL_C_STINYINT:
+                case SQL_C_TINYINT:
+                case SQL_C_SSHORT:
+                case SQL_C_SHORT:
+                {
+                    if (!py::isinstance<py::int_>(param)) {
+                        ThrowStdException(MakeParamMismatchErrorStr("SQL_C_TINY/SHORTINT", paramIndex));
+                    }
+    				paramBuffers.push_back(std::shared_ptr<void>(new int(param.cast<int>()),
+                                                                 std::default_delete<int>()));
+    				dataPtr = paramBuffers.back().get();
+                    break;
+                }
+                case SQL_C_UTINYINT:
+                case SQL_C_USHORT:
+                { 
+                    if (!py::isinstance<py::int_>(param)) {
+                        ThrowStdException(MakeParamMismatchErrorStr("SQL_C_UTINY/USHORTINT", paramIndex));
+                    }
+    				paramBuffers.push_back(std::shared_ptr<void>(new unsigned int(param.cast<unsigned int>()),
+                                                                 std::default_delete<unsigned int>()));
+    				dataPtr = paramBuffers.back().get();
+                    break;
+                }
+    			case SQL_C_SBIGINT:
+                case SQL_C_SLONG:
+                case SQL_C_LONG:
+                {
+                    if (!py::isinstance<py::int_>(param)) {
+                        ThrowStdException(MakeParamMismatchErrorStr("SQL_C_BIG/LONGINT", paramIndex));
+                    }
+    				paramBuffers.push_back(std::shared_ptr<void>(new int64_t(param.cast<int64_t>()),
+                                                                 std::default_delete<int64_t>()));
+    				dataPtr = paramBuffers.back().get();
+                    break;
+                }
+                case SQL_C_UBIGINT:
+                case SQL_C_ULONG:
+                {
+                    if (!py::isinstance<py::int_>(param)) {
+                        ThrowStdException(MakeParamMismatchErrorStr("SQL_C_UBIG/ULONGINT", paramIndex));
+                    }
+    				paramBuffers.push_back(std::shared_ptr<void>(new uint64_t(param.cast<uint64_t>()),
+                                                                 std::default_delete<uint64_t>()));
+    				dataPtr = paramBuffers.back().get();
+                    break;
+                }
+                case SQL_C_FLOAT:
+                {
+                    if (!py::isinstance<py::float_>(param)) {
+                        ThrowStdException(MakeParamMismatchErrorStr("SQL_C_FLOAT", paramIndex));
+                    }
+                    paramBuffers.push_back(std::shared_ptr<void>(new float(param.cast<float>()),
+                                                                 std::default_delete<float>()));
+                    dataPtr = paramBuffers.back().get();
+                    break;
+                }
+                case SQL_C_DOUBLE:
+                {
+                    if (!py::isinstance<py::float_>(param)) {
+                        ThrowStdException(MakeParamMismatchErrorStr("SQL_C_DOUBLE", paramIndex));
+                    }
+    				paramBuffers.push_back(std::shared_ptr<void>(new double(param.cast<double>()),
+                                                                 std::default_delete<double>()));
+    				dataPtr = paramBuffers.back().get();
+                    break;
+                }
+                case SQL_C_TYPE_DATE:
+                {
+                    py::object dateType = py::module_::import("datetime").attr("date");
+                    if (!py::isinstance(param, dateType)) {
+                        ThrowStdException(MakeParamMismatchErrorStr("SQL_C_TYPE_DATE", paramIndex));
+                    }
+                    // TODO: can be moved to python by registering SQL_DATE_STRUCT in pybind
+                    paramBuffers.push_back(std::shared_ptr<void>(new SQL_DATE_STRUCT(),
+                                                                 std::default_delete<SQL_DATE_STRUCT>()));
+    				dataPtr = paramBuffers.back().get();
+                    SQL_DATE_STRUCT* sqlDatePtr = static_cast<SQL_DATE_STRUCT*>(dataPtr);
+                    sqlDatePtr->year = param.attr("year").cast<int>();
+                    sqlDatePtr->month = param.attr("month").cast<int>();
+                    sqlDatePtr->day = param.attr("day").cast<int>();
+                    break;
+                }
+                case SQL_C_TYPE_TIME:
+                {
+                    py::object timeType = py::module_::import("datetime").attr("time");
+                    if (!py::isinstance(param, timeType)) {
+                        ThrowStdException(MakeParamMismatchErrorStr("SQL_C_TYPE_TIME", paramIndex));
+                    }
+                    // TODO: can be moved to python by registering SQL_TIME_STRUCT in pybind
+                    paramBuffers.push_back(std::shared_ptr<void>(new SQL_TIME_STRUCT(),
+                                                                 std::default_delete<SQL_TIME_STRUCT>()));
+    				dataPtr = paramBuffers.back().get();
+                    SQL_TIME_STRUCT* sqlTimePtr = static_cast<SQL_TIME_STRUCT*>(dataPtr);
+                    sqlTimePtr->hour = param.attr("hour").cast<int>();
+                    sqlTimePtr->minute = param.attr("minute").cast<int>();
+                    sqlTimePtr->second = param.attr("second").cast<int>();
+                    break;
+                }
+                case SQL_C_TYPE_TIMESTAMP:
+                {
+                    py::object datetimeType = py::module_::import("datetime").attr("datetime");
+                    if (!py::isinstance(param, datetimeType)) {
+                        ThrowStdException(MakeParamMismatchErrorStr("SQL_C_TYPE_TIMESTAMP", paramIndex));
+                    }
+                    paramBuffers.push_back(std::shared_ptr<void>(new SQL_TIMESTAMP_STRUCT(),
+                                                                 std::default_delete<SQL_TIMESTAMP_STRUCT>()));
+    				dataPtr = paramBuffers.back().get();
+                    SQL_TIMESTAMP_STRUCT* sqlTimestampPtr = static_cast<SQL_TIMESTAMP_STRUCT*>(dataPtr);
+                    sqlTimestampPtr->year = param.attr("year").cast<int>();
+                    sqlTimestampPtr->month = param.attr("month").cast<int>();
+                    sqlTimestampPtr->day = param.attr("day").cast<int>();
+                    sqlTimestampPtr->hour = param.attr("hour").cast<int>();
+                    sqlTimestampPtr->minute = param.attr("minute").cast<int>();
+                    sqlTimestampPtr->second = param.attr("second").cast<int>();
+                    // TODO: timestamp.fraction field seems to involve some computation.
+                    // Handle this in python and pass result to pybind module?
+                    sqlTimestampPtr->fraction = 0;
+                    break;
+                }
+                case SQL_C_NUMERIC:
+               {
+                    if (!py::isinstance<py::class_<NumericData>>(param)) {
+                        ThrowStdException(MakeParamMismatchErrorStr("SQL_C_NUMERIC", paramIndex));
+                    }
+                    NumericData decimalParam = param.cast<NumericData>();
+                    paramBuffers.push_back(std::shared_ptr<void>(new SQL_NUMERIC_STRUCT(),
+                                                                 std::default_delete<SQL_NUMERIC_STRUCT>()));
+                    dataPtr = paramBuffers.back().get();
+                    SQL_NUMERIC_STRUCT* decimalPtr = static_cast<SQL_NUMERIC_STRUCT*>(dataPtr);
+                    decimalPtr->precision = decimalParam.precision;
+                    decimalPtr->scale = decimalParam.scale;
+                    decimalPtr->sign = decimalParam.sign;
+                    if (decimalParam.val.size() != SQL_MAX_NUMERIC_LEN) {
+                        // TODO: Throw error. Val must be a 16 byte integer
+                    }
+                    std::memcpy(static_cast<void*>(decimalPtr->val), decimalParam.val.c_str(), decimalParam.val.size());
+                    break;
+                }
+                case SQL_C_GUID:
+                {
+                    // TODO
+                    break;
+                }
+                default:
+                {
+                    std::ostringstream errorString;
+                    errorString << "Unsupported parameter type - " << paramInfo.paramCType << " for parameter - " << paramIndex;
+                    ThrowStdException(errorString.str());
+                }
             }
-            else if (py::isinstance<py::int_>(param)) {
-				// TODO: Integers in python are mostly longs. Avoid narrowing conversions here
-				paramBuffers.push_back(std::shared_ptr<void>(new int(param.cast<int>()),
-                                                             std::default_delete<int>()));
-				dataPtr = paramBuffers.back().get();
-			}
-			else if (py::isinstance<py::float_>(param)) {
-				paramBuffers.push_back(std::shared_ptr<void>(new float(param.cast<float>()),
-                                                             std::default_delete<float>()));
-				dataPtr = paramBuffers.back().get();
-			}
-			else if (py::isinstance<py::bool_>(param)) {
-				paramBuffers.push_back(std::shared_ptr<void>(new bool(param.cast<bool>()),
-                                                             std::default_delete<bool>()));
-				dataPtr = paramBuffers.back().get();
-			}
-            else {
-				// TODO: Error needs to be relayed to application via exception
-                std::cout << "DDBCSQLExecute: Unsupported parameter type for parameter - " << paramIndex << std::endl;
-            }
+
             rc = SQLBindParameter_ptr(hStmt, paramIndex + 1 /* 1-based indexing */,
-                     SQL_PARAM_INPUT /* TODO: Handle other types of parameters */,
-                     paramInfo[paramIndex].paramCType,
-                     paramInfo[paramIndex].paramSQLType,
-                     columnSize /* Column size */,
-                     0, dataPtr, 0, nullptr);
+                paramInfo.inputOutputType,
+                paramInfo.paramCType,
+                paramInfo.paramSQLType,
+                paramInfo.columnSize,
+                paramInfo.decimalDigits,
+                dataPtr, bufferLength, strLenOrIndPtr);
             if (!SQL_SUCCEEDED(rc)) {
 				DEBUG_LOG("DDBCSQLExecute: Error when binding parameter - %d", paramIndex);
 				return rc;
@@ -422,9 +638,16 @@ SQLRETURN SQLExecute_wrap(const intptr_t statementHandle, const std::wstring& qu
         }
 
         rc = SQLExecute_ptr(hStmt);
-        if (!SQL_SUCCEEDED(rc)) {
+        if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
 			DEBUG_LOG("DDBCSQLExecute: Error during execution of the statement");
+            return rc;
         }
+        // TODO: Handle huge input parameters by checking rc == SQL_NEED_DATA
+
+        // Unbind the bound buffers for all parameters coz the buffers' memory will
+        // be freed when this function exits (parambuffers goes out of scope)
+        rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
+
 		return rc;
     }
 }
@@ -540,6 +763,7 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                 case SQL_LONGVARCHAR: {
                     std::vector<SQLCHAR> dataBuffer(columnSize / sizeof(SQLCHAR) + 1);
                     SQLLEN dataLen;
+                    // TODO: BufferLength here should be dataBuffer.size()-1?
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(), &dataLen);
 
                     if (SQL_SUCCEEDED(ret)) {
@@ -1193,12 +1417,20 @@ SQLRETURN SQLDisconnect_wrap(intptr_t ConnectionHandle) {
 // Bind the functions to the module
 PYBIND11_MODULE(ddbc_bindings, m) {
     m.doc() = "msodbcsql driver api bindings for Python"; // optional module docstring
-
+    m.def("ThrowStdException", &ThrowStdException);
     py::class_<ParamInfo>(m, "ParamInfo")
         .def(py::init<>())
+        .def_readwrite("inputOutputType", &ParamInfo::inputOutputType)
         .def_readwrite("paramCType", &ParamInfo::paramCType)
-        .def_readwrite("paramSQLType", &ParamInfo::paramSQLType);
-
+        .def_readwrite("paramSQLType", &ParamInfo::paramSQLType)
+        .def_readwrite("columnSize", &ParamInfo::columnSize)
+        .def_readwrite("decimalDigits", &ParamInfo::decimalDigits);
+    py::class_<NumericData>(m, "NumericData")
+        .def(py::init<>())
+        .def_readwrite("precision", &NumericData::precision)
+        .def_readwrite("scale", &NumericData::scale)
+        .def_readwrite("sign", &NumericData::sign)
+        .def_readwrite("val", &NumericData::val);
     m.def("DDBCSQLAllocHandle", &SQLAllocHandle_wrap, "Allocate an environment, connection, statement, or descriptor handle");
     m.def("DDBCSQLSetEnvAttr", &SQLSetEnvAttr_wrap, "Set an attribute that governs aspects of environments");
     m.def("DDBCSQLSetConnectAttr", &SQLSetConnectAttr_wrap, "Set an attribute that governs aspects of connections");

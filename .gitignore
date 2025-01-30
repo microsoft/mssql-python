@@ -20,6 +20,7 @@ __pycache__/
 
 # Ignore Visual Studio files
 mssql_python/.vs
+.vs
 
 # Ignore test-*.xml files
 test-*.xml
