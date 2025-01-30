@@ -1,4 +1,5 @@
 import ctypes
+import datetime
 import ddbc_bindings
 import os
 
@@ -68,6 +69,7 @@ def fetch_data_all(stmt_handle):
 def fetch_data(stmt_handle):
     rows = []
     column_count = ddbc_bindings.DDBCSQLNumResultCols(stmt_handle.value)
+    print("Number of columns = " + str(column_count))
     while True:
         result = ddbc_bindings.DDBCSQLFetch(stmt_handle.value)
         if result == SQL_NO_DATA:
@@ -97,6 +99,97 @@ def connect_to_db(dbc_handle, connection_string):
     if result < 0:
         print("Error:", ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_DBC, dbc_handle.value, result))
         raise RuntimeError(f"SQLDriverConnect failed. Error code: {result}")
+
+def add_string_param(params, paramInfos, data_string):
+    params.append(data_string)
+    paramInfo = ddbc_bindings.ParamInfo()
+    paramInfo.paramCType = 1 # SQL_C_CHAR
+    paramInfo.paramSQLType = 12 # SQL_VARCHAR
+    paramInfo.columnSize = len(data_string)
+    paramInfo.inputOutputType = 1 # SQL_PARAM_INPUT
+    paramInfos.append(paramInfo)
+
+def add_wstring_param(params, paramInfos, wide_string):
+    params.append(wide_string)
+    paramInfo = ddbc_bindings.ParamInfo()
+    paramInfo.paramCType = -8 # SQL_C_WCHAR
+    paramInfo.paramSQLType = -9 # SQL_WVARCHAR
+    paramInfo.columnSize = len(wide_string)
+    paramInfo.inputOutputType = 1 # SQL_PARAM_INPUT
+    paramInfos.append(paramInfo)
+
+def add_date_param(params, paramInfos):
+    date_obj = datetime.date(2025, 1, 28) # 28th Jan 2025
+    params.append(date_obj)
+    paramInfo = ddbc_bindings.ParamInfo()
+    paramInfo.paramCType = 91 # SQL_C_TYPE_DATE
+    paramInfo.paramSQLType = 91 # SQL_TYPE_DATE
+    paramInfo.inputOutputType = 1 # SQL_PARAM_INPUT
+    paramInfos.append(paramInfo)
+
+def add_time_param(params, paramInfos):
+    time_obj = datetime.time(5, 15, 30) # 5:15 AM + 30 secs
+    params.append(time_obj)
+    paramInfo = ddbc_bindings.ParamInfo()
+    paramInfo.paramCType = 92 # SQL_C_TYPE_TIME
+    paramInfo.paramSQLType = 92 # SQL_TYPE_TIME
+    paramInfo.inputOutputType = 1 # SQL_PARAM_INPUT
+    paramInfos.append(paramInfo)
+
+def add_datetime_param(params, paramInfos, addNone):
+    paramInfo = ddbc_bindings.ParamInfo()
+    if addNone:
+        params.append(None)
+        paramInfo.paramCType = 99 # SQL_C_DEFAULT
+    else:
+        datetime_obj = datetime.datetime(2025, 1, 28, 5, 15, 30)
+        params.append(datetime_obj)
+        paramInfo.paramCType = 93 # SQL_C_TYPE_TIMESTAMP
+    paramInfo.paramSQLType = 93 # SQL_TYPE_TIMESTAMP
+    paramInfo.inputOutputType = 1 # SQL_PARAM_INPUT
+    paramInfos.append(paramInfo)
+
+def add_bool_param(params, paramInfos, bool_val):
+    params.append(bool_val)
+    paramInfo = ddbc_bindings.ParamInfo()
+    paramInfo.paramCType = -7 # SQL_C_BIT
+    paramInfo.paramSQLType = -7 # SQL_BIT
+    paramInfo.inputOutputType = 1 # SQL_PARAM_INPUT
+    paramInfos.append(paramInfo)
+
+def add_tinyint_param(params, paramInfos, val):
+    params.append(val)
+    paramInfo = ddbc_bindings.ParamInfo()
+    paramInfo.paramCType = -6 # SQL_C_TINYINT
+    paramInfo.paramSQLType = -6 # SQL_TINYINT
+    paramInfo.inputOutputType = 1 # SQL_PARAM_INPUT
+    paramInfos.append(paramInfo)
+
+def add_bigint_param(params, paramInfos, val):
+    params.append(val)
+    paramInfo = ddbc_bindings.ParamInfo()
+    paramInfo.paramCType = -25 # SQL_C_SBIGINT
+    paramInfo.paramSQLType = -5 # SQL_BIGINT
+    paramInfo.inputOutputType = 1 # SQL_PARAM_INPUT
+    paramInfos.append(paramInfo)
+
+def add_float_param(params, paramInfos, val):
+    params.append(val)
+    paramInfo = ddbc_bindings.ParamInfo()
+    paramInfo.paramCType = 7 # SQL_C_FLOAT
+    paramInfo.paramSQLType = 7 # SQL_REAL
+    paramInfo.inputOutputType = 1 # SQL_PARAM_INPUT
+    paramInfo.columnSize = 15 # Precision
+    paramInfos.append(paramInfo)
+
+def add_double_param(params, paramInfos, val):
+    params.append(val)
+    paramInfo = ddbc_bindings.ParamInfo()
+    paramInfo.paramCType = 8 # SQL_C_DOUBLE
+    paramInfo.paramSQLType = 8 # SQL_DOUBLE
+    paramInfo.inputOutputType = 1 # SQL_PARAM_INPUT
+    paramInfo.columnSize = 15 # Precision
+    paramInfos.append(paramInfo)
 
 if __name__ == "__main__":
     # Allocate environment handle
@@ -134,20 +227,42 @@ if __name__ == "__main__":
     '''
     # Test DDBCSQLExecute for INSERT query
     print("Test DDBCSQLExecute insert")
-    insert_sql_query = "INSERT INTO customers (name, email) VALUES (?, ?);"
-    params = ['gaurav', 'gaurav@gaurav.com']
+    '''
+    insert_sql_query = """
+        ALTER TABLE [Employees].[dbo].[EmployeeFullNames]
+        ADD date_ DATE,
+            time_ TIME,
+            datetime_ TIMESTAMP,
+            wchar_ NVARCHAR(10),
+            bool_ BIT,
+            tinyint_ TINYINT,
+            bigint_ BIGINT,
+            float_ FLOAT(10),
+            double_ DOUBLE PRECISION;
+
+    """
+    '''
+    insert_sql_query = "INSERT INTO [Employees].[dbo].[EmployeeFullNames] (FirstName, LastName, date_, time_, wchar_, bool_, tinyint_, bigint_, float_, double_) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"
+    params = []
     param_info_list = []
-    for i in params:
-        paraminfo = ParamInfo()
-        paraminfo.paramCType = 1
-        paraminfo.paramSQLType = 12
-        param_info_list.append(paraminfo)
+    add_string_param(params, param_info_list, 'Harry')
+    add_string_param(params, param_info_list, 'Potter2')
+    add_date_param(params, param_info_list)
+    add_time_param(params, param_info_list)
+    # add_datetime_param(params, param_info_list, addNone=True) - Cannot insert an explicit value into a timestamp column. Use INSERT with a column list to exclude the timestamp column, or insert a DEFAULT into the timestamp column. Traceback (most recent call last):
+    add_wstring_param(params, param_info_list, u"Wide str3")
+    add_bool_param(params, param_info_list, True)
+    add_tinyint_param(params, param_info_list, 127)
+    add_bigint_param(params, param_info_list, 123456789)
+    add_float_param(params, param_info_list, 12.34)
+    add_double_param(params, param_info_list, 12.34)
     result = ddbc_sql_execute(stmt_handle, insert_sql_query, params, param_info_list, True)
     print("DDBCSQLExecute result:", result)
 
     # Test DDBCSQLExecute for SELECT query
     print("Test DDBCSQLExecute select")
-    select_sql_query = "SELECT * FROM customers;"
+    # select_sql_query = "SELECT * FROM customers;"
+    select_sql_query = "SELECT bool_, float_, wchar_, date_, time_, datetime_, wchar_, FirstName, LastName  FROM [Employees].[dbo].[EmployeeFullNames];"
     params = []
     param_info_list = []
     result = ddbc_sql_execute(stmt_handle, select_sql_query, params, param_info_list, False)
