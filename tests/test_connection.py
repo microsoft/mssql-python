@@ -11,7 +11,14 @@ Note: The cursor function is not yet implemented, so related tests are commented
 """
 
 import pytest
-from mssql_python.connection import Connection
+from mssql_python import Connection
+
+def drop_table_if_exists(cursor, table_name):
+    """Drop the table if it exists"""
+    try:
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+    except Exception as e:
+        pytest.fail(f"Failed to drop table {table_name}: {e}")
 
 def test_connection_string(conn_str):
     # Check if the connection string is not None
@@ -20,53 +27,82 @@ def test_connection_string(conn_str):
 def test_connection(db_connection):
     # Check if the database connection is established
     assert db_connection is not None, "Database connection variable should not be None"
-    # cursor = db_connection.cursor()
-    # assert cursor is not None, "Database connection failed - Cursor cannot be None"
+    cursor = db_connection.cursor()
+    assert cursor is not None, "Database connection failed - Cursor cannot be None"
+
+def test_autocommit_default(db_connection):
+    assert db_connection.autocommit is True, "Autocommit should be True by default"
+
+# def test_autocommit_property(db_connection):
+#     db_connection.autocommit = True
+#     assert db_connection.autocommit is True, "Autocommit should be True"
+#     # Create a new cursor to check if the autocommit property is set in the server
+#     cursor = db_connection.cursor()
+#     cursor.execute("DBCC USEROPTIONS;")
+#     result = cursor.fetchall()
+#     implicit_transactions_status = any(option[0] == 'implicit_transactions' and option[1] == 'SET' for option in result)
+#     assert not implicit_transactions_status, "Autocommit failed: Implicit transactions should be off"
+
+#     db_connection.autocommit = False
+#     assert db_connection.autocommit is False, "Autocommit should be False"
+#     cursor.execute("DBCC USEROPTIONS;")
+#     result = cursor.fetchall()
+#     implicit_transactions_status = any(option[0] == 'implicit_transactions' and option[1] == 'SET' for option in result)
+#     assert implicit_transactions_status, "Autocommit failed: Implicit transactions should be on"
+    
+def test_set_autcommit(db_connection):
+    db_connection.setautocommit(True)
+    assert db_connection.autocommit is True, "Autocommit should be True"
+    db_connection.setautocommit(False)
+    assert db_connection.autocommit is False, "Autocommit should be False"
 
 def test_commit(db_connection):
-    db_connection.commit()
-#     # Make a transaction and commit
-#     cursor = db_connection.cursor()
-#     cursor.execute("CREATE TABLE test_commit (id INT PRIMARY KEY, value VARCHAR(50));")
-#     cursor.execute("INSERT INTO test_commit (id, value) VALUES (1, 'test');")
-#     try:
-#         db_connection.commit()
-#         cursor.execute("SELECT * FROM test_commit WHERE id = 1;")
-#         result = cursor.fetchone()
-#         assert result is not None, "Commit failed: No data found"
-#         assert result[1] == 'test', "Commit failed: Incorrect data"
-#     except Exception as e:
-#         pytest.fail(f"Commit failed: {e}")
-#     finally:
-#         cursor.execute("DROP TABLE test_commit;")
-
-def test_autocommit(db_connection):
-    assert db_connection.autocommit is True, "Autocommit should be True by default"
-    db_connection.setautocommit(False)
-    assert db_connection.autocommit is False, "Autocommit failed: Autocommit should be False"
+    # Make a transaction and commit
+    cursor = db_connection.cursor()
+    drop_table_if_exists(cursor, "test_commit")
+    try:
+        cursor.execute("CREATE TABLE test_commit (id INT PRIMARY KEY, value VARCHAR(50));")
+        cursor.execute("INSERT INTO test_commit (id, value) VALUES (1, 'test');")
+        db_connection.commit()
+        cursor.execute("SELECT * FROM test_commit WHERE id = 1;")
+        result = cursor.fetchone()
+        assert result is not None, "Commit failed: No data found"
+        assert result[1] == 'test', "Commit failed: Incorrect data"
+    except Exception as e:
+        pytest.fail(f"Commit failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE test_commit;")
+        db_connection.commit()
 
 def test_rollback(db_connection):
-    db_connection.rollback()
-#     # Make a transaction and rollback
-#     cursor = db_connection.cursor()
-#     cursor.execute("CREATE TABLE test_rollback (id INT PRIMARY KEY, value VARCHAR(50));")
-#     cursor.execute("INSERT INTO test_rollback (id, value) VALUES (1, 'test');")
-#     try:
-#         db_connection.rollback()
-#         cursor.execute("SELECT * FROM test_rollback WHERE id = 1;")
-#         result = cursor.fetchone()
-#         assert result is None, "Rollback failed: Data found"
-#     except Exception as e:
-#         pytest.fail(f"Rollback failed: {e}")
-#     finally:
-#         cursor.execute("DROP TABLE test_rollback;")
+    # Make a transaction and rollback
+    cursor = db_connection.cursor()
+    drop_table_if_exists(cursor, "test_rollback")
+    try:
+        # Create a table and insert data
+        cursor.execute("CREATE TABLE test_rollback (id INT PRIMARY KEY, value VARCHAR(50));")
+        cursor.execute("INSERT INTO test_rollback (id, value) VALUES (1, 'test');")
+        db_connection.commit()
+        
+        # Check if the data is present before rollback
+        cursor.execute("SELECT * FROM test_rollback WHERE id = 1;")
+        result = cursor.fetchone()
+        assert result is not None, "Rollback failed: No data found before rollback"
+        assert result[1] == 'test', "Rollback failed: Incorrect data"
 
-def test_connection_close(db_connection):
-    # Check if the database connection is closed
-    db_connection.close()
-    # with pytest.raises(Exception):
-    #     # Attempt to create a cursor after closing the connection should raise an exception
-    #     db_connection.cursor()
+        # Insert data and rollback
+        cursor.execute("INSERT INTO test_rollback (id, value) VALUES (2, 'test');")
+        db_connection.rollback()
+        
+        # Check if the data is not present after rollback
+        cursor.execute("SELECT * FROM test_rollback WHERE id = 2;")
+        result = cursor.fetchone()
+        assert result is None, "Rollback failed: Data found after rollback"
+    except Exception as e:
+        pytest.fail(f"Rollback failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE test_rollback;")
+        db_connection.commit()
 
 def test_invalid_connection_string():
     # Check if initializing with an invalid connection string raises an exception

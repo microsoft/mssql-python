@@ -1,4 +1,21 @@
-from typing import Union
+import ctypes
+import logging
+import decimal, uuid
+from typing import List, Union
+from mssql_python.logging_config import setup_logging, ENABLE_LOGGING
+from mssql_python.constants import ConstantsODBC as odbc_sql_const
+from mssql_python.helpers import check_error
+import datetime
+import decimal
+import uuid
+import os
+
+os.chdir(os.path.dirname(__file__))
+
+from mssql_python import ddbc_bindings
+
+# Setting up logging
+setup_logging()
 
 class Cursor:
     """
@@ -24,31 +41,322 @@ class Cursor:
         setoutputsize(size, column=None) -> None.
     """
 
-    def __init__(self, connection_str: str) -> None:
+    def __init__(self, connection) -> None:
         """
         Initialize the cursor with a database connection.
         
         Args:
-            connection_str (str): Database connection object.
+            connection: Database connection object.
         """
-        self.connection = connection_str
+        self.connection = connection
+        # self.connection.autocommit = False
+        self.hstmt = ctypes.c_void_p()
+        self._initialize_cursor()
         self.description = None
         self.rowcount = -1
         self.arraysize = 1
-
-    def callproc(self, procname: str, parameters: Union[None, list] = None) -> Union[None, list]:
+        self.buffer_length = 1024  # Default buffer length for string data
+        self.closed = False  # Flag to indicate if the cursor is closed
+        
+    def _is_unicode_string(self, param):
         """
-        Call a stored database procedure with the given name.
+        Check if a string contains non-ASCII characters.
         
         Args:
-            procname (str): Name of the stored procedure.
-            parameters: Sequence of parameters for the procedure.
+            param: The string to check.
         
         Returns:
-            Modified copy of the input sequence with output parameters.
+            True if the string contains non-ASCII characters, False otherwise.
         """
-        pass
+        try:
+            param.encode('ascii')
+            return False  # Can be encoded to ASCII, so not Unicode
+        except UnicodeEncodeError:
+            return True  # Contains non-ASCII characters, so treat as Unicode
 
+    def _parse_date(self, param):
+        """
+        Attempt to parse a string as a date.
+        
+        Args:
+            param: The string to parse.
+        
+        Returns:
+            A datetime.date object if parsing is successful, else None.
+        """
+        formats = ["%Y-%m-%d"]
+        for fmt in formats:
+            try:
+                return datetime.datetime.strptime(param, fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    def _parse_datetime(self, param):
+        """
+        Attempt to parse a string as a datetime.
+        
+        Args:
+            param: The string to parse.
+        
+        Returns:
+            A datetime.datetime object if parsing is successful, else None.
+        """
+        formats = [
+            "%Y-%m-%dT%H:%M:%S",        # ISO 8601 datetime
+            "%Y-%m-%d %H:%M:%S.%f",     # Datetime with fractional seconds (up to 3 digits)
+        ]
+        for fmt in formats:
+            try:
+                dt = datetime.datetime.strptime(param, fmt)
+                if fmt == "%Y-%m-%d %H:%M:%S.%f" and len(param.split('.')[-1]) <= 3 or fmt == "%Y-%m-%dT%H:%M:%S":
+                    return dt
+            except ValueError:
+                continue
+        return None
+
+    def _parse_time(self, param):
+        """
+        Attempt to parse a string as a time.
+        
+        Args:
+            param: The string to parse.
+        
+        Returns:
+            A datetime.time object if parsing is successful, else None.
+        """
+        formats = [
+            "%H:%M:%S",                 # Time only
+            "%H:%M:%S.%f",              # Time with fractional seconds
+        ]
+        for fmt in formats:
+            try:
+                return datetime.datetime.strptime(param, fmt).time()
+            except ValueError:
+                continue
+        return None
+    
+    def _parse_timestamptz(self, param):
+        """
+        Attempt to parse a string as a timestamp with time zone (timestamptz).
+        
+        Args:
+            param: The string to parse.
+        
+        Returns:
+            A datetime.datetime object if parsing is successful, else None.
+        """
+        formats = [
+            "%Y-%m-%dT%H:%M:%S%z",      # ISO 8601 datetime with timezone offset
+            "%Y-%m-%d %H:%M:%S.%f%z",   # Datetime with fractional seconds and timezone offset
+        ]
+        for fmt in formats:
+            try:
+                return datetime.datetime.strptime(param, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _parse_smalldatetime(self, param):
+        """
+        Attempt to parse a string as a smalldatetime.
+        
+        Args:
+            param: The string to parse.
+        
+        Returns:
+            A datetime.datetime object if parsing is successful, else None.
+        """
+        formats = [
+            "%Y-%m-%d %H:%M:%S",        # Standard datetime
+        ]
+        for fmt in formats:
+            try:
+                return datetime.datetime.strptime(param, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _parse_datetime2(self, param):
+        """
+        Attempt to parse a string as a datetime2.
+        
+        Args:
+            param: The string to parse.
+        
+        Returns:
+            A datetime.datetime object if parsing is successful, else None.
+        """
+        formats = [
+            "%Y-%m-%d %H:%M:%S.%f",     # Datetime with fractional seconds (up to 6 digits)
+        ]
+        for fmt in formats:
+            try:
+                dt = datetime.datetime.strptime(param, fmt)
+                if fmt == "%Y-%m-%d %H:%M:%S.%f" and len(param.split('.')[-1]) > 3:
+                    return dt
+            except ValueError:
+                continue
+        return None
+
+    def _get_numeric_data(self, param):
+        """
+        Get the data for a numeric parameter.
+        
+        Args:
+            param: The numeric parameter.
+        
+        Returns:
+            A tuple containing the numeric data.
+        """
+        NumericData = ddbc_bindings.NumericData
+        numeric_data = NumericData()
+        numeric_data.precision = len(param.as_tuple().digits)
+        numeric_data.scale = param.as_tuple().exponent * -1
+        numeric_data.sign = param.as_tuple().sign
+        numeric_data.val = str(param)
+
+        print("NUMERIC DATA!!!", numeric_data.precision, numeric_data.scale, numeric_data.sign, numeric_data.val)
+        # precision = param.as_tuple().digits
+        # scale = param.as_tuple().exponent * -1
+        # sign = param.as_tuple().sign
+        # numeric_data = {
+        #     'precision': len(precision),
+        #     'scale': scale,
+        #     'sign': sign,
+        #     'value': param
+        # }
+        return numeric_data
+
+    def _map_sql_type(self, param, parameters_list, i):
+        """Map a Python data type to the corresponding SQL type,C type,Columnsize and Decimal digits."""
+        if param is None:
+            return odbc_sql_const.SQL_NULL_DATA.value, odbc_sql_const.SQL_C_DEFAULT.value, 1, 0  
+        
+        elif isinstance(param, bool):
+            return odbc_sql_const.SQL_BIT.value, odbc_sql_const.SQL_C_BIT.value, 1, 0
+        
+        elif isinstance(param, int):
+            if 0 <= param <= 255:
+                return odbc_sql_const.SQL_TINYINT.value, odbc_sql_const.SQL_C_TINYINT.value, 3, 0
+            elif -32768 <= param <= 32767:
+                return odbc_sql_const.SQL_SMALLINT.value, odbc_sql_const.SQL_C_SHORT.value, 5, 0
+            elif -2147483648 <= param <= 2147483647:
+                return odbc_sql_const.SQL_INTEGER.value, odbc_sql_const.SQL_C_LONG.value, 10, 0
+            else:
+                return odbc_sql_const.SQL_BIGINT.value, odbc_sql_const.SQL_C_SBIGINT.value, 19, 0
+        
+        elif isinstance(param, float):
+            if -3.4028235E+38 <= param <= 3.4028235E+38:
+                return odbc_sql_const.SQL_REAL.value, odbc_sql_const.SQL_C_FLOAT.value, 7, 0
+            else:
+                return odbc_sql_const.SQL_FLOAT.value, odbc_sql_const.SQL_C_DOUBLE.value, 15, 0
+        
+        elif isinstance(param, decimal.Decimal):
+            if param.as_tuple().exponent == -4:  # Scale is 4
+                if -214748.3648 <= param <= 214748.3647:
+                    return odbc_sql_const.SQL_SMALLMONEY.value, odbc_sql_const.SQL_C_NUMERIC.value, 10, 4
+                elif -922337203685477.5808 <= param <= 922337203685477.5807:
+                    return odbc_sql_const.SQL_MONEY.value, odbc_sql_const.SQL_C_NUMERIC.value, 19, 4
+            parameters_list[i] = self._get_numeric_data(param)  # Replace the parameter with the dictionary
+            print("DECIMAL!!!", odbc_sql_const.SQL_DECIMAL.value, odbc_sql_const.SQL_C_NUMERIC.value)
+            return odbc_sql_const.SQL_DECIMAL.value, odbc_sql_const.SQL_C_NUMERIC.value, len(param.as_tuple().digits), param.as_tuple().exponent * -1
+        
+        elif isinstance(param, str):
+            # Check for Well-Known Text (WKT) format for geography/geometry
+            if param.startswith("POINT") or param.startswith("LINESTRING") or param.startswith("POLYGON"):
+                return odbc_sql_const.SQL_WVARCHAR.value, odbc_sql_const.SQL_C_WCHAR.value, len(param), 0
+
+            # Attempt to parse as date, datetime or time
+            if self._parse_date(param):
+                parameters_list[i] = self._parse_date(param)  # Replace the parameter with the date object
+                return odbc_sql_const.SQL_DATE.value, odbc_sql_const.SQL_C_TYPE_DATE.value, 10, 0
+            elif self._parse_datetime(param):
+                parameters_list[i] = self._parse_datetime(param)
+                return odbc_sql_const.SQL_TIMESTAMP.value, odbc_sql_const.SQL_C_TYPE_TIMESTAMP.value, 23, 3
+            elif self._parse_time(param):
+                parameters_list[i] = self._parse_time(param)
+                return odbc_sql_const.SQL_TIME.value, odbc_sql_const.SQL_C_TYPE_TIME.value, 8, 0
+            # Unsupported types
+            # elif self._parse_timestamptz(param):
+            #     return odbc_sql_const.SQL_TIMESTAMPOFFSET.value, odbc_sql_const.SQL_C_TYPE_TIMESTAMP.value, 34, 7
+            # elif self._parse_smalldatetime(param):
+            #     return odbc_sql_const.SQL_SMALLDATETIME.value, odbc_sql_const.SQL_C_TYPE_TIMESTAMP.value, 16, 0
+            # elif self._parse_datetime2(param):
+            #     return odbc_sql_const.SQL_DATETIME2.value, odbc_sql_const.SQL_C_TYPE_TIMESTAMP.value, 27, 7
+            
+
+            # String mapping logic here
+            is_unicode = self._is_unicode_string(param)
+            if len(param) > 4000:  # Long strings
+                if is_unicode:
+                    return odbc_sql_const.SQL_WLONGVARCHAR.value, odbc_sql_const.SQL_C_WCHAR.value, len(param), 0
+                else:
+                    return odbc_sql_const.SQL_LONGVARCHAR.value, odbc_sql_const.SQL_C_CHAR.value, len(param), 0
+            elif is_unicode:  # Short Unicode strings
+                return odbc_sql_const.SQL_WVARCHAR.value, odbc_sql_const.SQL_C_WCHAR.value, len(param), 0
+            else:  # Short non-Unicode strings
+                return odbc_sql_const.SQL_VARCHAR.value, odbc_sql_const.SQL_C_CHAR.value, len(param), 0
+
+        elif isinstance(param, bytes):
+            if len(param) > 8000:  # Assuming VARBINARY(MAX) for long byte arrays
+                return odbc_sql_const.SQL_VARBINARY.value, odbc_sql_const.SQL_C_BINARY.value, len(param), 0
+            else:
+                return odbc_sql_const.SQL_BINARY.value, odbc_sql_const.SQL_C_BINARY.value, len(param), 0
+        
+        elif isinstance(param, bytearray):
+            if len(param) > 8000:  # Assuming VARBINARY(MAX) for long byte arrays
+                return odbc_sql_const.SQL_VARBINARY.value, odbc_sql_const.SQL_C_BINARY.value, len(param), 0
+            else:
+                return odbc_sql_const.SQL_BINARY.value, odbc_sql_const.SQL_C_BINARY.value, len(param), 0
+        
+        elif isinstance(param, uuid.UUID):  # Handle uniqueidentifier
+            return odbc_sql_const.SQL_GUID.value, odbc_sql_const.SQL_C_GUID.value, 36, 0
+        
+        elif isinstance(param, datetime.date):
+            return odbc_sql_const.SQL_DATE.value, odbc_sql_const.SQL_C_TYPE_DATE.value, 10, 0
+        
+        elif isinstance(param, datetime.datetime):
+            return odbc_sql_const.SQL_TIMESTAMP.value, odbc_sql_const.SQL_C_TYPE_TIMESTAMP.value, 23, 3
+        
+        elif isinstance(param, datetime.time):
+            return odbc_sql_const.SQL_TIME.value, odbc_sql_const.SQL_C_TYPE_TIME.value, 8, 0
+        
+        else:
+            # Fallback to VARCHAR for unsupported types
+            return odbc_sql_const.SQL_VARCHAR.value, odbc_sql_const.SQL_C_CHAR.value, len(str(param)), 0
+ 
+    def _initialize_cursor(self) -> None:
+        """
+        Initialize the ODBC statement handle.
+        """
+        # Allocate the statement handle
+        # try:
+        self._allocate_statement_handle()
+        # except Exception as e:
+        #     logging.error("An error occurred during initialization: %s", e)
+    
+    def _allocate_statement_handle(self):
+            """
+            Allocate the ODBC statement handle.
+            """
+            ret = ddbc_bindings.DDBCSQLAllocHandle(
+                odbc_sql_const.SQL_HANDLE_STMT.value,
+                self.connection.hdbc.value,
+                ctypes.cast(ctypes.pointer(self.hstmt), ctypes.c_void_p).value
+            )
+            check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+    
+    def _reset_cursor(self) -> None:
+        """
+        Reset the ODBC statement handle.
+        """
+        # Free the existing statement handle
+        if self.hstmt.value:
+            ddbc_bindings.DDBCSQLFreeHandle(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value)
+        # Reinitialize the statement handle
+        self._initialize_cursor()
+    
     def close(self) -> None:
         """
         Close the cursor now (rather than whenever __del__ is called).
@@ -56,20 +364,84 @@ class Cursor:
         Raises:
             Error: If any operation is attempted with the cursor after it is closed.
         """
-        pass
+        if self.closed:
+            raise Exception("Cursor is already closed.")
+        
+        # Free the statement handle
+        if self.hstmt.value:
+            ret = ddbc_bindings.DDBCSQLFreeHandle(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value)
+            check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+            self.hstmt.value = None
+        
+        self.closed = True
 
-    def execute(self, operation: str, parameters: Union[None, list, dict] = None) -> None:
+    def _check_closed(self):
+        """
+        Check if the cursor is closed and raise an exception if it is.
+        
+        Raises:
+            Error: If the cursor is closed.
+        """
+        if self.closed:
+            raise Exception("Operation cannot be performed: the cursor is closed.")
+    
+    def _create_parameter_types_list(self, parameter, ParamInfo, parameters_list, i):
+        """
+        Maps parameter types for the given parameter.
+        
+        Args:
+            parameter: parameter to bind.
+        
+        Returns:
+            paraminfo.
+        """
+        paraminfo = ParamInfo()
+        sql_type, c_type, column_size, decimal_digits = self._map_sql_type(parameter, parameters_list, i)
+        paraminfo.paramCType = c_type
+        paraminfo.paramSQLType = sql_type
+        paraminfo.inputOutputType = odbc_sql_const.SQL_PARAM_INPUT.value
+        paraminfo.columnSize = column_size
+        paraminfo.decimalDigits = decimal_digits
+        return paraminfo
+
+    def execute(self, operation: str, *parameters, use_prepare: bool = True, reset_cursor: bool = True):
         """
         Prepare and execute a database operation (query or command).
         
         Args:
-            operation (str): SQL query or command.
-            parameters: Sequence or mapping of parameters.
-        
-        Raises:
-            Error: If the operation fails.
+            operation: SQL query or command.
+            parameters: Sequence of parameters to bind.
+            use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
+            reset_cursor: Whether to reset the cursor before execution.
         """
-        pass
+        self._check_closed()  # Check if the cursor is closed
+
+        try:
+            if reset_cursor:
+                self._reset_cursor()
+
+            ParamInfo = ddbc_bindings.ParamInfo
+            parameters_type = []
+            
+            # Flatten parameters if a single tuple or list is passed
+            if len(parameters) == 1 and isinstance(parameters[0], (tuple, list)):
+                parameters = parameters[0]
+
+            parameters = list(parameters)
+
+            if len(parameters):
+                for i, param in enumerate(parameters):
+                    paraminfo = self._create_parameter_types_list(param, ParamInfo, parameters, i)
+                    parameters_type.append(paraminfo)
+            '''
+            Execute SQL Statement - (SQLExecute)
+            '''
+            ret = ddbc_bindings.DDBCSQLExecute(self.hstmt.value, operation, parameters, parameters_type, use_prepare)
+            check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+        except Exception as e:
+            if ENABLE_LOGGING:
+                logging.error("An error occurred while executing query: %s", e)
+            raise Exception(f"Error executing query: {e}")
 
     def executemany(self, operation: str, seq_of_parameters: list) -> None:
         """
@@ -82,7 +454,23 @@ class Cursor:
         Raises:
             Error: If the operation fails.
         """
-        pass
+        self._check_closed()  # Check if the cursor is closed
+        
+        try:
+            # Reset the cursor once before the loop
+            self._reset_cursor()
+
+            for parameters in seq_of_parameters:
+                # Execute the operation with the current set of parameters without 
+                # Converting the parameters to a list
+                parameters = list(parameters)
+                if ENABLE_LOGGING:
+                    logging.info("Executing query with parameters: %s", parameters)
+                self.execute(operation, parameters, use_prepare=True, reset_cursor=False)
+        except Exception as e:
+            if ENABLE_LOGGING:
+                logging.error("An error occurred while executing multiple queries: %s", e)
+            raise Exception(f"Error executing multiple queries: {e}")
 
     def fetchone(self) -> Union[None, tuple]:
         """
@@ -94,14 +482,27 @@ class Cursor:
         Raises:
             Error: If the previous call to execute did not produce any result set.
         """
-        pass
+        self._check_closed()  # Check if the cursor is closed
+        
+        try:
+            # Fetch the next row
+            row = []
+            ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt.value, row)
+            check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+            if ret == odbc_sql_const.SQL_NO_DATA.value:
+                return None
+            return list(row)
+        except Exception as e:
+            if ENABLE_LOGGING:
+                logging.error("An error occurred while fetching a row: %s", e)
+            raise Exception(f"Error fetching a row: {e}")
 
-    def fetchmany(self, size: int =None) -> list:
+    def fetchmany(self, size: int = None) -> List[tuple]:
         """
         Fetch the next set of rows of a query result.
         
         Args:
-            size: Number of rows to fetch per call.
+            size: Number of rows to fetch at a time.
         
         Returns:
             Sequence of sequences (e.g. list of tuples).
@@ -109,9 +510,24 @@ class Cursor:
         Raises:
             Error: If the previous call to execute did not produce any result set.
         """
-        pass
+        self._check_closed()  # Check if the cursor is closed
 
-    def fetchall(self) -> list:
+        if size is None:
+            size = 1
+
+        try:
+            # Fetch the next set of rows
+            rows = []
+            ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt.value, rows, size)
+            if ret == odbc_sql_const.SQL_NO_DATA.value:
+                return []
+            return rows
+        except Exception as e:
+            if ENABLE_LOGGING:
+                logging.error("An error occurred while fetching multiple rows: %s", e)
+            raise Exception(f"Error fetching multiple rows: %e")
+
+    def fetchall(self) -> List[tuple]:
         """
         Fetch all (remaining) rows of a query result.
         
@@ -121,9 +537,21 @@ class Cursor:
         Raises:
             Error: If the previous call to execute did not produce any result set.
         """
-        pass
+        self._check_closed()  # Check if the cursor is closed
 
-    def nextset(self) -> Union[None, bool]:
+        try:
+            # Fetch all remaining rows
+            rows = []
+            ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt.value, rows)
+            if ret != odbc_sql_const.SQL_NO_DATA.value:
+                return []
+            return list(rows)
+        except Exception as e:
+            if ENABLE_LOGGING:
+                logging.error("An error occurred while fetching all rows: %s", e)
+            raise Exception(f"Error fetching all rows: %e")
+
+    def nextset(self) -> Union[bool, None]:
         """
         Skip to the next available result set.
         
@@ -133,23 +561,16 @@ class Cursor:
         Raises:
             Error: If the previous call to execute did not produce any result set.
         """
-        pass
+        self._check_closed()  # Check if the cursor is closed
 
-    def setinputsizes(self, sizes: list) -> None:
-        """
-        Predefine memory areas for the operation’s parameters.
-        
-        Args:
-            sizes: Sequence of Type Objects or integers specifying maximum length of string parameters.
-        """
-        pass
+        try:
+            # Skip to the next result set
+            ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt.value)
+            if ret == odbc_sql_const.SQL_NO_DATA.value:
+                return False
+            return True
+        except Exception as e:
+            if ENABLE_LOGGING:
+                logging.error("An error occurred while skipping to the next result set: %s", e)
+            raise Exception(f"Error skipping to the next result set: %e")
 
-    def setoutputsize(self, size: int, column: int=None) -> None:
-        """
-        Set a column buffer size for fetches of large columns.
-        
-        Args:
-            size: Buffer size.
-            column: Index of the column in the result sequence.
-        """
-        pass

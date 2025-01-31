@@ -1357,9 +1357,10 @@ SQLRETURN FetchOne_wrap(intptr_t StatementHandle, py::list& row) {
         ret = SQLGetData_wrap(StatementHandle, colCount, row);
         return ret;
     } else if (ret == SQL_NO_DATA) {
-        return SQL_NO_DATA;  // Return empty list if no more rows
+        return ret;
     } else {
-        throw std::runtime_error("Error fetching data.");
+        std::wcerr << L"Error fetching data: " << SQLCheckError_Wrap(SQL_HANDLE_STMT, StatementHandle, ret) << std::endl;
+        return ret;
     }
 }
 

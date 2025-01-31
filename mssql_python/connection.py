@@ -1,6 +1,6 @@
 import ctypes
 from mssql_python.cursor import Cursor
-from mssql_python.logging_config import setup_logging
+from mssql_python.logging_config import setup_logging, ENABLE_LOGGING
 from mssql_python.constants import ConstantsODBC as odbc_sql_const
 from mssql_python.helpers import add_driver_to_connection_str, check_error
 import logging
@@ -115,7 +115,8 @@ class Connection:
             DatabaseError: If there is an error while trying to connect to the database.
             InterfaceError: If there is an error related to the database interface.
         """
-        logging.info("Connecting to the database")
+        if ENABLE_LOGGING:
+            logging.info("Connecting to the database")
         try:
             ret = ddbc_bindings.DDBCSQLDriverConnect(
                 self.hdbc.value, # Connection handle
@@ -123,9 +124,11 @@ class Connection:
                 self.connection_str # Connection string
             )
             check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
-            logging.info("Connection established successfully.")
+            if ENABLE_LOGGING:
+                logging.info("Connection established successfully.")
         except Exception as e:
-            logging.error("An error occurred while connecting to the database: %s", e)
+            if ENABLE_LOGGING:
+                logging.error("An error occurred while connecting to the database: %s", e)
             raise
 
     @property
@@ -165,9 +168,11 @@ class Connection:
             )
             check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
             self._autocommit = value
-            logging.info("Autocommit mode set to %s.", value)
+            if ENABLE_LOGGING:
+                logging.info("Autocommit mode set to %s.", value)
         except Exception as e:
-            logging.error("An error occurred while setting autocommit mode: %s", e)
+            if ENABLE_LOGGING:
+                logging.error("An error occurred while setting autocommit mode: %s", e)
             raise Exception("DatabaseError: Failed to set autocommit mode") from e
 
 
@@ -212,9 +217,11 @@ class Connection:
                 odbc_sql_const.SQL_COMMIT.value # Commit the transaction
             )
             check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
-            logging.info("Transaction committed successfully.")
+            if ENABLE_LOGGING:
+                logging.info("Transaction committed successfully.")
         except Exception as e:
-            logging.error("An error occurred while committing the transaction: %s", e)
+            if ENABLE_LOGGING:
+                logging.error("An error occurred while committing the transaction: %s", e)
             raise Exception("DatabaseError: Failed to commit the transaction") from e
 
     def rollback(self) -> None:
@@ -236,9 +243,11 @@ class Connection:
                 odbc_sql_const.SQL_ROLLBACK.value # Roll back the transaction
             )
             check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
-            logging.info("Transaction rolled back successfully.")
+            if ENABLE_LOGGING:
+                logging.info("Transaction rolled back successfully.")
         except Exception as e:
-            logging.error("An error occurred while rolling back the transaction: %s", e)
+            if ENABLE_LOGGING:
+                logging.error("An error occurred while rolling back the transaction: %s", e)
             raise Exception("DatabaseError: Failed to roll back the transaction") from e
 
     def close(self) -> None:
@@ -263,8 +272,9 @@ class Connection:
             ret = ddbc_bindings.DDBCSQLFreeHandle(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value)
             check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
             
-            
-            logging.info("Connection closed successfully.")
+            if ENABLE_LOGGING:
+                logging.info("Connection closed successfully.")
         except Exception as e:
-            logging.error("An error occurred while closing the connection: %s", e)
+            if ENABLE_LOGGING:
+                logging.error("An error occurred while closing the connection: %s", e)
             raise Exception("DatabaseError: Failed to close the connection") from e

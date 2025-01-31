@@ -54,9 +54,10 @@ def check_error(handle_type, handle, ret):
     Raises:
         RuntimeError: If an error is found.
     """
+    # Need to fetch proper error message
     if ret == ConstantsODBC.SQL_ERROR.value:
         e = ddbc_bindings.DDBCSQLCheckError(handle_type, handle, ret)
-        raise RuntimeError(f"Failed to allocate SQL connection handle. Error code: {e}")
+        raise RuntimeError(f"Error: {e}")
     
 def add_driver_name_to_app_parameter(connection_string):
     """
