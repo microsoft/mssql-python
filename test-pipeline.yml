@@ -10,7 +10,6 @@ jobs:
     inputs:
       versionSpec: '3.13'
       addToPath: true
-      # Added a never expire public repo read only Github token in ENV since the new python version is downloaded from GitHub
       githubToken: $(GITHUB_TOKEN)
     displayName: 'Use Python 3.13'
 
@@ -18,6 +17,22 @@ jobs:
       python -m pip install --upgrade pip
       pip install -r requirements.txt
     displayName: 'Install dependencies'
+
+  # Start LocalDB instance
+  - powershell: |
+      sqllocaldb create MSSQLLocalDB
+      sqllocaldb start MSSQLLocalDB
+    displayName: 'Start LocalDB instance'
+
+  # Create database and user
+  - powershell: |
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+    displayName: 'Setup database and user'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
       cd mssql_python\pybind
@@ -32,7 +47,7 @@ jobs:
       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage'
     env:
-      DB_CONNECTION_STRING: $(DB_CONNECTION_STRING)
+      DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
   - task: PublishBuildArtifacts@1
     inputs:
@@ -48,12 +63,6 @@ jobs:
       testRunTitle: 'Publish test results'
 
   - task: PublishCodeCoverageResults@1
-    # Have to resort to using PublishCodeCoverageResults@1 because PublishCodeCoverageResults@2 does not use ReportGenerator 
-    # https://stackoverflow.com/questions/78200629/azure-publishcodecoverageresults2-issue-with-detailed-report-for-coverage
-    # https://devblogs.microsoft.com/devops/new-pccr-task/?commentid=4300#comment-4300
-    # There will be warnings in the logs about this, but the coverage report will still be published, and the pipeline will not fail
-    # @gaurav to keep an eye on this in case the v1 task is deprecated.
-    # Alternatively, we can use the ReportGenerator tool to generate the coverage report and then publish it using the v2 task.
     inputs:
       codeCoverageTool: 'Cobertura'
       summaryFileLocation: '$(System.DefaultWorkingDirectory)/**/coverage.xml'

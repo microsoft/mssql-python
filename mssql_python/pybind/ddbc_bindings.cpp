@@ -17,6 +17,9 @@
 namespace py = pybind11;
 using namespace pybind11::literals;
 
+// Forward declarations
+#define SQL_SS_TIME2                        (-154)
+
 // Log data to stdout only in debug builds
 // TODO: Handle both UTF-8 and UTF-16 strings
 #ifndef NDEBUG
@@ -49,6 +52,35 @@ struct NumericData {
     SQLSCHAR scale;
     SQLCHAR	sign; /* 1=pos 0=neg */
     std::string val;
+
+    // Default constructor
+    NumericData() : precision(0), scale(0), sign(0), val("") {}
+
+    NumericData(SQLCHAR precision, SQLSCHAR scale, SQLCHAR sign, const std::string& value)
+        : precision(precision), scale(scale), sign(sign), val(value) {}
+
+    // Method to convert to a Python numeric type
+    double to_double() const {
+        double result = 0.0;
+
+        // Iterate over each byte in the value string
+        for (size_t i = 0; i < val.size(); ++i) {
+            // Convert each byte to an unsigned char and add it to the result
+            // Multiply the current result by 256 (2^8) before adding the new byte
+            result = result * 256 + static_cast<unsigned char>(val[i]);
+        }
+
+        // Adjust the result by dividing it by 10 raised to the power of the scale
+        // This accounts for the decimal places in the numeric value
+        result /= pow(10, scale);
+        
+        // If the sign is 0, the number is negative, so negate the result
+        if (sign == 0) {
+            result = -result;
+        }
+
+        return result;
+    }
 };
 
 // Struct to hold data buffers and indicators for each column
@@ -57,8 +89,9 @@ struct ColumnBuffers {
     std::vector<std::vector<SQLWCHAR>> wcharBuffers;
     std::vector<std::vector<SQLINTEGER>> intBuffers;
     std::vector<std::vector<SQLSMALLINT>> smallIntBuffers;
-    std::vector<std::vector<SQLREAL>> realBuffers;
+    std::vector<std::vector<SQLFLOAT>> floatBuffers;
     std::vector<std::vector<SQLDOUBLE>> doubleBuffers;
+    std::vector<std::vector<SQL_NUMERIC_STRUCT>> numericBuffers;
     std::vector<std::vector<SQL_TIMESTAMP_STRUCT>> timestampBuffers;
     std::vector<std::vector<SQLBIGINT>> bigIntBuffers;
     std::vector<std::vector<SQL_DATE_STRUCT>> dateBuffers;
@@ -71,8 +104,9 @@ struct ColumnBuffers {
           wcharBuffers(numCols),
           intBuffers(numCols),
           smallIntBuffers(numCols),
-          realBuffers(numCols),
+          floatBuffers(numCols),
           doubleBuffers(numCols),
+          numericBuffers(numCols),
           timestampBuffers(numCols),
           bigIntBuffers(numCols),
           dateBuffers(numCols),
@@ -763,8 +797,7 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                 case SQL_LONGVARCHAR: {
                     std::vector<SQLCHAR> dataBuffer(columnSize / sizeof(SQLCHAR) + 1);
                     SQLLEN dataLen;
-                    // TODO: BufferLength here should be dataBuffer.size()-1?
-                    ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(), &dataLen);
+                    ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size()-1, &dataLen);
 
                     if (SQL_SUCCEEDED(ret)) {
                         if (dataLen > 0 && dataLen < dataBuffer.size()) {
@@ -781,7 +814,7 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                 case SQL_WLONGVARCHAR: {
                     std::vector<SQLWCHAR> dataBuffer(columnSize / sizeof(SQLWCHAR) + 1);
                     SQLLEN dataLen;
-                    ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(), dataBuffer.size()*sizeof(SQLWCHAR), &dataLen);
+                    ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(), (dataBuffer.size()-1)*sizeof(SQLWCHAR), &dataLen);
 
                     if (SQL_SUCCEEDED(ret)) {
                         if (dataLen > 0 && dataLen < dataBuffer.size()*sizeof(SQLWCHAR)) {
@@ -814,12 +847,22 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                     break;
                 }
                 case SQL_FLOAT:
-                case SQL_REAL:
-                case SQL_DECIMAL: {  // For float and real types
+                case SQL_REAL: {  // For float and real types
                     SQLREAL floatValue;
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_FLOAT, &floatValue, 0, NULL);
                     if (SQL_SUCCEEDED(ret)) {
                         row.append(static_cast<float>(floatValue));
+                    } else {
+                        row.append(py::none());
+                    }
+                    break;
+                }
+                case SQL_DECIMAL:
+                case SQL_NUMERIC: {  // For decimal and numeric types
+                    SQL_NUMERIC_STRUCT numericValue;
+                    ret = SQLGetData_ptr(hStmt, i, SQL_C_NUMERIC, &numericValue, sizeof(numericValue), NULL);
+                    if (SQL_SUCCEEDED(ret)) {
+                        row.append(NumericData(numericValue.precision, numericValue.scale, numericValue.sign, std::string(reinterpret_cast<char*>(numericValue.val), SQL_MAX_NUMERIC_LEN)).to_double());
                     } else {
                         row.append(py::none());
                     }
@@ -830,17 +873,6 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_DOUBLE, &doubleValue, 0, NULL);
                     if (SQL_SUCCEEDED(ret)) {
                         row.append(static_cast<double>(doubleValue));
-                    } else {
-                        row.append(py::none());
-                    }
-                    break;
-                }
-                case SQL_DATETIME: {  // For datetime types
-                    SQL_TIMESTAMP_STRUCT timestampValue;
-                    ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIMESTAMP, &timestampValue, sizeof(timestampValue), NULL);
-                    if (SQL_SUCCEEDED(ret)) {
-                        row.append(py::make_tuple(timestampValue.year, timestampValue.month, timestampValue.day,
-                                                   timestampValue.hour, timestampValue.minute, timestampValue.second));
                     } else {
                         row.append(py::none());
                     }
@@ -866,7 +898,9 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                     }
                     break;
                 }
-                case SQL_TIME: { // TIME
+                case SQL_TIME:
+                case SQL_TYPE_TIME:
+                case SQL_SS_TIME2: { // TIME
                     SQL_TIME_STRUCT timeValue;
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIME, &timeValue, sizeof(timeValue), NULL);
                     if (SQL_SUCCEEDED(ret)) {
@@ -876,7 +910,9 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                     }
                     break;
                 }
-                case SQL_TIMESTAMP: { // TIMESTAMP
+                case SQL_TIMESTAMP:
+                case SQL_TYPE_TIMESTAMP:
+                case SQL_DATETIME: { // TIMESTAMP
                     SQL_TIMESTAMP_STRUCT timestampValue;
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIMESTAMP, &timestampValue, sizeof(timestampValue), NULL);
                     if (SQL_SUCCEEDED(ret)) {
@@ -889,12 +925,11 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                 }
                 case SQL_BINARY: { // BINARY
                     // Use raw pointer to manage memory
-                    std::unique_ptr<SQLCHAR[]> dataBuffer(new SQLCHAR[columnSize + 1]);
+                    std::unique_ptr<SQLCHAR[]> dataBuffer(new SQLCHAR[columnSize]);
                     SQLLEN dataLen;
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_BINARY, dataBuffer.get(), columnSize, &dataLen);
                     
                     if (SQL_SUCCEEDED(ret)) {
-                        dataBuffer[dataLen] = '\0'; // Null-terminate
                         // Handle binary data as needed (e.g., converting to a hex string)
                         row.append(py::bytes(reinterpret_cast<const char*>(dataBuffer.get()), dataLen));
                     } else {
@@ -904,12 +939,11 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                 }
                 case SQL_VARBINARY: { // VARBINARY
                     // Use smart pointer to manage memory
-                    std::unique_ptr<SQLCHAR[]> dataBuffer(new SQLCHAR[columnSize + 1]);
+                    std::unique_ptr<SQLCHAR[]> dataBuffer(new SQLCHAR[columnSize]);
                     SQLLEN dataLen;
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_BINARY, dataBuffer.get(), columnSize, &dataLen);
                     
                     if (SQL_SUCCEEDED(ret)) {
-                        dataBuffer[dataLen] = '\0'; // Null-terminate
                         row.append(py::bytes(reinterpret_cast<const char*>(dataBuffer.get()), dataLen));
                     } else {
                         row.append(py::none());
@@ -918,12 +952,11 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                 }
                 case SQL_LONGVARBINARY: { // LONGVARBINARY
                     //use smart pointer to manage memory
-                    std::unique_ptr<SQLCHAR[]> dataBuffer(new SQLCHAR[columnSize + 1]);
+                    std::unique_ptr<SQLCHAR[]> dataBuffer(new SQLCHAR[columnSize]);
                     SQLLEN dataLen;
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_BINARY, dataBuffer.get(), columnSize, &dataLen);
                     
                     if (SQL_SUCCEEDED(ret)) {
-                        dataBuffer[dataLen] = '\0'; // Null-terminate
                         row.append(py::bytes(reinterpret_cast<const char*>(dataBuffer.get()), dataLen));
                     } else {
                         row.append(py::none());
@@ -932,7 +965,7 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                 }
                 case SQL_TINYINT: { // TINYINT
                     SQLCHAR tinyIntValue;
-                    ret = SQLGetData_ptr(hStmt, i, SQL_C_STINYINT, &tinyIntValue, 0, NULL);
+                    ret = SQLGetData_ptr(hStmt, i, SQL_C_TINYINT, &tinyIntValue, 0, NULL);
                     if (SQL_SUCCEEDED(ret)) {
                         row.append(static_cast<int>(tinyIntValue));
                     } else {
@@ -1010,17 +1043,30 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 buffers.smallIntBuffers[col - 1].resize(fetchSize);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_SSHORT, buffers.smallIntBuffers[col - 1].data(), sizeof(SQLSMALLINT), buffers.indicators[col - 1].data());
                 break;
+            case SQL_TINYINT: // TINYINT
+                buffers.charBuffers[col - 1].resize(fetchSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_TINYINT, buffers.charBuffers[col - 1].data(), sizeof(SQLCHAR), buffers.indicators[col - 1].data());
+                break;
+            case SQL_BIT:  // BIT
+                buffers.charBuffers[col - 1].resize(fetchSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_BIT, buffers.charBuffers[col - 1].data(), sizeof(SQLCHAR), buffers.indicators[col - 1].data());
+                break;
             case SQL_REAL:
             case SQL_FLOAT:
+                buffers.floatBuffers[col - 1].resize(fetchSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_FLOAT, buffers.floatBuffers[col - 1].data(), sizeof(SQLREAL), buffers.indicators[col - 1].data());
+                break;
             case SQL_DECIMAL:
-                buffers.realBuffers[col - 1].resize(fetchSize);
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_FLOAT, buffers.realBuffers[col - 1].data(), sizeof(SQLREAL), buffers.indicators[col - 1].data());
+            case SQL_NUMERIC:
+                buffers.numericBuffers[col - 1].resize(fetchSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_NUMERIC, buffers.numericBuffers[col - 1].data(), sizeof(SQL_NUMERIC_STRUCT), buffers.indicators[col - 1].data());
                 break;
             case SQL_DOUBLE:
                 buffers.doubleBuffers[col - 1].resize(fetchSize);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_DOUBLE, buffers.doubleBuffers[col - 1].data(), sizeof(SQLDOUBLE), buffers.indicators[col - 1].data());
                 break;
             case SQL_TIMESTAMP:
+            case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME:
                 buffers.timestampBuffers[col - 1].resize(fetchSize);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_TYPE_TIMESTAMP, buffers.timestampBuffers[col - 1].data(), sizeof(SQL_TIMESTAMP_STRUCT), buffers.indicators[col - 1].data());
@@ -1034,6 +1080,8 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_TYPE_DATE, buffers.dateBuffers[col - 1].data(), sizeof(SQL_DATE_STRUCT), buffers.indicators[col - 1].data());
                 break;
             case SQL_TIME:
+            case SQL_TYPE_TIME:
+            case SQL_SS_TIME2:
                 buffers.timeBuffers[col - 1].resize(fetchSize);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_TYPE_TIME, buffers.timeBuffers[col - 1].data(), sizeof(SQL_TIME_STRUCT), buffers.indicators[col - 1].data());
                 break;
@@ -1078,13 +1126,27 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     case SQL_CHAR:
                     case SQL_VARCHAR:
                     case SQL_LONGVARCHAR:
-                        row.append(std::string(reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * columnMeta["ColumnSize"].cast<SQLULEN>()]), buffers.indicators[col - 1][i]));
-                        break;
+                        {
+                            SQLLEN dataLen = buffers.indicators[col - 1][i];
+                            if (dataLen <= SQL_NULL_DATA) {
+                                row.append(py::none());
+                                break;
+                            }
+                            if (dataLen > 0 && dataLen < columnMeta["ColumnSize"].cast<SQLULEN>()) {
+                                buffers.charBuffers[col - 1][i * columnMeta["ColumnSize"].cast<SQLULEN>() + dataLen / sizeof(SQLCHAR)] = '\0'; // Null-terminate
+                            }
+                            row.append(std::string(reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * columnMeta["ColumnSize"].cast<SQLULEN>()]), buffers.indicators[col - 1][i]));
+                            break;
+                        }
                     case SQL_WCHAR:
                     case SQL_WVARCHAR:
                     case SQL_WLONGVARCHAR:
                         {
                             SQLLEN dataLen = buffers.indicators[col - 1][i];
+                            if (dataLen <= SQL_NULL_DATA ) {
+                                row.append(py::none());
+                                break;
+                            }
                             if (dataLen > 0 && dataLen < columnMeta["ColumnSize"].cast<SQLULEN>()) {
                                 buffers.wcharBuffers[col - 1][i * columnMeta["ColumnSize"].cast<SQLULEN>() + dataLen / sizeof(SQLWCHAR)] = L'\0'; // Null-terminate
                             }
@@ -1097,18 +1159,34 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     case SQL_SMALLINT:
                         row.append(buffers.smallIntBuffers[col - 1][i]);
                         break;
+                    case SQL_TINYINT: // TINYINT
+                        row.append(buffers.charBuffers[col - 1][i]);
+                        break;
+                    case SQL_BIT:  // BIT
+                        row.append(buffers.charBuffers[col - 1][i]);
+                        break;
                     case SQL_REAL:
                     case SQL_FLOAT:
+                        row.append(static_cast<float>(buffers.floatBuffers[col - 1][i]));
+                        break;
                     case SQL_DECIMAL:
-                        row.append(buffers.realBuffers[col - 1][i]);
+                    case SQL_NUMERIC:
+                        row.append(NumericData(buffers.numericBuffers[col - 1][i].precision, buffers.numericBuffers[col - 1][i].scale, buffers.numericBuffers[col - 1][i].sign, std::string(reinterpret_cast<char*>(buffers.numericBuffers[col - 1][i].val), SQL_MAX_NUMERIC_LEN)).to_double());
                         break;
                     case SQL_DOUBLE:
-                        row.append(buffers.doubleBuffers[col - 1][i]);
+                        row.append(static_cast<double>(buffers.doubleBuffers[col - 1][i]));
                         break;
                     case SQL_TIMESTAMP:
+                    case SQL_TYPE_TIMESTAMP:
                     case SQL_DATETIME:
-                        row.append(py::make_tuple(buffers.timestampBuffers[col - 1][i].year, buffers.timestampBuffers[col - 1][i].month, buffers.timestampBuffers[col - 1][i].day,
-                                                  buffers.timestampBuffers[col - 1][i].hour, buffers.timestampBuffers[col - 1][i].minute, buffers.timestampBuffers[col - 1][i].second));
+                        row.append(py::make_tuple(
+                            buffers.timestampBuffers[col - 1][i].year,
+                            buffers.timestampBuffers[col - 1][i].month,
+                            buffers.timestampBuffers[col - 1][i].day,
+                            buffers.timestampBuffers[col - 1][i].hour,
+                            buffers.timestampBuffers[col - 1][i].minute,
+                            buffers.timestampBuffers[col - 1][i].second
+                        ));
                         break;
                     case SQL_BIGINT:
                         row.append(buffers.bigIntBuffers[col - 1][i]);
@@ -1117,6 +1195,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         row.append(py::make_tuple(buffers.dateBuffers[col - 1][i].year, buffers.dateBuffers[col - 1][i].month, buffers.dateBuffers[col - 1][i].day));
                         break;
                     case SQL_TIME:
+                    case SQL_TYPE_TIME:
+                    case SQL_SS_TIME2:
                         row.append(py::make_tuple(buffers.timeBuffers[col - 1][i].hour, buffers.timeBuffers[col - 1][i].minute, buffers.timeBuffers[col - 1][i].second));
                         break;
                     case SQL_GUID:
@@ -1133,9 +1213,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
             }
             rows.append(row);
-        }
-        if (SQL_SUCCEEDED(ret) && numRowsFetched < fetchSize) {
-            ret = SQL_NO_DATA;
         }
     }
 
@@ -1175,6 +1252,7 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
                 rowSize += sizeof(SQLDOUBLE);
                 break;
             case SQL_TIMESTAMP:
+            case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME:
                 rowSize += sizeof(SQL_TIMESTAMP_STRUCT);
                 break;
@@ -1185,10 +1263,16 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
                 rowSize += sizeof(SQL_DATE_STRUCT);
                 break;
             case SQL_TIME:
+            case SQL_TYPE_TIME:
+            case SQL_SS_TIME2:
                 rowSize += sizeof(SQL_TIME_STRUCT);
                 break;
             case SQL_GUID:
                 rowSize += sizeof(SQLGUID);
+                break;
+            case SQL_TINYINT:
+            case SQL_BIT:
+                rowSize += sizeof(SQLCHAR);
                 break;
             case SQL_BINARY:
             case SQL_VARBINARY:
@@ -1428,10 +1512,12 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("decimalDigits", &ParamInfo::decimalDigits);
     py::class_<NumericData>(m, "NumericData")
         .def(py::init<>())
+        .def(py::init<SQLCHAR, SQLSCHAR, SQLCHAR, const std::string&>())  // Parameterized constructor
         .def_readwrite("precision", &NumericData::precision)
         .def_readwrite("scale", &NumericData::scale)
         .def_readwrite("sign", &NumericData::sign)
-        .def_readwrite("val", &NumericData::val);
+        .def_readwrite("val", &NumericData::val)
+        .def("to_double", &NumericData::to_double);  // Expose the to_double method
     m.def("DDBCSQLAllocHandle", &SQLAllocHandle_wrap, "Allocate an environment, connection, statement, or descriptor handle");
     m.def("DDBCSQLSetEnvAttr", &SQLSetEnvAttr_wrap, "Set an attribute that governs aspects of environments");
     m.def("DDBCSQLSetConnectAttr", &SQLSetConnectAttr_wrap, "Set an attribute that governs aspects of connections");
