@@ -1,6 +1,12 @@
-# Microsoft Python Data Provider for SQL Server and Azure SQL
+# Microsoft Python Data Provider for SQL Server
 
-The Microsoft **mssql-python** data provider is a powerful, user-friendly Python connector designed for seamless interaction with Microsoft SQL Server, Azure SQL Database, and Azure SQL Managed Instance databases using Direct Database Connectivity (DDBC). DDBC allows Python applications to connect directly to SQL Server, bypassing the need for an external driver manager. This driver is crafted to adhere to the [DB API 2.0](https://peps.python.org/pep-0249/) specification while incorporating additional Pythonic features that enhance its ease of use and functionality. The driver offers comprehensive functionalities, including establishing connections, executing queries, and managing transactions among many other features.
+**mssql-python** is a Python data provider for Microsoft SQL Server and the Azure SQL family of databases. It leverages Direct Database Connectivity (DDBC) that enables direct connections to SQL Server without requiring an external driver manager. Designed to comply with the [DB API 2.0](https://peps.python.org/pep-0249/) specification, this driver also introduces Pythonic enhancements for improved usability and functionality. It supports a full range of database operations, including connection management, query execution, and transaction handling.
+
+Releases can be found on the [GitHub Releases](https://github.com/microsoft/mssql-python/releases) page.
+
+## Platform Compatibility
+
+The current release of mssql-python is tailored for the Windows platform. Future updates will extend compatibility to Mac and Linux, ensuring a consistent installation experience and feature set across all platforms. Stay tuned for more updates in this space.
 
 ## Key Features
 
@@ -25,10 +31,6 @@ By adhering to the DB API 2.0 specification, the mssql-python module ensures com
 
 - **Offline install using zip file**: Another way of installing the driver is using a .zip file which can be downloaded from here [TODO: Link of the zip file]. 
   - [TODO] - Steps to follow to install the driver using .zip file.
-
-### Platform Compatibility
-
-The current release of mssql-python is tailored for the Windows platform. Future updates will extend compatibility to Mac and Linux, ensuring a consistent installation experience and feature set across all platforms. Stay tuned for more updates in this space.
 
 ### Support for Microsoft Entra ID Authentication
 
