@@ -1,3 +1,4 @@
+MIT License
 All files licensed under the MIT license except the dynamic-link libraries (DLLs) in the libs\win folder, 
 which are subject to different licensing terms. Please review the licensing details for each component below.
 
