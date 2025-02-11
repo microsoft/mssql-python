@@ -27,8 +27,8 @@ def free_handle(handle_type, handle):
         print("Error:", ddbc_bindings.DDBCSQLCheckError(handle_type, handle.value, result))
         raise RuntimeError(f"Failed to free handle. Error code: {result}")
 
-def ddbc_sql_execute(stmt_handle, query, params, param_info_list, use_prepare=True):
-    result = ddbc_bindings.DDBCSQLExecute(stmt_handle.value, query, params, param_info_list, use_prepare)
+def ddbc_sql_execute(stmt_handle, query, params, param_info_list, is_stmt_prepared, use_prepare=True):
+    result = ddbc_bindings.DDBCSQLExecute(stmt_handle.value, query, params, param_info_list, is_stmt_prepared, use_prepare)
     if result < 0:
         print("Error:", ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_STMT, stmt_handle.value, result))
         raise RuntimeError(f"Failed to execute query. Error code: {result}")
@@ -245,8 +245,8 @@ if __name__ == "__main__":
     insert_sql_query = "INSERT INTO [Employees].[dbo].[EmployeeFullNames] (FirstName, LastName, date_, time_, wchar_, bool_, tinyint_, bigint_, float_, double_) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"
     params = []
     param_info_list = []
-    add_string_param(params, param_info_list, 'Harry')
-    add_string_param(params, param_info_list, 'Potter2')
+    add_string_param(params, param_info_list, 'is_stmt_prepared')
+    add_string_param(params, param_info_list, 'test')
     add_date_param(params, param_info_list)
     add_time_param(params, param_info_list)
     # add_datetime_param(params, param_info_list, addNone=True) - Cannot insert an explicit value into a timestamp column. Use INSERT with a column list to exclude the timestamp column, or insert a DEFAULT into the timestamp column. Traceback (most recent call last):
@@ -256,16 +256,18 @@ if __name__ == "__main__":
     add_bigint_param(params, param_info_list, 123456789)
     add_float_param(params, param_info_list, 12.34)
     add_double_param(params, param_info_list, 12.34)
-    result = ddbc_sql_execute(stmt_handle, insert_sql_query, params, param_info_list, True)
+    is_stmt_prepared = [False]
+    result = ddbc_sql_execute(stmt_handle, insert_sql_query, params, param_info_list, is_stmt_prepared, True)
     print("DDBCSQLExecute result:", result)
 
     # Test DDBCSQLExecute for SELECT query
     print("Test DDBCSQLExecute select")
     # select_sql_query = "SELECT * FROM customers;"
+    is_stmt_prepared = [False]
     select_sql_query = "SELECT bool_, float_, wchar_, date_, time_, datetime_, wchar_, FirstName, LastName  FROM [Employees].[dbo].[EmployeeFullNames];"
     params = []
     param_info_list = []
-    result = ddbc_sql_execute(stmt_handle, select_sql_query, params, param_info_list, False)
+    result = ddbc_sql_execute(stmt_handle, select_sql_query, params, param_info_list, is_stmt_prepared, False)
     print("DDBCSQLExecute result:", result)
 
     print("Fetching Data for DDBCSQLExecute!")

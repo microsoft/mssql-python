@@ -57,6 +57,11 @@ class Cursor:
         self.arraysize = 1
         self.buffer_length = 1024  # Default buffer length for string data
         self.closed = False  # Flag to indicate if the cursor is closed
+        self.last_executed_stmt = "" # Stores the last statement executed by this cursor
+        self.is_stmt_prepared = [False] # Indicates if last_executed_stmt was prepared by ddbc shim.
+                                        # Is a list instead of a bool coz bools in Python are immutable.
+                                        # Hence, we can't pass around bools by reference & modify them.
+                                        # Therefore, it must be a list with exactly one bool element.
         
     def _is_unicode_string(self, param):
         """
@@ -433,11 +438,20 @@ class Cursor:
                 for i, param in enumerate(parameters):
                     paraminfo = self._create_parameter_types_list(param, ParamInfo, parameters, i)
                     parameters_type.append(paraminfo)
+
+            # TODO: Use a more sophisticated string compare that handles redundant spaces etc.
+            #       Also consider storing last query's hash instead of full query string. This will help
+            #       in low-memory conditions (Ex: huge number of parallel queries with huge query string sizes)
+            if operation != self.last_executed_stmt:
+                # Executing a new statement. Reset is_stmt_prepared to false
+                self.is_stmt_prepared = [False]
             '''
             Execute SQL Statement - (SQLExecute)
             '''
-            ret = ddbc_bindings.DDBCSQLExecute(self.hstmt.value, operation, parameters, parameters_type, use_prepare)
+            ret = ddbc_bindings.DDBCSQLExecute(self.hstmt.value, operation, parameters, parameters_type,
+                                               self.is_stmt_prepared, use_prepare)
             check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+            self.last_executed_stmt = operation
         except Exception as e:
             if ENABLE_LOGGING:
                 logging.error("An error occurred while executing query: %s", e)
@@ -460,13 +474,23 @@ class Cursor:
             # Reset the cursor once before the loop
             self._reset_cursor()
 
+            first_execution = True
             for parameters in seq_of_parameters:
                 # Execute the operation with the current set of parameters without 
                 # Converting the parameters to a list
                 parameters = list(parameters)
                 if ENABLE_LOGGING:
                     logging.info("Executing query with parameters: %s", parameters)
-                self.execute(operation, parameters, use_prepare=True, reset_cursor=False)
+                # Prepare the statement only during first execution. From second time
+                # onwards, skip preparing and directly execute. This helps avoid
+                # unnecessary 'prepare' network calls.
+                if first_execution:
+                    prepare_stmt = True
+                    first_execution = False
+                else:
+                    prepare_stmt = False
+                # Execute statement with one parameter set
+                self.execute(operation, parameters, use_prepare=prepare_stmt, reset_cursor=False)
         except Exception as e:
             if ENABLE_LOGGING:
                 logging.error("An error occurred while executing multiple queries: %s", e)
