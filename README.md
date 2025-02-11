@@ -85,7 +85,7 @@ contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additio
 The mssql-python driver for SQL Server is licensed under the MIT license, except the dynamic-link libraries (DLLs) in the [libs](libs) folder 
 that are licensed under MICROSOFT SOFTWARE LICENSE TERMS.
 
-Please review the [LICENSE](LICENSE.txt) file for more details.
+Please review the [LICENSE](LICENSE) file for more details.
 
 ## Trademarks
 

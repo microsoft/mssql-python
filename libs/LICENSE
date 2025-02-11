@@ -19,7 +19,3 @@ These components are part of the Microsoft Visual C++ Redistributable and are go
 - vcruntime140.dll – Microsoft Visual C++ Runtime Library, essential for executing C++-based applications.  
 
 For redistribution and usage terms, refer to: libs\win\MICROSOFT_VISUAL_STUDIO_LICENSE.txt
-
-For further details, visit:  
-- Microsoft ODBC Driver for SQL Server: https://learn.microsoft.com/en-us/sql/connect/odbc 
-- Microsoft Visual C++ Redistributable: https://docs.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist  
