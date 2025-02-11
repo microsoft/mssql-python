@@ -4,45 +4,25 @@
 
 Releases can be found on the [GitHub Releases](https://github.com/microsoft/mssql-python/releases) page.
 
-## Platform Compatibility
+## Supported Platforms 
 
-The current release of mssql-python is tailored for the Windows platform. Future updates will extend compatibility to Mac and Linux, ensuring a consistent installation experience and feature set across all platforms. Stay tuned for more updates in this space.
+Windows
 
-## Key Features
+> **Note:**
+> Support for macOS and Linux is coming soon
+> 
+## Installation
 
-### DBAPI v2.0 Compliance
+mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
+```bash
+pip install mssql-python
+```
 
-The Microsoft **mssql-python** module is designed to be fully compliant with the DB API 2.0 specification. This ensures that the driver adheres to a standardized interface for database access in Python, providing consistency and reliability across different database systems. Key aspects of DBAPI v2.0 compliance include:
+### Getting Started Examples
 
-- **Connection Objects**: Establishing and managing connections to the database.
-- **Cursor Objects**: Executing SQL commands and retrieving results.
-- **Transaction Management**: Supporting commit and rollback operations to ensure data integrity.
-- **Error Handling**: Providing a consistent set of exceptions for handling database errors.
-- **Parameter Substitution**: Allowing the use of placeholders in SQL queries to prevent SQL injection attacks.
-
-By adhering to the DB API 2.0 specification, the mssql-python module ensures compatibility with a wide range of Python applications and frameworks, making it a versatile choice for developers working with Microsoft SQL Server, Azure SQL Database, and Azure SQL Managed Instance.
-
-### Ease of Installation
-
-- **pip install**: The easiest way to install mssql-python is through the Python package manager, pip, irrespective of the Operating System. This ensures a quick and straightforward setup process without the need for additional tools, software, or compilers.
-    ```bash
-    pip install mssql-python
-    ```
-
-- **Offline install using zip file**: Another way of installing the driver is using a .zip file which can be downloaded from here [TODO: Link of the zip file]. 
-  - [TODO] - Steps to follow to install the driver using .zip file.
-
-### Support for Microsoft Entra ID Authentication
-
-The Microsoft mssql-python driver enables Python applications to connect to Microsoft SQL Server, Azure SQL Database, or Azure SQL Managed Instance using Microsoft Entra ID identities. It supports various authentication methods, including username and password, Microsoft Entra managed identity, and Integrated Windows Authentication in a federated, domain-joined environment. Additionally, the driver supports Microsoft Entra interactive authentication and Microsoft Entra managed identity authentication for both system-assigned and user-assigned managed identities.
-
-### Enhanced Pythonic Features
-
-The driver offers a suite of Pythonic enhancements that streamline database interactions, making it easier for developers to execute queries, manage connections, and handle data more efficiently.
-
-### Example Usage
-
-Below is a simple example demonstrating how to establish a connection and execute a query using mssql-python:
+- [ ] Why is it import mssql_python and not mssql-python?
+  
+Connect to SQL Server and execute a simple query:
 
 ```python
 import mssql_python
@@ -66,6 +46,31 @@ for row in rows:
 # Close the connection
 connection.close()
 ```
+## Documentation
+
+- [ ] Add link to the API documentation in Wiki
+
+## Key Features
+
+### DBAPI v2.0 Compliance
+
+The Microsoft **mssql-python** module is designed to be fully compliant with the DB API 2.0 specification. This ensures that the driver adheres to a standardized interface for database access in Python, providing consistency and reliability across different database systems. Key aspects of DBAPI v2.0 compliance include:
+
+- **Connection Objects**: Establishing and managing connections to the database.
+- **Cursor Objects**: Executing SQL commands and retrieving results.
+- **Transaction Management**: Supporting commit and rollback operations to ensure data integrity.
+- **Error Handling**: Providing a consistent set of exceptions for handling database errors.
+- **Parameter Substitution**: Allowing the use of placeholders in SQL queries to prevent SQL injection attacks.
+
+By adhering to the DB API 2.0 specification, the mssql-python module ensures compatibility with a wide range of Python applications and frameworks, making it a versatile choice for developers working with Microsoft SQL Server, Azure SQL Database, and Azure SQL Managed Instance.
+
+### Support for Microsoft Entra ID Authentication
+
+The Microsoft mssql-python driver enables Python applications to connect to Microsoft SQL Server, Azure SQL Database, or Azure SQL Managed Instance using Microsoft Entra ID identities. It supports various authentication methods, including username and password, Microsoft Entra managed identity, and Integrated Windows Authentication in a federated, domain-joined environment. Additionally, the driver supports Microsoft Entra interactive authentication and Microsoft Entra managed identity authentication for both system-assigned and user-assigned managed identities.
+
+### Enhanced Pythonic Features
+
+The driver offers a suite of Pythonic enhancements that streamline database interactions, making it easier for developers to execute queries, manage connections, and handle data more efficiently.
 
 ## Contributing
 
