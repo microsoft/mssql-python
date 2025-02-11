@@ -91,6 +91,12 @@ This project has adopted the [Microsoft Open Source Code of Conduct](https://ope
 For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
 contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
 
+## License
+The mssql-python driver for SQL Server is licensed under the MIT license, except the dynamic-link libraries (DLLs) in the [libs](libs) folder.
+These files are subject to the [Microsoft ODBC Driver 18 End User License Agreement](libs\win\MICROSOFT_ODBC_DRIVER_FOR_SQL_SERVER_LICENSE.txt) and the [Microsoft Visual C++ Redistributable](libs\win\MICROSOFT_VISUAL_STUDIO_LICENSE.txt) licensing terms.
+
+Please review the [LICENSE](LICENSE.txt) file for more details.
+
 ## Trademarks
 
 This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft 

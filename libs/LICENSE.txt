@@ -9,7 +9,7 @@ These components are part of the Microsoft ODBC Driver 18 for SQL Server and are
 - msodbcdiag18.dll – Diagnostic library for handling error reporting and troubleshooting.
 - msodbcsql18.dll – Core ODBC driver enabling connectivity between SQL Server and applications.
 
-For official licensing terms, refer to: libs\win\MICROSOFT ODBC DRIVER FOR SQL SERVER-LICENSE.txt 
+For official licensing terms, refer to: libs\win\MICROSOFT_ODBC_DRIVER_FOR_SQL_SERVER_LICENSE.txt 
 
 2. Microsoft Visual C++ Redistributable EULA
 These components are part of the Microsoft Visual C++ Redistributable and are governed by the Microsoft Visual C++ Redistributable EULA.
@@ -18,7 +18,7 @@ These components are part of the Microsoft Visual C++ Redistributable and are go
 - vsruntime140_1.dll – Visual Studio runtime support library.  
 - vcruntime140.dll – Microsoft Visual C++ Runtime Library, essential for executing C++-based applications.  
 
-For redistribution and usage terms, refer to: libs\win\MICROSOFT VISUAL STUDIO COMMUNITY 2022-LICENSE.txt 
+For redistribution and usage terms, refer to: libs\win\MICROSOFT_VISUAL_STUDIO_LICENSE.txt
 
 For further details, visit:  
 - Microsoft ODBC Driver for SQL Server: https://learn.microsoft.com/en-us/sql/connect/odbc 
