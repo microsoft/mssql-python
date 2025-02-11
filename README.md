@@ -10,7 +10,7 @@ As the maintainer of this project, please make a few updates:
 - Understanding the security reporting process in SECURITY.MD
 - Remove this section from the README
 
-# Readme
+# Python Connector for SQL Server and Azure SQL
 
 The Microsoft **mssql-python** module is a powerful, user-friendly Python connector designed for seamless interaction with Microsoft SQL Server, Azure SQL Database, and Azure SQL Managed Instance databases using Direct Database Connectivity (DDBC). DDBC allows Python applications to connect directly to SQL Server, bypassing the need for an external driver manager. This driver is crafted to adhere to the [DB API 2.0](https://peps.python.org/pep-0249/) specification while incorporating additional Pythonic features that enhance its ease of use and functionality. The driver offers comprehensive functionalities, including establishing connections, executing queries, and managing transactions among many other features.
 
