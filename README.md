@@ -18,7 +18,7 @@ The Microsoft mssql-python module is a powerful, user-friendly Python driver des
 
 ### DBAPI v2.0 Compliance
 
-The Microsoft mssql-python module is designed to be fully compliant with the DB API 2.0 specification. This ensures that the driver adheres to a standardized interface for database access in Python, providing consistency and reliability across different database systems. Key aspects of DBAPI v2.0 compliance include:
+The Microsoft **mssql-python** module is designed to be fully compliant with the DB API 2.0 specification. This ensures that the driver adheres to a standardized interface for database access in Python, providing consistency and reliability across different database systems. Key aspects of DBAPI v2.0 compliance include:
 
 - **Connection Objects**: Establishing and managing connections to the database.
 - **Cursor Objects**: Executing SQL commands and retrieving results.
