@@ -38,8 +38,6 @@ The Microsoft mssql-python driver enables Python applications to connect to Micr
 The driver offers a suite of Pythonic enhancements that streamline database interactions, making it easier for developers to execute queries, manage connections, and handle data more efficiently.
 
 ## Getting Started Examples
-
-- [ ] Question: Why is it import mssql_python and not mssql-python?
   
 Connect to SQL Server and execute a simple query:
 
