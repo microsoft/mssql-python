@@ -1,26 +1,45 @@
-# Microsoft Python Data Provider for SQL Server
+# Microsoft Python Driver for SQL Server
 
-**mssql-python** is a Python data provider for Microsoft SQL Server and the Azure SQL family of databases. It leverages Direct Database Connectivity (DDBC) that enables direct connections to SQL Server without requiring an external driver manager. Designed to comply with the [DB API 2.0](https://peps.python.org/pep-0249/) specification, this driver also introduces Pythonic enhancements for improved usability and functionality. It supports a full range of database operations, including connection management, query execution, and transaction handling.
+**mssql-python** is a Python driver for Microsoft SQL Server and the Azure SQL family of databases. It leverages Direct Database Connectivity (DDBC) that enables direct connections to SQL Server without requiring an external driver manager. Designed to comply with the [DB API 2.0](https://peps.python.org/pep-0249/) specification, this driver also introduces Pythonic enhancements for improved usability and functionality. It supports a full range of database operations, including connection management, query execution, and transaction handling.
 
-Releases can be found on the [GitHub Releases](https://github.com/microsoft/mssql-python/releases) page.
-
-## Supported Platforms 
-
-Windows
-
-> **Note:**
-> Support for macOS and Linux is coming soon
-> 
 ## Installation
 
 mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
 ```bash
 pip install mssql-python
 ```
+## Key Features
+### Supported Platforms 
 
-### Getting Started Examples
+Windows
 
-- [ ] Why is it import mssql_python and not mssql-python?
+> **Note:**
+> Support for macOS and Linux is coming soon
+> 
+
+### DBAPI v2.0 Compliance
+
+The Microsoft **mssql-python** module is designed to be fully compliant with the DB API 2.0 specification. This ensures that the driver adheres to a standardized interface for database access in Python, providing consistency and reliability across different database systems. Key aspects of DBAPI v2.0 compliance include:
+
+- **Connection Objects**: Establishing and managing connections to the database.
+- **Cursor Objects**: Executing SQL commands and retrieving results.
+- **Transaction Management**: Supporting commit and rollback operations to ensure data integrity.
+- **Error Handling**: Providing a consistent set of exceptions for handling database errors.
+- **Parameter Substitution**: Allowing the use of placeholders in SQL queries to prevent SQL injection attacks.
+
+By adhering to the DB API 2.0 specification, the mssql-python module ensures compatibility with a wide range of Python applications and frameworks, making it a versatile choice for developers working with Microsoft SQL Server, Azure SQL Database, and Azure SQL Managed Instance.
+
+### Support for Microsoft Entra ID Authentication
+
+The Microsoft mssql-python driver enables Python applications to connect to Microsoft SQL Server, Azure SQL Database, or Azure SQL Managed Instance using Microsoft Entra ID identities. It supports various authentication methods, including username and password, Microsoft Entra managed identity, and Integrated Windows Authentication in a federated, domain-joined environment. Additionally, the driver supports Microsoft Entra interactive authentication and Microsoft Entra managed identity authentication for both system-assigned and user-assigned managed identities.
+
+### Enhanced Pythonic Features
+
+The driver offers a suite of Pythonic enhancements that streamline database interactions, making it easier for developers to execute queries, manage connections, and handle data more efficiently.
+
+## Getting Started Examples
+
+- [ ] Question: Why is it import mssql_python and not mssql-python?
   
 Connect to SQL Server and execute a simple query:
 
@@ -48,29 +67,11 @@ connection.close()
 ```
 ## Documentation
 
-- [ ] Add link to the API documentation in Wiki
+- [ ] TODO: Add link to the API documentation in Wiki
 
-## Key Features
+## Still have questions?
 
-### DBAPI v2.0 Compliance
-
-The Microsoft **mssql-python** module is designed to be fully compliant with the DB API 2.0 specification. This ensures that the driver adheres to a standardized interface for database access in Python, providing consistency and reliability across different database systems. Key aspects of DBAPI v2.0 compliance include:
-
-- **Connection Objects**: Establishing and managing connections to the database.
-- **Cursor Objects**: Executing SQL commands and retrieving results.
-- **Transaction Management**: Supporting commit and rollback operations to ensure data integrity.
-- **Error Handling**: Providing a consistent set of exceptions for handling database errors.
-- **Parameter Substitution**: Allowing the use of placeholders in SQL queries to prevent SQL injection attacks.
-
-By adhering to the DB API 2.0 specification, the mssql-python module ensures compatibility with a wide range of Python applications and frameworks, making it a versatile choice for developers working with Microsoft SQL Server, Azure SQL Database, and Azure SQL Managed Instance.
-
-### Support for Microsoft Entra ID Authentication
-
-The Microsoft mssql-python driver enables Python applications to connect to Microsoft SQL Server, Azure SQL Database, or Azure SQL Managed Instance using Microsoft Entra ID identities. It supports various authentication methods, including username and password, Microsoft Entra managed identity, and Integrated Windows Authentication in a federated, domain-joined environment. Additionally, the driver supports Microsoft Entra interactive authentication and Microsoft Entra managed identity authentication for both system-assigned and user-assigned managed identities.
-
-### Enhanced Pythonic Features
-
-The driver offers a suite of Pythonic enhancements that streamline database interactions, making it easier for developers to execute queries, manage connections, and handle data more efficiently.
+Check out our [FAQ](https://github.com/microsoft/mssql-python/wiki/Frequently-Asked-Questions). Still not answered? Create an [issue](https://github.com/microsoft/mssql-python/issues/new/choose) to ask a question.
 
 ## Contributing
 
