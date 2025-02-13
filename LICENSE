@@ -43,7 +43,5 @@ For official licensing terms, refer to: libs\win\MICROSOFT_ODBC_DRIVER_FOR_SQL_S
 These components are part of the Microsoft Visual C++ Redistributable and are governed by the Microsoft Visual C++ Redistributable EULA.
 
 - msvcp140.dll: Microsoft C++ Standard Library runtime, required for running C++ applications.  
-- vsruntime140_1.dll: Visual Studio runtime support library.  
-- vcruntime140.dll: Microsoft Visual C++ Runtime Library, essential for executing C++-based applications.  
 
 For redistribution and usage terms, refer to: libs\win\libs\win\MICROSOFT_VISUAL_STUDIO_LICENSE.txt
