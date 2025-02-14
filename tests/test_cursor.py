@@ -402,6 +402,13 @@ def test_fetchmany(cursor):
     assert isinstance(rows, list), "fetchmany should return a list"
     assert len(rows) == 2, "Incorrect number of rows returned"
 
+def test_fetchmany_with_arraysize(cursor, db_connection):
+    """Test fetchmany with arraysize"""
+    cursor.arraysize = 3
+    cursor.execute("SELECT * FROM all_data_types")
+    rows = cursor.fetchmany()
+    assert len(rows) == 3, "fetchmany with arraysize returned incorrect number of rows"
+
 def test_fetchall(cursor):
     """Test fetching all rows"""
     cursor.execute("SELECT * FROM all_data_types")
@@ -433,10 +440,14 @@ def test_execute_invalid_query(cursor):
 #     assert row[10] == TEST_DATA[10], "Date mismatch"
 #     assert round(row[11], 5) == round(TEST_DATA[11], 5), "Real mismatch"
 
-# def test_arraysize(cursor):
-#     """Test arraysize"""
-#     cursor.arraysize = 10
-#     assert cursor.arraysize == 10, "Arraysize mismatch"
+def test_arraysize(cursor):
+    """Test arraysize"""
+    cursor.arraysize = 10
+    assert cursor.arraysize == 10, "Arraysize mismatch"
+    cursor.arraysize = 5
+    assert cursor.arraysize == 5, "Arraysize mismatch after change"
+
+
 
 # def test_description(cursor):
 #     """Test description"""

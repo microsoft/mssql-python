@@ -54,7 +54,7 @@ class Cursor:
         self._initialize_cursor()
         self.description = None
         self.rowcount = -1
-        self.arraysize = 1
+        self.arraysize = 1 # Default number of rows to fetch at a time is 1, user can change it
         self.buffer_length = 1024  # Default buffer length for string data
         self.closed = False  # Flag to indicate if the cursor is closed
         self.last_executed_stmt = "" # Stores the last statement executed by this cursor
@@ -607,7 +607,7 @@ class Cursor:
         self._check_closed()  # Check if the cursor is closed
 
         if size is None:
-            size = 1
+            size = self.arraysize
 
         try:
             # Fetch the next set of rows
