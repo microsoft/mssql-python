@@ -68,6 +68,7 @@ def test_cursor(cursor):
 def test_insert_id_column(cursor, db_connection):
     """Test inserting data into the id column"""
     try:
+        drop_table_if_exists(cursor, "single_column")
         cursor.execute("CREATE TABLE single_column (id INTEGER PRIMARY KEY)")
         db_connection.commit()
         cursor.execute("INSERT INTO single_column (id) VALUES (?)", [1])
@@ -328,12 +329,64 @@ def test_parametrized_insert(cursor, db_connection, data):
     except Exception as e:
         pytest.fail(f"Parameterized data insertion failed: {e}")
 
-# def test_rowcount(cursor, db_connection):
-#     """Test rowcount"""
-#     cursor.execute("SELECT * FROM all_data_types")
-#     assert cursor.rowcount == -1, "Affected Rowcount should be -1"
-#     cursor.execute("UPDATE all_data_types SET wvarchar_column = 'updated' where id > 2")
-#     assert cursor.rowcount == 2, "Affected Rowcount should be 2"
+def test_rowcount(cursor, db_connection):
+    """Test rowcount after insert operations"""
+    try:
+        cursor.execute("CREATE TABLE test_rowcount (id INT IDENTITY(1,1) PRIMARY KEY, name NVARCHAR(100))")
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO test_rowcount (name) VALUES ('JohnDoe1');")
+        assert cursor.rowcount == 1, "Rowcount should be 1 after first insert"
+
+        cursor.execute("INSERT INTO test_rowcount (name) VALUES ('JohnDoe2');")
+        assert cursor.rowcount == 1, "Rowcount should be 1 after second insert"
+
+        cursor.execute("INSERT INTO test_rowcount (name) VALUES ('JohnDoe3');")
+        assert cursor.rowcount == 1, "Rowcount should be 1 after third insert"
+
+        cursor.execute("""
+            INSERT INTO test_rowcount (name) 
+            VALUES 
+            ('JohnDoe4'), 
+            ('JohnDoe5'), 
+            ('JohnDoe6');
+        """)
+        assert cursor.rowcount == 3, "Rowcount should be 3 after inserting multiple rows"
+
+        cursor.execute("SELECT * FROM test_rowcount;")
+        assert cursor.rowcount == -1, "Rowcount should be -1 after a SELECT statement"
+
+        db_connection.commit()
+    except Exception as e:
+        pytest.fail(f"Rowcount test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE test_rowcount")
+        db_connection.commit()
+
+def test_rowcount_executemany(cursor, db_connection):
+    """Test rowcount after executemany operations"""
+    try:
+        cursor.execute("CREATE TABLE test_rowcount (id INT IDENTITY(1,1) PRIMARY KEY, name NVARCHAR(100))")
+        db_connection.commit()
+
+        data = [
+            ('JohnDoe1',),
+            ('JohnDoe2',),
+            ('JohnDoe3',)
+        ]
+
+        cursor.executemany("INSERT INTO test_rowcount (name) VALUES (?)", data)
+        assert cursor.rowcount == 3, "Rowcount should be 3 after executemany insert"
+
+        cursor.execute("SELECT * FROM test_rowcount;")
+        assert cursor.rowcount == -1, "Rowcount should be -1 after a SELECT statement"
+
+        db_connection.commit()
+    except Exception as e:
+        pytest.fail(f"Rowcount executemany test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE test_rowcount")
+        db_connection.commit()
 
 def test_fetchone(cursor):
     """Test fetching a single row"""
@@ -584,6 +637,18 @@ def test_drop_tables_for_join(cursor, db_connection):
         db_connection.commit()
     except Exception as e:
         pytest.fail(f"Failed to drop tables for join operations: {e}")
+
+def test_cursor_description(cursor):
+    """Test cursor description"""
+    cursor.execute("SELECT database_id, name FROM sys.databases;")
+    description = cursor.description
+    expected_description = [
+        ('database_id', int, None, 10, 10, 0, False),
+        ('name', str, None, 128, 128, 0, False)
+    ]
+    assert len(description) == len(expected_description), "Description length mismatch"
+    for desc, expected in zip(description, expected_description):
+        assert desc == expected, f"Description mismatch: {desc} != {expected}"
 
 def test_close(cursor):
     """Test closing the cursor"""

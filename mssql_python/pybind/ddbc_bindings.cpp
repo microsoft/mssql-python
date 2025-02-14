@@ -196,6 +196,12 @@ SQLFreeStmtFunc SQLFreeStmt_ptr = nullptr;
 // Diagnostic record function pointer
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
 
+// Function pointer typedef for SQLRowCount
+typedef SQLRETURN (*SQLRowCountFunc)(SQLHSTMT, SQLLEN*);
+
+// Function pointer for SQLRowCount
+SQLRowCountFunc SQLRowCount_ptr = nullptr;
+
 namespace {
 // Helper to load the driver
 bool LoadDriver() {
@@ -247,6 +253,9 @@ bool LoadDriver() {
     // Diagnostic record function Loading
     SQLGetDiagRec_ptr = (SQLGetDiagRecFunc)GetProcAddress(hModule, "SQLGetDiagRecW");
 
+    // Load SQLRowCount function
+    SQLRowCount_ptr = (SQLRowCountFunc)GetProcAddress(hModule, "SQLRowCount");
+
 #ifdef _DEBUG
     std::cout << "Driver loaded successfully." << std::endl;
 #endif
@@ -256,7 +265,8 @@ bool LoadDriver() {
            SQLBindParameter_ptr && SQLExecute_ptr && SQLFetch_ptr && SQLFetchScroll_ptr &&
            SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr && SQLDescribeCol_ptr &&
            SQLMoreResults_ptr && SQLColAttribute_ptr && SQLColAttribute_ptr && SQLEndTran_ptr &&
-           SQLFreeHandle_ptr && SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
+           SQLFreeHandle_ptr && SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr &&
+           SQLRowCount_ptr;
 }
 
 // TODO: Add more nuanced exception classes
@@ -1598,6 +1608,23 @@ SQLRETURN SQLDisconnect_wrap(intptr_t ConnectionHandle) {
     return SQLDisconnect_ptr(reinterpret_cast<SQLHDBC>(ConnectionHandle));
 }
 
+// Wrap SQLRowCount
+SQLLEN SQLRowCount_wrap(intptr_t StatementHandle) {
+    if (!SQLRowCount_ptr && !LoadDriver()) {
+        return -1;
+    }
+
+    SQLLEN rowCount;
+    SQLRETURN ret = SQLRowCount_ptr(reinterpret_cast<SQLHSTMT>(StatementHandle), &rowCount);
+    if (!SQL_SUCCEEDED(ret)) {
+        std::cerr << "SQLRowCount failed with error code: " << ret << std::endl;
+        return -1;
+    }
+
+    std::cout << "SQLRowCount returned: " << rowCount << std::endl;  // Debug print
+    return rowCount;
+}
+
 // Bind the functions to the module
 PYBIND11_MODULE(ddbc_bindings, m) {
     m.doc() = "msodbcsql driver api bindings for Python";  // optional module docstring
@@ -1629,7 +1656,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLGetConnectionAttr", &SQLGetConnectionAttr_wrap,
           "Get an attribute that governs aspects of connections");
     m.def("DDBCSQLDriverConnect", &SQLDriverConnect_wrap,
-          "Connect to a data source with a connection string");
+            "Connect to a data source with a connection string");
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");
     m.def("DDBCSQLFetch", &SQLFetch_wrap, "Fetch the next row from the result set");
@@ -1647,4 +1674,5 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLDisconnect", &SQLDisconnect_wrap, "Disconnect from a data source");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
+    m.def("DDBCSQLRowCount", &SQLRowCount_wrap, "Get the number of rows affected by the last statement");
 }

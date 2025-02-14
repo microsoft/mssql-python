@@ -104,3 +104,4 @@ class ConstantsODBC(Enum):
     SQL_PARAM_OUTPUT = 2
     SQL_PARAM_INPUT_OUTPUT = 3
     SQL_C_WCHAR = -8
+    SQL_NULLABLE = 1

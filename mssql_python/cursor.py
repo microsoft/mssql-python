@@ -409,6 +409,62 @@ class Cursor:
         paraminfo.decimalDigits = decimal_digits
         return paraminfo
 
+    def _initialize_description(self):
+        """
+        Initialize the description attribute using SQLDescribeCol.
+        """
+        col_metadata = []
+        ret = ddbc_bindings.DDBCSQLDescribeCol(self.hstmt.value, col_metadata)
+        check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+
+        self.description = [
+            (
+                col["ColumnName"],
+                self._map_data_type(col["DataType"]),
+                None,
+                col["ColumnSize"],
+                col["ColumnSize"],
+                col["DecimalDigits"],
+                col["Nullable"] == odbc_sql_const.SQL_NULLABLE.value,
+            )
+            for col in col_metadata
+        ]
+
+    def _map_data_type(self, sql_type):
+        """
+        Map SQL data type to Python data type.
+        
+        Args:
+            sql_type: SQL data type.
+        
+        Returns:
+            Corresponding Python data type.
+        """
+        sql_to_python_type = {
+            odbc_sql_const.SQL_INTEGER.value: int,
+            odbc_sql_const.SQL_VARCHAR.value: str,
+            odbc_sql_const.SQL_WVARCHAR.value: str,
+            odbc_sql_const.SQL_CHAR.value: str,
+            odbc_sql_const.SQL_WCHAR.value: str,
+            odbc_sql_const.SQL_FLOAT.value: float,
+            odbc_sql_const.SQL_DOUBLE.value: float,
+            odbc_sql_const.SQL_DECIMAL.value: decimal.Decimal,
+            odbc_sql_const.SQL_NUMERIC.value: decimal.Decimal,
+            odbc_sql_const.SQL_DATE.value: datetime.date,
+            odbc_sql_const.SQL_TIMESTAMP.value: datetime.datetime,
+            odbc_sql_const.SQL_TIME.value: datetime.time,
+            odbc_sql_const.SQL_BIT.value: bool,
+            odbc_sql_const.SQL_TINYINT.value: int,
+            odbc_sql_const.SQL_SMALLINT.value: int,
+            odbc_sql_const.SQL_BIGINT.value: int,
+            odbc_sql_const.SQL_BINARY.value: bytes,
+            odbc_sql_const.SQL_VARBINARY.value: bytes,
+            odbc_sql_const.SQL_LONGVARBINARY.value: bytes,
+            odbc_sql_const.SQL_GUID.value: uuid.UUID,
+            # Add more mappings as needed
+        }
+        return sql_to_python_type.get(sql_type, str)
+
     def execute(self, operation: str, *parameters, use_prepare: bool = True, reset_cursor: bool = True):
         """
         Prepare and execute a database operation (query or command).
@@ -452,6 +508,12 @@ class Cursor:
                                                self.is_stmt_prepared, use_prepare)
             check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
             self.last_executed_stmt = operation
+
+            # Update rowcount after execution
+            self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt.value)
+
+            # Initialize description after execution
+            self._initialize_description()
         except Exception as e:
             if ENABLE_LOGGING:
                 logging.error("An error occurred while executing query: %s", e)
@@ -475,6 +537,7 @@ class Cursor:
             self._reset_cursor()
 
             first_execution = True
+            total_rowcount = 0
             for parameters in seq_of_parameters:
                 # Execute the operation with the current set of parameters without 
                 # Converting the parameters to a list
@@ -491,6 +554,13 @@ class Cursor:
                     prepare_stmt = False
                 # Execute statement with one parameter set
                 self.execute(operation, parameters, use_prepare=prepare_stmt, reset_cursor=False)
+                if self.rowcount != -1:
+                    # Rowcount would get updated inside execute method, add it to the current rowcount
+                    total_rowcount += self.rowcount
+                else:
+                    total_rowcount = -1
+            # Update the rowcount after all executions
+            self.rowcount = total_rowcount
         except Exception as e:
             if ENABLE_LOGGING:
                 logging.error("An error occurred while executing multiple queries: %s", e)
