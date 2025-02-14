@@ -14,7 +14,7 @@ import decimal
 
 # Setup test table
 TEST_TABLE = """
-CREATE TABLE all_data_types (
+CREATE TABLE pytest_all_data_types (
     id INTEGER PRIMARY KEY,
     bit_column BIT,
     tinyint_column TINYINT,
@@ -68,50 +68,50 @@ def test_cursor(cursor):
 def test_insert_id_column(cursor, db_connection):
     """Test inserting data into the id column"""
     try:
-        drop_table_if_exists(cursor, "single_column")
-        cursor.execute("CREATE TABLE single_column (id INTEGER PRIMARY KEY)")
+        drop_table_if_exists(cursor, "pytest_single_column")
+        cursor.execute("CREATE TABLE pytest_single_column (id INTEGER PRIMARY KEY)")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (id) VALUES (?)", [1])
+        cursor.execute("INSERT INTO pytest_single_column (id) VALUES (?)", [1])
         db_connection.commit()
-        cursor.execute("SELECT id FROM single_column")
+        cursor.execute("SELECT id FROM pytest_single_column")
         row = cursor.fetchone()
         assert row[0] == 1, "ID column insertion failed"
     except Exception as e:
         pytest.fail(f"ID column insertion failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
 
 def test_insert_bit_column(cursor, db_connection):
     """Test inserting data into the bit_column"""
     try:
-        cursor.execute("CREATE TABLE single_column (bit_column BIT)")
+        cursor.execute("CREATE TABLE pytest_single_column (bit_column BIT)")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (bit_column) VALUES (?)", [1])
+        cursor.execute("INSERT INTO pytest_single_column (bit_column) VALUES (?)", [1])
         db_connection.commit()
-        cursor.execute("SELECT bit_column FROM single_column")
+        cursor.execute("SELECT bit_column FROM pytest_single_column")
         row = cursor.fetchone()
         assert row[0] == 1, "Bit column insertion failed"
     except Exception as e:
         pytest.fail(f"Bit column insertion failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
 
 def test_insert_nvarchar_column(cursor, db_connection):
     """Test inserting data into the nvarchar_column"""
     try:
-        cursor.execute("CREATE TABLE single_column (nvarchar_column NVARCHAR(255))")
+        cursor.execute("CREATE TABLE pytest_single_column (nvarchar_column NVARCHAR(255))")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (nvarchar_column) VALUES (?)", ["test"])
+        cursor.execute("INSERT INTO pytest_single_column (nvarchar_column) VALUES (?)", ["test"])
         db_connection.commit()
-        cursor.execute("SELECT nvarchar_column FROM single_column")
+        cursor.execute("SELECT nvarchar_column FROM pytest_single_column")
         row = cursor.fetchone()
         assert row[0] == "test", "Nvarchar column insertion failed"
     except Exception as e:
         pytest.fail(f"Nvarchar column insertion failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
 
 # def test_insert_time_column(cursor, db_connection):
@@ -149,33 +149,33 @@ def test_insert_nvarchar_column(cursor, db_connection):
 def test_insert_date_column(cursor, db_connection):
     """Test inserting data into the date_column"""
     try:
-        cursor.execute("CREATE TABLE single_column (date_column DATE)")
+        cursor.execute("CREATE TABLE pytest_single_column (date_column DATE)")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (date_column) VALUES (?)", [date(2024, 5, 20)])
+        cursor.execute("INSERT INTO pytest_single_column (date_column) VALUES (?)", [date(2024, 5, 20)])
         db_connection.commit()
-        cursor.execute("SELECT date_column FROM single_column")
+        cursor.execute("SELECT date_column FROM pytest_single_column")
         row = cursor.fetchone()
         assert row[0] == (2024, 5, 20), "Date column insertion failed"
     except Exception as e:
         pytest.fail(f"Date column insertion failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
 
 def test_insert_real_column(cursor, db_connection):
     """Test inserting data into the real_column"""
     try:
-        cursor.execute("CREATE TABLE single_column (real_column REAL)")
+        cursor.execute("CREATE TABLE pytest_single_column (real_column REAL)")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (real_column) VALUES (?)", [1.23456789])
+        cursor.execute("INSERT INTO pytest_single_column (real_column) VALUES (?)", [1.23456789])
         db_connection.commit()
-        cursor.execute("SELECT real_column FROM single_column")
+        cursor.execute("SELECT real_column FROM pytest_single_column")
         row = cursor.fetchone()
         assert abs(row[0] - 1.23456789) < 1e-8, "Real column insertion failed"
     except Exception as e:
         pytest.fail(f"Real column insertion failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
 
 # def test_insert_decimal_column(cursor, db_connection):
@@ -197,86 +197,86 @@ def test_insert_real_column(cursor, db_connection):
 def test_insert_tinyint_column(cursor, db_connection):
     """Test inserting data into the tinyint_column"""
     try:
-        cursor.execute("CREATE TABLE single_column (tinyint_column TINYINT)")
+        cursor.execute("CREATE TABLE pytest_single_column (tinyint_column TINYINT)")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (tinyint_column) VALUES (?)", [127])
+        cursor.execute("INSERT INTO pytest_single_column (tinyint_column) VALUES (?)", [127])
         db_connection.commit()
-        cursor.execute("SELECT tinyint_column FROM single_column")
+        cursor.execute("SELECT tinyint_column FROM pytest_single_column")
         row = cursor.fetchone()
         assert row[0] == 127, "Tinyint column insertion failed"
     except Exception as e:
         pytest.fail(f"Tinyint column insertion failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
 
 def test_insert_smallint_column(cursor, db_connection):
     """Test inserting data into the smallint_column"""
     try:
-        cursor.execute("CREATE TABLE single_column (smallint_column SMALLINT)")
+        cursor.execute("CREATE TABLE pytest_single_column (smallint_column SMALLINT)")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (smallint_column) VALUES (?)", [32767])
+        cursor.execute("INSERT INTO pytest_single_column (smallint_column) VALUES (?)", [32767])
         db_connection.commit()
-        cursor.execute("SELECT smallint_column FROM single_column")
+        cursor.execute("SELECT smallint_column FROM pytest_single_column")
         row = cursor.fetchone()
         assert row[0] == 32767, "Smallint column insertion failed"
     except Exception as e:
         pytest.fail(f"Smallint column insertion failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
 
 def test_insert_bigint_column(cursor, db_connection):
     """Test inserting data into the bigint_column"""
     try:
-        cursor.execute("CREATE TABLE single_column (bigint_column BIGINT)")
+        cursor.execute("CREATE TABLE pytest_single_column (bigint_column BIGINT)")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (bigint_column) VALUES (?)", [9223372036854775807])
+        cursor.execute("INSERT INTO pytest_single_column (bigint_column) VALUES (?)", [9223372036854775807])
         db_connection.commit()
-        cursor.execute("SELECT bigint_column FROM single_column")
+        cursor.execute("SELECT bigint_column FROM pytest_single_column")
         row = cursor.fetchone()
         assert row[0] == 9223372036854775807, "Bigint column insertion failed"
     except Exception as e:
         pytest.fail(f"Bigint column insertion failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
 
 def test_insert_integer_column(cursor, db_connection):
     """Test inserting data into the integer_column"""
     try:
-        cursor.execute("CREATE TABLE single_column (integer_column INTEGER)")
+        cursor.execute("CREATE TABLE pytest_single_column (integer_column INTEGER)")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (integer_column) VALUES (?)", [2147483647])
+        cursor.execute("INSERT INTO pytest_single_column (integer_column) VALUES (?)", [2147483647])
         db_connection.commit()
-        cursor.execute("SELECT integer_column FROM single_column")
+        cursor.execute("SELECT integer_column FROM pytest_single_column")
         row = cursor.fetchone()
         assert row[0] == 2147483647, "Integer column insertion failed"
     except Exception as e:
         pytest.fail(f"Integer column insertion failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
 
 def test_insert_float_column(cursor, db_connection):
     """Test inserting data into the float_column"""
     try:
-        cursor.execute("CREATE TABLE single_column (float_column FLOAT)")
+        cursor.execute("CREATE TABLE pytest_single_column (float_column FLOAT)")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (float_column) VALUES (?)", [1.23456789])
+        cursor.execute("INSERT INTO pytest_single_column (float_column) VALUES (?)", [1.23456789])
         db_connection.commit()
-        cursor.execute("SELECT float_column FROM single_column")
+        cursor.execute("SELECT float_column FROM pytest_single_column")
         row = cursor.fetchone()
         assert abs(row[0] - 1.23456789) < 1e-8, "Float column insertion failed"
     except Exception as e:
         pytest.fail(f"Float column insertion failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
 
 def test_create_table(cursor, db_connection):
     # Drop the table if it exists
-    drop_table_if_exists(cursor, "all_data_types")
+    drop_table_if_exists(cursor, "pytest_all_data_types")
     
     # Create test table
     try:
@@ -289,7 +289,7 @@ def test_insert_args(cursor, db_connection):
     """Test parameterized insert using qmark parameters"""
     try:
         cursor.execute("""
-            INSERT INTO all_data_types VALUES (
+            INSERT INTO pytest_all_data_types VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
         """, 
@@ -307,13 +307,13 @@ def test_insert_args(cursor, db_connection):
             TEST_DATA[11]
         )
         db_connection.commit()
-        cursor.execute("SELECT * FROM all_data_types WHERE id = 1")
+        cursor.execute("SELECT * FROM pytest_all_data_types WHERE id = 1")
         row = cursor.fetchone()
         assert row[0] == TEST_DATA[0], "Insertion using args failed"
     except Exception as e:
         pytest.fail(f"Parameterized data insertion failed: {e}")    
     finally:
-        cursor.execute("DELETE FROM all_data_types")
+        cursor.execute("DELETE FROM pytest_all_data_types")
         db_connection.commit()                   
 
 @pytest.mark.parametrize("data", PARAM_TEST_DATA)
@@ -321,7 +321,7 @@ def test_parametrized_insert(cursor, db_connection, data):
     """Test parameterized insert using qmark parameters"""
     try:
         cursor.execute("""
-            INSERT INTO all_data_types VALUES (
+            INSERT INTO pytest_all_data_types VALUES (
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
         """, [None if v is None else v for v in data])
@@ -332,20 +332,20 @@ def test_parametrized_insert(cursor, db_connection, data):
 def test_rowcount(cursor, db_connection):
     """Test rowcount after insert operations"""
     try:
-        cursor.execute("CREATE TABLE test_rowcount (id INT IDENTITY(1,1) PRIMARY KEY, name NVARCHAR(100))")
+        cursor.execute("CREATE TABLE pytest_test_rowcount (id INT IDENTITY(1,1) PRIMARY KEY, name NVARCHAR(100))")
         db_connection.commit()
 
-        cursor.execute("INSERT INTO test_rowcount (name) VALUES ('JohnDoe1');")
+        cursor.execute("INSERT INTO pytest_test_rowcount (name) VALUES ('JohnDoe1');")
         assert cursor.rowcount == 1, "Rowcount should be 1 after first insert"
 
-        cursor.execute("INSERT INTO test_rowcount (name) VALUES ('JohnDoe2');")
+        cursor.execute("INSERT INTO pytest_test_rowcount (name) VALUES ('JohnDoe2');")
         assert cursor.rowcount == 1, "Rowcount should be 1 after second insert"
 
-        cursor.execute("INSERT INTO test_rowcount (name) VALUES ('JohnDoe3');")
+        cursor.execute("INSERT INTO pytest_test_rowcount (name) VALUES ('JohnDoe3');")
         assert cursor.rowcount == 1, "Rowcount should be 1 after third insert"
 
         cursor.execute("""
-            INSERT INTO test_rowcount (name) 
+            INSERT INTO pytest_test_rowcount (name) 
             VALUES 
             ('JohnDoe4'), 
             ('JohnDoe5'), 
@@ -353,20 +353,20 @@ def test_rowcount(cursor, db_connection):
         """)
         assert cursor.rowcount == 3, "Rowcount should be 3 after inserting multiple rows"
 
-        cursor.execute("SELECT * FROM test_rowcount;")
+        cursor.execute("SELECT * FROM pytest_test_rowcount;")
         assert cursor.rowcount == -1, "Rowcount should be -1 after a SELECT statement"
 
         db_connection.commit()
     except Exception as e:
         pytest.fail(f"Rowcount test failed: {e}")
     finally:
-        cursor.execute("DROP TABLE test_rowcount")
+        cursor.execute("DROP TABLE pytest_test_rowcount")
         db_connection.commit()
 
 def test_rowcount_executemany(cursor, db_connection):
     """Test rowcount after executemany operations"""
     try:
-        cursor.execute("CREATE TABLE test_rowcount (id INT IDENTITY(1,1) PRIMARY KEY, name NVARCHAR(100))")
+        cursor.execute("CREATE TABLE pytest_test_rowcount (id INT IDENTITY(1,1) PRIMARY KEY, name NVARCHAR(100))")
         db_connection.commit()
 
         data = [
@@ -375,29 +375,29 @@ def test_rowcount_executemany(cursor, db_connection):
             ('JohnDoe3',)
         ]
 
-        cursor.executemany("INSERT INTO test_rowcount (name) VALUES (?)", data)
+        cursor.executemany("INSERT INTO pytest_test_rowcount (name) VALUES (?)", data)
         assert cursor.rowcount == 3, "Rowcount should be 3 after executemany insert"
 
-        cursor.execute("SELECT * FROM test_rowcount;")
+        cursor.execute("SELECT * FROM pytest_test_rowcount;")
         assert cursor.rowcount == -1, "Rowcount should be -1 after a SELECT statement"
 
         db_connection.commit()
     except Exception as e:
         pytest.fail(f"Rowcount executemany test failed: {e}")
     finally:
-        cursor.execute("DROP TABLE test_rowcount")
+        cursor.execute("DROP TABLE pytest_test_rowcount")
         db_connection.commit()
 
 def test_fetchone(cursor):
     """Test fetching a single row"""
-    cursor.execute("SELECT * FROM all_data_types WHERE id = 1")
+    cursor.execute("SELECT * FROM pytest_all_data_types WHERE id = 1")
     row = cursor.fetchone()
     assert row is not None, "No row returned"
     assert len(row) == 12, "Incorrect number of columns"
 
 def test_fetchmany(cursor):
     """Test fetching multiple rows"""
-    cursor.execute("SELECT * FROM all_data_types")
+    cursor.execute("SELECT * FROM pytest_all_data_types")
     rows = cursor.fetchmany(2)
     assert isinstance(rows, list), "fetchmany should return a list"
     assert len(rows) == 2, "Incorrect number of rows returned"
@@ -405,13 +405,13 @@ def test_fetchmany(cursor):
 def test_fetchmany_with_arraysize(cursor, db_connection):
     """Test fetchmany with arraysize"""
     cursor.arraysize = 3
-    cursor.execute("SELECT * FROM all_data_types")
+    cursor.execute("SELECT * FROM pytest_all_data_types")
     rows = cursor.fetchmany()
     assert len(rows) == 3, "fetchmany with arraysize returned incorrect number of rows"
 
 def test_fetchall(cursor):
     """Test fetching all rows"""
-    cursor.execute("SELECT * FROM all_data_types")
+    cursor.execute("SELECT * FROM pytest_all_data_types")
     rows = cursor.fetchall()
     assert isinstance(rows, list), "fetchall should return a list"
     assert len(rows) == len(PARAM_TEST_DATA), "Incorrect number of rows returned"
@@ -468,43 +468,43 @@ def test_arraysize(cursor):
 def test_execute_many(cursor, db_connection):
     """Test executemany"""
     # Start fresh
-    cursor.execute("DELETE FROM all_data_types")
+    cursor.execute("DELETE FROM pytest_all_data_types")
     db_connection.commit()
     data = [(i,) for i in range(1, 12)]
-    cursor.executemany("INSERT INTO all_data_types (id) VALUES (?)", data)
-    cursor.execute("SELECT COUNT(*) FROM all_data_types")
+    cursor.executemany("INSERT INTO pytest_all_data_types (id) VALUES (?)", data)
+    cursor.execute("SELECT COUNT(*) FROM pytest_all_data_types")
     count = cursor.fetchone()[0]
     assert count == 11, "Executemany failed"
 
 def test_nextset(cursor):
     """Test nextset"""
-    cursor.execute("SELECT * FROM all_data_types WHERE id = 1;")
+    cursor.execute("SELECT * FROM pytest_all_data_types WHERE id = 1;")
     assert cursor.nextset() is False, "Nextset should return False"
-    cursor.execute("SELECT * FROM all_data_types WHERE id = 2; SELECT * FROM all_data_types WHERE id = 3;")
+    cursor.execute("SELECT * FROM pytest_all_data_types WHERE id = 2; SELECT * FROM pytest_all_data_types WHERE id = 3;")
     assert cursor.nextset() is True, "Nextset should return True"
 
 def test_delete_table(cursor, db_connection):
     """Test deleting the table"""
-    drop_table_if_exists(cursor, "all_data_types")
+    drop_table_if_exists(cursor, "pytest_all_data_types")
     db_connection.commit()
 
 # Setup tables for join operations
 CREATE_TABLES_FOR_JOIN = [
     """
-    CREATE TABLE employees (
+    CREATE TABLE pytest_employees (
         employee_id INTEGER PRIMARY KEY,
         name NVARCHAR(255),
         department_id INTEGER
     );
     """,
     """
-    CREATE TABLE departments (
+    CREATE TABLE pytest_departments (
         department_id INTEGER PRIMARY KEY,
         department_name NVARCHAR(255)
     );
     """,
     """
-    CREATE TABLE projects (
+    CREATE TABLE pytest_projects (
         project_id INTEGER PRIMARY KEY,
         project_name NVARCHAR(255),
         employee_id INTEGER
@@ -515,18 +515,18 @@ CREATE_TABLES_FOR_JOIN = [
 # Insert data for join operations
 INSERT_DATA_FOR_JOIN = [
     """
-    INSERT INTO employees (employee_id, name, department_id) VALUES
+    INSERT INTO pytest_employees (employee_id, name, department_id) VALUES
     (1, 'Alice', 1),
     (2, 'Bob', 2),
     (3, 'Charlie', 1);
     """,
     """
-    INSERT INTO departments (department_id, department_name) VALUES
+    INSERT INTO pytest_departments (department_id, department_name) VALUES
     (1, 'HR'),
     (2, 'Engineering');
     """,
     """
-    INSERT INTO projects (project_id, project_name, employee_id) VALUES
+    INSERT INTO pytest_projects (project_id, project_name, employee_id) VALUES
     (1, 'Project A', 1),
     (2, 'Project B', 2),
     (3, 'Project C', 3);
@@ -556,9 +556,9 @@ def test_join_operations(cursor):
     try:
         cursor.execute("""
             SELECT e.name, d.department_name, p.project_name
-            FROM employees e
-            JOIN departments d ON e.department_id = d.department_id
-            JOIN projects p ON e.employee_id = p.employee_id
+            FROM pytest_employees e
+            JOIN pytest_departments d ON e.department_id = d.department_id
+            JOIN pytest_projects p ON e.employee_id = p.employee_id
         """)
         rows = cursor.fetchall()
         assert len(rows) == 3, "Join operation returned incorrect number of rows"
@@ -574,9 +574,9 @@ def test_join_operations_with_parameters(cursor):
         employee_ids = [1, 2]
         query = """
             SELECT e.name, d.department_name, p.project_name
-            FROM employees e
-            JOIN departments d ON e.department_id = d.department_id
-            JOIN projects p ON e.employee_id = p.employee_id
+            FROM pytest_employees e
+            JOIN pytest_departments d ON e.department_id = d.department_id
+            JOIN pytest_projects p ON e.employee_id = p.employee_id
             WHERE e.employee_id IN (?, ?)
         """
         cursor.execute(query, employee_ids)
@@ -594,8 +594,8 @@ CREATE PROCEDURE GetEmployeeProjects
 AS
 BEGIN
     SELECT e.name, p.project_name
-    FROM employees e
-    JOIN projects p ON e.employee_id = p.employee_id
+    FROM pytest_employees e
+    JOIN pytest_projects p ON e.employee_id = p.employee_id
     WHERE e.employee_id = @EmployeeID
 END
 """
@@ -642,9 +642,9 @@ def test_drop_stored_procedure(cursor, db_connection):
 def test_drop_tables_for_join(cursor, db_connection):
     """Drop tables for join operations"""
     try:
-        cursor.execute("DROP TABLE IF EXISTS employees")
-        cursor.execute("DROP TABLE IF EXISTS departments")
-        cursor.execute("DROP TABLE IF EXISTS projects")
+        cursor.execute("DROP TABLE IF EXISTS pytest_employees")
+        cursor.execute("DROP TABLE IF EXISTS pytest_departments")
+        cursor.execute("DROP TABLE IF EXISTS pytest_projects")
         db_connection.commit()
     except Exception as e:
         pytest.fail(f"Failed to drop tables for join operations: {e}")

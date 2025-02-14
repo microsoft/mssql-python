@@ -1,6 +1,11 @@
 from mssql_python.constants import ConstantsODBC
 from mssql_python import ddbc_bindings
-    
+from mssql_python.exceptions import raise_exception
+from mssql_python.logging_config import setup_logging, ENABLE_LOGGING
+import logging
+
+setup_logging()
+
 def add_driver_to_connection_str(connection_str):
     """
     Add the ODBC driver to the connection string if not present.
@@ -54,10 +59,13 @@ def check_error(handle_type, handle, ret):
     Raises:
         RuntimeError: If an error is found.
     """
-    # Need to fetch proper error message
+    if ENABLE_LOGGING:
+        logging.debug(f"Checking error for handle type: {handle_type}, handle: {handle}, ret: {ret}")
     if ret == ConstantsODBC.SQL_ERROR.value:
-        e = ddbc_bindings.DDBCSQLCheckError(handle_type, handle, ret)
-        raise RuntimeError(f"Error: {e}")
+        error_info = ddbc_bindings.DDBCSQLCheckError(handle_type, handle, ret)
+        if ENABLE_LOGGING:
+            logging.error(f"Error: {error_info.ddbcErrorMsg}")
+        raise_exception(error_info.sqlState, error_info.ddbcErrorMsg)
     
 def add_driver_name_to_app_parameter(connection_string):
     """
@@ -92,4 +100,4 @@ def add_driver_name_to_app_parameter(connection_string):
         modified_parameters.append("APP=MSSQL-Python")
 
     # Join the parameters back into a connection string
-    return ';'.join(modified_parameters) + ';'   
+    return ';'.join(modified_parameters) + ';'

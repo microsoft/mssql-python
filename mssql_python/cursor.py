@@ -9,6 +9,7 @@ import datetime
 import decimal
 import uuid
 import os
+from mssql_python.exceptions import raise_exception
 
 os.chdir(os.path.dirname(__file__))
 
@@ -477,47 +478,42 @@ class Cursor:
         """
         self._check_closed()  # Check if the cursor is closed
 
-        try:
-            if reset_cursor:
-                self._reset_cursor()
+        if reset_cursor:
+            self._reset_cursor()
 
-            ParamInfo = ddbc_bindings.ParamInfo
-            parameters_type = []
-            
-            # Flatten parameters if a single tuple or list is passed
-            if len(parameters) == 1 and isinstance(parameters[0], (tuple, list)):
-                parameters = parameters[0]
+        ParamInfo = ddbc_bindings.ParamInfo
+        parameters_type = []
+        
+        # Flatten parameters if a single tuple or list is passed
+        if len(parameters) == 1 and isinstance(parameters[0], (tuple, list)):
+            parameters = parameters[0]
 
-            parameters = list(parameters)
+        parameters = list(parameters)
 
-            if len(parameters):
-                for i, param in enumerate(parameters):
-                    paraminfo = self._create_parameter_types_list(param, ParamInfo, parameters, i)
-                    parameters_type.append(paraminfo)
+        if len(parameters):
+            for i, param in enumerate(parameters):
+                paraminfo = self._create_parameter_types_list(param, ParamInfo, parameters, i)
+                parameters_type.append(paraminfo)
 
-            # TODO: Use a more sophisticated string compare that handles redundant spaces etc.
-            #       Also consider storing last query's hash instead of full query string. This will help
-            #       in low-memory conditions (Ex: huge number of parallel queries with huge query string sizes)
-            if operation != self.last_executed_stmt:
-                # Executing a new statement. Reset is_stmt_prepared to false
-                self.is_stmt_prepared = [False]
-            '''
-            Execute SQL Statement - (SQLExecute)
-            '''
-            ret = ddbc_bindings.DDBCSQLExecute(self.hstmt.value, operation, parameters, parameters_type,
-                                               self.is_stmt_prepared, use_prepare)
-            check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
-            self.last_executed_stmt = operation
+        # TODO: Use a more sophisticated string compare that handles redundant spaces etc.
+        #       Also consider storing last query's hash instead of full query string. This will help
+        #       in low-memory conditions (Ex: huge number of parallel queries with huge query string sizes)
+        if operation != self.last_executed_stmt:
+            # Executing a new statement. Reset is_stmt_prepared to false
+            self.is_stmt_prepared = [False]
+        '''
+        Execute SQL Statement - (SQLExecute)
+        '''
+        ret = ddbc_bindings.DDBCSQLExecute(self.hstmt.value, operation, parameters, parameters_type,
+                                            self.is_stmt_prepared, use_prepare)
+        check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+        self.last_executed_stmt = operation
 
-            # Update rowcount after execution
-            self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt.value)
+        # Update rowcount after execution
+        self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt.value)
 
-            # Initialize description after execution
-            self._initialize_description()
-        except Exception as e:
-            if ENABLE_LOGGING:
-                logging.error("An error occurred while executing query: %s", e)
-            raise Exception(f"Error executing query: {e}")
+        # Initialize description after execution
+        self._initialize_description()
 
     def executemany(self, operation: str, seq_of_parameters: list) -> None:
         """
@@ -532,10 +528,10 @@ class Cursor:
         """
         self._check_closed()  # Check if the cursor is closed
         
-        try:
-            # Reset the cursor once before the loop
-            self._reset_cursor()
+        # Reset the cursor once before the loop
+        self._reset_cursor()
 
+        try:
             first_execution = True
             total_rowcount = 0
             for parameters in seq_of_parameters:
@@ -563,8 +559,17 @@ class Cursor:
             self.rowcount = total_rowcount
         except Exception as e:
             if ENABLE_LOGGING:
-                logging.error("An error occurred while executing multiple queries: %s", e)
-            raise Exception(f"Error executing multiple queries: {e}")
+                logging.info("Executing query with parameters: %s", parameters)
+            # Prepare the statement only during first execution. From second time
+            # onwards, skip preparing and directly execute. This helps avoid
+            # unnecessary 'prepare' network calls.
+            if first_execution:
+                prepare_stmt = True
+                first_execution = False
+            else:
+                prepare_stmt = False
+            # Execute statement with one parameter set
+            self.execute(operation, parameters, use_prepare=prepare_stmt, reset_cursor=False)
 
     def fetchone(self) -> Union[None, tuple]:
         """
@@ -578,18 +583,13 @@ class Cursor:
         """
         self._check_closed()  # Check if the cursor is closed
         
-        try:
-            # Fetch the next row
-            row = []
-            ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt.value, row)
-            check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
-            if ret == odbc_sql_const.SQL_NO_DATA.value:
-                return None
-            return list(row)
-        except Exception as e:
-            if ENABLE_LOGGING:
-                logging.error("An error occurred while fetching a row: %s", e)
-            raise Exception(f"Error fetching a row: {e}")
+        # Fetch the next row
+        row = []
+        ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt.value, row)
+        check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+        if ret == odbc_sql_const.SQL_NO_DATA.value:
+            return None
+        return list(row)
 
     def fetchmany(self, size: int = None) -> List[tuple]:
         """
@@ -609,17 +609,12 @@ class Cursor:
         if size is None:
             size = self.arraysize
 
-        try:
-            # Fetch the next set of rows
-            rows = []
-            ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt.value, rows, size)
-            if ret == odbc_sql_const.SQL_NO_DATA.value:
-                return []
-            return rows
-        except Exception as e:
-            if ENABLE_LOGGING:
-                logging.error("An error occurred while fetching multiple rows: %s", e)
-            raise Exception(f"Error fetching multiple rows: %e")
+        # Fetch the next set of rows
+        rows = []
+        ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt.value, rows, size)
+        if ret == odbc_sql_const.SQL_NO_DATA.value:
+            return []
+        return rows
 
     def fetchall(self) -> List[tuple]:
         """
@@ -633,17 +628,12 @@ class Cursor:
         """
         self._check_closed()  # Check if the cursor is closed
 
-        try:
-            # Fetch all remaining rows
-            rows = []
-            ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt.value, rows)
-            if ret != odbc_sql_const.SQL_NO_DATA.value:
-                return []
-            return list(rows)
-        except Exception as e:
-            if ENABLE_LOGGING:
-                logging.error("An error occurred while fetching all rows: %s", e)
-            raise Exception(f"Error fetching all rows: %e")
+        # Fetch all remaining rows
+        rows = []
+        ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt.value, rows)
+        if ret != odbc_sql_const.SQL_NO_DATA.value:
+            return []
+        return list(rows)
 
     def nextset(self) -> Union[bool, None]:
         """
@@ -657,14 +647,8 @@ class Cursor:
         """
         self._check_closed()  # Check if the cursor is closed
 
-        try:
-            # Skip to the next result set
-            ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt.value)
-            if ret == odbc_sql_const.SQL_NO_DATA.value:
-                return False
-            return True
-        except Exception as e:
-            if ENABLE_LOGGING:
-                logging.error("An error occurred while skipping to the next result set: %s", e)
-            raise Exception(f"Error skipping to the next result set: %e")
-
+        # Skip to the next result set
+        ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt.value)
+        if ret == odbc_sql_const.SQL_NO_DATA.value:
+            return False
+        return True

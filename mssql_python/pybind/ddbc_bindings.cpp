@@ -592,7 +592,13 @@ SQLINTEGER SQLGetConnectionAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER attri
 }
 
 // Helper function to check for driver errors
-std::wstring SQLCheckError_Wrap(SQLSMALLINT handleType, intptr_t handle, SQLRETURN retcode) {
+struct ErrorInfo {
+    std::wstring sqlState;
+    std::wstring ddbcErrorMsg;
+};
+
+ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, intptr_t handle, SQLRETURN retcode) {
+    ErrorInfo errorInfo;
     // TODO: Add check for when handle is a nullptr0?
     if (!SQL_SUCCEEDED(retcode)) {
         if (!SQLGetDiagRec_ptr && !LoadDriver()) {
@@ -609,10 +615,11 @@ std::wstring SQLCheckError_Wrap(SQLSMALLINT handleType, intptr_t handle, SQLRETU
                               &nativeError, message, SQL_MAX_MESSAGE_LENGTH, &messageLen);
 
         if (SQL_SUCCEEDED(diagReturn)) {
-            return std::wstring(message);  // Return by value, not by reference
+            errorInfo.sqlState = std::wstring(sqlState);
+            errorInfo.ddbcErrorMsg = std::wstring(message);
         }
     }
-    return L"";  // Return an empty string if no error
+    return errorInfo;
 }
 
 // Wrap SQLDriverConnect
@@ -1432,7 +1439,8 @@ SQLRETURN FetchMany_wrap(intptr_t StatementHandle, py::list& rows, int fetchSize
     ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
     if (!SQL_SUCCEEDED(ret)) {
         std::wcerr << L"Error binding columns: "
-                   << SQLCheckError_Wrap(SQL_HANDLE_STMT, StatementHandle, ret) << std::endl;
+                   << SQLCheckError_Wrap(SQL_HANDLE_STMT, StatementHandle, ret).ddbcErrorMsg
+                   << std::endl;
         return ret;
     }
 
@@ -1443,7 +1451,8 @@ SQLRETURN FetchMany_wrap(intptr_t StatementHandle, py::list& rows, int fetchSize
     ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, fetchSize);
     if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
         std::wcerr << L"Error fetching data: "
-                   << SQLCheckError_Wrap(SQL_HANDLE_STMT, StatementHandle, ret) << std::endl;
+                   << SQLCheckError_Wrap(SQL_HANDLE_STMT, StatementHandle, ret).ddbcErrorMsg
+                   << std::endl;
         return ret;
     }
 
@@ -1502,7 +1511,8 @@ SQLRETURN FetchAll_wrap(intptr_t StatementHandle, py::list& rows) {
     ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
     if (!SQL_SUCCEEDED(ret)) {
         std::wcerr << L"Error binding columns: "
-                   << SQLCheckError_Wrap(SQL_HANDLE_STMT, StatementHandle, ret) << std::endl;
+                   << SQLCheckError_Wrap(SQL_HANDLE_STMT, StatementHandle, ret).ddbcErrorMsg
+                   << std::endl;
         return ret;
     }
 
@@ -1514,7 +1524,8 @@ SQLRETURN FetchAll_wrap(intptr_t StatementHandle, py::list& rows) {
         ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, fetchSize);
         if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
             std::wcerr << L"Error fetching data: "
-                       << SQLCheckError_Wrap(SQL_HANDLE_STMT, StatementHandle, ret) << std::endl;
+                       << SQLCheckError_Wrap(SQL_HANDLE_STMT, StatementHandle, ret).ddbcErrorMsg
+                       << std::endl;
             return ret;
         }
     }
@@ -1552,7 +1563,8 @@ SQLRETURN FetchOne_wrap(intptr_t StatementHandle, py::list& row) {
         return ret;
     } else {
         std::wcerr << L"Error fetching data: "
-                   << SQLCheckError_Wrap(SQL_HANDLE_STMT, StatementHandle, ret) << std::endl;
+                   << SQLCheckError_Wrap(SQL_HANDLE_STMT, StatementHandle, ret).ddbcErrorMsg
+                   << std::endl;
         return ret;
     }
 }
@@ -1645,6 +1657,9 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("sign", &NumericData::sign)
         .def_readwrite("val", &NumericData::val)
         .def("to_double", &NumericData::to_double);  // Expose the to_double method
+    py::class_<ErrorInfo>(m, "ErrorInfo")
+        .def_readwrite("sqlState", &ErrorInfo::sqlState)
+        .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);
     m.def("DDBCSQLAllocHandle", &SQLAllocHandle_wrap,
           "Allocate an environment, connection, statement, or descriptor handle");
     m.def("DDBCSQLSetEnvAttr", &SQLSetEnvAttr_wrap,

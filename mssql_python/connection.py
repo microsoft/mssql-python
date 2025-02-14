@@ -117,19 +117,14 @@ class Connection:
         """
         if ENABLE_LOGGING:
             logging.info("Connecting to the database")
-        try:
-            ret = ddbc_bindings.DDBCSQLDriverConnect(
-                self.hdbc.value, # Connection handle
-                0, # Window handle
-                self.connection_str # Connection string
-            )
-            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
-            if ENABLE_LOGGING:
-                logging.info("Connection established successfully.")
-        except Exception as e:
-            if ENABLE_LOGGING:
-                logging.error("An error occurred while connecting to the database: %s", e)
-            raise
+        ret = ddbc_bindings.DDBCSQLDriverConnect(
+            self.hdbc.value, # Connection handle
+            0, # Window handle
+            self.connection_str # Connection string
+        )
+        check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
+        if ENABLE_LOGGING:
+            logging.info("Connection established successfully.")
 
     @property
     def autocommit(self) -> bool:
@@ -138,16 +133,12 @@ class Connection:
         Returns:
             bool: True if autocommit is enabled, False otherwise.
         """
-        try:
-            autocommit_mode = ddbc_bindings.DDBCSQLGetConnectionAttr(
-                self.hdbc.value,  # Connection handle
-                odbc_sql_const.SQL_ATTR_AUTOCOMMIT.value,  # Attribute
-            )
-            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, autocommit_mode)
-            return autocommit_mode == odbc_sql_const.SQL_AUTOCOMMIT_ON.value
-        except Exception as e:
-            logging.error("An error occurred while getting autocommit mode: %s", e)
-            raise Exception("DatabaseError: Failed to get autocommit mode") from e
+        autocommit_mode = ddbc_bindings.DDBCSQLGetConnectionAttr(
+            self.hdbc.value,  # Connection handle
+            odbc_sql_const.SQL_ATTR_AUTOCOMMIT.value,  # Attribute
+        )
+        check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, autocommit_mode)
+        return autocommit_mode == odbc_sql_const.SQL_AUTOCOMMIT_ON.value
         
     def setautocommit(self, value: bool) -> None:
         """
@@ -159,22 +150,16 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while setting the autocommit mode.
         """
-        try:
-            ret = ddbc_bindings.DDBCSQLSetConnectAttr(
-                self.hdbc.value,  # Connection handle
-                odbc_sql_const.SQL_ATTR_AUTOCOMMIT.value,  # Attribute
-                odbc_sql_const.SQL_AUTOCOMMIT_ON.value if value else odbc_sql_const.SQL_AUTOCOMMIT_OFF.value,  # Value
-                0  # String length
-            )
-            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
-            self._autocommit = value
-            if ENABLE_LOGGING:
-                logging.info("Autocommit mode set to %s.", value)
-        except Exception as e:
-            if ENABLE_LOGGING:
-                logging.error("An error occurred while setting autocommit mode: %s", e)
-            raise Exception("DatabaseError: Failed to set autocommit mode") from e
-
+        ret = ddbc_bindings.DDBCSQLSetConnectAttr(
+            self.hdbc.value,  # Connection handle
+            odbc_sql_const.SQL_ATTR_AUTOCOMMIT.value,  # Attribute
+            odbc_sql_const.SQL_AUTOCOMMIT_ON.value if value else odbc_sql_const.SQL_AUTOCOMMIT_OFF.value,  # Value
+            0  # String length
+        )
+        check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
+        self._autocommit = value
+        if ENABLE_LOGGING:
+            logging.info("Autocommit mode set to %s.", value)
 
     def cursor(self) -> Cursor:
         """
@@ -191,11 +176,7 @@ class Connection:
             DatabaseError: If there is an error while creating the cursor.
             InterfaceError: If there is an error related to the database interface. 
         """
-        try:
-            return Cursor(self)
-        except Exception as e:
-            logging.error("An error occurred while creating the cursor: %s", e)
-            raise Exception("DatabaseError: Failed to create the cursor") from e
+        return Cursor(self)
 
     def commit(self) -> None:
         """
@@ -209,20 +190,15 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while committing the transaction.
         """
-        try:
-            # Commit the current transaction
-            ret = ddbc_bindings.DDBCSQLEndTran(
-                odbc_sql_const.SQL_HANDLE_DBC.value, # Handle type
-                self.hdbc.value, # Connection handle
-                odbc_sql_const.SQL_COMMIT.value # Commit the transaction
-            )
-            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
-            if ENABLE_LOGGING:
-                logging.info("Transaction committed successfully.")
-        except Exception as e:
-            if ENABLE_LOGGING:
-                logging.error("An error occurred while committing the transaction: %s", e)
-            raise Exception("DatabaseError: Failed to commit the transaction") from e
+        # Commit the current transaction
+        ret = ddbc_bindings.DDBCSQLEndTran(
+            odbc_sql_const.SQL_HANDLE_DBC.value, # Handle type
+            self.hdbc.value, # Connection handle
+            odbc_sql_const.SQL_COMMIT.value # Commit the transaction
+        )
+        check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
+        if ENABLE_LOGGING:
+            logging.info("Transaction committed successfully.")
 
     def rollback(self) -> None:
         """
@@ -235,20 +211,15 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while rolling back the transaction.
         """
-        try:
-            # Roll back the current transaction
-            ret = ddbc_bindings.DDBCSQLEndTran(
-                odbc_sql_const.SQL_HANDLE_DBC.value,  # Handle type
-                self.hdbc.value, # Connection handle
-                odbc_sql_const.SQL_ROLLBACK.value # Roll back the transaction
-            )
-            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
-            if ENABLE_LOGGING:
-                logging.info("Transaction rolled back successfully.")
-        except Exception as e:
-            if ENABLE_LOGGING:
-                logging.error("An error occurred while rolling back the transaction: %s", e)
-            raise Exception("DatabaseError: Failed to roll back the transaction") from e
+        # Roll back the current transaction
+        ret = ddbc_bindings.DDBCSQLEndTran(
+            odbc_sql_const.SQL_HANDLE_DBC.value,  # Handle type
+            self.hdbc.value, # Connection handle
+            odbc_sql_const.SQL_ROLLBACK.value # Roll back the transaction
+        )
+        check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
+        if ENABLE_LOGGING:
+            logging.info("Transaction rolled back successfully.")
 
     def close(self) -> None:
         """
@@ -263,18 +234,13 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while closing the connection.
         """
-        try:
-            # Disconnect from the database
-            ret = ddbc_bindings.DDBCSQLDisconnect(self.hdbc.value)
-            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
-            
-            # Free the connection handle
-            ret = ddbc_bindings.DDBCSQLFreeHandle(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value)
-            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
-            
-            if ENABLE_LOGGING:
-                logging.info("Connection closed successfully.")
-        except Exception as e:
-            if ENABLE_LOGGING:
-                logging.error("An error occurred while closing the connection: %s", e)
-            raise Exception("DatabaseError: Failed to close the connection") from e
+        # Disconnect from the database
+        ret = ddbc_bindings.DDBCSQLDisconnect(self.hdbc.value)
+        check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
+        
+        # Free the connection handle
+        ret = ddbc_bindings.DDBCSQLFreeHandle(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value)
+        check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
+        
+        if ENABLE_LOGGING:
+            logging.info("Connection closed successfully.")

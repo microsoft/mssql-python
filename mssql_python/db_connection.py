@@ -24,15 +24,5 @@ def connect(connection_str: str) -> Connection:
     be used to perform database operations such as executing queries, committing
     transactions, and closing the connection.
     """
-    try:
-        conn = Connection(connection_str)
-        return conn
-    except DatabaseError as e:
-        logging.error(f"Database error occurred while connecting to the database: {e}")
-        raise DatabaseError(f"Database error occurred while connecting to the database: {e}")
-    except InterfaceError as e:
-        logging.error(f"Interface error occurred while connecting to the database: {e}")
-        raise InterfaceError(f"Interface error occurred while connecting to the database: {e}")
-    except Exception as e:
-        logging.error(f"An error occurred while connecting to the database: {e}")
-        raise Exception(f"An error occurred while connecting to the database: {e}")
+    conn = Connection(connection_str)
+    return conn
