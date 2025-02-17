@@ -66,13 +66,13 @@ def TimeFromTicks(ticks: int) -> datetime.time:
     """
     Generates a time object from ticks.
     """
-    return datetime.time(*time.localtime(ticks)[3:6])
+    return datetime.time(*time.gmtime(ticks)[3:6])
 
 def TimestampFromTicks(ticks: int) -> datetime.datetime:
     """
     Generates a timestamp object from ticks.
     """
-    return datetime.datetime.fromtimestamp(ticks)
+    return datetime.datetime.fromtimestamp(ticks, datetime.UTC)
 
 def Binary(string: str) -> bytes:
     """

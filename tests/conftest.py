@@ -38,4 +38,3 @@ def db_connection(conn_str):
 def cursor(db_connection):
     cursor = db_connection.cursor()
     yield cursor
-

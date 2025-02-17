@@ -108,3 +108,7 @@ def test_invalid_connection_string():
     # Check if initializing with an invalid connection string raises an exception
     with pytest.raises(Exception):
         Connection("invalid_connection_string")
+
+def test_connection_close(db_connection):
+    # Check if the database connection is closed
+    db_connection.close()

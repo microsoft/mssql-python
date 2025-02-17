@@ -59,14 +59,12 @@ def check_error(handle_type, handle, ret):
     Raises:
         RuntimeError: If an error is found.
     """
-    if ENABLE_LOGGING:
-        logging.debug(f"Checking error for handle type: {handle_type}, handle: {handle}, ret: {ret}")
-    if ret == ConstantsODBC.SQL_ERROR.value:
+    if ret < 0:
         error_info = ddbc_bindings.DDBCSQLCheckError(handle_type, handle, ret)
         if ENABLE_LOGGING:
             logging.error(f"Error: {error_info.ddbcErrorMsg}")
         raise_exception(error_info.sqlState, error_info.ddbcErrorMsg)
-    
+
 def add_driver_name_to_app_parameter(connection_string):
     """
     Modifies the input connection string by appending the APP name.

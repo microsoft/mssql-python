@@ -12,6 +12,7 @@
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
+#include <pybind11/pytypes.h>  // Add this line for datetime support
 #include <pybind11/stl.h>
 #include <windows.h>  // windows.h needs to be included before sql.h
 #include <sql.h>
@@ -957,7 +958,13 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                 ret =
                     SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue), NULL);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(py::make_tuple(dateValue.year, dateValue.month, dateValue.day));
+                    row.append(
+                        py::module_::import("datetime").attr("date")(
+                            dateValue.year,
+                            dateValue.month,
+                            dateValue.day
+                        )
+                    );
                 } else {
                     row.append(py::none());
                 }
@@ -970,7 +977,13 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                 ret =
                     SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIME, &timeValue, sizeof(timeValue), NULL);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(py::make_tuple(timeValue.hour, timeValue.minute, timeValue.second));
+                    row.append(
+                        py::module_::import("datetime").attr("time")(
+                            timeValue.hour,
+                            timeValue.minute,
+                            timeValue.second
+                        )
+                    );
                 } else {
                     row.append(py::none());
                 }
@@ -983,9 +996,16 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIMESTAMP, &timestampValue,
                                      sizeof(timestampValue), NULL);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(py::make_tuple(timestampValue.year, timestampValue.month,
-                                              timestampValue.day, timestampValue.hour,
-                                              timestampValue.minute, timestampValue.second));
+                    row.append(
+                        py::module_::import("datetime").attr("datetime")(
+                            timestampValue.year,
+                            timestampValue.month,
+                            timestampValue.day,
+                            timestampValue.hour,
+                            timestampValue.minute,
+                            timestampValue.second
+                        )
+                    );
                 } else {
                     row.append(py::none());
                 }
@@ -1305,27 +1325,40 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     case SQL_TIMESTAMP:
                     case SQL_TYPE_TIMESTAMP:
                     case SQL_DATETIME:
-                        row.append(py::make_tuple(buffers.timestampBuffers[col - 1][i].year,
-                                                  buffers.timestampBuffers[col - 1][i].month,
-                                                  buffers.timestampBuffers[col - 1][i].day,
-                                                  buffers.timestampBuffers[col - 1][i].hour,
-                                                  buffers.timestampBuffers[col - 1][i].minute,
-                                                  buffers.timestampBuffers[col - 1][i].second));
+                        row.append(
+                            py::module_::import("datetime").attr("datetime")(
+                                buffers.timestampBuffers[col - 1][i].year,
+                                buffers.timestampBuffers[col - 1][i].month,
+                                buffers.timestampBuffers[col - 1][i].day,
+                                buffers.timestampBuffers[col - 1][i].hour,
+                                buffers.timestampBuffers[col - 1][i].minute,
+                                buffers.timestampBuffers[col - 1][i].second
+                            )
+                            
+                        );
                         break;
                     case SQL_BIGINT:
                         row.append(buffers.bigIntBuffers[col - 1][i]);
                         break;
                     case SQL_TYPE_DATE:
-                        row.append(py::make_tuple(buffers.dateBuffers[col - 1][i].year,
-                                                  buffers.dateBuffers[col - 1][i].month,
-                                                  buffers.dateBuffers[col - 1][i].day));
+                        row.append(
+                            py::module_::import("datetime").attr("date")(
+                                buffers.dateBuffers[col - 1][i].year,
+                                buffers.dateBuffers[col - 1][i].month,
+                                buffers.dateBuffers[col - 1][i].day
+                            )   
+                        );
                         break;
                     case SQL_TIME:
                     case SQL_TYPE_TIME:
                     case SQL_SS_TIME2:
-                        row.append(py::make_tuple(buffers.timeBuffers[col - 1][i].hour,
-                                                  buffers.timeBuffers[col - 1][i].minute,
-                                                  buffers.timeBuffers[col - 1][i].second));
+                        row.append(
+                            py::module_::import("datetime").attr("time")(
+                                buffers.timeBuffers[col - 1][i].hour,
+                                buffers.timeBuffers[col - 1][i].minute,
+                                buffers.timeBuffers[col - 1][i].second
+                            )
+                        );
                         break;
                     case SQL_GUID:
                         row.append(py::bytes(

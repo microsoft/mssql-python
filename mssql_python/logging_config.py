@@ -5,7 +5,7 @@ import os
 # Variable to enable or disable logging
 ENABLE_LOGGING = False
 
-def setup_logging(log_level=logging.INFO):
+def setup_logging(log_level=logging.DEBUG):
     """
     Set up logging configuration.
 

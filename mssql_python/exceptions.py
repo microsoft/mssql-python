@@ -9,7 +9,7 @@ class Exception(Exception):
     """
     def __init__(self, driver_error, ddbc_error) -> None:
         self.driver_error = driver_error
-        self.ddbc_error = ddbc_error
+        self.ddbc_error = truncate_error_message(ddbc_error)
         self.message = f"Driver Error: {self.driver_error}; DDBC Error: {self.ddbc_error}"
         super().__init__(self.message)
 
@@ -218,13 +218,8 @@ def sqlstate_to_exception(sqlstate: str, ddbc_error: str) -> Exception:
 
 def truncate_error_message(error_message: str) -> str:
     '''
-    Sample Error Message:
-    mssql_python.exceptions.ProgrammingError: Driver Error: Syntax error or access violation; DDBC Error: [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]Incorrect syntax near the keyword 'from'.
-    Remove [ODBC Driver 18 for SQL Server] from the error message.
-    - The Driver Error message is the message that is returned by the ODBC driver.
-    - It will always start with [ODBC Driver <version> for SQL Server].
-    - The DDBC Error message is the message that is returned by the database server.
-    - this section will always be at the start of the message.
+    - The Driver Error message is the message that is returned by the Internal driver.
+    - This section will always be at the start of the message.
     '''
     try:
         if not error_message.startswith('[Microsoft]'):
@@ -252,10 +247,9 @@ def raise_exception(sqlstate: str, ddbc_error: str) -> None:
     Raises:
         DatabaseError: If the SQLSTATE code is not found in the mapping.
     """
-    exception_class = sqlstate_to_exception(
-        sqlstate,
-        truncate_error_message(ddbc_error)
-    )
+    exception_class = sqlstate_to_exception(sqlstate, ddbc_error)
     if exception_class:
+        if ENABLE_LOGGING:
+            logging.error(exception_class)
         raise exception_class
     raise DatabaseError(driver_error="An error occurred with SQLSTATE code", ddbc_error=f"Unknown DDBC error: {sqlstate}")

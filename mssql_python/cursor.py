@@ -222,16 +222,6 @@ class Cursor:
         numeric_data.sign = param.as_tuple().sign
         numeric_data.val = str(param)
 
-        print("NUMERIC DATA!!!", numeric_data.precision, numeric_data.scale, numeric_data.sign, numeric_data.val)
-        # precision = param.as_tuple().digits
-        # scale = param.as_tuple().exponent * -1
-        # sign = param.as_tuple().sign
-        # numeric_data = {
-        #     'precision': len(precision),
-        #     'scale': scale,
-        #     'sign': sign,
-        #     'value': param
-        # }
         return numeric_data
 
     def _map_sql_type(self, param, parameters_list, i):
@@ -259,13 +249,12 @@ class Cursor:
                 return odbc_sql_const.SQL_FLOAT.value, odbc_sql_const.SQL_C_DOUBLE.value, 15, 0
         
         elif isinstance(param, decimal.Decimal):
-            if param.as_tuple().exponent == -4:  # Scale is 4
-                if -214748.3648 <= param <= 214748.3647:
-                    return odbc_sql_const.SQL_SMALLMONEY.value, odbc_sql_const.SQL_C_NUMERIC.value, 10, 4
-                elif -922337203685477.5808 <= param <= 922337203685477.5807:
-                    return odbc_sql_const.SQL_MONEY.value, odbc_sql_const.SQL_C_NUMERIC.value, 19, 4
+            # if param.as_tuple().exponent == -4:  # Scale is 4
+            #     if -214748.3648 <= param <= 214748.3647:
+            #         return odbc_sql_const.SQL_SMALLMONEY.value, odbc_sql_const.SQL_C_NUMERIC.value, 10, 4
+            #     elif -922337203685477.5808 <= param <= 922337203685477.5807:
+            #         return odbc_sql_const.SQL_MONEY.value, odbc_sql_const.SQL_C_NUMERIC.value, 19, 4
             parameters_list[i] = self._get_numeric_data(param)  # Replace the parameter with the dictionary
-            print("DECIMAL!!!", odbc_sql_const.SQL_DECIMAL.value, odbc_sql_const.SQL_C_NUMERIC.value)
             return odbc_sql_const.SQL_DECIMAL.value, odbc_sql_const.SQL_C_NUMERIC.value, len(param.as_tuple().digits), param.as_tuple().exponent * -1
         
         elif isinstance(param, str):
@@ -319,11 +308,12 @@ class Cursor:
         elif isinstance(param, uuid.UUID):  # Handle uniqueidentifier
             return odbc_sql_const.SQL_GUID.value, odbc_sql_const.SQL_C_GUID.value, 36, 0
         
+        elif isinstance(param, datetime.datetime):
+            # Always keep datetime.datetime check before datetime.date check since datetime.datetime is a subclass of datetime (isinstance(datetime.datetime, datetime.date) returns True)
+            return odbc_sql_const.SQL_TIMESTAMP.value, odbc_sql_const.SQL_C_TYPE_TIMESTAMP.value, 23, 3
+        
         elif isinstance(param, datetime.date):
             return odbc_sql_const.SQL_DATE.value, odbc_sql_const.SQL_C_TYPE_DATE.value, 10, 0
-        
-        elif isinstance(param, datetime.datetime):
-            return odbc_sql_const.SQL_TIMESTAMP.value, odbc_sql_const.SQL_C_TYPE_TIMESTAMP.value, 23, 3
         
         elif isinstance(param, datetime.time):
             return odbc_sql_const.SQL_TIME.value, odbc_sql_const.SQL_C_TYPE_TIME.value, 8, 0
@@ -336,11 +326,7 @@ class Cursor:
         """
         Initialize the ODBC statement handle.
         """
-        # Allocate the statement handle
-        # try:
         self._allocate_statement_handle()
-        # except Exception as e:
-        #     logging.error("An error occurred during initialization: %s", e)
     
     def _allocate_statement_handle(self):
             """
@@ -504,6 +490,22 @@ class Cursor:
         '''
         Execute SQL Statement - (SQLExecute)
         '''
+        if ENABLE_LOGGING:
+            # TODO - Need to evaluate encrypted logs for query parameters
+            logging.debug("Executing query: %s", operation)
+            for i, param in enumerate(parameters):
+                logging.debug(
+                    "Parameter number: %s, Parameter: %s, Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s",
+                    i+1,
+                    param,
+                    str(type(param)),
+                    parameters_type[i].paramSQLType, 
+                    parameters_type[i].paramCType, 
+                    parameters_type[i].columnSize, 
+                    parameters_type[i].decimalDigits, 
+                    parameters_type[i].inputOutputType
+                )
+
         ret = ddbc_bindings.DDBCSQLExecute(self.hstmt.value, operation, parameters, parameters_type,
                                             self.is_stmt_prepared, use_prepare)
         check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
