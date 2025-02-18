@@ -105,7 +105,7 @@ struct ColumnBuffers {
     std::vector<std::vector<SQLWCHAR>> wcharBuffers;
     std::vector<std::vector<SQLINTEGER>> intBuffers;
     std::vector<std::vector<SQLSMALLINT>> smallIntBuffers;
-    std::vector<std::vector<SQLFLOAT>> floatBuffers;
+    std::vector<std::vector<SQLREAL>> realBuffers;
     std::vector<std::vector<SQLDOUBLE>> doubleBuffers;
     std::vector<std::vector<SQL_NUMERIC_STRUCT>> numericBuffers;
     std::vector<std::vector<SQL_TIMESTAMP_STRUCT>> timestampBuffers;
@@ -120,7 +120,7 @@ struct ColumnBuffers {
           wcharBuffers(numCols),
           intBuffers(numCols),
           smallIntBuffers(numCols),
-          floatBuffers(numCols),
+          realBuffers(numCols),
           doubleBuffers(numCols),
           numericBuffers(numCols),
           timestampBuffers(numCols),
@@ -906,12 +906,11 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                 }
                 break;
             }
-            case SQL_FLOAT:
             case SQL_REAL: {
-                SQLREAL floatValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_FLOAT, &floatValue, 0, NULL);
+                SQLREAL realValue;
+                ret = SQLGetData_ptr(hStmt, i, SQL_REAL, &realValue, 0, NULL);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<float>(floatValue));
+                    row.append(realValue);
                 } else {
                     row.append(py::none());
                 }
@@ -933,11 +932,12 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                 }
                 break;
             }
-            case SQL_DOUBLE: {
+            case SQL_DOUBLE:
+            case SQL_FLOAT: {
                 SQLDOUBLE doubleValue;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_DOUBLE, &doubleValue, 0, NULL);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<double>(doubleValue));
+                    row.append(doubleValue);
                 } else {
                     row.append(py::none());
                 }
@@ -1154,9 +1154,8 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                                      sizeof(SQLCHAR), buffers.indicators[col - 1].data());
                 break;
             case SQL_REAL:
-            case SQL_FLOAT:
-                buffers.floatBuffers[col - 1].resize(fetchSize);
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_FLOAT, buffers.floatBuffers[col - 1].data(),
+                buffers.realBuffers[col - 1].resize(fetchSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_REAL, buffers.realBuffers[col - 1].data(),
                                      sizeof(SQLREAL), buffers.indicators[col - 1].data());
                 break;
             case SQL_DECIMAL:
@@ -1167,6 +1166,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                     sizeof(SQL_NUMERIC_STRUCT), buffers.indicators[col - 1].data());
                 break;
             case SQL_DOUBLE:
+            case SQL_FLOAT:
                 buffers.doubleBuffers[col - 1].resize(fetchSize);
                 ret =
                     SQLBindCol_ptr(hStmt, col, SQL_C_DOUBLE, buffers.doubleBuffers[col - 1].data(),
@@ -1305,8 +1305,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         row.append(buffers.charBuffers[col - 1][i]);
                         break;
                     case SQL_REAL:
-                    case SQL_FLOAT:
-                        row.append(static_cast<float>(buffers.floatBuffers[col - 1][i]));
+                        row.append(buffers.realBuffers[col - 1][i]);
                         break;
                     case SQL_DECIMAL:
                     case SQL_NUMERIC:
@@ -1320,7 +1319,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                                 .to_double());
                         break;
                     case SQL_DOUBLE:
-                        row.append(static_cast<double>(buffers.doubleBuffers[col - 1][i]));
+                    case SQL_FLOAT:
+                        row.append(buffers.doubleBuffers[col - 1][i]);
                         break;
                     case SQL_TIMESTAMP:
                     case SQL_TYPE_TIMESTAMP:
