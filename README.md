@@ -1,34 +1,7 @@
-# MSSQL-Python
+# mssql-python
 
-This repository contains the source code for the MSSQL-Python project, which provides Python bindings for the Microsoft SQL Server driver using `pybind11`. The project includes a C++ extension module that wraps the DDBC API and exposes it to Python, allowing for efficient database interactions.
+This is a new Python driver for Microsoft SQL Server currently under development.
 
-## Build Status (`main`)
+## Development Stage
 
-### Python Tests
-[![Build Status](https://sqlclientdrivers.visualstudio.com/mssql-python/_apis/build/status%2FPython%20Tests?branchName=main)](https://sqlclientdrivers.visualstudio.com/mssql-python/_build/latest?definitionId=2024&branchName=main)
-
-## Requirements
-
-To build and run this project, you need the following:
-
-- **Python**: Version 3.13
-
-### Installing Requirements
-
-To install the required Python packages, use the following command:
-
-```sh
-pip install -r requirements.txt
-```
-
-## Running Tests
-
-To run the tests locally, use the following command:
-
-```sh
-python -m pytest -v
-```
-
-## Building the PYD binary
-
-To build locally, follow steps in the `README.txt` inside `mssql_python\pybind` directory.
+Please note that this project is in the early stages of development. No code, logic, or binaries are present in this package at this time. This release is intended to reserve the package name on PyPI and provide a placeholder for future development. Stay tuned for updates as we continue to work on this project.

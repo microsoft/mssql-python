@@ -25,3 +25,7 @@ mssql_python/.vs
 # Ignore test-*.xml files
 test-*.xml
 **/test-**.xml
+
+# Ignore the build & mssql_python.egg-info directories
+build/
+mssql_python.egg-info/

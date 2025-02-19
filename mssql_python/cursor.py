@@ -243,10 +243,10 @@ class Cursor:
         # strip decimal point from param & convert the significant digits to integer
         # Ex: 12.34 ---> 1234
         val = str(param)
-        if '.' in val:
+        if '.' in val or '-' in val:
             val = val.replace('.', '')
             val = val.replace('-', '')
-            val = int(val)
+        val = int(val)
         numeric_data.val = val
         return numeric_data
 
