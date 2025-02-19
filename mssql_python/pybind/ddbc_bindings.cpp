@@ -31,6 +31,7 @@ using namespace pybind11::literals;
 
 // This constant is not exposed via sql.h, hence define it here
 #define SQL_SS_TIME2 (-154)
+#define SQL_NUMERIC_SIZE 64
 
 // Logs data to stdout only in debug builds
 // TODO: Handle both UTF-8 and UTF-16 strings
@@ -110,7 +111,6 @@ struct ColumnBuffers {
     std::vector<std::vector<SQLSMALLINT>> smallIntBuffers;
     std::vector<std::vector<SQLREAL>> realBuffers;
     std::vector<std::vector<SQLDOUBLE>> doubleBuffers;
-    std::vector<std::vector<SQL_NUMERIC_STRUCT>> numericBuffers;
     std::vector<std::vector<SQL_TIMESTAMP_STRUCT>> timestampBuffers;
     std::vector<std::vector<SQLBIGINT>> bigIntBuffers;
     std::vector<std::vector<SQL_DATE_STRUCT>> dateBuffers;
@@ -125,7 +125,6 @@ struct ColumnBuffers {
           smallIntBuffers(numCols),
           realBuffers(numCols),
           doubleBuffers(numCols),
-          numericBuffers(numCols),
           timestampBuffers(numCols),
           bigIntBuffers(numCols),
           dateBuffers(numCols),
@@ -941,16 +940,22 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
             }
             case SQL_DECIMAL:
             case SQL_NUMERIC: {
-                SQL_NUMERIC_STRUCT numericValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_NUMERIC, &numericValue, sizeof(numericValue),
-                                     NULL);
+                SQLCHAR numericStr[SQL_NUMERIC_SIZE] = { 0 };
+                SQLLEN indicator;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, numericStr, sizeof(numericStr), &indicator);
+
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(NumericData(numericValue.precision, numericValue.scale,
-                                           numericValue.sign,
-                                           std::string(reinterpret_cast<char*>(numericValue.val),
-                                                       SQL_MAX_NUMERIC_LEN))
-                                   .to_double());
-                } else {
+                    try{
+                    // Convert numericStr to py::decimal.Decimal and append to row
+                    row.append(py::module_::import("decimal").attr("Decimal")(
+                        std::string(reinterpret_cast<const char*>(numericStr), indicator)));
+                    } catch (const py::error_already_set& e) {
+                        // If the conversion fails, append None
+                        DEBUG_LOG("Error converting to decimal: %s", e.what());
+                        row.append(py::none());
+                    }
+                }
+                else {
                     row.append(py::none());
                 }
                 break;
@@ -1142,7 +1147,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR:
-                buffers.charBuffers[col - 1].resize(fetchSize * (columnSize));
+                buffers.charBuffers[col - 1].resize(fetchSize * columnSize);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
                                      (columnSize) * sizeof(SQLCHAR),
                                      buffers.indicators[col - 1].data());
@@ -1150,7 +1155,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
             case SQL_WCHAR:
             case SQL_WVARCHAR:
             case SQL_WLONGVARCHAR:
-                buffers.wcharBuffers[col - 1].resize(fetchSize * (columnSize));
+                buffers.wcharBuffers[col - 1].resize(fetchSize * columnSize);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
                                      (columnSize) * sizeof(SQLWCHAR),
                                      buffers.indicators[col - 1].data());
@@ -1183,10 +1188,10 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 break;
             case SQL_DECIMAL:
             case SQL_NUMERIC:
-                buffers.numericBuffers[col - 1].resize(fetchSize);
+                buffers.charBuffers[col - 1].resize(fetchSize * SQL_NUMERIC_SIZE);
                 ret = SQLBindCol_ptr(
-                    hStmt, col, SQL_C_NUMERIC, buffers.numericBuffers[col - 1].data(),
-                    sizeof(SQL_NUMERIC_STRUCT), buffers.indicators[col - 1].data());
+                    hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
+                    SQL_NUMERIC_SIZE * sizeof(SQLCHAR), buffers.indicators[col - 1].data());
                 break;
             case SQL_DOUBLE:
             case SQL_FLOAT:
@@ -1332,14 +1337,17 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         break;
                     case SQL_DECIMAL:
                     case SQL_NUMERIC:
-                        row.append(
-                            NumericData(buffers.numericBuffers[col - 1][i].precision,
-                                        buffers.numericBuffers[col - 1][i].scale,
-                                        buffers.numericBuffers[col - 1][i].sign,
-                                        std::string(reinterpret_cast<char*>(
-                                                        buffers.numericBuffers[col - 1][i].val),
-                                                    SQL_MAX_NUMERIC_LEN))
-                                .to_double());
+                        try {
+                            // Convert numericStr to py::decimal.Decimal and append to row
+                            row.append(py::module_::import("decimal").attr("Decimal")(
+                                std::string(reinterpret_cast<const char*>(
+                                    &buffers.charBuffers[col - 1][i * SQL_NUMERIC_SIZE]),
+                                    buffers.indicators[col - 1][i])));
+                        } catch (const py::error_already_set& e) {
+                            // Handle the exception, e.g., log the error and append py::none()
+                            DEBUG_LOG("Error converting to decimal: %s", e.what());
+                            row.append(py::none());
+                        }
                         break;
                     case SQL_DOUBLE:
                     case SQL_FLOAT:
@@ -1443,12 +1451,15 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
                 rowSize += sizeof(SQLSMALLINT);
                 break;
             case SQL_REAL:
-            case SQL_FLOAT:
-            case SQL_DECIMAL:
                 rowSize += sizeof(SQLREAL);
                 break;
             case SQL_DOUBLE:
+            case SQL_FLOAT:
                 rowSize += sizeof(SQLDOUBLE);
+                break;
+            case SQL_DECIMAL:
+            case SQL_NUMERIC:
+                rowSize += SQL_NUMERIC_SIZE;
                 break;
             case SQL_TIMESTAMP:
             case SQL_TYPE_TIMESTAMP:
