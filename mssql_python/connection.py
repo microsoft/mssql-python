@@ -26,45 +26,81 @@ class Connection:
         close() -> None:
     """
   
-    def __init__(self, connection_str: str, autocommit: bool = True) -> None:
+    def __init__(self, connection_str: str, autocommit: bool = False, **kwargs) -> None:
         """
-        Initialize the connection object with the specified connection string.
+        Initialize the connection object with the specified connection string and parameters.
 
         Args:
-            connection_str (str): The connection_str to connect to.
-
+            - connection_str (str): The connection string to connect to.
+            - autocommit (bool): If True, causes a commit to be performed after each SQL statement.
+            **kwargs: Additional key/value pairs for the connection string.
+            Not including below properties since we are driver doesn't support this:
+            
         Returns:
             None
 
         Raises:
-            ValueError: If the connection_str is invalid or connection fails.
+            ValueError: If the connection string is invalid or connection fails.
 
         This method sets up the initial state for the connection object, 
         preparing it for further operations such as connecting to the database, executing queries, etc.
         """
         self.henv = ctypes.c_void_p()
         self.hdbc = ctypes.c_void_p()
-        self.connection_str = add_driver_to_connection_str(connection_str)
+        self.connection_str = self._construct_connection_string(connection_str, **kwargs)
         self._initializer()
         self._autocommit = autocommit
         self.setautocommit(autocommit)
 
+    def _construct_connection_string(self, connection_str: str, **kwargs) -> str:
+        """
+        Construct the connection string by concatenating the connection string with key/value pairs from kwargs.
+
+        Args:
+            connection_str (str): The base connection string.
+            **kwargs: Additional key/value pairs for the connection string.
+
+        Returns:
+            str: The constructed connection string.
+        """
+        # Add the driver attribute to the connection string
+        conn_str = add_driver_to_connection_str(connection_str)
+        # Add additional key-value pairs to the connection string
+        for key, value in kwargs.items():
+            if key.lower() == "host":
+                key = "Server"
+            elif key.lower() == "user":
+                key = "Uid"
+            elif key.lower() == "password":
+                key = "Pwd"
+            elif key.lower() == "database":
+                key = "Database"
+            elif key.lower() == "encrypt":
+                key = "Encrypt"
+            elif key.lower() == "trust_server_certificate":
+                key = "TrustServerCertificate"
+            else:
+                continue
+            conn_str += f"{key}={value};"
+        return conn_str
+
     def _initializer(self) -> None:
         """
-        Initialize the ODBC environment and connection handles.
+        Initialize the environment and connection handles.
 
-        This method is responsible for setting up the ODBC environment and connection
+        This method is responsible for setting up the environment and connection
         handles, allocating memory for them, and setting the necessary attributes.
         It should be called before establishing a connection to the database.
         """
         self._allocate_environment_handle()
         self._set_environment_attributes()
         self._allocate_connection_handle()
+        self._set_connection_attributes()
         self._connect_to_db()
         
     def _allocate_environment_handle(self):
         """
-        Allocate the ODBC environment handle.
+        Allocate the environment handle.
         """
         ret = ddbc_bindings.DDBCSQLAllocHandle(
             odbc_sql_const.SQL_HANDLE_ENV.value, #SQL environment handle type
@@ -75,7 +111,7 @@ class Connection:
 
     def _set_environment_attributes(self):
         """
-        Set the ODBC environment attributes.
+        Set the environment attributes.
         """
         ret = ddbc_bindings.DDBCSQLSetEnvAttr(
             self.henv.value,  # Environment handle
@@ -87,7 +123,7 @@ class Connection:
 
     def _allocate_connection_handle(self):
         """
-        Allocate the ODBC connection handle.
+        Allocate the connection handle.
         """
         ret = ddbc_bindings.DDBCSQLAllocHandle(
             odbc_sql_const.SQL_HANDLE_DBC.value, # SQL connection handle type
@@ -95,6 +131,19 @@ class Connection:
             ctypes.cast(ctypes.pointer(self.hdbc), ctypes.c_void_p).value # SQL output handle pointer
         )
         check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
+
+    def _set_connection_attributes(self):
+        """
+        Set the connection attributes before connecting.
+        """
+        if self.autocommit:
+            ret = ddbc_bindings.DDBCSQLSetConnectAttr(
+                self.hdbc.value,
+                odbc_sql_const.SQL_ATTR_AUTOCOMMIT.value,
+                odbc_sql_const.SQL_AUTOCOMMIT_ON.value,
+                0
+            )
+            check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
 
     def _connect_to_db(self) -> None:
         """
@@ -133,8 +182,9 @@ class Connection:
         )
         check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, autocommit_mode)
         return autocommit_mode == odbc_sql_const.SQL_AUTOCOMMIT_ON.value
-        
-    def setautocommit(self, value: bool) -> None:
+
+    @autocommit.setter
+    def autocommit(self, value: bool) -> None:
         """
         Set the autocommit mode of the connection.
         Args:
@@ -154,6 +204,18 @@ class Connection:
         self._autocommit = value
         if ENABLE_LOGGING:
             logger.info("Autocommit mode set to %s.", value)
+
+    def setautocommit(self, value: bool = True) -> None:
+        """
+        Set the autocommit mode of the connection.
+        Args:
+            value (bool): True to enable autocommit, False to disable it.
+        Returns:
+            None
+        Raises:
+            DatabaseError: If there is an error while setting the autocommit mode.
+        """
+        self.autocommit = value
 
     def cursor(self) -> Cursor:
         """

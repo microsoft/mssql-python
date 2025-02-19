@@ -30,27 +30,65 @@ def test_connection(db_connection):
     cursor = db_connection.cursor()
     assert cursor is not None, "Database connection failed - Cursor cannot be None"
 
+
+def test_construct_connection_string(db_connection):
+    # Check if the connection string is constructed correctly with kwargs
+    conn_str = db_connection._construct_connection_string("",host="localhost", user="me", password="mypwd", database="mydb", encrypt="yes", trust_server_certificate="yes")
+    assert "Server=localhost;" in conn_str, "Connection string should contain 'Server=localhost;'"
+    assert "Uid=me;" in conn_str, "Connection string should contain 'Uid=me;'"
+    assert "Pwd=mypwd;" in conn_str, "Connection string should contain 'Pwd=mypwd;'"
+    assert "Database=mydb;" in conn_str, "Connection string should contain 'Database=mydb;'"
+    assert "Encrypt=yes;" in conn_str, "Connection string should contain 'Encrypt=yes;'"
+    assert "TrustServerCertificate=yes;" in conn_str, "Connection string should contain 'TrustServerCertificate=yes;'"
+    assert "APP=MSSQL-Python" in conn_str, "Connection string should contain 'APP=MSSQL-Python'"
+    assert "Driver={ODBC Driver 18 for SQL Server}" in conn_str, "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
+    assert "Driver={ODBC Driver 18 for SQL Server};;APP=MSSQL-Python;Server=localhost;Uid=me;Pwd=mypwd;Database=mydb;Encrypt=yes;TrustServerCertificate=yes;" == conn_str, "Connection string is incorrect"
+
 def test_autocommit_default(db_connection):
     assert db_connection.autocommit is True, "Autocommit should be True by default"
 
-# def test_autocommit_property(db_connection):
-#     db_connection.autocommit = True
-#     assert db_connection.autocommit is True, "Autocommit should be True"
-#     # Create a new cursor to check if the autocommit property is set in the server
-#     cursor = db_connection.cursor()
-#     cursor.execute("DBCC USEROPTIONS;")
-#     result = cursor.fetchall()
-#     implicit_transactions_status = any(option[0] == 'implicit_transactions' and option[1] == 'SET' for option in result)
-#     assert not implicit_transactions_status, "Autocommit failed: Implicit transactions should be off"
-
-#     db_connection.autocommit = False
-#     assert db_connection.autocommit is False, "Autocommit should be False"
-#     cursor.execute("DBCC USEROPTIONS;")
-#     result = cursor.fetchall()
-#     implicit_transactions_status = any(option[0] == 'implicit_transactions' and option[1] == 'SET' for option in result)
-#     assert implicit_transactions_status, "Autocommit failed: Implicit transactions should be on"
+def test_autocommit_setter(db_connection):
+    db_connection.autocommit = True
+    cursor = db_connection.cursor()
+    # Make a transaction and check if it is autocommited
+    drop_table_if_exists(cursor, "pytest_test_autocommit")
+    try:
+        cursor.execute("CREATE TABLE pytest_test_autocommit (id INT PRIMARY KEY, value VARCHAR(50));")
+        cursor.execute("INSERT INTO pytest_test_autocommit (id, value) VALUES (1, 'test');")
+        cursor.execute("SELECT * FROM pytest_test_autocommit WHERE id = 1;")
+        result = cursor.fetchone()
+        assert result is not None, "Autocommit failed: No data found"
+        assert result[1] == 'test', "Autocommit failed: Incorrect data"
+    except Exception as e:
+        pytest.fail(f"Autocommit failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_test_autocommit;")
+        db_connection.commit()
+    assert db_connection.autocommit is True, "Autocommit should be True"
     
-def test_set_autcommit(db_connection):
+    db_connection.autocommit = False
+    cursor = db_connection.cursor()
+    # Make a transaction and check if it is not autocommited
+    drop_table_if_exists(cursor, "pytest_test_autocommit")
+    try:
+        cursor.execute("CREATE TABLE pytest_test_autocommit (id INT PRIMARY KEY, value VARCHAR(50));")
+        cursor.execute("INSERT INTO pytest_test_autocommit (id, value) VALUES (1, 'test');")
+        cursor.execute("SELECT * FROM pytest_test_autocommit WHERE id = 1;")
+        result = cursor.fetchone()
+        assert result is not None, "Autocommit failed: No data found"
+        assert result[1] == 'test', "Autocommit failed: Incorrect data"
+        db_connection.commit()
+        cursor.execute("SELECT * FROM pytest_test_autocommit WHERE id = 1;")
+        result = cursor.fetchone()
+        assert result is not None, "Autocommit failed: No data found after commit"
+        assert result[1] == 'test', "Autocommit failed: Incorrect data after commit"
+    except Exception as e:
+        pytest.fail(f"Autocommit failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_test_autocommit;")
+        db_connection.commit()
+    
+def test_set_autocommit(db_connection):
     db_connection.setautocommit(True)
     assert db_connection.autocommit is True, "Autocommit should be True"
     db_connection.setautocommit(False)

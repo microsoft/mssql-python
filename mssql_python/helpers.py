@@ -1,4 +1,3 @@
-from mssql_python.constants import ConstantsODBC
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import raise_exception
 from mssql_python.logging_config import get_logger, ENABLE_LOGGING

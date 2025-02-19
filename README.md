@@ -1,6 +1,6 @@
 # MSSQL-Python
 
-This repository contains the source code for the MSSQL-Python project, which provides Python bindings for the Microsoft SQL Server ODBC driver using `pybind11`. The project includes a C++ extension module that wraps the ODBC API and exposes it to Python, allowing for efficient database interactions.
+This repository contains the source code for the MSSQL-Python project, which provides Python bindings for the Microsoft SQL Server driver using `pybind11`. The project includes a C++ extension module that wraps the DDBC API and exposes it to Python, allowing for efficient database interactions.
 
 ## Build Status (`main`)
 
