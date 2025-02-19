@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+// INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
+//             taken up in beta release
+
 #include <pybind11/pybind11.h> // pybind11.h must be the first include - https://pybind11.readthedocs.io/en/latest/basics.html#header-and-namespace-conventions
 
 #include <cstdint>
@@ -237,14 +240,33 @@ void ThrowStdException(const std::string& message) { throw std::runtime_error(me
 // TODO: We don't need to do explicit linking using LoadLibrary. We can just use implicit
 //       linking to load this DLL. It will simplify the code a lot.
 void LoadDriverOrThrowException() {
-    // Get the DLL directory to the current directory
-    wchar_t currentDir[MAX_PATH];
-    GetCurrentDirectoryW(MAX_PATH, currentDir);
-    std::wstring dllDir = std::wstring(currentDir) + L"\\libs\\win\\msodbcsql18.dll";
+    HMODULE hDdbcModule;
+    wchar_t ddbcModulePath[MAX_PATH];
+    // Get the path to DDBC module:
+    // GetModuleHandleExW returns a handle to current shared library (ddbc_bindings.pyd) given a
+    // function from the library (LoadDriverOrThrowException). GetModuleFileNameW takes in the
+    // library handle (hDdbcModule) & returns the full path to this library (ddbcModulePath)
+    if (GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (LPWSTR)&LoadDriverOrThrowException, &hDdbcModule) &&
+        GetModuleFileNameW(hDdbcModule, ddbcModulePath, MAX_PATH)) {
+        // Look for last occurence of '\' in the path and set it to null
+        wchar_t* lastBackSlash = wcsrchr(ddbcModulePath, L'\\');
+        if (lastBackSlash == nullptr) {
+            DEBUG_LOG("Invalid DDBC module path - %S", ddbcModulePath);
+            ThrowStdException("Failed to load driver");
+        }
+        *lastBackSlash = 0;
+    } else {
+        DEBUG_LOG("Failed to get DDBC module path. Error code - %d", GetLastError());
+        ThrowStdException("Failed to load driver");
+    }
 
-    // Load the DLL from the specified path
+    // Look for msodbcsql18.dll in a path relative to DDBC module
+    std::wstring dllDir = std::wstring(ddbcModulePath) + L"\\libs\\win\\msodbcsql18.dll";
     HMODULE hModule = LoadLibraryW(dllDir.c_str());
     if (!hModule) {
+        DEBUG_LOG("LoadLibraryW failed to load driver from - %S", dllDir.c_str());
         ThrowStdException("Failed to load driver");
     }
     DEBUG_LOG("Driver loaded successfully from - %S", dllDir.c_str());
@@ -294,6 +316,7 @@ void LoadDriverOrThrowException() {
                    SQLFreeHandle_ptr && SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
 
     if (!success) {
+        DEBUG_LOG("Failed to load required function pointers from driver - %S", dllDir.c_str());
         ThrowStdException("Failed to load required function pointers from driver");
     }
     DEBUG_LOG("Sucessfully loaded function pointers from driver");

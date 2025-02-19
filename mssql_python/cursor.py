@@ -10,9 +10,6 @@ import decimal
 import uuid
 import os
 from mssql_python.exceptions import raise_exception
-
-os.chdir(os.path.dirname(__file__))
-
 from mssql_python import ddbc_bindings
 
 # Setting up logging
