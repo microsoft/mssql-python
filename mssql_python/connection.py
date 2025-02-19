@@ -1,18 +1,12 @@
 import ctypes
 from mssql_python.cursor import Cursor
-from mssql_python.logging_config import setup_logging, ENABLE_LOGGING
+from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 from mssql_python.constants import ConstantsODBC as odbc_sql_const
 from mssql_python.helpers import add_driver_to_connection_str, check_error
-import logging
 import os
-
-# Change the current working directory to the directory of the script to import ddbc_bindings
-os.chdir(os.path.dirname(__file__))
-
 from mssql_python import ddbc_bindings
 
-# Setting up logging
-setup_logging()
+logger = get_logger()
 
 class Connection:
     """
@@ -116,7 +110,7 @@ class Connection:
             InterfaceError: If there is an error related to the database interface.
         """
         if ENABLE_LOGGING:
-            logging.info("Connecting to the database")
+            logger.info("Connecting to the database")
         ret = ddbc_bindings.DDBCSQLDriverConnect(
             self.hdbc.value, # Connection handle
             0, # Window handle
@@ -124,7 +118,7 @@ class Connection:
         )
         check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
         if ENABLE_LOGGING:
-            logging.info("Connection established successfully.")
+            logger.info("Connection established successfully.")
 
     @property
     def autocommit(self) -> bool:
@@ -159,7 +153,7 @@ class Connection:
         check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
         self._autocommit = value
         if ENABLE_LOGGING:
-            logging.info("Autocommit mode set to %s.", value)
+            logger.info("Autocommit mode set to %s.", value)
 
     def cursor(self) -> Cursor:
         """
@@ -198,7 +192,7 @@ class Connection:
         )
         check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
         if ENABLE_LOGGING:
-            logging.info("Transaction committed successfully.")
+            logger.info("Transaction committed successfully.")
 
     def rollback(self) -> None:
         """
@@ -219,7 +213,7 @@ class Connection:
         )
         check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
         if ENABLE_LOGGING:
-            logging.info("Transaction rolled back successfully.")
+            logger.info("Transaction rolled back successfully.")
 
     def close(self) -> None:
         """
@@ -243,4 +237,4 @@ class Connection:
         check_error(odbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
         
         if ENABLE_LOGGING:
-            logging.info("Connection closed successfully.")
+            logger.info("Connection closed successfully.")

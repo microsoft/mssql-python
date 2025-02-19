@@ -2,10 +2,9 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 
-# Variable to enable or disable logging
 ENABLE_LOGGING = False
 
-def setup_logging(log_level=logging.DEBUG):
+def setup_logging(mode='file', log_level=logging.DEBUG):
     """
     Set up logging configuration.
 
@@ -15,21 +14,43 @@ def setup_logging(log_level=logging.DEBUG):
     Args:
         log_level (int): The logging level (default: logging.INFO).
     """
-    if ENABLE_LOGGING:
-        # Get the directory of the current script
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # Construct the path to the log file
-        log_file = os.path.join(current_dir, 'application.log')
-        
-        # Configure logging
-        logging.basicConfig(
-            level=log_level,
-            format='%(asctime)s - %(levelname)s - %(filename)s - %(message)s',
-            handlers=[
-                RotatingFileHandler(log_file, maxBytes=10485760, backupCount=5),  # 10MB per file, keep 5 backups
-                logging.StreamHandler()
-            ]
-        )
+    global ENABLE_LOGGING
+    ENABLE_LOGGING = True
+
+    # Create a logger for mssql_python module
+    logger = logging.getLogger(__name__)
+    logger.setLevel(log_level)
+
+    # Construct the path to the log file
+    # TODO: Use a different dir to dump log file
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    log_file = os.path.join(current_dir, 'mssql_python_trace_{pid}.log'.format(pid=os.getpid()))
+
+    # Create a log handler to log to driver specific file
+    # By default we only want to log to a file, max size 500MB, and keep 5 backups
+    # TODO: Rotate files based on time too? Ex: everyday
+    file_handler = RotatingFileHandler(log_file, maxBytes=512*1024*1024, backupCount=5)
+    file_handler.setLevel(log_level)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(filename)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    if mode == 'stdout':
+        # If the mode is stdout, then we want to log to the console as well
+        stdout_handler = logging.StreamHandler()
+        stdout_handler.setLevel(log_level)
+        stdout_handler.setFormatter(formatter)
+        logger.addHandler(stdout_handler)
     else:
-        logging.disable(logging.CRITICAL)
+        raise ValueError(f'Invalid logging mode: {mode}')
+
+def get_logger():
+    """
+    Get the logger instance.
+
+    Returns:
+        logging.Logger: The logger instance.
+    """
+    if not ENABLE_LOGGING:
+        return None
+    return logging.getLogger(__name__)

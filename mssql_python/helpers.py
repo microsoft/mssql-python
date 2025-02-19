@@ -1,10 +1,9 @@
 from mssql_python.constants import ConstantsODBC
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import raise_exception
-from mssql_python.logging_config import setup_logging, ENABLE_LOGGING
-import logging
+from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 
-setup_logging()
+logger = get_logger()
 
 def add_driver_to_connection_str(connection_str):
     """
@@ -62,7 +61,7 @@ def check_error(handle_type, handle, ret):
     if ret < 0:
         error_info = ddbc_bindings.DDBCSQLCheckError(handle_type, handle, ret)
         if ENABLE_LOGGING:
-            logging.error(f"Error: {error_info.ddbcErrorMsg}")
+            logger.error(f"Error: {error_info.ddbcErrorMsg}")
         raise_exception(error_info.sqlState, error_info.ddbcErrorMsg)
 
 def add_driver_name_to_app_parameter(connection_string):

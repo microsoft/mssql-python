@@ -1,7 +1,11 @@
 import ctypes
 import datetime
 import ddbc_bindings
+import decimal
 import os
+from logging_config import setup_logging
+
+setup_logging()
 
 # Constants
 SQL_HANDLE_ENV = 1
@@ -191,6 +195,22 @@ def add_double_param(params, paramInfos, val):
     paramInfo.columnSize = 15 # Precision
     paramInfos.append(paramInfo)
 
+def add_numeric_param(params, paramInfos, param):
+    numericdata = ddbc_bindings.NumericData()
+    numericdata.precision = len(param.as_tuple().digits)
+    numericdata.scale = param.as_tuple().exponent * -1
+    numericdata.sign = param.as_tuple().sign
+    numericdata.val = str(param)
+    print(type(numericdata.precision),type(numericdata.scale),type(numericdata.sign), type(numericdata.val), type(numericdata))
+    params.append(numericdata)
+
+    paramInfo = ddbc_bindings.ParamInfo()
+    paramInfo.paramCType = 2 # SQL_C_NUMERIC
+    paramInfo.paramSQLType = 2 # SQL_NUMERIC
+    paramInfo.inputOutputType = 1 # SQL_PARAM_INPUT
+    paramInfo.columnSize = 10 # Precision
+    paramInfos.append(paramInfo)
+
 if __name__ == "__main__":
     # Allocate environment handle
     env_handle = alloc_handle(SQL_HANDLE_ENV, 0)
@@ -245,8 +265,8 @@ if __name__ == "__main__":
     insert_sql_query = "INSERT INTO [Employees].[dbo].[EmployeeFullNames] (FirstName, LastName, date_, time_, wchar_, bool_, tinyint_, bigint_, float_, double_) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"
     params = []
     param_info_list = []
-    add_string_param(params, param_info_list, 'is_stmt_prepared')
     add_string_param(params, param_info_list, 'test')
+    add_string_param(params, param_info_list, 'inner file')
     add_date_param(params, param_info_list)
     add_time_param(params, param_info_list)
     # add_datetime_param(params, param_info_list, addNone=True) - Cannot insert an explicit value into a timestamp column. Use INSERT with a column list to exclude the timestamp column, or insert a DEFAULT into the timestamp column. Traceback (most recent call last):
@@ -256,6 +276,7 @@ if __name__ == "__main__":
     add_bigint_param(params, param_info_list, 123456789)
     add_float_param(params, param_info_list, 12.34)
     add_double_param(params, param_info_list, 12.34)
+    #add_numeric_param(params, param_info_list, decimal.Decimal('12'))
     is_stmt_prepared = [False]
     result = ddbc_sql_execute(stmt_handle, insert_sql_query, params, param_info_list, is_stmt_prepared, True)
     print("DDBCSQLExecute result:", result)

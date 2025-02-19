@@ -1,10 +1,5 @@
-import logging
-from mssql_python.logging_config import setup_logging
 from mssql_python.exceptions import DatabaseError, InterfaceError
 from mssql_python.connection import Connection
-
-# Setting up logging
-setup_logging()
 
 def connect(connection_str: str) -> Connection:
     """

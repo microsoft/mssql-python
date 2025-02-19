@@ -1,10 +1,9 @@
 import ctypes
-import logging
 import decimal, uuid
 from typing import List, Union
-from mssql_python.logging_config import setup_logging, ENABLE_LOGGING
 from mssql_python.constants import ConstantsODBC as odbc_sql_const
 from mssql_python.helpers import check_error
+from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 import datetime
 import decimal
 import uuid
@@ -12,8 +11,7 @@ import os
 from mssql_python.exceptions import raise_exception
 from mssql_python import ddbc_bindings
 
-# Setting up logging
-setup_logging()
+logger = get_logger()
 
 class Cursor:
     """
@@ -60,7 +58,7 @@ class Cursor:
                                         # Is a list instead of a bool coz bools in Python are immutable.
                                         # Hence, we can't pass around bools by reference & modify them.
                                         # Therefore, it must be a list with exactly one bool element.
-        
+
     def _is_unicode_string(self, param):
         """
         Check if a string contains non-ASCII characters.
@@ -207,28 +205,67 @@ class Cursor:
         Get the data for a numeric parameter.
         
         Args:
-            param: The numeric parameter.
+            param: The numeric parameter. 
         
         Returns:
-            A tuple containing the numeric data.
+            A NumericData struct containing the numeric data.
         """
+        decimal_as_tuple = param.as_tuple()
+        num_digits = len(decimal_as_tuple.digits)
+        exponent = decimal_as_tuple.exponent
+
+        # Calculate the SQL precision & scale
+        #   precision = no. of significant digits
+        #   scale     = no. digits after decimal point
+        if exponent >= 0:
+            # digits=314, exp=2 ---> '31400' --> precision=5, scale=0
+            precision = num_digits + exponent
+            scale = 0
+        elif (-1 * exponent) <= num_digits:
+            # digits=3140, exp=-3 ---> '3.140' --> precision=4, scale=3
+            precision = num_digits
+            scale = exponent * -1
+        else:
+            # digits=3140, exp=-5 ---> '0.03140' --> precision=5, scale=5
+            # TODO: double check the precision calculation here with SQL documentation
+            precision = exponent * -1
+            scale = exponent * -1
+
+        # TODO: Revisit this check, do we want this restriction?
+        if precision > 15:
+            raise ValueError("Precision of the numeric value is too high - " + str(param) +
+                             ". Should be less than or equal to 15")
         NumericData = ddbc_bindings.NumericData
         numeric_data = NumericData()
-        numeric_data.precision = len(param.as_tuple().digits)
-        numeric_data.scale = param.as_tuple().exponent * -1
-        numeric_data.sign = param.as_tuple().sign
-        numeric_data.val = str(param)
-
+        numeric_data.scale = scale
+        numeric_data.precision = precision
+        numeric_data.sign = 1 if decimal_as_tuple.sign == 0 else 0
+        # strip decimal point from param & convert the significant digits to integer
+        # Ex: 12.34 ---> 1234
+        val = str(param)
+        if '.' in val:
+            val = val.replace('.', '')
+            val = val.replace('-', '')
+            val = int(val)
+        numeric_data.val = val
         return numeric_data
 
     def _map_sql_type(self, param, parameters_list, i):
-        """Map a Python data type to the corresponding SQL type,C type,Columnsize and Decimal digits."""
+        """
+        Map a Python data type to the corresponding SQL type,C type,Columnsize and Decimal digits.
+        Takes:
+            - param: The parameter to map.
+            - parameters_list: The list of parameters to bind.
+            - i: The index of the parameter in the list.
+        Returns:
+            - A tuple containing the SQL type, C type, column size, and decimal digits.
+        """
         if param is None:
-            return odbc_sql_const.SQL_NULL_DATA.value, odbc_sql_const.SQL_C_DEFAULT.value, 1, 0  
-        
+            return odbc_sql_const.SQL_NULL_DATA.value, odbc_sql_const.SQL_C_DEFAULT.value, 1, 0
+
         elif isinstance(param, bool):
             return odbc_sql_const.SQL_BIT.value, odbc_sql_const.SQL_C_BIT.value, 1, 0
-        
+
         elif isinstance(param, int):
             if 0 <= param <= 255:
                 return odbc_sql_const.SQL_TINYINT.value, odbc_sql_const.SQL_C_TINYINT.value, 3, 0
@@ -238,22 +275,20 @@ class Cursor:
                 return odbc_sql_const.SQL_INTEGER.value, odbc_sql_const.SQL_C_LONG.value, 10, 0
             else:
                 return odbc_sql_const.SQL_BIGINT.value, odbc_sql_const.SQL_C_SBIGINT.value, 19, 0
-        
+
         elif isinstance(param, float):
-            if -3.4028235E+38 <= param <= 3.4028235E+38:
-                return odbc_sql_const.SQL_REAL.value, odbc_sql_const.SQL_C_FLOAT.value, 7, 0
-            else:
-                return odbc_sql_const.SQL_FLOAT.value, odbc_sql_const.SQL_C_DOUBLE.value, 15, 0
-        
+            return odbc_sql_const.SQL_DOUBLE.value, odbc_sql_const.SQL_C_DOUBLE.value, 15, 0
+
         elif isinstance(param, decimal.Decimal):
+            # TODO: Support for other numeric types (smallmoney, money etc.)
             # if param.as_tuple().exponent == -4:  # Scale is 4
             #     if -214748.3648 <= param <= 214748.3647:
             #         return odbc_sql_const.SQL_SMALLMONEY.value, odbc_sql_const.SQL_C_NUMERIC.value, 10, 4
             #     elif -922337203685477.5808 <= param <= 922337203685477.5807:
             #         return odbc_sql_const.SQL_MONEY.value, odbc_sql_const.SQL_C_NUMERIC.value, 19, 4
             parameters_list[i] = self._get_numeric_data(param)  # Replace the parameter with the dictionary
-            return odbc_sql_const.SQL_DECIMAL.value, odbc_sql_const.SQL_C_NUMERIC.value, len(param.as_tuple().digits), param.as_tuple().exponent * -1
-        
+            return odbc_sql_const.SQL_NUMERIC.value, odbc_sql_const.SQL_C_NUMERIC.value, parameters_list[i].precision, parameters_list[i].scale
+
         elif isinstance(param, str):
             # Check for Well-Known Text (WKT) format for geography/geometry
             if param.startswith("POINT") or param.startswith("LINESTRING") or param.startswith("POLYGON"):
@@ -269,7 +304,7 @@ class Cursor:
             elif self._parse_time(param):
                 parameters_list[i] = self._parse_time(param)
                 return odbc_sql_const.SQL_TIME.value, odbc_sql_const.SQL_C_TYPE_TIME.value, 8, 0
-            # Unsupported types
+            # TODO: Support for other types (Timestampoffset etc.)
             # elif self._parse_timestamptz(param):
             #     return odbc_sql_const.SQL_TIMESTAMPOFFSET.value, odbc_sql_const.SQL_C_TYPE_TIMESTAMP.value, 34, 7
             # elif self._parse_smalldatetime(param):
@@ -466,7 +501,7 @@ class Cursor:
 
         ParamInfo = ddbc_bindings.ParamInfo
         parameters_type = []
-        
+
         # Flatten parameters if a single tuple or list is passed
         if len(parameters) == 1 and isinstance(parameters[0], (tuple, list)):
             parameters = parameters[0]
@@ -487,19 +522,19 @@ class Cursor:
         '''
         Execute SQL Statement - (SQLExecute)
         '''
+        # TODO - Need to evaluate encrypted logs for query parameters
         if ENABLE_LOGGING:
-            # TODO - Need to evaluate encrypted logs for query parameters
-            logging.debug("Executing query: %s", operation)
+            logger.debug("Executing query: %s", operation)
             for i, param in enumerate(parameters):
-                logging.debug(
+                logger.debug(
                     "Parameter number: %s, Parameter: %s, Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s",
                     i+1,
                     param,
                     str(type(param)),
-                    parameters_type[i].paramSQLType, 
-                    parameters_type[i].paramCType, 
-                    parameters_type[i].columnSize, 
-                    parameters_type[i].decimalDigits, 
+                    parameters_type[i].paramSQLType,
+                    parameters_type[i].paramCType,
+                    parameters_type[i].columnSize,
+                    parameters_type[i].decimalDigits,
                     parameters_type[i].inputOutputType
                 )
 
@@ -538,7 +573,7 @@ class Cursor:
                 # Converting the parameters to a list
                 parameters = list(parameters)
                 if ENABLE_LOGGING:
-                    logging.info("Executing query with parameters: %s", parameters)
+                    logger.info("Executing query with parameters: %s", parameters)
                 # Prepare the statement only during first execution. From second time
                 # onwards, skip preparing and directly execute. This helps avoid
                 # unnecessary 'prepare' network calls.
@@ -558,7 +593,7 @@ class Cursor:
             self.rowcount = total_rowcount
         except Exception as e:
             if ENABLE_LOGGING:
-                logging.info("Executing query with parameters: %s", parameters)
+                logger.info("Executing query with parameters: %s", parameters)
             # Prepare the statement only during first execution. From second time
             # onwards, skip preparing and directly execute. This helps avoid
             # unnecessary 'prepare' network calls.

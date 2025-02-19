@@ -1,7 +1,6 @@
-from mssql_python.logging_config import setup_logging, ENABLE_LOGGING
-import logging
+from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 
-setup_logging()
+logger = get_logger()
 
 class Exception(Exception):
     """
@@ -231,7 +230,7 @@ def truncate_error_message(error_message: str) -> str:
         return string_first + string_third
     except Exception as e:
         if ENABLE_LOGGING:
-            logging.error(f"Error while truncating error message: {e}")
+            logger.error(f"Error while truncating error message: {e}")
         return error_message
 
 def raise_exception(sqlstate: str, ddbc_error: str) -> None:
@@ -250,6 +249,6 @@ def raise_exception(sqlstate: str, ddbc_error: str) -> None:
     exception_class = sqlstate_to_exception(sqlstate, ddbc_error)
     if exception_class:
         if ENABLE_LOGGING:
-            logging.error(exception_class)
+            logger.error(exception_class)
         raise exception_class
     raise DatabaseError(driver_error="An error occurred with SQLSTATE code", ddbc_error=f"Unknown DDBC error: {sqlstate}")

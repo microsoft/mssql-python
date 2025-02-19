@@ -33,18 +33,6 @@ using namespace pybind11::literals;
 #define SQL_SS_TIME2 (-154)
 #define SQL_NUMERIC_SIZE 64
 
-// Logs data to stdout only in debug builds
-// TODO: Handle both UTF-8 and UTF-16 strings
-#ifndef NDEBUG
-#define DEBUG_LOG(formatString, ...)       \
-    do {                                   \
-        printf(formatString, __VA_ARGS__); \
-        printf("\n");                      \
-    } while (0)
-#else
-#define DEBUG_LOG(x) (void)0
-#endif
-
 #define STRINGIFY_FOR_CASE(x) \
     case x:                   \
         return #x
@@ -73,34 +61,12 @@ struct NumericData {
     SQLCHAR precision;
     SQLSCHAR scale;
     SQLCHAR sign;  // 1=pos, 0=neg
-    std::string val;
+    std::uint64_t val; // 123.45 -> 12345
 
-    NumericData() : precision(0), scale(0), sign(0), val("") {}
+    NumericData() : precision(0), scale(0), sign(0), val(0) {}
 
-    NumericData(SQLCHAR precision, SQLSCHAR scale, SQLCHAR sign, const std::string& value)
+    NumericData(SQLCHAR precision, SQLSCHAR scale, SQLCHAR sign, std::uint64_t value)
         : precision(precision), scale(scale), sign(sign), val(value) {}
-
-    // Method to convert to a Python numeric type
-    double to_double() const {
-        double result = 0.0;
-
-        for (size_t i = 0; i < val.size(); ++i) {
-            // Convert each byte to an unsigned char and add it to the result
-            // Multiply the current result by 256 (2^8) before adding the new byte
-            result = result * 256 + static_cast<unsigned char>(val[i]);
-        }
-
-        // Adjust the result by dividing it by 10 raised to the power of the scale
-        // This accounts for the decimal places in the numeric value
-        result /= pow(10, scale);
-
-        // If the sign is 0, the number is negative, so negate the result
-        if (sign == 0) {
-            result = -result;
-        }
-
-        return result;
-    }
 };
 
 // Struct to hold data buffers and indicators for each column
@@ -162,6 +128,8 @@ typedef SQLRETURN (*SQLBindParameterFunc)(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, 
                                           SQLLEN*);
 typedef SQLRETURN (*SQLExecuteFunc)(SQLHANDLE);
 typedef SQLRETURN (*SQLRowCountFunc)(SQLHSTMT, SQLLEN*);
+typedef SQLRETURN (*SQLSetDescFieldFunc)(SQLHDESC, SQLSMALLINT, SQLSMALLINT, SQLPOINTER, SQLINTEGER);
+typedef SQLRETURN (*SQLGetStmtAttrFunc)(SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER, SQLINTEGER*);
 
 // Data retrieval APIs
 typedef SQLRETURN (*SQLFetchFunc)(SQLHANDLE);
@@ -208,6 +176,8 @@ SQLPrepareFunc SQLPrepare_ptr = nullptr;
 SQLBindParameterFunc SQLBindParameter_ptr = nullptr;
 SQLExecuteFunc SQLExecute_ptr = nullptr;
 SQLRowCountFunc SQLRowCount_ptr = nullptr;
+SQLGetStmtAttrFunc SQLGetStmtAttr_ptr = nullptr;
+SQLSetDescFieldFunc SQLSetDescField_ptr = nullptr;
 
 // Data retrieval APIs
 SQLFetchFunc SQLFetch_ptr = nullptr;
@@ -232,6 +202,20 @@ SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
 
 namespace {
 
+// TODO: Revisit GIL considerations if we're using python's logger
+template <typename... Args>
+void LOG(const std::string& formatString, Args&&... args) {
+    // TODO: Try to do this string concatenation at compile time
+    std::string ddbcFormatString = "[DDBC Bindings log] " + formatString;
+    static py::object logging = py::module_::import("mssql_python.logging_config")
+	                            .attr("get_logger")();
+    if (py::isinstance<py::none>(logging)) {
+        return;
+    }
+    py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
+    logging.attr("debug")(message);
+}
+
 // TODO: Add more nuanced exception classes
 void ThrowStdException(const std::string& message) { throw std::runtime_error(message); }
 
@@ -252,12 +236,12 @@ void LoadDriverOrThrowException() {
         // Look for last occurence of '\' in the path and set it to null
         wchar_t* lastBackSlash = wcsrchr(ddbcModulePath, L'\\');
         if (lastBackSlash == nullptr) {
-            DEBUG_LOG("Invalid DDBC module path - %S", ddbcModulePath);
+            LOG("Invalid DDBC module path - %S", ddbcModulePath);
             ThrowStdException("Failed to load driver");
         }
         *lastBackSlash = 0;
     } else {
-        DEBUG_LOG("Failed to get DDBC module path. Error code - %d", GetLastError());
+        LOG("Failed to get DDBC module path. Error code - %d", GetLastError());
         ThrowStdException("Failed to load driver");
     }
 
@@ -265,10 +249,10 @@ void LoadDriverOrThrowException() {
     std::wstring dllDir = std::wstring(ddbcModulePath) + L"\\libs\\win\\msodbcsql18.dll";
     HMODULE hModule = LoadLibraryW(dllDir.c_str());
     if (!hModule) {
-        DEBUG_LOG("LoadLibraryW failed to load driver from - %S", dllDir.c_str());
+        LOG("LoadLibraryW failed to load driver from - %S", dllDir.c_str());
         ThrowStdException("Failed to load driver");
     }
-    DEBUG_LOG("Driver loaded successfully from - %S", dllDir.c_str());
+    LOG("Driver loaded successfully from - {}", dllDir.c_str());
 
     // Environment and handle function loading
     SQLAllocHandle_ptr = (SQLAllocHandleFunc)GetProcAddress(hModule, "SQLAllocHandle");
@@ -284,6 +268,8 @@ void LoadDriverOrThrowException() {
     SQLBindParameter_ptr = (SQLBindParameterFunc)GetProcAddress(hModule, "SQLBindParameter");
     SQLExecute_ptr = (SQLExecuteFunc)GetProcAddress(hModule, "SQLExecute");
     SQLRowCount_ptr = (SQLRowCountFunc)GetProcAddress(hModule, "SQLRowCount");
+    SQLGetStmtAttr_ptr = (SQLGetStmtAttrFunc)GetProcAddress(hModule, "SQLGetStmtAttrW");
+    SQLSetDescField_ptr = (SQLSetDescFieldFunc)GetProcAddress(hModule, "SQLSetDescFieldW");
 
     // Fetch and data retrieval function loading
     SQLFetch_ptr = (SQLFetchFunc)GetProcAddress(hModule, "SQLFetch");
@@ -309,16 +295,17 @@ void LoadDriverOrThrowException() {
     bool success = SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
                    SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
                    SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
-                   SQLRowCount_ptr && SQLFetch_ptr && SQLFetchScroll_ptr && SQLGetData_ptr &&
-                   SQLNumResultCols_ptr && SQLBindCol_ptr && SQLDescribeCol_ptr &&
-                   SQLMoreResults_ptr && SQLColAttribute_ptr && SQLEndTran_ptr &&
-                   SQLFreeHandle_ptr && SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
+                   SQLRowCount_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr && SQLFetch_ptr &&
+		   SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr &&
+		   SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr &&
+		   SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr &&
+		   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
 
     if (!success) {
-        DEBUG_LOG("Failed to load required function pointers from driver - %S", dllDir.c_str());
+        LOG("Failed to load required function pointers from driver - %S", dllDir.c_str());
         ThrowStdException("Failed to load required function pointers from driver");
     }
-    DEBUG_LOG("Sucessfully loaded function pointers from driver");
+    LOG("Sucessfully loaded function pointers from driver");
 }
 
 const char* GetSqlCTypeAsString(const SQLSMALLINT cType) {
@@ -542,18 +529,23 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
                 NumericData decimalParam = param.cast<NumericData>();
+                LOG("Received numeric parameter: precision - {}, scale- {}, sign - {}, value - {}",
+                    decimalParam.precision, decimalParam.scale, decimalParam.sign,
+                    decimalParam.val);
                 SQL_NUMERIC_STRUCT* decimalPtr =
                     AllocateParamBuffer<SQL_NUMERIC_STRUCT>(paramBuffers);
                 decimalPtr->precision = decimalParam.precision;
                 decimalPtr->scale = decimalParam.scale;
                 decimalPtr->sign = decimalParam.sign;
-                if (decimalParam.val.size() != SQL_MAX_NUMERIC_LEN) {
-                    // Throw error. Val must be a 16 byte integer
-                    ThrowStdException("Incorrect format of numeric data received");
-                }
-                std::memcpy(static_cast<void*>(decimalPtr->val), decimalParam.val.c_str(),
-                            decimalParam.val.size());
+                // Convert the integer decimalParam.val to char array
+                std:memset(static_cast<void*>(decimalPtr->val), 0, sizeof(decimalPtr->val));
+                std::memcpy(static_cast<void*>(decimalPtr->val),
+			    reinterpret_cast<char*>(&decimalParam.val),
+                            sizeof(decimalParam.val));
                 dataPtr = static_cast<void*>(decimalPtr);
+                // TODO: Remove these lines
+                //strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
+                //*strLenOrIndPtr = sizeof(SQL_NUMERIC_STRUCT);
                 break;
             }
             case SQL_C_GUID: {
@@ -566,14 +558,50 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 ThrowStdException(errorString.str());
             }
         }
+        assert(SQLBindParameter_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr);
 
         RETCODE rc = SQLBindParameter_ptr(
             hStmt, paramIndex + 1 /* 1-based indexing */, paramInfo.inputOutputType,
             paramInfo.paramCType, paramInfo.paramSQLType, paramInfo.columnSize,
             paramInfo.decimalDigits, dataPtr, bufferLength, strLenOrIndPtr);
         if (!SQL_SUCCEEDED(rc)) {
-            DEBUG_LOG("DDBCSQLExecute: Error when binding parameter - %d", paramIndex);
+            LOG("Error when binding parameter - {}", paramIndex);
             return rc;
+        }
+	// Special handling for Numeric type -
+	// https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/retrieve-numeric-data-sql-numeric-struct-kb222831?view=sql-server-ver16#sql_c_numeric-overview
+        if (paramInfo.paramCType == SQL_C_NUMERIC) {
+            SQLHDESC hDesc = nullptr;
+            RETCODE rc = SQLGetStmtAttr_ptr(hStmt, SQL_ATTR_APP_PARAM_DESC, &hDesc, 0, NULL);
+            if(!SQL_SUCCEEDED(rc)) {
+                LOG("Error when getting statement attribute - {}", paramIndex);
+                return rc;
+            }
+            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_TYPE, (SQLPOINTER) SQL_C_NUMERIC, 0);
+            if(!SQL_SUCCEEDED(rc)) {
+                LOG("Error when setting descriptor field SQL_DESC_TYPE - {}", paramIndex);
+                return rc;
+            }
+            SQL_NUMERIC_STRUCT* numericPtr = reinterpret_cast<SQL_NUMERIC_STRUCT*>(dataPtr);
+            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_PRECISION,
+			             (SQLPOINTER) numericPtr->precision, 0);
+            if(!SQL_SUCCEEDED(rc)) {
+                LOG("Error when setting descriptor field SQL_DESC_PRECISION - {}", paramIndex);
+                return rc;
+            }
+
+            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_SCALE,
+			             (SQLPOINTER) numericPtr->scale, 0);
+            if(!SQL_SUCCEEDED(rc)) {
+                LOG("Error when setting descriptor field SQL_DESC_SCALE - {}", paramIndex);
+                return rc;
+            }
+
+            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_DATA_PTR, (SQLPOINTER) numericPtr, 0);
+            if(!SQL_SUCCEEDED(rc)) {
+                LOG("Error when setting descriptor field SQL_DESC_DATA_PTR - {}", paramIndex);
+                return rc;
+            }
         }
     }
     return SQL_SUCCESS;
@@ -583,7 +611,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
 
 // Wrap SQLAllocHandle
 SQLRETURN SQLAllocHandle_wrap(SQLSMALLINT HandleType, intptr_t InputHandle, intptr_t OutputHandle) {
-    DEBUG_LOG("Allocate SQL Handle");
+    LOG("Allocate SQL Handle");
     if (!SQLAllocHandle_ptr) {
         LoadDriverOrThrowException();
     }
@@ -595,7 +623,7 @@ SQLRETURN SQLAllocHandle_wrap(SQLSMALLINT HandleType, intptr_t InputHandle, intp
 // Wrap SQLSetEnvAttr
 SQLRETURN SQLSetEnvAttr_wrap(intptr_t EnvHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
                              SQLINTEGER StringLength) {
-    DEBUG_LOG("Set SQL environment Attribute");
+    LOG("Set SQL environment Attribute");
     if (!SQLSetEnvAttr_ptr) {
         LoadDriverOrThrowException();
     }
@@ -608,7 +636,7 @@ SQLRETURN SQLSetEnvAttr_wrap(intptr_t EnvHandle, SQLINTEGER Attribute, intptr_t 
 // Wrap SQLSetConnectAttr
 SQLRETURN SQLSetConnectAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
                                  SQLINTEGER StringLength) {
-    DEBUG_LOG("Set SQL Connection Attribute");
+    LOG("Set SQL Connection Attribute");
     if (!SQLSetConnectAttr_ptr) {
         LoadDriverOrThrowException();
     }
@@ -621,7 +649,7 @@ SQLRETURN SQLSetConnectAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER Attribute
 // Wrap SQLSetStmtAttr
 SQLRETURN SQLSetStmtAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
                               SQLINTEGER StringLength) {
-    DEBUG_LOG("Set SQL Statement Attribute");
+    LOG("Set SQL Statement Attribute");
     if (!SQLSetConnectAttr_ptr) {
         LoadDriverOrThrowException();
     }
@@ -635,7 +663,7 @@ SQLRETURN SQLSetStmtAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER Attribute, i
 // Currently only supports retrieval of int-valued attributes
 // TODO: add support to retrieve all types of attributes
 SQLINTEGER SQLGetConnectionAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER attribute) {
-    DEBUG_LOG("Get SQL COnnection Attribute");
+    LOG("Get SQL COnnection Attribute");
     if (!SQLGetConnectAttr_ptr) {
         LoadDriverOrThrowException();
     }
@@ -651,10 +679,10 @@ SQLINTEGER SQLGetConnectionAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER attri
 
 // Helper function to check for driver errors
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, intptr_t handle, SQLRETURN retcode) {
-    DEBUG_LOG("Checking errors for retcode - %d" , retcode);
+    LOG("Checking errors for retcode - {}" , retcode);
     ErrorInfo errorInfo;
     if (retcode == SQL_INVALID_HANDLE) {
-        DEBUG_LOG("Invalid handle received");
+        LOG("Invalid handle received");
         errorInfo.ddbcErrorMsg = std::wstring( L"Invalid handle!");
         return errorInfo;
     }
@@ -683,7 +711,7 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, intptr_t handle, SQLRETURN 
 // Wrap SQLDriverConnect
 SQLRETURN SQLDriverConnect_wrap(intptr_t ConnectionHandle, intptr_t WindowHandle,
                                 const std::wstring& ConnectionString) {
-    DEBUG_LOG("Driver Connect to MSSQL");
+    LOG("Driver Connect to MSSQL");
     if (!SQLDriverConnect_ptr) {
         LoadDriverOrThrowException();
     }
@@ -695,7 +723,7 @@ SQLRETURN SQLDriverConnect_wrap(intptr_t ConnectionHandle, intptr_t WindowHandle
 
 // Wrap SQLExecDirect
 SQLRETURN SQLExecDirect_wrap(intptr_t StatementHandle, const std::wstring& Query) {
-    DEBUG_LOG("Execute SQL query directly - %S", Query.c_str());
+    LOG("Execute SQL query directly - {}", Query.c_str());
     if (!SQLExecDirect_ptr) {
         LoadDriverOrThrowException();
     }
@@ -712,7 +740,7 @@ SQLRETURN SQLExecute_wrap(const intptr_t statementHandle,
                           const std::wstring& query /* TODO: Use SQLTCHAR? */,
                           const py::list& params, const std::vector<ParamInfo>& paramInfos,
                           py::list& isStmtPrepared, const bool usePrepare = true) {
-    DEBUG_LOG("Execute SQL Query - %S", query.c_str());
+    LOG("Execute SQL Query - {}", query.c_str());
     if (!SQLPrepare_ptr) {
         LoadDriverOrThrowException();
     }
@@ -733,7 +761,7 @@ SQLRETURN SQLExecute_wrap(const intptr_t statementHandle,
         // https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function?view=sql-server-ver16
         rc = SQLExecDirect_ptr(hStmt, queryPtr, SQL_NTS);
         if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
-            DEBUG_LOG("Error during direct execution of the statement");
+            LOG("Error during direct execution of the statement");
         }
         return rc;
     } else {
@@ -744,7 +772,7 @@ SQLRETURN SQLExecute_wrap(const intptr_t statementHandle,
         if (usePrepare) {
             rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
             if (!SQL_SUCCEEDED(rc)) {
-                DEBUG_LOG("Error while preparing the statement");
+                LOG("Error while preparing the statement");
                 return rc;
             }
             isStmtPrepared[0] = py::cast(true);
@@ -767,7 +795,7 @@ SQLRETURN SQLExecute_wrap(const intptr_t statementHandle,
 
         rc = SQLExecute_ptr(hStmt);
         if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
-            DEBUG_LOG("DDBCSQLExecute: Error during execution of the statement");
+            LOG("DDBCSQLExecute: Error during execution of the statement");
             return rc;
         }
         // TODO: Handle huge input parameters by checking rc == SQL_NEED_DATA
@@ -782,7 +810,7 @@ SQLRETURN SQLExecute_wrap(const intptr_t statementHandle,
 
 // Wrap SQLNumResultCols
 SQLSMALLINT SQLNumResultCols_wrap(intptr_t statementHandle) {
-    DEBUG_LOG("Get number of columns in result set");
+    LOG("Get number of columns in result set");
     if (!SQLNumResultCols_ptr) {
         LoadDriverOrThrowException();
     }
@@ -795,7 +823,7 @@ SQLSMALLINT SQLNumResultCols_wrap(intptr_t statementHandle) {
 
 // Wrap SQLDescribeCol
 SQLRETURN SQLDescribeCol_wrap(intptr_t StatementHandle, py::list& ColumnMetadata) {
-    DEBUG_LOG("Get column description");
+    LOG("Get column description");
     if (!SQLDescribeCol_ptr) {
         LoadDriverOrThrowException();
     }
@@ -804,7 +832,7 @@ SQLRETURN SQLDescribeCol_wrap(intptr_t StatementHandle, py::list& ColumnMetadata
     SQLRETURN retcode =
         SQLNumResultCols_ptr(reinterpret_cast<SQLHSTMT>(StatementHandle), &ColumnCount);
     if (!SQL_SUCCEEDED(retcode)) {
-        DEBUG_LOG("Failed to get number of columns");
+        LOG("Failed to get number of columns");
         return retcode;
     }
 
@@ -836,7 +864,7 @@ SQLRETURN SQLDescribeCol_wrap(intptr_t StatementHandle, py::list& ColumnMetadata
 
 // Wrap SQLFetch to retrieve rows
 SQLRETURN SQLFetch_wrap(intptr_t StatementHandle) {
-    DEBUG_LOG("Fetch next row");
+    LOG("Fetch next row");
     if (!SQLFetch_ptr) {
         LoadDriverOrThrowException();
     }
@@ -846,7 +874,7 @@ SQLRETURN SQLFetch_wrap(intptr_t StatementHandle) {
 
 // Helper function to retrieve column data
 SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::list& row) {
-    DEBUG_LOG("Get data from columns");
+    LOG("Get data from columns");
     if (!SQLGetData_ptr) {
         LoadDriverOrThrowException();
     }
@@ -864,8 +892,7 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
         ret = SQLDescribeCol_ptr(hStmt, i, columnName, sizeof(columnName) / sizeof(SQLWCHAR),
                                  &columnNameLen, &dataType, &columnSize, &decimalDigits, &nullable);
         if (!SQL_SUCCEEDED(ret)) {
-            DEBUG_LOG("Error retrieving data for column - %d, SQLDescribeCol return code - %d", i,
-                      ret);
+            LOG("Error retrieving data for column - {}, SQLDescribeCol return code - {}", i, ret);
             row.append(py::none());
             // TODO: Do we want to continue in this case or return?
             continue;
@@ -951,7 +978,7 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                         std::string(reinterpret_cast<const char*>(numericStr), indicator)));
                     } catch (const py::error_already_set& e) {
                         // If the conversion fails, append None
-                        DEBUG_LOG("Error converting to decimal: %s", e.what());
+                        LOG("Error converting to decimal: {}", e.what());
                         row.append(py::none());
                     }
                 }
@@ -1123,8 +1150,8 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
 #endif
             default:
                 // TODO: Do we want to throw exception in this case instead of continue?
-                DEBUG_LOG("Unsupported data type for column - %S, Type - %d, column ID - %d",
-                          columnName, dataType, i);
+                LOG("Unsupported data type for column - {}, Type - {}, column ID - {}",
+                    columnName, dataType, i);
                 row.append(py::none());  // Append None for unsupported types
                 break;
         }
@@ -1243,15 +1270,14 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
             default:
                 // TODO: Should we return instead of continue?
                 std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
-                DEBUG_LOG(
-                    "Unsupported data type for column - %S, column ID - %d, "
-                    "data type %d",
+                LOG("Unsupported data type for column - {}, column ID - {}, "
+                    "data type {}",
                     columnName.c_str(), col, dataType);
                 break;
         }
         if (!SQL_SUCCEEDED(ret)) {
             std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
-            DEBUG_LOG("Failed to bind column - %S, column ID - %d", columnName.c_str(), col);
+            LOG("Failed to bind column - {}, column ID - {}", columnName.c_str(), col);
             return ret;
         }
     }
@@ -1345,7 +1371,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                                     buffers.indicators[col - 1][i])));
                         } catch (const py::error_already_set& e) {
                             // Handle the exception, e.g., log the error and append py::none()
-                            DEBUG_LOG("Error converting to decimal: %s", e.what());
+                            LOG("Error converting to decimal: {}", e.what());
                             row.append(py::none());
                         }
                         break;
@@ -1365,7 +1391,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                                 buffers.timestampBuffers[col - 1][i].minute,
                                 buffers.timestampBuffers[col - 1][i].second
                             )
-                            
                         );
                         break;
                     case SQL_BIGINT:
@@ -1408,9 +1433,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     default:
                         // TODO: Should we return instead of continue?
                         std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
-                        DEBUG_LOG(
-                            "Unsupported data type for column while fetching - %S, "
-                            "column ID - %d, data type %d",
+                        LOG("Unsupported data type for column while fetching - {}, "
+                            "column ID - {}, data type {}",
                             columnName.c_str(), col, dataType);
                         row.append(py::none());
                         break;
@@ -1453,8 +1477,10 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
             case SQL_REAL:
                 rowSize += sizeof(SQLREAL);
                 break;
-            case SQL_DOUBLE:
             case SQL_FLOAT:
+                rowSize += sizeof(SQLFLOAT);
+                break;
+            case SQL_DOUBLE:
                 rowSize += sizeof(SQLDOUBLE);
                 break;
             case SQL_DECIMAL:
@@ -1492,9 +1518,8 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
             default:
                 // TODO: Should we return instead of continue?
                 std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
-                DEBUG_LOG(
-                    "Unsupported data type for column while calculating row size - %S"
-                    ", column ID - %d, data type %d",
+                LOG("Unsupported data type for column while calculating row size - {}"
+                    ", column ID - {}, data type {}",
                     columnName.c_str(), col, dataType);
                 break;
         }
@@ -1526,7 +1551,7 @@ SQLRETURN FetchMany_wrap(intptr_t StatementHandle, py::list& rows, int fetchSize
     py::list columnNames;
     ret = SQLDescribeCol_wrap(StatementHandle, columnNames);
     if (!SQL_SUCCEEDED(ret)) {
-        DEBUG_LOG("Failed to get column descriptions");
+        LOG("Failed to get column descriptions");
         return ret;
     }
 
@@ -1536,7 +1561,7 @@ SQLRETURN FetchMany_wrap(intptr_t StatementHandle, py::list& rows, int fetchSize
     // Bind columns
     ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
     if (!SQL_SUCCEEDED(ret)) {
-        DEBUG_LOG("Error when binding columns");
+        LOG("Error when binding columns");
         return ret;
     }
 
@@ -1546,7 +1571,7 @@ SQLRETURN FetchMany_wrap(intptr_t StatementHandle, py::list& rows, int fetchSize
 
     ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched);
     if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
-        DEBUG_LOG("Error when fetching data");
+        LOG("Error when fetching data");
         return ret;
     }
 
@@ -1576,7 +1601,7 @@ SQLRETURN FetchAll_wrap(intptr_t StatementHandle, py::list& rows) {
     py::list columnNames;
     ret = SQLDescribeCol_wrap(StatementHandle, columnNames);
     if (!SQL_SUCCEEDED(ret)) {
-        DEBUG_LOG("Failed to get column descriptions");
+        LOG("Failed to get column descriptions");
         return ret;
     }
 
@@ -1602,7 +1627,7 @@ SQLRETURN FetchAll_wrap(intptr_t StatementHandle, py::list& rows) {
     // Bind columns
     ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
     if (!SQL_SUCCEEDED(ret)) {
-        DEBUG_LOG("Error when binding columns");
+        LOG("Error when binding columns");
         return ret;
     }
 
@@ -1613,7 +1638,7 @@ SQLRETURN FetchAll_wrap(intptr_t StatementHandle, py::list& rows) {
     while (ret != SQL_NO_DATA) {
         ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched);
         if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
-            DEBUG_LOG("Error when fetching data");
+            LOG("Error when fetching data");
             return ret;
         }
     }
@@ -1645,14 +1670,14 @@ SQLRETURN FetchOne_wrap(intptr_t StatementHandle, py::list& row) {
         SQLSMALLINT colCount = SQLNumResultCols_wrap(StatementHandle);
         ret = SQLGetData_wrap(StatementHandle, colCount, row);
     } else if (ret != SQL_NO_DATA) {
-        DEBUG_LOG("Error fetching data");
+        LOG("Error when fetching data");
     }
     return ret;
 }
 
 // Wrap SQLMoreResults
 SQLRETURN SQLMoreResults_wrap(intptr_t StatementHandle) {
-    DEBUG_LOG("Check for more results");
+    LOG("Check for more results");
     if (!SQLMoreResults_ptr) {
         LoadDriverOrThrowException();
     }
@@ -1662,7 +1687,7 @@ SQLRETURN SQLMoreResults_wrap(intptr_t StatementHandle) {
 
 // Wrap SQLEndTran
 SQLRETURN SQLEndTran_wrap(SQLSMALLINT HandleType, intptr_t Handle, SQLSMALLINT CompletionType) {
-    DEBUG_LOG("End SQL Transaction");
+    LOG("End SQL Transaction");
     if (!SQLEndTran_ptr) {
         LoadDriverOrThrowException();
     }
@@ -1672,7 +1697,7 @@ SQLRETURN SQLEndTran_wrap(SQLSMALLINT HandleType, intptr_t Handle, SQLSMALLINT C
 
 // Wrap SQLFreeHandle
 SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, intptr_t Handle) {
-    DEBUG_LOG("Free SQL handle");
+    LOG("Free SQL handle");
     if (!SQLAllocHandle_ptr) {
         LoadDriverOrThrowException();
     }
@@ -1682,8 +1707,8 @@ SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, intptr_t Handle) {
 
 // Wrap SQLDisconnect
 SQLRETURN SQLDisconnect_wrap(intptr_t ConnectionHandle) {
-    DEBUG_LOG("Disconnect from MSSQL");
-    if (!SQLDriverConnect_ptr) {
+    LOG("Disconnect from MSSQL");
+    if (!SQLDisconnect_ptr) {
         LoadDriverOrThrowException();
     }
 
@@ -1692,7 +1717,7 @@ SQLRETURN SQLDisconnect_wrap(intptr_t ConnectionHandle) {
 
 // Wrap SQLRowCount
 SQLLEN SQLRowCount_wrap(intptr_t StatementHandle) {
-    DEBUG_LOG("Get number of row affected by last execute");
+    LOG("Get number of row affected by last execute");
     if (!SQLRowCount_ptr) {
         LoadDriverOrThrowException();
     }
@@ -1700,10 +1725,10 @@ SQLLEN SQLRowCount_wrap(intptr_t StatementHandle) {
     SQLLEN rowCount;
     SQLRETURN ret = SQLRowCount_ptr(reinterpret_cast<SQLHSTMT>(StatementHandle), &rowCount);
     if (!SQL_SUCCEEDED(ret)) {
-        DEBUG_LOG("SQLRowCount failed with error code - %d", ret);
+        LOG("SQLRowCount failed with error code - {}", ret);
         return ret;
     }
-    DEBUG_LOG("SQLRowCount returned %d", rowCount);
+    LOG("SQLRowCount returned {}", rowCount);
     return rowCount;
 }
 
@@ -1720,12 +1745,11 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("decimalDigits", &ParamInfo::decimalDigits);
     py::class_<NumericData>(m, "NumericData")
         .def(py::init<>())
-        .def(py::init<SQLCHAR, SQLSCHAR, SQLCHAR, const std::string&>())
+        .def(py::init<SQLCHAR, SQLSCHAR, SQLCHAR, std::uint64_t>())
         .def_readwrite("precision", &NumericData::precision)
         .def_readwrite("scale", &NumericData::scale)
         .def_readwrite("sign", &NumericData::sign)
-        .def_readwrite("val", &NumericData::val)
-        .def("to_double", &NumericData::to_double);
+        .def_readwrite("val", &NumericData::val);
     py::class_<ErrorInfo>(m, "ErrorInfo")
         .def_readwrite("sqlState", &ErrorInfo::sqlState)
         .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);

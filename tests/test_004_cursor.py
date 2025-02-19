@@ -75,9 +75,9 @@ def test_insert_id_column(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT id FROM pytest_single_column")
         row = cursor.fetchone()
-        assert row[0] == 1, "ID column insertion failed"
+        assert row[0] == 1, "ID column insertion/fetch failed"
     except Exception as e:
-        pytest.fail(f"ID column insertion failed: {e}")
+        pytest.fail(f"ID column insertion/fetch failed: {e}")
     finally:
         cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
@@ -91,9 +91,9 @@ def test_insert_bit_column(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT bit_column FROM pytest_single_column")
         row = cursor.fetchone()
-        assert row[0] == 1, "Bit column insertion failed"
+        assert row[0] == 1, "Bit column insertion/fetch failed"
     except Exception as e:
-        pytest.fail(f"Bit column insertion failed: {e}")
+        pytest.fail(f"Bit column insertion/fetch failed: {e}")
     finally:
         cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
@@ -107,9 +107,9 @@ def test_insert_nvarchar_column(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT nvarchar_column FROM pytest_single_column")
         row = cursor.fetchone()
-        assert row[0] == "test", "Nvarchar column insertion failed"
+        assert row[0] == "test", "Nvarchar column insertion/fetch failed"
     except Exception as e:
-        pytest.fail(f"Nvarchar column insertion failed: {e}")
+        pytest.fail(f"Nvarchar column insertion/fetch failed: {e}")
     finally:
         cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
@@ -124,9 +124,9 @@ def test_insert_time_column(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT time_column FROM single_column")
         row = cursor.fetchone()
-        assert row[0] == time(12, 34, 56), "Time column insertion failed"
+        assert row[0] == time(12, 34, 56), "Time column insertion/fetch failed"
     except Exception as e:
-        pytest.fail(f"Time column insertion failed: {e}")
+        pytest.fail(f"Time column insertion/fetch failed: {e}")
     finally:
         cursor.execute("DROP TABLE single_column")
         db_connection.commit()
@@ -141,9 +141,9 @@ def test_insert_datetime_column(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT datetime_column FROM single_column")
         row = cursor.fetchone()
-        assert row[0] == datetime(2024, 5, 20, 12, 34, 56), "Datetime column insertion failed"
+        assert row[0] == datetime(2024, 5, 20, 12, 34, 56), "Datetime column insertion/fetch failed"
     except Exception as e:
-        pytest.fail(f"Datetime column insertion failed: {e}")
+        pytest.fail(f"Datetime column insertion/fetch failed: {e}")
     finally:
         cursor.execute("DROP TABLE single_column")
         db_connection.commit()
@@ -158,9 +158,9 @@ def test_insert_date_column(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT date_column FROM pytest_single_column")
         row = cursor.fetchone()
-        assert row[0] == date(2024, 5, 20), "Date column insertion failed"
+        assert row[0] == date(2024, 5, 20), "Date column insertion/fetch failed"
     except Exception as e:
-        pytest.fail(f"Date column insertion failed: {e}")
+        pytest.fail(f"Date column insertion/fetch failed: {e}")
     finally:
         cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
@@ -175,28 +175,34 @@ def test_insert_real_column(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT real_column FROM pytest_single_column")
         row = cursor.fetchone()
-        assert abs(row[0] - 1.23456789) < 1e-8, "Real column insertion failed"
+        assert abs(row[0] - 1.23456789) < 1e-8, "Real column insertion/fetch failed"
     except Exception as e:
-        pytest.fail(f"Real column insertion failed: {e}")
+        pytest.fail(f"Real column insertion/fetch failed: {e}")
     finally:
         cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
 
-# def test_insert_decimal_column(cursor, db_connection):
-#     """Test inserting data into the decimal_column"""
-#     try:
-#         cursor.execute("CREATE TABLE single_column (decimal_column DECIMAL(10, 10))")
-#         db_connection.commit()
-#         cursor.execute("INSERT INTO single_column (decimal_column) VALUES (?)", [decimal.Decimal("1.23456789")])
-#         db_connection.commit()
-#         cursor.execute("SELECT decimal_column FROM single_column")
-#         row = cursor.fetchone()
-#         assert row[0] == decimal.Decimal("1.23456789"), "Decimal column insertion failed"
-#     except Exception as e:
-#         pytest.fail(f"Decimal column insertion failed: {e}")
-#     finally:
-#         cursor.execute("DROP TABLE single_column")
-#         db_connection.commit()
+def test_insert_decimal_column(cursor, db_connection):
+    """Test inserting data into the decimal_column"""
+    try:
+        cursor.execute("CREATE TABLE single_column (decimal_column DECIMAL(10, 2))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO single_column (decimal_column) VALUES (?)", [decimal.Decimal(123.45).quantize(decimal.Decimal('0.00'))])
+        db_connection.commit()
+        cursor.execute("SELECT decimal_column FROM single_column")
+        row = cursor.fetchone()
+        assert row[0] == decimal.Decimal(123.45).quantize(decimal.Decimal('0.00')), "Decimal column insertion/fetch failed"
+        cursor.execute("TRUNCATE TABLE single_column")
+        cursor.execute("INSERT INTO single_column (decimal_column) VALUES (?)", [decimal.Decimal(-123.45).quantize(decimal.Decimal('0.00'))])
+        db_connection.commit()
+        cursor.execute("SELECT decimal_column FROM single_column")
+        row = cursor.fetchone()
+        assert row[0] == decimal.Decimal(-123.45).quantize(decimal.Decimal('0.00')), "Negative Decimal insertion/fetch failed"
+    except Exception as e:
+        pytest.fail(f"Decimal column insertion/fetch failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE single_column")
+        db_connection.commit()
 
 def test_insert_tinyint_column(cursor, db_connection):
     """Test inserting data into the tinyint_column"""
@@ -207,9 +213,9 @@ def test_insert_tinyint_column(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT tinyint_column FROM pytest_single_column")
         row = cursor.fetchone()
-        assert row[0] == 127, "Tinyint column insertion failed"
+        assert row[0] == 127, "Tinyint column insertion/fetch failed"
     except Exception as e:
-        pytest.fail(f"Tinyint column insertion failed: {e}")
+        pytest.fail(f"Tinyint column insertion/fetch failed: {e}")
     finally:
         cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
@@ -223,9 +229,9 @@ def test_insert_smallint_column(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT smallint_column FROM pytest_single_column")
         row = cursor.fetchone()
-        assert row[0] == 32767, "Smallint column insertion failed"
+        assert row[0] == 32767, "Smallint column insertion/fetch failed"
     except Exception as e:
-        pytest.fail(f"Smallint column insertion failed: {e}")
+        pytest.fail(f"Smallint column insertion/fetch failed: {e}")
     finally:
         cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
@@ -239,9 +245,9 @@ def test_insert_bigint_column(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT bigint_column FROM pytest_single_column")
         row = cursor.fetchone()
-        assert row[0] == 9223372036854775807, "Bigint column insertion failed"
+        assert row[0] == 9223372036854775807, "Bigint column insertion/fetch failed"
     except Exception as e:
-        pytest.fail(f"Bigint column insertion failed: {e}")
+        pytest.fail(f"Bigint column insertion/fetch failed: {e}")
     finally:
         cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
@@ -255,9 +261,9 @@ def test_insert_integer_column(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT integer_column FROM pytest_single_column")
         row = cursor.fetchone()
-        assert row[0] == 2147483647, "Integer column insertion failed"
+        assert row[0] == 2147483647, "Integer column insertion/fetch failed"
     except Exception as e:
-        pytest.fail(f"Integer column insertion failed: {e}")
+        pytest.fail(f"Integer column insertion/fetch failed: {e}")
     finally:
         cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
@@ -271,9 +277,9 @@ def test_insert_float_column(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT float_column FROM pytest_single_column")
         row = cursor.fetchone()
-        assert abs(row[0] - 1.23456789) < 1e-8, "Float column insertion failed"
+        assert row[0] == 1.23456789, "Float column insertion/fetch failed"
     except Exception as e:
-        pytest.fail(f"Float column insertion failed: {e}")
+        pytest.fail(f"Float column insertion/fetch failed: {e}")
     finally:
         cursor.execute("DROP TABLE pytest_single_column")
         db_connection.commit()
@@ -315,7 +321,7 @@ def test_insert_args(cursor, db_connection):
         row = cursor.fetchone()
         assert row[0] == TEST_DATA[0], "Insertion using args failed"
     except Exception as e:
-        pytest.fail(f"Parameterized data insertion failed: {e}")    
+        pytest.fail(f"Parameterized data insertion/fetch failed: {e}")    
     finally:
         cursor.execute("DELETE FROM pytest_all_data_types")
         db_connection.commit()                   
@@ -331,7 +337,7 @@ def test_parametrized_insert(cursor, db_connection, data):
         """, [None if v is None else v for v in data])
         db_connection.commit()
     except Exception as e:
-        pytest.fail(f"Parameterized data insertion failed: {e}")
+        pytest.fail(f"Parameterized data insertion/fetch failed: {e}")
 
 def test_rowcount(cursor, db_connection):
     """Test rowcount after insert operations"""
