@@ -104,17 +104,28 @@ class Cursor:
             A datetime.datetime object if parsing is successful, else None.
         """
         formats = [
+            "%Y-%m-%dT%H:%M:%S.%f",     # ISO 8601 datetime with fractional seconds
             "%Y-%m-%dT%H:%M:%S",        # ISO 8601 datetime
             "%Y-%m-%d %H:%M:%S.%f",     # Datetime with fractional seconds (up to 3 digits)
+            "%Y-%m-%d %H:%M:%S",        # Datetime without fractional seconds
         ]
         for fmt in formats:
             try:
                 dt = datetime.datetime.strptime(param, fmt)
-                if fmt == "%Y-%m-%d %H:%M:%S.%f" and len(param.split('.')[-1]) <= 3 or fmt == "%Y-%m-%dT%H:%M:%S":
-                    return dt
+
+                # If there are fractional seconds, ensure they do not exceed 7 digits
+                if fmt in ["%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S.%f"]:
+                    fractional_part = param.split('.')[-1]
+                    # If the fractional part is more than 3 digits, truncate to 3 digits
+                    if len(fractional_part) > 3:
+                        fractional_part = fractional_part[:3]
+                        # Convert to microseconds
+                        dt = dt.replace(microsecond=int(fractional_part.ljust(3, "0")) * 1000)
+                return dt  # Valid datetime
             except ValueError:
-                continue
-        return None
+                continue  # Try next format
+
+        return None  # If all formats fail, return None
 
     def _parse_time(self, param):
         """

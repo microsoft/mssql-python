@@ -41,7 +41,7 @@ TEST_DATA = (
     1.23456789,
     "nvarchar data",
     time(12, 34, 56),
-    datetime(2024, 5, 20, 12, 34, 56),
+    datetime(2024, 5, 20, 12, 34, 56, 123000),
     date(2024, 5, 20),
     1.23456789
 )
@@ -51,7 +51,7 @@ PARAM_TEST_DATA = [
     TEST_DATA,
     (2, 0, 0, 0, 0, 0, 0.0, "test1", time(0, 0, 0), datetime(2024, 1, 1, 0, 0, 0), date(2024, 1, 1), 0.0),
     (3, 1, 1, 1, 1, 1, 1.1, "test2", time(1, 1, 1), datetime(2024, 2, 2, 1, 1, 1), date(2024, 2, 2), 1.1),
-    (4, 0, 127, 32767, 9223372036854775807, 2147483647, 1.23456789, "test3", time(12, 34, 56), datetime(2024, 5, 20, 12, 34, 56), date(2024, 5, 20), 1.23456789)
+    (4, 0, 127, 32767, 9223372036854775807, 2147483647, 1.23456789, "test3", time(12, 34, 56), datetime(2024, 5, 20, 12, 34, 56, 123000), date(2024, 5, 20), 1.23456789)
 ]
 
 def drop_table_if_exists(cursor, table_name):
@@ -137,11 +137,11 @@ def test_insert_datetime_column(cursor, db_connection):
         drop_table_if_exists(cursor, "single_column")
         cursor.execute("CREATE TABLE single_column (datetime_column DATETIME)")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (datetime_column) VALUES (?)", [datetime(2024, 5, 20, 12, 34, 56)])
+        cursor.execute("INSERT INTO single_column (datetime_column) VALUES (?)", [datetime(2024, 5, 20, 12, 34, 56, 123000)])
         db_connection.commit()
         cursor.execute("SELECT datetime_column FROM single_column")
         row = cursor.fetchone()
-        assert row[0] == datetime(2024, 5, 20, 12, 34, 56), "Datetime column insertion/fetch failed"
+        assert row[0] == datetime(2024, 5, 20, 12, 34, 56, 123000), "Datetime column insertion/fetch failed"
     except Exception as e:
         pytest.fail(f"Datetime column insertion/fetch failed: {e}")
     finally:

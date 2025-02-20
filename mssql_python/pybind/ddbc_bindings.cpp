@@ -518,9 +518,9 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 sqlTimestampPtr->hour = param.attr("hour").cast<int>();
                 sqlTimestampPtr->minute = param.attr("minute").cast<int>();
                 sqlTimestampPtr->second = param.attr("second").cast<int>();
-                // TODO: timestamp.fraction field seems to involve some computation.
-                // Handle this in python and pass result to pybind module?
-                sqlTimestampPtr->fraction = 0;
+                // SQL server supports in ns, but python datetime supports in µs
+                sqlTimestampPtr->fraction = static_cast<SQLUINTEGER>(
+                    param.attr("microsecond").cast<int>() * 1000);  // Convert µs to ns
                 dataPtr = static_cast<void*>(sqlTimestampPtr);
                 break;
             }
@@ -1058,7 +1058,8 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                             timestampValue.day,
                             timestampValue.hour,
                             timestampValue.minute,
-                            timestampValue.second
+                            timestampValue.second,
+                            timestampValue.fraction / 1000  // Convert back ns to µs
                         )
                     );
                 } else {
@@ -1356,7 +1357,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         row.append(buffers.charBuffers[col - 1][i]);
                         break;
                     case SQL_BIT:
-                        row.append(buffers.charBuffers[col - 1][i]);
+                        row.append(static_cast<bool>(buffers.charBuffers[col - 1][i]));
                         break;
                     case SQL_REAL:
                         row.append(buffers.realBuffers[col - 1][i]);
@@ -1389,7 +1390,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                                 buffers.timestampBuffers[col - 1][i].day,
                                 buffers.timestampBuffers[col - 1][i].hour,
                                 buffers.timestampBuffers[col - 1][i].minute,
-                                buffers.timestampBuffers[col - 1][i].second
+                                buffers.timestampBuffers[col - 1][i].second,
+                                buffers.timestampBuffers[col - 1][i].fraction / 1000  // Convert back ns to µs
                             )
                         );
                         break;
