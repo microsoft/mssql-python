@@ -555,6 +555,7 @@ class Cursor:
         self.last_executed_stmt = operation
 
         # Update rowcount after execution
+        # TODO: rowcount return code from SQL needs to be handled
         self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt.value)
 
         # Initialize description after execution
@@ -572,7 +573,7 @@ class Cursor:
             Error: If the operation fails.
         """
         self._check_closed()  # Check if the cursor is closed
-        
+
         # Reset the cursor once before the loop
         self._reset_cursor()
 
@@ -657,6 +658,7 @@ class Cursor:
         # Fetch the next set of rows
         rows = []
         ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt.value, rows, size)
+        check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
         if ret == odbc_sql_const.SQL_NO_DATA.value:
             return []
         return rows
@@ -676,6 +678,7 @@ class Cursor:
         # Fetch all remaining rows
         rows = []
         ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt.value, rows)
+        check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
         if ret != odbc_sql_const.SQL_NO_DATA.value:
             return []
         return list(rows)
@@ -694,6 +697,7 @@ class Cursor:
 
         # Skip to the next result set
         ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt.value)
+        check_error(odbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
         if ret == odbc_sql_const.SQL_NO_DATA.value:
             return False
         return True
