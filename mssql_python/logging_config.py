@@ -1,6 +1,7 @@
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import sys
 
 ENABLE_LOGGING = False
 
@@ -37,11 +38,11 @@ def setup_logging(mode='file', log_level=logging.DEBUG):
 
     if mode == 'stdout':
         # If the mode is stdout, then we want to log to the console as well
-        stdout_handler = logging.StreamHandler()
+        stdout_handler = logging.StreamHandler(sys.stdout)
         stdout_handler.setLevel(log_level)
         stdout_handler.setFormatter(formatter)
         logger.addHandler(stdout_handler)
-    else:
+    elif mode != 'file':
         raise ValueError(f'Invalid logging mode: {mode}')
 
 def get_logger():
