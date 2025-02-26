@@ -148,68 +148,68 @@ class Cursor:
                 continue
         return None
     
-    def _parse_timestamptz(self, param):
-        """
-        Attempt to parse a string as a timestamp with time zone (timestamptz).
-        
-        Args:
-            param: The string to parse.
-        
-        Returns:
-            A datetime.datetime object if parsing is successful, else None.
-        """
-        formats = [
-            "%Y-%m-%dT%H:%M:%S%z",      # ISO 8601 datetime with timezone offset
-            "%Y-%m-%d %H:%M:%S.%f%z",   # Datetime with fractional seconds and timezone offset
-        ]
-        for fmt in formats:
-            try:
-                return datetime.datetime.strptime(param, fmt)
-            except ValueError:
-                continue
-        return None
+    # def _parse_timestamptz(self, param):
+    #     """
+    #     Attempt to parse a string as a timestamp with time zone (timestamptz).
+    #     
+    #     Args:
+    #         param: The string to parse.
+    #     
+    #     Returns:
+    #         A datetime.datetime object if parsing is successful, else None.
+    #     """
+    #     formats = [
+    #         "%Y-%m-%dT%H:%M:%S%z",      # ISO 8601 datetime with timezone offset
+    #         "%Y-%m-%d %H:%M:%S.%f%z",   # Datetime with fractional seconds and timezone offset
+    #     ]
+    #     for fmt in formats:
+    #         try:
+    #             return datetime.datetime.strptime(param, fmt)
+    #         except ValueError:
+    #             continue
+    #     return None
 
-    def _parse_smalldatetime(self, param):
-        """
-        Attempt to parse a string as a smalldatetime.
-        
-        Args:
-            param: The string to parse.
-        
-        Returns:
-            A datetime.datetime object if parsing is successful, else None.
-        """
-        formats = [
-            "%Y-%m-%d %H:%M:%S",        # Standard datetime
-        ]
-        for fmt in formats:
-            try:
-                return datetime.datetime.strptime(param, fmt)
-            except ValueError:
-                continue
-        return None
+    # def _parse_smalldatetime(self, param):
+    #     """
+    #     Attempt to parse a string as a smalldatetime.
+    #     
+    #     Args:
+    #         param: The string to parse.
+    #     
+    #     Returns:
+    #         A datetime.datetime object if parsing is successful, else None.
+    #     """
+    #     formats = [
+    #         "%Y-%m-%d %H:%M:%S",        # Standard datetime
+    #     ]
+    #     for fmt in formats:
+    #         try:
+    #             return datetime.datetime.strptime(param, fmt)
+    #         except ValueError:
+    #             continue
+    #     return None
 
-    def _parse_datetime2(self, param):
-        """
-        Attempt to parse a string as a datetime2.
-        
-        Args:
-            param: The string to parse.
-        
-        Returns:
-            A datetime.datetime object if parsing is successful, else None.
-        """
-        formats = [
-            "%Y-%m-%d %H:%M:%S.%f",     # Datetime with fractional seconds (up to 6 digits)
-        ]
-        for fmt in formats:
-            try:
-                dt = datetime.datetime.strptime(param, fmt)
-                if fmt == "%Y-%m-%d %H:%M:%S.%f" and len(param.split('.')[-1]) > 3:
-                    return dt
-            except ValueError:
-                continue
-        return None
+    # def _parse_datetime2(self, param):
+    #     """
+    #     Attempt to parse a string as a datetime2.
+    #     
+    #     Args:
+    #         param: The string to parse.
+    #     
+    #     Returns:
+    #         A datetime.datetime object if parsing is successful, else None.
+    #     """
+    #     formats = [
+    #         "%Y-%m-%d %H:%M:%S.%f",     # Datetime with fractional seconds (up to 6 digits)
+    #     ]
+    #     for fmt in formats:
+    #         try:
+    #             dt = datetime.datetime.strptime(param, fmt)
+    #             if fmt == "%Y-%m-%d %H:%M:%S.%f" and len(param.split('.')[-1]) > 3:
+    #                 return dt
+    #         except ValueError:
+    #             continue
+    #     return None
 
     def _get_numeric_data(self, param):
         """
@@ -326,6 +326,7 @@ class Cursor:
 
             # String mapping logic here
             is_unicode = self._is_unicode_string(param)
+            # TODO: revisit
             if len(param) > 4000:  # Long strings
                 if is_unicode:
                     return odbc_sql_const.SQL_WLONGVARCHAR.value, odbc_sql_const.SQL_C_WCHAR.value, len(param), 0
@@ -348,8 +349,8 @@ class Cursor:
             else:
                 return odbc_sql_const.SQL_BINARY.value, odbc_sql_const.SQL_C_BINARY.value, len(param), 0
         
-        elif isinstance(param, uuid.UUID):  # Handle uniqueidentifier
-            return odbc_sql_const.SQL_GUID.value, odbc_sql_const.SQL_C_GUID.value, 36, 0
+        # elif isinstance(param, uuid.UUID):  # Handle uniqueidentifier
+        #     return odbc_sql_const.SQL_GUID.value, odbc_sql_const.SQL_C_GUID.value, 36, 0
         
         elif isinstance(param, datetime.datetime):
             # Always keep datetime.datetime check before datetime.date check since datetime.datetime is a subclass of datetime (isinstance(datetime.datetime, datetime.date) returns True)

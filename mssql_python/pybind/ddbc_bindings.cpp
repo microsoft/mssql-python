@@ -420,6 +420,8 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 if (!py::isinstance<py::none>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
+                // TODO: This wont work for None values added to BINARY/VARBINARY columns. None values
+                //       of binary columns need to have C type = SQL_C_BINARY & SQL type = SQL_BINARY
                 dataPtr = nullptr;
                 strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                 *strLenOrIndPtr = SQL_NULL_DATA;
@@ -918,19 +920,21 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
             case SQL_LONGVARCHAR: {
                 // TODO: revisit
                 HandleZeroColumnSizeAtFetch(columnSize);
-                std::vector<SQLCHAR> dataBuffer(columnSize + 1);
+		uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
+                std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
                 SQLLEN dataLen;
                 // TODO: Handle the return code better
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size() - 1,
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(),
                                      &dataLen);
 
                 if (SQL_SUCCEEDED(ret)) {
                     // TODO: Refactor these if's across other switches to avoid code duplication
                     // columnSize is in chars, dataLen is in bytes
                     if (dataLen > 0) {
-                        int numCharsInData = dataLen / sizeof(SQLCHAR);
+                        uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
+                        // NOTE: dataBuffer.size() includes null-terminator, dataLen doesn't. Hence use '<'.
 						if (numCharsInData < dataBuffer.size()) {
-							dataBuffer[numCharsInData] = '\0';  // Null-terminate
+                            // SQLGetData will null-terminate the data
                             row.append(std::string(reinterpret_cast<char*>(dataBuffer.data())));
 						} else {
                             // In this case, buffer size is smaller, and data to be retrieved is longer
@@ -962,17 +966,18 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
 			case SQL_WLONGVARCHAR: {
                 // TODO: revisit
                 HandleZeroColumnSizeAtFetch(columnSize);
-                std::vector<SQLWCHAR> dataBuffer(columnSize + 1);
+		uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
+                std::vector<SQLWCHAR> dataBuffer(fetchBufferSize);
                 SQLLEN dataLen;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(),
-                                     (dataBuffer.size() - 1) * sizeof(SQLWCHAR), &dataLen);
+                                     dataBuffer.size() * sizeof(SQLWCHAR), &dataLen);
 
                 if (SQL_SUCCEEDED(ret)) {
                     // TODO: Refactor these if's across other switches to avoid code duplication
                     if (dataLen > 0) {
-                        int numCharsInData = dataLen / sizeof(SQLWCHAR);
+                        uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
 						if (numCharsInData < dataBuffer.size()) {
-							dataBuffer[numCharsInData] = L'\0';  // Null-terminate
+                            // SQLGetData will null-terminate the data
                             row.append(std::wstring(dataBuffer.data()));
 						} else {
                             // In this case, buffer size is smaller, and data to be retrieved is longer
@@ -1273,24 +1278,37 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
         switch (dataType) {
             case SQL_CHAR:
             case SQL_VARCHAR:
-            case SQL_LONGVARCHAR:
+            case SQL_LONGVARCHAR: {
                 // TODO: handle variable length data correctly. This logic wont suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
-                buffers.charBuffers[col - 1].resize(fetchSize * (columnSize + 1 /*null-terminator*/));
+                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+		// TODO: For LONGVARCHAR/BINARY types, columnSize is returned as 2GB-1 by
+		// SQLDescribeCol. So fetchBufferSize = 2GB. fetchSize=1 if columnSize>1GB.
+		// So we'll allocate a vector of size 2GB. If a query fetches multiple (say N)
+		// LONG... columns, we will have allocated multiple (N) 2GB sized vectors. This
+		// will make driver very slow. And if the N is high enough, we could hit the OS
+		// limit for heap memory that we can allocate, & hence get a std::bad_alloc. The
+		// process could also be killed by OS for consuming too much memory.
+		// Hence this will be revisited in beta to not allocate 2GB+ memory,
+		// & use streaming instead
+                buffers.charBuffers[col - 1].resize(fetchSize * fetchBufferSize);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
-                                     (columnSize) * sizeof(SQLCHAR),
+                                     fetchBufferSize * sizeof(SQLCHAR),
                                      buffers.indicators[col - 1].data());
                 break;
+            }
             case SQL_WCHAR:
             case SQL_WVARCHAR:
-            case SQL_WLONGVARCHAR:
+            case SQL_WLONGVARCHAR: {
                 // TODO: handle variable length data correctly. This logic wont suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
-                buffers.wcharBuffers[col - 1].resize(fetchSize * (columnSize + 1 /*null-terminator*/));
+                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                buffers.wcharBuffers[col - 1].resize(fetchSize * fetchBufferSize);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
-                                     (columnSize) * sizeof(SQLWCHAR),
+                                     fetchBufferSize * sizeof(SQLWCHAR),
                                      buffers.indicators[col - 1].data());
                 break;
+            }
             case SQL_INTEGER:
                 buffers.intBuffers[col - 1].resize(fetchSize);
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_SLONG, buffers.intBuffers[col - 1].data(),
@@ -1439,12 +1457,13 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     // TODO: variable length data needs special handling, this logic wont suffice
                     SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
                     HandleZeroColumnSizeAtFetch(columnSize);
-					int numCharsInData = dataLen / sizeof(SQLCHAR);
-                    if (numCharsInData <= columnSize) {
-						buffers.charBuffers[col - 1][(i * columnSize) + numCharsInData] =
-                            '\0';  // Null-terminate
+                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+					uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
+					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
+                    if (numCharsInData < fetchBufferSize) {
+                        // SQLFetch will nullterminate the data
                         row.append(std::string(
-                            reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * columnSize]),
+                            reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * fetchBufferSize]),
                             numCharsInData));
                     } else {
                         // In this case, buffer size is smaller, and data to be retrieved is longer
@@ -1463,13 +1482,13 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     // TODO: variable length data needs special handling, this logic wont suffice
                     SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
                     HandleZeroColumnSizeAtFetch(columnSize);
-					int numCharsInData = dataLen / sizeof(SQLWCHAR);
-                    if (numCharsInData <= columnSize) {
-                        buffers.wcharBuffers[col - 1]
-                                            [(i * columnSize) + numCharsInData] =
-                            L'\0';  // Null-terminate
+                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+					uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
+					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
+                    if (numCharsInData < fetchBufferSize) {
+                        // SQLFetch will nullterminate the data
                         row.append(std::wstring(
-                            reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * columnSize]),
+                            reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]),
                             numCharsInData));
                     } else {
                         // In this case, buffer size is smaller, and data to be retrieved is longer
