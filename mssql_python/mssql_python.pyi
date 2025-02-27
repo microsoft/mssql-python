@@ -1,50 +1,61 @@
-from typing import (
-    Final, Union
-)
+"""
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+"""
+
+from typing import Final, Union
 import datetime
 
 # GLOBALS
 # Read-Only
-apilevel: Final[str] = '2.0'
-paramstyle: Final[str] = 'pyformat'
+apilevel: Final[str] = "2.0"
+paramstyle: Final[str] = "pyformat"
 threadsafety: Final[int] = 1
 
 # Type Objects
 # https://www.python.org/dev/peps/pep-0249/#type-objects
-class STRING: 
+class STRING:
     """
     This type object is used to describe columns in a database that are string-based (e.g. CHAR).
     """
+
     def __init__(self) -> None: ...
 
 class BINARY:
     """
-    This type object is used to describe (long) binary columns in a database (e.g. LONG, RAW, BLOBs).
+    This type object is used to describe (long) 
+    binary columns in a database (e.g. LONG, RAW, BLOBs).
     """
+
     def __init__(self) -> None: ...
 
 class NUMBER:
     """
     This type object is used to describe numeric columns in a database.
     """
+
     def __init__(self) -> None: ...
 
 class DATETIME:
     """
     This type object is used to describe date/time columns in a database.
     """
+
     def __init__(self) -> None: ...
 
 class ROWID:
     """
     This type object is used to describe the “Row ID” column in a database.
     """
+
     def __init__(self) -> None: ...
 
 # Type Constructors
 def Date(year: int, month: int, day: int) -> datetime.date: ...
 def Time(hour: int, minute: int, second: int) -> datetime.time: ...
-def Timestamp(year: int, month: int, day: int, hour: int, minute: int, second: int) -> datetime.datetime: ...
+def Timestamp(
+    year: int, month: int, day: int, hour: int, minute: int, second: int
+) -> datetime.datetime: ...
 def DateFromTicks(ticks: int) -> datetime.date: ...
 def TimeFromTicks(ticks: int) -> datetime.time: ...
 def TimestampFromTicks(ticks: int) -> datetime.datetime: ...
@@ -74,7 +85,7 @@ class Connection:
     create a Connection object.
     """
 
-    def cursor(self) -> 'Cursor':
+    def cursor(self) -> "Cursor":
         """
         Return a new Cursor object using the connection.
         """
@@ -102,14 +113,16 @@ class Connection:
 class Cursor:
     """
     Cursor object for executing SQL queries and fetching results.
-    
+
     https://www.python.org/dev/peps/pep-0249/#cursor-objects
 
     This class should not be instantiated directly, instead call cursor() from a Connection
     object to create a Cursor object.
     """
 
-    def callproc(self, procname: str, parameters: Union[None, list] = None) -> Union[None, list]:
+    def callproc(
+        self, procname: str, parameters: Union[None, list] = None
+    ) -> Union[None, list]:
         """
         Call a stored database procedure with the given name.
         """
@@ -121,7 +134,9 @@ class Cursor:
         """
         ...
 
-    def execute(self, operation: str, parameters: Union[None, list, dict] = None) -> None:
+    def execute(
+        self, operation: str, parameters: Union[None, list, dict] = None
+    ) -> None:
         """
         Prepare and execute a database operation (query or command).
         """

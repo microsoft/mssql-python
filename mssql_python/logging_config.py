@@ -1,3 +1,9 @@
+"""
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+This module provides logging configuration for the mssql_python package.
+"""
+
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -5,7 +11,8 @@ import sys
 
 ENABLE_LOGGING = False
 
-def setup_logging(mode='file', log_level=logging.DEBUG):
+
+def setup_logging(mode="file", log_level=logging.DEBUG):
     """
     Set up logging configuration.
 
@@ -13,7 +20,8 @@ def setup_logging(mode='file', log_level=logging.DEBUG):
     It sets the log level, format, and log file location.
 
     Args:
-        log_level (int): The logging level (default: logging.INFO).
+        mode (str): The logging mode ('file' or 'stdout').
+        log_level (int): The logging level (default: logging.DEBUG).
     """
     global ENABLE_LOGGING
     ENABLE_LOGGING = True
@@ -25,7 +33,7 @@ def setup_logging(mode='file', log_level=logging.DEBUG):
     # Construct the path to the log file
     # TODO: Use a different dir to dump log file
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    log_file = os.path.join(current_dir, 'mssql_python_trace_{pid}.log'.format(pid=os.getpid()))
+    log_file = os.path.join(current_dir, f'mssql_python_trace_{os.getpid()}.log')
 
     # Create a log handler to log to driver specific file
     # By default we only want to log to a file, max size 500MB, and keep 5 backups

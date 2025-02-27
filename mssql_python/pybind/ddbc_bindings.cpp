@@ -772,7 +772,7 @@ SQLRETURN SQLExecute_wrap(const intptr_t statementHandle,
     if (params.size() == 0) {
         // Execute statement directly if the statement is not parametrized. This is the
         // fastest way to submit a SQL statement for one-time execution according to
-        // ODBC documentation -
+        // DDBC documentation -
         // https://learn.microsoft.com/en-us/sql/odbc/reference/syntax/sqlexecdirect-function?view=sql-server-ver16
         rc = SQLExecDirect_ptr(hStmt, queryPtr, SQL_NTS);
         if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {

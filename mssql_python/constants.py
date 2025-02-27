@@ -1,6 +1,16 @@
+"""
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+This module contains the constants used in the DDBC module.
+"""
+
 from enum import Enum
 
-class ConstantsODBC(Enum):
+
+class ConstantsDDBC(Enum):
+    """
+    Constants used in the DDBC module.
+    """
     SQL_HANDLE_ENV = 1
     SQL_HANDLE_DBC = 2
     SQL_HANDLE_STMT = 3
@@ -13,14 +23,14 @@ class ConstantsODBC(Enum):
     SQL_ATTR_ASYNC_DBC_EVENT = 119
     SQL_IS_INTEGER = -6
     SQL_ATTR_ASYNC_DBC_FUNCTIONS_ENABLE = 117
-    SQL_OV_ODBC3_80 = 380
-    SQL_ATTR_ODBC_VERSION = 200
+    SQL_OV_DDBC3_80 = 380
+    SQL_ATTR_DDBC_VERSION = 200
     SQL_ATTR_ASYNC_ENABLE = 4
     SQL_ATTR_ASYNC_STMT_EVENT = 29
     SQL_ERROR = -1
     SQL_INVALID_HANDLE = -2
     SQL_NULL_HANDLE = 0
-    SQL_OV_ODBC3 = 3
+    SQL_OV_DDBC3 = 3
     SQL_COMMIT = 0
     SQL_ROLLBACK = 1
     SQL_ATTR_AUTOCOMMIT = 102

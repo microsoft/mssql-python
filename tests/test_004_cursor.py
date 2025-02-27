@@ -704,12 +704,12 @@ def test_description(cursor):
 
 # def test_setinputsizes(cursor):
 #     """Test setinputsizes"""
-#     sizes = [(mssql_python.ConstantsODBC.SQL_INTEGER, 10), (mssql_python.ConstantsODBC.SQL_VARCHAR, 255)]
+#     sizes = [(mssql_python.ConstantsDDBC.SQL_INTEGER, 10), (mssql_python.ConstantsDDBC.SQL_VARCHAR, 255)]
 #     cursor.setinputsizes(sizes)
 
 # def test_setoutputsize(cursor):
 #     """Test setoutputsize"""
-#     cursor.setoutputsize(10, mssql_python.ConstantsODBC.SQL_INTEGER)
+#     cursor.setoutputsize(10, mssql_python.ConstantsDDBC.SQL_INTEGER)
 
 def test_execute_many(cursor, db_connection):
     """Test executemany"""
@@ -906,6 +906,209 @@ def test_cursor_description(cursor):
     assert len(description) == len(expected_description), "Description length mismatch"
     for desc, expected in zip(description, expected_description):
         assert desc == expected, f"Description mismatch: {desc} != {expected}"
+
+def test_parse_datetime(cursor, db_connection):
+    """Test _parse_datetime"""
+    try:
+        cursor.execute("CREATE TABLE pytest_datetime_test (datetime_column DATETIME)")
+        db_connection.commit()
+        cursor.execute("INSERT INTO pytest_datetime_test (datetime_column) VALUES (?)", ['2024-05-20T12:34:56.123'])
+        db_connection.commit()
+        cursor.execute("SELECT datetime_column FROM pytest_datetime_test")
+        row = cursor.fetchone()
+        assert row[0] == datetime(2024, 5, 20, 12, 34, 56, 123000), "Datetime parsing failed"
+    except Exception as e:
+        pytest.fail(f"Datetime parsing test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_datetime_test")
+        db_connection.commit()
+
+def test_parse_date(cursor, db_connection):
+    """Test _parse_date"""
+    try:
+        cursor.execute("CREATE TABLE pytest_date_test (date_column DATE)")
+        db_connection.commit()
+        cursor.execute("INSERT INTO pytest_date_test (date_column) VALUES (?)", ['2024-05-20'])
+        db_connection.commit()
+        cursor.execute("SELECT date_column FROM pytest_date_test")
+        row = cursor.fetchone()
+        assert row[0] == date(2024, 5, 20), "Date parsing failed"
+    except Exception as e:
+        pytest.fail(f"Date parsing test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_date_test")
+        db_connection.commit()
+
+def test_parse_time(cursor, db_connection):
+    """Test _parse_time"""
+    try:
+        cursor.execute("CREATE TABLE pytest_time_test (time_column TIME)")
+        db_connection.commit()
+        cursor.execute("INSERT INTO pytest_time_test (time_column) VALUES (?)", ['12:34:56'])
+        db_connection.commit()
+        cursor.execute("SELECT time_column FROM pytest_time_test")
+        row = cursor.fetchone()
+        assert row[0] == time(12, 34, 56), "Time parsing failed"
+    except Exception as e:
+        pytest.fail(f"Time parsing test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_time_test")
+        db_connection.commit()
+
+# def test_parse_smalldatetime(cursor, db_connection):
+#     """Test _parse_smalldatetime"""
+#     try:
+#         cursor.execute("CREATE TABLE pytest_smalldatetime_test (smalldatetime_column SMALLDATETIME)")
+#         db_connection.commit()
+#         cursor.execute("INSERT INTO pytest_smalldatetime_test (smalldatetime_column) VALUES (?)", ['2024-05-20 12:34:56'])
+#         db_connection.commit()
+#         cursor.execute("SELECT smalldatetime_column FROM pytest_smalldatetime_test")
+#         row = cursor.fetchone()
+#         assert row[0] == datetime(2024, 5, 20, 12, 34), "Smalldatetime parsing failed"
+#     except Exception as e:
+#         pytest.fail(f"Smalldatetime parsing test failed: {e}")
+#     finally:
+#         cursor.execute("DROP TABLE pytest_smalldatetime_test")
+#         db_connection.commit()
+
+# def test_parse_datetime2(cursor, db_connection):
+#     """Test _parse_datetime2"""
+#     try:
+#         cursor.execute("CREATE TABLE pytest_datetime2_test (datetime2_column DATETIME2)")
+#         db_connection.commit()
+#         cursor.execute("INSERT INTO pytest_datetime2_test (datetime2_column) VALUES (?)", ['2024-05-20 12:34:56.123456'])
+#         db_connection.commit()
+#         cursor.execute("SELECT datetime2_column FROM pytest_datetime2_test")
+#         row = cursor.fetchone()
+#         assert row[0] == datetime(2024, 5, 20, 12, 34, 56, 123456), "Datetime2 parsing failed"
+#     except Exception as e:
+#         pytest.fail(f"Datetime2 parsing test failed: {e}")
+#     finally:
+#         cursor.execute("DROP TABLE pytest_datetime2_test")
+#         db_connection.commit()
+
+def test_get_numeric_data(cursor, db_connection):
+    """Test _get_numeric_data"""
+    try:
+        cursor.execute("CREATE TABLE pytest_numeric_test (numeric_column DECIMAL(10, 2))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO pytest_numeric_test (numeric_column) VALUES (?)", [decimal.Decimal('123.45')])
+        db_connection.commit()
+        cursor.execute("SELECT numeric_column FROM pytest_numeric_test")
+        row = cursor.fetchone()
+        assert row[0] == decimal.Decimal('123.45'), "Numeric data parsing failed"
+    except Exception as e:
+        pytest.fail(f"Numeric data parsing test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_numeric_test")
+        db_connection.commit()
+
+def test_none(cursor, db_connection):
+    """Test None"""
+    try:
+        cursor.execute("CREATE TABLE pytest_none_test (none_column NVARCHAR(255))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO pytest_none_test (none_column) VALUES (?)", [None])
+        db_connection.commit()
+        cursor.execute("SELECT none_column FROM pytest_none_test")
+        row = cursor.fetchone()
+        assert row[0] is None, "None parsing failed"
+    except Exception as e:
+        pytest.fail(f"None parsing test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_none_test")
+        db_connection.commit()
+
+def test_boolean(cursor, db_connection):
+    """Test boolean"""
+    try:
+        cursor.execute("CREATE TABLE pytest_boolean_test (boolean_column BIT)")
+        db_connection.commit()
+        cursor.execute("INSERT INTO pytest_boolean_test (boolean_column) VALUES (?)", [True])
+        db_connection.commit()
+        cursor.execute("SELECT boolean_column FROM pytest_boolean_test")
+        row = cursor.fetchone()
+        assert row[0] is True, "Boolean parsing failed"
+    except Exception as e:
+        pytest.fail(f"Boolean parsing test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_boolean_test")
+        db_connection.commit()
+
+
+def test_sql_wvarchar(cursor, db_connection):
+    """Test SQL_WVARCHAR"""
+    try:
+        cursor.execute("CREATE TABLE pytest_wvarchar_test (wvarchar_column NVARCHAR(255))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO pytest_wvarchar_test (wvarchar_column) VALUES (?)", ['nvarchar data'])
+        db_connection.commit()
+        cursor.execute("SELECT wvarchar_column FROM pytest_wvarchar_test")
+        row = cursor.fetchone()
+        assert row[0] == 'nvarchar data', "SQL_WVARCHAR parsing failed"
+    except Exception as e:
+        pytest.fail(f"SQL_WVARCHAR parsing test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_wvarchar_test")
+        db_connection.commit()
+
+def test_sql_varchar(cursor, db_connection):
+    """Test SQL_VARCHAR"""
+    try:
+        cursor.execute("CREATE TABLE pytest_varchar_test (varchar_column VARCHAR(255))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO pytest_varchar_test (varchar_column) VALUES (?)", ['varchar data'])
+        db_connection.commit()
+        cursor.execute("SELECT varchar_column FROM pytest_varchar_test")
+        row = cursor.fetchone()
+        assert row[0] == 'varchar data', "SQL_VARCHAR parsing failed"
+    except Exception as e:
+        pytest.fail(f"SQL_VARCHAR parsing test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_varchar_test")
+        db_connection.commit()
+
+def test_numeric_precision_scale_positive_exponent(cursor, db_connection):
+    """Test precision and scale for numeric values with positive exponent"""
+    try:
+        cursor.execute("CREATE TABLE pytest_numeric_test (numeric_column DECIMAL(10, 2))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO pytest_numeric_test (numeric_column) VALUES (?)", [decimal.Decimal('31400')])
+        db_connection.commit()
+        cursor.execute("SELECT numeric_column FROM pytest_numeric_test")
+        row = cursor.fetchone()
+        assert row[0] == decimal.Decimal('31400'), "Numeric data parsing failed"
+        # Check precision and scale
+        precision = 5  # 31400 has 5 significant digits
+        scale = 0      # No digits after the decimal point
+        assert precision == 5, "Precision calculation failed"
+        assert scale == 0, "Scale calculation failed"
+    except Exception as e:
+        pytest.fail(f"Numeric precision and scale test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_numeric_test")
+        db_connection.commit()
+
+def test_numeric_precision_scale_negative_exponent(cursor, db_connection):
+    """Test precision and scale for numeric values with negative exponent"""
+    try:
+        cursor.execute("CREATE TABLE pytest_numeric_test (numeric_column DECIMAL(10, 5))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO pytest_numeric_test (numeric_column) VALUES (?)", [decimal.Decimal('0.03140')])
+        db_connection.commit()
+        cursor.execute("SELECT numeric_column FROM pytest_numeric_test")
+        row = cursor.fetchone()
+        assert row[0] == decimal.Decimal('0.03140'), "Numeric data parsing failed"
+        # Check precision and scale
+        precision = 5  # 0.03140 has 5 significant digits
+        scale = 5      # 5 digits after the decimal point
+        assert precision == 5, "Precision calculation failed"
+        assert scale == 5, "Scale calculation failed"
+    except Exception as e:
+        pytest.fail(f"Numeric precision and scale test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_numeric_test")
+        db_connection.commit()
 
 def test_close(cursor):
     """Test closing the cursor"""

@@ -1,5 +1,10 @@
-from mssql_python.exceptions import DatabaseError, InterfaceError
+"""
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+This module provides a way to create a new connection object to interact with the database.
+"""
 from mssql_python.connection import Connection
+
 
 def connect(connection_str: str, autocommit: bool = True, **kwargs) -> Connection:
     """
@@ -29,9 +34,5 @@ def connect(connection_str: str, autocommit: bool = True, **kwargs) -> Connectio
     be used to perform database operations such as executing queries, committing
     transactions, and closing the connection.
     """
-    conn = Connection(
-        connection_str, 
-        autocommit=autocommit,
-        **kwargs
-    )
+    conn = Connection(connection_str, autocommit=autocommit, **kwargs)
     return conn
