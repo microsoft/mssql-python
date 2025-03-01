@@ -62,7 +62,7 @@ def check_error(handle_type, handle, ret):
     Args:
         handle_type: The type of the handle (e.g., SQL_HANDLE_ENV, SQL_HANDLE_DBC).
         handle: The handle to check for errors.
-        ret: The return code from the ODBC function call.
+        ret: The return code from the DDBC function call.
 
     Raises:
         RuntimeError: If an error is found.

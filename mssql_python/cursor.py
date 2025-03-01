@@ -105,7 +105,7 @@ class Cursor:
 
     def _parse_datetime(self, param):
         """
-        Attempt to parse a string as a datetime.
+        Attempt to parse a string as a datetime, smalldatetime, datetime2, timestamp.
 
         Args:
             param: The string to parse.
@@ -116,24 +116,12 @@ class Cursor:
         formats = [
             "%Y-%m-%dT%H:%M:%S.%f",  # ISO 8601 datetime with fractional seconds
             "%Y-%m-%dT%H:%M:%S",  # ISO 8601 datetime
-            "%Y-%m-%d %H:%M:%S.%f",  # Datetime with fractional seconds (up to 3 digits)
+            "%Y-%m-%d %H:%M:%S.%f",  # Datetime with fractional seconds
             "%Y-%m-%d %H:%M:%S",  # Datetime without fractional seconds
         ]
         for fmt in formats:
             try:
-                dt = datetime.datetime.strptime(param, fmt)
-
-                # If there are fractional seconds, ensure they do not exceed 7 digits
-                if fmt in ["%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S.%f"]:
-                    fractional_part = param.split(".")[-1]
-                    # If the fractional part is more than 3 digits, truncate to 3 digits
-                    if len(fractional_part) > 3:
-                        fractional_part = fractional_part[:3]
-                        # Convert to microseconds
-                        dt = dt.replace(
-                            microsecond=int(fractional_part.ljust(3, "0")) * 1000
-                        )
-                return dt  # Valid datetime
+                return datetime.datetime.strptime(param, fmt)  # Valid datetime
             except ValueError:
                 continue  # Try next format
 
@@ -160,69 +148,6 @@ class Cursor:
                 continue
         return None
     
-    # def _parse_timestamptz(self, param):
-    #     """
-    #     Attempt to parse a string as a timestamp with time zone (timestamptz).
-    #     
-    #     Args:
-    #         param: The string to parse.
-    #     
-    #     Returns:
-    #         A datetime.datetime object if parsing is successful, else None.
-    #     """
-    #     formats = [
-    #         "%Y-%m-%dT%H:%M:%S%z",      # ISO 8601 datetime with timezone offset
-    #         "%Y-%m-%d %H:%M:%S.%f%z",   # Datetime with fractional seconds and timezone offset
-    #     ]
-    #     for fmt in formats:
-    #         try:
-    #             return datetime.datetime.strptime(param, fmt)
-    #         except ValueError:
-    #             continue
-    #     return None
-
-    # def _parse_smalldatetime(self, param):
-    #     """
-    #     Attempt to parse a string as a smalldatetime.
-    #     
-    #     Args:
-    #         param: The string to parse.
-    #     
-    #     Returns:
-    #         A datetime.datetime object if parsing is successful, else None.
-    #     """
-    #     formats = [
-    #         "%Y-%m-%d %H:%M:%S",        # Standard datetime
-    #     ]
-    #     for fmt in formats:
-    #         try:
-    #             return datetime.datetime.strptime(param, fmt)
-    #         except ValueError:
-    #             continue
-    #     return None
-
-    # def _parse_datetime2(self, param):
-    #     """
-    #     Attempt to parse a string as a datetime2.
-    #     
-    #     Args:
-    #         param: The string to parse.
-    #     
-    #     Returns:
-    #         A datetime.datetime object if parsing is successful, else None.
-    #     """
-    #     formats = [
-    #         "%Y-%m-%d %H:%M:%S.%f",     # Datetime with fractional seconds (up to 6 digits)
-    #     ]
-    #     for fmt in formats:
-    #         try:
-    #             dt = datetime.datetime.strptime(param, fmt)
-    #             if fmt == "%Y-%m-%d %H:%M:%S.%f" and len(param.split('.')[-1]) > 3:
-    #                 return dt
-    #         except ValueError:
-    #             continue
-    #     return None
-
     def _get_numeric_data(self, param):
         """
         Get the data for a numeric parameter.
@@ -290,7 +215,7 @@ class Cursor:
         """
         if param is None:
             return (
-                ddbc_sql_const.SQL_NULL_DATA.value,
+                ddbc_sql_const.SQL_VARCHAR.value, # TODO: Add SQLDescribeParam to get correct type
                 ddbc_sql_const.SQL_C_DEFAULT.value,
                 1,
                 0,
@@ -360,7 +285,7 @@ class Cursor:
                     0,
                 )
 
-            # Attempt to parse as date, datetime or time
+            # Attempt to parse as date, datetime, datetime2, timestamp, smalldatetime or time
             if self._parse_date(param):
                 parameters_list[i] = self._parse_date(
                     param
@@ -376,8 +301,8 @@ class Cursor:
                 return (
                     ddbc_sql_const.SQL_TIMESTAMP.value,
                     ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
-                    23,
-                    3,
+                    26,
+                    6,
                 )
             if self._parse_time(param):
                 parameters_list[i] = self._parse_time(param)
@@ -453,8 +378,8 @@ class Cursor:
             return (
                 ddbc_sql_const.SQL_TIMESTAMP.value,
                 ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
-                23,
-                3,
+                26,
+                6,
             )
 
         if isinstance(param, datetime.date):

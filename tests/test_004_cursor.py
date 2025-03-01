@@ -148,6 +148,40 @@ def test_insert_datetime_column(cursor, db_connection):
         cursor.execute("DROP TABLE single_column")
         db_connection.commit()
 
+def test_insert_datetime2_column(cursor, db_connection):
+    """Test inserting data into the datetime_column"""
+    try:
+        drop_table_if_exists(cursor, "single_column")
+        cursor.execute("CREATE TABLE single_column (datetime2_column DATETIME2)")
+        db_connection.commit()
+        cursor.execute("INSERT INTO single_column (datetime2_column) VALUES (?)", [datetime(2024, 5, 20, 12, 34, 56, 123456)])
+        db_connection.commit()
+        cursor.execute("SELECT datetime2_column FROM single_column")
+        row = cursor.fetchone()
+        assert row[0] == datetime(2024, 5, 20, 12, 34, 56, 123456), "Datetime2 column insertion/fetch failed"
+    except Exception as e:
+        pytest.fail(f"Datetime2 column insertion/fetch failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE single_column")
+        db_connection.commit()
+
+def test_insert_smalldatetime_column(cursor, db_connection):
+    """Test inserting data into the datetime_column"""
+    try:
+        drop_table_if_exists(cursor, "single_column")
+        cursor.execute("CREATE TABLE single_column (smalldatetime_column SMALLDATETIME)")
+        db_connection.commit()
+        cursor.execute("INSERT INTO single_column (smalldatetime_column) VALUES (?)", [datetime(2024, 5, 20, 12, 34)])
+        db_connection.commit()
+        cursor.execute("SELECT smalldatetime_column FROM single_column")
+        row = cursor.fetchone()
+        assert row[0] == datetime(2024, 5, 20, 12, 34), "Smalldatetime column insertion/fetch failed"
+    except Exception as e:
+        pytest.fail(f"Smalldatetime column insertion/fetch failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE single_column")
+        db_connection.commit()
+
 def test_insert_date_column(cursor, db_connection):
     """Test inserting data into the date_column"""
     try:
@@ -955,37 +989,37 @@ def test_parse_time(cursor, db_connection):
         cursor.execute("DROP TABLE pytest_time_test")
         db_connection.commit()
 
-# def test_parse_smalldatetime(cursor, db_connection):
-#     """Test _parse_smalldatetime"""
-#     try:
-#         cursor.execute("CREATE TABLE pytest_smalldatetime_test (smalldatetime_column SMALLDATETIME)")
-#         db_connection.commit()
-#         cursor.execute("INSERT INTO pytest_smalldatetime_test (smalldatetime_column) VALUES (?)", ['2024-05-20 12:34:56'])
-#         db_connection.commit()
-#         cursor.execute("SELECT smalldatetime_column FROM pytest_smalldatetime_test")
-#         row = cursor.fetchone()
-#         assert row[0] == datetime(2024, 5, 20, 12, 34), "Smalldatetime parsing failed"
-#     except Exception as e:
-#         pytest.fail(f"Smalldatetime parsing test failed: {e}")
-#     finally:
-#         cursor.execute("DROP TABLE pytest_smalldatetime_test")
-#         db_connection.commit()
+def test_parse_smalldatetime(cursor, db_connection):
+    """Test _parse_smalldatetime"""
+    try:
+        cursor.execute("CREATE TABLE pytest_smalldatetime_test (smalldatetime_column SMALLDATETIME)")
+        db_connection.commit()
+        cursor.execute("INSERT INTO pytest_smalldatetime_test (smalldatetime_column) VALUES (?)", ['2024-05-20 12:34'])
+        db_connection.commit()
+        cursor.execute("SELECT smalldatetime_column FROM pytest_smalldatetime_test")
+        row = cursor.fetchone()
+        assert row[0] == datetime(2024, 5, 20, 12, 34), "Smalldatetime parsing failed"
+    except Exception as e:
+        pytest.fail(f"Smalldatetime parsing test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_smalldatetime_test")
+        db_connection.commit()
 
-# def test_parse_datetime2(cursor, db_connection):
-#     """Test _parse_datetime2"""
-#     try:
-#         cursor.execute("CREATE TABLE pytest_datetime2_test (datetime2_column DATETIME2)")
-#         db_connection.commit()
-#         cursor.execute("INSERT INTO pytest_datetime2_test (datetime2_column) VALUES (?)", ['2024-05-20 12:34:56.123456'])
-#         db_connection.commit()
-#         cursor.execute("SELECT datetime2_column FROM pytest_datetime2_test")
-#         row = cursor.fetchone()
-#         assert row[0] == datetime(2024, 5, 20, 12, 34, 56, 123456), "Datetime2 parsing failed"
-#     except Exception as e:
-#         pytest.fail(f"Datetime2 parsing test failed: {e}")
-#     finally:
-#         cursor.execute("DROP TABLE pytest_datetime2_test")
-#         db_connection.commit()
+def test_parse_datetime2(cursor, db_connection):
+    """Test _parse_datetime2"""
+    try:
+        cursor.execute("CREATE TABLE pytest_datetime2_test (datetime2_column DATETIME2)")
+        db_connection.commit()
+        cursor.execute("INSERT INTO pytest_datetime2_test (datetime2_column) VALUES (?)", ['2024-05-20 12:34:56.123456'])
+        db_connection.commit()
+        cursor.execute("SELECT datetime2_column FROM pytest_datetime2_test")
+        row = cursor.fetchone()
+        assert row[0] == datetime(2024, 5, 20, 12, 34, 56, 123456), "Datetime2 parsing failed"
+    except Exception as e:
+        pytest.fail(f"Datetime2 parsing test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_datetime2_test")
+        db_connection.commit()
 
 def test_get_numeric_data(cursor, db_connection):
     """Test _get_numeric_data"""
