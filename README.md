@@ -48,15 +48,15 @@ import mssql_python
 
 # Establish a connection
 connection = mssql_python.connect(
-    server='your_server',
-    database='your_database',
-    username='your_username',
+    server='localhost',
+    database='test_db',
+    username='admin',
     password='your_password'
 )
 
 # Execute a query
 cursor = connection.cursor()
-cursor.execute("SELECT * FROM your_table")
+cursor.execute("SELECT * FROM employees")
 rows = cursor.fetchall()
 
 for row in rows:
@@ -64,6 +64,7 @@ for row in rows:
 
 # Close the connection
 connection.close()
+
 ```
 
 ## Still have questions?
