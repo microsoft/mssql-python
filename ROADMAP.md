@@ -54,7 +54,7 @@ We are dedicated to continuously improving the Python driver for SQL Server and 
 Join the Conversation!
 
 We are building this for developers, with developers. Your feedback will shape the future of the driver.
-- Follow our [Github Repo](https://github.com/microsoft/mssql-python)>
+- Follow our [Github Repo](https://github.com/microsoft/mssql-python)
 - Join Discussions – Share your ideas and suggestions
 - Try our alpha release – Help us refine and optimize the experience
 
