@@ -47,16 +47,12 @@ Connect to SQL Server and execute a simple query:
 import mssql_python
 
 # Establish a connection
-connection = mssql_python.connect(
-    server='your_server',
-    database='your_database',
-    username='your_username',
-    password='your_password'
-)
+# Specify connection string
+connection = ("SERVER=<your_server_name>;DATABASE=<your_database_name>;UID=<your_user_name>;PWD=<your_password>;Encrypt=yes;")
 
 # Execute a query
 cursor = connection.cursor()
-cursor.execute("SELECT * FROM your_table")
+cursor.execute("SELECT @@version")
 rows = cursor.fetchall()
 
 for row in rows:
@@ -86,7 +82,7 @@ For more information see the [Code of Conduct FAQ](https://opensource.microsoft.
 contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
 
 ## License
-The mssql-python driver for SQL Server is licensed under the MIT license, except the dynamic-link libraries (DLLs) in the [libs](libs) folder 
+The mssql-python driver for SQL Server is licensed under the MIT license, except the dynamic-link libraries (DLLs) in the [libs](https://github.com/microsoft/mssql-python/tree/alphaChanges/mssql_python/libs) folder 
 that are licensed under MICROSOFT SOFTWARE LICENSE TERMS.
 
 Please review the [LICENSE](LICENSE) file for more details.
