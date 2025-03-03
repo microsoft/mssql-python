@@ -47,16 +47,12 @@ Connect to SQL Server and execute a simple query:
 import mssql_python
 
 # Establish a connection
-connection = mssql_python.connect(
-    server='your_server',
-    database='your_database',
-    username='your_username',
-    password='your_password'
-)
+# Specify connection string
+connection = "SERVER=<your_server_name>;DATABASE=<your_database_name>;UID=<your_user_name>;PWD=<your_password>;Encrypt=yes;")
 
 # Execute a query
 cursor = connection.cursor()
-cursor.execute("SELECT * FROM your_table")
+cursor.execute("SELECT @@version")
 rows = cursor.fetchall()
 
 for row in rows:
