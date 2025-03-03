@@ -43,7 +43,7 @@ class CMakeBuild(build_ext):
 
 setup(
     name='mssql-python',
-    version='1.0.0-alpha',
+    version='0.1.5',
     description='A Python library for interacting with Microsoft SQL Server',
     long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
