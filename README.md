@@ -52,7 +52,7 @@ connection = ("SERVER=<your_server_name>;DATABASE=<your_database_name>;UID=<your
 
 # Execute a query
 cursor = connection.cursor()
-cursor.execute("SELECT @@version")
+cursor.execute("SELECT * from customer")
 rows = cursor.fetchall()
 
 for row in rows:
