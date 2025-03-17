@@ -51,7 +51,7 @@ import mssql_python
 
 # Establish a connection
 # Specify connection string
-connection = ("SERVER=<your_server_name>;DATABASE=<your_database_name>;UID=<your_user_name>;PWD=<your_password>;Encrypt=yes;")
+connection = connect("SERVER=<your_server_name>;DATABASE=<your_database_name>;UID=<your_user_name>;PWD=<your_password>;Encrypt=yes;")
 
 # Execute a query
 cursor = connection.cursor()
