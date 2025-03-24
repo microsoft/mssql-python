@@ -50,7 +50,7 @@ class Cursor:
         """
         self.connection = connection
         # self.connection.autocommit = False
-        self.hstmt = ddbc_bindings.SQLStatementWrapper(0)  # Initialize the statement handle wrapper
+        self.hstmt = None
         self._initialize_cursor()
         self.description = None
         self.rowcount = -1
@@ -415,20 +415,19 @@ class Cursor:
         """
         Allocate the DDBC statement handle.
         """
-        ret = ddbc_bindings.DDBCSQLAllocHandle(
+        ret, handle = ddbc_bindings.DDBCSQLAllocHandle(
             ddbc_sql_const.SQL_HANDLE_STMT.value,
-            self.connection.hdbc,
-            self.hstmt,
+            self.connection.hdbc
         )
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, handle, ret)
+        self.hstmt = handle
 
     def _reset_cursor(self) -> None:
         """
         Reset the DDBC statement handle.
         """
-        # Clear the reference to the existing statement handle
-        self.hstmt = None  # This triggers the destructor of SQLStatementWrapper
-        
+        if self.hstmt:
+            self.hstmt = None        
         # Reinitialize the statement handle
         self._initialize_cursor()
 
@@ -442,8 +441,10 @@ class Cursor:
         if self.closed:
             raise RuntimeError("Cursor is already closed.")
 
-        # No need to explicitly free the existing statement handle; SQLStatementWrapper will handle it
-        self.hstmt = None  # Clear the reference to the statement handle
+        if self.hstmt:
+            self.hstmt = None
+            if ENABLE_LOGGING:
+                logger.debug("SQLFreeHandle succeeded")
         self.closed = True
 
     def _check_closed(self):

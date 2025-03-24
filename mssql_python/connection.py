@@ -53,8 +53,8 @@ class Connection:
         preparing it for further operations such as connecting to the 
         database, executing queries, etc.
         """
-        self.henv = ddbc_bindings.SQLHandleWrapper(0, ddbc_sql_const.SQL_HANDLE_ENV.value)
-        self.hdbc = ddbc_bindings.SQLConnectionWrapper(0)
+        self.henv = None
+        self.hdbc = None
         self.connection_str = self._construct_connection_string(
             connection_str, **kwargs
         )
@@ -113,12 +113,12 @@ class Connection:
         """
         Allocate the environment handle.
         """
-        ret = ddbc_bindings.DDBCSQLAllocHandle(
+        ret, handle = ddbc_bindings.DDBCSQLAllocHandle(
             ddbc_sql_const.SQL_HANDLE_ENV.value,  # SQL environment handle type
-            0,  # SQL input handle
-            self.henv,  # Use the wrapper class
+            None
         )
-        check_error(ddbc_sql_const.SQL_HANDLE_ENV.value, self.henv, ret)
+        check_error(ddbc_sql_const.SQL_HANDLE_ENV.value, handle, ret)
+        self.henv = handle
 
     def _set_environment_attributes(self):
         """
@@ -136,14 +136,12 @@ class Connection:
         """
         Allocate the connection handle.
         """
-        raw_hdbc = ddbc_bindings.SQLConnectionWrapper(0)  # Create an empty wrapper
-        ret = ddbc_bindings.DDBCSQLAllocHandle(
+        ret, handle = ddbc_bindings.DDBCSQLAllocHandle(
             ddbc_sql_const.SQL_HANDLE_DBC.value,  # SQL connection handle type
-            self.henv,  # SQL environment handle
-            raw_hdbc,  # Use the wrapper class
+            self.henv
         )
-        check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, ret)
-        self.hdbc = raw_hdbc  # Assign the wrapper to self.hdbc
+        check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, handle, ret)
+        self.hdbc = handle
 
     def _set_connection_attributes(self):
         """
@@ -154,7 +152,7 @@ class Connection:
                 self.hdbc,  # Using the wrapper class
                 ddbc_sql_const.SQL_ATTR_AUTOCOMMIT.value,
                 ddbc_sql_const.SQL_AUTOCOMMIT_ON.value,
-                0,
+                0
             )
             check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, ret)
 
@@ -190,7 +188,7 @@ class Connection:
             bool: True if autocommit is enabled, False otherwise.
         """
         autocommit_mode = ddbc_bindings.DDBCSQLGetConnectionAttr(
-            self.hdbc,  # Connection handle
+            self.hdbc,  # Connection handle (wrapper)
             ddbc_sql_const.SQL_ATTR_AUTOCOMMIT.value,  # Attribute
         )
         check_error(
@@ -309,16 +307,12 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while closing the connection.
         """
-        if self.hdbc:
-            self.hdbc = None  # Reset the connection handle to trigger cleanup
-            if ENABLE_LOGGING:
-                logger.info("Connection closed successfully.")
-        # # Disconnect from the database
-        # ret = ddbc_bindings.DDBCSQLDisconnect(self.hdbc)
-        # check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, ret)
+        # Disconnect from the database
+        ret = ddbc_bindings.DDBCSQLDisconnect(self.hdbc)
+        check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, ret)
 
-        # # Set the reference to None to trigger destructor
-        # self.hdbc = None
+        # Set the reference to None to trigger destructor
+        self.hdbc = None
 
-        # if ENABLE_LOGGING:
-        #     logger.info("Connection closed successfully.")
+        if ENABLE_LOGGING:
+            logger.info("Connection closed successfully.")

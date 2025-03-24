@@ -3,7 +3,6 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 This module provides functions to test DDBC bindings.
 """
-
 import ctypes
 import datetime
 import os
@@ -27,15 +26,13 @@ def alloc_handle(handle_type, input_handle):
     """
     Allocate a handle for the given handle type and input handle.
     """
-    handle = ctypes.c_void_p()
-    result_alloc = ddbc_bindings.DDBCSQLAllocHandle(
+    result_alloc, handle = ddbc_bindings.DDBCSQLAllocHandle(
         handle_type,
-        input_handle,
-        ctypes.cast(ctypes.pointer(handle), ctypes.c_void_p).value,
+        input_handle
     )
     if result_alloc < 0:
         print(
-            "Error:", ddbc_bindings.DDBCSQLCheckError(handle_type, handle.value, result_alloc)
+            "Error:", ddbc_bindings.DDBCSQLCheckError(handle_type, handle, result_alloc)
         )
         raise RuntimeError(f"Failed to allocate handle. Error code: {result_alloc}")
     return handle
@@ -45,10 +42,10 @@ def free_handle(handle_type, handle):
     """
     Free the handle for the given handle type and handle.
     """
-    result_free = ddbc_bindings.DDBCSQLFreeHandle(handle_type, handle.value)
+    result_free = ddbc_bindings.DDBCSQLFreeHandle(handle_type, handle)
     if result_free < 0:
         print(
-            "Error:", ddbc_bindings.DDBCSQLCheckError(handle_type, handle.value, result_free)
+            "Error:", ddbc_bindings.DDBCSQLCheckError(handle_type, handle, result_free)
         )
         raise RuntimeError(f"Failed to free handle. Error code: {result_free}")
 
@@ -60,12 +57,12 @@ def ddbc_sql_execute(
     Execute an SQL statement using DDBC bindings.
     """
     result_execute = ddbc_bindings.DDBCSQLExecute(
-        stmt_handle.value, query, params, param_info_list, is_stmt_prepared, use_prepare
+        stmt_handle, query, params, param_info_list, is_stmt_prepared, use_prepare
     )
     if result_execute < 0:
         print(
             "Error: ",
-            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_STMT, stmt_handle.value, result_execute),
+            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_STMT, stmt_handle, result_execute),
         )
         raise RuntimeError(f"Failed to execute query. Error code: {result_execute}")
     return result_execute
@@ -79,12 +76,12 @@ def fetch_data_onebyone(stmt_handle):
     ret_fetch = 1
     while ret_fetch != SQL_NO_DATA:
         row = []
-        ret_fetch = ddbc_bindings.DDBCSQLFetchOne(stmt_handle.value, row)
+        ret_fetch = ddbc_bindings.DDBCSQLFetchOne(stmt_handle, row)
         if ret_fetch < 0:
             print(
                 "Error: ",
                 ddbc_bindings.DDBCSQLCheckError(
-                    SQL_HANDLE_STMT, stmt_handle.value, ret_fetch
+                    SQL_HANDLE_STMT, stmt_handle, ret_fetch
                 ),
             )
             raise RuntimeError(f"Failed to fetch data. Error code: {ret_fetch}")
@@ -100,12 +97,12 @@ def fetch_data_many(stmt_handle):
     rows = []
     ret_fetch = 1
     while ret_fetch != SQL_NO_DATA:
-        ret_fetch = ddbc_bindings.DDBCSQLFetchMany(stmt_handle.value, rows, 10)
+        ret_fetch = ddbc_bindings.DDBCSQLFetchMany(stmt_handle, rows, 10)
         if ret_fetch < 0:
             print(
                 "Error: ",
                 ddbc_bindings.DDBCSQLCheckError(
-                    SQL_HANDLE_STMT, stmt_handle.value, ret_fetch
+                    SQL_HANDLE_STMT, stmt_handle, ret_fetch
                 ),
             )
             raise RuntimeError(f"Failed to fetch data. Error code: {ret_fetch}")
@@ -117,11 +114,11 @@ def fetch_data_all(stmt_handle):
     Fetch all data using DDBC bindings.
     """
     rows = []
-    ret_fetch = ddbc_bindings.DDBCSQLFetchAll(stmt_handle.value, rows)
+    ret_fetch = ddbc_bindings.DDBCSQLFetchAll(stmt_handle, rows)
     if ret_fetch != SQL_NO_DATA:
         print(
             "Error: ",
-            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_STMT, stmt_handle.value, ret_fetch),
+            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_STMT, stmt_handle, ret_fetch),
         )
         raise RuntimeError(f"Failed to fetch data. Error code: {ret_fetch}")
     return rows
@@ -132,28 +129,28 @@ def fetch_data(stmt_handle):
     Fetch data using DDBC bindings.
     """
     rows = []
-    column_count = ddbc_bindings.DDBCSQLNumResultCols(stmt_handle.value)
+    column_count = ddbc_bindings.DDBCSQLNumResultCols(stmt_handle)
     print("Number of columns = " + str(column_count))
     while True:
-        result_fetch = ddbc_bindings.DDBCSQLFetch(stmt_handle.value)
+        result_fetch = ddbc_bindings.DDBCSQLFetch(stmt_handle)
         if result_fetch == SQL_NO_DATA:
             break
         if result_fetch < 0:
             print(
                 "Error: ",
                 ddbc_bindings.DDBCSQLCheckError(
-                    SQL_HANDLE_STMT, stmt_handle.value, result_fetch
+                    SQL_HANDLE_STMT, stmt_handle, result_fetch
                 ),
             )
             raise RuntimeError(f"Failed to fetch data. Error code: {result_fetch}")
         if column_count > 0:
             row = []
-            result_get_data = ddbc_bindings.DDBCSQLGetData(stmt_handle.value, column_count, row)
+            result_get_data = ddbc_bindings.DDBCSQLGetData(stmt_handle, column_count, row)
             if result_get_data < 0:
                 print(
                     "Error: ",
                     ddbc_bindings.DDBCSQLCheckError(
-                        SQL_HANDLE_STMT, stmt_handle.value, result_get_data
+                        SQL_HANDLE_STMT, stmt_handle, result_get_data
                     ),
                 )
                 raise RuntimeError(f"Failed to get data. Error code: {result_get_data}")
@@ -166,11 +163,11 @@ def describe_columns(stmt_handle):
     Describe columns using DDBC bindings.
     """
     column_names = []
-    result_describe = ddbc_bindings.DDBCSQLDescribeCol(stmt_handle.value, column_names)
+    result_describe = ddbc_bindings.DDBCSQLDescribeCol(stmt_handle, column_names)
     if result_describe < 0:
         print(
             "Error: ",
-            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_STMT, stmt_handle.value, result_describe),
+            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_STMT, stmt_handle, result_describe),
         )
         raise RuntimeError(f"Failed to describe columns. Error code: {result_describe}")
     return column_names
@@ -180,11 +177,11 @@ def connect_to_db(dbc_handle, connection_string):
     """
     Connect to the database using DDBC bindings.
     """
-    result_connect = ddbc_bindings.DDBCSQLDriverConnect(dbc_handle.value, 0, connection_string)
+    result_connect = ddbc_bindings.DDBCSQLDriverConnect(dbc_handle, 0, connection_string)
     if result_connect < 0:
         print(
             "Error: ",
-            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_DBC, dbc_handle.value, result_connect),
+            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_DBC, dbc_handle, result_connect),
         )
         raise RuntimeError(f"SQLDriverConnect failed. Error code: {result_connect}")
 
@@ -348,26 +345,27 @@ def add_numeric_param(params, param_infos, param):
 
 if __name__ == "__main__":
     # Allocate environment handle
-    env_handle = alloc_handle(SQL_HANDLE_ENV, 0)
-
+    env_handle = alloc_handle(SQL_HANDLE_ENV, None)
+    
     # Set the DDBC version environment attribute
     result_set_env = ddbc_bindings.DDBCSQLSetEnvAttr(
-        env_handle.value, SQL_ATTR_DDBC_VERSION, SQL_OV_DDBC3_80, 0
+        env_handle, SQL_ATTR_DDBC_VERSION, SQL_OV_DDBC3_80, 0
     )
     if result_set_env < 0:
         print(
             "Error: ",
-            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_ENV, env_handle.value, result_set_env),
+            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_ENV, env_handle, result_set_env),
         )
         raise RuntimeError(
             f"Failed to set DDBC version attribute. Error code: {result_set_env}"
         )
 
     # Allocate connection handle
-    dbc_handle = alloc_handle(SQL_HANDLE_DBC, env_handle.value)
+    dbc_handle = alloc_handle(SQL_HANDLE_DBC, env_handle)
 
     # Fetch the connection string from environment variables
     connection_string = os.getenv("DB_CONNECTION_STRING")
+
     if not connection_string:
         raise EnvironmentError(
             "Environment variable 'DB_CONNECTION_STRING' is not set or is empty."
@@ -378,7 +376,7 @@ if __name__ == "__main__":
     print("Connection successful!")
 
     # Allocate connection statement handle
-    stmt_handle = alloc_handle(SQL_HANDLE_STMT, dbc_handle.value)
+    stmt_handle = alloc_handle(SQL_HANDLE_STMT, dbc_handle)
 
     ParamInfo = ddbc_bindings.ParamInfo
     """
@@ -441,16 +439,16 @@ if __name__ == "__main__":
                 print(row)
         else:
             print("No columns to fetch data from.")
-        ret_fetch = ddbc_bindings.DDBCSQLMoreResults(stmt_handle.value)
+        ret_fetch = ddbc_bindings.DDBCSQLMoreResults(stmt_handle)
 
     # Free the statement handle
     free_handle(SQL_HANDLE_STMT, stmt_handle)
     # Disconnect from the data source
-    result_disconnect = ddbc_bindings.DDBCSQLDisconnect(dbc_handle.value)
+    result_disconnect = ddbc_bindings.DDBCSQLDisconnect(dbc_handle)
     if result_disconnect < 0:
         print(
             "Error: ",
-            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_DBC, dbc_handle.value, result_disconnect),
+            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_DBC, dbc_handle, result_disconnect),
         )
         raise RuntimeError(
             f"Failed to disconnect from the data source. Error code: {result_disconnect}"
