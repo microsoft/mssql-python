@@ -47,12 +47,12 @@ The driver offers a suite of Pythonic enhancements that streamline database inte
 Connect to SQL Server and execute a simple query:
 
 ```python
-import mssql_python
+from mssql_python import connect
 
 # Establish a connection
 # Specify connection string
 connection_string = ("SERVER=<your_server_name>;DATABASE=<your_database_name>;UID=<your_user_name>;PWD=<your_password>;Encrypt=yes;")
-connection = mssql_python.connect(connection_string)
+connection = connect(connection_string)
 
 # Execute a query
 cursor = connection.cursor()
