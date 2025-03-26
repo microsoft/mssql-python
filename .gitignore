@@ -29,3 +29,25 @@ test-*.xml
 # Ignore the build & mssql_python.egg-info directories
 build/
 mssql_python.egg-info/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# C extensions
+*.so
+*.pyd
+
+# Build files
+mssql_python/ddbc_bindings.pyd
+
+# IDE files
+.vscode/
+.idea/
+*.swp
