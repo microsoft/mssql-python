@@ -13,6 +13,22 @@ endif()
 # Add architecture to compiler definitions
 add_definitions(-DARCHITECTURE="${ARCHITECTURE}")
 
+# Get Python version and platform info
+execute_process(
+    COMMAND python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')"
+    OUTPUT_VARIABLE PYTHON_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+# Map the architecture to a format similar to what wheels use
+if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64" OR DEFINED ENV{BUILD_ARM64})
+    set(WHEEL_ARCH "arm64")
+elseif(ARCHITECTURE STREQUAL "win64" OR ARCHITECTURE STREQUAL "amd64" OR ARCHITECTURE STREQUAL "x64")
+    set(WHEEL_ARCH "amd64")
+else()
+    set(WHEEL_ARCH "win32")
+endif()
+
 # Get Python and pybind11 include paths (needed for all architectures)
 execute_process(
     COMMAND python -c "import sysconfig; print(sysconfig.get_path('include'))"
@@ -35,9 +51,10 @@ execute_process(
 # Add module library
 add_library(ddbc_bindings MODULE ddbc_bindings.cpp)
 
-# Set output properties
+# Set the output name to include Python version and architecture
 set_target_properties(ddbc_bindings PROPERTIES 
     PREFIX ""
+    OUTPUT_NAME "ddbc_bindings.cp${PYTHON_VERSION}-${WHEEL_ARCH}"
     SUFFIX ".pyd"
 )
 
@@ -56,14 +73,15 @@ if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64" OR DEFINED ENV{BUILD_ARM64})
     
     # Set ARM64-specific Python library path
     set(PYTHON_LIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libs/arm64")
-    set(PYTHON_LIBRARIES "${PYTHON_LIB_PATH}/python313.lib")
+    set(PYTHON_LIBRARIES "${PYTHON_LIB_PATH}/python${PYTHON_VERSION}.lib")
 else()
     # For x64, use the system Python library
-    set(PYTHON_LIBRARIES "${PYTHON_LIB_DIR}/python313.lib")
+    set(PYTHON_LIBRARIES "${PYTHON_LIB_DIR}/python${PYTHON_VERSION}.lib")
 endif()
 
 # Link Python library
 message(STATUS "Using Python library: ${PYTHON_LIBRARIES}")
+message(STATUS "Output PYD name: ddbc_bindings.cp${PYTHON_VERSION}-${WHEEL_ARCH}.pyd")
 target_link_libraries(ddbc_bindings PRIVATE ${PYTHON_LIBRARIES})
 
 # Compiler definitions

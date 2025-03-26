@@ -87,7 +87,7 @@ def test_data_truncation_error(cursor):
     try:
         cursor.execute("CREATE TABLE pytest_test_truncation (id INT, name NVARCHAR(5))")
         cursor.execute("INSERT INTO pytest_test_truncation (id, name) VALUES (?, ?)", [1, 'TooLongName'])
-    except ProgrammingError as excinfo:
+    except DataError as excinfo:
         assert "String or binary data would be truncated" in str(excinfo)
     finally:
         drop_table_if_exists(cursor, "pytest_test_truncation")

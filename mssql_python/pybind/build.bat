@@ -22,9 +22,23 @@ if "%1"=="" (
 
 echo Building for target architecture: %ARCH%
 
-rem Set the output PYD path
+rem Set the output PYD path and determine wheel-compatible architecture
 set PARENT_DIR=%~dp0..
-set OUTPUT_PYD_PATH=%PARENT_DIR%\ddbc_bindings.pyd
+set WHEEL_ARCH=none
+
+rem Map architecture to wheel-compatible format
+if /i "%ARCH%"=="x64" (
+    set WHEEL_ARCH=amd64
+) else if /i "%ARCH%"=="arm64" (
+    set WHEEL_ARCH=arm64
+) else (
+    set WHEEL_ARCH=win32
+)
+
+rem Define the versioned PYD filename
+set VERSIONED_PYD_NAME=ddbc_bindings.cp%PYVER%-%WHEEL_ARCH%.pyd
+
+echo Will build: %VERSIONED_PYD_NAME%
 
 rem Configure and build based on architecture
 if /i "%ARCH%"=="x64" (
@@ -32,8 +46,8 @@ if /i "%ARCH%"=="x64" (
     cmake -S . -B build/build_dir -A x64 -DARCHITECTURE=win64
     cmake --build build/build_dir --config Release
     
-    rem Copy the built PYD file
-    copy /Y build\build_dir\Release\ddbc_bindings.pyd "%OUTPUT_PYD_PATH%"
+    rem Copy only the versioned PYD file
+    copy /Y "build\build_dir\Release\%VERSIONED_PYD_NAME%" "%PARENT_DIR%\%VERSIONED_PYD_NAME%"
     
 ) else if /i "%ARCH%"=="arm64" (
     call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64_arm64
@@ -49,8 +63,8 @@ if /i "%ARCH%"=="x64" (
         copy /Y "%PARENT_DIR%\libs\winarm64\1033\*" "%PARENT_DIR%\libs\winarm64\1033\"
     )
     
-    rem Copy the built PYD file
-    copy /Y build\build_dir\Release\ddbc_bindings.pyd "%OUTPUT_PYD_PATH%"
+    rem Copy only the versioned PYD file
+    copy /Y "build\build_dir\Release\%VERSIONED_PYD_NAME%" "%PARENT_DIR%\%VERSIONED_PYD_NAME%"
 ) else (
     echo Error: Unsupported architecture. Use x64 or arm64
     exit /b 1
@@ -62,4 +76,5 @@ if errorlevel 1 (
 )
 
 echo Build completed successfully
-echo The PYD file has been copied to: %OUTPUT_PYD_PATH%
+echo The versioned PYD file has been copied to:
+echo - %PARENT_DIR%\%VERSIONED_PYD_NAME%
