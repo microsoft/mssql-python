@@ -265,11 +265,8 @@ std::wstring LoadDriverOrThrowException(const std::wstring& modulePath = L"") {
         archDir = L"winamd64";
     } else if (archStr == L"arm64") {
         archDir = L"winarm64";
-    } else if (archStr == L"x86") {
-        archDir = L"win32";
     } else {
-        // Use architecture string directly if it doesn't match known patterns
-        archDir = archStr;
+        archDir = L"win32";
     }
     
     dllDir += archDir;
@@ -296,50 +293,7 @@ std::wstring LoadDriverOrThrowException(const std::wstring& modulePath = L"") {
         LocalFree(messageBuffer);
         
         LOG("Failed to load the driver with error code: {} - {}", error, errorMessage);
-        
-        // First fallback - try with the raw architecture name
-        dllDir = ddbcModulePath;
-        dllDir += L"\\libs\\";
-        dllDir += archStr;
-        dllDir += L"\\msodbcsql18.dll";
-        
-        std::string fallbackDirStr(dllDir.begin(), dllDir.end());
-        LOG("Fallback 1: Attempting to load driver from - {}", fallbackDirStr);
-        hModule = LoadLibraryW(dllDir.c_str());
-        
-        if (!hModule) {
-            DWORD error = GetLastError();
-            LOG("Fallback 1 failed with error code: {}", error);
-        }
-    }
-    
-    if (!hModule) {
-        // Second fallback - try the win64 directory explicitly
-        dllDir = ddbcModulePath;
-        dllDir += L"\\libs\\win64\\msodbcsql18.dll";
-        std::string winDirStr(dllDir.begin(), dllDir.end());
-        LOG("Fallback 2: Attempting to load driver from - {}", winDirStr);
-        hModule = LoadLibraryW(dllDir.c_str());
-        
-        if (!hModule) {
-            DWORD error = GetLastError();
-            LOG("Fallback 2 failed with error code: {}", error);
-        }
-    }
-    
-    if (!hModule) {
-        // Final fallback - try the 1033 subdirectory variant
-        dllDir = ddbcModulePath;
-        dllDir += L"\\libs\\winamd64\\1033\\msodbcsql18.dll";
-        std::string localeDirStr(dllDir.begin(), dllDir.end());
-        LOG("Fallback 3: Attempting to load driver from locale directory - {}", localeDirStr);
-        hModule = LoadLibraryW(dllDir.c_str());
-        
-        if (!hModule) {
-            DWORD error = GetLastError();
-            LOG("Fallback 3 failed with error code: {}", error);
-            throw std::runtime_error("Failed to load ODBC driver, error = " + std::to_string(error));
-        }
+        ThrowStdException("Failed to load the ODBC driver. Please check that it is installed correctly.");
     }
 
     // If we got here, we've successfully loaded the DLL. Now get the function pointers.
@@ -385,10 +339,10 @@ std::wstring LoadDriverOrThrowException(const std::wstring& modulePath = L"") {
                    SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
                    SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
                    SQLRowCount_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr && SQLFetch_ptr &&
-           SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr &&
-           SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr &&
-           SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr &&
-           SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
+                   SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr &&
+                   SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr &&
+                   SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr &&
+                   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
 
     if (!success) {
         LOG("Failed to load required function pointers from driver - {}", dllDirStr);
@@ -452,7 +406,7 @@ ParamType* AllocateParamBuffer(std::vector<std::shared_ptr<void>>& paramBuffers,
 SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                          const std::vector<ParamInfo>& paramInfos,
                          std::vector<std::shared_ptr<void>>& paramBuffers) {
-    for (size_t paramIndex = 0; paramIndex < static_cast<size_t>(params.size()); paramIndex++) {
+    for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
         const auto& param = params[paramIndex];
         const ParamInfo& paramInfo = paramInfos[paramIndex];
         void* dataPtr = nullptr;
@@ -611,10 +565,9 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 sqlTimestampPtr->hour = param.attr("hour").cast<int>();
                 sqlTimestampPtr->minute = param.attr("minute").cast<int>();
                 sqlTimestampPtr->second = param.attr("second").cast<int>();
-                // SQL server supports ns, but python datetime supports µs
-                // Use uint64_t for intermediate calculation to avoid overflow
+                // SQL server supports in ns, but python datetime supports in µs
                 sqlTimestampPtr->fraction = static_cast<SQLUINTEGER>(
-                    static_cast<uint64_t>(param.attr("microsecond").cast<int>()) * 1000ULL);  // Convert µs to ns
+                    param.attr("microsecond").cast<int>() * 1000);  // Convert µs to ns
                 dataPtr = static_cast<void*>(sqlTimestampPtr);
                 break;
             }
@@ -700,6 +653,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
     }
     return SQL_SUCCESS;
 }
+
 
 // This is temporary hack to avoid crash when SQLDescribeCol returns 0 as columnSize
 // for NVARCHAR(MAX) & similar types. Variable length data needs more nuanced handling.
@@ -1011,12 +965,11 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
             case SQL_LONGVARCHAR: {
                 // TODO: revisit
                 HandleZeroColumnSizeAtFetch(columnSize);
-		SQLULEN fetchBufferSize = columnSize + 1 /* null-termination */;
-                std::vector<SQLCHAR> dataBuffer(static_cast<size_t>(fetchBufferSize));
+		uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
+                std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
                 SQLLEN dataLen;
                 // TODO: Handle the return code better
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), 
-                                     static_cast<SQLINTEGER>(dataBuffer.size()),
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(),
                                      &dataLen);
 
                 if (SQL_SUCCEEDED(ret)) {
@@ -1027,7 +980,7 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                         // NOTE: dataBuffer.size() includes null-terminator, dataLen doesn't. Hence use '<'.
 						if (numCharsInData < dataBuffer.size()) {
                             // SQLGetData will null-terminate the data
-                            row.append(std::string(reinterpret_cast<char*>(dataBuffer.data()), static_cast<size_t>(numCharsInData)));
+                            row.append(std::string(reinterpret_cast<char*>(dataBuffer.data())));
 						} else {
                             // In this case, buffer size is smaller, and data to be retrieved is longer
                             // TODO: Revisit
@@ -1058,12 +1011,11 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
 			case SQL_WLONGVARCHAR: {
                 // TODO: revisit
                 HandleZeroColumnSizeAtFetch(columnSize);
-		SQLULEN fetchBufferSize = columnSize + 1 /* null-termination */;
-                std::vector<SQLWCHAR> dataBuffer(static_cast<size_t>(fetchBufferSize));
+		uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
+                std::vector<SQLWCHAR> dataBuffer(fetchBufferSize);
                 SQLLEN dataLen;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(),
-                                     static_cast<SQLINTEGER>(dataBuffer.size() * sizeof(SQLWCHAR)),
-                                     &dataLen);
+                                     dataBuffer.size() * sizeof(SQLWCHAR), &dataLen);
 
                 if (SQL_SUCCEEDED(ret)) {
                     // TODO: Refactor these if's across other switches to avoid code duplication
@@ -1265,7 +1217,7 @@ SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::l
                 if (SQL_SUCCEEDED(ret)) {
                     // TODO: Refactor these if's across other switches to avoid code duplication
                     if (dataLen > 0) {
-						if (static_cast<SQLULEN>(dataLen) <= columnSize) {
+						if (dataLen <= columnSize) {
                             row.append(py::bytes(reinterpret_cast<const char*>(
                                 dataBuffer.get()), dataLen));
 						} else {
@@ -1374,7 +1326,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
             case SQL_LONGVARCHAR: {
                 // TODO: handle variable length data correctly. This logic wont suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
-                SQLULEN fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 		// TODO: For LONGVARCHAR/BINARY types, columnSize is returned as 2GB-1 by
 		// SQLDescribeCol. So fetchBufferSize = 2GB. fetchSize=1 if columnSize>1GB.
 		// So we'll allocate a vector of size 2GB. If a query fetches multiple (say N)
@@ -1384,12 +1336,10 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
 		// process could also be killed by OS for consuming too much memory.
 		// Hence this will be revisited in beta to not allocate 2GB+ memory,
 		// & use streaming instead
-                buffers.charBuffers[col - 1].resize(static_cast<size_t>(fetchSize) * 
-                                                  static_cast<size_t>(fetchBufferSize));
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_CHAR, 
-                                   buffers.charBuffers[col - 1].data(),
-                                   static_cast<SQLLEN>(fetchBufferSize),
-                                   buffers.indicators[col - 1].data());
+                buffers.charBuffers[col - 1].resize(fetchSize * fetchBufferSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
+                                     fetchBufferSize * sizeof(SQLCHAR),
+                                     buffers.indicators[col - 1].data());
                 break;
             }
             case SQL_WCHAR:
@@ -1397,13 +1347,11 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
             case SQL_WLONGVARCHAR: {
                 // TODO: handle variable length data correctly. This logic wont suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
-                SQLULEN fetchBufferSize = columnSize + 1 /*null-terminator*/;
-                buffers.wcharBuffers[col - 1].resize(static_cast<size_t>(fetchSize) * 
-                                                    static_cast<size_t>(fetchBufferSize));
-                ret = SQLBindCol_ptr(hStmt, col, SQL_C_WCHAR, 
-                                   buffers.wcharBuffers[col - 1].data(),
-                                   static_cast<SQLLEN>(fetchBufferSize * sizeof(SQLWCHAR)),
-                                   buffers.indicators[col - 1].data());
+                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                buffers.wcharBuffers[col - 1].resize(fetchSize * fetchBufferSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
+                                     fetchBufferSize * sizeof(SQLWCHAR),
+                                     buffers.indicators[col - 1].data());
                 break;
             }
             case SQL_INTEGER:
@@ -1554,14 +1502,14 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     // TODO: variable length data needs special handling, this logic wont suffice
                     SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
                     HandleZeroColumnSizeAtFetch(columnSize);
-                    SQLULEN fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 					uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (numCharsInData < fetchBufferSize) {
                         // SQLFetch will nullterminate the data
                         row.append(std::string(
                             reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * fetchBufferSize]),
-                            static_cast<size_t>(numCharsInData)));
+                            numCharsInData));
                     } else {
                         // In this case, buffer size is smaller, and data to be retrieved is longer
                         // TODO: Revisit
@@ -1579,7 +1527,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     // TODO: variable length data needs special handling, this logic wont suffice
                     SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
                     HandleZeroColumnSizeAtFetch(columnSize);
-                    SQLULEN fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 					uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (numCharsInData < fetchBufferSize) {
@@ -1630,7 +1578,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         // Handle the exception, e.g., log the error and append py::none()
                         LOG("Error converting to decimal: {}", e.what());
                         row.append(py::none());
-                                                          }
+                    }
                     break;
                 }
                 case SQL_DOUBLE:
@@ -1683,7 +1631,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     // TODO: variable length data needs special handling, this logic wont suffice
                     SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
                     HandleZeroColumnSizeAtFetch(columnSize);
-                    if (static_cast<SQLULEN>(dataLen) <= columnSize) {
+                    if (dataLen <= columnSize) {
                         row.append(py::bytes(reinterpret_cast<const char*>(
                                                  &buffers.charBuffers[col - 1][i * columnSize]),
                                              dataLen));
