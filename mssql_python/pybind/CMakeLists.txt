@@ -25,8 +25,10 @@ if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64" OR DEFINED ENV{BUILD_ARM64})
     set(WHEEL_ARCH "arm64")
 elseif(ARCHITECTURE STREQUAL "win64" OR ARCHITECTURE STREQUAL "amd64" OR ARCHITECTURE STREQUAL "x64")
     set(WHEEL_ARCH "amd64")
-else()
+elseif(ARCHITECTURE STREQUAL "win32" OR ARCHITECTURE STREQUAL "x86")
     set(WHEEL_ARCH "win32")
+else()
+    message(FATAL_ERROR "Unsupported architecture: ${ARCHITECTURE}. Supported architectures are win32, win64, x86, amd64, arm64.")
 endif()
 
 # Get Python and pybind11 include paths (needed for all architectures)
@@ -73,6 +75,15 @@ if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64" OR DEFINED ENV{BUILD_ARM64})
     
     # Set ARM64-specific Python library path
     set(PYTHON_LIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libs/arm64")
+    set(PYTHON_LIBRARIES "${PYTHON_LIB_PATH}/python${PYTHON_VERSION}.lib")
+elseif(ARCHITECTURE STREQUAL "win32" OR ARCHITECTURE STREQUAL "x86")
+    message(STATUS "Building for x86 architecture")
+    set(CMAKE_SYSTEM_PROCESSOR "x86")
+    set(CMAKE_VS_PLATFORM_NAME "Win32")
+    add_definitions(-DTARGET_X86=1)
+    
+    # Set x86-specific Python library path
+    set(PYTHON_LIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libs/x86")
     set(PYTHON_LIBRARIES "${PYTHON_LIB_PATH}/python${PYTHON_VERSION}.lib")
 else()
     # For x64, use the system Python library

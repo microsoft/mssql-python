@@ -55,13 +55,12 @@ if /i "%ARCH%"=="x64" (
     cmake -S . -B build/build_dir -A ARM64 -DARCHITECTURE=arm64
     cmake --build build/build_dir --config Release
     
-    rem Ensure DLL dependencies are properly set up
-    if not exist "%PARENT_DIR%\libs\winarm64" mkdir "%PARENT_DIR%\libs\winarm64"
-    copy /Y "%PARENT_DIR%\libs\winarm64\*.dll" "%PARENT_DIR%\libs\winarm64\"
-    if exist "%PARENT_DIR%\libs\winarm64\1033" (
-        if not exist "%PARENT_DIR%\libs\winarm64\1033" mkdir "%PARENT_DIR%\libs\winarm64\1033"
-        copy /Y "%PARENT_DIR%\libs\winarm64\1033\*" "%PARENT_DIR%\libs\winarm64\1033\"
-    )
+    rem Copy only the versioned PYD file
+    copy /Y "build\build_dir\Release\%VERSIONED_PYD_NAME%" "%PARENT_DIR%\%VERSIONED_PYD_NAME%"
+) else if /i "%ARCH%"=="x86" (
+    call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x86
+    cmake -S . -B build/build_dir -A Win32 -DARCHITECTURE=win32
+    cmake --build build/build_dir --config Release
     
     rem Copy only the versioned PYD file
     copy /Y "build\build_dir\Release\%VERSIONED_PYD_NAME%" "%PARENT_DIR%\%VERSIONED_PYD_NAME%"
