@@ -47,7 +47,7 @@ The driver offers a suite of Pythonic enhancements that streamline database inte
 Connect to SQL Server and execute a simple query:
 
 ```python
-from mssql_python import connect
+import mssql_python
 
 # Establish a connection
 # Specify connection string
