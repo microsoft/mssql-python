@@ -1,8 +1,69 @@
-blank_issues_enabled: false
-contact_links:
-  - name: Python Community Support / Discussions
-    url: https://github.com/microsoft/mssql-python/discussions
-    about: Please ask and answer questions here.
-  - name: MSRC Vulnerability Reporting / Bug Bounty
-    url: https://msrc.microsoft.com/create-report
-    about: Please report security vulnerabilities here.
+name: pr-validation
+
+jobs:
+- job: PytestOnWindows
+  pool:
+    vmImage: 'windows-latest'
+  
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.13'
+      addToPath: true
+      githubToken: $(GITHUB_TOKEN)
+    displayName: 'Use Python 3.13'
+
+  - script: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+    displayName: 'Install dependencies'
+
+  # Start LocalDB instance
+  - powershell: |
+      sqllocaldb create MSSQLLocalDB
+      sqllocaldb start MSSQLLocalDB
+    displayName: 'Start LocalDB instance'
+
+  # Create database and user
+  # - powershell: |
+  #     sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
+  #     sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+  #     sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+  #     sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+  #   displayName: 'Setup database and user'
+  #   env:
+  #     DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      cd mssql_python\pybind
+      mkdir build
+      cd build  
+      cmake -DPython3_EXECUTABLE="python3" -DCMAKE_BUILD_TYPE=Debug ..
+      cmake --build . --config Debug
+      copy Debug\ddbc_bindings.pyd ..\..\ddbc_bindings.pyd
+    displayName: 'Build .pyd file'
+
+  - script: |
+      python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
+    displayName: 'Run tests with coverage'
+    # env:
+    #   DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: 'mssql_python/ddbc_bindings.pyd'
+      ArtifactName: 'ddbc_bindings'
+      publishLocation: 'Container'
+    displayName: 'Publish pyd file as artifact'
+
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFiles: '**/test-results.xml'
+      testRunTitle: 'Publish test results'
+
+  - task: PublishCodeCoverageResults@1
+    inputs:
+      codeCoverageTool: 'Cobertura'
+      summaryFileLocation: '$(System.DefaultWorkingDirectory)/**/coverage.xml'
+    displayName: 'Publish code coverage results'
