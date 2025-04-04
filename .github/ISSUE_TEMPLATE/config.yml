@@ -15,7 +15,7 @@ jobs:
 
   - script: |
       python -m pip install --upgrade pip
-      pip install -r requirements.txt
+      pip install pytest pytest-cov pybind11 coverage pytest-azurepipelines unittest-xml-reporting setuptools
     displayName: 'Install dependencies'
 
   # Start LocalDB instance
