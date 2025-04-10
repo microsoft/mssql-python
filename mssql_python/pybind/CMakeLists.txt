@@ -38,11 +38,52 @@ execute_process(
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
+# Add debug messages for Python paths
+message(STATUS "Python version: ${PYTHON_VERSION}")
+message(STATUS "Python include directory: ${PYTHON_INCLUDE_DIR}")
+
+# Get Python library directory with fallbacks if one method returns None
 execute_process(
     COMMAND python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
     OUTPUT_VARIABLE PYTHON_LIB_DIR
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
+message(STATUS "Python LIBDIR from sysconfig: ${PYTHON_LIB_DIR}")
+
+# If LIBDIR is None or empty, try alternative methods
+if("${PYTHON_LIB_DIR}" STREQUAL "None" OR "${PYTHON_LIB_DIR}" STREQUAL "")
+    message(STATUS "LIBDIR is None or empty, trying alternative methods")
+    
+    # Try to get the Python executable directory
+    execute_process(
+        COMMAND python -c "import sys, os; print(os.path.dirname(sys.executable))"
+        OUTPUT_VARIABLE PYTHON_EXEC_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    message(STATUS "Python executable directory: ${PYTHON_EXEC_DIR}")
+    
+    # Check if the libs directory exists
+    execute_process(
+        COMMAND python -c "import sys, os; libs_dir = os.path.join(os.path.dirname(sys.executable), 'libs'); print('EXISTS' if os.path.exists(libs_dir) else 'NOT_EXISTS')"
+        OUTPUT_VARIABLE PYTHON_LIBS_EXISTS
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    message(STATUS "Python libs directory exists: ${PYTHON_LIBS_EXISTS}")
+    
+    # If the libs directory exists, use that
+    if("${PYTHON_LIBS_EXISTS}" STREQUAL "EXISTS")
+        set(PYTHON_LIB_DIR "${PYTHON_EXEC_DIR}/libs")
+        message(STATUS "Setting PYTHON_LIB_DIR to: ${PYTHON_LIB_DIR}")
+    endif()
+endif()
+
+# Check if our local libs directory contains the Python library
+set(LOCAL_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs/${WHEEL_ARCH}")
+message(STATUS "Local library directory: ${LOCAL_LIB_DIR}")
+if(EXISTS "${LOCAL_LIB_DIR}/python${PYTHON_VERSION}.lib")
+    message(STATUS "Found Python library in local directory")
+    set(PYTHON_LIB_DIR "${LOCAL_LIB_DIR}")
+endif()
 
 execute_process(
     COMMAND python -c "import pybind11; print(pybind11.get_include())"
@@ -80,8 +121,8 @@ elseif(ARCHITECTURE STREQUAL "win32" OR ARCHITECTURE STREQUAL "x86")
     add_definitions(-DTARGET_X86=1)
 endif()
 
-set(PYTHON_LIBRARIES "${PYTHON_LIB_DIR}/python${PYTHON_VERSION}.lib")
-
+    set(PYTHON_LIBRARIES "${PYTHON_LIB_DIR}/python${PYTHON_VERSION}.lib")
+    
 # Link Python library
 message(STATUS "Using Python library: ${PYTHON_LIBRARIES}")
 message(STATUS "Output PYD name: ddbc_bindings.cp${PYTHON_VERSION}-${WHEEL_ARCH}.pyd")
