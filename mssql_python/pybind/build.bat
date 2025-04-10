@@ -108,8 +108,8 @@ if errorlevel 1 (
 )
 
 REM Now invoke CMake with correct source path (options first, path last!)
-echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR%"
-cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR%"
+echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% %SOURCE_DIR%
+cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% %SOURCE_DIR%
 echo [DIAGNOSTIC] CMake configure exit code: %errorlevel%
 if errorlevel 1 (
     echo [ERROR] CMake configuration failed
