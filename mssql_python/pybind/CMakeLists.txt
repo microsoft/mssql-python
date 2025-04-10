@@ -80,6 +80,8 @@ elseif(ARCHITECTURE STREQUAL "win32" OR ARCHITECTURE STREQUAL "x86")
     add_definitions(-DTARGET_X86=1)
 endif()
 
+set(PYTHON_LIBRARIES "${PYTHON_LIB_DIR}/python${PYTHON_VERSION}.lib")
+
 # Link Python library
 message(STATUS "Using Python library: ${PYTHON_LIBRARIES}")
 message(STATUS "Output PYD name: ddbc_bindings.cp${PYTHON_VERSION}-${WHEEL_ARCH}.pyd")
