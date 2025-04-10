@@ -1,0 +1,58 @@
+name: build-pyd-pipeline
+
+# This pipeline builds PYD files for multiple Python versions and architectures
+# It uses the latest point releases of each Python minor version
+
+variables:
+  - name: pythonVersions
+    value: '3.11.* 3.12.* 3.13.*'  # Use latest point releases
+  - name: architectures
+    value: 'x64 arm64 x86'
+
+jobs:
+- job: BuildAllPyds
+  pool:
+    vmImage: 'windows-latest'
+  
+  strategy:
+    matrix:
+      ${{ each pyVer in split(variables.pythonVersions, ' ') }}:
+        ${{ each arch in split(variables.architectures, ' ') }}:
+          py${{ replace(pyVer, '.', '') }}_${{ arch }}:
+            pythonVersion: ${{ pyVer }}
+            architecture: ${{ arch }}
+            shortPyVer: ${{ replace(replace(pyVer, '.', ''), '*', '') }}
+
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '$(pythonVersion)'
+      architecture: '$(architecture)'
+      addToPath: true
+    displayName: 'Use Python $(pythonVersion) $(architecture)'
+
+  - script: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+      pip install cmake pybind11
+    displayName: 'Install dependencies'
+
+  - script: |
+      cd mssql_python/pybind
+      build.bat $(architecture)
+      cd ../..
+    displayName: 'Build PYD for $(architecture)'
+  - task: CopyFiles@2
+    inputs:
+      SourceFolder: '$(Build.SourcesDirectory)/mssql_python'
+      Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
+      TargetFolder: '$(Build.ArtifactStagingDirectory)/all-pyds/$(shortPyVer)/$(architecture)'
+    displayName: 'Collect PYD files'
+
+  - task: PublishBuildArtifacts@1
+    condition: succeededOrFailed()
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)/all-pyds'
+      ArtifactName: 'mssql-python-all-pyds'
+      publishLocation: 'Container'
+    displayName: 'Publish PYD artifacts'
