@@ -30,7 +30,6 @@ jobs:
       architecture: '$(architecture)'
       addToPath: true
     displayName: 'Use Python $(pythonVersion) $(architecture)'
-
   - script: |
       python -m pip install --upgrade pip
       pip install -r requirements.txt
@@ -38,9 +37,15 @@ jobs:
     displayName: 'Install dependencies'
 
   - script: |
-      cd mssql_python/pybind
+      echo "Working directory: %CD%"
+      echo "Build source directory: $(Build.SourcesDirectory)"
+      echo "Python version: $(pythonVersion) - $(shortPyVer)"
+      echo "Architecture: $(architecture)"
+      
+      cd "$(Build.SourcesDirectory)\mssql_python\pybind"
+      dir
       build.bat $(architecture)
-      cd ../..
+      cd ..\..
     displayName: 'Build PYD for $(architecture)'
   - task: CopyFiles@2
     inputs:
