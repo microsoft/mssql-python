@@ -50,29 +50,52 @@ if "%ARCH%"=="x64" (
 
 echo [DIAGNOSTIC] Source directory: "%SOURCE_DIR%"
 
-REM Check if Visual Studio exists - try Enterprise edition first (based on pipeline logs)
-set VS_PATH="%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
-echo [DIAGNOSTIC] Checking for Visual Studio Enterprise at: %VS_PATH%
-if not exist %VS_PATH% (
-    echo [WARNING] Visual Studio Enterprise not found at expected path
-    
-    REM Try alternative paths
-    set VS_PATHS="%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat" "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" "%ProgramFiles%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat" "%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
-    
-    for %%i in (%VS_PATHS%) do (
-        echo [DIAGNOSTIC] Checking alternative path: %%i
-        if exist %%i (
-            set VS_PATH=%%i
-            echo [DIAGNOSTIC] Found Visual Studio at: %%i
+REM Check for Visual Studio - look in standard paths or check if vswhere is available
+echo [DIAGNOSTIC] Searching for Visual Studio installation...
+
+set VS_PATH=
+
+REM Try direct paths first (most common locations)
+for %%p in (
+    "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
+    "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
+    "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat"
+    "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
+    "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"
+    "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
+) do (
+    echo [DIAGNOSTIC] Checking path: %%p
+    if exist %%p (
+        set VS_PATH=%%p
+        echo [DIAGNOSTIC] Found Visual Studio at: %%p
+        goto vs_found
+    )
+)
+
+REM If we reach here, we didn't find Visual Studio in the standard paths
+echo [DIAGNOSTIC] Visual Studio not found in standard paths
+echo [DIAGNOSTIC] Looking for vswhere.exe...
+
+REM Try using vswhere if available (common on Azure DevOps agents)
+set VSWHERE_PATH="%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist %VSWHERE_PATH% (
+    echo [DIAGNOSTIC] Found vswhere at: %VSWHERE_PATH%
+    for /f "usebackq tokens=*" %%i in (`%VSWHERE_PATH% -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+        set VS_DIR=%%i
+        if exist "%%i\VC\Auxiliary\Build\vcvarsall.bat" (
+            set VS_PATH="%%i\VC\Auxiliary\Build\vcvarsall.bat"
+            echo [DIAGNOSTIC] Found Visual Studio using vswhere at: %%i\VC\Auxiliary\Build\vcvarsall.bat
             goto vs_found
         )
     )
-    
-    echo [ERROR] Could not find Visual Studio installation
-    echo [DIAGNOSTIC] Environment variables:
-    set
-    exit /b 1
 )
+
+echo [WARNING] Visual Studio not found in standard paths or using vswhere
+echo [DIAGNOSTIC] Current directory structure:
+dir "%ProgramFiles(x86)%\Microsoft Visual Studio" /s /b | findstr "vcvarsall.bat"
+dir "%ProgramFiles%\Microsoft Visual Studio" /s /b | findstr "vcvarsall.bat"
+echo [ERROR] Could not find Visual Studio installation
+exit /b 1
 
 :vs_found
 REM Initialize MSVC toolchain
