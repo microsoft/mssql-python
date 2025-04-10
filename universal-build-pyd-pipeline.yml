@@ -5,7 +5,7 @@ name: build-pyd-pipeline
 
 variables:
   - name: pythonVersions
-    value: '3.11.* 3.12.* 3.13.*'  # Use latest point releases
+    value: '3.11 3.12 3.13'  # Use latest point releases
   - name: architectures
     value: 'x64 arm64 x86'
 

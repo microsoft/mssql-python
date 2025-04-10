@@ -28,31 +28,78 @@ set BUILD_DIR=%SOURCE_DIR%build\%ARCH%\py%PYTAG%
 if exist "%BUILD_DIR%" rd /s /q "%BUILD_DIR%"
 mkdir "%BUILD_DIR%"
 cd /d "%BUILD_DIR%"
+echo [DIAGNOSTIC] Changed to build directory: "%BUILD_DIR%"
 
 REM Set CMake platform name
 set PLATFORM_NAME=%ARCH%
+echo [DIAGNOSTIC] Setting up for architecture: %ARCH%
 REM Set CMake platform name
 if "%ARCH%"=="x64" (
     set PLATFORM_NAME=x64
+    echo [DIAGNOSTIC] Using platform name: x64
 ) else if "%ARCH%"=="x86" (
     set PLATFORM_NAME=Win32
+    echo [DIAGNOSTIC] Using platform name: Win32
 ) else if "%ARCH%"=="arm64" (
     set PLATFORM_NAME=ARM64
+    echo [DIAGNOSTIC] Using platform name: ARM64
 ) else (
-    echo Invalid architecture: %ARCH%
+    echo [ERROR] Invalid architecture: %ARCH%
     exit /b 1
 )
 
+echo [DIAGNOSTIC] Source directory: "%SOURCE_DIR%"
 
+REM Check if Visual Studio exists
+set VS_PATH="%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat"
+echo [DIAGNOSTIC] Checking for Visual Studio at: %VS_PATH%
+if not exist %VS_PATH% (
+    echo [WARNING] Visual Studio not found at default path
+    
+    REM Try alternative paths
+    set VS_PATHS="%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat" "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" "%ProgramFiles%\Microsoft Visual Studio\2022\Professional\VC\Auxiliary\Build\vcvarsall.bat" "%ProgramFiles%\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat"
+    
+    for %%i in (%VS_PATHS%) do (
+        echo [DIAGNOSTIC] Checking alternative path: %%i
+        if exist %%i (
+            set VS_PATH=%%i
+            echo [DIAGNOSTIC] Found Visual Studio at: %%i
+            goto vs_found
+        )
+    )
+    
+    echo [ERROR] Could not find Visual Studio installation
+    echo [DIAGNOSTIC] Environment variables:
+    set
+    exit /b 1
+)
+
+:vs_found
 REM Initialize MSVC toolchain
-call "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" %ARCH%
+echo [DIAGNOSTIC] Initializing MSVC toolchain with: call %VS_PATH% %ARCH%
+call %VS_PATH% %ARCH%
+echo [DIAGNOSTIC] MSVC initialization exit code: %errorlevel%
+if errorlevel 1 (
+    echo [ERROR] Failed to initialize MSVC toolchain
+    exit /b 1
+)
 
 REM Now invoke CMake with correct source path (options first, path last!)
+echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR%"
 cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR%"
-if errorlevel 1 exit /b 1
+echo [DIAGNOSTIC] CMake configure exit code: %errorlevel%
+if errorlevel 1 (
+    echo [ERROR] CMake configuration failed
+    exit /b 1
+)
 
+echo [DIAGNOSTIC] Running CMake build with: cmake --build . --config Release
 cmake --build . --config Release
-if errorlevel 1 exit /b 1
+echo [DIAGNOSTIC] CMake build exit code: %errorlevel% 
+if errorlevel 1 (
+    echo [ERROR] CMake build failed
+    exit /b 1
+)
 
 echo ===== Build completed for %ARCH% Python %PYTAG% ======
 
