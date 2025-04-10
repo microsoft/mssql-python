@@ -5,6 +5,14 @@ REM Usage: build.bat [ARCH]
 set ARCH=%1
 if "%ARCH%"=="" set ARCH=x64
 
+REM Clean up main build directory if it exists
+echo Checking for main build directory...
+if exist "build" (
+    echo Removing existing build directory...
+    rd /s /q build
+    echo Build directory removed.
+)
+
 REM Get Python version from active interpreter
 for /f %%v in ('python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')"') do set PYTAG=%%v
 

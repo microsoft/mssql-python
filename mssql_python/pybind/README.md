@@ -15,9 +15,23 @@ This README provides instructions to build a project using PyBind11.
 
 ## Build Instructions
 
-1. Go to pybind folder and run `build.bat`:
+1. Go to the pybind folder and run `build.bat` with your desired architecture:
     ```sh
-    build.bat
+    # For 64-bit Intel/AMD (default)
+    build.bat x64
+    
+    # For ARM64
+    build.bat arm64
+    
+    # For 32-bit Intel
+    build.bat x86
     ```
 
-2. The built `ddbc_bindings.pyd` file will be moved to the `mssql_python` directory.
+2. The script will:
+   - Clean up existing build directories
+   - Detect your Python version
+   - Create properly versioned PYD files (e.g., `ddbc_bindings.cp313-amd64.pyd`)
+   - Move the built PYD file to the parent `mssql_python` directory
+
+3. The versioned PYD filename follows the pattern: `ddbc_bindings.cp{python-version}-{architecture}.pyd`
+   - Example: `ddbc_bindings.cp313-amd64.pyd` for Python 3.13 on x64 architecture
