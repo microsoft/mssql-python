@@ -44,9 +44,6 @@ build/
 *.so
 *.pyd
 
-# Build files
-mssql_python/ddbc_bindings.pyd
-
 # IDE files
 .vscode/
 .idea/

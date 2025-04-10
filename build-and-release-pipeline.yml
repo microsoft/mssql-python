@@ -1,106 +1,49 @@
-trigger:
-  branches:
-    include:
-      - main
-      - release/*
+name: build-and-release-pipeline
 
 jobs:
-  - job: build_wheels
-    displayName: Build wheels
-    strategy:
-      matrix:
-        windows_py38_x64:
-          python_version: '3.8'
-          python_version_no_dot: '38'
-          os: windows-latest
-          arch: AMD64
-          arch_tag: win_amd64
-        windows_py39_x64:
-          python_version: '3.9'
-          python_version_no_dot: '39'
-          os: windows-latest
-          arch: AMD64
-          arch_tag: win_amd64
-        windows_py310_x64:
-          python_version: '3.10'
-          python_version_no_dot: '310'
-          os: windows-latest
-          arch: AMD64
-          arch_tag: win_amd64
-        windows_py311_x64:
-          python_version: '3.11'
-          python_version_no_dot: '311'
-          os: windows-latest
-          arch: AMD64
-          arch_tag: win_amd64
-        windows_py312_x64:
-          python_version: '3.12'
-          python_version_no_dot: '312'
-          os: windows-latest
-          arch: AMD64
-          arch_tag: win_amd64
-        windows_py38_x86:
-          python_version: '3.8'
-          python_version_no_dot: '38'
-          os: windows-latest
-          arch: x86
-          arch_tag: win32
-        windows_py38_arm64:
-          python_version: '3.8'
-          python_version_no_dot: '38'
-          os: windows-latest
-          arch: ARM64
-          arch_tag: win_arm64
+- job: BuildWheel
+  pool:
+    vmImage: 'windows-latest'
+  
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.13'
+      addToPath: true
+      githubToken: $(GITHUB_TOKEN)
+    displayName: 'Use Python 3.13'
 
-    pool:
-      vmImage: $(os)
+  - script: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+    displayName: 'Install build dependencies'
 
-    steps:
-      - task: UsePythonVersion@0
-        inputs:
-          versionSpec: $(python_version)
-          architecture: $(arch)
+  - script: |
+      python setup.py bdist_wheel
+    displayName: 'Build .whl file'
 
-      - script: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install pybind11 delvewheel
-        displayName: Install build dependencies
-        
-      - script: |
-          python -m pip install cibuildwheel
-        displayName: Install cibuildwheel
+  - task: PublishBuildArtifacts@1
+    inputs:
+        PathtoPublish: 'dist'
+        ArtifactName: 'mssql-python'
+        publishLocation: 'Container'
+    displayName: 'Publish Artifact'
 
-      # Special handling for ARM64 builds since CI machines may not be ARM64 hardware
-      - task: PowerShell@2
-        displayName: Configure cross-compilation for ARM64
-        condition: eq(variables['arch'], 'ARM64')
-        inputs:
-          targetType: 'inline'
-          script: |
-            Write-Host "Configuring cross-compilation for ARM64"
-            
-            # Set environment variables to help with cross-compilation
-            echo "##vso[task.setvariable variable=SETUPTOOLS_USE_DISTUTILS]local"
-            echo "##vso[task.setvariable variable=SETUPTOOLS_BUILD_HOOK_KWARGS]{\"py_limited_api\": false}"
-            
-            # Configure Visual Studio for ARM64 
-            $vsPath = & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
-            if ($vsPath) {
-              $vcvarsall = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
-              if (Test-Path $vcvarsall) {
-                Write-Host "Found vcvarsall.bat at $vcvarsall"
-                echo "##vso[task.setvariable variable=VCVARSALL_PATH]$vcvarsall"
-              }
-            }
-
-      - script: |
-          python -m cibuildwheel --output-dir dist
-        displayName: Build wheels
-        env:
-          CIBW_BUILD: cp$(python_version_no_dot)-$(arch_tag)
-          CIBW_ARCHS: $(arch)
-
-      - task: PublishBuildArtifacts@1
-        inputs:
-          pathToPublish: './dist'
-          artifactName: wheels
+  - task: EsrpRelease@7
+    inputs:
+      ConnectedServiceName: 'mssql-python-service'
+      keyvaultname: mssqlpythonKey
+      authcertname: 'ESRP-Release-mssql-python-auth'
+      signcertname: 'ESRP-Release-mssql-python-Sign2'
+      clientid: 'a0d18a38-fde1-4ba7-92e1-15be16cb6a8e'
+      Intent: 'PackageDistribution'
+      ContentType: 'PyPi'
+      ContentSource: 'Folder'
+      FolderLocation: '$(System.DefaultWorkingDirectory)/dist'
+      WaitForReleaseCompletion: true
+      Owners: 'enumittal@microsoft.com'
+      Approvers: 'enumittal@microsoft.com'
+      ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
+      MainPublisher: 'ESRPRELPACMAN'
+      DomainTenantId: '72f988bf-86f1-41af-91ab-2d7cd011db47'
+    displayName: 'ESRP Release'
