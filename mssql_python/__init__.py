@@ -1,8 +1,8 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT license.
-
-"""Microsoft SQL Server Python Driver."""
-
+"""
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+This module initializes the mssql_python package.
+"""
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
@@ -47,9 +47,6 @@ from .logging_config import setup_logging, get_logger
 
 # Constants
 from .constants import ConstantsDDBC
-
-# Version information
-__version__ = "0.1.0"
 
 # GLOBALS
 # Read-Only
