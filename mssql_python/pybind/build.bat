@@ -1,79 +1,67 @@
 @echo off
 setlocal enabledelayedexpansion
 
-echo Cleaning up build directories...
-if exist build (
-    echo Removing existing build directory...
-    rmdir /s /q build
-)
-mkdir build
+REM Usage: build.bat [ARCH]
+set ARCH=%1
+if "%ARCH%"=="" set ARCH=x64
 
-rem Get Python version for PYD naming
-python -c "import sys; ver = f'{sys.version_info.major}{sys.version_info.minor}'; print(ver)" > temp.txt
-set /p PYVER=<temp.txt
-del temp.txt
+REM Get Python version from active interpreter
+for /f %%v in ('python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')"') do set PYTAG=%%v
 
-rem Default to x64 if no architecture specified
-if "%1"=="" (
-    set ARCH=x64
+echo ===================================
+echo Building for: %ARCH% / Python %PYTAG%
+echo ===================================
+
+REM Save absolute source directory
+set SOURCE_DIR=%~dp0
+
+REM Go to build output directory
+set BUILD_DIR=%SOURCE_DIR%build\%ARCH%\py%PYTAG%
+if exist "%BUILD_DIR%" rd /s /q "%BUILD_DIR%"
+mkdir "%BUILD_DIR%"
+cd /d "%BUILD_DIR%"
+
+REM Set CMake platform name
+set PLATFORM_NAME=%ARCH%
+REM Set CMake platform name
+if "%ARCH%"=="x64" (
+    set PLATFORM_NAME=x64
+) else if "%ARCH%"=="x86" (
+    set PLATFORM_NAME=Win32
+) else if "%ARCH%"=="arm64" (
+    set PLATFORM_NAME=ARM64
 ) else (
-    set ARCH=%1
-)
-
-echo Building for target architecture: %ARCH%
-
-rem Set the output PYD path and determine wheel-compatible architecture
-set PARENT_DIR=%~dp0..
-set WHEEL_ARCH=none
-
-rem Map architecture to wheel-compatible format
-if /i "%ARCH%"=="x64" (
-    set WHEEL_ARCH=amd64
-) else if /i "%ARCH%"=="arm64" (
-    set WHEEL_ARCH=arm64
-) else (
-    set WHEEL_ARCH=win32
-)
-
-rem Define the versioned PYD filename
-set VERSIONED_PYD_NAME=ddbc_bindings.cp%PYVER%-%WHEEL_ARCH%.pyd
-
-echo Will build: %VERSIONED_PYD_NAME%
-
-rem Configure and build based on architecture
-if /i "%ARCH%"=="x64" (
-    call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64
-    cmake -S . -B build/build_dir -A x64 -DARCHITECTURE=win64
-    cmake --build build/build_dir --config Release
-    
-    rem Copy only the versioned PYD file
-    copy /Y "build\build_dir\Release\%VERSIONED_PYD_NAME%" "%PARENT_DIR%\%VERSIONED_PYD_NAME%"
-    
-) else if /i "%ARCH%"=="arm64" (
-    call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x64_arm64
-    set BUILD_ARM64=1
-    cmake -S . -B build/build_dir -A ARM64 -DARCHITECTURE=arm64
-    cmake --build build/build_dir --config Release
-    
-    rem Copy only the versioned PYD file
-    copy /Y "build\build_dir\Release\%VERSIONED_PYD_NAME%" "%PARENT_DIR%\%VERSIONED_PYD_NAME%"
-) else if /i "%ARCH%"=="x86" (
-    call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" x86
-    cmake -S . -B build/build_dir -A Win32 -DARCHITECTURE=win32
-    cmake --build build/build_dir --config Release
-    
-    rem Copy only the versioned PYD file
-    copy /Y "build\build_dir\Release\%VERSIONED_PYD_NAME%" "%PARENT_DIR%\%VERSIONED_PYD_NAME%"
-) else (
-    echo Error: Unsupported architecture. Use x64 or arm64
+    echo Invalid architecture: %ARCH%
     exit /b 1
 )
 
-if errorlevel 1 (
-    echo Build failed
-    exit /b 1
+
+REM Initialize MSVC toolchain
+call "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" %ARCH%
+
+REM Now invoke CMake with correct source path (options first, path last!)
+cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR%"
+if errorlevel 1 exit /b 1
+
+cmake --build . --config Release
+if errorlevel 1 exit /b 1
+
+echo ===== Build completed for %ARCH% Python %PYTAG% ======
+
+REM Copy the built .pyd file to source directory
+set WHEEL_ARCH=%ARCH%
+if "%WHEEL_ARCH%"=="x64" set WHEEL_ARCH=amd64
+if "%WHEEL_ARCH%"=="arm64" set WHEEL_ARCH=arm64
+if "%WHEEL_ARCH%"=="x86" set WHEEL_ARCH=win32
+
+set PYD_NAME=ddbc_bindings.cp%PYTAG%-%WHEEL_ARCH%.pyd
+set OUTPUT_DIR=%BUILD_DIR%\Release
+
+if exist "%OUTPUT_DIR%\%PYD_NAME%" (
+    copy /Y "%OUTPUT_DIR%\%PYD_NAME%" "%SOURCE_DIR%\.."
+    echo Copied %PYD_NAME% to %SOURCE_DIR%
+) else (
+    echo Could not find built .pyd file: %PYD_NAME%
 )
 
-echo Build completed successfully
-echo The versioned PYD file has been copied to:
-echo - %PARENT_DIR%\%VERSIONED_PYD_NAME%
+endlocal
