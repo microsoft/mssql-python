@@ -1,7 +1,0 @@
-include README.md
-include LICENSE
-include KNOWLEDGE_BASE.md
-recursive-include mssql_python/dlls *
-global-exclude *.py[cod]
-global-exclude __pycache__
-global-exclude *.so *.dylib
