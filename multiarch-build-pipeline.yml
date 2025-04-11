@@ -1,5 +1,5 @@
 # Pipeline name shown in ADO UI
-name: build-pyd-pipeline
+name: multiarch-build-pipeline
 
 # Trigger the pipeline on pushes to these branches
 trigger:

@@ -13,7 +13,6 @@
 #include <utility>  // std::forward
 
 // Replace std::filesystem usage with Windows-specific headers
-#include <windows.h>
 #include <shlwapi.h>
 #pragma comment(lib, "shlwapi.lib")
 
@@ -242,26 +241,6 @@ void LOG(const std::string& formatString, Args&&... args) {
 // TODO: Add more nuanced exception classes
 void ThrowStdException(const std::string& message) { throw std::runtime_error(message); }
 
-// Helper to load the architecture-specific runtime libraries
-bool LoadRuntimeLibraries(const std::wstring& basePath, const std::wstring& archDir) {
-    // Path to architecture-specific vcredist folder
-    std::wstring vcredistPath = basePath + L"\\libs\\" + archDir + L"\\vcredist\\";
-    
-    // Convert wstring to string for logging
-    std::string vcredistPathStr(vcredistPath.begin(), vcredistPath.end());
-    LOG("Attempting to load runtime libraries from - {}", vcredistPathStr);
-    
-    // Add the vcredist directory to the DLL search path
-    DLL_DIRECTORY_COOKIE dllCookie = AddDllDirectory(vcredistPath.c_str());
-    if (dllCookie == NULL) {    
-        DWORD error = GetLastError();
-        LOG("Failed to add vcredist directory to DLL search path: {}", error);
-        // Continue anyway, as the system may find the DLLs elsewhere
-    }
-    
-    return true;
-}
-
 // Helper to load the driver
 // TODO: We don't need to do explicit linking using LoadLibrary. We can just use implicit
 //       linking to load this DLL. It will simplify the code a lot.
@@ -288,15 +267,8 @@ std::wstring LoadDriverOrThrowException(const std::wstring& modulePath = L"") {
     } else {
         archDir = L"x86";
     }
-    
     dllDir += archDir;
     dllDir += L"\\msodbcsql18.dll";
-
-    // Load the runtime libraries for the specified architecture
-    if (!LoadRuntimeLibraries(ddbcModulePath, archDir)) {
-        LOG("Failed to load runtime libraries for architecture - {}", archStr);
-        ThrowStdException("Failed to load runtime libraries for the specified architecture.");
-    }
     
     // Convert wstring to string for logging
     std::string dllDirStr(dllDir.begin(), dllDir.end());
@@ -304,6 +276,7 @@ std::wstring LoadDriverOrThrowException(const std::wstring& modulePath = L"") {
     
     HMODULE hModule = LoadLibraryW(dllDir.c_str());
     if (!hModule) {
+        // Failed to load the DLL, get the error message
         DWORD error = GetLastError();
         char* messageBuffer = nullptr;
         size_t size = FormatMessageA(
@@ -317,7 +290,8 @@ std::wstring LoadDriverOrThrowException(const std::wstring& modulePath = L"") {
         );
         std::string errorMessage = messageBuffer ? std::string(messageBuffer, size) : "Unknown error";
         LocalFree(messageBuffer);
-        
+
+        // Log the error message        
         LOG("Failed to load the driver with error code: {} - {}", error, errorMessage);
         ThrowStdException("Failed to load the ODBC driver. Please check that it is installed correctly.");
     }
@@ -1994,27 +1968,6 @@ SQLLEN SQLRowCount_wrap(intptr_t StatementHandle) {
     }
     LOG("SQLRowCount returned {}", rowCount);
     return rowCount;
-}
-
-// Helper function to load DLLs from the architecture-specific directory
-bool LoadArchitectureSpecificDLLs() {
-    std::string module_dir = GetModuleDirectory();  // Use the existing function
-    std::string dll_path = module_dir + "\\libs\\" + ARCHITECTURE + "\\";
-    
-    // Set DLL directory temporarily to load architecture-specific DLLs
-    BOOL success = SetDllDirectoryA(dll_path.c_str());
-    if (!success) {
-        std::cerr << "Failed to set DLL directory: " << GetLastError() << std::endl;
-        return false;
-    }
-    
-    // Load any required DLLs dynamically here if needed
-    // Example:
-    // HMODULE module = LoadLibraryA((dll_path + "msodbcsql18.dll").c_str());
-    
-    // Reset DLL directory
-    SetDllDirectoryA(NULL);
-    return true;
 }
 
 // Functions/data to be exposed to Python as a part of ddbc_bindings module
