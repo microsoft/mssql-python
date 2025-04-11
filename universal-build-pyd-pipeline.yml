@@ -13,28 +13,60 @@ jobs:
 - job: BuildAllPyds
   pool:
     vmImage: 'windows-latest'
-  
-  strategy:
+    strategy:
     matrix:
-      ${{ each pyVer in split(variables.pythonVersions, ' ') }}:
-        ${{ each arch in split(variables.architectures, ' ') }}:
-          py${{ replace(pyVer, '.', '') }}_${{ arch }}:
-            pythonVersion: ${{ pyVer }}
-            architecture: ${{ arch }}
-            shortPyVer: ${{ replace(replace(pyVer, '.', ''), '*', '') }}
-  steps:
+      py311_x64:
+        pythonVersion: '3.11'
+        architecture: 'x64'
+        shortPyVer: '311'
+      py311_x86:
+        pythonVersion: '3.11'
+        architecture: 'x86'
+        shortPyVer: '311'
+      py311_arm64:
+        pythonVersion: '3.11'
+        architecture: 'x64'  # Use x64 Python for arm64 builds
+        targetArch: 'arm64'
+        shortPyVer: '311'
+      py312_x64:
+        pythonVersion: '3.12'
+        architecture: 'x64'
+        shortPyVer: '312'
+      py312_x86:
+        pythonVersion: '3.12'
+        architecture: 'x86'
+        shortPyVer: '312'
+      py312_arm64:
+        pythonVersion: '3.12'
+        architecture: 'x64'  # Use x64 Python for arm64 builds
+        targetArch: 'arm64'
+        shortPyVer: '312'
+      py313_x64:
+        pythonVersion: '3.13'
+        architecture: 'x64'
+        shortPyVer: '313'
+      py313_x86:
+        pythonVersion: '3.13'
+        architecture: 'x86'
+        shortPyVer: '313'
+      py313_arm64:
+        pythonVersion: '3.13'
+        architecture: 'x64'  # Use x64 Python for arm64 builds
+        targetArch: 'arm64'
+        shortPyVer: '313'
+
+  steps:  
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '$(pythonVersion)'
-      architecture: ${{ lower(variables['architecture']) == 'arm64' && 'x64' || variables['architecture'] }}
+      architecture: '$(architecture)'
       addToPath: true
-    displayName: 'Use Python $(pythonVersion) ${{ lower(variables["architecture"]) == "arm64" && "x64 (for arm64 cross-compile)" || variables["architecture"] }}'
+    displayName: 'Use Python $(pythonVersion) $(architecture)'
   - script: |
       python -m pip install --upgrade pip
       pip install -r requirements.txt
       pip install cmake pybind11
     displayName: 'Install dependencies'
-
   - script: |
       echo "Working directory: %CD%"
       echo "Build source directory: $(Build.SourcesDirectory)"
@@ -43,9 +75,9 @@ jobs:
       
       cd "$(Build.SourcesDirectory)\mssql_python\pybind"
       dir
-      build.bat $(architecture)
+      build.bat ${{ coalesce(variables.targetArch, variables.architecture) }}
       cd ..\..
-    displayName: 'Build PYD for $(architecture)'
+    displayName: 'Build PYD for ${{ coalesce(variables.targetArch, variables.architecture) }}'
   - task: CopyFiles@2
     inputs:
       SourceFolder: '$(Build.SourcesDirectory)/mssql_python'
