@@ -71,6 +71,7 @@ if("${PYTHON_LIB_DIR}" STREQUAL "None" OR "${PYTHON_LIB_DIR}" STREQUAL "")
     if("${PYTHON_LIBS_EXISTS}" STREQUAL "EXISTS")
         set(PYTHON_LIB_DIR "${PYTHON_EXEC_DIR}/libs")
         message(STATUS "Using Python libs directory: ${PYTHON_LIB_DIR}")
+    endif()
 endif()
 
 # If CUSTOM_PYTHON_LIB_DIR is set, use it
