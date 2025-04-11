@@ -1,99 +1,68 @@
 name: build-pyd-pipeline
 
 variables:
-  pythonVersions: '3.11 3.12 3.13'
-  architectures: 'x64 arm64 x86'
+  pythonVersions: ['3.11', '3.12', '3.13']
+  shortPyVers: ['311', '312', '313']
+  architectures: ['x64', 'x86', 'arm64']
 
-jobs:
-- job: BuildAllPyds
-  strategy:
-    matrix:
-      py311_x64:
-        pythonVersion: '3.11'
-        architecture: 'x64'
-        shortPyVer: '311'
-        targetArch: 'x64'
-      py311_x86:
-        pythonVersion: '3.11'
-        architecture: 'x86'
-        shortPyVer: '311'
-        targetArch: 'x86'
-      py311_arm64:
-        pythonVersion: '3.11'
-        architecture: 'x64'  # host Python
-        shortPyVer: '311'
-        targetArch: 'arm64'
-      py312_x64:
-        pythonVersion: '3.12'
-        architecture: 'x64'
-        shortPyVer: '312'
-        targetArch: 'x64'
-      py312_x86:
-        pythonVersion: '3.12'
-        architecture: 'x86'
-        shortPyVer: '312'
-        targetArch: 'x86'
-      py312_arm64:
-        pythonVersion: '3.12'
-        architecture: 'x64'
-        shortPyVer: '312'
-        targetArch: 'arm64'
-      py313_x64:
-        pythonVersion: '3.13'
-        architecture: 'x64'
-        shortPyVer: '313'
-        targetArch: 'x64'
-      py313_x86:
-        pythonVersion: '3.13'
-        architecture: 'x86'
-        shortPyVer: '313'
-        targetArch: 'x86'
-      py313_arm64:
-        pythonVersion: '3.13'
-        architecture: 'x64'
-        shortPyVer: '313'
-        targetArch: 'arm64'
+stages:
+- stage: Build
+  displayName: Build PYD files
+  jobs:
+  - ${{ each version in variables.pythonVersions }}:
+    - ${{ each arch in variables.architectures }}:
+      - job: Build_${{ replace(version, '.', '') }}_${{ arch }}
+        displayName: Build PYD for Python ${{ version }} (${{ arch }})
+        pool:
+          vmImage: 'windows-latest'
+        variables:
+          shortPyVer: ${{ replace(replace(version, '.', ''), '3', '3') }}
+          targetArch: ${{ arch }}
+          pythonVersion: ${{ version }}
+          architecture: ${{ if eq(arch, 'arm64') }} then 'x64' else arch  # Host Python is x64 for arm64 builds
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              architecture: '$(architecture)'
+              addToPath: true
+            displayName: 'Use Python $(pythonVersion) ($(architecture))'
 
-  pool:
-    vmImage: 'windows-latest'
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+              pip install cmake pybind11
+            displayName: 'Install dependencies'          
+          
+          - script: |
+              echo "Working directory: %CD%"
+              echo "Build source directory: $(Build.SourcesDirectory)"
+              echo "Python version: $(pythonVersion) - $(shortPyVer)"
+              echo "Target Architecture: $(targetArch)"
 
-  steps:
-    - task: UsePythonVersion@0
-      inputs:
-        versionSpec: '$(pythonVersion)'
-        architecture: '$(architecture)'
-        addToPath: true
-      displayName: 'Use Python $(pythonVersion) ($(architecture))'
+              cd "$(Build.SourcesDirectory)\mssql_python\pybind"
+              
+              IF "$(targetArch)" == "arm64" (
+                echo "Using arm64-specific Python library from python_libs\arm64"
+                set PYTHON_LIBRARY_PATH=$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64\python$(shortPyVer).lib
+                call build.bat $(targetArch)
+              ) ELSE (
+                call build.bat $(targetArch)
+              )
+              cd ..\..
+            displayName: 'Build PYD for $(targetArch)'
 
-    - script: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install cmake pybind11
-      displayName: 'Install dependencies'
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+              Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
+              TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pyds\$(shortPyVer)\$(targetArch)'
+            displayName: 'Collect PYD files'
 
-    - script: |
-        echo "Working directory: %CD%"
-        echo "Build source directory: $(Build.SourcesDirectory)"
-        echo "Python version: $(pythonVersion) - $(shortPyVer)"
-        echo "Target Architecture: $(targetArch)"
-
-        cd "$(Build.SourcesDirectory)\mssql_python\pybind"
-        dir
-        call build.bat $(targetArch)
-        cd ..\..
-      displayName: 'Build PYD for $(targetArch)'
-
-    - task: CopyFiles@2
-      inputs:
-        SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
-        Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
-        TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pyds\$(shortPyVer)\$(targetArch)'
-      displayName: 'Collect PYD files'
-
-    - task: PublishBuildArtifacts@1
-      condition: succeededOrFailed()
-      inputs:
-        PathtoPublish: '$(Build.ArtifactStagingDirectory)\all-pyds'
-        ArtifactName: 'mssql-python-all-pyds'
-        publishLocation: 'Container'
-      displayName: 'Publish PYD artifacts'
+          - task: PublishBuildArtifacts@1
+            condition: succeededOrFailed()
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)\all-pyds'
+              ArtifactName: 'mssql-python-all-pyds'
+              publishLocation: 'Container'
+            displayName: 'Publish PYD artifacts'
