@@ -30,7 +30,7 @@ setup(
     url='https://github.com/microsoft/mssql-python',
     packages=find_packages(),
     package_data={
-        # Include PYD and DLL files inside mssql_python
+        # Include PYD and DLL files inside mssql_python, exclude YML files
         'mssql_python': [
             'ddbc_bindings.cp*.pyd',  # Include all PYD files
             'libs/*', 
@@ -44,4 +44,7 @@ setup(
     zip_safe=False,
     # Force binary distribution
     distclass=BinaryDistribution,
+    exclude_package_data={
+        '': ['*.yml', '*.yaml'],  # Exclude YML files
+    },
 )

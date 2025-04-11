@@ -157,15 +157,15 @@ jobs:
       inputs:
         SourceFolder: '$(Build.SourcesDirectory)\dist'
         Contents: '*.whl'
-        TargetFolder: '$(Build.ArtifactStagingDirectory)\wheels\$(shortPyVer)\$(targetArch)'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)\dist'
       displayName: 'Collect wheel package'
 
     # Publish the collected .pyd file(s) as build artifacts
     - task: PublishBuildArtifacts@1
       condition: succeededOrFailed()
       inputs:
-        PathtoPublish: '$(Build.ArtifactStagingDirectory)\all-pyds'
-        ArtifactName: 'mssql-python-all-pyds'
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)\pyds'
+        ArtifactName: 'mssql-python-pyds'
         publishLocation: 'Container'
       displayName: 'Publish all PYDs as artifacts'
     
@@ -173,7 +173,7 @@ jobs:
     - task: PublishBuildArtifacts@1
       condition: succeededOrFailed()
       inputs:
-        PathtoPublish: '$(Build.ArtifactStagingDirectory)\wheels'
-        ArtifactName: 'mssql-python-wheels'
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)\dist'
+        ArtifactName: 'mssql-python-wheels-dist'
         publishLocation: 'Container'
       displayName: 'Publish all wheels as artifacts'
