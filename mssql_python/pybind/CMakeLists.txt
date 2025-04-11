@@ -69,12 +69,12 @@ if("${PYTHON_LIB_DIR}" STREQUAL "None" OR "${PYTHON_LIB_DIR}" STREQUAL "")
         OUTPUT_STRIP_TRAILING_WHITESPACE
     )
     message(STATUS "Python libs directory exists: ${PYTHON_LIBS_EXISTS}")
-    
-    # If the libs directory exists, use that
-    if("${PYTHON_LIBS_EXISTS}" STREQUAL "EXISTS")
-        set(PYTHON_LIB_DIR "${PYTHON_EXEC_DIR}/libs")
-        message(STATUS "Setting PYTHON_LIB_DIR to: ${PYTHON_LIB_DIR}")
-    endif()
+endif()
+
+# If CUSTOM_PYTHON_LIB_DIR is set, use it
+if(DEFINED ENV{CUSTOM_PYTHON_LIB_DIR})
+    set(PYTHON_LIB_DIR $ENV{CUSTOM_PYTHON_LIB_DIR})
+    message(STATUS "Using custom Python library directory: ${PYTHON_LIB_DIR}")
 endif()
 
 execute_process(
