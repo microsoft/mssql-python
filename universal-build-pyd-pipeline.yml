@@ -136,15 +136,17 @@ jobs:
         call build.bat $(targetArch)
 
         cd ..\..
-      displayName: 'Build PYD for $(targetArch)'    
-
-    # Copy the built .pyd file to staging folder for artifacts
+      displayName: 'Build PYD for $(targetArch)'        
+      
+      # Copy the built .pyd file to staging folder for artifacts
     - task: CopyFiles@2
       inputs:
         SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
         Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
         TargetFolder: '$(Build.ArtifactStagingDirectory)\pyds\$(shortPyVer)\$(targetArch)'
-      displayName: 'Collect PYD files'    # Build wheel package for the current architecture
+      displayName: 'Collect PYD files'
+      
+    # Build wheel package for the current architecture
     - script: |
         python -m pip install --upgrade pip
         pip install wheel
@@ -158,7 +160,7 @@ jobs:
         SourceFolder: '$(Build.SourcesDirectory)\dist'
         Contents: '*.whl'
         TargetFolder: '$(Build.ArtifactStagingDirectory)\dist'
-      displayName: 'Collect wheel package'
+      displayName: 'Collect wheel package'    
 
     # Publish the collected .pyd file(s) as build artifacts
     - task: PublishBuildArtifacts@1
