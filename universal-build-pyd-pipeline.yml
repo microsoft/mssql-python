@@ -22,14 +22,13 @@ jobs:
             pythonVersion: ${{ pyVer }}
             architecture: ${{ arch }}
             shortPyVer: ${{ replace(replace(pyVer, '.', ''), '*', '') }}
-
   steps:
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '$(pythonVersion)'
-      architecture: '$(architecture)'
+      architecture: ${{ lower(variables['architecture']) == 'arm64' && 'x64' || variables['architecture'] }}
       addToPath: true
-    displayName: 'Use Python $(pythonVersion) $(architecture)'
+    displayName: 'Use Python $(pythonVersion) ${{ lower(variables["architecture"]) == "arm64" && "x64 (for arm64 cross-compile)" || variables["architecture"] }}'
   - script: |
       python -m pip install --upgrade pip
       pip install -r requirements.txt
