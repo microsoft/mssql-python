@@ -14,46 +14,46 @@ jobs:
   pool:
     vmImage: 'windows-latest'
     strategy:
-    matrix:
-      py311_x64:
-        pythonVersion: '3.11'
-        architecture: 'x64'
-        shortPyVer: '311'
-      py311_x86:
-        pythonVersion: '3.11'
-        architecture: 'x86'
-        shortPyVer: '311'
-      py311_arm64:
-        pythonVersion: '3.11'
-        architecture: 'x64'  # Use x64 Python for arm64 builds
-        targetArch: 'arm64'
-        shortPyVer: '311'
-      py312_x64:
-        pythonVersion: '3.12'
-        architecture: 'x64'
-        shortPyVer: '312'
-      py312_x86:
-        pythonVersion: '3.12'
-        architecture: 'x86'
-        shortPyVer: '312'
-      py312_arm64:
-        pythonVersion: '3.12'
-        architecture: 'x64'  # Use x64 Python for arm64 builds
-        targetArch: 'arm64'
-        shortPyVer: '312'
-      py313_x64:
-        pythonVersion: '3.13'
-        architecture: 'x64'
-        shortPyVer: '313'
-      py313_x86:
-        pythonVersion: '3.13'
-        architecture: 'x86'
-        shortPyVer: '313'
-      py313_arm64:
-        pythonVersion: '3.13'
-        architecture: 'x64'  # Use x64 Python for arm64 builds
-        targetArch: 'arm64'
-        shortPyVer: '313'
+      matrix:
+        py311_x64:
+          pythonVersion: '3.11'
+          architecture: 'x64'
+          shortPyVer: '311'
+        py311_x86:
+          pythonVersion: '3.11'
+          architecture: 'x86'
+          shortPyVer: '311'
+        py311_arm64:
+          pythonVersion: '3.11'
+          architecture: 'x64'  # Use x64 Python for arm64 builds
+          targetArch: 'arm64'
+          shortPyVer: '311'
+        py312_x64:
+          pythonVersion: '3.12'
+          architecture: 'x64'
+          shortPyVer: '312'
+        py312_x86:
+          pythonVersion: '3.12'
+          architecture: 'x86'
+          shortPyVer: '312'
+        py312_arm64:
+          pythonVersion: '3.12'
+          architecture: 'x64'  # Use x64 Python for arm64 builds
+          targetArch: 'arm64'
+          shortPyVer: '312'
+        py313_x64:
+          pythonVersion: '3.13'
+          architecture: 'x64'
+          shortPyVer: '313'
+        py313_x86:
+          pythonVersion: '3.13'
+          architecture: 'x86'
+          shortPyVer: '313'
+        py313_arm64:
+          pythonVersion: '3.13'
+          architecture: 'x64'  # Use x64 Python for arm64 builds
+          targetArch: 'arm64'
+          shortPyVer: '313'
 
   steps:  
   - task: UsePythonVersion@0
