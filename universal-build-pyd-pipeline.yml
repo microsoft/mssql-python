@@ -18,6 +18,40 @@ jobs:
   # Strategy matrix to build all combinations
   strategy:
     matrix:
+      # Python 3.9
+      py39_x64:
+        pythonVersion: '3.9'        # Host Python version
+        shortPyVer: '39'            # Used in filenames like cp39
+        architecture: 'x64'         # Host Python architecture
+        targetArch: 'x64'           # Target architecture to pass to build.bat
+      py39_x86:
+        pythonVersion: '3.9'
+        shortPyVer: '39'
+        architecture: 'x86'
+        targetArch: 'x86'
+      py39_arm64:
+        pythonVersion: '3.9'
+        shortPyVer: '39'
+        architecture: 'x64'         # No arm64 Python, use x64 host
+        targetArch: 'arm64'
+
+      # Python 3.10
+      py310_x64:
+        pythonVersion: '3.10'       # Host Python version
+        shortPyVer: '310'           # Used in filenames like cp310
+        architecture: 'x64'         # Host Python architecture
+        targetArch: 'x64'           # Target architecture to pass to build.bat
+      py310_x86:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        architecture: 'x86'
+        targetArch: 'x86'
+      py310_arm64:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        architecture: 'x64'         # No arm64 Python, use x64 host
+        targetArch: 'arm64'
+
       # Python 3.11
       py311_x64:
         pythonVersion: '3.11'       # Host Python version
