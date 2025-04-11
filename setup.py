@@ -40,7 +40,7 @@ setup(
     },
     include_package_data=True,
     # Requires >= Python 3.9
-    python_requires='>=3.9.*',
+    python_requires='>=3.9',
     zip_safe=False,
     # Force binary distribution
     distclass=BinaryDistribution,
