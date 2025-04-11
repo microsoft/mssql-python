@@ -75,7 +75,8 @@ if("${PYTHON_LIB_DIR}" STREQUAL "None" OR "${PYTHON_LIB_DIR}" STREQUAL "")
 endif()
 
 # If CUSTOM_PYTHON_LIB_DIR is set, use it
-if(DEFINED ENV{CUSTOM_PYTHON_LIB_DIR} AND NOT "${CUSTOM_PYTHON_LIB_DIR}" STREQUAL "None" AND NOT "${CUSTOM_PYTHON_LIB_DIR}" STREQUAL "")
+if(DEFINED ENV{CUSTOM_PYTHON_LIB_DIR} AND NOT EMPTY ENV{CUSTOM_PYTHON_LIB_DIR})
+    # Check if the environment variable is set and not empty
     message(STATUS "CUSTOM_PYTHON_LIB_DIR is set, using it")
     set(PYTHON_LIB_DIR $ENV{CUSTOM_PYTHON_LIB_DIR})
     message(STATUS "Using custom Python library directory: ${PYTHON_LIB_DIR}")
