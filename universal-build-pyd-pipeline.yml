@@ -144,12 +144,11 @@ jobs:
         SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
         Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
         TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pyds\$(shortPyVer)\$(targetArch)'
-      displayName: 'Collect PYD files'
-
-    # Build wheel package for the current architecture
+      displayName: 'Collect PYD files'    # Build wheel package for the current architecture
     - script: |
         python -m pip install --upgrade pip
         pip install wheel
+        set ARCHITECTURE=$(targetArch)
         python setup.py bdist_wheel
       displayName: 'Build wheel package for Python $(pythonVersion) ($(targetArch))'
     

@@ -1,5 +1,23 @@
 import os
+import sys
 from setuptools import setup, find_packages
+from setuptools.dist import Distribution
+
+# Custom distribution to force platform-specific wheel
+class BinaryDistribution(Distribution):
+    def has_ext_modules(self):
+        return True
+
+# Determine the platform tag for the wheel
+if sys.platform.startswith('win'):
+    if os.environ.get('ARCHITECTURE') == 'arm64':
+        platform_tag = 'win_arm64'
+    elif os.environ.get('ARCHITECTURE') == 'x86' or os.environ.get('ARCHITECTURE') == 'win32':
+        platform_tag = 'win32'
+    else:  # Default to x64/amd64
+        platform_tag = 'win_amd64'
+else:
+    platform_tag = 'any'  # Fallback
 
 setup(
     name='mssql-python',
@@ -21,7 +39,9 @@ setup(
         ]
     },
     include_package_data=True,
-    # Requires Python 3.13
-    python_requires='==3.13.*',
+    # Requires >= Python 3.9
+    python_requires='>=3.9.*',
     zip_safe=False,
+    # Force binary distribution
+    distclass=BinaryDistribution,
 )
