@@ -252,8 +252,8 @@ bool LoadRuntimeLibraries(const std::wstring& basePath, const std::wstring& arch
     LOG("Attempting to load runtime libraries from - {}", vcredistPathStr);
     
     // Add the vcredist directory to the DLL search path
-    BOOL addDllDirResult = AddDllDirectory(vcredistPath.c_str());
-    if (!addDllDirResult) {
+    DLL_DIRECTORY_COOKIE dllCookie = AddDllDirectory(vcredistPath.c_str());
+    if (dllCookie == NULL) {    
         DWORD error = GetLastError();
         LOG("Failed to add vcredist directory to DLL search path: {}", error);
         // Continue anyway, as the system may find the DLLs elsewhere
