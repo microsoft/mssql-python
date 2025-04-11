@@ -62,17 +62,20 @@ if("${PYTHON_LIB_DIR}" STREQUAL "None" OR "${PYTHON_LIB_DIR}" STREQUAL "")
     )
     message(STATUS "Python executable directory: ${PYTHON_EXEC_DIR}")
     
-    # Check if the libs directory exists
+    # Check if the libs directory exists, and set PYTHON_LIB_DIR accordingly
     execute_process(
         COMMAND python -c "import sys, os; libs_dir = os.path.join(os.path.dirname(sys.executable), 'libs'); print('EXISTS' if os.path.exists(libs_dir) else 'NOT_EXISTS')"
         OUTPUT_VARIABLE PYTHON_LIBS_EXISTS
         OUTPUT_STRIP_TRAILING_WHITESPACE
     )
-    message(STATUS "Python libs directory exists: ${PYTHON_LIBS_EXISTS}")
+    if("${PYTHON_LIBS_EXISTS}" STREQUAL "EXISTS")
+        set(PYTHON_LIB_DIR "${PYTHON_EXEC_DIR}/libs")
+        message(STATUS "Using Python libs directory: ${PYTHON_LIB_DIR}")
 endif()
 
 # If CUSTOM_PYTHON_LIB_DIR is set, use it
-if(DEFINED ENV{CUSTOM_PYTHON_LIB_DIR})
+if(DEFINED ENV{CUSTOM_PYTHON_LIB_DIR} AND NOT "${CUSTOM_PYTHON_LIB_DIR}" STREQUAL "None" AND NOT "${CUSTOM_PYTHON_LIB_DIR}" STREQUAL "")
+    message(STATUS "CUSTOM_PYTHON_LIB_DIR is set, using it")
     set(PYTHON_LIB_DIR $ENV{CUSTOM_PYTHON_LIB_DIR})
     message(STATUS "Using custom Python library directory: ${PYTHON_LIB_DIR}")
 endif()
