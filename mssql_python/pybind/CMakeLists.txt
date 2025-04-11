@@ -77,14 +77,6 @@ if("${PYTHON_LIB_DIR}" STREQUAL "None" OR "${PYTHON_LIB_DIR}" STREQUAL "")
     endif()
 endif()
 
-# Check if our local libs directory contains the Python library
-set(LOCAL_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs/${WHEEL_ARCH}")
-message(STATUS "Local library directory: ${LOCAL_LIB_DIR}")
-if(EXISTS "${LOCAL_LIB_DIR}/python${PYTHON_VERSION}.lib")
-    message(STATUS "Found Python library in local directory")
-    set(PYTHON_LIB_DIR "${LOCAL_LIB_DIR}")
-endif()
-
 execute_process(
     COMMAND python -c "import pybind11; print(pybind11.get_include())"
     OUTPUT_VARIABLE PYBIND11_INCLUDE_DIR

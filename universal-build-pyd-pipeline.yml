@@ -14,8 +14,6 @@ pool:
 
 jobs:
 - job: BuildPYDs
-  displayName: Build PYD files across all Python versions + architectures
-
   # Strategy matrix to build all combinations
   strategy:
     matrix:
@@ -97,7 +95,7 @@ jobs:
         REM Optional: override lib path if building for ARM64
         if "$(targetArch)"=="arm64" (
           echo Using arm64-specific Python library...
-          set PYTHON_LIBRARY_PATH=$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64\python$(shortPyVer).lib
+          set PYTHON_LIB_DIR=$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64\python$(shortPyVer).lib
         )
 
         call build.bat $(targetArch)
