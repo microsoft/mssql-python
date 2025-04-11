@@ -46,7 +46,8 @@ setup(
     distclass=BinaryDistribution,
     exclude_package_data={
         '': ['*.yml', '*.yaml'],  # Exclude YML files
-        'mssql_python': ['python_libs/*', 'python_libs/**/*'], # Exclude python_libs directory from the package data
-        'mssql_python': ['vcredist/*', 'vcredist/**/*'], # Exclude vcredist directory from the package data
+        'mssql_python': [
+            'libs/*/vcredist/*', 'libs/*/vcredist/**/*',  # Exclude vcredist directories, added here since `'libs/*' is already included`
+        ],
     },
 )
