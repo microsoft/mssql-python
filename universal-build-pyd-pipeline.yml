@@ -138,14 +138,22 @@ jobs:
         cd ..\..
       displayName: 'Build PYD for $(targetArch)'        
       
-      # Copy the built .pyd file to staging folder for artifacts
+    # Copy the built .pyd file to staging folder for artifacts
     - task: CopyFiles@2
       inputs:
         SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
         Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
         TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pyds\$(shortPyVer)\$(targetArch)'
-      displayName: 'Collect PYD files'
-      
+      displayName: 'Place PYD file into artifacts'
+
+    # Copy the msvcp140.dll to mssql_python dir
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)\mssql_python\libs\$(targetArch)\vcredist'
+        Contents: 'msvcp140.dll'
+        TargetFolder: '$(Build.SourcesDirectory)\mssql_python'
+      displayName: 'Place msvcp140.dll into mssql_python package'
+
     # Build wheel package for the current architecture
     - script: |
         python -m pip install --upgrade pip

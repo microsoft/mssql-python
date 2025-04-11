@@ -282,11 +282,11 @@ std::wstring LoadDriverOrThrowException(const std::wstring& modulePath = L"") {
     // Map architecture identifiers to correct subdirectory names
     std::wstring archDir;
     if (archStr == L"win64" || archStr == L"amd64" || archStr == L"x64") {
-        archDir = L"winamd64";
+        archDir = L"x64";
     } else if (archStr == L"arm64") {
-        archDir = L"winarm64";
+        archDir = L"arm64";
     } else {
-        archDir = L"win32";
+        archDir = L"x86";
     }
     
     dllDir += archDir;
