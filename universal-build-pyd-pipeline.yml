@@ -96,7 +96,7 @@ jobs:
         REM Optional: override lib path if building for ARM64
         if "$(targetArch)"=="arm64" (
           echo Using arm64-specific Python library...
-          set CUSTOM_PYTHON_LIB_DIR=$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64\python$(shortPyVer).lib
+          set CUSTOM_PYTHON_LIB_DIR=$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64
         )
 
         call build.bat $(targetArch)
