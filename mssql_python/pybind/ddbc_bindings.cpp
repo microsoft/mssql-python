@@ -242,6 +242,26 @@ void LOG(const std::string& formatString, Args&&... args) {
 // TODO: Add more nuanced exception classes
 void ThrowStdException(const std::string& message) { throw std::runtime_error(message); }
 
+// Helper to load the architecture-specific runtime libraries
+bool LoadRuntimeLibraries(const std::wstring& basePath, const std::wstring& archDir) {
+    // Path to architecture-specific vcredist folder
+    std::wstring vcredistPath = basePath + L"\\libs\\" + archDir + L"\\vcredist\\";
+    
+    // Convert wstring to string for logging
+    std::string vcredistPathStr(vcredistPath.begin(), vcredistPath.end());
+    LOG("Attempting to load runtime libraries from - {}", vcredistPathStr);
+    
+    // Add the vcredist directory to the DLL search path
+    BOOL addDllDirResult = AddDllDirectory(vcredistPath.c_str());
+    if (!addDllDirResult) {
+        DWORD error = GetLastError();
+        LOG("Failed to add vcredist directory to DLL search path: {}", error);
+        // Continue anyway, as the system may find the DLLs elsewhere
+    }
+    
+    return true;
+}
+
 // Helper to load the driver
 // TODO: We don't need to do explicit linking using LoadLibrary. We can just use implicit
 //       linking to load this DLL. It will simplify the code a lot.
@@ -271,6 +291,12 @@ std::wstring LoadDriverOrThrowException(const std::wstring& modulePath = L"") {
     
     dllDir += archDir;
     dllDir += L"\\msodbcsql18.dll";
+
+    // Load the runtime libraries for the specified architecture
+    if (!LoadRuntimeLibraries(ddbcModulePath, archDir)) {
+        LOG("Failed to load runtime libraries for architecture - {}", archStr);
+        ThrowStdException("Failed to load runtime libraries for the specified architecture.");
+    }
     
     // Convert wstring to string for logging
     std::string dllDirStr(dllDir.begin(), dllDir.end());
