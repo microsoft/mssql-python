@@ -136,7 +136,7 @@ jobs:
         call build.bat $(targetArch)
 
         cd ..\..
-      displayName: 'Build PYD for $(targetArch)'
+      displayName: 'Build PYD for $(targetArch)'    
 
     # Copy the built .pyd file to staging folder for artifacts
     - task: CopyFiles@2
@@ -146,6 +146,21 @@ jobs:
         TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pyds\$(shortPyVer)\$(targetArch)'
       displayName: 'Collect PYD files'
 
+    # Build wheel package for the current architecture
+    - script: |
+        python -m pip install --upgrade pip
+        pip install wheel
+        python setup.py bdist_wheel
+      displayName: 'Build wheel package for Python $(pythonVersion) ($(targetArch))'
+    
+    # Copy the wheel file to the artifacts
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)\dist'
+        Contents: '*.whl'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)\wheels\$(shortPyVer)\$(targetArch)'
+      displayName: 'Collect wheel package'
+
     # Publish the collected .pyd file(s) as build artifacts
     - task: PublishBuildArtifacts@1
       condition: succeededOrFailed()
@@ -153,4 +168,13 @@ jobs:
         PathtoPublish: '$(Build.ArtifactStagingDirectory)\all-pyds'
         ArtifactName: 'mssql-python-all-pyds'
         publishLocation: 'Container'
-      displayName: 'Publish PYD artifacts'
+      displayName: 'Publish all PYDs as artifacts'
+    
+    # Publish the collected wheel file(s) as build artifacts
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)\wheels'
+        ArtifactName: 'mssql-python-wheels'
+        publishLocation: 'Container'
+      displayName: 'Publish all wheels as artifacts'

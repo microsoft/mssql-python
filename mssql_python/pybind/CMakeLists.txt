@@ -54,6 +54,14 @@ message(STATUS "Python LIBDIR from sysconfig: ${PYTHON_LIB_DIR}")
 if("${PYTHON_LIB_DIR}" STREQUAL "None" OR "${PYTHON_LIB_DIR}" STREQUAL "")
     message(STATUS "LIBDIR is None or empty, trying alternative methods")
 
+    # Get the directory of the Python executable
+    execute_process(
+        COMMAND python -c "import sys, os; print(os.path.dirname(sys.executable))"
+        OUTPUT_VARIABLE PYTHON_EXEC_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    message(STATUS "Python executable directory: ${PYTHON_EXEC_DIR}")
+
     # Check if the libs directory exists, and set PYTHON_LIB_DIR accordingly
     execute_process(
         COMMAND python -c "import sys, os; libs_dir = os.path.join(os.path.dirname(sys.executable), 'libs'); print('EXISTS' if os.path.exists(libs_dir) else 'NOT_EXISTS')"
