@@ -53,15 +53,7 @@ message(STATUS "Python LIBDIR from sysconfig: ${PYTHON_LIB_DIR}")
 # If LIBDIR is None or empty, try alternative methods
 if("${PYTHON_LIB_DIR}" STREQUAL "None" OR "${PYTHON_LIB_DIR}" STREQUAL "")
     message(STATUS "LIBDIR is None or empty, trying alternative methods")
-    
-    # Try to get the Python executable directory
-    execute_process(
-        COMMAND python -c "import sys, os; print(os.path.dirname(sys.executable))"
-        OUTPUT_VARIABLE PYTHON_EXEC_DIR
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
-    message(STATUS "Python executable directory: ${PYTHON_EXEC_DIR}")
-    
+
     # Check if the libs directory exists, and set PYTHON_LIB_DIR accordingly
     execute_process(
         COMMAND python -c "import sys, os; libs_dir = os.path.join(os.path.dirname(sys.executable), 'libs'); print('EXISTS' if os.path.exists(libs_dir) else 'NOT_EXISTS')"
@@ -70,16 +62,17 @@ if("${PYTHON_LIB_DIR}" STREQUAL "None" OR "${PYTHON_LIB_DIR}" STREQUAL "")
     )
     if("${PYTHON_LIBS_EXISTS}" STREQUAL "EXISTS")
         set(PYTHON_LIB_DIR "${PYTHON_EXEC_DIR}/libs")
-        message(STATUS "Using Python libs directory: ${PYTHON_LIB_DIR}")
+        message(STATUS "Setting Python libs directory from sys.executable: ${PYTHON_LIB_DIR}")
     endif()
 endif()
 
-# If CUSTOM_PYTHON_LIB_DIR is set, use it
-if(DEFINED ENV{CUSTOM_PYTHON_LIB_DIR} AND NOT EMPTY ENV{CUSTOM_PYTHON_LIB_DIR})
-    # Check if the environment variable is set and not empty
+# If CUSTOM_PYTHON_LIB_DIR is set and exists, use it
+if(DEFINED ENV{CUSTOM_PYTHON_LIB_DIR} AND NOT "$ENV{CUSTOM_PYTHON_LIB_DIR}" STREQUAL "" AND NOT "$ENV{CUSTOM_PYTHON_LIB_DIR}" STREQUAL "None")
     message(STATUS "CUSTOM_PYTHON_LIB_DIR is set, using it")
     set(PYTHON_LIB_DIR $ENV{CUSTOM_PYTHON_LIB_DIR})
     message(STATUS "Using custom Python library directory: ${PYTHON_LIB_DIR}")
+else()
+    message(STATUS "Custom Path is not set or empty, finally using: ${PYTHON_LIB_DIR}")
 endif()
 
 execute_process(
