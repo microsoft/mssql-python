@@ -143,7 +143,7 @@ jobs:
       inputs:
         SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
         Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
-        TargetFolder: '$(Build.ArtifactStagingDirectory)\pyds\$(shortPyVer)\$(targetArch)'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pyds\$(shortPyVer)\$(targetArch)'
       displayName: 'Collect PYD files'
       
     # Build wheel package for the current architecture
@@ -166,7 +166,7 @@ jobs:
     - task: PublishBuildArtifacts@1
       condition: succeededOrFailed()
       inputs:
-        PathtoPublish: '$(Build.ArtifactStagingDirectory)\pyds'
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)\all-pyds'
         ArtifactName: 'mssql-python-pyds'
         publishLocation: 'Container'
       displayName: 'Publish all PYDs as artifacts'
