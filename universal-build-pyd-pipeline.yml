@@ -146,14 +146,6 @@ jobs:
         TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pyds\$(shortPyVer)\$(targetArch)'
       displayName: 'Place PYD file into artifacts'
 
-    # Copy the msvcp140.dll to mssql_python dir
-    - task: CopyFiles@2
-      inputs:
-        SourceFolder: '$(Build.SourcesDirectory)\mssql_python\libs\$(targetArch)\vcredist'
-        Contents: 'msvcp140.dll'
-        TargetFolder: '$(Build.SourcesDirectory)\mssql_python'
-      displayName: 'Place msvcp140.dll into mssql_python package'
-
     # Build wheel package for the current architecture
     - script: |
         python -m pip install --upgrade pip

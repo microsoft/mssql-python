@@ -126,6 +126,23 @@ if errorlevel 1 (
 
 echo ===== Build completed for %ARCH% Python %PYTAG% ======
 
+REM Delete other architecture directories that aren't needed
+echo Removing unnecessary architecture directories...
+set LIBS_BASE_DIR=%SOURCE_DIR%..\libs
+if "%ARCH%"=="x64" (
+    if exist "%LIBS_BASE_DIR%\x86" rd /s /q "%LIBS_BASE_DIR%\x86"
+    if exist "%LIBS_BASE_DIR%\arm64" rd /s /q "%LIBS_BASE_DIR%\arm64"
+    echo Kept x64, removed other architectures.
+) else if "%ARCH%"=="x86" (
+    if exist "%LIBS_BASE_DIR%\x64" rd /s /q "%LIBS_BASE_DIR%\x64"
+    if exist "%LIBS_BASE_DIR%\arm64" rd /s /q "%LIBS_BASE_DIR%\arm64"
+    echo Kept x86, removed other architectures.
+) else if "%ARCH%"=="arm64" (
+    if exist "%LIBS_BASE_DIR%\x64" rd /s /q "%LIBS_BASE_DIR%\x64"
+    if exist "%LIBS_BASE_DIR%\x86" rd /s /q "%LIBS_BASE_DIR%\x86"
+    echo Kept arm64, removed other architectures.
+)
+
 REM Copy the built .pyd file to source directory
 set WHEEL_ARCH=%ARCH%
 if "%WHEEL_ARCH%"=="x64" set WHEEL_ARCH=amd64
@@ -137,7 +154,16 @@ set OUTPUT_DIR=%BUILD_DIR%\Release
 
 if exist "%OUTPUT_DIR%\%PYD_NAME%" (
     copy /Y "%OUTPUT_DIR%\%PYD_NAME%" "%SOURCE_DIR%\.."
-    echo Copied %PYD_NAME% to %SOURCE_DIR%
+    echo Copied %PYD_NAME% to %SOURCE_DIR%..
+    
+    REM Copy msvcp140.dll from the libs folder for the appropriate architecture
+    set VCREDIST_DLL_PATH=%SOURCE_DIR%..\libs\%ARCH%\vcredist\msvcp140.dll
+    if exist "%VCREDIST_DLL_PATH%" (
+        copy /Y "%VCREDIST_DLL_PATH%" "%SOURCE_DIR%\.."
+        echo Copied msvcp140.dll from %VCREDIST_DLL_PATH% to %SOURCE_DIR%..
+    ) else (
+        echo [WARNING] Could not find msvcp140.dll at %VCREDIST_DLL_PATH%
+    )
 ) else (
     echo Could not find built .pyd file: %PYD_NAME%
 )
