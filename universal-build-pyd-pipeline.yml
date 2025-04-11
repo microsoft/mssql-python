@@ -1,77 +1,77 @@
+# Pipeline name shown in ADO UI
 name: build-pyd-pipeline
 
-# Trigger on main and dev branches
+# Trigger the pipeline on pushes to these branches
 trigger:
   branches:
     include:
       - main
       - dev
 
-# Use Microsoft-hosted Windows runner
+# Use Microsoft-hosted Windows VM
 pool:
   vmImage: 'windows-latest'
 
-# Define all combinations of Python version + architecture
-# NOTE: architecture = host Python arch (used by UsePythonVersion)
-#       targetArch = architecture passed to build.bat (can be arm64 etc.)
-strategy:
-  matrix:
-    py311_x64:
-      pythonVersion: '3.11'
-      shortPyVer: '311'
-      architecture: 'x64'
-      targetArch: 'x64'
-    py311_x86:
-      pythonVersion: '3.11'
-      shortPyVer: '311'
-      architecture: 'x86'
-      targetArch: 'x86'
-    py311_arm64:
-      pythonVersion: '3.11'
-      shortPyVer: '311'
-      architecture: 'x64'
-      targetArch: 'arm64'
-
-    py312_x64:
-      pythonVersion: '3.12'
-      shortPyVer: '312'
-      architecture: 'x64'
-      targetArch: 'x64'
-    py312_x86:
-      pythonVersion: '3.12'
-      shortPyVer: '312'
-      architecture: 'x86'
-      targetArch: 'x86'
-    py312_arm64:
-      pythonVersion: '3.12'
-      shortPyVer: '312'
-      architecture: 'x64'
-      targetArch: 'arm64'
-
-    py313_x64:
-      pythonVersion: '3.13'
-      shortPyVer: '313'
-      architecture: 'x64'
-      targetArch: 'x64'
-    py313_x86:
-      pythonVersion: '3.13'
-      shortPyVer: '313'
-      architecture: 'x86'
-      targetArch: 'x86'
-    py313_arm64:
-      pythonVersion: '3.13'
-      shortPyVer: '313'
-      architecture: 'x64'
-      targetArch: 'arm64'
-
-# One job reused for all matrix combinations
 jobs:
-- job: BuildPYD
+- job: BuildPYDs
+  displayName: Build PYD files across all Python versions + architectures
+
+  # Strategy matrix to build all combinations
   strategy:
-    matrix: ${{ variables.matrix }}
+    matrix:
+      # Python 3.11
+      py311_x64:
+        pythonVersion: '3.11'       # Host Python version
+        shortPyVer: '311'           # Used in filenames like cp311
+        architecture: 'x64'         # Host Python architecture
+        targetArch: 'x64'           # Target architecture to pass to build.bat
+      py311_x86:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        architecture: 'x86'
+        targetArch: 'x86'
+      py311_arm64:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        architecture: 'x64'         # No arm64 Python, use x64 host
+        targetArch: 'arm64'
+
+      # Python 3.12
+      py312_x64:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        architecture: 'x64'
+        targetArch: 'x64'
+      py312_x86:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        architecture: 'x86'
+        targetArch: 'x86'
+      py312_arm64:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        architecture: 'x64'
+        targetArch: 'arm64'
+
+      # Python 3.13
+      py313_x64:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        architecture: 'x64'
+        targetArch: 'x64'
+      py313_x86:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        architecture: 'x86'
+        targetArch: 'x86'
+      py313_arm64:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        architecture: 'x64'
+        targetArch: 'arm64'
 
   steps:
-    # Use the selected Python version and architecture on runner
+    # Use correct Python version and architecture for the current job
     - task: UsePythonVersion@0
       inputs:
         versionSpec: '$(pythonVersion)'
@@ -79,21 +79,24 @@ jobs:
         addToPath: true
       displayName: 'Use Python $(pythonVersion) ($(architecture))'
 
-    # Install Python + CMake + PyBind11 dependencies
+    # Install required packages: pip, CMake, pybind11
     - script: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install cmake pybind11
       displayName: 'Install dependencies'
 
-    # Run the build.bat with the targetArch
+    # Build the PYD file by calling build.bat
     - script: |
-        echo "Python: $(pythonVersion), Arch: $(architecture), Target: $(targetArch)"
+        echo "Python Version: $(pythonVersion)"
+        echo "Short Tag: $(shortPyVer)"
+        echo "Architecture: Host=$(architecture), Target=$(targetArch)"
+
         cd "$(Build.SourcesDirectory)\mssql_python\pybind"
 
-        REM If targeting ARM64, set lib path manually (optional)
+        REM Optional: override lib path if building for ARM64
         if "$(targetArch)"=="arm64" (
-          echo Using arm64-specific Python library
+          echo Using arm64-specific Python library...
           set PYTHON_LIBRARY_PATH=$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64\python$(shortPyVer).lib
         )
 
@@ -102,7 +105,7 @@ jobs:
         cd ..\..
       displayName: 'Build PYD for $(targetArch)'
 
-    # Copy the generated .pyd file to the artifact staging folder
+    # Copy the built .pyd file to staging folder for artifacts
     - task: CopyFiles@2
       inputs:
         SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
@@ -110,7 +113,7 @@ jobs:
         TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pyds\$(shortPyVer)\$(targetArch)'
       displayName: 'Collect PYD files'
 
-    # Publish all collected artifacts for this build
+    # Publish the collected .pyd file(s) as build artifacts
     - task: PublishBuildArtifacts@1
       condition: succeededOrFailed()
       inputs:
