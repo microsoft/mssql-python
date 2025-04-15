@@ -8,9 +8,9 @@ This README provides instructions to build the DDBC Bindings PYD for various arc
     ```sh
     pip install pybind11
     ```
-2. **Visual Studio Build Tools**: Install Visual Studio with the C++ development tools.
+2. **Visual Studio Build Tools**:
     - Download Visual Studio Build Tools from https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022
-    - During installation, select the "Desktop development with C++" workload, this should also install **CMake**.
+    - During installation, select the **`Desktop development with C++`** workload, this should also install **CMake**.
 
 ## Build Steps
 

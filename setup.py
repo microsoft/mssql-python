@@ -8,14 +8,30 @@ class BinaryDistribution(Distribution):
     def has_ext_modules(self):
         return True
 
-# Determine the platform tag for the wheel
+# Find all packages in the current directory
+packages = find_packages()
+
+# Determine the architecture and platform tag for the wheel
 if sys.platform.startswith('win'):
-    if os.environ.get('ARCHITECTURE') == 'arm64':
-        platform_tag = 'win_arm64'
-    elif os.environ.get('ARCHITECTURE') == 'x86' or os.environ.get('ARCHITECTURE') == 'win32':
+    # Get architecture from environment variable or default to x64
+    arch = os.environ.get('ARCHITECTURE', 'x64')
+    
+    # Normalize architecture values
+    if arch in ['x86', 'win32']:
+        arch = 'x86'
         platform_tag = 'win32'
+    elif arch == 'arm64':
+        platform_tag = 'win_arm64'
     else:  # Default to x64/amd64
+        arch = 'x64'
         platform_tag = 'win_amd64'
+    
+    # Add architecture-specific packages
+    packages.extend([
+        f'mssql_python.libs.{arch}',
+        f'mssql_python.libs.{arch}.1033',
+        f'mssql_python.libs.{arch}.vcredist'
+    ])
 else:
     platform_tag = 'any'  # Fallback
 
@@ -28,7 +44,7 @@ setup(
     author='Microsoft Corporation',
     author_email='pysqldriver@microsoft.com',
     url='https://github.com/microsoft/mssql-python',
-    packages=find_packages(),
+    packages=packages,
     package_data={
         # Include PYD and DLL files inside mssql_python, exclude YML files
         'mssql_python': [
