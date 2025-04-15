@@ -109,8 +109,8 @@ if errorlevel 1 (
 )
 
 REM Now invoke CMake with correct source path (options first, path last!)
-echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% %SOURCE_DIR%
-cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% %SOURCE_DIR%
+echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR%"
+cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR%"
 echo [DIAGNOSTIC] CMake configure exit code: %errorlevel%
 if errorlevel 1 (
     echo [ERROR] CMake configuration failed
@@ -127,22 +127,9 @@ if errorlevel 1 (
 
 echo ===== Build completed for %ARCH% Python %PYTAG% ======
 
-REM Delete other architecture directories that aren't needed
-echo Removing unnecessary architecture directories...
-set LIBS_BASE_DIR=%SOURCE_DIR%..\libs
-if "%ARCH%"=="x64" (
-    if exist "%LIBS_BASE_DIR%\x86" rd /s /q "%LIBS_BASE_DIR%\x86"
-    if exist "%LIBS_BASE_DIR%\arm64" rd /s /q "%LIBS_BASE_DIR%\arm64"
-    echo Kept x64, removed other architectures.
-) else if "%ARCH%"=="x86" (
-    if exist "%LIBS_BASE_DIR%\x64" rd /s /q "%LIBS_BASE_DIR%\x64"
-    if exist "%LIBS_BASE_DIR%\arm64" rd /s /q "%LIBS_BASE_DIR%\arm64"
-    echo Kept x86, removed other architectures.
-) else if "%ARCH%"=="arm64" (
-    if exist "%LIBS_BASE_DIR%\x64" rd /s /q "%LIBS_BASE_DIR%\x64"
-    if exist "%LIBS_BASE_DIR%\x86" rd /s /q "%LIBS_BASE_DIR%\x86"
-    echo Kept arm64, removed other architectures.
-)
+@REM REM Call the external script to preserve only the target architecture odbc libs
+@REM REM This is commented out to avoid running it automatically. Uncomment if needed.
+@REM call "%SOURCE_DIR%keep_single_arch.bat" "%ARCH%"
 
 REM Copy the built .pyd file to source directory
 set WHEEL_ARCH=%ARCH%
@@ -156,18 +143,27 @@ set OUTPUT_DIR=%BUILD_DIR%\Release
 if exist "%OUTPUT_DIR%\%PYD_NAME%" (
     copy /Y "%OUTPUT_DIR%\%PYD_NAME%" "%SOURCE_DIR%\.."
     echo Copied %PYD_NAME% to %SOURCE_DIR%..
-    
-    REM Copy msvcp140.dll from the libs folder for the appropriate architecture
-    set VCREDIST_DLL_PATH="%SOURCE_DIR%\..\libs\%ARCH%\vcredist\msvcp140.dll"
-    echo [DIAGNOSTIC] Looking for msvcp140.dll at %VCREDIST_DLL_PATH%
-    if exist "%VCREDIST_DLL_PATH%" (
-        copy /Y "%VCREDIST_DLL_PATH%" "%SOURCE_DIR%\.."
-        echo Copied msvcp140.dll from %VCREDIST_DLL_PATH% to "%SOURCE_DIR%\.."
+
+    setlocal enabledelayedexpansion
+    for %%I in ("%SOURCE_DIR%..") do (
+        set PARENT_DIR=%%~fI
+    )
+    echo Parent is: !PARENT_DIR!
+
+    set VCREDIST_DLL_PATH=!PARENT_DIR!\libs\!ARCH!\vcredist\msvcp140.dll
+    echo [DIAGNOSTIC] Looking for msvcp140.dll at "!VCREDIST_DLL_PATH!"
+
+    if exist "!VCREDIST_DLL_PATH!" (
+        copy /Y "!VCREDIST_DLL_PATH!" "%SOURCE_DIR%\.."
+        echo Copied msvcp140.dll from !VCREDIST_DLL_PATH! to "%SOURCE_DIR%\.."
     ) else (
-        echo [WARNING] Could not find msvcp140.dll at %VCREDIST_DLL_PATH%
+        echo [ERROR] Could not find msvcp140.dll at "!VCREDIST_DLL_PATH!"
+        exit /b 1
     )
 ) else (
-    echo Could not find built .pyd file: %PYD_NAME%
+    echo [ERROR] Could not find built .pyd file: %PYD_NAME%
+    REM Exit with an error code here if the .pyd file is not found
+    exit /b 1
 )
 
 endlocal

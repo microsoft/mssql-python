@@ -134,6 +134,7 @@ jobs:
         )
 
         call build.bat $(targetArch)
+        call keep_single_arch.bat $(targetArch)
 
         cd ..\..
       displayName: 'Build PYD for $(targetArch)'        
