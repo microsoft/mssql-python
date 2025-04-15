@@ -1,9 +1,10 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM Usage: build.bat [ARCH]
+REM Usage: build.bat [ARCH], If ARCH is not specified, it defaults to x64.
 set ARCH=%1
 if "%ARCH%"=="" set ARCH=x64
+echo [DIAGNOSTIC] Target Architecture set to: %ARCH%
 
 REM Clean up main build directory if it exists
 echo Checking for main build directory...
@@ -157,10 +158,11 @@ if exist "%OUTPUT_DIR%\%PYD_NAME%" (
     echo Copied %PYD_NAME% to %SOURCE_DIR%..
     
     REM Copy msvcp140.dll from the libs folder for the appropriate architecture
-    set VCREDIST_DLL_PATH=%SOURCE_DIR%..\libs\%ARCH%\vcredist\msvcp140.dll
+    set VCREDIST_DLL_PATH="%SOURCE_DIR%\..\libs\%ARCH%\vcredist\msvcp140.dll"
+    echo [DIAGNOSTIC] Looking for msvcp140.dll at %VCREDIST_DLL_PATH%
     if exist "%VCREDIST_DLL_PATH%" (
         copy /Y "%VCREDIST_DLL_PATH%" "%SOURCE_DIR%\.."
-        echo Copied msvcp140.dll from %VCREDIST_DLL_PATH% to %SOURCE_DIR%..
+        echo Copied msvcp140.dll from %VCREDIST_DLL_PATH% to "%SOURCE_DIR%\.."
     ) else (
         echo [WARNING] Could not find msvcp140.dll at %VCREDIST_DLL_PATH%
     )
