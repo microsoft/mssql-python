@@ -68,7 +68,7 @@ for %%p in (
     echo [DIAGNOSTIC] Checking path: %%p
     if exist %%p (
         set VS_PATH=%%p
-        echo [DIAGNOSTIC] Found Visual Studio at: %%p
+        echo [SUCCESS] Found Visual Studio at: %%p
         goto vs_found
     )
 )
@@ -85,7 +85,7 @@ if exist %VSWHERE_PATH% (
         set VS_DIR=%%i
         if exist "%%i\VC\Auxiliary\Build\vcvarsall.bat" (
             set VS_PATH="%%i\VC\Auxiliary\Build\vcvarsall.bat"
-            echo [DIAGNOSTIC] Found Visual Studio using vswhere at: %%i\VC\Auxiliary\Build\vcvarsall.bat
+            echo [SUCCESS] Found Visual Studio using vswhere at: %%i\VC\Auxiliary\Build\vcvarsall.bat
             goto vs_found
         )
     )
@@ -109,8 +109,8 @@ if errorlevel 1 (
 )
 
 REM Now invoke CMake with correct source path (options first, path last!)
-echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR%"
-cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR%"
+echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
+cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
 echo [DIAGNOSTIC] CMake configure exit code: %errorlevel%
 if errorlevel 1 (
     echo [ERROR] CMake configuration failed
@@ -124,7 +124,7 @@ if errorlevel 1 (
     echo [ERROR] CMake build failed
     exit /b 1
 )
-
+echo [SUCCESS] Build completed successfully.
 echo ===== Build completed for %ARCH% Python %PYTAG% ======
 
 @REM REM Call the external script to preserve only the target architecture odbc libs
@@ -142,20 +142,20 @@ set OUTPUT_DIR=%BUILD_DIR%\Release
 
 if exist "%OUTPUT_DIR%\%PYD_NAME%" (
     copy /Y "%OUTPUT_DIR%\%PYD_NAME%" "%SOURCE_DIR%\.."
-    echo Copied %PYD_NAME% to %SOURCE_DIR%..
+    echo [SUCCESS] Copied %PYD_NAME% to %SOURCE_DIR%..
 
     setlocal enabledelayedexpansion
     for %%I in ("%SOURCE_DIR%..") do (
         set PARENT_DIR=%%~fI
     )
-    echo Parent is: !PARENT_DIR!
+    echo [DIAGNOSTIC] Parent is: !PARENT_DIR!
 
     set VCREDIST_DLL_PATH=!PARENT_DIR!\libs\!ARCH!\vcredist\msvcp140.dll
     echo [DIAGNOSTIC] Looking for msvcp140.dll at "!VCREDIST_DLL_PATH!"
 
     if exist "!VCREDIST_DLL_PATH!" (
         copy /Y "!VCREDIST_DLL_PATH!" "%SOURCE_DIR%\.."
-        echo Copied msvcp140.dll from !VCREDIST_DLL_PATH! to "%SOURCE_DIR%\.."
+        echo [SUCCESS] Copied msvcp140.dll from !VCREDIST_DLL_PATH! to "%SOURCE_DIR%\.."
     ) else (
         echo [ERROR] Could not find msvcp140.dll at "!VCREDIST_DLL_PATH!"
         exit /b 1
