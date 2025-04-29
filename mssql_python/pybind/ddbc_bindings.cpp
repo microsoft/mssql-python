@@ -1978,3 +1978,4 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLDisconnect", &SQLDisconnect_wrap, "Disconnect from a data source");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
 }
+
