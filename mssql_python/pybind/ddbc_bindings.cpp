@@ -11,11 +11,11 @@
 #include <iostream>
 #include <string>
 #include <utility>  // std::forward
-// Include cstring for strnlen
-#include <cstring>
+
 // Replace std::filesystem usage with Windows-specific headers
 #include <shlwapi.h>
 #pragma comment(lib, "shlwapi.lib")
+
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
@@ -44,11 +44,7 @@ using namespace pybind11::literals;
 
 // Architecture-specific defines
 #ifndef ARCHITECTURE
-  #if defined(_WIN64)
-    #define ARCHITECTURE "x64"
-  #else
-    #define ARCHITECTURE "x86"
-  #endif
+#define ARCHITECTURE "win64"  // Default to win64 if not defined during compilation
 #endif
 
 //-------------------------------------------------------------------------------------------------
@@ -249,37 +245,38 @@ void ThrowStdException(const std::string& message) { throw std::runtime_error(me
 // TODO: We don't need to do explicit linking using LoadLibrary. We can just use implicit
 //       linking to load this DLL. It will simplify the code a lot.
 std::wstring LoadDriverOrThrowException(const std::wstring& modulePath = L"") {
-    std::cout << "[DDBC] Entered LoadDriverOrThrowException" << std::endl;
     std::wstring ddbcModulePath = modulePath;
     if (ddbcModulePath.empty()) {
-        std::cout << "[DDBC] Getting module directory..." << std::endl;
+        // Get the module path if not provided
         std::string path = GetModuleDirectory();
-        std::cout << "[DDBC] Module directory: " << path << std::endl;
         ddbcModulePath = std::wstring(path.begin(), path.end());
     }
 
     std::wstring dllDir = ddbcModulePath;
     dllDir += L"\\libs\\";
-    std::cout << "[DDBC] dllDir after libs: " << std::string(dllDir.begin(), dllDir.end()) << std::endl;
+    
+    // Convert ARCHITECTURE macro to wstring
     std::wstring archStr(ARCHITECTURE, ARCHITECTURE + strlen(ARCHITECTURE));
-    std::cout << "[DDBC] ARCHITECTURE macro at runtime: " << std::string(archStr.begin(), archStr.end()) << std::endl;
+    
+    // Map architecture identifiers to correct subdirectory names
     std::wstring archDir;
-    if (archStr == L"x64" || archStr == L"win64" || archStr == L"amd64") {
+    if (archStr == L"win64" || archStr == L"amd64" || archStr == L"x64") {
         archDir = L"x64";
-    } else if (archStr == L"x86" || archStr == L"win32" || archStr == L"i386") {
-        archDir = L"x86";
     } else if (archStr == L"arm64") {
         archDir = L"arm64";
     } else {
-        archDir = archStr;
+        archDir = L"x86";
     }
     dllDir += archDir;
     dllDir += L"\\msodbcsql18.dll";
+    
+    // Convert wstring to string for logging
     std::string dllDirStr(dllDir.begin(), dllDir.end());
-    std::cout << "[DDBC] Attempting to load driver from: " << dllDirStr << std::endl;
+    LOG("Attempting to load driver from - {}", dllDirStr);
+    
     HMODULE hModule = LoadLibraryW(dllDir.c_str());
     if (!hModule) {
-        std::cout << "[DDBC] LoadLibraryW failed!" << std::endl;
+        // Failed to load the DLL, get the error message
         DWORD error = GetLastError();
         char* messageBuffer = nullptr;
         size_t size = FormatMessageA(
@@ -293,76 +290,51 @@ std::wstring LoadDriverOrThrowException(const std::wstring& modulePath = L"") {
         );
         std::string errorMessage = messageBuffer ? std::string(messageBuffer, size) : "Unknown error";
         LocalFree(messageBuffer);
-        std::cout << "[DDBC] Failed to load the driver with error code: " << error << " - " << errorMessage << std::endl;
+
+        // Log the error message        
+        LOG("Failed to load the driver with error code: {} - {}", error, errorMessage);
         ThrowStdException("Failed to load the ODBC driver. Please check that it is installed correctly.");
     }
-    std::cout << "[DDBC] DLL loaded successfully!" << std::endl;
+
     // If we got here, we've successfully loaded the DLL. Now get the function pointers.
     // Environment and handle function loading
     SQLAllocHandle_ptr = (SQLAllocHandleFunc)GetProcAddress(hModule, "SQLAllocHandle");
-    std::cout << "[DDBC] SQLAllocHandle_ptr: " << (void*)SQLAllocHandle_ptr << std::endl;
     SQLSetEnvAttr_ptr = (SQLSetEnvAttrFunc)GetProcAddress(hModule, "SQLSetEnvAttr");
-    std::cout << "[DDBC] SQLSetEnvAttr_ptr: " << (void*)SQLSetEnvAttr_ptr << std::endl;
     SQLSetConnectAttr_ptr = (SQLSetConnectAttrFunc)GetProcAddress(hModule, "SQLSetConnectAttrW");
-    std::cout << "[DDBC] SQLSetConnectAttr_ptr: " << (void*)SQLSetConnectAttr_ptr << std::endl;
     SQLSetStmtAttr_ptr = (SQLSetStmtAttrFunc)GetProcAddress(hModule, "SQLSetStmtAttrW");
-    std::cout << "[DDBC] SQLSetStmtAttr_ptr: " << (void*)SQLSetStmtAttr_ptr << std::endl;
     SQLGetConnectAttr_ptr = (SQLGetConnectAttrFunc)GetProcAddress(hModule, "SQLGetConnectAttrW");
-    std::cout << "[DDBC] SQLGetConnectAttr_ptr: " << (void*)SQLGetConnectAttr_ptr << std::endl;
 
     // Connection and statement function loading
     SQLDriverConnect_ptr = (SQLDriverConnectFunc)GetProcAddress(hModule, "SQLDriverConnectW");
-    std::cout << "[DDBC] SQLDriverConnect_ptr: " << (void*)SQLDriverConnect_ptr << std::endl;
     SQLExecDirect_ptr = (SQLExecDirectFunc)GetProcAddress(hModule, "SQLExecDirectW");
-    std::cout << "[DDBC] SQLExecDirect_ptr: " << (void*)SQLExecDirect_ptr << std::endl;
     SQLPrepare_ptr = (SQLPrepareFunc)GetProcAddress(hModule, "SQLPrepareW");
-    std::cout << "[DDBC] SQLPrepare_ptr: " << (void*)SQLPrepare_ptr << std::endl;
     SQLBindParameter_ptr = (SQLBindParameterFunc)GetProcAddress(hModule, "SQLBindParameter");
-    std::cout << "[DDBC] SQLBindParameter_ptr: " << (void*)SQLBindParameter_ptr << std::endl;
     SQLExecute_ptr = (SQLExecuteFunc)GetProcAddress(hModule, "SQLExecute");
-    std::cout << "[DDBC] SQLExecute_ptr: " << (void*)SQLExecute_ptr << std::endl;
     SQLRowCount_ptr = (SQLRowCountFunc)GetProcAddress(hModule, "SQLRowCount");
-    std::cout << "[DDBC] SQLRowCount_ptr: " << (void*)SQLRowCount_ptr << std::endl;
     SQLGetStmtAttr_ptr = (SQLGetStmtAttrFunc)GetProcAddress(hModule, "SQLGetStmtAttrW");
-    std::cout << "[DDBC] SQLGetStmtAttr_ptr: " << (void*)SQLGetStmtAttr_ptr << std::endl;
     SQLSetDescField_ptr = (SQLSetDescFieldFunc)GetProcAddress(hModule, "SQLSetDescFieldW");
-    std::cout << "[DDBC] SQLSetDescField_ptr: " << (void*)SQLSetDescField_ptr << std::endl;
 
     // Fetch and data retrieval function loading
     SQLFetch_ptr = (SQLFetchFunc)GetProcAddress(hModule, "SQLFetch");
-    std::cout << "[DDBC] SQLFetch_ptr: " << (void*)SQLFetch_ptr << std::endl;
     SQLFetchScroll_ptr = (SQLFetchScrollFunc)GetProcAddress(hModule, "SQLFetchScroll");
-    std::cout << "[DDBC] SQLFetchScroll_ptr: " << (void*)SQLFetchScroll_ptr << std::endl;
     SQLGetData_ptr = (SQLGetDataFunc)GetProcAddress(hModule, "SQLGetData");
-    std::cout << "[DDBC] SQLGetData_ptr: " << (void*)SQLGetData_ptr << std::endl;
     SQLNumResultCols_ptr = (SQLNumResultColsFunc)GetProcAddress(hModule, "SQLNumResultCols");
-    std::cout << "[DDBC] SQLNumResultCols_ptr: " << (void*)SQLNumResultCols_ptr << std::endl;
     SQLBindCol_ptr = (SQLBindColFunc)GetProcAddress(hModule, "SQLBindCol");
-    std::cout << "[DDBC] SQLBindCol_ptr: " << (void*)SQLBindCol_ptr << std::endl;
     SQLDescribeCol_ptr = (SQLDescribeColFunc)GetProcAddress(hModule, "SQLDescribeColW");
-    std::cout << "[DDBC] SQLDescribeCol_ptr: " << (void*)SQLDescribeCol_ptr << std::endl;
     SQLMoreResults_ptr = (SQLMoreResultsFunc)GetProcAddress(hModule, "SQLMoreResults");
-    std::cout << "[DDBC] SQLMoreResults_ptr: " << (void*)SQLMoreResults_ptr << std::endl;
     SQLColAttribute_ptr = (SQLColAttributeFunc)GetProcAddress(hModule, "SQLColAttributeW");
-    std::cout << "[DDBC] SQLColAttribute_ptr: " << (void*)SQLColAttribute_ptr << std::endl;
 
     // Transaction functions loading
     SQLEndTran_ptr = (SQLEndTranFunc)GetProcAddress(hModule, "SQLEndTran");
-    std::cout << "[DDBC] SQLEndTran_ptr: " << (void*)SQLEndTran_ptr << std::endl;
 
     // Disconnect and free functions loading
     SQLFreeHandle_ptr = (SQLFreeHandleFunc)GetProcAddress(hModule, "SQLFreeHandle");
-    std::cout << "[DDBC] SQLFreeHandle_ptr: " << (void*)SQLFreeHandle_ptr << std::endl;
     SQLDisconnect_ptr = (SQLDisconnectFunc)GetProcAddress(hModule, "SQLDisconnect");
-    std::cout << "[DDBC] SQLDisconnect_ptr: " << (void*)SQLDisconnect_ptr << std::endl;
     SQLFreeStmt_ptr = (SQLFreeStmtFunc)GetProcAddress(hModule, "SQLFreeStmt");
-    std::cout << "[DDBC] SQLFreeStmt_ptr: " << (void*)SQLFreeStmt_ptr << std::endl;
 
     // Diagnostic record function Loading
     SQLGetDiagRec_ptr = (SQLGetDiagRecFunc)GetProcAddress(hModule, "SQLGetDiagRecW");
-    std::cout << "[DDBC] SQLGetDiagRec_ptr: " << (void*)SQLGetDiagRec_ptr << std::endl;
 
-    std::cout << "[DDBC] All function pointers loaded. Checking success..." << std::endl;
     bool success = SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
                    SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
                    SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
@@ -371,14 +343,13 @@ std::wstring LoadDriverOrThrowException(const std::wstring& modulePath = L"") {
                    SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr &&
                    SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr &&
                    SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
-    std::cout << "[DDBC] Success value: " << success << std::endl;
+
     if (!success) {
-        std::cout << "[DDBC] Failed to load required function pointers from driver!" << std::endl;
         LOG("Failed to load required function pointers from driver - {}", dllDirStr);
         ThrowStdException("Failed to load required function pointers from driver");
     }
-    std::cout << "[DDBC] Successfully loaded function pointers from driver!" << std::endl;
     LOG("Successfully loaded function pointers from driver");
+    
     return dllDir;
 }
 
@@ -700,93 +671,52 @@ void HandleZeroColumnSizeAtFetch(SQLULEN& columnSize) {
 
 // Wrap SQLAllocHandle
 SQLRETURN SQLAllocHandle_wrap(SQLSMALLINT HandleType, intptr_t InputHandle, intptr_t OutputHandle) {
-    std::cout << "[DDBC] Entered SQLAllocHandle_wrap" << std::endl;
-    std::cout << "[DDBC] HandleType: " << HandleType << std::endl;
-    std::cout << "[DDBC] InputHandle: " << InputHandle << std::endl;
-    std::cout << "[DDBC] OutputHandle: " << OutputHandle << std::endl;
-    std::cout << "[DDBC] About to call LOG for Allocate SQL Handle" << std::endl;
     LOG("Allocate SQL Handle");
-    std::cout << "[DDBC] After LOG, checking SQLAllocHandle_ptr" << std::endl;
     if (!SQLAllocHandle_ptr) {
-        std::cout << "[DDBC] SQLAllocHandle_ptr is null, calling LoadDriverOrThrowException" << std::endl;
         LoadDriverOrThrowException();
-        std::cout << "[DDBC] Returned from LoadDriverOrThrowException" << std::endl;
     }
-    std::cout << "[DDBC] About to reinterpret_cast OutputHandle" << std::endl;
+
     SQLHANDLE* pOutputHandle = reinterpret_cast<SQLHANDLE*>(OutputHandle);
-    std::cout << "[DDBC] About to call SQLAllocHandle_ptr" << std::endl;
-    SQLRETURN ret = SQLAllocHandle_ptr(HandleType, reinterpret_cast<SQLHANDLE>(InputHandle), pOutputHandle);
-    std::cout << "[DDBC] SQLAllocHandle_ptr returned: " << ret << std::endl;
-    return ret;
+    return SQLAllocHandle_ptr(HandleType, reinterpret_cast<SQLHANDLE>(InputHandle), pOutputHandle);
 }
 
 // Wrap SQLSetEnvAttr
 SQLRETURN SQLSetEnvAttr_wrap(intptr_t EnvHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
                              SQLINTEGER StringLength) {
-    std::cout << "[DDBC] Entered SQLSetEnvAttr_wrap" << std::endl;
-    std::cout << "[DDBC] EnvHandle: " << EnvHandle << std::endl;
-    std::cout << "[DDBC] Attribute: " << Attribute << std::endl;
-    std::cout << "[DDBC] ValuePtr: " << ValuePtr << std::endl;
-    std::cout << "[DDBC] StringLength: " << StringLength << std::endl;
-    std::cout << "[DDBC] About to call LOG for Set SQL environment Attribute" << std::endl;
     LOG("Set SQL environment Attribute");
-    std::cout << "[DDBC] After LOG, checking SQLSetEnvAttr_ptr" << std::endl;
     if (!SQLSetEnvAttr_ptr) {
-        std::cout << "[DDBC] SQLSetEnvAttr_ptr is null, calling LoadDriverOrThrowException" << std::endl;
         LoadDriverOrThrowException();
-        std::cout << "[DDBC] Returned from LoadDriverOrThrowException" << std::endl;
     }
-    std::cout << "[DDBC] About to call SQLSetEnvAttr_ptr" << std::endl;
-    SQLRETURN ret = SQLSetEnvAttr_ptr(reinterpret_cast<SQLHANDLE>(EnvHandle), Attribute,
+
+    // TODO: Does ValuePtr need to be converted from Python to C++ object?
+    return SQLSetEnvAttr_ptr(reinterpret_cast<SQLHANDLE>(EnvHandle), Attribute,
                              reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
-    std::cout << "[DDBC] SQLSetEnvAttr_ptr returned: " << ret << std::endl;
-    return ret;
 }
 
 // Wrap SQLSetConnectAttr
 SQLRETURN SQLSetConnectAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
                                  SQLINTEGER StringLength) {
-    std::cout << "[DDBC] Entered SQLSetConnectAttr_wrap" << std::endl;
-    std::cout << "[DDBC] ConnectionHandle: " << ConnectionHandle << std::endl;
-    std::cout << "[DDBC] Attribute: " << Attribute << std::endl;
-    std::cout << "[DDBC] ValuePtr: " << ValuePtr << std::endl;
-    std::cout << "[DDBC] StringLength: " << StringLength << std::endl;
-    std::cout << "[DDBC] About to call LOG for Set SQL Connection Attribute" << std::endl;
     LOG("Set SQL Connection Attribute");
-    std::cout << "[DDBC] After LOG, checking SQLSetConnectAttr_ptr" << std::endl;
     if (!SQLSetConnectAttr_ptr) {
-        std::cout << "[DDBC] SQLSetConnectAttr_ptr is null, calling LoadDriverOrThrowException" << std::endl;
         LoadDriverOrThrowException();
-        std::cout << "[DDBC] Returned from LoadDriverOrThrowException" << std::endl;
     }
-    std::cout << "[DDBC] About to call SQLSetConnectAttr_ptr" << std::endl;
-    SQLRETURN ret = SQLSetConnectAttr_ptr(reinterpret_cast<SQLHDBC>(ConnectionHandle), Attribute,
+
+    // TODO: Does ValuePtr need to be converted from Python to C++ object?
+    return SQLSetConnectAttr_ptr(reinterpret_cast<SQLHDBC>(ConnectionHandle), Attribute,
                                  reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
-    std::cout << "[DDBC] SQLSetConnectAttr_ptr returned: " << ret << std::endl;
-    return ret;
 }
 
 // Wrap SQLSetStmtAttr
-SQLRETURN SQLSetStmtAttr_wrap(intptr_t StatementHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
+SQLRETURN SQLSetStmtAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
                               SQLINTEGER StringLength) {
-    std::cout << "[DDBC] Entered SQLSetStmtAttr_wrap" << std::endl;
-    std::cout << "[DDBC] StatementHandle: " << StatementHandle << std::endl;
-    std::cout << "[DDBC] Attribute: " << Attribute << std::endl;
-    std::cout << "[DDBC] ValuePtr: " << ValuePtr << std::endl;
-    std::cout << "[DDBC] StringLength: " << StringLength << std::endl;
-    std::cout << "[DDBC] About to call LOG for Set SQL Statement Attribute" << std::endl;
     LOG("Set SQL Statement Attribute");
-    std::cout << "[DDBC] After LOG, checking SQLSetStmtAttr_ptr" << std::endl;
-    if (!SQLSetStmtAttr_ptr) {
-        std::cout << "[DDBC] SQLSetStmtAttr_ptr is null, calling LoadDriverOrThrowException" << std::endl;
+    if (!SQLSetConnectAttr_ptr) {
         LoadDriverOrThrowException();
-        std::cout << "[DDBC] Returned from LoadDriverOrThrowException" << std::endl;
     }
-    std::cout << "[DDBC] About to call SQLSetStmtAttr_ptr" << std::endl;
-    SQLRETURN ret = SQLSetStmtAttr_ptr(reinterpret_cast<SQLHSTMT>(StatementHandle), Attribute,
+
+    // TODO: Does ValuePtr need to be converted from Python to C++ object?
+    return SQLSetStmtAttr_ptr(reinterpret_cast<SQLHSTMT>(ConnectionHandle), Attribute,
                               reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
-    std::cout << "[DDBC] SQLSetStmtAttr_ptr returned: " << ret << std::endl;
-    return ret;
 }
 
 // Wrap SQLGetConnectionAttrA
@@ -841,45 +771,25 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, intptr_t handle, SQLRETURN 
 // Wrap SQLDriverConnect
 SQLRETURN SQLDriverConnect_wrap(intptr_t ConnectionHandle, intptr_t WindowHandle,
                                 const std::wstring& ConnectionString) {
-    std::cout << "[DDBC] Entered SQLDriverConnect_wrap" << std::endl;
-    std::cout << "[DDBC] ConnectionHandle: " << ConnectionHandle << std::endl;
-    std::cout << "[DDBC] WindowHandle: " << WindowHandle << std::endl;
-    std::wcout << L"[DDBC] ConnectionString: " << ConnectionString << std::endl;
-    std::cout << "[DDBC] About to call LOG for Driver Connect to MSSQL" << std::endl;
     LOG("Driver Connect to MSSQL");
-    std::cout << "[DDBC] After LOG, checking SQLDriverConnect_ptr" << std::endl;
     if (!SQLDriverConnect_ptr) {
-        std::cout << "[DDBC] SQLDriverConnect_ptr is null, calling LoadDriverOrThrowException" << std::endl;
         LoadDriverOrThrowException();
-        std::cout << "[DDBC] Returned from LoadDriverOrThrowException" << std::endl;
     }
-    std::cout << "[DDBC] About to call SQLDriverConnect_ptr" << std::endl;
-    SQLRETURN ret = SQLDriverConnect_ptr(reinterpret_cast<SQLHANDLE>(ConnectionHandle),
+    return SQLDriverConnect_ptr(reinterpret_cast<SQLHANDLE>(ConnectionHandle),
                                 reinterpret_cast<SQLHWND>(WindowHandle),
                                 const_cast<SQLWCHAR*>(ConnectionString.c_str()), SQL_NTS, nullptr,
                                 0, nullptr, SQL_DRIVER_NOPROMPT);
-    std::cout << "[DDBC] SQLDriverConnect_ptr returned: " << ret << std::endl;
-    return ret;
 }
 
 // Wrap SQLExecDirect
 SQLRETURN SQLExecDirect_wrap(intptr_t StatementHandle, const std::wstring& Query) {
-    std::cout << "[DDBC] Entered SQLExecDirect_wrap" << std::endl;
-    std::cout << "[DDBC] StatementHandle: " << StatementHandle << std::endl;
-    std::wcout << L"[DDBC] Query: " << Query << std::endl;
-    std::cout << "[DDBC] About to call LOG for Execute SQL query directly" << std::endl;
     LOG("Execute SQL query directly - {}", Query.c_str());
-    std::cout << "[DDBC] After LOG, checking SQLExecDirect_ptr" << std::endl;
     if (!SQLExecDirect_ptr) {
-        std::cout << "[DDBC] SQLExecDirect_ptr is null, calling LoadDriverOrThrowException" << std::endl;
         LoadDriverOrThrowException();
-        std::cout << "[DDBC] Returned from LoadDriverOrThrowException" << std::endl;
     }
-    std::cout << "[DDBC] About to call SQLExecDirect_ptr" << std::endl;
-    SQLRETURN ret = SQLExecDirect_ptr(reinterpret_cast<SQLHANDLE>(StatementHandle),
+
+    return SQLExecDirect_ptr(reinterpret_cast<SQLHANDLE>(StatementHandle),
                              const_cast<SQLWCHAR*>(Query.c_str()), SQL_NTS);
-    std::cout << "[DDBC] SQLExecDirect_ptr returned: " << ret << std::endl;
-    return ret;
 }
 
 // Executes the provided query. If the query is parametrized, it prepares the statement and
@@ -960,504 +870,1046 @@ SQLRETURN SQLExecute_wrap(const intptr_t statementHandle,
 
 // Wrap SQLNumResultCols
 SQLSMALLINT SQLNumResultCols_wrap(intptr_t statementHandle) {
-    std::cout << "[DDBC] Entered SQLNumResultCols_wrap" << std::endl;
-    std::cout << "[DDBC] statementHandle: " << statementHandle << std::endl;
-    
-    if (statementHandle == 0) {
-        std::cout << "[DDBC ERROR] Statement handle is NULL in SQLNumResultCols_wrap" << std::endl;
-        ThrowStdException("Statement handle is NULL");
-        return 0;  // Never reaches here, but keeps compiler happy
-    }
-    
     LOG("Get number of columns in result set");
     if (!SQLNumResultCols_ptr) {
-        std::cout << "[DDBC] SQLNumResultCols_ptr is null! Loading driver..." << std::endl;
         LoadDriverOrThrowException();
     }
 
-    SQLSMALLINT columnCount = 0;
-    std::cout << "[DDBC] About to call SQLNumResultCols_ptr" << std::endl;
-    
-    // Use a try-catch block around the ODBC call
-    try {
-        SQLHSTMT hStmt = reinterpret_cast<SQLHSTMT>(statementHandle);
-        SQLRETURN ret = SQLNumResultCols_ptr(hStmt, &columnCount);
-        std::cout << "[DDBC] SQLNumResultCols_ptr returned: " << ret << ", columnCount: " << columnCount << std::endl;
-        
-        if (!SQL_SUCCEEDED(ret)) {
-            std::cout << "[DDBC ERROR] SQLNumResultCols_ptr failed with code: " << ret << std::endl;
-            columnCount = 0;
-        }
-    }
-    catch (const std::exception& e) {
-        std::cout << "[DDBC ERROR] Exception in SQLNumResultCols_ptr: " << e.what() << std::endl;
-        columnCount = 0;
-    }
-    catch (...) {
-        std::cout << "[DDBC ERROR] Unknown exception in SQLNumResultCols_ptr" << std::endl;
-        columnCount = 0;
-    }
-    
+    SQLSMALLINT columnCount;
+    // TODO: Handle the return code
+    SQLNumResultCols_ptr(reinterpret_cast<SQLHSTMT>(statementHandle), &columnCount);
     return columnCount;
 }
 
 // Wrap SQLDescribeCol
 SQLRETURN SQLDescribeCol_wrap(intptr_t StatementHandle, py::list& ColumnMetadata) {
-    std::cout << "[DDBC] Entered SQLDescribeCol_wrap" << std::endl;
-    std::cout << "[DDBC] StatementHandle: " << StatementHandle << std::endl;
-    
-    if (StatementHandle == 0) {
-        std::cout << "[DDBC ERROR] Statement handle is NULL in SQLDescribeCol_wrap" << std::endl;
-        return SQL_ERROR;
-    }
-    
     LOG("Get column description");
-    if (!SQLDescribeCol_ptr || !SQLNumResultCols_ptr) {
-        std::cout << "[DDBC] SQLDescribeCol_ptr or SQLNumResultCols_ptr is null! Loading driver..." << std::endl;
+    if (!SQLDescribeCol_ptr) {
         LoadDriverOrThrowException();
     }
 
-    SQLSMALLINT ColumnCount = 0;
-    SQLRETURN retcode = SQL_ERROR;
-    
-    try {
-        SQLHSTMT hStmt = reinterpret_cast<SQLHSTMT>(StatementHandle);
-        std::cout << "[DDBC] About to call SQLNumResultCols_ptr in SQLDescribeCol_wrap" << std::endl;
-        retcode = SQLNumResultCols_ptr(hStmt, &ColumnCount);
-        std::cout << "[DDBC] SQLNumResultCols_ptr in SQLDescribeCol_wrap returned: " << retcode << ", ColumnCount: " << ColumnCount << std::endl;
-        
-        if (!SQL_SUCCEEDED(retcode)) {
-            std::cout << "[DDBC ERROR] Failed to get number of columns in SQLDescribeCol_wrap" << std::endl;
-            LOG("Failed to get number of columns");
+    SQLSMALLINT ColumnCount;
+    SQLRETURN retcode =
+        SQLNumResultCols_ptr(reinterpret_cast<SQLHSTMT>(StatementHandle), &ColumnCount);
+    if (!SQL_SUCCEEDED(retcode)) {
+        LOG("Failed to get number of columns");
+        return retcode;
+    }
+
+    for (SQLUSMALLINT i = 1; i <= ColumnCount; ++i) {
+        SQLWCHAR ColumnName[256];
+        SQLSMALLINT NameLength;
+        SQLSMALLINT DataType;
+        SQLULEN ColumnSize;
+        SQLSMALLINT DecimalDigits;
+        SQLSMALLINT Nullable;
+
+        retcode = SQLDescribeCol_ptr(reinterpret_cast<SQLHSTMT>(StatementHandle), i, ColumnName,
+                                     sizeof(ColumnName) / sizeof(SQLWCHAR), &NameLength, &DataType,
+                                     &ColumnSize, &DecimalDigits, &Nullable);
+
+        if (SQL_SUCCEEDED(retcode)) {
+            // Append a named py::dict to ColumnMetadata
+            // TODO: Should we define a struct for this task instead of dict?
+            ColumnMetadata.append(py::dict("ColumnName"_a = std::wstring(ColumnName),
+                                           "DataType"_a = DataType, "ColumnSize"_a = ColumnSize,
+                                           "DecimalDigits"_a = DecimalDigits,
+                                           "Nullable"_a = Nullable));
+        } else {
             return retcode;
         }
-        
-        for (SQLUSMALLINT i = 1; i <= ColumnCount; ++i) {
-            try {
-                SQLWCHAR ColumnName[256];
-                SQLSMALLINT NameLength;
-                SQLSMALLINT DataType;
-                SQLULEN ColumnSize;
-                SQLSMALLINT DecimalDigits;
-                SQLSMALLINT Nullable;
-                
-                std::cout << "[DDBC] About to call SQLDescribeCol_ptr for column: " << i << std::endl;
-                retcode = SQLDescribeCol_ptr(hStmt, i, ColumnName, sizeof(ColumnName) / sizeof(SQLWCHAR),
-                                         &NameLength, &DataType, &ColumnSize, &DecimalDigits, &Nullable);
-                std::cout << "[DDBC] SQLDescribeCol_ptr returned: " << retcode << " for column: " << i << std::endl;
-
-                if (SQL_SUCCEEDED(retcode)) {
-                    // Append a named py::dict to ColumnMetadata
-                    // TODO: Should we define a struct for this task instead of dict?
-                    ColumnMetadata.append(py::dict("ColumnName"_a = std::wstring(ColumnName),
-                                               "DataType"_a = DataType, "ColumnSize"_a = ColumnSize,
-                                               "DecimalDigits"_a = DecimalDigits,
-                                               "Nullable"_a = Nullable));
-                } else {
-                    std::cout << "[DDBC ERROR] SQLDescribeCol_ptr failed for column: " << i << std::endl;
-                    return retcode;
-                }
-            } catch (const std::exception& e) {
-                std::cout << "[DDBC ERROR] Exception describing column " << i << ": " << e.what() << std::endl;
-                return SQL_ERROR;
-            } catch (...) {
-                std::cout << "[DDBC ERROR] Unknown exception describing column " << i << std::endl;
-                return SQL_ERROR;
-            }
-        }
-    } catch (const std::exception& e) {
-        std::cout << "[DDBC ERROR] Exception in SQLDescribeCol_wrap: " << e.what() << std::endl;
-        return SQL_ERROR;
-    } catch (...) {
-        std::cout << "[DDBC ERROR] Unknown exception in SQLDescribeCol_wrap" << std::endl;
-        return SQL_ERROR;
     }
-    
-    std::cout << "[DDBC] SQLDescribeCol_wrap completed successfully" << std::endl;
     return SQL_SUCCESS;
 }
 
 // Wrap SQLFetch to retrieve rows
 SQLRETURN SQLFetch_wrap(intptr_t StatementHandle) {
-    std::cout << "[DDBC] Entered SQLFetch_wrap" << std::endl;
-    std::cout << "[DDBC] StatementHandle: " << StatementHandle << std::endl;
+    LOG("Fetch next row");
     if (!SQLFetch_ptr) {
         LoadDriverOrThrowException();
     }
-    std::cout << "[DDBC] About to call SQLFetch_ptr" << std::endl;
-    SQLRETURN ret = SQLFetch_ptr(reinterpret_cast<SQLHANDLE>(StatementHandle));
-    std::cout << "[DDBC] SQLFetch_ptr returned: " << ret << std::endl;
-    return ret;
-}
 
-// Simplified approach to FetchOne_wrap to avoid complex buffer handling and be more 32-bit compatible
-SQLRETURN FetchOne_wrap(intptr_t StatementHandle, py::list& row) {
-    // Print directly to stdout without buffering to ensure it's immediately visible
-    printf("[DDBC] ENTERING FetchOne_wrap with handle: %p\n", (void*)StatementHandle);
-    fflush(stdout);
-    std::cout << "[DDBC] ENTERING FetchOne_wrap" << std::endl;
-    std::cout << "[DDBC] Entered FetchOne_wrap with simplification for 32-bit" << std::endl;
-    std::cout << "[DDBC] StatementHandle: " << StatementHandle << std::endl;
-    std::cout.flush();
-    
-    // Use try/catch for all operations
-    try {
-        if (StatementHandle == 0) {
-            std::cout << "[DDBC ERROR] Statement handle is NULL in FetchOne_wrap" << std::endl;
-            return SQL_ERROR;
-        }
-        
-        // Special handling for 32-bit platforms
-        #if defined(_WIN32) && !defined(_WIN64)
-            printf("[DDBC] Using 32-bit specific handle conversion\n");
-            fflush(stdout);
-            // On 32-bit, use careful casting to avoid pointer truncation
-            SQLHSTMT hStmt = (SQLHSTMT)(DWORD_PTR)StatementHandle;
-        #else
-            // Standard 64-bit handling
-            SQLHSTMT hStmt = reinterpret_cast<SQLHSTMT>(StatementHandle);
-        #endif
-        
-        printf("[DDBC] Handle conversion complete, hStmt: %p\n", (void*)hStmt);
-        fflush(stdout);
-        
-        // First check if SQLFetch_ptr is valid
-        if (!SQLFetch_ptr || !SQLGetData_ptr || !SQLNumResultCols_ptr) {
-            std::cout << "[DDBC] Some function pointers are null, loading driver..." << std::endl;
-            LoadDriverOrThrowException();
-        }
-        
-        // Safely fetch next row
-        std::cout << "[DDBC] About to call SQLFetch_ptr with hStmt: " << hStmt << std::endl;
-        SQLRETURN ret = SQLFetch_ptr(hStmt);
-        std::cout << "[DDBC] SQLFetch_ptr returned: " << ret << std::endl;
-        
-        if (ret == SQL_NO_DATA) {
-            std::cout << "[DDBC] No more rows" << std::endl;
-            return SQL_NO_DATA;
-        }
-        
-        if (!SQL_SUCCEEDED(ret)) {
-            std::cout << "[DDBC ERROR] SQLFetch_ptr failed with return code: " << ret << std::endl;
-            return ret;
-        }
-        
-        // Get number of columns
-        std::cout << "[DDBC] Fetching column count" << std::endl;
-        SQLSMALLINT colCount = 0;
-        ret = SQLNumResultCols_ptr(hStmt, &colCount);
-        std::cout << "[DDBC] SQLNumResultCols_ptr returned: " << ret << ", colCount: " << colCount << std::endl;
-        
-        if (!SQL_SUCCEEDED(ret)) {
-            std::cout << "[DDBC ERROR] SQLNumResultCols_ptr failed with return code: " << ret << std::endl;
-            return ret;
-        }
-        
-        // Get data for each column
-        std::cout << "[DDBC] Processing " << colCount << " columns" << std::endl;
-        for (SQLSMALLINT i = 1; i <= colCount; i++) {
-            std::cout << "[DDBC] Processing column: " << i << std::endl;
-            SQLCHAR buffer[1024] = {0};
-            SQLLEN indicator = 0;
-            // Always use SQL_C_CHAR type for simplicity
-            std::cout << "[DDBC] About to call SQLGetData_ptr for column: " << i << std::endl;
-            ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, buffer, sizeof(buffer), &indicator);
-            std::cout << "[DDBC] SQLGetData_ptr returned: " << ret << " for column: " << i << ", indicator: " << indicator << std::endl;
-            
-            if (SQL_SUCCEEDED(ret)) {
-                if (indicator == SQL_NULL_DATA) {
-                    std::cout << "[DDBC] Column " << i << " is NULL" << std::endl;
-                    row.append(py::none());
-                } else {
-                    // Only use the valid bytes from buffer up to indicator to avoid garbage
-                    const char* charBuf = reinterpret_cast<const char*>(buffer);
-                    size_t dataLen = 0;
-                    if (indicator > 0 && indicator < static_cast<SQLLEN>(sizeof(buffer))) {
-                        dataLen = static_cast<size_t>(indicator);
-                    } else {
-                        dataLen = strnlen(charBuf, sizeof(buffer) - 1);
-                    }
-                    std::string dataStr(charBuf, dataLen);
-                    std::cout << "[DDBC] Column " << i << " data: '" << dataStr << "'" << std::endl;
-                    row.append(py::str(dataStr));
-                }
-            } else {
-                std::cout << "[DDBC ERROR] Failed to get data for column " << i << std::endl;
-                // Add an empty string rather than fail the whole operation
-                row.append(py::str(""));
-            }
-        }
-        
-        std::cout << "[DDBC] Row processing complete" << std::endl;
-        return SQL_SUCCESS;
-    }
-    catch(const std::exception& e) {
-        std::cerr << "[DDBC ERROR] Exception in FetchOne_wrap: " << e.what() << std::endl;
-        return SQL_ERROR;
-    }
-    catch(...) {
-        std::cerr << "[DDBC ERROR] Unknown exception in FetchOne_wrap" << std::endl;
-        return SQL_ERROR;
-    }
-}
-
-// Helper function to fetch multiple rows
-SQLRETURN FetchMany_wrap(intptr_t StatementHandle, py::list& rows, int fetchSize) {
-    // Print directly to stdout without buffering to ensure it's immediately visible
-    printf("[DDBC] ENTERING FetchMany_wrap with handle: %p\n", (void*)StatementHandle);
-    fflush(stdout);
-    std::cout << "[DDBC] Entered FetchMany_wrap" << std::endl;
-    std::cout << "[DDBC] StatementHandle: " << StatementHandle << std::endl;
-    std::cout << "[DDBC] fetchSize: " << fetchSize << std::endl;
-    std::cout.flush();
-    
-    if (StatementHandle == 0) {
-        std::cout << "[DDBC ERROR] StatementHandle is NULL in FetchMany_wrap" << std::endl;
-        return SQL_ERROR;
-    }
-      try {
-        // Special handling for 32-bit platforms isn't needed here since we're using FetchOne_wrap
-        // which already has the 32-bit handle conversion
-        
-        // Fetch the specified number of rows or until there are no more rows
-        int rowsRetrieved = 0;
-        while (rowsRetrieved < fetchSize) {
-            py::list row;
-            SQLRETURN ret = FetchOne_wrap(StatementHandle, row);
-            
-            if (ret == SQL_NO_DATA) {
-                std::cout << "[DDBC] No more rows to fetch in FetchMany_wrap" << std::endl;
-                break;
-            }
-            
-            if (!SQL_SUCCEEDED(ret)) {
-                std::cout << "[DDBC ERROR] Error fetching row in FetchMany_wrap: " << ret << std::endl;
-                return ret;
-            }
-            
-            rows.append(row);
-            rowsRetrieved++;
-        }
-        
-        std::cout << "[DDBC] FetchMany_wrap retrieved " << rowsRetrieved << " rows" << std::endl;
-        return SQL_SUCCESS;
-    } catch (const std::exception& e) {
-        std::cout << "[DDBC ERROR] Exception in FetchMany_wrap: " << e.what() << std::endl;
-        return SQL_ERROR;
-    } catch (...) {
-        std::cout << "[DDBC ERROR] Unknown exception in FetchMany_wrap" << std::endl;
-        return SQL_ERROR;
-    }
-}
-
-// Helper function to fetch all remaining rows with more defensive programming
-SQLRETURN FetchAll_wrap(intptr_t StatementHandle, py::list& rows) {
-    printf("[DDBC] ENTERING FetchAll_wrap with handle: %p\n", (void*)StatementHandle);
-    fflush(stdout);
-    
-    if (StatementHandle == 0) {
-        printf("[DDBC ERROR] Statement handle is NULL in FetchAll_wrap\n");
-        fflush(stdout);
-        return SQL_ERROR;
-    }
-
-    // Clear the rows list to start fresh
-    rows.attr("clear")();
-    
-    try {
-        // Special handling for 32-bit platforms
-        #if defined(_WIN32) && !defined(_WIN64)
-            printf("[DDBC] Using 32-bit specific handle conversion in FetchAll_wrap\n");
-            fflush(stdout);
-            // On 32-bit, use careful casting to avoid pointer truncation
-            SQLHSTMT hStmt = (SQLHSTMT)(DWORD_PTR)StatementHandle;
-        #else
-            // Standard 64-bit handling
-            SQLHSTMT hStmt = reinterpret_cast<SQLHSTMT>(StatementHandle);
-        #endif
-        
-        printf("[DDBC] FetchAll_wrap handle conversion complete, hStmt: %p\n", (void*)hStmt);
-        fflush(stdout);
-        
-        // Check if function pointers are valid
-        if (!SQLFetch_ptr || !SQLNumResultCols_ptr || !SQLGetData_ptr) {
-            printf("[DDBC] Loading driver in FetchAll_wrap\n");
-            fflush(stdout);
-            LoadDriverOrThrowException();
-        }
-        
-        // Get column count once
-        SQLSMALLINT numCols = 0;
-        SQLRETURN colRet = SQLNumResultCols_ptr(hStmt, &numCols);
-        printf("[DDBC] FetchAll_wrap got column count: %d (ret=%d)\n", numCols, colRet);
-        fflush(stdout);
-        
-        if (!SQL_SUCCEEDED(colRet) || numCols <= 0) {
-            printf("[DDBC ERROR] Failed to get column count or no columns in result set\n");
-            fflush(stdout);
-            return colRet != SQL_SUCCESS ? colRet : SQL_ERROR;
-        }
-        
-        // Fetch all rows directly
-        SQLRETURN ret;
-        int rowCount = 0;
-        while (true) {
-            // Fetch next row
-            printf("[DDBC] FetchAll_wrap calling SQLFetch_ptr\n");
-            fflush(stdout);
-            ret = SQLFetch_ptr(hStmt);
-            printf("[DDBC] FetchAll_wrap SQLFetch_ptr returned: %d\n", ret);
-            fflush(stdout);
-
-            if (ret == SQL_NO_DATA) {
-                printf("[DDBC] No more rows to fetch in FetchAll_wrap\n");
-                fflush(stdout);
-                break;
-            }
-
-            if (!SQL_SUCCEEDED(ret)) {
-                printf("[DDBC ERROR] Error in SQLFetch_ptr: %d\n", ret);
-                fflush(stdout);
-                return ret;
-            }
-
-            // Create a new row
-            py::list row;
-
-            // Get data for each column
-            for (SQLSMALLINT i = 1; i <= numCols; i++) {
-                char buffer[4096] = {0};
-                SQLLEN indicator = 0;
-
-                SQLRETURN dataRet = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, buffer, sizeof(buffer), &indicator);
-                printf("[DDBC] Column %d SQLGetData_ptr returned: %d (indicator=%ld)\n", i, dataRet, (long)indicator);
-                fflush(stdout);
-
-                if (SQL_SUCCEEDED(dataRet)) {
-                    if (indicator == SQL_NULL_DATA) {
-                        row.append(py::none());
-                        printf("[DDBC] Column %d is NULL\n", i);
-                        fflush(stdout);
-                    } else {
-                        // Only use the valid bytes from buffer up to indicator to avoid garbage
-                        size_t dataLen = 0;
-                        if (indicator > 0 && indicator < static_cast<SQLLEN>(sizeof(buffer))) {
-                            dataLen = static_cast<size_t>(indicator);
-                        } else {
-                            dataLen = strnlen(buffer, sizeof(buffer) - 1);
-                        }
-                        std::string dataStr(buffer, dataLen);
-                        printf("[DDBC] Column %d data: '%s'\n", i, dataStr.c_str());
-                        fflush(stdout);
-                        row.append(py::str(dataStr));
-                    }
-                } else {
-                    printf("[DDBC ERROR] Failed to get column %d data\n", i);
-                    fflush(stdout);
-                    row.append(py::none());
-                }
-            }
-
-            // Validate row before appending
-            if (py::len(row) == numCols) {
-                rows.append(row);
-                rowCount++;
-                printf("[DDBC] Added row %d, row size: %d\n", rowCount, (int)py::len(row));
-                fflush(stdout);
-            } else {
-                printf("[DDBC ERROR] Row size mismatch, skipping row\n");
-                fflush(stdout);
-            }
-
-            // Debug: Print the current state of rows
-            printf("[DDBC DEBUG] Current rows list:\n");
-            for (auto& r : rows) {
-                printf("[DDBC DEBUG] Row: %s\n", py::str(r).cast<std::string>().c_str());
-            }
-        }
-
-        printf("[DDBC] FetchAll_wrap successfully retrieved all rows: %d\n", (int)py::len(rows));
-        fflush(stdout);
-        return SQL_SUCCESS;
-    } catch (const std::exception& e) {
-        printf("[DDBC ERROR] Exception in FetchAll_wrap: %s\n", e.what());
-        fflush(stdout);
-        return SQL_ERROR;
-    } catch (...) {
-        printf("[DDBC ERROR] Unknown exception in FetchAll_wrap\n");
-        fflush(stdout);
-        return SQL_ERROR;
-    }
+    return SQLFetch_ptr(reinterpret_cast<SQLHANDLE>(StatementHandle));
 }
 
 // Helper function to retrieve column data
 // TODO: Handle variable length data correctly
 SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::list& row) {
-    std::cout << "[DDBC] Entered SQLGetData_wrap" << std::endl;
-    std::cout << "[DDBC] StatementHandle: " << StatementHandle << std::endl;
-    std::cout << "[DDBC] colCount: " << colCount << std::endl;
-    
+    LOG("Get data from columns");
     if (!SQLGetData_ptr) {
-        std::cout << "[DDBC] SQLGetData_ptr is null! Loading driver..." << std::endl;
         LoadDriverOrThrowException();
     }
-    
-    SQLRETURN ret = SQL_SUCCESS;
+
+    SQLRETURN ret;
     SQLHSTMT hStmt = reinterpret_cast<SQLHSTMT>(StatementHandle);
-    
-    for (SQLSMALLINT i = 1; i <= colCount; i++) {
-        try {
-            std::cout << "[DDBC] Processing column: " << i << std::endl;
-            SQLCHAR buffer[1024] = {0};
-            SQLLEN indicator = 0;
-              // Use direct SQL_C_CHAR for simplicity and compatibility
-            std::cout << "[DDBC] About to call SQLGetData_ptr for column: " << i << std::endl;
-            ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, buffer, sizeof(buffer), &indicator);
-            std::cout << "[DDBC] SQLGetData_ptr returned: " << ret << " for column: " << i << ", indicator: " << indicator << std::endl;
-            
-            if (SQL_SUCCEEDED(ret)) {
-                if (indicator == SQL_NULL_DATA) {
-                    std::cout << "[DDBC] Column " << i << " is NULL" << std::endl;
-                    row.append(py::none());
-                } else {
-                    // Only use the valid bytes from buffer up to indicator to avoid garbage
-                    size_t dataLen = 0;
-                    if (indicator == SQL_NO_TOTAL) {
-                        // For SQL_NO_TOTAL, find null terminator manually
-                        for (dataLen = 0; dataLen < sizeof(buffer); dataLen++) {
-                            if (buffer[dataLen] == 0) break;
+    for (SQLSMALLINT i = 1; i <= colCount; ++i) {
+        SQLWCHAR columnName[256];
+        SQLSMALLINT columnNameLen;
+        SQLSMALLINT dataType;
+        SQLULEN columnSize;
+        SQLSMALLINT decimalDigits;
+        SQLSMALLINT nullable;
+
+        ret = SQLDescribeCol_ptr(hStmt, i, columnName, sizeof(columnName) / sizeof(SQLWCHAR),
+                                 &columnNameLen, &dataType, &columnSize, &decimalDigits, &nullable);
+        if (!SQL_SUCCEEDED(ret)) {
+            LOG("Error retrieving data for column - {}, SQLDescribeCol return code - {}", i, ret);
+            row.append(py::none());
+            // TODO: Do we want to continue in this case or return?
+            continue;
+        }
+
+        switch (dataType) {
+            case SQL_CHAR:
+            case SQL_VARCHAR:
+            case SQL_LONGVARCHAR: {
+                // TODO: revisit
+                HandleZeroColumnSizeAtFetch(columnSize);
+		uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
+                std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
+                SQLLEN dataLen;
+                // TODO: Handle the return code better
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(),
+                                     &dataLen);
+
+                if (SQL_SUCCEEDED(ret)) {
+                    // TODO: Refactor these if's across other switches to avoid code duplication
+                    // columnSize is in chars, dataLen is in bytes
+                    if (dataLen > 0) {
+                        uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
+                        // NOTE: dataBuffer.size() includes null-terminator, dataLen doesn't. Hence use '<'.
+						if (numCharsInData < dataBuffer.size()) {
+                            // SQLGetData will null-terminate the data
+                            row.append(std::string(reinterpret_cast<char*>(dataBuffer.data())));
+						} else {
+                            // In this case, buffer size is smaller, and data to be retrieved is longer
+                            // TODO: Revisit
+                            std::ostringstream oss;
+                            oss << "Buffer length for fetch (" << dataBuffer.size()-1 << ") is smaller, & data "
+                                << "to be retrieved is longer (" << numCharsInData << "). ColumnID - "
+                                << i << ", datatype - " << dataType;
+                            ThrowStdException(oss.str());
                         }
-                    } else if (indicator > 0) {
-                        // Normal case: indicator contains the length
-                        dataLen = static_cast<size_t>(indicator);
-                        if (dataLen >= sizeof(buffer)) {
-                            dataLen = sizeof(buffer) - 1; // Ensure we don't exceed buffer
-                        }
+				    } else if (dataLen == SQL_NULL_DATA) {
+					    row.append(py::none());
                     } else {
-                        // Fallback: find first null byte manually
-                        for (dataLen = 0; dataLen < sizeof(buffer); dataLen++) {
-                            if (buffer[dataLen] == 0) break;
-                        }
+                        assert(dataLen == SQL_NO_TOTAL);
+                        LOG("SQLGetData couldn't determine the length of the data. "
+                            "Returning NULL value instead. Column ID - {}", i);
+					    row.append(py::none());
                     }
-                    // Create string using the proper char* cast instead of relying on implicit conversion
-                    std::string dataStr(reinterpret_cast<const char*>(buffer), dataLen);
-                    std::cout << "[DDBC] Column " << i << " data: '" << dataStr << "'" << std::endl;
-                    row.append(py::str(dataStr));
-                }
-            } else {
-                std::cout << "[DDBC] Error retrieving data for column: " << i << std::endl;
-                row.append(py::none());
+				} else {
+					LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+						"code - {}. Returning NULL value instead",
+						i, dataType, ret);
+					row.append(py::none());
+				}
+                break;
             }
-        } catch (const std::exception& e) {
-            std::cout << "[DDBC ERROR] Exception in SQLGetData_wrap for column " << i << ": " << e.what() << std::endl;
-            row.append(py::none());
-        } catch (...) {
-            std::cout << "[DDBC ERROR] Unknown exception in SQLGetData_wrap for column " << i << std::endl;
-            row.append(py::none());
+            case SQL_WCHAR:
+            case SQL_WVARCHAR:
+			case SQL_WLONGVARCHAR: {
+                // TODO: revisit
+                HandleZeroColumnSizeAtFetch(columnSize);
+		uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
+                std::vector<SQLWCHAR> dataBuffer(fetchBufferSize);
+                SQLLEN dataLen;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(),
+                                     dataBuffer.size() * sizeof(SQLWCHAR), &dataLen);
+
+                if (SQL_SUCCEEDED(ret)) {
+                    // TODO: Refactor these if's across other switches to avoid code duplication
+                    if (dataLen > 0) {
+                        uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
+						if (numCharsInData < dataBuffer.size()) {
+                            // SQLGetData will null-terminate the data
+                            row.append(std::wstring(dataBuffer.data()));
+						} else {
+                            // In this case, buffer size is smaller, and data to be retrieved is longer
+                            // TODO: Revisit
+                            std::ostringstream oss;
+                            oss << "Buffer length for fetch (" << dataBuffer.size()-1 << ") is smaller, & data "
+                                << "to be retrieved is longer (" << numCharsInData << "). ColumnID - "
+                                << i << ", datatype - " << dataType;
+                            ThrowStdException(oss.str());
+                        }
+				    } else if (dataLen == SQL_NULL_DATA) {
+					    row.append(py::none());
+                    } else {
+                        assert(dataLen == SQL_NO_TOTAL);
+                        LOG("SQLGetData couldn't determine the length of the data. "
+                            "Returning NULL value instead. Column ID - {}", i);
+					    row.append(py::none());
+                    }
+				} else {
+					LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+						"code - {}. Returning NULL value instead",
+						i, dataType, ret);
+					row.append(py::none());
+				}
+                break;
+            }
+            case SQL_INTEGER: {
+                SQLINTEGER intValue;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_LONG, &intValue, 0, NULL);
+                if (SQL_SUCCEEDED(ret)) {
+                    row.append(static_cast<int>(intValue));
+                } else {
+                    row.append(py::none());
+                }
+                break;
+            }
+            case SQL_SMALLINT: {
+                SQLSMALLINT smallIntValue;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_SHORT, &smallIntValue, 0, NULL);
+                if (SQL_SUCCEEDED(ret)) {
+                    row.append(static_cast<int>(smallIntValue));
+                } else {
+                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+                        "code - {}. Returning NULL value instead",
+                        i, dataType, ret);
+                    row.append(py::none());
+                }
+                break;
+            }
+            case SQL_REAL: {
+                SQLREAL realValue;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_FLOAT, &realValue, 0, NULL);
+                if (SQL_SUCCEEDED(ret)) {
+                    row.append(realValue);
+                } else {
+                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+                        "code - {}. Returning NULL value instead",
+                        i, dataType, ret);
+                    row.append(py::none());
+                }
+                break;
+            }
+            case SQL_DECIMAL:
+            case SQL_NUMERIC: {
+                SQLCHAR numericStr[MAX_DIGITS_IN_NUMERIC] = {0};
+                SQLLEN indicator;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, numericStr, sizeof(numericStr), &indicator);
+
+                if (SQL_SUCCEEDED(ret)) {
+                    try{
+                    // Convert numericStr to py::decimal.Decimal and append to row
+                    row.append(py::module_::import("decimal").attr("Decimal")(
+                        std::string(reinterpret_cast<const char*>(numericStr), indicator)));
+                    } catch (const py::error_already_set& e) {
+                        // If the conversion fails, append None
+                        LOG("Error converting to decimal: {}", e.what());
+                        row.append(py::none());
+                    }
+                }
+                else {
+                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+                        "code - {}. Returning NULL value instead",
+                        i, dataType, ret);
+                    row.append(py::none());
+                }
+                break;
+            }
+            case SQL_DOUBLE:
+            case SQL_FLOAT: {
+                SQLDOUBLE doubleValue;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_DOUBLE, &doubleValue, 0, NULL);
+                if (SQL_SUCCEEDED(ret)) {
+                    row.append(doubleValue);
+                } else {
+                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+                        "code - {}. Returning NULL value instead",
+                        i, dataType, ret);
+                    row.append(py::none());
+                }
+                break;
+            }
+            case SQL_BIGINT: {
+                SQLBIGINT bigintValue;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_SBIGINT, &bigintValue, 0, NULL);
+                if (SQL_SUCCEEDED(ret)) {
+                    row.append(static_cast<long long>(bigintValue));
+                } else {
+                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+                        "code - {}. Returning NULL value instead",
+                        i, dataType, ret);
+                    row.append(py::none());
+                }
+                break;
+            }
+            case SQL_TYPE_DATE: {
+                SQL_DATE_STRUCT dateValue;
+                ret =
+                    SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue), NULL);
+                if (SQL_SUCCEEDED(ret)) {
+                    row.append(
+                        py::module_::import("datetime").attr("date")(
+                            dateValue.year,
+                            dateValue.month,
+                            dateValue.day
+                        )
+                    );
+                } else {
+                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+                        "code - {}. Returning NULL value instead",
+                        i, dataType, ret);
+                    row.append(py::none());
+                }
+                break;
+            }
+            case SQL_TIME:
+            case SQL_TYPE_TIME:
+            case SQL_SS_TIME2: {
+                SQL_TIME_STRUCT timeValue;
+                ret =
+                    SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIME, &timeValue, sizeof(timeValue), NULL);
+                if (SQL_SUCCEEDED(ret)) {
+                    row.append(
+                        py::module_::import("datetime").attr("time")(
+                            timeValue.hour,
+                            timeValue.minute,
+                            timeValue.second
+                        )
+                    );
+                } else {
+                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+                        "code - {}. Returning NULL value instead",
+                        i, dataType, ret);
+                    row.append(py::none());
+                }
+                break;
+            }
+            case SQL_TIMESTAMP:
+            case SQL_TYPE_TIMESTAMP:
+            case SQL_DATETIME: {
+                SQL_TIMESTAMP_STRUCT timestampValue;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIMESTAMP, &timestampValue,
+                                     sizeof(timestampValue), NULL);
+                if (SQL_SUCCEEDED(ret)) {
+                    row.append(
+                        py::module_::import("datetime").attr("datetime")(
+                            timestampValue.year,
+                            timestampValue.month,
+                            timestampValue.day,
+                            timestampValue.hour,
+                            timestampValue.minute,
+                            timestampValue.second,
+                            timestampValue.fraction / 1000  // Convert back ns to µs
+                        )
+                    );
+                } else {
+                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+                        "code - {}. Returning NULL value instead",
+                        i, dataType, ret);
+                    row.append(py::none());
+                }
+                break;
+            }
+            case SQL_BINARY:
+            case SQL_VARBINARY:
+            case SQL_LONGVARBINARY: {
+                // TODO: revisit
+                HandleZeroColumnSizeAtFetch(columnSize);
+                std::unique_ptr<SQLCHAR[]> dataBuffer(new SQLCHAR[columnSize]);
+                SQLLEN dataLen;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_BINARY, dataBuffer.get(), columnSize, &dataLen);
+
+                if (SQL_SUCCEEDED(ret)) {
+                    // TODO: Refactor these if's across other switches to avoid code duplication
+                    if (dataLen > 0) {
+						if (dataLen <= columnSize) {
+                            row.append(py::bytes(reinterpret_cast<const char*>(
+                                dataBuffer.get()), dataLen));
+						} else {
+                            // In this case, buffer size is smaller, and data to be retrieved is longer
+                            // TODO: Revisit
+                            std::ostringstream oss;
+                            oss << "Buffer length for fetch (" << columnSize << ") is smaller, & data "
+                                << "to be retrieved is longer (" << dataLen << "). ColumnID - "
+                                << i << ", datatype - " << dataType;
+                            ThrowStdException(oss.str());
+                        }
+				    } else if (dataLen == SQL_NULL_DATA) {
+					    row.append(py::none());
+                    } else {
+                        assert(dataLen == SQL_NO_TOTAL);
+                        LOG("SQLGetData couldn't determine the length of the data. "
+                            "Returning NULL value instead. Column ID - {}", i);
+					    row.append(py::none());
+                    }
+				} else {
+					LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+						"code - {}. Returning NULL value instead",
+						i, dataType, ret);
+					row.append(py::none());
+				}
+                break;
+            }
+            case SQL_TINYINT: {
+                SQLCHAR tinyIntValue;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_TINYINT, &tinyIntValue, 0, NULL);
+                if (SQL_SUCCEEDED(ret)) {
+                    row.append(static_cast<int>(tinyIntValue));
+                } else {
+                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+                        "code - {}. Returning NULL value instead",
+                        i, dataType, ret);
+                    row.append(py::none());
+                }
+                break;
+            }
+            case SQL_BIT: {
+                SQLCHAR bitValue;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_BIT, &bitValue, 0, NULL);
+                if (SQL_SUCCEEDED(ret)) {
+                    row.append(static_cast<bool>(bitValue));
+                } else {
+                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+                        "code - {}. Returning NULL value instead",
+                        i, dataType, ret);
+                    row.append(py::none());
+                }
+                break;
+            }
+#if (ODBCVER >= 0x0350)
+            case SQL_GUID: {
+                SQLGUID guidValue;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_GUID, &guidValue, sizeof(guidValue), NULL);
+                if (SQL_SUCCEEDED(ret)) {
+                    std::ostringstream oss;
+                    oss << std::hex << std::setfill('0') << std::setw(8) << guidValue.Data1 << '-'
+                        << std::setw(4) << guidValue.Data2 << '-' << std::setw(4) << guidValue.Data3
+                        << '-' << std::setw(2) << static_cast<int>(guidValue.Data4[0])
+                        << std::setw(2) << static_cast<int>(guidValue.Data4[1]) << '-' << std::hex
+                        << std::setw(2) << static_cast<int>(guidValue.Data4[2]) << std::setw(2)
+                        << static_cast<int>(guidValue.Data4[3]) << std::setw(2)
+                        << static_cast<int>(guidValue.Data4[4]) << std::setw(2)
+                        << static_cast<int>(guidValue.Data4[5]) << std::setw(2)
+                        << static_cast<int>(guidValue.Data4[6]) << std::setw(2)
+                        << static_cast<int>(guidValue.Data4[7]);
+                    row.append(oss.str());  // Append GUID as a string
+                } else {
+                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+                        "code - {}. Returning NULL value instead",
+                        i, dataType, ret);
+                    row.append(py::none());
+                }
+                break;
+            }
+#endif
+            default:
+                std::ostringstream errorString;
+                errorString << "Unsupported data type for column - " << columnName << ", Type - "
+                            << dataType << ", column ID - " << i;
+                LOG(errorString.str());
+                ThrowStdException(errorString.str());
+                break;
         }
     }
-    
-    std::cout << "[DDBC] SQLGetData_wrap finished with ret: " << ret << std::endl;
+    return ret;
+}
+
+// For column in the result set, binds a buffer to retrieve column data
+// TODO: Move to anonymous namespace, since it is not used outside this file
+SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
+                        SQLUSMALLINT numCols, int fetchSize) {
+    SQLRETURN ret = SQL_SUCCESS;
+    // Bind columns based on their data types
+    for (SQLUSMALLINT col = 1; col <= numCols; col++) {
+        auto columnMeta = columnNames[col - 1].cast<py::dict>();
+        SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
+        SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+
+        switch (dataType) {
+            case SQL_CHAR:
+            case SQL_VARCHAR:
+            case SQL_LONGVARCHAR: {
+                // TODO: handle variable length data correctly. This logic wont suffice
+                HandleZeroColumnSizeAtFetch(columnSize);
+                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+		// TODO: For LONGVARCHAR/BINARY types, columnSize is returned as 2GB-1 by
+		// SQLDescribeCol. So fetchBufferSize = 2GB. fetchSize=1 if columnSize>1GB.
+		// So we'll allocate a vector of size 2GB. If a query fetches multiple (say N)
+		// LONG... columns, we will have allocated multiple (N) 2GB sized vectors. This
+		// will make driver very slow. And if the N is high enough, we could hit the OS
+		// limit for heap memory that we can allocate, & hence get a std::bad_alloc. The
+		// process could also be killed by OS for consuming too much memory.
+		// Hence this will be revisited in beta to not allocate 2GB+ memory,
+		// & use streaming instead
+                buffers.charBuffers[col - 1].resize(fetchSize * fetchBufferSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
+                                     fetchBufferSize * sizeof(SQLCHAR),
+                                     buffers.indicators[col - 1].data());
+                break;
+            }
+            case SQL_WCHAR:
+            case SQL_WVARCHAR:
+            case SQL_WLONGVARCHAR: {
+                // TODO: handle variable length data correctly. This logic wont suffice
+                HandleZeroColumnSizeAtFetch(columnSize);
+                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                buffers.wcharBuffers[col - 1].resize(fetchSize * fetchBufferSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_WCHAR, buffers.wcharBuffers[col - 1].data(),
+                                     fetchBufferSize * sizeof(SQLWCHAR),
+                                     buffers.indicators[col - 1].data());
+                break;
+            }
+            case SQL_INTEGER:
+                buffers.intBuffers[col - 1].resize(fetchSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_SLONG, buffers.intBuffers[col - 1].data(),
+                                     sizeof(SQLINTEGER), buffers.indicators[col - 1].data());
+                break;
+            case SQL_SMALLINT:
+                buffers.smallIntBuffers[col - 1].resize(fetchSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_SSHORT,
+                                     buffers.smallIntBuffers[col - 1].data(), sizeof(SQLSMALLINT),
+                                     buffers.indicators[col - 1].data());
+                break;
+            case SQL_TINYINT:
+                buffers.charBuffers[col - 1].resize(fetchSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_TINYINT, buffers.charBuffers[col - 1].data(),
+                                     sizeof(SQLCHAR), buffers.indicators[col - 1].data());
+                break;
+            case SQL_BIT:
+                buffers.charBuffers[col - 1].resize(fetchSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_BIT, buffers.charBuffers[col - 1].data(),
+                                     sizeof(SQLCHAR), buffers.indicators[col - 1].data());
+                break;
+            case SQL_REAL:
+                buffers.realBuffers[col - 1].resize(fetchSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_FLOAT, buffers.realBuffers[col - 1].data(),
+                                     sizeof(SQLREAL), buffers.indicators[col - 1].data());
+                break;
+            case SQL_DECIMAL:
+            case SQL_NUMERIC:
+                buffers.charBuffers[col - 1].resize(fetchSize * MAX_DIGITS_IN_NUMERIC);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_CHAR, buffers.charBuffers[col - 1].data(),
+                                     MAX_DIGITS_IN_NUMERIC * sizeof(SQLCHAR),
+                                     buffers.indicators[col - 1].data());
+                break;
+            case SQL_DOUBLE:
+            case SQL_FLOAT:
+                buffers.doubleBuffers[col - 1].resize(fetchSize);
+                ret =
+                    SQLBindCol_ptr(hStmt, col, SQL_C_DOUBLE, buffers.doubleBuffers[col - 1].data(),
+                                   sizeof(SQLDOUBLE), buffers.indicators[col - 1].data());
+                break;
+            case SQL_TIMESTAMP:
+            case SQL_TYPE_TIMESTAMP:
+            case SQL_DATETIME:
+                buffers.timestampBuffers[col - 1].resize(fetchSize);
+                ret = SQLBindCol_ptr(
+                    hStmt, col, SQL_C_TYPE_TIMESTAMP, buffers.timestampBuffers[col - 1].data(),
+                    sizeof(SQL_TIMESTAMP_STRUCT), buffers.indicators[col - 1].data());
+                break;
+            case SQL_BIGINT:
+                buffers.bigIntBuffers[col - 1].resize(fetchSize);
+                ret =
+                    SQLBindCol_ptr(hStmt, col, SQL_C_SBIGINT, buffers.bigIntBuffers[col - 1].data(),
+                                   sizeof(SQLBIGINT), buffers.indicators[col - 1].data());
+                break;
+            case SQL_TYPE_DATE:
+                buffers.dateBuffers[col - 1].resize(fetchSize);
+                ret =
+                    SQLBindCol_ptr(hStmt, col, SQL_C_TYPE_DATE, buffers.dateBuffers[col - 1].data(),
+                                   sizeof(SQL_DATE_STRUCT), buffers.indicators[col - 1].data());
+                break;
+            case SQL_TIME:
+            case SQL_TYPE_TIME:
+            case SQL_SS_TIME2:
+                buffers.timeBuffers[col - 1].resize(fetchSize);
+                ret =
+                    SQLBindCol_ptr(hStmt, col, SQL_C_TYPE_TIME, buffers.timeBuffers[col - 1].data(),
+                                   sizeof(SQL_TIME_STRUCT), buffers.indicators[col - 1].data());
+                break;
+            case SQL_GUID:
+                buffers.guidBuffers[col - 1].resize(fetchSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_GUID, buffers.guidBuffers[col - 1].data(),
+                                     sizeof(SQLGUID), buffers.indicators[col - 1].data());
+                break;
+            case SQL_BINARY:
+            case SQL_VARBINARY:
+            case SQL_LONGVARBINARY:
+                // TODO: handle variable length data correctly. This logic wont suffice
+                HandleZeroColumnSizeAtFetch(columnSize);
+                buffers.charBuffers[col - 1].resize(fetchSize * columnSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_BINARY, buffers.charBuffers[col - 1].data(),
+                                     columnSize, buffers.indicators[col - 1].data());
+                break;
+            default:
+                std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
+                std::ostringstream errorString;
+                errorString << "Unsupported data type for column - " << columnName.c_str()
+                            << ", Type - " << dataType << ", column ID - " << col;
+                LOG(errorString.str());
+                ThrowStdException(errorString.str());
+                break;
+        }
+        if (!SQL_SUCCEEDED(ret)) {
+            std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
+            std::ostringstream errorString;
+            errorString << "Failed to bind column - " << columnName.c_str() << ", Type - "
+                        << dataType << ", column ID - " << col;
+            LOG(errorString.str());
+            ThrowStdException(errorString.str());
+            return ret;
+        }
+    }
+    return ret;
+}
+
+// Fetch rows in batches
+// TODO: Move to anonymous namespace, since it is not used outside this file
+SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
+                         py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched) {
+    LOG("Fetching data in batches");
+    SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
+    if (ret == SQL_NO_DATA) {
+        LOG("No data to fetch");
+        return ret;
+    }
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Error while fetching rows in batches");
+        return ret;
+    }
+    // numRowsFetched is the SQL_ATTR_ROWS_FETCHED_PTR attribute. It'll be populated by
+    // SQLFetchScroll
+    for (SQLULEN i = 0; i < numRowsFetched; i++) {
+        py::list row;
+        for (SQLUSMALLINT col = 1; col <= numCols; col++) {
+            auto columnMeta = columnNames[col - 1].cast<py::dict>();
+            SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
+            SQLLEN dataLen = buffers.indicators[col - 1][i];
+
+            if (dataLen == SQL_NULL_DATA) {
+                row.append(py::none());
+                continue;
+            }
+            // TODO: variable length data needs special handling, this logic wont suffice
+            // This value indicates that the driver cannot determine the length of the data
+            if (dataLen == SQL_NO_TOTAL) {
+                LOG("Cannot determine the length of the data. Returning NULL value instead."
+                    "Column ID - {}", col);
+                row.append(py::none());
+                continue;
+            }
+            assert(dataLen > 0 && "Must be > 0 since SQL_NULL_DATA & SQL_NO_DATA is already handled");
+
+            switch (dataType) {
+                case SQL_CHAR:
+                case SQL_VARCHAR:
+                case SQL_LONGVARCHAR: {
+                    // TODO: variable length data needs special handling, this logic wont suffice
+                    SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+                    HandleZeroColumnSizeAtFetch(columnSize);
+                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+					uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
+					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
+                    if (numCharsInData < fetchBufferSize) {
+                        // SQLFetch will nullterminate the data
+                        row.append(std::string(
+                            reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * fetchBufferSize]),
+                            numCharsInData));
+                    } else {
+                        // In this case, buffer size is smaller, and data to be retrieved is longer
+                        // TODO: Revisit
+                        std::ostringstream oss;
+                        oss << "Buffer length for fetch (" << columnSize << ") is smaller, & data "
+                            << "to be retrieved is longer (" << numCharsInData << "). ColumnID - "
+                            << col << ", datatype - " << dataType;
+                        ThrowStdException(oss.str());
+                    }
+                    break;
+                }
+                case SQL_WCHAR:
+                case SQL_WVARCHAR:
+                case SQL_WLONGVARCHAR: {
+                    // TODO: variable length data needs special handling, this logic wont suffice
+                    SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+                    HandleZeroColumnSizeAtFetch(columnSize);
+                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+					uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
+					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
+                    if (numCharsInData < fetchBufferSize) {
+                        // SQLFetch will nullterminate the data
+                        row.append(std::wstring(
+                            reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]),
+                            numCharsInData));
+                    } else {
+                        // In this case, buffer size is smaller, and data to be retrieved is longer
+                        // TODO: Revisit
+                        std::ostringstream oss;
+                        oss << "Buffer length for fetch (" << columnSize << ") is smaller, & data "
+                            << "to be retrieved is longer (" << numCharsInData << "). ColumnID - "
+                            << col << ", datatype - " << dataType;
+                        ThrowStdException(oss.str());
+                    }
+                    break;
+                }
+                case SQL_INTEGER: {
+                    row.append(buffers.intBuffers[col - 1][i]);
+                    break;
+                }
+                case SQL_SMALLINT: {
+                    row.append(buffers.smallIntBuffers[col - 1][i]);
+                    break;
+                }
+                case SQL_TINYINT: {
+                    row.append(buffers.charBuffers[col - 1][i]);
+                    break;
+                }
+                case SQL_BIT: {
+                    row.append(static_cast<bool>(buffers.charBuffers[col - 1][i]));
+                    break;
+                }
+                case SQL_REAL: {
+                    row.append(buffers.realBuffers[col - 1][i]);
+                    break;
+                }
+                case SQL_DECIMAL:
+                case SQL_NUMERIC: {
+                    try {
+                        // Convert numericStr to py::decimal.Decimal and append to row
+                        row.append(py::module_::import("decimal").attr("Decimal")(std::string(
+                            reinterpret_cast<const char*>(
+                                &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]),
+                            buffers.indicators[col - 1][i])));
+                    } catch (const py::error_already_set& e) {
+                        // Handle the exception, e.g., log the error and append py::none()
+                        LOG("Error converting to decimal: {}", e.what());
+                        row.append(py::none());
+                    }
+                    break;
+                }
+                case SQL_DOUBLE:
+                case SQL_FLOAT: {
+                    row.append(buffers.doubleBuffers[col - 1][i]);
+                    break;
+                }
+                case SQL_TIMESTAMP:
+                case SQL_TYPE_TIMESTAMP:
+                case SQL_DATETIME: {
+                    row.append(py::module_::import("datetime")
+                                   .attr("datetime")(buffers.timestampBuffers[col - 1][i].year,
+                                                     buffers.timestampBuffers[col - 1][i].month,
+                                                     buffers.timestampBuffers[col - 1][i].day,
+                                                     buffers.timestampBuffers[col - 1][i].hour,
+                                                     buffers.timestampBuffers[col - 1][i].minute,
+                                                     buffers.timestampBuffers[col - 1][i].second,
+						                             buffers.timestampBuffers[col - 1][i].fraction / 1000  /* Convert back ns to µs */));
+                    break;
+                }
+                case SQL_BIGINT: {
+                    row.append(buffers.bigIntBuffers[col - 1][i]);
+                    break;
+                }
+                case SQL_TYPE_DATE: {
+                    row.append(py::module_::import("datetime")
+                                   .attr("date")(buffers.dateBuffers[col - 1][i].year,
+                                                 buffers.dateBuffers[col - 1][i].month,
+                                                 buffers.dateBuffers[col - 1][i].day));
+                    break;
+                }
+                case SQL_TIME:
+                case SQL_TYPE_TIME:
+                case SQL_SS_TIME2: {
+                    row.append(py::module_::import("datetime")
+                                   .attr("time")(buffers.timeBuffers[col - 1][i].hour,
+                                                 buffers.timeBuffers[col - 1][i].minute,
+                                                 buffers.timeBuffers[col - 1][i].second));
+                    break;
+                }
+                case SQL_GUID: {
+                    row.append(
+                        py::bytes(reinterpret_cast<const char*>(&buffers.guidBuffers[col - 1][i]),
+                                  sizeof(SQLGUID)));
+                    break;
+                }
+                case SQL_BINARY:
+                case SQL_VARBINARY:
+                case SQL_LONGVARBINARY: {
+                    // TODO: variable length data needs special handling, this logic wont suffice
+                    SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+                    HandleZeroColumnSizeAtFetch(columnSize);
+                    if (dataLen <= columnSize) {
+                        row.append(py::bytes(reinterpret_cast<const char*>(
+                                                 &buffers.charBuffers[col - 1][i * columnSize]),
+                                             dataLen));
+                    } else {
+                        // In this case, buffer size is smaller, and data to be retrieved is longer
+                        // TODO: Revisit
+                        std::ostringstream oss;
+                        oss << "Buffer length for fetch (" << columnSize << ") is smaller, & data "
+                            << "to be retrieved is longer (" << dataLen << "). ColumnID - "
+                            << col << ", datatype - " << dataType;
+                        ThrowStdException(oss.str());
+                    }
+                    break;
+                }
+                default: {
+                    std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
+                    std::ostringstream errorString;
+                    errorString << "Unsupported data type for column - " << columnName.c_str()
+                                << ", Type - " << dataType << ", column ID - " << col;
+                    LOG(errorString.str());
+                    ThrowStdException(errorString.str());
+                    break;
+                }
+            }
+        }
+        rows.append(row);
+    }
+    return ret;
+}
+
+// Given a list of columns that are a part of single row in the result set, calculates
+// the max size of the row
+// TODO: Move to anonymous namespace, since it is not used outside this file
+size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
+    size_t rowSize = 0;
+    for (SQLUSMALLINT col = 1; col <= numCols; col++) {
+        auto columnMeta = columnNames[col - 1].cast<py::dict>();
+        SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
+        SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+
+        switch (dataType) {
+            case SQL_CHAR:
+            case SQL_VARCHAR:
+            case SQL_LONGVARCHAR:
+                rowSize += columnSize;
+                break;
+            case SQL_WCHAR:
+            case SQL_WVARCHAR:
+            case SQL_WLONGVARCHAR:
+                rowSize += columnSize * sizeof(SQLWCHAR);
+                break;
+            case SQL_INTEGER:
+                rowSize += sizeof(SQLINTEGER);
+                break;
+            case SQL_SMALLINT:
+                rowSize += sizeof(SQLSMALLINT);
+                break;
+            case SQL_REAL:
+                rowSize += sizeof(SQLREAL);
+                break;
+            case SQL_FLOAT:
+                rowSize += sizeof(SQLFLOAT);
+                break;
+            case SQL_DOUBLE:
+                rowSize += sizeof(SQLDOUBLE);
+                break;
+            case SQL_DECIMAL:
+            case SQL_NUMERIC:
+                rowSize += MAX_DIGITS_IN_NUMERIC;
+                break;
+            case SQL_TIMESTAMP:
+            case SQL_TYPE_TIMESTAMP:
+            case SQL_DATETIME:
+                rowSize += sizeof(SQL_TIMESTAMP_STRUCT);
+                break;
+            case SQL_BIGINT:
+                rowSize += sizeof(SQLBIGINT);
+                break;
+            case SQL_TYPE_DATE:
+                rowSize += sizeof(SQL_DATE_STRUCT);
+                break;
+            case SQL_TIME:
+            case SQL_TYPE_TIME:
+            case SQL_SS_TIME2:
+                rowSize += sizeof(SQL_TIME_STRUCT);
+                break;
+            case SQL_GUID:
+                rowSize += sizeof(SQLGUID);
+                break;
+            case SQL_TINYINT:
+            case SQL_BIT:
+                rowSize += sizeof(SQLCHAR);
+                break;
+            case SQL_BINARY:
+            case SQL_VARBINARY:
+            case SQL_LONGVARBINARY:
+                rowSize += columnSize;
+                break;
+            default:
+                std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
+                std::ostringstream errorString;
+                errorString << "Unsupported data type for column - " << columnName.c_str()
+                            << ", Type - " << dataType << ", column ID - " << col;
+                LOG(errorString.str());
+                ThrowStdException(errorString.str());
+                break;
+        }
+    }
+    return rowSize;
+}
+
+// FetchMany_wrap - Fetches multiple rows of data from the result set.
+//
+// @param StatementHandle: Handle to the statement from which data is to be fetched.
+// @param rows: A Python list that will be populated with the fetched rows of data.
+// @param fetchSize: The number of rows to fetch. Default value is 1.
+//
+// @return SQLRETURN: SQL_SUCCESS if data is fetched successfully,
+//                    SQL_NO_DATA if there are no more rows to fetch,
+//                    throws a runtime error if there is an error fetching data.
+//
+// This function assumes that the statement handle (hStmt) is already allocated and a query has been
+// executed. It fetches the specified number of rows from the result set and populates the provided
+// Python list with the row data. If there are no more rows to fetch, it returns SQL_NO_DATA. If an
+// error occurs during fetching, it throws a runtime error.
+SQLRETURN FetchMany_wrap(intptr_t StatementHandle, py::list& rows, int fetchSize = 1) {
+    SQLRETURN ret;
+    SQLHSTMT hStmt = reinterpret_cast<SQLHSTMT>(StatementHandle);
+    // Retrieve column count
+    SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle);
+
+    // Retrieve column metadata
+    py::list columnNames;
+    ret = SQLDescribeCol_wrap(StatementHandle, columnNames);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to get column descriptions");
+        return ret;
+    }
+
+    // Initialize column buffers
+    ColumnBuffers buffers(numCols, fetchSize);
+
+    // Bind columns
+    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Error when binding columns");
+        return ret;
+    }
+
+    SQLULEN numRowsFetched;
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)fetchSize, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
+
+    ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched);
+    if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
+        LOG("Error when fetching data");
+        return ret;
+    }
+
+    return ret;
+}
+
+// FetchAll_wrap - Fetches all rows of data from the result set.
+//
+// @param StatementHandle: Handle to the statement from which data is to be fetched.
+// @param rows: A Python list that will be populated with the fetched rows of data.
+//
+// @return SQLRETURN: SQL_SUCCESS if data is fetched successfully,
+//                    SQL_NO_DATA if there are no more rows to fetch,
+//                    throws a runtime error if there is an error fetching data.
+//
+// This function assumes that the statement handle (hStmt) is already allocated and a query has been
+// executed. It fetches all rows from the result set and populates the provided Python list with the
+// row data. If there are no more rows to fetch, it returns SQL_NO_DATA. If an error occurs during
+// fetching, it throws a runtime error.
+SQLRETURN FetchAll_wrap(intptr_t StatementHandle, py::list& rows) {
+    SQLRETURN ret;
+    SQLHSTMT hStmt = reinterpret_cast<SQLHSTMT>(StatementHandle);
+    // Retrieve column count
+    SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle);
+
+    // Retrieve column metadata
+    py::list columnNames;
+    ret = SQLDescribeCol_wrap(StatementHandle, columnNames);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to get column descriptions");
+        return ret;
+    }
+
+    // Define a memory limit (1 GB)
+    const size_t memoryLimit = 1ULL * 1024 * 1024 * 1024;  // 1 GB
+    size_t totalRowSize = calculateRowSize(columnNames, numCols);
+
+    // Calculate fetch size based on the total row size and memory limit
+    size_t numRowsInMemLimit;
+    if (totalRowSize > 0) {
+        numRowsInMemLimit = static_cast<size_t>(memoryLimit / totalRowSize);
+    } else {
+        // Handle case where totalRowSize is 0 to avoid division by zero.
+        // This can happen for NVARCHAR(MAX) cols. SQLDescribeCol returns 0
+        // for column size of such columns.
+        // TODO: Find why NVARCHAR(MAX) returns columnsize 0
+        // TODO: What if a row has 2 cols, an int & NVARCHAR(MAX)?
+        //       totalRowSize will be 4+0 = 4. It wont take NVARCHAR(MAX)
+        //       into account. So, we will end up fetching 1000 rows at a time.
+        numRowsInMemLimit = 1;  // fetchsize will be 10
+    }
+    // TODO: Revisit this logic. Eventhough we're fetching fetchSize rows at a time,
+    // fetchall will keep all rows in memory anyway. So what are we gaining by fetching
+    // fetchSize rows at a time?
+    // Also, say the table has only 10 rows, each row size if 100 bytes. Here, we'll have
+    // fetchSize = 1000, so we'll allocate memory for 1000 rows inside SQLBindCol_wrap, while
+    // actually only need to retrieve 10 rows
+    int fetchSize;
+    if (numRowsInMemLimit == 0) {
+        // If the row size is larger than the memory limit, fetch one row at a time
+        fetchSize = 1;
+    } else if (numRowsInMemLimit > 0 && numRowsInMemLimit <= 100) {
+        // If between 1-100 rows fit in memoryLimit, fetch 10 rows at a time
+        fetchSize = 10;
+    } else if (numRowsInMemLimit > 100 && numRowsInMemLimit <= 1000) {
+        // If between 100-1000 rows fit in memoryLimit, fetch 100 rows at a time
+        fetchSize = 100;
+    } else {
+        fetchSize = 1000;
+    }
+    LOG("Fetching data in batch sizes of {}", fetchSize);
+
+    ColumnBuffers buffers(numCols, fetchSize);
+
+    // Bind columns
+    ret = SQLBindColums(hStmt, buffers, columnNames, numCols, fetchSize);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Error when binding columns");
+        return ret;
+    }
+
+    SQLULEN numRowsFetched;
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)fetchSize, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
+
+    while (ret != SQL_NO_DATA) {
+        ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched);
+        if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
+            LOG("Error when fetching data");
+            return ret;
+        }
+    }
+
+    return ret;
+}
+
+// FetchOne_wrap - Fetches a single row of data from the result set.
+//
+// @param StatementHandle: Handle to the statement from which data is to be fetched.
+// @param row: A Python list that will be populated with the fetched row data.
+//
+// @return SQLRETURN: SQL_SUCCESS or SQL_SUCCESS_WITH_INFO if data is fetched successfully,
+//                    SQL_NO_DATA if there are no more rows to fetch,
+//                    throws a runtime error if there is an error fetching data.
+//
+// This function assumes that the statement handle (hStmt) is already allocated and a query has been
+// executed. It fetches the next row of data from the result set and populates the provided Python
+// list with the row data. If there are no more rows to fetch, it returns SQL_NO_DATA. If an error
+// occurs during fetching, it throws a runtime error.
+SQLRETURN FetchOne_wrap(intptr_t StatementHandle, py::list& row) {
+    SQLRETURN ret;
+    SQLHSTMT hStmt = reinterpret_cast<SQLHSTMT>(StatementHandle);
+
+    // Assume hStmt is already allocated and a query has been executed
+    ret = SQLFetch_ptr(hStmt);
+    if (SQL_SUCCEEDED(ret)) {
+        // Retrieve column count
+        SQLSMALLINT colCount = SQLNumResultCols_wrap(StatementHandle);
+        ret = SQLGetData_wrap(StatementHandle, colCount, row);
+    } else if (ret != SQL_NO_DATA) {
+        LOG("Error when fetching data");
+    }
     return ret;
 }
 
@@ -1503,20 +1955,16 @@ SQLRETURN SQLDisconnect_wrap(intptr_t ConnectionHandle) {
 
 // Wrap SQLRowCount
 SQLLEN SQLRowCount_wrap(intptr_t StatementHandle) {
-    std::cout << "[DDBC] Entered SQLRowCount_wrap" << std::endl;
-    std::cout << "[DDBC] StatementHandle: " << StatementHandle << std::endl;
     LOG("Get number of row affected by last execute");
     if (!SQLRowCount_ptr) {
-        std::cout << "[DDBC] SQLRowCount_ptr is null! Loading driver..." << std::endl;
         LoadDriverOrThrowException();
     }
 
     SQLLEN rowCount;
-    std::cout << "[DDBC] About to call SQLRowCount_ptr" << std::endl;
     SQLRETURN ret = SQLRowCount_ptr(reinterpret_cast<SQLHSTMT>(StatementHandle), &rowCount);
-    std::cout << "[DDBC] SQLRowCount_ptr returned: " << ret << ", rowCount: " << rowCount << std::endl;
     if (!SQL_SUCCEEDED(ret)) {
-        LOG("Error getting row count");
+        LOG("SQLRowCount failed with error code - {}", ret);
+        return ret;
     }
     LOG("SQLRowCount returned {}", rowCount);
     return rowCount;
@@ -1524,9 +1972,6 @@ SQLLEN SQLRowCount_wrap(intptr_t StatementHandle) {
 
 // Functions/data to be exposed to Python as a part of ddbc_bindings module
 PYBIND11_MODULE(ddbc_bindings, m) {
-    // Make sure the return value policy is properly set to ensure ownership transfer
-    pybind11::return_value_policy rvp = pybind11::return_value_policy::move;
-    
     m.doc() = "msodbcsql driver api bindings for Python";
 
     // Add architecture information as module attribute
@@ -1559,7 +2004,9 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Define error info class
     py::class_<ErrorInfo>(m, "ErrorInfo")
         .def_readwrite("sqlState", &ErrorInfo::sqlState)
-        .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);    // Expose all the SQL functions with proper error handling and explicit return value policies
+        .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);
+
+    // Expose all the SQL functions with proper error handling
     m.def("DDBCSQLAllocHandle", &SQLAllocHandle_wrap,
           "Allocate an environment, connection, statement, or descriptor handle");
     m.def("DDBCSQLSetEnvAttr", &SQLSetEnvAttr_wrap,
@@ -1583,13 +2030,10 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           "Get information about a column in the result set");
     m.def("DDBCSQLGetData", &SQLGetData_wrap, "Retrieve data from the result set");
     m.def("DDBCSQLMoreResults", &SQLMoreResults_wrap, "Check for more results in the result set");
-    // For these fetch functions, use py::return_value_policy::reference to ensure Python references the same list
-    m.def("DDBCSQLFetchOne", &FetchOne_wrap, py::arg("StatementHandle"), py::arg("row"),
-          "Fetch one row from the result set");
+    m.def("DDBCSQLFetchOne", &FetchOne_wrap, "Fetch one row from the result set");
     m.def("DDBCSQLFetchMany", &FetchMany_wrap, py::arg("StatementHandle"), py::arg("rows"),
           py::arg("fetchSize") = 1, "Fetch many rows from the result set");
-    m.def("DDBCSQLFetchAll", &FetchAll_wrap, py::arg("StatementHandle"), py::arg("rows"),
-          "Fetch all rows from the result set");
+    m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set");
     m.def("DDBCSQLEndTran", &SQLEndTran_wrap, "End a transaction");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLDisconnect", &SQLDisconnect_wrap, "Disconnect from a data source");
