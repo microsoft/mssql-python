@@ -4,6 +4,9 @@
 
 [Documentation](https://github.com/microsoft/mssql-python/wiki) | [Release Notes](https://github.com/microsoft/mssql-python/releases) | [Roadmap](https://github.com/microsoft/mssql-python/blob/main/ROADMAP.md)
 
+> **Note:**
+> This project is currently in an alpha phase, meaning it is still under active development. We are looking to validate core functionalities and gather initial feedback before a broader public launch. Please use with caution and avoid production environments.
+> 
 ## Installation
 
 mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
@@ -48,11 +51,12 @@ import mssql_python
 
 # Establish a connection
 # Specify connection string
-connection = ("SERVER=<your_server_name>;DATABASE=<your_database_name>;UID=<your_user_name>;PWD=<your_password>;Encrypt=yes;")
+connection_string = "SERVER=<your_server_name>;DATABASE=<your_database_name>;UID=<your_user_name>;PWD=<your_password>;Encrypt=yes;"
+connection = mssql_python.connect(connection_string)
 
 # Execute a query
 cursor = connection.cursor()
-cursor.execute("SELECT @@version")
+cursor.execute("SELECT * from customer")
 rows = cursor.fetchall()
 
 for row in rows:
