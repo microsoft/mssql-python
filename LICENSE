@@ -1,0 +1,47 @@
+MIT License
+All files licensed under the MIT license except the dynamic-link libraries (DLLs) in the mssql_python\libs\win folder, 
+which are subject to different licensing terms. Please review the licensing details for each component below.
+
+A. MIT License
+==================================================================
+Copyright (c) Microsoft Corporation.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE
+
+
+B. MICROSOFT LICENSES
+==================================================================
+The following dynamic-link libraries (DLLs) in the mssql_python\libs\win folder fall under different Microsoft licenses. 
+Below is a breakdown of these components by their respective licenses.
+
+1. Microsoft ODBC Driver 18 End User License Agreement (EULA)
+These components are part of the Microsoft ODBC Driver 18 for SQL Server and are governed by the Microsoft ODBC Driver 18 EULA.
+
+- msodbcsqlr18.rll: Resource library containing localized error messages for the ODBC driver.
+- msodbcdiag18.dll: Diagnostic library for handling error reporting and troubleshooting.
+- msodbcsql18.dll: Core ODBC driver enabling connectivity between SQL Server and applications.
+
+For official licensing terms, refer to: mssql_python\libs\win\MICROSOFT_ODBC_DRIVER_FOR_SQL_SERVER_LICENSE.txt 
+
+2. Microsoft Visual C++ Redistributable EULA
+These components are part of the Microsoft Visual C++ Redistributable and are governed by the Microsoft Visual C++ Redistributable EULA.
+
+- msvcp140.dll: Microsoft C++ Standard Library runtime, required for running C++ applications.  
+
+For redistribution and usage terms, refer to: mssql_python\libs\win\libs\win\MICROSOFT_VISUAL_STUDIO_LICENSE.txt

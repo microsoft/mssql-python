@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Python Community Support / Discussions
+    url: https://github.com/microsoft/mssql-python/discussions
+    about: Please ask and answer questions here.
+  - name: MSRC Vulnerability Reporting / Bug Bounty
+    url: https://msrc.microsoft.com/create-report
+    about: Please report security vulnerabilities here.

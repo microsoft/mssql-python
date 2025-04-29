@@ -1,0 +1,19 @@
+A. The dynamic-link libraries (DLLs) in the mssql_python\libs\win folder fall under different Microsoft licenses. 
+====================================================================================================
+Below is a breakdown of these components by their respective licenses.
+
+1. Microsoft ODBC Driver 18 End User License Agreement (EULA)
+These components are part of the Microsoft ODBC Driver 18 for SQL Server and are governed by the Microsoft ODBC Driver 18 EULA.
+
+- msodbcsqlr18.rll – Resource library containing localized error messages for the ODBC driver.
+- msodbcdiag18.dll – Diagnostic library for handling error reporting and troubleshooting.
+- msodbcsql18.dll – Core ODBC driver enabling connectivity between SQL Server and applications.
+
+For official licensing terms, refer to: mssql_python\libs\win\MICROSOFT_ODBC_DRIVER_FOR_SQL_SERVER_LICENSE.txt 
+
+2. Microsoft Visual C++ Redistributable EULA
+These components are part of the Microsoft Visual C++ Redistributable and are governed by the Microsoft Visual C++ Redistributable EULA.
+
+- msvcp140.dll – Microsoft C++ Standard Library runtime, required for running C++ applications.  
+
+For redistribution and usage terms, refer to: mssql_python\libs\win\MICROSOFT_VISUAL_STUDIO_LICENSE.txt
