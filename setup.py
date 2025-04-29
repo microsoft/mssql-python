@@ -63,3 +63,4 @@ setup(
     cmdclass={'build_ext': CMakeBuild},
     zip_safe=False,
 )
+
