@@ -694,7 +694,7 @@ class Cursor:
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             return []
-        return rows
+        return rows    
 
     def fetchall(self) -> List[tuple]:
         """
@@ -710,11 +710,23 @@ class Cursor:
 
         # Fetch all remaining rows
         rows = []
+        print("FETCH ALL!!!")
         ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt.value, rows)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
-        if ret != ddbc_sql_const.SQL_NO_DATA.value:
-            return []
-        return list(rows)
+        print("RETURN CODE!", ret, rows)
+        # if ret != ddbc_sql_const.SQL_NO_DATA.value:
+        #     return []
+        
+        # Process rows to ensure they are properly formatted
+        # This converts any py::list objects to Python lists
+        result = []
+        for row in rows:
+            if row is not None:
+                result.append(list(row))
+            else:
+                result.append(None)
+        
+        return result
 
     def nextset(self) -> Union[bool, None]:
         """
