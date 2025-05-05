@@ -246,6 +246,15 @@ void LoadDriverOrThrowException() {
         ThrowStdException("Failed to load driver");
     }
 
+    // Preload mssql-auth.dll from the same path if available
+    std::wstring authDllDir = std::wstring(ddbcModulePath) + L"\\libs\\win\\mssql-auth.dll";
+    HMODULE hAuthModule = LoadLibraryW(authDllDir.c_str());
+    if (hAuthModule) {
+        LOG("Authentication library loaded successfully from - {}", authDllDir.c_str());
+    } else {
+        LOG("Note: Authentication library not found at - {}. This is OK if not using Windows Authentication.", authDllDir.c_str());
+    }
+
     // Look for msodbcsql18.dll in a path relative to DDBC module
     std::wstring dllDir = std::wstring(ddbcModulePath) + L"\\libs\\win\\msodbcsql18.dll";
     HMODULE hModule = LoadLibraryW(dllDir.c_str());
