@@ -50,7 +50,7 @@ class Cursor:
         """
         self.connection = connection
         # self.connection.autocommit = False
-        self.hstmt = ctypes.c_void_p()
+        self.hstmt = None
         self._initialize_cursor()
         self.description = None
         self.rowcount = -1
@@ -415,22 +415,19 @@ class Cursor:
         """
         Allocate the DDBC statement handle.
         """
-        ret = ddbc_bindings.DDBCSQLAllocHandle(
+        ret, handle = ddbc_bindings.DDBCSQLAllocHandle(
             ddbc_sql_const.SQL_HANDLE_STMT.value,
-            self.connection.hdbc.value,
-            ctypes.cast(ctypes.pointer(self.hstmt), ctypes.c_void_p).value,
+            self.connection.hdbc
         )
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, handle, ret)
+        self.hstmt = handle
 
     def _reset_cursor(self) -> None:
         """
         Reset the DDBC statement handle.
         """
-        # Free the existing statement handle
-        if self.hstmt.value:
-            ddbc_bindings.DDBCSQLFreeHandle(
-                ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value
-            )
+        if self.hstmt:
+            self.hstmt = None        
         # Reinitialize the statement handle
         self._initialize_cursor()
 
@@ -444,13 +441,10 @@ class Cursor:
         if self.closed:
             raise RuntimeError("Cursor is already closed.")
 
-        if self.hstmt.value:
-            ret = ddbc_bindings.DDBCSQLFreeHandle(
-                ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value
-            )
-            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
-            self.hstmt.value = None
-
+        if self.hstmt:
+            self.hstmt = None
+            if ENABLE_LOGGING:
+                logger.debug("SQLFreeHandle succeeded")
         self.closed = True
 
     def _check_closed(self):
@@ -489,8 +483,8 @@ class Cursor:
         Initialize the description attribute using SQLDescribeCol.
         """
         col_metadata = []
-        ret = ddbc_bindings.DDBCSQLDescribeCol(self.hstmt.value, col_metadata)
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+        ret = ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, col_metadata)
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
         self.description = [
             (
@@ -602,19 +596,19 @@ class Cursor:
                 )
 
         ret = ddbc_bindings.DDBCSQLExecute(
-            self.hstmt.value,
+            self.hstmt,
             operation,
             parameters,
             parameters_type,
             self.is_stmt_prepared,
             use_prepare,
         )
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
         self.last_executed_stmt = operation
 
         # Update rowcount after execution
         # TODO: rowcount return code from SQL needs to be handled
-        self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt.value)
+        self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
 
         # Initialize description after execution
         self._initialize_description()
@@ -664,8 +658,8 @@ class Cursor:
         self._check_closed()  # Check if the cursor is closed
 
         row = []
-        ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt.value, row)
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+        ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row)
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             return None
         return list(row)
@@ -690,8 +684,8 @@ class Cursor:
 
         # Fetch the next set of rows
         rows = []
-        ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt.value, rows, size)
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+        ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows, size)
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             return []
         return rows
@@ -710,8 +704,8 @@ class Cursor:
 
         # Fetch all remaining rows
         rows = []
-        ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt.value, rows)
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+        ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows)
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
         if ret != ddbc_sql_const.SQL_NO_DATA.value:
             return []
         return list(rows)
@@ -729,8 +723,8 @@ class Cursor:
         self._check_closed()  # Check if the cursor is closed
 
         # Skip to the next result set
-        ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt.value)
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
+        ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt)
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             return False
         return True
