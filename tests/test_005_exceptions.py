@@ -71,7 +71,7 @@ def test_not_supported_error_exception():
 def test_unknown_error_exception():
     with pytest.raises(DatabaseError) as excinfo:
         raise_exception('99999', 'Unknown error')
-    assert str(excinfo.value) == "Driver Error: An error occurred with SQLSTATE code; DDBC Error: Unknown DDBC error: 99999"
+    assert str(excinfo.value) == "Driver Error: An error occurred with SQLSTATE code: 99999; DDBC Error: Unknown error"
 
 def test_syntax_error(cursor):
     with pytest.raises(ProgrammingError) as excinfo:

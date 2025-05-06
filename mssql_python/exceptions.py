@@ -645,6 +645,6 @@ def raise_exception(sqlstate: str, ddbc_error: str) -> None:
             logger.error(exception_class)
         raise exception_class
     raise DatabaseError(
-        driver_error="An error occurred with SQLSTATE code",
-        ddbc_error=f"Unknown DDBC error: {sqlstate}",
+        driver_error=f"An error occurred with SQLSTATE code: {sqlstate}",
+        ddbc_error=f"{ddbc_error}" if ddbc_error else f"Unknown DDBC error",
     )
