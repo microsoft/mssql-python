@@ -1,5 +1,9 @@
 name: build-and-release-pipeline
 
+variables:
+  - group: 'ESRP Federated Creds (AME)'
+
+
 jobs:
 - job: BuildWheel
   pool:
@@ -29,21 +33,21 @@ jobs:
         publishLocation: 'Container'
     displayName: 'Publish Artifact'
 
-  - task: EsrpRelease@7
+  - task: EsrpRelease@9
+    displayName: 'ESRP Release'
     inputs:
-      ConnectedServiceName: 'mssql-python-service'
-      keyvaultname: mssqlpythonKey
-      authcertname: 'ESRP-Release-mssql-python-auth'
-      signcertname: 'ESRP-Release-mssql-python-Sign2'
-      clientid: 'a0d18a38-fde1-4ba7-92e1-15be16cb6a8e'
+      connectedservicename: '$(ESRPConnectedServiceName)'
+      usemanagedidentity: true
+      keyvaultname: '$(AuthAKVName)'
+      signcertname: '$(AuthSignCertName)'
+      clientid: '$(EsrpClientId)'
       Intent: 'PackageDistribution'
-      ContentType: 'PyPi'
+      ContentType: 'PyPI'
       ContentSource: 'Folder'
       FolderLocation: '$(System.DefaultWorkingDirectory)/dist'
       WaitForReleaseCompletion: true
-      Owners: 'enumittal@microsoft.com'
-      Approvers: 'enumittal@microsoft.com'
+      Owners: '$(owner)'
+      Approvers: '$(approver)'
       ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
       MainPublisher: 'ESRPRELPACMAN'
-      DomainTenantId: '72f988bf-86f1-41af-91ab-2d7cd011db47'
-    displayName: 'ESRP Release'
+      DomainTenantId: '$(DomainTenantId)'
