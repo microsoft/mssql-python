@@ -12,15 +12,13 @@
 #include <string>
 #include <utility>  // std::forward
 
+#include "ddbc_bindings.h"
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
 #include <pybind11/pytypes.h>  // Add this line for datetime support
 #include <pybind11/stl.h>
-#include <windows.h>  // windows.h needs to be included before sql.h
-#include <sql.h>
-#include <sqlext.h>
-
+#include "connection/connection.h"
 
 namespace py = pybind11;
 using namespace pybind11::literals;
@@ -106,61 +104,8 @@ struct ErrorInfo {
     std::wstring ddbcErrorMsg;
 };
 
-
 //-------------------------------------------------------------------------------------------------
-// Function pointer typedefs
-//-------------------------------------------------------------------------------------------------
-
-// Handle APIs
-typedef SQLRETURN (*SQLAllocHandleFunc)(SQLSMALLINT, SQLHANDLE, SQLHANDLE*);
-typedef SQLRETURN (*SQLSetEnvAttrFunc)(SQLHANDLE, SQLINTEGER, SQLPOINTER, SQLINTEGER);
-typedef SQLRETURN (*SQLSetConnectAttrFunc)(SQLHDBC, SQLINTEGER, SQLPOINTER, SQLINTEGER);
-typedef SQLRETURN (*SQLSetStmtAttrFunc)(SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER);
-typedef SQLRETURN (*SQLGetConnectAttrFunc)(SQLHDBC, SQLINTEGER, SQLPOINTER, SQLINTEGER,
-                                           SQLINTEGER*);
-
-// Connection and Execution APIs
-typedef SQLRETURN (*SQLDriverConnectFunc)(SQLHANDLE, SQLHWND, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*,
-                                          SQLSMALLINT, SQLSMALLINT*, SQLUSMALLINT);
-typedef SQLRETURN (*SQLExecDirectFunc)(SQLHANDLE, SQLWCHAR*, SQLINTEGER);
-typedef SQLRETURN (*SQLPrepareFunc)(SQLHANDLE, SQLWCHAR*, SQLINTEGER);
-typedef SQLRETURN (*SQLBindParameterFunc)(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLSMALLINT,
-                                          SQLSMALLINT, SQLULEN, SQLSMALLINT, SQLPOINTER, SQLLEN,
-                                          SQLLEN*);
-typedef SQLRETURN (*SQLExecuteFunc)(SQLHANDLE);
-typedef SQLRETURN (*SQLRowCountFunc)(SQLHSTMT, SQLLEN*);
-typedef SQLRETURN (*SQLSetDescFieldFunc)(SQLHDESC, SQLSMALLINT, SQLSMALLINT, SQLPOINTER, SQLINTEGER);
-typedef SQLRETURN (*SQLGetStmtAttrFunc)(SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER, SQLINTEGER*);
-
-// Data retrieval APIs
-typedef SQLRETURN (*SQLFetchFunc)(SQLHANDLE);
-typedef SQLRETURN (*SQLFetchScrollFunc)(SQLHANDLE, SQLSMALLINT, SQLLEN);
-typedef SQLRETURN (*SQLGetDataFunc)(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER, SQLLEN,
-                                    SQLLEN*);
-typedef SQLRETURN (*SQLNumResultColsFunc)(SQLHSTMT, SQLSMALLINT*);
-typedef SQLRETURN (*SQLBindColFunc)(SQLHSTMT, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER, SQLLEN,
-                                    SQLLEN*);
-typedef SQLRETURN (*SQLDescribeColFunc)(SQLHSTMT, SQLUSMALLINT, SQLWCHAR*, SQLSMALLINT,
-                                        SQLSMALLINT*, SQLSMALLINT*, SQLULEN*, SQLSMALLINT*,
-                                        SQLSMALLINT*);
-typedef SQLRETURN (*SQLMoreResultsFunc)(SQLHSTMT);
-typedef SQLRETURN (*SQLColAttributeFunc)(SQLHSTMT, SQLUSMALLINT, SQLUSMALLINT, SQLPOINTER,
-                                         SQLSMALLINT, SQLSMALLINT*, SQLPOINTER);
-
-// Transaction APIs
-typedef SQLRETURN (*SQLEndTranFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT);
-
-// Disconnect/free APIs
-typedef SQLRETURN (*SQLFreeHandleFunc)(SQLSMALLINT, SQLHANDLE);
-typedef SQLRETURN (*SQLDisconnectFunc)(SQLHDBC);
-typedef SQLRETURN (*SQLFreeStmtFunc)(SQLHSTMT, SQLUSMALLINT);
-
-// Diagnostic APIs
-typedef SQLRETURN (*SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLWCHAR*, SQLINTEGER*,
-                                       SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*);
-
-//-------------------------------------------------------------------------------------------------
-// Function pointer initialization
+// Function pointer definitions
 //-------------------------------------------------------------------------------------------------
 
 // Handle APIs
@@ -201,131 +146,7 @@ SQLFreeStmtFunc SQLFreeStmt_ptr = nullptr;
 // Diagnostic APIs
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
 
-// Smart wrapper around SQLHANDLE
-class SqlHandle {
-public:
-    SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle) : _type(type), _handle(rawHandle) {}
-    ~SqlHandle() {
-        if (_handle) {
-            SQLFreeHandle_ptr(_type, _handle);
-            _handle = nullptr;
-        }
-    }
-    SQLHANDLE get() const { return _handle; }
-
-private:
-    SQLSMALLINT _type;
-    SQLHANDLE _handle;
-};
-using SqlHandlePtr = std::shared_ptr<SqlHandle>;
-
 namespace {
-
-// TODO: Revisit GIL considerations if we're using python's logger
-template <typename... Args>
-void LOG(const std::string& formatString, Args&&... args) {
-    // TODO: Try to do this string concatenation at compile time
-    std::string ddbcFormatString = "[DDBC Bindings log] " + formatString;
-    static py::object logging = py::module_::import("mssql_python.logging_config")
-	                            .attr("get_logger")();
-    if (py::isinstance<py::none>(logging)) {
-        return;
-    }
-    py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
-    logging.attr("debug")(message);
-}
-
-// TODO: Add more nuanced exception classes
-void ThrowStdException(const std::string& message) { throw std::runtime_error(message); }
-
-// Helper to load the driver
-// TODO: We don't need to do explicit linking using LoadLibrary. We can just use implicit
-//       linking to load this DLL. It will simplify the code a lot.
-void LoadDriverOrThrowException() {
-    HMODULE hDdbcModule;
-    wchar_t ddbcModulePath[MAX_PATH];
-    // Get the path to DDBC module:
-    // GetModuleHandleExW returns a handle to current shared library (ddbc_bindings.pyd) given a
-    // function from the library (LoadDriverOrThrowException). GetModuleFileNameW takes in the
-    // library handle (hDdbcModule) & returns the full path to this library (ddbcModulePath)
-    if (GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            (LPWSTR)&LoadDriverOrThrowException, &hDdbcModule) &&
-        GetModuleFileNameW(hDdbcModule, ddbcModulePath, MAX_PATH)) {
-        // Look for last occurence of '\' in the path and set it to null
-        wchar_t* lastBackSlash = wcsrchr(ddbcModulePath, L'\\');
-        if (lastBackSlash == nullptr) {
-            LOG("Invalid DDBC module path - %S", ddbcModulePath);
-            ThrowStdException("Failed to load driver");
-        }
-        *lastBackSlash = 0;
-    } else {
-        LOG("Failed to get DDBC module path. Error code - %d", GetLastError());
-        ThrowStdException("Failed to load driver");
-    }
-
-    // Look for msodbcsql18.dll in a path relative to DDBC module
-    std::wstring dllDir = std::wstring(ddbcModulePath) + L"\\libs\\win\\msodbcsql18.dll";
-    HMODULE hModule = LoadLibraryW(dllDir.c_str());
-    if (!hModule) {
-        LOG("LoadLibraryW failed to load driver from - %S", dllDir.c_str());
-        ThrowStdException("Failed to load driver");
-    }
-    LOG("Driver loaded successfully from - {}", dllDir.c_str());
-
-    // Environment and handle function loading
-    SQLAllocHandle_ptr = (SQLAllocHandleFunc)GetProcAddress(hModule, "SQLAllocHandle");
-    SQLSetEnvAttr_ptr = (SQLSetEnvAttrFunc)GetProcAddress(hModule, "SQLSetEnvAttr");
-    SQLSetConnectAttr_ptr = (SQLSetConnectAttrFunc)GetProcAddress(hModule, "SQLSetConnectAttrW");
-    SQLSetStmtAttr_ptr = (SQLSetStmtAttrFunc)GetProcAddress(hModule, "SQLSetStmtAttrW");
-    SQLGetConnectAttr_ptr = (SQLGetConnectAttrFunc)GetProcAddress(hModule, "SQLGetConnectAttrW");
-
-    // Connection and statement function loading
-    SQLDriverConnect_ptr = (SQLDriverConnectFunc)GetProcAddress(hModule, "SQLDriverConnectW");
-    SQLExecDirect_ptr = (SQLExecDirectFunc)GetProcAddress(hModule, "SQLExecDirectW");
-    SQLPrepare_ptr = (SQLPrepareFunc)GetProcAddress(hModule, "SQLPrepareW");
-    SQLBindParameter_ptr = (SQLBindParameterFunc)GetProcAddress(hModule, "SQLBindParameter");
-    SQLExecute_ptr = (SQLExecuteFunc)GetProcAddress(hModule, "SQLExecute");
-    SQLRowCount_ptr = (SQLRowCountFunc)GetProcAddress(hModule, "SQLRowCount");
-    SQLGetStmtAttr_ptr = (SQLGetStmtAttrFunc)GetProcAddress(hModule, "SQLGetStmtAttrW");
-    SQLSetDescField_ptr = (SQLSetDescFieldFunc)GetProcAddress(hModule, "SQLSetDescFieldW");
-
-    // Fetch and data retrieval function loading
-    SQLFetch_ptr = (SQLFetchFunc)GetProcAddress(hModule, "SQLFetch");
-    SQLFetchScroll_ptr = (SQLFetchScrollFunc)GetProcAddress(hModule, "SQLFetchScroll");
-    SQLGetData_ptr = (SQLGetDataFunc)GetProcAddress(hModule, "SQLGetData");
-    SQLNumResultCols_ptr = (SQLNumResultColsFunc)GetProcAddress(hModule, "SQLNumResultCols");
-    SQLBindCol_ptr = (SQLBindColFunc)GetProcAddress(hModule, "SQLBindCol");
-    SQLDescribeCol_ptr = (SQLDescribeColFunc)GetProcAddress(hModule, "SQLDescribeColW");
-    SQLMoreResults_ptr = (SQLMoreResultsFunc)GetProcAddress(hModule, "SQLMoreResults");
-    SQLColAttribute_ptr = (SQLColAttributeFunc)GetProcAddress(hModule, "SQLColAttributeW");
-
-    // Transaction functions loading
-    SQLEndTran_ptr = (SQLEndTranFunc)GetProcAddress(hModule, "SQLEndTran");
-
-    // Disconnect and free functions loading
-    SQLFreeHandle_ptr = (SQLFreeHandleFunc)GetProcAddress(hModule, "SQLFreeHandle");
-    SQLDisconnect_ptr = (SQLDisconnectFunc)GetProcAddress(hModule, "SQLDisconnect");
-    SQLFreeStmt_ptr = (SQLFreeStmtFunc)GetProcAddress(hModule, "SQLFreeStmt");
-
-    // Diagnostic record function Loading
-    SQLGetDiagRec_ptr = (SQLGetDiagRecFunc)GetProcAddress(hModule, "SQLGetDiagRecW");
-
-    bool success = SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
-                   SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
-                   SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
-                   SQLRowCount_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr && SQLFetch_ptr &&
-		   SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr &&
-		   SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr &&
-		   SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr &&
-		   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
-
-    if (!success) {
-        LOG("Failed to load required function pointers from driver - %S", dllDir.c_str());
-        ThrowStdException("Failed to load required function pointers from driver");
-    }
-    LOG("Sucessfully loaded function pointers from driver");
-}
 
 const char* GetSqlCTypeAsString(const SQLSMALLINT cType) {
     switch (cType) {
@@ -642,87 +463,155 @@ void HandleZeroColumnSizeAtFetch(SQLULEN& columnSize) {
 
 }  // namespace
 
-// Wrap SQLAllocHandle
-SQLRETURN SQLAllocHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr InputHandle, SqlHandlePtr& OutputHandle) {
-    LOG("Allocate SQL Handle");
-    if (!SQLAllocHandle_ptr) {
-        LoadDriverOrThrowException();
+// TODO: Revisit GIL considerations if we're using python's logger
+template <typename... Args>
+void LOG(const std::string& formatString, Args&&... args) {
+    // TODO: Try to do this string concatenation at compile time
+    std::string ddbcFormatString = "[DDBC Bindings log] " + formatString;
+    static py::object logging = py::module_::import("mssql_python.logging_config")
+	                            .attr("get_logger")();
+    if (py::isinstance<py::none>(logging)) {
+        return;
     }
-
-    SQLHANDLE rawOutputHandle = nullptr;
-    SQLRETURN ret = SQLAllocHandle_ptr(HandleType, InputHandle ? InputHandle->get() : nullptr, &rawOutputHandle);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to allocate handle");
-        return ret;
-    }
-    OutputHandle = std::make_shared<SqlHandle>(HandleType, rawOutputHandle);
-    return ret;
+    py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
+    logging.attr("debug")(message);
 }
 
-// Wrap SQLSetEnvAttr
-SQLRETURN SQLSetEnvAttr_wrap(SqlHandlePtr EnvHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
-                             SQLINTEGER StringLength) {
-    LOG("Set SQL environment Attribute");
-    if (!SQLSetEnvAttr_ptr) {
-        LoadDriverOrThrowException();
+// TODO: Add more nuanced exception classes
+void ThrowStdException(const std::string& message) { throw std::runtime_error(message); }
+
+// Helper to load the driver
+// TODO: We don't need to do explicit linking using LoadLibrary. We can just use implicit
+//       linking to load this DLL. It will simplify the code a lot.
+void LoadDriverOrThrowException() {
+    HMODULE hDdbcModule;
+    wchar_t ddbcModulePath[MAX_PATH];
+    // Get the path to DDBC module:
+    // GetModuleHandleExW returns a handle to current shared library (ddbc_bindings.pyd) given a
+    // function from the library (LoadDriverOrThrowException). GetModuleFileNameW takes in the
+    // library handle (hDdbcModule) & returns the full path to this library (ddbcModulePath)
+    if (GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (LPWSTR)&LoadDriverOrThrowException, &hDdbcModule) &&
+        GetModuleFileNameW(hDdbcModule, ddbcModulePath, MAX_PATH)) {
+        // Look for last occurence of '\' in the path and set it to null
+        wchar_t* lastBackSlash = wcsrchr(ddbcModulePath, L'\\');
+        if (lastBackSlash == nullptr) {
+            LOG("Invalid DDBC module path - %S", ddbcModulePath);
+            ThrowStdException("Failed to load driver");
+        }
+        *lastBackSlash = 0;
+    } else {
+        LOG("Failed to get DDBC module path. Error code - %d", GetLastError());
+        ThrowStdException("Failed to load driver");
     }
 
-    // TODO: Does ValuePtr need to be converted from Python to C++ object?
-    SQLRETURN ret =  SQLSetEnvAttr_ptr(EnvHandle->get(), Attribute, reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to set environment attribute");
+    // Look for msodbcsql18.dll in a path relative to DDBC module
+    std::wstring dllDir = std::wstring(ddbcModulePath) + L"\\libs\\win\\msodbcsql18.dll";
+    HMODULE hModule = LoadLibraryW(dllDir.c_str());
+    if (!hModule) {
+        LOG("LoadLibraryW failed to load driver from - %S", dllDir.c_str());
+        ThrowStdException("Failed to load driver");
     }
-    return ret;
+    LOG("Driver loaded successfully from - {}", dllDir.c_str());
+
+    // Environment and handle function loading
+    SQLAllocHandle_ptr = (SQLAllocHandleFunc)GetProcAddress(hModule, "SQLAllocHandle");
+    SQLSetEnvAttr_ptr = (SQLSetEnvAttrFunc)GetProcAddress(hModule, "SQLSetEnvAttr");
+    SQLSetConnectAttr_ptr = (SQLSetConnectAttrFunc)GetProcAddress(hModule, "SQLSetConnectAttrW");
+    SQLSetStmtAttr_ptr = (SQLSetStmtAttrFunc)GetProcAddress(hModule, "SQLSetStmtAttrW");
+    SQLGetConnectAttr_ptr = (SQLGetConnectAttrFunc)GetProcAddress(hModule, "SQLGetConnectAttrW");
+
+    // Connection and statement function loading
+    SQLDriverConnect_ptr = (SQLDriverConnectFunc)GetProcAddress(hModule, "SQLDriverConnectW");
+    SQLExecDirect_ptr = (SQLExecDirectFunc)GetProcAddress(hModule, "SQLExecDirectW");
+    SQLPrepare_ptr = (SQLPrepareFunc)GetProcAddress(hModule, "SQLPrepareW");
+    SQLBindParameter_ptr = (SQLBindParameterFunc)GetProcAddress(hModule, "SQLBindParameter");
+    SQLExecute_ptr = (SQLExecuteFunc)GetProcAddress(hModule, "SQLExecute");
+    SQLRowCount_ptr = (SQLRowCountFunc)GetProcAddress(hModule, "SQLRowCount");
+    SQLGetStmtAttr_ptr = (SQLGetStmtAttrFunc)GetProcAddress(hModule, "SQLGetStmtAttrW");
+    SQLSetDescField_ptr = (SQLSetDescFieldFunc)GetProcAddress(hModule, "SQLSetDescFieldW");
+
+    // Fetch and data retrieval function loading
+    SQLFetch_ptr = (SQLFetchFunc)GetProcAddress(hModule, "SQLFetch");
+    SQLFetchScroll_ptr = (SQLFetchScrollFunc)GetProcAddress(hModule, "SQLFetchScroll");
+    SQLGetData_ptr = (SQLGetDataFunc)GetProcAddress(hModule, "SQLGetData");
+    SQLNumResultCols_ptr = (SQLNumResultColsFunc)GetProcAddress(hModule, "SQLNumResultCols");
+    SQLBindCol_ptr = (SQLBindColFunc)GetProcAddress(hModule, "SQLBindCol");
+    SQLDescribeCol_ptr = (SQLDescribeColFunc)GetProcAddress(hModule, "SQLDescribeColW");
+    SQLMoreResults_ptr = (SQLMoreResultsFunc)GetProcAddress(hModule, "SQLMoreResults");
+    SQLColAttribute_ptr = (SQLColAttributeFunc)GetProcAddress(hModule, "SQLColAttributeW");
+
+    // Transaction functions loading
+    SQLEndTran_ptr = (SQLEndTranFunc)GetProcAddress(hModule, "SQLEndTran");
+
+    // Disconnect and free functions loading
+    SQLFreeHandle_ptr = (SQLFreeHandleFunc)GetProcAddress(hModule, "SQLFreeHandle");
+    SQLDisconnect_ptr = (SQLDisconnectFunc)GetProcAddress(hModule, "SQLDisconnect");
+    SQLFreeStmt_ptr = (SQLFreeStmtFunc)GetProcAddress(hModule, "SQLFreeStmt");
+
+    // Diagnostic record function Loading
+    SQLGetDiagRec_ptr = (SQLGetDiagRecFunc)GetProcAddress(hModule, "SQLGetDiagRecW");
+
+    bool success = SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
+                   SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
+                   SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
+                   SQLRowCount_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr && SQLFetch_ptr &&
+		   SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr &&
+		   SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr &&
+		   SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr &&
+		   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
+
+    if (!success) {
+        LOG("Failed to load required function pointers from driver - %S", dllDir.c_str());
+        ThrowStdException("Failed to load required function pointers from driver");
+    }
+    LOG("Sucessfully loaded function pointers from driver");
 }
 
-// Wrap SQLSetConnectAttr
-SQLRETURN SQLSetConnectAttr_wrap(SqlHandlePtr ConnectionHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
-                                 SQLINTEGER StringLength) {
-    LOG("Set SQL Connection Attribute");
-    if (!SQLSetConnectAttr_ptr) {
-        LoadDriverOrThrowException();
-    }
+// DriverLoader definition 
+DriverLoader::DriverLoader() : m_driverLoaded(false) {}
 
-    // TODO: Does ValuePtr need to be converted from Python to C++ object?
-    SQLRETURN ret =  SQLSetConnectAttr_ptr(ConnectionHandle->get(), Attribute, reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to set Connection attribute");
-    }
-    return ret;
+DriverLoader& DriverLoader::getInstance() {
+    static DriverLoader instance;
+    return instance;
 }
 
-// Wrap SQLSetStmtAttr
-SQLRETURN SQLSetStmtAttr_wrap(SqlHandlePtr StatementHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
-                              SQLINTEGER StringLength) {
-    LOG("Set SQL Statement Attribute");
-    if (!SQLSetConnectAttr_ptr) {
+void DriverLoader::loadDriver() {
+    if (!m_driverLoaded) {
         LoadDriverOrThrowException();
+        m_driverLoaded = true;
     }
-
-    // TODO: Does ValuePtr need to be converted from Python to C++ object?
-    SQLRETURN ret = SQLSetStmtAttr_ptr(StatementHandle->get(), Attribute, reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to set Statement attribute");
-    }
-    return ret;
 }
 
-// Wrap SQLGetConnectionAttrA
-// Currently only supports retrieval of int-valued attributes
-// TODO: add support to retrieve all types of attributes
-SQLINTEGER SQLGetConnectionAttr_wrap(SqlHandlePtr ConnectionHandle, SQLINTEGER attribute) {
-    LOG("Get SQL COnnection Attribute");
-    if (!SQLGetConnectAttr_ptr) {
-        LoadDriverOrThrowException();
+// SqlHandle definition
+SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle)
+    : _type(type), _handle(rawHandle) {}
+
+SqlHandle::~SqlHandle() {
+    if (_handle) {
+        const char* type_str = nullptr;
+        switch (_type) {
+            case SQL_HANDLE_ENV:  type_str = "ENV"; break;
+            case SQL_HANDLE_DBC:  type_str = "DBC"; break;
+            case SQL_HANDLE_STMT: type_str = "STMT"; break;
+            case SQL_HANDLE_DESC: type_str = "DESC"; break;
+            default:              type_str = "UNKNOWN"; break;
+        }
+        SQLFreeHandle_ptr(_type, _handle);
+        _handle = nullptr;
+        std::stringstream ss;
+        ss << "Freed SQL Handle of type: " << type_str;
+        LOG(ss.str());
     }
+}
 
-    SQLINTEGER stringLength;
-    SQLINTEGER intValue;
+SQLHANDLE SqlHandle::get() const {
+    return _handle;
+}
 
-    // Try to get the attribute as an integer
-    SQLGetConnectAttr_ptr(ConnectionHandle->get(), attribute, &intValue,
-                          sizeof(SQLINTEGER), &stringLength);
-    return intValue;
+SQLSMALLINT SqlHandle::type() const {
+    return _type;
 }
 
 // Helper function to check for driver errors
@@ -738,7 +627,8 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
     SQLHANDLE rawHandle = handle->get();
     if (!SQL_SUCCEEDED(retcode)) {
         if (!SQLGetDiagRec_ptr) {
-            LoadDriverOrThrowException();
+            LOG("Function pointer not initialized. Loading the driver.");
+            DriverLoader::getInstance().loadDriver();  // Load the driver
         }
 
         SQLWCHAR sqlState[6], message[SQL_MAX_MESSAGE_LENGTH];
@@ -757,27 +647,12 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
     return errorInfo;
 }
 
-// Wrap SQLDriverConnect
-SQLRETURN SQLDriverConnect_wrap(SqlHandlePtr ConnectionHandle, intptr_t WindowHandle, const std::wstring& ConnectionString) {
-    LOG("Driver Connect to MSSQL");
-    if (!SQLDriverConnect_ptr) {
-        LoadDriverOrThrowException();
-    }
-    SQLRETURN ret = SQLDriverConnect_ptr(ConnectionHandle->get(),
-                                reinterpret_cast<SQLHWND>(WindowHandle),
-                                const_cast<SQLWCHAR*>(ConnectionString.c_str()), SQL_NTS, nullptr,
-                                0, nullptr, SQL_DRIVER_NOPROMPT);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to connect to DB");
-    }
-    return ret;
-}
-
 // Wrap SQLExecDirect
 SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Query) {
     LOG("Execute SQL query directly - {}", Query.c_str());
     if (!SQLExecDirect_ptr) {
-        LoadDriverOrThrowException();
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
     SQLRETURN ret = SQLExecDirect_ptr(StatementHandle->get(), const_cast<SQLWCHAR*>(Query.c_str()), SQL_NTS);
@@ -797,7 +672,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                           py::list& isStmtPrepared, const bool usePrepare = true) {
     LOG("Execute SQL Query - {}", query.c_str());
     if (!SQLPrepare_ptr) {
-        LoadDriverOrThrowException();
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();  // Load the driver
     }
     assert(SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr && SQLExecDirect_ptr);
 
@@ -870,7 +746,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
 SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle) {
     LOG("Get number of columns in result set");
     if (!SQLNumResultCols_ptr) {
-        LoadDriverOrThrowException();
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
     SQLSMALLINT columnCount;
@@ -883,7 +760,8 @@ SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle) {
 SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMetadata) {
     LOG("Get column description");
     if (!SQLDescribeCol_ptr) {
-        LoadDriverOrThrowException();
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
     SQLSMALLINT ColumnCount;
@@ -924,7 +802,8 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
 SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
     LOG("Fetch next row");
     if (!SQLFetch_ptr) {
-        LoadDriverOrThrowException();
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
     return SQLFetch_ptr(StatementHandle->get());
@@ -935,7 +814,8 @@ SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
 SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, py::list& row) {
     LOG("Get data from columns");
     if (!SQLGetData_ptr) {
-        LoadDriverOrThrowException();
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
     SQLRETURN ret;
@@ -1915,51 +1795,19 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row) {
 SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
     LOG("Check for more results");
     if (!SQLMoreResults_ptr) {
-        LoadDriverOrThrowException();
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
     return SQLMoreResults_ptr(StatementHandle->get());
-}
-
-// Wrap SQLEndTran
-SQLRETURN SQLEndTran_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle, SQLSMALLINT CompletionType) {
-    LOG("End SQL Transaction");
-    if (!SQLEndTran_ptr) {
-        LoadDriverOrThrowException();
-    }
-
-    return SQLEndTran_ptr(HandleType, Handle->get(), CompletionType);
-}
-
-// Wrap SQLFreeHandle
-SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
-    LOG("Free SQL handle");
-    if (!SQLAllocHandle_ptr) {
-        LoadDriverOrThrowException();
-    }
-
-    SQLRETURN ret = SQLFreeHandle_ptr(HandleType, Handle->get());
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("SQLFreeHandle failed with error code - {}", ret);
-    }
-    return ret;
-}
-
-// Wrap SQLDisconnect
-SQLRETURN SQLDisconnect_wrap(SqlHandlePtr ConnectionHandle) {
-    LOG("Disconnect from MSSQL");
-    if (!SQLDisconnect_ptr) {
-        LoadDriverOrThrowException();
-    }
-
-    return SQLDisconnect_ptr(ConnectionHandle->get());
 }
 
 // Wrap SQLRowCount
 SQLLEN SQLRowCount_wrap(SqlHandlePtr StatementHandle) {
     LOG("Get number of row affected by last execute");
     if (!SQLRowCount_ptr) {
-        LoadDriverOrThrowException();
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
     SQLLEN rowCount;
@@ -1994,21 +1842,15 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("sqlState", &ErrorInfo::sqlState)
         .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle");
-    m.def("DDBCSQLAllocHandle", [](SQLSMALLINT HandleType, SqlHandlePtr InputHandle = nullptr) {
-            SqlHandlePtr OutputHandle;
-            SQLRETURN rc = SQLAllocHandle_wrap(HandleType, InputHandle, OutputHandle);
-            return py::make_tuple(rc, OutputHandle);
-        }, "Allocate an environment, connection, statement, or descriptor handle");
-    m.def("DDBCSQLSetEnvAttr", &SQLSetEnvAttr_wrap,
-          "Set an attribute that governs aspects of environments");
-    m.def("DDBCSQLSetConnectAttr", &SQLSetConnectAttr_wrap,
-          "Set an attribute that governs aspects of connections");
-    m.def("DDBCSQLSetStmtAttr", &SQLSetStmtAttr_wrap,
-          "Set an attribute that governs aspects of statements");
-    m.def("DDBCSQLGetConnectionAttr", &SQLGetConnectionAttr_wrap,
-          "Get an attribute that governs aspects of connections");
-    m.def("DDBCSQLDriverConnect", &SQLDriverConnect_wrap,
-          "Connect to a data source with a connection string");
+    py::class_<Connection>(m, "Connection")
+        .def(py::init<const std::wstring&>(), "Initialize connection with connection string")
+        .def("connect", &Connection::connect, "Connect to the database")
+        .def("close", &Connection::close, "Close the connection")
+        .def("commit", &Connection::commit, "Commit the current transaction")
+        .def("rollback", &Connection::rollback, "Rollback the current transaction")
+        .def("set_autocommit", &Connection::set_autocommit)
+        .def("get_autocommit", &Connection::get_autocommit)
+        .def("alloc_statement_handle", &Connection::alloc_statement_handle, "hello");
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");
     m.def("DDBCSQLRowCount", &SQLRowCount_wrap,
@@ -2024,8 +1866,5 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchMany", &FetchMany_wrap, py::arg("StatementHandle"), py::arg("rows"),
           py::arg("fetchSize") = 1, "Fetch many rows from the result set");
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set");
-    m.def("DDBCSQLEndTran", &SQLEndTran_wrap, "End a transaction");
-    m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
-    m.def("DDBCSQLDisconnect", &SQLDisconnect_wrap, "Disconnect from a data source");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
 }

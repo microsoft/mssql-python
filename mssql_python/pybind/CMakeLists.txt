@@ -41,7 +41,13 @@ set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 set(PYTHON_EXTENSION_NAME ddbc_bindings)
 
 # Add the shared library (DLL or .pyd) instead of an executable
-add_library(${PYTHON_EXTENSION_NAME} MODULE ddbc_bindings.cpp)
+add_library(${PYTHON_EXTENSION_NAME} MODULE connection/connection.cpp ddbc_bindings.cpp)
+
+# Add include directories for your project
+target_include_directories(${PYTHON_EXTENSION_NAME} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}           # Root directory (for ddbc_bindings.h)
+    ${CMAKE_CURRENT_SOURCE_DIR}/connection  # connection directory (for connection.h)
+)
 
 # Set output directories based on build type
 set_target_properties(${PYTHON_EXTENSION_NAME} PROPERTIES

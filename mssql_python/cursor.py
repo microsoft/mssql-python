@@ -415,12 +415,8 @@ class Cursor:
         """
         Allocate the DDBC statement handle.
         """
-        ret, handle = ddbc_bindings.DDBCSQLAllocHandle(
-            ddbc_sql_const.SQL_HANDLE_STMT.value,
-            self.connection.hdbc
-        )
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, handle, ret)
-        self.hstmt = handle
+        self.hstmt = self.connection._conn.alloc_statement_handle()
+        print(f"Statement handle: {self.hstmt}")
 
     def _reset_cursor(self) -> None:
         """
@@ -550,11 +546,13 @@ class Cursor:
             use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
             reset_cursor: Whether to reset the cursor before execution.
         """
+        print(f"Executing query: {operation}")
         self._check_closed()  # Check if the cursor is closed
 
         if reset_cursor:
             self._reset_cursor()
 
+        print(f"Parameters: {parameters}")
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
 
