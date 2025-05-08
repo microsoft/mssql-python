@@ -95,6 +95,15 @@ class Connection:
             conn_str += f"{key}={value};"
         return conn_str
 
+    def _is_closed(self) -> bool:
+        """
+        Check if the connection is closed.
+
+        Returns:
+            bool: True if the connection is closed, False otherwise.
+        """
+        return self.hdbc is None
+
     def _initializer(self) -> None:
         """
         Initialize the environment and connection handles.
@@ -249,6 +258,9 @@ class Connection:
             DatabaseError: If there is an error while creating the cursor.
             InterfaceError: If there is an error related to the database interface.
         """
+        if self._is_closed():
+            # Cannot create a cursor if the connection is closed
+            raise Exception("Connection is closed. Cannot create cursor.")
         return Cursor(self)
 
     def commit(self) -> None:
@@ -263,6 +275,10 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while committing the transaction.
         """
+        if self._is_closed():
+            # Cannot commit if the connection is closed
+            raise Exception("Connection is closed. Cannot commit.")
+
         # Commit the current transaction
         ret = ddbc_bindings.DDBCSQLEndTran(
             ddbc_sql_const.SQL_HANDLE_DBC.value,  # Handle type
@@ -284,6 +300,10 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while rolling back the transaction.
         """
+        if self._is_closed():
+            # Cannot roll back if the connection is closed
+            raise Exception("Connection is closed. Cannot roll back.")
+
         # Roll back the current transaction
         ret = ddbc_bindings.DDBCSQLEndTran(
             ddbc_sql_const.SQL_HANDLE_DBC.value,  # Handle type
@@ -307,6 +327,9 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while closing the connection.
         """
+        if self._is_closed():
+            # Connection is already closed
+            return
         # Disconnect from the database
         ret = ddbc_bindings.DDBCSQLDisconnect(self.hdbc)
         check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, ret)

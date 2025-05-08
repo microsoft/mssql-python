@@ -11,7 +11,7 @@ Note: The cursor function is not yet implemented, so related tests are commented
 """
 
 import pytest
-from mssql_python import Connection
+from mssql_python import Connection, connect
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
@@ -147,6 +147,10 @@ def test_invalid_connection_string():
     with pytest.raises(Exception):
         Connection("invalid_connection_string")
 
-def test_connection_close(db_connection):
-    # Check if the database connection is closed
-    db_connection.close()
+def test_connection_close(conn_str):
+    # Create a separate connection just for this test
+    temp_conn = connect(conn_str)
+    # Check if the database connection can be closed
+    temp_conn.close()
+    with pytest.raises(Exception):
+        temp_conn.cursor() # This should raise an exception since the connection is closed

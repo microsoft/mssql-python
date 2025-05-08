@@ -16,7 +16,7 @@ def pytest_configure(config):
     # Add any necessary configuration here
     pass
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope='session')
 def conn_str():
     conn_str = os.getenv('DB_CONNECTION_STRING')
     return conn_str
@@ -33,8 +33,10 @@ def db_connection(conn_str):
         else:
             pytest.fail(f"Database connection failed: {e}")
     yield conn
+    conn.close()
 
 @pytest.fixture(scope="module")
 def cursor(db_connection):
     cursor = db_connection.cursor()
     yield cursor
+    cursor.close()
