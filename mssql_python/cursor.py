@@ -439,7 +439,7 @@ class Cursor:
             Error: If any operation is attempted with the cursor after it is closed.
         """
         if self.closed:
-            raise RuntimeError("Cursor is already closed.")
+            raise Exception("Cursor is already closed.")
 
         if self.hstmt:
             self.hstmt = None
@@ -455,7 +455,7 @@ class Cursor:
             Error: If the cursor is closed.
         """
         if self.closed:
-            raise RuntimeError("Operation cannot be performed: the cursor is closed.")
+            raise Exception("Operation cannot be performed: the cursor is closed.")
 
     def _create_parameter_types_list(self, parameter, param_info, parameters_list, i):
         """

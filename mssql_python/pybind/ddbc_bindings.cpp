@@ -206,28 +206,12 @@ class SqlHandle {
 public:
     SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle) : _type(type), _handle(rawHandle) {}
     ~SqlHandle() {
-        try {
-            if (_handle) {
-                // Special case for connection handles - make sure we disconnect before freeing
-                if (_type == SQL_HANDLE_DBC && SQLDisconnect_ptr) {
-                    SQLDisconnect_ptr(_handle);
-                }
-                // Only call if the function pointer is valid
-                if (SQLFreeHandle_ptr) {
-                    SQLFreeHandle_ptr(_type, _handle);
-                }
-                _handle = nullptr;
-            }
-        } catch (...) {
-            // Prevent exceptions from propagating out of destructor
-            // This ensures the destructor doesn't throw during garbage collection
+        if (_handle) {
+            SQLFreeHandle_ptr(_type, _handle);
+            _handle = nullptr;
         }
     }
     SQLHANDLE get() const { return _handle; }
-    
-    // Delete copy constructor and assignment operator to prevent double-free issues
-    SqlHandle(const SqlHandle&) = delete;
-    SqlHandle& operator=(const SqlHandle&) = delete;
 
 private:
     SQLSMALLINT _type;

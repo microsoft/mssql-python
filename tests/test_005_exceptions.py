@@ -1,5 +1,5 @@
 import pytest
-from mssql_python import connect
+from mssql_python import connect, Connection
 from mssql_python.exceptions import (
     Exception,
     Warning,
@@ -123,5 +123,5 @@ def test_foreign_key_constraint_error(cursor):
 
 def test_connection_error(db_connection):
     with pytest.raises(OperationalError) as excinfo:
-        connect("InvalidConnectionString")
+        Connection("InvalidConnectionString")
     assert "Client unable to establish connection" in str(excinfo.value)
