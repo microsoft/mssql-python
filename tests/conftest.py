@@ -34,13 +34,6 @@ def db_connection(conn_str):
             pytest.fail(f"Database connection failed: {e}")
     yield conn
     conn.close()
-    # try:
-    #     # Roll back any pending transactions before closing
-    #     conn.rollback()
-    # except Exception as e:
-    #     print(f"Warning: Rollback failed: {e}")
-    # finally:
-    #     conn.close()
 
 @pytest.fixture(scope="session")
 def cursor(db_connection):
@@ -53,11 +46,4 @@ import atexit
 def force_gc_cleanup():
     print("[DEBUG] Atexit: Forcing GC before interpreter shutdown by skipping SQL handle destructor")
     # Force garbage collection to clean up any remaining SQL handles
-    ddbc_bindings._skip_sqlhandle_destructor_on_teardown()
-
-# conftest.py
-
-def pytest_sessionfinish(session, exitstatus):
-    from mssql_python import ddbc_bindings
-    print("[DEBUG] Pytest session finished. Disabling native teardown.")
     ddbc_bindings._skip_sqlhandle_destructor_on_teardown()
