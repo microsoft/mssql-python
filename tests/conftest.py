@@ -9,7 +9,7 @@ Functions:
 
 import pytest
 import os
-from mssql_python import connect
+from mssql_python import connect, ddbc_bindings
 import time
 
 def pytest_configure(config):
@@ -21,8 +21,8 @@ def conn_str():
     conn_str = os.getenv('DB_CONNECTION_STRING')
     return conn_str
 
-@pytest.fixture(scope="module")
-def db_connection(conn_str):
+@pytest.fixture(scope="session")
+def db_connection(conn_str):    
     try:
         conn = connect(conn_str)
     except Exception as e:
@@ -34,9 +34,30 @@ def db_connection(conn_str):
             pytest.fail(f"Database connection failed: {e}")
     yield conn
     conn.close()
+    # try:
+    #     # Roll back any pending transactions before closing
+    #     conn.rollback()
+    # except Exception as e:
+    #     print(f"Warning: Rollback failed: {e}")
+    # finally:
+    #     conn.close()
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def cursor(db_connection):
     cursor = db_connection.cursor()
     yield cursor
     cursor.close()
+
+import atexit
+@atexit.register
+def force_gc_cleanup():
+    print("[DEBUG] Atexit: Forcing GC before interpreter shutdown by skipping SQL handle destructor")
+    # Force garbage collection to clean up any remaining SQL handles
+    ddbc_bindings._skip_sqlhandle_destructor_on_teardown()
+
+# conftest.py
+
+def pytest_sessionfinish(session, exitstatus):
+    from mssql_python import ddbc_bindings
+    print("[DEBUG] Pytest session finished. Disabling native teardown.")
+    ddbc_bindings._skip_sqlhandle_destructor_on_teardown()

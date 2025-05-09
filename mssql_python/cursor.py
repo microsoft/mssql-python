@@ -48,6 +48,8 @@ class Cursor:
         Args:
             connection: Database connection object.
         """
+        if connection.hdbc is None:
+            raise Exception("Connection is closed. Cannot create a cursor.")
         self.connection = connection
         # self.connection.autocommit = False
         self.hstmt = None

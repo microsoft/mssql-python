@@ -83,7 +83,7 @@ def test_table_not_found_error(cursor):
         cursor.execute("SELECT * FROM non_existent_table")
     assert "Base table or view not found" in str(excinfo.value)
 
-def test_data_truncation_error(cursor):
+def test_data_truncation_error(cursor, db_connection):
     try:
         cursor.execute("CREATE TABLE pytest_test_truncation (id INT, name NVARCHAR(5))")
         cursor.execute("INSERT INTO pytest_test_truncation (id, name) VALUES (?, ?)", [1, 'TooLongName'])
@@ -91,8 +91,9 @@ def test_data_truncation_error(cursor):
         assert "String or binary data would be truncated" in str(excinfo)
     finally:
         drop_table_if_exists(cursor, "pytest_test_truncation")
+        db_connection.commit()
 
-def test_unique_constraint_error(cursor):
+def test_unique_constraint_error(cursor, db_connection):
     try:
         drop_table_if_exists(cursor, "pytest_test_unique")
         cursor.execute("CREATE TABLE pytest_test_unique (id INT PRIMARY KEY, name NVARCHAR(50))")
@@ -104,8 +105,9 @@ def test_unique_constraint_error(cursor):
         pytest.fail(f"Test failed: {e}")
     finally:
         drop_table_if_exists(cursor, "pytest_test_unique")
+        db_connection.commit()
 
-def test_foreign_key_constraint_error(cursor):
+def test_foreign_key_constraint_error(cursor, db_connection):
     try:
         drop_table_if_exists(cursor, "pytest_child_table")
         drop_table_if_exists(cursor, "pytest_parent_table")
@@ -120,6 +122,7 @@ def test_foreign_key_constraint_error(cursor):
     finally:
         drop_table_if_exists(cursor, "pytest_child_table")
         drop_table_if_exists(cursor, "pytest_parent_table")
+        db_connection.commit()
 
 def test_connection_error(db_connection):
     with pytest.raises(OperationalError) as excinfo:

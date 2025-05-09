@@ -205,19 +205,28 @@ SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
 class SqlHandle {
 public:
     SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle) : _type(type), _handle(rawHandle) {}
+    // Optional: global flag to disable cleanup during shutdown
     ~SqlHandle() {
-        if (_handle) {
+        if (skip_sqlhandle_destructor) {
+            // During test shutdown, Python may free env/dbc handles before statement handles.
+            // This causes access violations if C++ destructors run late.
+            // We skip SqlHandle teardown on shutdown via a global flag for test safety.
+            return;
+        }
+        if (_handle && SQLFreeHandle_ptr) {
             SQLFreeHandle_ptr(_type, _handle);
             _handle = nullptr;
         }
     }
     SQLHANDLE get() const { return _handle; }
-
+    // TODO: Remove the skip_sqlhandle_destructor flag eventually
+    static bool skip_sqlhandle_destructor;
 private:
     SQLSMALLINT _type;
     SQLHANDLE _handle;
 };
 using SqlHandlePtr = std::shared_ptr<SqlHandle>;
+bool SqlHandle::skip_sqlhandle_destructor = false;
 
 namespace {
 
@@ -2028,4 +2037,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLDisconnect", &SQLDisconnect_wrap, "Disconnect from a data source");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
+    m.def("_skip_sqlhandle_destructor_on_teardown", []() {
+        SqlHandle::skip_sqlhandle_destructor  = true;
+    });
 }
