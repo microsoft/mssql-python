@@ -69,5 +69,4 @@ jobs:
     inputs:
       codeCoverageTool: 'Cobertura'
       summaryFileLocation: 'coverage.xml'
-      reportDirectory: 'htmlcov'
     displayName: 'Publish code coverage results'
