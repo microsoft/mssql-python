@@ -26,6 +26,10 @@ mssql_python/.vs
 test-*.xml
 **/test-**.xml
 
+# Ignore coverage files
+.coverage
+.coverage.*
+
 # Ignore the build & mssql_python.egg-info directories
 build/
 mssql_python.egg-info/

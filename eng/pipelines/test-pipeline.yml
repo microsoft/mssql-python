@@ -46,6 +46,7 @@ jobs:
   - script: |
       python -m pytest --cov=mssql_python --cov-report= --junitxml=test-results.xml --capture=tee-sys --cache-clear -v
       coverage html
+      coverage xml -o coverage.xml
       coverage report
     displayName: 'Run tests with coverage'
     env:
@@ -67,5 +68,6 @@ jobs:
   - task: PublishCodeCoverageResults@1
     inputs:
       codeCoverageTool: 'Cobertura'
-      summaryFileLocation: '$(System.DefaultWorkingDirectory)/**/coverage.xml'
+      summaryFileLocation: 'coverage.xml'
+      reportDirectory: 'htmlcov'
     displayName: 'Publish code coverage results'
