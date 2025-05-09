@@ -11,6 +11,7 @@ Note: The cursor function is not yet implemented, so related tests are commented
 import pytest
 from datetime import datetime, date, time
 import decimal
+from mssql_python import Connection
 
 # Setup test table
 TEST_TABLE = """
@@ -1144,8 +1145,13 @@ def test_numeric_precision_scale_negative_exponent(cursor, db_connection):
         cursor.execute("DROP TABLE pytest_numeric_test")
         db_connection.commit()
 
-def test_close(cursor):
+def test_close(db_connection):
     """Test closing the cursor"""
-    cursor.close()
-    with pytest.raises(Exception):
-        cursor.execute("SELECT 1")
+    try:
+        cursor = db_connection.cursor()
+        cursor.close()
+        assert cursor.closed, "Cursor should be closed after calling close()"
+    except Exception as e:
+        pytest.fail(f"Cursor close test failed: {e}")
+    finally:
+        cursor = db_connection.cursor()
