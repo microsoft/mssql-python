@@ -429,7 +429,10 @@ class Cursor:
         Reset the DDBC statement handle.
         """
         if self.hstmt:
-            self.hstmt = None        
+            self.hstmt.free()  # Free the existing statement handle
+            self.hstmt = None
+            if ENABLE_LOGGING:
+                logger.debug("SQLFreeHandle succeeded")     
         # Reinitialize the statement handle
         self._initialize_cursor()
 
@@ -444,6 +447,7 @@ class Cursor:
             raise Exception("Cursor is already closed.")
 
         if self.hstmt:
+            self.hstmt.free()
             self.hstmt = None
             if ENABLE_LOGGING:
                 logger.debug("SQLFreeHandle succeeded")

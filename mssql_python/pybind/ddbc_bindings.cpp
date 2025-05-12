@@ -207,26 +207,23 @@ public:
     SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle) : _type(type), _handle(rawHandle) {}
     // Optional: global flag to disable cleanup during shutdown
     ~SqlHandle() {
-        if (skip_sqlhandle_destructor) {
-            // During test shutdown, Python may free env/dbc handles before statement handles.
-            // This causes access violations if C++ destructors run late.
-            // We skip SqlHandle teardown on shutdown via a global flag for test safety.
-            return;
-        }
+        // Note: Destructor is intentionally a no-op. Python owns the lifecycle.
+        // Native ODBC handles must be explicitly released by calling `free()`.
+        // This avoids nondeterministic crashes during GC or pytest/coverage shutdown.
+        // Read the documentation for more details (https://aka.ms/CPPvsPythonGC)
+    }
+    void free() {
         if (_handle && SQLFreeHandle_ptr) {
             SQLFreeHandle_ptr(_type, _handle);
             _handle = nullptr;
         }
     }
     SQLHANDLE get() const { return _handle; }
-    // TODO: Remove the skip_sqlhandle_destructor flag eventually
-    static bool skip_sqlhandle_destructor;
 private:
     SQLSMALLINT _type;
     SQLHANDLE _handle;
 };
 using SqlHandlePtr = std::shared_ptr<SqlHandle>;
-bool SqlHandle::skip_sqlhandle_destructor = false;
 
 namespace {
 
@@ -2002,7 +1999,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     py::class_<ErrorInfo>(m, "ErrorInfo")
         .def_readwrite("sqlState", &ErrorInfo::sqlState)
         .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);
-    py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle");
+    py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
+        .def("free", &SqlHandle::free);
     m.def("DDBCSQLAllocHandle", [](SQLSMALLINT HandleType, SqlHandlePtr InputHandle = nullptr) {
             SqlHandlePtr OutputHandle;
             SQLRETURN rc = SQLAllocHandle_wrap(HandleType, InputHandle, OutputHandle);
@@ -2037,7 +2035,4 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLDisconnect", &SQLDisconnect_wrap, "Disconnect from a data source");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
-    m.def("_skip_sqlhandle_destructor_on_teardown", []() {
-        SqlHandle::skip_sqlhandle_destructor  = true;
-    });
 }

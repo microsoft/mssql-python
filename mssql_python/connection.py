@@ -335,6 +335,7 @@ class Connection:
         check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, ret)
 
         # Set the reference to None to trigger destructor
+        self.hdbc.free()
         self.hdbc = None
 
         if ENABLE_LOGGING:

@@ -21,7 +21,7 @@ def conn_str():
     conn_str = os.getenv('DB_CONNECTION_STRING')
     return conn_str
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def db_connection(conn_str):    
     try:
         conn = connect(conn_str)
@@ -35,15 +35,8 @@ def db_connection(conn_str):
     yield conn
     conn.close()
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def cursor(db_connection):
     cursor = db_connection.cursor()
     yield cursor
     cursor.close()
-
-import atexit
-@atexit.register
-def force_gc_cleanup():
-    print("[DEBUG] Atexit: Forcing GC before interpreter shutdown by skipping SQL handle destructor")
-    # Force garbage collection to clean up any remaining SQL handles
-    ddbc_bindings._skip_sqlhandle_destructor_on_teardown()
