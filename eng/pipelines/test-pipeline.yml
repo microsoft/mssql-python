@@ -65,5 +65,5 @@ jobs:
   - task: PublishCodeCoverageResults@1
     inputs:
       codeCoverageTool: 'Cobertura'
-      summaryFileLocation: '$(System.DefaultWorkingDirectory)/**/coverage.xml'
+      summaryFileLocation: 'coverage.xml'
     displayName: 'Publish code coverage results'

@@ -3,8 +3,8 @@ mssql_python/pybind/build/
 
 mssql_python/pybind/pymsbuild/build/
 
-# Ignore pyd file
-mssql_python/ddbc_bindings.pyd
+# Ignore all pyd files
+**.pyd
 
 # Ignore pycache files and folders
 __pycache__/
@@ -25,6 +25,11 @@ mssql_python/.vs
 # Ignore test-*.xml files
 test-*.xml
 **/test-**.xml
+
+# Ignore coverage files
+coverage.xml
+.coverage
+.coverage.*
 
 # Ignore the build & mssql_python.egg-info directories
 build/
