@@ -33,7 +33,7 @@ class Connection:
         close() -> None:
     """
 
-    def __init__(self, connection_str: str, autocommit: bool = False, **kwargs) -> None:
+    def __init__(self, connection_str: str, autocommit: bool = False,  attrs_before: dict = {}, **kwargs) -> None:
         """
         Initialize the connection object with the specified connection string and parameters.
 
@@ -58,6 +58,7 @@ class Connection:
         self.connection_str = self._construct_connection_string(
             connection_str, **kwargs
         )
+        self._attrs_before = attrs_before
         self._initializer()
         self._autocommit = autocommit
         self.setautocommit(autocommit)
@@ -77,22 +78,32 @@ class Connection:
         # Add the driver attribute to the connection string
         conn_str = add_driver_to_connection_str(connection_str)
         # Add additional key-value pairs to the connection string
-        for key, value in kwargs.items():
-            if key.lower() == "host":
-                key = "Server"
-            elif key.lower() == "user":
-                key = "Uid"
-            elif key.lower() == "password":
-                key = "Pwd"
-            elif key.lower() == "database":
-                key = "Database"
-            elif key.lower() == "encrypt":
-                key = "Encrypt"
-            elif key.lower() == "trust_server_certificate":
-                key = "TrustServerCertificate"
-            else:
-                continue
-            conn_str += f"{key}={value};"
+        # Check if access token authentication is being used
+        if "attrs_before" in kwargs:
+            # Skip adding Uid and Pwd for access token authentication
+            if ENABLE_LOGGING:
+                logger.info("Using access token authentication. Skipping Uid and Pwd.")
+        else:
+            # Add additional key-value pairs to the connection string
+            for key, value in kwargs.items():
+                if key.lower() == "host":
+                    key = "Server"
+                elif key.lower() == "user":
+                    key = "Uid"
+                elif key.lower() == "password":
+                    key = "Pwd"
+                elif key.lower() == "database":
+                    key = "Database"
+                elif key.lower() == "encrypt":
+                    key = "Encrypt"
+                elif key.lower() == "trust_server_certificate":
+                    key = "TrustServerCertificate"
+                else:
+                    continue
+                conn_str += f"{key}={value};"
+
+        if ENABLE_LOGGING:
+            logger.info("Final connection string: %s", conn_str)
         return conn_str
 
     def _initializer(self) -> None:
@@ -106,8 +117,39 @@ class Connection:
         self._allocate_environment_handle()
         self._set_environment_attributes()
         self._allocate_connection_handle()
-        self._set_connection_attributes()
+        if self._attrs_before != {}:
+            self._apply_attrs_before()  # Apply pre-connection attributes
+        if self._autocommit:
+            self._set_connection_attributes(
+                ddbc_sql_const.SQL_ATTR_AUTOCOMMIT.value,
+                ddbc_sql_const.SQL_AUTOCOMMIT_ON.value,
+            )
         self._connect_to_db()
+
+    def _apply_attrs_before(self):
+        """
+        Apply a dictionary of attributes to the database connection before connecting.
+
+        Returns:
+            bool: True if all attributes were successfully applied, False otherwise.
+        """
+        strencoding = "utf-16le"
+
+        if ENABLE_LOGGING:
+            logger.info("Applying attrs_before: %s", self._attrs_before)
+
+        for key, value in self._attrs_before.items():
+            if isinstance(key, int):
+                ikey = key
+            elif isinstance(key, str) and key.isdigit():
+                ikey = int(key)
+            else:
+                raise TypeError(f"Unsupported key type: {type(key).__name__}")
+
+            if not self._set_connection_attributes(ikey, value):
+                return False
+
+        return True
 
     def _allocate_environment_handle(self):
         """
@@ -147,18 +189,25 @@ class Connection:
         )
         check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
 
-    def _set_connection_attributes(self):
+    def _set_connection_attributes(self, ikey: int, ivalue: any) -> None:
         """
         Set the connection attributes before connecting.
+
+        Args:
+            ikey (int): The attribute key to set.
+            ivalue (Any): The value to set for the attribute. Can be bytes, bytearray, int, or unicode.
+            vallen (int): The length of the value.
+
+        Raises:
+            DatabaseError: If there is an error while setting the connection attribute.
         """
-        if self.autocommit:
-            ret = ddbc_bindings.DDBCSQLSetConnectAttr(
-                self.hdbc.value,
-                ddbc_sql_const.SQL_ATTR_AUTOCOMMIT.value,
-                ddbc_sql_const.SQL_AUTOCOMMIT_ON.value,
-                0,
-            )
-            check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc.value, ret)
+
+        ret = ddbc_bindings.DDBCSQLSetConnectAttr(
+            self.hdbc,  # Connection handle
+            ikey,  # Attribute
+            ivalue,  # Value
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, ret)
 
     def _connect_to_db(self) -> None:
         """
