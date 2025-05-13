@@ -208,8 +208,8 @@ public:
     // Optional: global flag to disable cleanup during shutdown
     ~SqlHandle() {
         // Note: Destructor is intentionally a no-op. Python owns the lifecycle.
-        // Native ODBC handles must be explicitly released by calling `free()`.
-        // This avoids nondeterministic crashes during GC or pytest/coverage shutdown.
+        // Native ODBC handles must be explicitly released by calling `free()` directly from Python.
+        // This avoids nondeterministic crashes during GC or shutdown during pytest.
         // Read the documentation for more details (https://aka.ms/CPPvsPythonGC)
     }
     void free() {
