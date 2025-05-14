@@ -157,8 +157,7 @@ class Connection:
             else:
                 raise TypeError(f"Unsupported key type: {type(key).__name__}")
 
-            if not self._set_connection_attributes(ikey, value):
-                return False
+            self._set_connection_attributes(ikey, value)
 
         return True
 
