@@ -117,4 +117,4 @@ class ConstantsDDBC(Enum):
     SQL_NULLABLE = 1
     SQL_MAX_NUMERIC_LEN = 16
     SQL_IS_POINTER = -4
-    
+    SQL_COPT_SS_ACCESS_TOKEN = 1256

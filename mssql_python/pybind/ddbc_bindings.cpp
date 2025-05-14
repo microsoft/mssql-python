@@ -710,12 +710,12 @@ SQLRETURN SQLSetConnectAttr_wrap(SqlHandlePtr ConnectionHandle, SQLINTEGER Attri
         int intValue = ValuePtr.cast<int>();
         value = reinterpret_cast<SQLPOINTER>(intValue);
         length = SQL_IS_INTEGER;  // Integer values don't require a length
-    } else if (py::isinstance<py::str>(ValuePtr)) {
-        // Handle Unicode string values
-        static std::wstring unicodeValueBuffer;
-        unicodeValueBuffer = ValuePtr.cast<std::wstring>();
-        value = const_cast<SQLWCHAR*>(unicodeValueBuffer.c_str());
-        length = SQL_NTS;  // Indicates null-terminated string
+    // } else if (py::isinstance<py::str>(ValuePtr)) {
+    //     // Handle Unicode string values
+    //     static std::wstring unicodeValueBuffer;
+    //     unicodeValueBuffer = ValuePtr.cast<std::wstring>();
+    //     value = const_cast<SQLWCHAR*>(unicodeValueBuffer.c_str());
+    //     length = SQL_NTS;  // Indicates null-terminated string
     } else if (py::isinstance<py::bytes>(ValuePtr) || py::isinstance<py::bytearray>(ValuePtr)) {
         // Handle byte or bytearray values (like access tokens)
         // Store in static buffer to ensure memory remains valid during connection
@@ -723,17 +723,17 @@ SQLRETURN SQLSetConnectAttr_wrap(SqlHandlePtr ConnectionHandle, SQLINTEGER Attri
         bytesBuffers.push_back(ValuePtr.cast<std::string>());
         value = const_cast<char*>(bytesBuffers.back().c_str());
         length = SQL_IS_POINTER;  // Indicates we're passing a pointer (required for token)
-    } else if (py::isinstance<py::list>(ValuePtr) || py::isinstance<py::tuple>(ValuePtr)) {
-        // Handle list or tuple values
-        LOG("ValuePtr is a sequence (list or tuple)");
-        for (py::handle item : ValuePtr) {
-            LOG("Processing item in sequence");
-            SQLRETURN ret = SQLSetConnectAttr_wrap(ConnectionHandle, Attribute, py::reinterpret_borrow<py::object>(item));
-            if (!SQL_SUCCEEDED(ret)) {
-                LOG("Failed to set attribute for item in sequence");
-                return ret;
-            }
-        }    
+    // } else if (py::isinstance<py::list>(ValuePtr) || py::isinstance<py::tuple>(ValuePtr)) {
+    //     // Handle list or tuple values
+    //     LOG("ValuePtr is a sequence (list or tuple)");
+    //     for (py::handle item : ValuePtr) {
+    //         LOG("Processing item in sequence");
+    //         SQLRETURN ret = SQLSetConnectAttr_wrap(ConnectionHandle, Attribute, py::reinterpret_borrow<py::object>(item));
+    //         if (!SQL_SUCCEEDED(ret)) {
+    //             LOG("Failed to set attribute for item in sequence");
+    //             return ret;
+    //         }
+    //     }    
     } else {
         LOG("Unsupported ValuePtr type");
         return SQL_ERROR;

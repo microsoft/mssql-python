@@ -33,7 +33,7 @@ class Connection:
         close() -> None:
     """
 
-    def __init__(self, connection_str: str, autocommit: bool = False, attrs_before: dict = {}, **kwargs) -> None:
+    def __init__(self, connection_str: str, autocommit: bool = False, attrs_before: dict = None, **kwargs) -> None:
         """
         Initialize the connection object with the specified connection string and parameters.
 
@@ -78,29 +78,23 @@ class Connection:
         # Add the driver attribute to the connection string
         conn_str = add_driver_to_connection_str(connection_str)
 
-        # Check if access token authentication is being used
-        if "attrs_before" in kwargs:
-            # Skip adding Uid and Pwd for access token authentication
-            if ENABLE_LOGGING:
-                logger.info("Using access token authentication. Skipping Uid and Pwd.")
-        else:
-            # Add additional key-value pairs to the connection string
-            for key, value in kwargs.items():
-                if key.lower() == "host":
-                    key = "Server"
-                elif key.lower() == "user":
-                    key = "Uid"
-                elif key.lower() == "password":
-                    key = "Pwd"
-                elif key.lower() == "database":
-                    key = "Database"
-                elif key.lower() == "encrypt":
-                    key = "Encrypt"
-                elif key.lower() == "trust_server_certificate":
-                    key = "TrustServerCertificate"
-                else:
-                    continue
-                conn_str += f"{key}={value};"
+        # Add additional key-value pairs to the connection string
+        for key, value in kwargs.items():
+            if key.lower() == "host":
+                key = "Server"
+            elif key.lower() == "user":
+                key = "Uid"
+            elif key.lower() == "password":
+                key = "Pwd"
+            elif key.lower() == "database":
+                key = "Database"
+            elif key.lower() == "encrypt":
+                key = "Encrypt"
+            elif key.lower() == "trust_server_certificate":
+                key = "TrustServerCertificate"
+            else:
+                continue
+            conn_str += f"{key}={value};"
 
         if ENABLE_LOGGING:
             logger.info("Final connection string: %s", conn_str)
@@ -136,29 +130,68 @@ class Connection:
             )
         self._connect_to_db()
 
-
     def _apply_attrs_before(self):
         """
-        Apply a dictionary of attributes to the database connection before connecting.
+        Apply specific pre-connection attributes.
+        Currently, this method only processes an attribute with key 1256 (e.g., SQL_COPT_SS_ACCESS_TOKEN)
+        if present in `self._attrs_before`. Other attributes are ignored.
 
         Returns:
-            bool: True if all attributes were successfully applied, False otherwise.
+            bool: True.
         """
-        strencoding = "utf-16le"
 
         if ENABLE_LOGGING:
-            logger.info("Applying attrs_before: %s", self._attrs_before)
+            logger.info("Attempting to apply pre-connection attributes (attrs_before): %s", self._attrs_before)
+
+        if not isinstance(self._attrs_before, dict):
+            if self._attrs_before is not None and ENABLE_LOGGING:
+                logger.warning(
+                    f"_attrs_before is of type {type(self._attrs_before).__name__}, "
+                    f"expected dict. Skipping attribute application."
+                )
+            elif self._attrs_before is None and ENABLE_LOGGING:
+                 logger.debug("_attrs_before is None. No pre-connection attributes to apply.")
+            return True # Exit if _attrs_before is not a dictionary or is None
 
         for key, value in self._attrs_before.items():
+            ikey = None
             if isinstance(key, int):
                 ikey = key
             elif isinstance(key, str) and key.isdigit():
-                ikey = int(key)
+                try:
+                    ikey = int(key)
+                except ValueError:
+                    if ENABLE_LOGGING:
+                        logger.debug(
+                            f"Skipping attribute with key '{key}' in attrs_before: "
+                            f"could not convert string to int."
+                        )
+                    continue # Skip if string key is not a valid integer
             else:
-                raise TypeError(f"Unsupported key type: {type(key).__name__}")
+                if ENABLE_LOGGING:
+                    logger.debug(
+                        f"Skipping attribute with key '{key}' in attrs_before due to "
+                        f"unsupported key type: {type(key).__name__}. Expected int or string representation of an int."
+                    )
+                continue  # Skip keys that are not int or string representation of an int
 
-            self._set_connection_attributes(ikey, value)
-
+            if ikey == ddbc_sql_const.SQL_COPT_SS_ACCESS_TOKEN.value:
+                if ENABLE_LOGGING:
+                    logger.info(
+                        f"Found attribute {ddbc_sql_const.SQL_COPT_SS_ACCESS_TOKEN.value}. Attempting to set it."
+                    )
+                self._set_connection_attributes(ikey, value)
+                if ENABLE_LOGGING:
+                    logger.info(
+                        f"Call to set attribute {ddbc_sql_const.SQL_COPT_SS_ACCESS_TOKEN.value} with value '{value}' completed."
+                    )
+                # If you expect only one such key, you could add 'break' here.
+            else:
+                if ENABLE_LOGGING:
+                    logger.debug(
+                        f"Ignoring attribute with key '{key}' (resolved to {ikey}) in attrs_before "
+                        f"as it is not the target attribute ({ddbc_sql_const.SQL_COPT_SS_ACCESS_TOKEN.value})."
+                    )
         return True
 
     def _allocate_environment_handle(self):
