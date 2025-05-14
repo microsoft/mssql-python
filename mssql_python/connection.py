@@ -80,11 +80,11 @@ class Connection:
 
         # Add additional key-value pairs to the connection string
         for key, value in kwargs.items():
-            if key.lower() == "host":
+            if key.lower() == "host" or key.lower() == "server":
                 key = "Server"
-            elif key.lower() == "user":
+            elif key.lower() == "user" or key.lower() == "uid":
                 key = "Uid"
-            elif key.lower() == "password":
+            elif key.lower() == "password" or key.lower() == "pwd":
                 key = "Pwd"
             elif key.lower() == "database":
                 key = "Database"
@@ -95,6 +95,7 @@ class Connection:
             else:
                 continue
             conn_str += f"{key}={value};"
+        print(f"Connection string after adding driver: {conn_str}")
 
         if ENABLE_LOGGING:
             logger.info("Final connection string: %s", conn_str)

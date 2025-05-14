@@ -46,6 +46,7 @@ def add_driver_to_connection_str(connection_str):
         # Insert the driver attribute at the beginning of the connection string
         final_connection_attributes.insert(0, driver_name)
         connection_str = ";".join(final_connection_attributes)
+        print(f"Connection string after adding driver: {connection_str}")
     except Exception as e:
         raise Exception(
             "Invalid connection string, Please follow the format: "
