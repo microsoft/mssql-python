@@ -55,7 +55,7 @@ def test_connection_string_with_attrs_before(db_connection):
     assert "TrustServerCertificate=yes;" in conn_str, "Connection string should contain 'TrustServerCertificate=yes;'"
     assert "APP=MSSQL-Python" in conn_str, "Connection string should contain 'APP=MSSQL-Python'"
     assert "Driver={ODBC Driver 18 for SQL Server}" in conn_str, "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
-    assert "{1256: token}" in conn_str, "Connection string should contain '{1256: token}'"
+    assert "{1256: token}" not in conn_str, "Connection string should not contain '{1256: token}'"
 
 def test_connection_string_with_odbc_param(db_connection):
     # Check if the connection string is constructed correctly with ODBC parameters

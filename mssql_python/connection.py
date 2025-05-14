@@ -63,7 +63,7 @@ class Connection:
         self._initializer()
         self.setautocommit(autocommit)
 
-    def _construct_connection_string(self, connection_str: str, **kwargs) -> str:
+    def _construct_connection_string(self, connection_str: str = "", **kwargs) -> str:
         """
         Construct the connection string by concatenating the connection string 
         with key/value pairs from kwargs.
