@@ -12,6 +12,10 @@
 #include <string>
 #include <utility>  // std::forward
 
+// Replace std::filesystem usage with Windows-specific headers
+#include <shlwapi.h>
+#pragma comment(lib, "shlwapi.lib")
+
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
@@ -37,6 +41,11 @@ using namespace pybind11::literals;
 #define STRINGIFY_FOR_CASE(x) \
     case x:                   \
         return #x
+
+// Architecture-specific defines
+#ifndef ARCHITECTURE
+#define ARCHITECTURE "win64"  // Default to win64 if not defined during compilation
+#endif
 
 //-------------------------------------------------------------------------------------------------
 // Class definitions
@@ -201,6 +210,18 @@ SQLFreeStmtFunc SQLFreeStmt_ptr = nullptr;
 // Diagnostic APIs
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
 
+// Move GetModuleDirectory outside namespace to resolve ambiguity
+std::string GetModuleDirectory() {
+    py::object module = py::module::import("mssql_python");
+    py::object module_path = module.attr("__file__");
+    std::string module_file = module_path.cast<std::string>();
+    
+    char path[MAX_PATH];
+    strncpy_s(path, MAX_PATH, module_file.c_str(), module_file.length());
+    PathRemoveFileSpecA(path);
+    return std::string(path);
+}
+
 // Smart wrapper around SQLHANDLE
 class SqlHandle {
 public:
@@ -247,48 +268,59 @@ void ThrowStdException(const std::string& message) { throw std::runtime_error(me
 // Helper to load the driver
 // TODO: We don't need to do explicit linking using LoadLibrary. We can just use implicit
 //       linking to load this DLL. It will simplify the code a lot.
-void LoadDriverOrThrowException() {
-    HMODULE hDdbcModule;
-    wchar_t ddbcModulePath[MAX_PATH];
-    // Get the path to DDBC module:
-    // GetModuleHandleExW returns a handle to current shared library (ddbc_bindings.pyd) given a
-    // function from the library (LoadDriverOrThrowException). GetModuleFileNameW takes in the
-    // library handle (hDdbcModule) & returns the full path to this library (ddbcModulePath)
-    if (GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            (LPWSTR)&LoadDriverOrThrowException, &hDdbcModule) &&
-        GetModuleFileNameW(hDdbcModule, ddbcModulePath, MAX_PATH)) {
-        // Look for last occurence of '\' in the path and set it to null
-        wchar_t* lastBackSlash = wcsrchr(ddbcModulePath, L'\\');
-        if (lastBackSlash == nullptr) {
-            LOG("Invalid DDBC module path - %S", ddbcModulePath);
-            ThrowStdException("Failed to load driver");
-        }
-        *lastBackSlash = 0;
-    } else {
-        LOG("Failed to get DDBC module path. Error code - %d", GetLastError());
-        ThrowStdException("Failed to load driver");
+std::wstring LoadDriverOrThrowException(const std::wstring& modulePath = L"") {
+    std::wstring ddbcModulePath = modulePath;
+    if (ddbcModulePath.empty()) {
+        // Get the module path if not provided
+        std::string path = GetModuleDirectory();
+        ddbcModulePath = std::wstring(path.begin(), path.end());
     }
 
-    // Preload mssql-auth.dll from the same path if available
-    // TODO: Only load mssql-auth.dll if using Entra ID Authentication modes (Active Directory modes)
-    std::wstring authDllDir = std::wstring(ddbcModulePath) + L"\\libs\\win\\mssql-auth.dll";
-    HMODULE hAuthModule = LoadLibraryW(authDllDir.c_str());
-    if (hAuthModule) {
-        LOG("Authentication library loaded successfully from - {}", authDllDir.c_str());
+    std::wstring dllDir = ddbcModulePath;
+    dllDir += L"\\libs\\";
+    
+    // Convert ARCHITECTURE macro to wstring
+    std::wstring archStr(ARCHITECTURE, ARCHITECTURE + strlen(ARCHITECTURE));
+    
+    // Map architecture identifiers to correct subdirectory names
+    std::wstring archDir;
+    if (archStr == L"win64" || archStr == L"amd64" || archStr == L"x64") {
+        archDir = L"x64";
+    } else if (archStr == L"arm64") {
+        archDir = L"arm64";
     } else {
-        LOG("Note: Authentication library not found at - {}. This is OK if you're not using Entra ID Authentication.", authDllDir.c_str());
+        archDir = L"x86";
     }
-
-    // Look for msodbcsql18.dll in a path relative to DDBC module
-    std::wstring dllDir = std::wstring(ddbcModulePath) + L"\\libs\\win\\msodbcsql18.dll";
+    dllDir += archDir;
+    dllDir += L"\\msodbcsql18.dll";
+    
+    // Convert wstring to string for logging
+    std::string dllDirStr(dllDir.begin(), dllDir.end());
+    LOG("Attempting to load driver from - {}", dllDirStr);
+    
     HMODULE hModule = LoadLibraryW(dllDir.c_str());
     if (!hModule) {
-        LOG("LoadLibraryW failed to load driver from - %S", dllDir.c_str());
-        ThrowStdException("Failed to load driver");
-    }
-    LOG("Driver loaded successfully from - {}", dllDir.c_str());
+        // Failed to load the DLL, get the error message
+        DWORD error = GetLastError();
+        char* messageBuffer = nullptr;
+        size_t size = FormatMessageA(
+            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+            NULL,
+            error,
+            MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+            (LPSTR)&messageBuffer,
+            0,
+            NULL
+        );
+        std::string errorMessage = messageBuffer ? std::string(messageBuffer, size) : "Unknown error";
+        LocalFree(messageBuffer);
 
+        // Log the error message        
+        LOG("Failed to load the driver with error code: {} - {}", error, errorMessage);
+        ThrowStdException("Failed to load the ODBC driver. Please check that it is installed correctly.");
+    }
+
+    // If we got here, we've successfully loaded the DLL. Now get the function pointers.
     // Environment and handle function loading
     SQLAllocHandle_ptr = (SQLAllocHandleFunc)GetProcAddress(hModule, "SQLAllocHandle");
     SQLSetEnvAttr_ptr = (SQLSetEnvAttrFunc)GetProcAddress(hModule, "SQLSetEnvAttr");
@@ -331,16 +363,18 @@ void LoadDriverOrThrowException() {
                    SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
                    SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
                    SQLRowCount_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr && SQLFetch_ptr &&
-		   SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr &&
-		   SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr &&
-		   SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr &&
-		   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
+                   SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr &&
+                   SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr &&
+                   SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr &&
+                   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
 
     if (!success) {
-        LOG("Failed to load required function pointers from driver - %S", dllDir.c_str());
+        LOG("Failed to load required function pointers from driver - {}", dllDirStr);
         ThrowStdException("Failed to load required function pointers from driver");
     }
-    LOG("Sucessfully loaded function pointers from driver");
+    LOG("Successfully loaded function pointers from driver");
+    
+    return dllDir;
 }
 
 const char* GetSqlCTypeAsString(const SQLSMALLINT cType) {
@@ -369,7 +403,7 @@ const char* GetSqlCTypeAsString(const SQLSMALLINT cType) {
         STRINGIFY_FOR_CASE(SQL_C_GUID);
         STRINGIFY_FOR_CASE(SQL_C_DEFAULT);
         default:
-            return "Unkown";
+            return "Unknown";
     }
 }
 
@@ -1988,10 +2022,25 @@ SQLLEN SQLRowCount_wrap(SqlHandlePtr StatementHandle) {
     return rowCount;
 }
 
+// Architecture-specific defines
+#ifndef ARCHITECTURE
+#define ARCHITECTURE "win64"  // Default to win64 if not defined during compilation
+#endif
+
 // Functions/data to be exposed to Python as a part of ddbc_bindings module
 PYBIND11_MODULE(ddbc_bindings, m) {
     m.doc() = "msodbcsql driver api bindings for Python";
+
+    // Add architecture information as module attribute
+    m.attr("__architecture__") = ARCHITECTURE;
+
+    // Expose architecture-specific constants
+    m.attr("ARCHITECTURE") = ARCHITECTURE;
+    
+    // Expose the C++ functions to Python
     m.def("ThrowStdException", &ThrowStdException);
+
+    // Define parameter info class
     py::class_<ParamInfo>(m, "ParamInfo")
         .def(py::init<>())
         .def_readwrite("inputOutputType", &ParamInfo::inputOutputType)
@@ -1999,6 +2048,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("paramSQLType", &ParamInfo::paramSQLType)
         .def_readwrite("columnSize", &ParamInfo::columnSize)
         .def_readwrite("decimalDigits", &ParamInfo::decimalDigits);
+    
+    // Define numeric data class
     py::class_<NumericData>(m, "NumericData")
         .def(py::init<>())
         .def(py::init<SQLCHAR, SQLSCHAR, SQLCHAR, std::uint64_t>())
@@ -2006,11 +2057,15 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("scale", &NumericData::scale)
         .def_readwrite("sign", &NumericData::sign)
         .def_readwrite("val", &NumericData::val);
+
+    // Define error info class
     py::class_<ErrorInfo>(m, "ErrorInfo")
         .def_readwrite("sqlState", &ErrorInfo::sqlState)
         .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);
+        
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free);
+        
     m.def("DDBCSQLAllocHandle", [](SQLSMALLINT HandleType, SqlHandlePtr InputHandle = nullptr) {
             SqlHandlePtr OutputHandle;
             SQLRETURN rc = SQLAllocHandle_wrap(HandleType, InputHandle, OutputHandle);
@@ -2045,4 +2100,15 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLDisconnect", &SQLDisconnect_wrap, "Disconnect from a data source");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
+
+    // Add a version attribute
+    m.attr("__version__") = "1.0.0";
+    
+    try {
+        // Try loading the ODBC driver when the module is imported
+        LoadDriverOrThrowException();
+    } catch (const std::exception& e) {
+        // Log the error but don't throw - let the error happen when functions are called
+        LOG("Failed to load ODBC driver during module initialization: {}", e.what());
+    }
 }
