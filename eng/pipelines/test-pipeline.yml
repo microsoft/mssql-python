@@ -47,7 +47,7 @@ jobs:
 
   - task: PublishBuildArtifacts@1
     inputs:
-      PathtoPublish: 'mssql_python/ddbc_bindings.pyd'
+      PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pyd'
       ArtifactName: 'ddbc_bindings'
       publishLocation: 'Container'
     displayName: 'Publish pyd file as artifact'
