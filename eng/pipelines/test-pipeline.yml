@@ -63,3 +63,12 @@ jobs:
       codeCoverageTool: 'Cobertura'
       summaryFileLocation: 'coverage.xml'
     displayName: 'Publish code coverage results'
+
+  # Publish the python arm64 libraries as build artifacts
+  - task: PublishBuildArtifacts@1
+    condition: succeededOrFailed()
+    inputs:
+      PathtoPublish: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
+      ArtifactName: 'mssql-python-arm64-libs'
+      publishLocation: 'Container'
+    displayName: 'Publish arm64 libs as artifacts'
