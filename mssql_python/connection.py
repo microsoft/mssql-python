@@ -33,7 +33,7 @@ class Connection:
         close() -> None:
     """
 
-    def __init__(self, connection_str: str, autocommit: bool = False, attrs_before: dict = None, **kwargs) -> None:
+    def __init__(self, connection_str: str = "", autocommit: bool = False, attrs_before: dict = None, **kwargs) -> None:
         """
         Initialize the connection object with the specified connection string and parameters.
 
