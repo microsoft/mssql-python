@@ -201,6 +201,30 @@ SQLFreeStmtFunc SQLFreeStmt_ptr = nullptr;
 // Diagnostic APIs
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
 
+// Smart wrapper around SQLHANDLE
+class SqlHandle {
+public:
+    SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle) : _type(type), _handle(rawHandle) {}
+    // Optional: global flag to disable cleanup during shutdown
+    ~SqlHandle() {
+        // Note: Destructor is intentionally a no-op. Python owns the lifecycle.
+        // Native ODBC handles must be explicitly released by calling `free()` directly from Python.
+        // This avoids nondeterministic crashes during GC or shutdown during pytest.
+        // Read the documentation for more details (https://aka.ms/CPPvsPythonGC)
+    }
+    void free() {
+        if (_handle && SQLFreeHandle_ptr) {
+            SQLFreeHandle_ptr(_type, _handle);
+            _handle = nullptr;
+        }
+    }
+    SQLHANDLE get() const { return _handle; }
+private:
+    SQLSMALLINT _type;
+    SQLHANDLE _handle;
+};
+using SqlHandlePtr = std::shared_ptr<SqlHandle>;
+
 namespace {
 
 // TODO: Revisit GIL considerations if we're using python's logger
@@ -244,6 +268,16 @@ void LoadDriverOrThrowException() {
     } else {
         LOG("Failed to get DDBC module path. Error code - %d", GetLastError());
         ThrowStdException("Failed to load driver");
+    }
+
+    // Preload mssql-auth.dll from the same path if available
+    // TODO: Only load mssql-auth.dll if using Entra ID Authentication modes (Active Directory modes)
+    std::wstring authDllDir = std::wstring(ddbcModulePath) + L"\\libs\\win\\mssql-auth.dll";
+    HMODULE hAuthModule = LoadLibraryW(authDllDir.c_str());
+    if (hAuthModule) {
+        LOG("Authentication library loaded successfully from - {}", authDllDir.c_str());
+    } else {
+        LOG("Note: Authentication library not found at - {}. This is OK if you're not using Entra ID Authentication.", authDllDir.c_str());
     }
 
     // Look for msodbcsql18.dll in a path relative to DDBC module
@@ -625,18 +659,24 @@ void HandleZeroColumnSizeAtFetch(SQLULEN& columnSize) {
 }  // namespace
 
 // Wrap SQLAllocHandle
-SQLRETURN SQLAllocHandle_wrap(SQLSMALLINT HandleType, intptr_t InputHandle, intptr_t OutputHandle) {
+SQLRETURN SQLAllocHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr InputHandle, SqlHandlePtr& OutputHandle) {
     LOG("Allocate SQL Handle");
     if (!SQLAllocHandle_ptr) {
         LoadDriverOrThrowException();
     }
 
-    SQLHANDLE* pOutputHandle = reinterpret_cast<SQLHANDLE*>(OutputHandle);
-    return SQLAllocHandle_ptr(HandleType, reinterpret_cast<SQLHANDLE>(InputHandle), pOutputHandle);
+    SQLHANDLE rawOutputHandle = nullptr;
+    SQLRETURN ret = SQLAllocHandle_ptr(HandleType, InputHandle ? InputHandle->get() : nullptr, &rawOutputHandle);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to allocate handle");
+        return ret;
+    }
+    OutputHandle = std::make_shared<SqlHandle>(HandleType, rawOutputHandle);
+    return ret;
 }
 
 // Wrap SQLSetEnvAttr
-SQLRETURN SQLSetEnvAttr_wrap(intptr_t EnvHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
+SQLRETURN SQLSetEnvAttr_wrap(SqlHandlePtr EnvHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
                              SQLINTEGER StringLength) {
     LOG("Set SQL environment Attribute");
     if (!SQLSetEnvAttr_ptr) {
@@ -644,12 +684,15 @@ SQLRETURN SQLSetEnvAttr_wrap(intptr_t EnvHandle, SQLINTEGER Attribute, intptr_t 
     }
 
     // TODO: Does ValuePtr need to be converted from Python to C++ object?
-    return SQLSetEnvAttr_ptr(reinterpret_cast<SQLHANDLE>(EnvHandle), Attribute,
-                             reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
+    SQLRETURN ret =  SQLSetEnvAttr_ptr(EnvHandle->get(), Attribute, reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to set environment attribute");
+    }
+    return ret;
 }
 
 // Wrap SQLSetConnectAttr
-SQLRETURN SQLSetConnectAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
+SQLRETURN SQLSetConnectAttr_wrap(SqlHandlePtr ConnectionHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
                                  SQLINTEGER StringLength) {
     LOG("Set SQL Connection Attribute");
     if (!SQLSetConnectAttr_ptr) {
@@ -657,12 +700,15 @@ SQLRETURN SQLSetConnectAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER Attribute
     }
 
     // TODO: Does ValuePtr need to be converted from Python to C++ object?
-    return SQLSetConnectAttr_ptr(reinterpret_cast<SQLHDBC>(ConnectionHandle), Attribute,
-                                 reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
+    SQLRETURN ret =  SQLSetConnectAttr_ptr(ConnectionHandle->get(), Attribute, reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to set Connection attribute");
+    }
+    return ret;
 }
 
 // Wrap SQLSetStmtAttr
-SQLRETURN SQLSetStmtAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
+SQLRETURN SQLSetStmtAttr_wrap(SqlHandlePtr StatementHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
                               SQLINTEGER StringLength) {
     LOG("Set SQL Statement Attribute");
     if (!SQLSetConnectAttr_ptr) {
@@ -670,14 +716,17 @@ SQLRETURN SQLSetStmtAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER Attribute, i
     }
 
     // TODO: Does ValuePtr need to be converted from Python to C++ object?
-    return SQLSetStmtAttr_ptr(reinterpret_cast<SQLHSTMT>(ConnectionHandle), Attribute,
-                              reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
+    SQLRETURN ret = SQLSetStmtAttr_ptr(StatementHandle->get(), Attribute, reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to set Statement attribute");
+    }
+    return ret;
 }
 
 // Wrap SQLGetConnectionAttrA
 // Currently only supports retrieval of int-valued attributes
 // TODO: add support to retrieve all types of attributes
-SQLINTEGER SQLGetConnectionAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER attribute) {
+SQLINTEGER SQLGetConnectionAttr_wrap(SqlHandlePtr ConnectionHandle, SQLINTEGER attribute) {
     LOG("Get SQL COnnection Attribute");
     if (!SQLGetConnectAttr_ptr) {
         LoadDriverOrThrowException();
@@ -687,13 +736,13 @@ SQLINTEGER SQLGetConnectionAttr_wrap(intptr_t ConnectionHandle, SQLINTEGER attri
     SQLINTEGER intValue;
 
     // Try to get the attribute as an integer
-    SQLGetConnectAttr_ptr(reinterpret_cast<SQLHDBC>(ConnectionHandle), attribute, &intValue,
+    SQLGetConnectAttr_ptr(ConnectionHandle->get(), attribute, &intValue,
                           sizeof(SQLINTEGER), &stringLength);
     return intValue;
 }
 
 // Helper function to check for driver errors
-ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, intptr_t handle, SQLRETURN retcode) {
+ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode) {
     LOG("Checking errors for retcode - {}" , retcode);
     ErrorInfo errorInfo;
     if (retcode == SQL_INVALID_HANDLE) {
@@ -702,6 +751,7 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, intptr_t handle, SQLRETURN 
         return errorInfo;
     }
     assert(handle != 0);
+    SQLHANDLE rawHandle = handle->get();
     if (!SQL_SUCCEEDED(retcode)) {
         if (!SQLGetDiagRec_ptr) {
             LoadDriverOrThrowException();
@@ -712,7 +762,7 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, intptr_t handle, SQLRETURN 
         SQLSMALLINT messageLen;
 
         SQLRETURN diagReturn =
-            SQLGetDiagRec_ptr(handleType, reinterpret_cast<SQLHANDLE>(handle), 1, sqlState,
+            SQLGetDiagRec_ptr(handleType, rawHandle, 1, sqlState,
                               &nativeError, message, SQL_MAX_MESSAGE_LENGTH, &messageLen);
 
         if (SQL_SUCCEEDED(diagReturn)) {
@@ -724,34 +774,40 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, intptr_t handle, SQLRETURN 
 }
 
 // Wrap SQLDriverConnect
-SQLRETURN SQLDriverConnect_wrap(intptr_t ConnectionHandle, intptr_t WindowHandle,
-                                const std::wstring& ConnectionString) {
+SQLRETURN SQLDriverConnect_wrap(SqlHandlePtr ConnectionHandle, intptr_t WindowHandle, const std::wstring& ConnectionString) {
     LOG("Driver Connect to MSSQL");
     if (!SQLDriverConnect_ptr) {
         LoadDriverOrThrowException();
     }
-    return SQLDriverConnect_ptr(reinterpret_cast<SQLHANDLE>(ConnectionHandle),
+    SQLRETURN ret = SQLDriverConnect_ptr(ConnectionHandle->get(),
                                 reinterpret_cast<SQLHWND>(WindowHandle),
                                 const_cast<SQLWCHAR*>(ConnectionString.c_str()), SQL_NTS, nullptr,
                                 0, nullptr, SQL_DRIVER_NOPROMPT);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to connect to DB");
+    }
+    return ret;
 }
 
 // Wrap SQLExecDirect
-SQLRETURN SQLExecDirect_wrap(intptr_t StatementHandle, const std::wstring& Query) {
+SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Query) {
     LOG("Execute SQL query directly - {}", Query.c_str());
     if (!SQLExecDirect_ptr) {
         LoadDriverOrThrowException();
     }
 
-    return SQLExecDirect_ptr(reinterpret_cast<SQLHANDLE>(StatementHandle),
-                             const_cast<SQLWCHAR*>(Query.c_str()), SQL_NTS);
+    SQLRETURN ret = SQLExecDirect_ptr(StatementHandle->get(), const_cast<SQLWCHAR*>(Query.c_str()), SQL_NTS);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to execute query directly");
+    }
+    return ret;
 }
 
 // Executes the provided query. If the query is parametrized, it prepares the statement and
 // binds the parameters. Otherwise, it executes the query directly.
 // 'usePrepare' parameter can be used to disable the prepare step for queries that might already
 // be prepared in a previous call.
-SQLRETURN SQLExecute_wrap(const intptr_t statementHandle,
+SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                           const std::wstring& query /* TODO: Use SQLTCHAR? */,
                           const py::list& params, const std::vector<ParamInfo>& paramInfos,
                           py::list& isStmtPrepared, const bool usePrepare = true) {
@@ -767,7 +823,10 @@ SQLRETURN SQLExecute_wrap(const intptr_t statementHandle,
     }
 
     RETCODE rc;
-    SQLHANDLE hStmt = reinterpret_cast<SQLHANDLE>(statementHandle);
+    SQLHANDLE hStmt = statementHandle->get();
+    if (!statementHandle || !statementHandle->get()) {
+        LOG("Statement handle is null or empty");
+    }
     SQLWCHAR* queryPtr = const_cast<SQLWCHAR*>(query.c_str());
     if (params.size() == 0) {
         // Execute statement directly if the statement is not parametrized. This is the
@@ -824,7 +883,7 @@ SQLRETURN SQLExecute_wrap(const intptr_t statementHandle,
 }
 
 // Wrap SQLNumResultCols
-SQLSMALLINT SQLNumResultCols_wrap(intptr_t statementHandle) {
+SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle) {
     LOG("Get number of columns in result set");
     if (!SQLNumResultCols_ptr) {
         LoadDriverOrThrowException();
@@ -832,12 +891,12 @@ SQLSMALLINT SQLNumResultCols_wrap(intptr_t statementHandle) {
 
     SQLSMALLINT columnCount;
     // TODO: Handle the return code
-    SQLNumResultCols_ptr(reinterpret_cast<SQLHSTMT>(statementHandle), &columnCount);
+    SQLNumResultCols_ptr(statementHandle->get(), &columnCount);
     return columnCount;
 }
 
 // Wrap SQLDescribeCol
-SQLRETURN SQLDescribeCol_wrap(intptr_t StatementHandle, py::list& ColumnMetadata) {
+SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMetadata) {
     LOG("Get column description");
     if (!SQLDescribeCol_ptr) {
         LoadDriverOrThrowException();
@@ -845,7 +904,7 @@ SQLRETURN SQLDescribeCol_wrap(intptr_t StatementHandle, py::list& ColumnMetadata
 
     SQLSMALLINT ColumnCount;
     SQLRETURN retcode =
-        SQLNumResultCols_ptr(reinterpret_cast<SQLHSTMT>(StatementHandle), &ColumnCount);
+        SQLNumResultCols_ptr(StatementHandle->get(), &ColumnCount);
     if (!SQL_SUCCEEDED(retcode)) {
         LOG("Failed to get number of columns");
         return retcode;
@@ -859,7 +918,7 @@ SQLRETURN SQLDescribeCol_wrap(intptr_t StatementHandle, py::list& ColumnMetadata
         SQLSMALLINT DecimalDigits;
         SQLSMALLINT Nullable;
 
-        retcode = SQLDescribeCol_ptr(reinterpret_cast<SQLHSTMT>(StatementHandle), i, ColumnName,
+        retcode = SQLDescribeCol_ptr(StatementHandle->get(), i, ColumnName,
                                      sizeof(ColumnName) / sizeof(SQLWCHAR), &NameLength, &DataType,
                                      &ColumnSize, &DecimalDigits, &Nullable);
 
@@ -878,25 +937,25 @@ SQLRETURN SQLDescribeCol_wrap(intptr_t StatementHandle, py::list& ColumnMetadata
 }
 
 // Wrap SQLFetch to retrieve rows
-SQLRETURN SQLFetch_wrap(intptr_t StatementHandle) {
+SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
     LOG("Fetch next row");
     if (!SQLFetch_ptr) {
         LoadDriverOrThrowException();
     }
 
-    return SQLFetch_ptr(reinterpret_cast<SQLHANDLE>(StatementHandle));
+    return SQLFetch_ptr(StatementHandle->get());
 }
 
 // Helper function to retrieve column data
 // TODO: Handle variable length data correctly
-SQLRETURN SQLGetData_wrap(intptr_t StatementHandle, SQLUSMALLINT colCount, py::list& row) {
+SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, py::list& row) {
     LOG("Get data from columns");
     if (!SQLGetData_ptr) {
         LoadDriverOrThrowException();
     }
 
     SQLRETURN ret;
-    SQLHSTMT hStmt = reinterpret_cast<SQLHSTMT>(StatementHandle);
+    SQLHSTMT hStmt = StatementHandle->get();
     for (SQLSMALLINT i = 1; i <= colCount; ++i) {
         SQLWCHAR columnName[256];
         SQLSMALLINT columnNameLen;
@@ -1712,9 +1771,9 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
 // executed. It fetches the specified number of rows from the result set and populates the provided
 // Python list with the row data. If there are no more rows to fetch, it returns SQL_NO_DATA. If an
 // error occurs during fetching, it throws a runtime error.
-SQLRETURN FetchMany_wrap(intptr_t StatementHandle, py::list& rows, int fetchSize = 1) {
+SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetchSize = 1) {
     SQLRETURN ret;
-    SQLHSTMT hStmt = reinterpret_cast<SQLHSTMT>(StatementHandle);
+    SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
     SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle);
 
@@ -1762,9 +1821,9 @@ SQLRETURN FetchMany_wrap(intptr_t StatementHandle, py::list& rows, int fetchSize
 // executed. It fetches all rows from the result set and populates the provided Python list with the
 // row data. If there are no more rows to fetch, it returns SQL_NO_DATA. If an error occurs during
 // fetching, it throws a runtime error.
-SQLRETURN FetchAll_wrap(intptr_t StatementHandle, py::list& rows) {
+SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
     SQLRETURN ret;
-    SQLHSTMT hStmt = reinterpret_cast<SQLHSTMT>(StatementHandle);
+    SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
     SQLSMALLINT numCols = SQLNumResultCols_wrap(StatementHandle);
 
@@ -1852,9 +1911,9 @@ SQLRETURN FetchAll_wrap(intptr_t StatementHandle, py::list& rows) {
 // executed. It fetches the next row of data from the result set and populates the provided Python
 // list with the row data. If there are no more rows to fetch, it returns SQL_NO_DATA. If an error
 // occurs during fetching, it throws a runtime error.
-SQLRETURN FetchOne_wrap(intptr_t StatementHandle, py::list& row) {
+SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row) {
     SQLRETURN ret;
-    SQLHSTMT hStmt = reinterpret_cast<SQLHSTMT>(StatementHandle);
+    SQLHSTMT hStmt = StatementHandle->get();
 
     // Assume hStmt is already allocated and a query has been executed
     ret = SQLFetch_ptr(hStmt);
@@ -1869,54 +1928,58 @@ SQLRETURN FetchOne_wrap(intptr_t StatementHandle, py::list& row) {
 }
 
 // Wrap SQLMoreResults
-SQLRETURN SQLMoreResults_wrap(intptr_t StatementHandle) {
+SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
     LOG("Check for more results");
     if (!SQLMoreResults_ptr) {
         LoadDriverOrThrowException();
     }
 
-    return SQLMoreResults_ptr(reinterpret_cast<SQLHANDLE>(StatementHandle));
+    return SQLMoreResults_ptr(StatementHandle->get());
 }
 
 // Wrap SQLEndTran
-SQLRETURN SQLEndTran_wrap(SQLSMALLINT HandleType, intptr_t Handle, SQLSMALLINT CompletionType) {
+SQLRETURN SQLEndTran_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle, SQLSMALLINT CompletionType) {
     LOG("End SQL Transaction");
     if (!SQLEndTran_ptr) {
         LoadDriverOrThrowException();
     }
 
-    return SQLEndTran_ptr(HandleType, reinterpret_cast<SQLHANDLE>(Handle), CompletionType);
+    return SQLEndTran_ptr(HandleType, Handle->get(), CompletionType);
 }
 
 // Wrap SQLFreeHandle
-SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, intptr_t Handle) {
+SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
     LOG("Free SQL handle");
     if (!SQLAllocHandle_ptr) {
         LoadDriverOrThrowException();
     }
 
-    return SQLFreeHandle_ptr(HandleType, reinterpret_cast<SQLHANDLE>(Handle));
+    SQLRETURN ret = SQLFreeHandle_ptr(HandleType, Handle->get());
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("SQLFreeHandle failed with error code - {}", ret);
+    }
+    return ret;
 }
 
 // Wrap SQLDisconnect
-SQLRETURN SQLDisconnect_wrap(intptr_t ConnectionHandle) {
+SQLRETURN SQLDisconnect_wrap(SqlHandlePtr ConnectionHandle) {
     LOG("Disconnect from MSSQL");
     if (!SQLDisconnect_ptr) {
         LoadDriverOrThrowException();
     }
 
-    return SQLDisconnect_ptr(reinterpret_cast<SQLHDBC>(ConnectionHandle));
+    return SQLDisconnect_ptr(ConnectionHandle->get());
 }
 
 // Wrap SQLRowCount
-SQLLEN SQLRowCount_wrap(intptr_t StatementHandle) {
+SQLLEN SQLRowCount_wrap(SqlHandlePtr StatementHandle) {
     LOG("Get number of row affected by last execute");
     if (!SQLRowCount_ptr) {
         LoadDriverOrThrowException();
     }
 
     SQLLEN rowCount;
-    SQLRETURN ret = SQLRowCount_ptr(reinterpret_cast<SQLHSTMT>(StatementHandle), &rowCount);
+    SQLRETURN ret = SQLRowCount_ptr(StatementHandle->get(), &rowCount);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("SQLRowCount failed with error code - {}", ret);
         return ret;
@@ -1946,8 +2009,13 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     py::class_<ErrorInfo>(m, "ErrorInfo")
         .def_readwrite("sqlState", &ErrorInfo::sqlState)
         .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);
-    m.def("DDBCSQLAllocHandle", &SQLAllocHandle_wrap,
-          "Allocate an environment, connection, statement, or descriptor handle");
+    py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
+        .def("free", &SqlHandle::free);
+    m.def("DDBCSQLAllocHandle", [](SQLSMALLINT HandleType, SqlHandlePtr InputHandle = nullptr) {
+            SqlHandlePtr OutputHandle;
+            SQLRETURN rc = SQLAllocHandle_wrap(HandleType, InputHandle, OutputHandle);
+            return py::make_tuple(rc, OutputHandle);
+        }, "Allocate an environment, connection, statement, or descriptor handle");
     m.def("DDBCSQLSetEnvAttr", &SQLSetEnvAttr_wrap,
           "Set an attribute that governs aspects of environments");
     m.def("DDBCSQLSetConnectAttr", &SQLSetConnectAttr_wrap,
