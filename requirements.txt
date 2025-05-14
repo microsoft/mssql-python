@@ -2,5 +2,6 @@ pytest
 pytest-cov
 pybind11
 coverage
+pytest-azurepipelines
 unittest-xml-reporting
 setuptools
