@@ -1,7 +1,7 @@
 name: mssql-python-official-release-pipeline
 
-# variables:
-#   - group: 'ESRP Federated Creds (AME)'
+variables:
+  - group: 'ESRP Federated Creds (AME)'
 
 jobs:
 - job: ReleaseESRPPackage
