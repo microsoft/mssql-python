@@ -292,16 +292,16 @@ std::wstring LoadDriverOrThrowException(const std::wstring& modulePath = L"") {
         archDir = L"x86";
     }
     dllDir += archDir;
+    std::wstring mssqlauthDllPath = dllDir + L"\\mssql-auth.dll";
     dllDir += L"\\msodbcsql18.dll";
 
     // Preload mssql-auth.dll from the same path if available
     // TODO: Only load mssql-auth.dll if using Entra ID Authentication modes (Active Directory modes)
-    std::wstring authDllDir = dllDir + L"\\mssql-auth.dll";
-    HMODULE hAuthModule = LoadLibraryW(authDllDir.c_str());
+    HMODULE hAuthModule = LoadLibraryW(mssqlauthDllPath.c_str());
     if (hAuthModule) {
-        LOG("Authentication library loaded successfully from - {}", authDllDir.c_str());
+        LOG("Authentication library loaded successfully from - {}", mssqlauthDllPath.c_str());
     } else {
-        LOG("Note: Authentication library not found at - {}. This is OK if you're not using Entra ID Authentication.", authDllDir.c_str());
+        LOG("Note: Authentication library not found at - {}. This is OK if you're not using Entra ID Authentication.", mssqlauthDllPath.c_str());
     }
 
     // Convert wstring to string for logging
