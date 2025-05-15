@@ -38,7 +38,7 @@ jobs:
       Intent: 'PackageDistribution'
       ContentType: 'PyPI'
       ContentSource: 'Folder'
-      FolderLocation: '$(System.DefaultWorkingDirectory)/dist'
+      FolderLocation: '$(System.SourcesDirectory)/dist'
       WaitForReleaseCompletion: true
       Owners: '$(owner)'
       Approvers: '$(approver)'
