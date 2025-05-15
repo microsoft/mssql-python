@@ -77,15 +77,17 @@ jobs:
         pip install cmake pybind11
       displayName: 'Install dependencies'
 
-    # Download the python libraries for ARM64 if building for ARM64
     - task: DownloadPipelineArtifact@2
       condition: eq(variables['targetArch'], 'arm64')
       inputs:
-        buildType: 'latest'
-        pipeline: '2134' # Download from the latest successful build of the mssql-python-arm64-libs pipeline
+        buildType: 'specific'
+        project: '$(System.TeamProject)'
+        definition: 2134
+        buildVersionToDownload: 'latestFromBranch'
+        branchName: 'refs/heads/bewithgaurav/build_whl_pipeline'                        # Or 'refs/heads/dev'
         artifactName: 'mssql-python-arm64-libs'
         targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
-      displayName: 'Download ARM64 Python libraries from latest successful build'
+      displayName: 'Download ARM64 Python libs from latest successful run on branches'
 
     # Build the PYD file by calling build.bat
     - script: |
