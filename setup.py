@@ -14,7 +14,7 @@ packages = find_packages()
 # Determine the architecture and platform tag for the wheel
 if sys.platform.startswith('win'):
     # Get architecture from environment variable or default to x64
-    arch = os.environ.get('ARCHITECTURE', 'x64')
+    arch = os.environ.get('ARCH', 'x64')
     
     # Normalize architecture values
     if arch in ['x86', 'win32']:
