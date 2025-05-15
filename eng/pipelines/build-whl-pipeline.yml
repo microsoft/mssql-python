@@ -14,7 +14,7 @@ pool:
 
 jobs:
 - job: BuildPYDs
-  displayName: 'Build PYD -'
+  displayName: 'Build -'
   # Strategy matrix to build all combinations
   strategy:
     matrix:
