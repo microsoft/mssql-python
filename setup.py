@@ -78,7 +78,7 @@ setup(
     name='mssql-python',
     version='0.1.6',
     description='A Python library for interacting with Microsoft SQL Server',
-    long_description=open('README.md', encoding='utf-8').read(),
+    long_description=open('PyPI_Description.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
     author='Microsoft Corporation',
     author_email='pysqldriver@microsoft.com',
@@ -94,8 +94,11 @@ setup(
         ]
     },
     include_package_data=True,
-    # Requires >= Python 3.9
-    python_requires='>=3.9',
+    # Requires >= Python 3.10
+    python_requires='>=3.10',
+    classifiers=[
+        'Operating System :: Microsoft :: Windows',
+    ],
     zip_safe=False,
     # Force binary distribution
     distclass=BinaryDistribution,
