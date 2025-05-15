@@ -81,9 +81,11 @@ jobs:
     - task: DownloadPipelineArtifact@2
       condition: eq(variables['targetArch'], 'arm64')
       inputs:
+        buildType: 'latest'
+        pipeline: '2134' # Download from the latest successful build of the mssql-python-arm64-libs pipeline
         artifactName: 'mssql-python-arm64-libs'
         targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
-      displayName: 'Download ARM64 Python libraries'
+      displayName: 'Download ARM64 Python libraries from latest successful build'
 
     # Build the PYD file by calling build.bat
     - script: |
