@@ -14,7 +14,7 @@ packages = find_packages()
 # Determine the architecture and platform tag for the wheel
 if sys.platform.startswith('win'):
     # Get architecture from environment variable or default to x64
-    arch = os.environ.get('ARCH', 'x64')
+    arch = os.environ.get('ARCHITECTURE', 'x64')
     
     # Normalize architecture values
     if arch in ['x86', 'win32']:
@@ -25,7 +25,9 @@ if sys.platform.startswith('win'):
     else:  # Default to x64/amd64
         arch = 'x64'
         platform_tag = 'win_amd64'
-    
+
+    print(f"Detected architecture: {arch} (platform tag: {platform_tag})")
+
     # Add architecture-specific packages
     packages.extend([
         f'mssql_python.libs.{arch}',
