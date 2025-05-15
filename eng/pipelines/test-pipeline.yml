@@ -36,11 +36,7 @@ jobs:
 
   - script: |
       cd mssql_python\pybind
-      mkdir build
-      cd build  
-      cmake -DPython3_EXECUTABLE="python3" -DCMAKE_BUILD_TYPE=Debug ..
-      cmake --build . --config Debug
-      copy Debug\ddbc_bindings.pyd ..\..\ddbc_bindings.pyd
+      build.bat x64
     displayName: 'Build .pyd file'
 
   - script: |
@@ -51,7 +47,7 @@ jobs:
 
   - task: PublishBuildArtifacts@1
     inputs:
-      PathtoPublish: 'mssql_python/ddbc_bindings.pyd'
+      PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pyd'
       ArtifactName: 'ddbc_bindings'
       publishLocation: 'Container'
     displayName: 'Publish pyd file as artifact'

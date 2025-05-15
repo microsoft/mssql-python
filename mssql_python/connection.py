@@ -95,7 +95,6 @@ class Connection:
             else:
                 continue
             conn_str += f"{key}={value};"
-        print(f"Connection string after adding driver: {conn_str}")
 
         if ENABLE_LOGGING:
             logger.info("Final connection string: %s", conn_str)

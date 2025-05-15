@@ -1,65 +1,112 @@
 import os
 import sys
-import subprocess
-from setuptools import setup, Extension, find_packages
-from setuptools.command.build_ext import build_ext
+from setuptools import setup, find_packages
+from setuptools.dist import Distribution
+from wheel.bdist_wheel import bdist_wheel
 
-class CMakeExtension(Extension):
-    def __init__(self, name, sourcedir=''):
-        # No sources; CMake handles the build.
-        super().__init__(name, sources=[])
-        self.sourcedir = os.path.abspath(sourcedir)
+# Custom distribution to force platform-specific wheel
+class BinaryDistribution(Distribution):
+    def has_ext_modules(self):
+        return True
 
-class CMakeBuild(build_ext):
-    def run(self):
-        # Check if CMake is installed
-        try:
-            subprocess.check_output(['cmake', '--version'])
-        except OSError:
-            raise RuntimeError("CMake must be installed to build these extensions.")
-        for ext in self.extensions:
-            self.build_extension(ext)
+# Custom bdist_wheel command to override platform tag
+class CustomBdistWheel(bdist_wheel):
+    def finalize_options(self):
+        # Call the original finalize_options first to initialize self.bdist_dir
+        bdist_wheel.finalize_options(self)
+        
+        # Override the platform tag with our custom one based on ARCHITECTURE env var
+        if sys.platform.startswith('win'):
+            # Strip quotes if present
+            arch = os.environ.get('ARCHITECTURE', 'x64')
+            if isinstance(arch, str):
+                arch = arch.strip('"\'')
+                
+            print(f"Architecture from environment: '{arch}'")
+            
+            if arch in ['x86', 'win32']:
+                self.plat_name = "win32"
+                platform_dir = "win32"
+            elif arch == 'arm64':
+                self.plat_name = "win_arm64"
+                platform_dir = "win_arm64"
+            else:  # Default to x64/amd64
+                self.plat_name = "win_amd64"
+                platform_dir = "win_amd64"
+            
+            # Override the plat_name for the wheel
+            print(f"Setting wheel platform tag to: {self.plat_name}")
+            
+            # Force platform-specific paths if bdist_dir is already set
+            if self.bdist_dir and "win-amd64" in self.bdist_dir:
+                self.bdist_dir = self.bdist_dir.replace("win-amd64", f"win-{platform_dir}")
+                print(f"Using build directory: {self.bdist_dir}")
 
-    def build_extension(self, ext):
-        # Calculate the directory where the final .pyd will be placed (inside mssql_python)
-        extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.name)))
-        cfg = 'Debug' if self.debug else 'Release'
-        cmake_args = [
-            '-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=' + extdir,
-            '-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE=' + extdir,
-            '-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=' + extdir,
-            '-DPYTHON_EXECUTABLE=' + sys.executable,
-            '-DCMAKE_BUILD_TYPE=' + cfg
-        ]
-        build_args = ['--config', cfg]
+# Find all packages in the current directory
+packages = find_packages()
 
-        if not os.path.exists(self.build_temp):
-            os.makedirs(self.build_temp)
+# Determine the architecture and platform tag for the wheel
+if sys.platform.startswith('win'):
+    # Get architecture from environment variable or default to x64
+    arch = os.environ.get('ARCHITECTURE', 'x64')
+    # Strip quotes if present
+    if isinstance(arch, str):
+        arch = arch.strip('"\'')
+    
+    # Normalize architecture values
+    if arch in ['x86', 'win32']:
+        arch = 'x86'
+        platform_tag = 'win32'
+    elif arch == 'arm64':
+        platform_tag = 'win_arm64'
+    else:  # Default to x64/amd64
+        arch = 'x64'
+        platform_tag = 'win_amd64'
 
-        # Configure CMake project
-        subprocess.check_call(['cmake', ext.sourcedir] + cmake_args, cwd=self.build_temp)
-        # Build the target defined in your CMakeLists.txt
-        subprocess.check_call(['cmake', '--build', '.', '--target', 'ddbc_bindings'] + build_args, cwd=self.build_temp)
+    print(f"Detected architecture: {arch} (platform tag: {platform_tag})")
+
+    # Add architecture-specific packages
+    packages.extend([
+        f'mssql_python.libs.{arch}',
+        f'mssql_python.libs.{arch}.1033',
+        f'mssql_python.libs.{arch}.vcredist'
+    ])
+else:
+    platform_tag = 'any'  # Fallback
 
 setup(
     name='mssql-python',
-    version='0.1.5',
+    version='0.1.6',
     description='A Python library for interacting with Microsoft SQL Server',
     long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
     author='Microsoft Corporation',
     author_email='pysqldriver@microsoft.com',
     url='https://github.com/microsoft/mssql-python',
-    packages=find_packages(),
+    packages=packages,
     package_data={
-        # Include DLL files inside mssql_python
-        'mssql_python': ['libs/*', 'libs/**/*', '*.dll']
+        # Include PYD and DLL files inside mssql_python, exclude YML files
+        'mssql_python': [
+            'ddbc_bindings.cp*.pyd',  # Include all PYD files
+            'libs/*', 
+            'libs/**/*', 
+            '*.dll'
+        ]
     },
     include_package_data=True,
-    # Requires Python 3.13
-    python_requires='==3.13.*',
-    # Naming the extension as mssql_python.ddbc_bindings puts the .pyd directly in mssql_python
-    ext_modules=[CMakeExtension('mssql_python.ddbc_bindings', sourcedir='mssql_python/pybind')],
-    cmdclass={'build_ext': CMakeBuild},
+    # Requires >= Python 3.9
+    python_requires='>=3.9',
     zip_safe=False,
+    # Force binary distribution
+    distclass=BinaryDistribution,
+    exclude_package_data={
+        '': ['*.yml', '*.yaml'],  # Exclude YML files
+        'mssql_python': [
+            'libs/*/vcredist/*', 'libs/*/vcredist/**/*',  # Exclude vcredist directories, added here since `'libs/*' is already included`
+        ],
+    },
+    # Register custom commands
+    cmdclass={
+        'bdist_wheel': CustomBdistWheel,
+    },
 )

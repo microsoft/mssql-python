@@ -1,0 +1,164 @@
+# Pipeline name shown in ADO UI
+name: build-whl-pipeline
+
+# Trigger the pipeline on pushes to these branches
+trigger:
+  branches:
+    include:
+      - main
+      - dev
+
+# Use Microsoft-hosted Windows VM
+pool:
+  vmImage: 'windows-latest'
+
+jobs:
+- job: BuildPYDs
+  displayName: 'Build -'
+  # Strategy matrix to build all combinations
+  strategy:
+    matrix:
+      # Python 3.10 (only x64)
+      py310_x64:
+        pythonVersion: '3.10'       # Host Python version
+        shortPyVer: '310'           # Used in filenames like cp310
+        architecture: 'x64'         # Host Python architecture
+        targetArch: 'x64'           # Target architecture to pass to build.bat
+
+      # Python 3.11
+      py311_x64:
+        pythonVersion: '3.11'       # Host Python version
+        shortPyVer: '311'           # Used in filenames like cp311
+        architecture: 'x64'         # Host Python architecture
+        targetArch: 'x64'           # Target architecture to pass to build.bat
+      py311_arm64:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        architecture: 'x64'         # No arm64 Python, use x64 host
+        targetArch: 'arm64'
+
+      # Python 3.12
+      py312_x64:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        architecture: 'x64'
+        targetArch: 'x64'
+      py312_arm64:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        architecture: 'x64'
+        targetArch: 'arm64'
+
+      # Python 3.13
+      py313_x64:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        architecture: 'x64'
+        targetArch: 'x64'
+      py313_arm64:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        architecture: 'x64'
+        targetArch: 'arm64'
+
+  steps:
+    # Use correct Python version and architecture for the current job
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '$(pythonVersion)'
+        architecture: '$(architecture)'
+        addToPath: true
+      displayName: 'Use Python $(pythonVersion) ($(architecture))'
+
+    # Install required packages: pip, CMake, pybind11
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install cmake pybind11
+      displayName: 'Install dependencies'
+
+    - task: DownloadPipelineArtifact@2
+      condition: eq(variables['targetArch'], 'arm64')
+      inputs:
+        buildType: 'specific'
+        project: '$(System.TeamProject)'
+        definition: 2134
+        buildVersionToDownload: 'latestFromBranch'
+        branchName: 'refs/heads/bewithgaurav/build_whl_pipeline'                        # Or 'refs/heads/dev'
+        artifactName: 'mssql-python-arm64-libs'
+        targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
+      displayName: 'Download ARM64 Python libs from latest successful run on branches'
+
+    # Build the PYD file by calling build.bat
+    - script: |
+        echo "Python Version: $(pythonVersion)"
+        echo "Short Tag: $(shortPyVer)"
+        echo "Architecture: Host=$(architecture), Target=$(targetArch)"
+
+        cd "$(Build.SourcesDirectory)\mssql_python\pybind"
+
+        REM Optional: override lib path if building for ARM64 since we cannot install arm64 python on x64 host
+        if "$(targetArch)"=="arm64" (
+          echo Using arm64-specific Python library...
+          set CUSTOM_PYTHON_LIB_DIR=$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64
+        )
+
+        REM Call build.bat to build the PYD file
+        call build.bat $(targetArch)
+
+        REM Calling keep_single_arch.bat to remove ODBC libs of other architectures
+        call keep_single_arch.bat $(targetArch)
+
+        cd ..\..
+      displayName: 'Build PYD for $(targetArch)'        
+      
+    # Copy the built .pyd file to staging folder for artifacts
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+        Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pyds'
+      displayName: 'Place PYD file into artifacts directory'
+
+    # Build wheel package for the current architecture
+    - script: |
+        python -m pip install --upgrade pip
+        pip install wheel setuptools
+        set ARCHITECTURE=$(targetArch)
+        python setup.py bdist_wheel
+      displayName: 'Build wheel package for Python $(pythonVersion) ($(targetArch))'
+    
+    # Copy the wheel file to the artifacts
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)\dist'
+        Contents: '*.whl'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)\dist'
+      displayName: 'Collect wheel package'    
+
+    # Publish the collected .pyd file(s) as build artifacts
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)\all-pyds'
+        ArtifactName: 'mssql-python-pyds'
+        publishLocation: 'Container'
+      displayName: 'Publish all PYDs as artifacts'
+
+    # Publish the python arm64 libraries as build artifacts for next builds if ARM64
+    - task: PublishBuildArtifacts@1
+      condition: eq(variables['targetArch'], 'arm64')
+      inputs:
+        PathtoPublish: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
+        ArtifactName: 'mssql-python-arm64-libs'
+        publishLocation: 'Container'
+      displayName: 'Publish arm64 libs as artifacts'
+    
+    # Publish the collected wheel file(s) as build artifacts
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)\dist'
+        ArtifactName: 'mssql-python-wheels-dist'
+        publishLocation: 'Container'
+      displayName: 'Publish all wheels as artifacts'
