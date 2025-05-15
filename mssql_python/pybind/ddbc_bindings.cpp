@@ -736,18 +736,58 @@ SQLRETURN SQLSetEnvAttr_wrap(SqlHandlePtr EnvHandle, SQLINTEGER Attribute, intpt
 }
 
 // Wrap SQLSetConnectAttr
-SQLRETURN SQLSetConnectAttr_wrap(SqlHandlePtr ConnectionHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
-                                 SQLINTEGER StringLength) {
+SQLRETURN SQLSetConnectAttr_wrap(SqlHandlePtr ConnectionHandle, SQLINTEGER Attribute, 
+                                 py::object ValuePtr) {
     LOG("Set SQL Connection Attribute");
     if (!SQLSetConnectAttr_ptr) {
         LoadDriverOrThrowException();
     }
 
-    // TODO: Does ValuePtr need to be converted from Python to C++ object?
-    SQLRETURN ret =  SQLSetConnectAttr_ptr(ConnectionHandle->get(), Attribute, reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
+    // Print the type of ValuePtr and attribute value - helpful for debugging
+    LOG("Type of ValuePtr: {}, Attribute: {}", py::type::of(ValuePtr).attr("__name__").cast<std::string>(), Attribute);
+
+    SQLPOINTER value = 0;
+    SQLINTEGER length = 0;
+
+    if (py::isinstance<py::int_>(ValuePtr)) {
+        // Handle integer values
+        int intValue = ValuePtr.cast<int>();
+        value = reinterpret_cast<SQLPOINTER>(intValue);
+        length = SQL_IS_INTEGER;  // Integer values don't require a length
+    // } else if (py::isinstance<py::str>(ValuePtr)) {
+    //     // Handle Unicode string values
+    //     static std::wstring unicodeValueBuffer;
+    //     unicodeValueBuffer = ValuePtr.cast<std::wstring>();
+    //     value = const_cast<SQLWCHAR*>(unicodeValueBuffer.c_str());
+    //     length = SQL_NTS;  // Indicates null-terminated string
+    } else if (py::isinstance<py::bytes>(ValuePtr) || py::isinstance<py::bytearray>(ValuePtr)) {
+        // Handle byte or bytearray values (like access tokens)
+        // Store in static buffer to ensure memory remains valid during connection
+        static std::vector<std::string> bytesBuffers;
+        bytesBuffers.push_back(ValuePtr.cast<std::string>());
+        value = const_cast<char*>(bytesBuffers.back().c_str());
+        length = SQL_IS_POINTER;  // Indicates we're passing a pointer (required for token)
+    // } else if (py::isinstance<py::list>(ValuePtr) || py::isinstance<py::tuple>(ValuePtr)) {
+    //     // Handle list or tuple values
+    //     LOG("ValuePtr is a sequence (list or tuple)");
+    //     for (py::handle item : ValuePtr) {
+    //         LOG("Processing item in sequence");
+    //         SQLRETURN ret = SQLSetConnectAttr_wrap(ConnectionHandle, Attribute, py::reinterpret_borrow<py::object>(item));
+    //         if (!SQL_SUCCEEDED(ret)) {
+    //             LOG("Failed to set attribute for item in sequence");
+    //             return ret;
+    //         }
+    //     }    
+    } else {
+        LOG("Unsupported ValuePtr type");
+        return SQL_ERROR;
+    }
+
+    SQLRETURN ret = SQLSetConnectAttr_ptr(ConnectionHandle->get(), Attribute, value, length);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to set Connection attribute");
     }
+    LOG("Set Connection attribute successfully");
     return ret;
 }
 
