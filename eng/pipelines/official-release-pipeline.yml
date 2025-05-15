@@ -27,21 +27,21 @@ jobs:
       dir "$(Build.SourcesDirectory)\dist"
     displayName: 'List contents of dist directory'
 
-  # - task: EsrpRelease@9
-  #   displayName: 'ESRP Release'
-  #   inputs:
-  #     connectedservicename: '$(ESRPConnectedServiceName)'
-  #     usemanagedidentity: true
-  #     keyvaultname: '$(AuthAKVName)'
-  #     signcertname: '$(AuthSignCertName)'
-  #     clientid: '$(EsrpClientId)'
-  #     Intent: 'PackageDistribution'
-  #     ContentType: 'PyPI'
-  #     ContentSource: 'Folder'
-  #     FolderLocation: '$(System.DefaultWorkingDirectory)/dist'
-  #     WaitForReleaseCompletion: true
-  #     Owners: '$(owner)'
-  #     Approvers: '$(approver)'
-  #     ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
-  #     MainPublisher: 'ESRPRELPACMAN'
-  #     DomainTenantId: '$(DomainTenantId)'
+  - task: EsrpRelease@9
+    displayName: 'ESRP Release'
+    inputs:
+      connectedservicename: '$(ESRPConnectedServiceName)'
+      usemanagedidentity: true
+      keyvaultname: '$(AuthAKVName)'
+      signcertname: '$(AuthSignCertName)'
+      clientid: '$(EsrpClientId)'
+      Intent: 'PackageDistribution'
+      ContentType: 'PyPI'
+      ContentSource: 'Folder'
+      FolderLocation: '$(System.DefaultWorkingDirectory)/dist'
+      WaitForReleaseCompletion: true
+      Owners: '$(owner)'
+      Approvers: '$(approver)'
+      ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
+      MainPublisher: 'ESRPRELPACMAN'
+      DomainTenantId: '$(DomainTenantId)'
