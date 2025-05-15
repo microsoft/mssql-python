@@ -94,8 +94,8 @@ setup(
         ]
     },
     include_package_data=True,
-    # Requires >= Python 3.9
-    python_requires='>=3.9',
+    # Requires >= Python 3.10
+    python_requires='>=3.10',
     zip_safe=False,
     # Force binary distribution
     distclass=BinaryDistribution,

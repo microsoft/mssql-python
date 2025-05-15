@@ -84,7 +84,7 @@ jobs:
         project: '$(System.TeamProject)'
         definition: 2134
         buildVersionToDownload: 'latestFromBranch'
-        branchName: 'refs/heads/bewithgaurav/build_whl_pipeline'                        # Or 'refs/heads/dev'
+        branchName: 'refs/heads/main'                        # Or 'refs/heads/dev'
         artifactName: 'mssql-python-arm64-libs'
         targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
       displayName: 'Download ARM64 Python libs from latest successful run on branches'
