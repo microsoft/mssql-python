@@ -33,7 +33,7 @@ class Connection:
         close() -> None:
     """
 
-    def __init__(self, connection_str: str, autocommit: bool = False, **kwargs) -> None:
+    def __init__(self, connection_str: str = "", autocommit: bool = False, attrs_before: dict = None, **kwargs) -> None:
         """
         Initialize the connection object with the specified connection string and parameters.
 
@@ -58,11 +58,12 @@ class Connection:
         self.connection_str = self._construct_connection_string(
             connection_str, **kwargs
         )
+        self._attrs_before = attrs_before
+        self._autocommit = autocommit  # Initialize _autocommit before calling _initializer
         self._initializer()
-        self._autocommit = autocommit
         self.setautocommit(autocommit)
 
-    def _construct_connection_string(self, connection_str: str, **kwargs) -> str:
+    def _construct_connection_string(self, connection_str: str = "", **kwargs) -> str:
         """
         Construct the connection string by concatenating the connection string 
         with key/value pairs from kwargs.
@@ -76,13 +77,14 @@ class Connection:
         """
         # Add the driver attribute to the connection string
         conn_str = add_driver_to_connection_str(connection_str)
+
         # Add additional key-value pairs to the connection string
         for key, value in kwargs.items():
-            if key.lower() == "host":
+            if key.lower() == "host" or key.lower() == "server":
                 key = "Server"
-            elif key.lower() == "user":
+            elif key.lower() == "user" or key.lower() == "uid":
                 key = "Uid"
-            elif key.lower() == "password":
+            elif key.lower() == "password" or key.lower() == "pwd":
                 key = "Pwd"
             elif key.lower() == "database":
                 key = "Database"
@@ -93,6 +95,11 @@ class Connection:
             else:
                 continue
             conn_str += f"{key}={value};"
+        print(f"Connection string after adding driver: {conn_str}")
+
+        if ENABLE_LOGGING:
+            logger.info("Final connection string: %s", conn_str)
+
         return conn_str
 
     def _is_closed(self) -> bool:
@@ -103,7 +110,7 @@ class Connection:
             bool: True if the connection is closed, False otherwise.
         """
         return self.hdbc is None
-
+    
     def _initializer(self) -> None:
         """
         Initialize the environment and connection handles.
@@ -115,8 +122,78 @@ class Connection:
         self._allocate_environment_handle()
         self._set_environment_attributes()
         self._allocate_connection_handle()
-        self._set_connection_attributes()
+        if self._attrs_before != {}:
+            self._apply_attrs_before()  # Apply pre-connection attributes
+        if self._autocommit:
+            self._set_connection_attributes(
+                ddbc_sql_const.SQL_ATTR_AUTOCOMMIT.value,
+                ddbc_sql_const.SQL_AUTOCOMMIT_ON.value,
+            )
         self._connect_to_db()
+
+    def _apply_attrs_before(self):
+        """
+        Apply specific pre-connection attributes.
+        Currently, this method only processes an attribute with key 1256 (e.g., SQL_COPT_SS_ACCESS_TOKEN)
+        if present in `self._attrs_before`. Other attributes are ignored.
+
+        Returns:
+            bool: True.
+        """
+
+        if ENABLE_LOGGING:
+            logger.info("Attempting to apply pre-connection attributes (attrs_before): %s", self._attrs_before)
+
+        if not isinstance(self._attrs_before, dict):
+            if self._attrs_before is not None and ENABLE_LOGGING:
+                logger.warning(
+                    f"_attrs_before is of type {type(self._attrs_before).__name__}, "
+                    f"expected dict. Skipping attribute application."
+                )
+            elif self._attrs_before is None and ENABLE_LOGGING:
+                 logger.debug("_attrs_before is None. No pre-connection attributes to apply.")
+            return True # Exit if _attrs_before is not a dictionary or is None
+
+        for key, value in self._attrs_before.items():
+            ikey = None
+            if isinstance(key, int):
+                ikey = key
+            elif isinstance(key, str) and key.isdigit():
+                try:
+                    ikey = int(key)
+                except ValueError:
+                    if ENABLE_LOGGING:
+                        logger.debug(
+                            f"Skipping attribute with key '{key}' in attrs_before: "
+                            f"could not convert string to int."
+                        )
+                    continue # Skip if string key is not a valid integer
+            else:
+                if ENABLE_LOGGING:
+                    logger.debug(
+                        f"Skipping attribute with key '{key}' in attrs_before due to "
+                        f"unsupported key type: {type(key).__name__}. Expected int or string representation of an int."
+                    )
+                continue  # Skip keys that are not int or string representation of an int
+
+            if ikey == ddbc_sql_const.SQL_COPT_SS_ACCESS_TOKEN.value:
+                if ENABLE_LOGGING:
+                    logger.info(
+                        f"Found attribute {ddbc_sql_const.SQL_COPT_SS_ACCESS_TOKEN.value}. Attempting to set it."
+                    )
+                self._set_connection_attributes(ikey, value)
+                if ENABLE_LOGGING:
+                    logger.info(
+                        f"Call to set attribute {ddbc_sql_const.SQL_COPT_SS_ACCESS_TOKEN.value} with value '{value}' completed."
+                    )
+                # If you expect only one such key, you could add 'break' here.
+            else:
+                if ENABLE_LOGGING:
+                    logger.debug(
+                        f"Ignoring attribute with key '{key}' (resolved to {ikey}) in attrs_before "
+                        f"as it is not the target attribute ({ddbc_sql_const.SQL_COPT_SS_ACCESS_TOKEN.value})."
+                    )
+        return True
 
     def _allocate_environment_handle(self):
         """
@@ -152,18 +229,25 @@ class Connection:
         check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, handle, ret)
         self.hdbc = handle
 
-    def _set_connection_attributes(self):
+    def _set_connection_attributes(self, ikey: int, ivalue: any) -> None:
         """
         Set the connection attributes before connecting.
+
+        Args:
+            ikey (int): The attribute key to set.
+            ivalue (Any): The value to set for the attribute. Can be bytes, bytearray, int, or unicode.
+            vallen (int): The length of the value.
+
+        Raises:
+            DatabaseError: If there is an error while setting the connection attribute.
         """
-        if self.autocommit:
-            ret = ddbc_bindings.DDBCSQLSetConnectAttr(
-                self.hdbc,  # Using the wrapper class
-                ddbc_sql_const.SQL_ATTR_AUTOCOMMIT.value,
-                ddbc_sql_const.SQL_AUTOCOMMIT_ON.value,
-                0
-            )
-            check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, ret)
+
+        ret = ddbc_bindings.DDBCSQLSetConnectAttr(
+            self.hdbc,  # Connection handle
+            ikey,  # Attribute
+            ivalue,  # Value
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, ret)
 
     def _connect_to_db(self) -> None:
         """
@@ -224,7 +308,6 @@ class Connection:
                 if value
                 else ddbc_sql_const.SQL_AUTOCOMMIT_OFF.value
             ),  # Value
-            0,  # String length
         )
         check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, ret)
         self._autocommit = value
