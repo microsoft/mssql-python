@@ -159,3 +159,4 @@ class SqlHandle {
         SQLHANDLE _handle;
     };
     using SqlHandlePtr = std::shared_ptr<SqlHandle>;
+    
