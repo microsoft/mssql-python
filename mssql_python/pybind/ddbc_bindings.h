@@ -120,6 +120,8 @@ class DriverLoader {
         void loadDriver();
     private:
         DriverLoader();
+        DriverLoader(const DriverLoader&) = delete;
+        DriverLoader& operator=(const DriverLoader&) = delete;
         bool m_driverLoaded;
     };
 
@@ -136,4 +138,3 @@ class SqlHandle {
         SQLHANDLE _handle;
     };
     using SqlHandlePtr = std::shared_ptr<SqlHandle>;
-    
