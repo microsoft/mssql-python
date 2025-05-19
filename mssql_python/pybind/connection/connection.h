@@ -18,8 +18,7 @@ public:
     Connection(const std::wstring& conn_str, bool autocommit = false);
     ~Connection();
 
-    // Establish the connection using the stored connection string.
-    SQLRETURN connect();
+    SQLRETURN connect(const py::dict& attrs_before = py::dict());
 
     // Close the connection and free resources.
     SQLRETURN close();
@@ -46,8 +45,10 @@ private:
     std::wstring _conn_str;
     SqlHandlePtr _dbc_handle;
     bool _autocommit = false;
+    std::shared_ptr<Connection> _conn; 
 
-    static SqlHandlePtr getSharedEnvHandle();
+    SQLRETURN set_attribute(SQLINTEGER attribute, pybind11::object value);
+    void apply_attrs_before(const pybind11::dict& attrs);
 };
 
 #endif // CONNECTION_H

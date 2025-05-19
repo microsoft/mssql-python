@@ -415,8 +415,7 @@ class Cursor:
         """
         Allocate the DDBC statement handle.
         """
-        self.connection._conn.alloc_statement_handle()
-        print(f"Statement handle: {self.hstmt}")
+        self.hstmt = self.connection._conn.alloc_statement_handle()
 
     def _reset_cursor(self) -> None:
         """

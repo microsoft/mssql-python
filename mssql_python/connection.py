@@ -56,16 +56,9 @@ class Connection:
         self.connection_str = self._construct_connection_string(
             connection_str, **kwargs
         )
-        # self._attrs_before = attrs_before
-        # self._autocommit = autocommit
-        # if self._attrs_before != {}:
-        #     self._apply_attrs_before()  # Apply pre-connection attributes
-        # if self._autocommit:
-        #     self.setautocommit(autocommit)
-        print("Connection string:", self.connection_str)
-        self._conn = ddbc_bindings.Connection(self.connection_str)
-        self._conn.connect()
-        print("Connection established")
+        self._attrs_before = attrs_before or {}
+        self._conn = ddbc_bindings.Connection(self.connection_str, autocommit)
+        self._conn.connect(self._attrs_before)
         self._autocommit = autocommit
         self.setautocommit(autocommit)
 
@@ -107,90 +100,6 @@ class Connection:
 
         return conn_str
     
-    # def _apply_attrs_before(self):
-    #     """
-    #     Apply specific pre-connection attributes.
-    #     Currently, this method only processes an attribute with key 1256 (e.g., SQL_COPT_SS_ACCESS_TOKEN)
-    #     if present in `self._attrs_before`. Other attributes are ignored.
-
-    #     Returns:
-    #         bool: True.
-    #     """
-
-    #     if ENABLE_LOGGING:
-    #         logger.info("Attempting to apply pre-connection attributes (attrs_before): %s", self._attrs_before)
-
-    #     if not isinstance(self._attrs_before, dict):
-    #         if self._attrs_before is not None and ENABLE_LOGGING:
-    #             logger.warning(
-    #                 f"_attrs_before is of type {type(self._attrs_before).__name__}, "
-    #                 f"expected dict. Skipping attribute application."
-    #             )
-    #         elif self._attrs_before is None and ENABLE_LOGGING:
-    #              logger.debug("_attrs_before is None. No pre-connection attributes to apply.")
-    #         return True # Exit if _attrs_before is not a dictionary or is None
-
-    #     for key, value in self._attrs_before.items():
-    #         ikey = None
-    #         if isinstance(key, int):
-    #             ikey = key
-    #         elif isinstance(key, str) and key.isdigit():
-    #             try:
-    #                 ikey = int(key)
-    #             except ValueError:
-    #                 if ENABLE_LOGGING:
-    #                     logger.debug(
-    #                         f"Skipping attribute with key '{key}' in attrs_before: "
-    #                         f"could not convert string to int."
-    #                     )
-    #                 continue # Skip if string key is not a valid integer
-    #         else:
-    #             if ENABLE_LOGGING:
-    #                 logger.debug(
-    #                     f"Skipping attribute with key '{key}' in attrs_before due to "
-    #                     f"unsupported key type: {type(key).__name__}. Expected int or string representation of an int."
-    #                 )
-    #             continue  # Skip keys that are not int or string representation of an int
-
-    #         if ikey == ddbc_sql_const.SQL_COPT_SS_ACCESS_TOKEN.value:
-    #             if ENABLE_LOGGING:
-    #                 logger.info(
-    #                     f"Found attribute {ddbc_sql_const.SQL_COPT_SS_ACCESS_TOKEN.value}. Attempting to set it."
-    #                 )
-    #             self._conn.set_attribute(ikey, value)
-    #             if ENABLE_LOGGING:
-    #                 logger.info(
-    #                     f"Call to set attribute {ddbc_sql_const.SQL_COPT_SS_ACCESS_TOKEN.value} with value '{value}' completed."
-    #                 )
-    #             # If you expect only one such key, you could add 'break' here.
-    #         else:
-    #             if ENABLE_LOGGING:
-    #                 logger.debug(
-    #                     f"Ignoring attribute with key '{key}' (resolved to {ikey}) in attrs_before "
-    #                     f"as it is not the target attribute ({ddbc_sql_const.SQL_COPT_SS_ACCESS_TOKEN.value})."
-    #                 )
-    #     return True
-
-    # def _set_connection_attributes(self, ikey: int, ivalue: any) -> None:
-    #     """
-    #     Set the connection attributes before connecting.
-
-    #     Args:
-    #         ikey (int): The attribute key to set.
-    #         ivalue (Any): The value to set for the attribute. Can be bytes, bytearray, int, or unicode.
-    #         vallen (int): The length of the value.
-
-    #     Raises:
-    #         DatabaseError: If there is an error while setting the connection attribute.
-    #     """
-
-    #     ret = ddbc_bindings.DDBCSQLSetConnectAttr(
-    #         self.hdbc,  # Connection handle
-    #         ikey,  # Attribute
-    #         ivalue,  # Value
-    #     )
-    #     check_error(ddbc_sql_const.SQL_HANDLE_DBC.value, self.hdbc, ret)
-
     @property
     def autocommit(self) -> bool:
         """
@@ -208,8 +117,6 @@ class Connection:
             value (bool): True to enable autocommit, False to disable it.
         Returns:
             None
-        Raises:
-            DatabaseError: If there is an error while setting the autocommit mode.
         """
         self.setautocommit(value)
         if ENABLE_LOGGING:
@@ -243,9 +150,6 @@ class Connection:
             DatabaseError: If there is an error while creating the cursor.
             InterfaceError: If there is an error related to the database interface.
         """
-        # if self._is_closed():
-        #     # Cannot create a cursor if the connection is closed
-        #     raise Exception("Connection is closed. Cannot create cursor.")
         return Cursor(self)
 
     def commit(self) -> None:
@@ -260,10 +164,6 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while committing the transaction.
         """
-        if self._is_closed():
-            # Cannot commit if the connection is closed
-            raise Exception("Connection is closed. Cannot commit.")
-
         # Commit the current transaction
         self._conn.commit()
         if ENABLE_LOGGING:
@@ -280,10 +180,6 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while rolling back the transaction.
         """
-        if self._is_closed():
-            # Cannot roll back if the connection is closed
-            raise Exception("Connection is closed. Cannot roll back.")
-
         # Roll back the current transaction
         self._conn.rollback()
         if ENABLE_LOGGING:
@@ -302,10 +198,7 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while closing the connection.
         """
-        if self._is_closed():
-            # Connection is already closed
-            return
+        # Close the connection
         self._conn.close()
-
         if ENABLE_LOGGING:
             logger.info("Connection closed successfully.")

@@ -7,8 +7,6 @@
 #include "connection.h"
 #include <iostream>
 #include <vector>
-
-<<<<<<< HEAD
 #include <pybind11/pybind11.h>
 
 //-------------------------------------------------------------------------------------------------
@@ -16,15 +14,8 @@
 // This class wraps low-level ODBC operations like connect/disconnect,
 // transaction control, and autocommit configuration.
 //-------------------------------------------------------------------------------------------------
-<<<<<<< HEAD
 Connection::Connection(const std::wstring& conn_str, bool autocommit)
     : _conn_str(conn_str) , _autocommit(autocommit) {}
-=======
-Connection::Connection(const std::wstring& conn_str, bool autocommit) : _conn_str(conn_str) , _autocommit(autocommit) {}
-=======
-Connection::Connection(const std::wstring& conn_str) : _conn_str(conn_str) {}
->>>>>>> fcd64d4 (working flow with c++ connection class)
->>>>>>> 29a7a65 (working flow with c++ connection class)
 
 Connection::~Connection() {
     close();    // Ensure the connection is closed when the object is destroyed.
@@ -173,6 +164,52 @@ SqlHandlePtr Connection::allocStatementHandle() {
         throw std::runtime_error("Failed to allocate statement handle");
     }
     return std::make_shared<SqlHandle>(SQL_HANDLE_STMT, stmt);
+}
+
+SQLRETURN Connection::set_attribute(SQLINTEGER attribute, py::object value) {
+    LOG("Setting SQL attribute {}");
+
+    SQLPOINTER ptr = nullptr;
+    SQLINTEGER length = 0;
+
+    if (py::isinstance<py::int_>(value)) {
+        int intValue = value.cast<int>();
+        ptr = reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(intValue));
+        length = SQL_IS_INTEGER;
+    } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
+        static std::vector<std::string> buffers;
+        buffers.emplace_back(value.cast<std::string>());
+        ptr = const_cast<char*>(buffers.back().c_str());
+        length = static_cast<SQLINTEGER>(buffers.back().size());
+    } else {
+        LOG("Unsupported attribute value type");
+        return SQL_ERROR;
+    }
+
+    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbc_handle->get(), attribute, ptr, length);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to set attribute {}");
+    }
+    return ret;
+}
+
+void Connection::apply_attrs_before(const py::dict& attrs) {
+    for (const auto& item : attrs) {
+        int key;
+        try {
+            key = py::cast<int>(item.first);
+        } catch (...) {
+            continue;
+        }
+
+        //do not hard code the key values
+        if (key == 1256) {   
+            SQLRETURN ret = set_attribute(key, py::reinterpret_borrow<py::object>(item.second));
+            if (!SQL_SUCCEEDED(ret)) {
+                throw std::runtime_error("Failed to set access token before connect");
+            }
+        }
+    }
 }
 
 SqlHandlePtr Connection::getSharedEnvHandle() {
