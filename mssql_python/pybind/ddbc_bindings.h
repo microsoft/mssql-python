@@ -1,9 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+<<<<<<< HEAD
 // INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
 //             taken up in future.
 
+=======
+>>>>>>> 25d6ef0 (refactor native layer and create reusable components)
 #pragma once
 
 #include <Windows.h>
