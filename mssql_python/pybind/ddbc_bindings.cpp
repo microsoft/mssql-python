@@ -2143,8 +2143,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     
     try {
         // Try loading the ODBC driver when the module is imported
-        LOG("Loading ODBC driver");
-        DriverLoader::getInstance().loadDriver();  // Load the driver
+        LoadDriverOrThrowException();
     } catch (const std::exception& e) {
         // Log the error but don't throw - let the error happen when functions are called
         LOG("Failed to load ODBC driver during module initialization: {}", e.what());
