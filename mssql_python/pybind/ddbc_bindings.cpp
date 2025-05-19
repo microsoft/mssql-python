@@ -21,6 +21,7 @@
 #include <pybind11/functional.h>
 #include <pybind11/pytypes.h>  // Add this line for datetime support
 #include <pybind11/stl.h>
+#include "connection/connection.h"
 
 namespace py = pybind11;
 using namespace pybind11::literals;
@@ -669,6 +670,46 @@ void SqlHandle::free() {
         ss << "Freed SQL Handle of type: " << type_str;
         LOG(ss.str());
     }
+}
+
+// Wrap SQLSetConnectAttr
+SQLRETURN SQLSetConnectAttr_wrap(SqlHandlePtr ConnectionHandle, SQLINTEGER Attribute, 
+                                 py::object ValuePtr) {
+    LOG("Set SQL Connection Attribute");
+    if (!SQLSetConnectAttr_ptr) {
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();  // Load the driver
+    }
+
+    // Print the type of ValuePtr and attribute value - helpful for debugging
+    LOG("Type of ValuePtr: {}, Attribute: {}", py::type::of(ValuePtr).attr("__name__").cast<std::string>(), Attribute);
+
+    SQLPOINTER value = 0;
+    SQLINTEGER length = 0;
+
+    if (py::isinstance<py::int_>(ValuePtr)) {
+        // Handle integer values
+        int intValue = ValuePtr.cast<int>();
+        value = reinterpret_cast<SQLPOINTER>(intValue);
+        length = SQL_IS_INTEGER;  // Integer values don't require a length
+    } else if (py::isinstance<py::bytes>(ValuePtr) || py::isinstance<py::bytearray>(ValuePtr)) {
+        // Handle byte or bytearray values (like access tokens)
+        // Store in static buffer to ensure memory remains valid during connection
+        static std::vector<std::string> bytesBuffers;
+        bytesBuffers.push_back(ValuePtr.cast<std::string>());
+        value = const_cast<char*>(bytesBuffers.back().c_str());
+        length = SQL_IS_POINTER;  // Indicates we're passing a pointer (required for token)
+    } else {
+        LOG("Unsupported ValuePtr type");
+        return SQL_ERROR;
+    }
+
+    SQLRETURN ret = SQLSetConnectAttr_ptr(ConnectionHandle->get(), Attribute, value, length);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to set Connection attribute");
+    }
+    LOG("Set Connection attribute successfully");
+    return ret;
 }
 
 // Helper function to check for driver errors
@@ -1936,20 +1977,20 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free);
     py::class_<Connection>(m, "Connection")
-        .def(py::init<const std::wstring&, bool>(), py::arg("conn_str"))
+        .def(py::init<const std::wstring&>(), py::arg("conn_str"))
         .def("connect", &Connection::connect, "Establish a connection to the database")
         .def("close", &Connection::close, "Close the connection")
         .def("commit", [](Connection& self) {
             self.end_transaction(SQL_COMMIT);
         })
         .def("rollback", [](Connection& self) {
-            self.end_transaction(SQL_ROLLBACK)})
+            self.end_transaction(SQL_ROLLBACK);})
         .def("set_autocommit", &Connection::set_autocommit)
         .def("get_autocommit", &Connection::get_autocommit)
-        .def("set_attribute", &Connection::set_attribute);
         .def("alloc_statement_handle", &Connection::alloc_statement_handle);
     m.def("DDBCSQLSetConnectAttr", &SQLSetConnectAttr_wrap,
           "Set an attribute that governs aspects of connections");
+
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");
     m.def("DDBCSQLRowCount", &SQLRowCount_wrap,
@@ -1965,7 +2006,6 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchMany", &FetchMany_wrap, py::arg("StatementHandle"), py::arg("rows"),
           py::arg("fetchSize") = 1, "Fetch many rows from the result set");
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set");
-    m.def("DDBCSQLEndTran", &SQLEndTran_wrap, "End a transaction");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
 

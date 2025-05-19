@@ -106,11 +106,11 @@ extern SQLFreeStmtFunc SQLFreeStmt_ptr;
 extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
 
 
-// -- Logging utility --
+// Logging utility
 template <typename... Args>
 void LOG(const std::string& formatString, Args&&... args);
 
-// -- Exception helper --
+// Throws a std::runtime_error with the given message
 void ThrowStdException(const std::string& message);
 
 //-------------------------------------------------------------------------------------------------

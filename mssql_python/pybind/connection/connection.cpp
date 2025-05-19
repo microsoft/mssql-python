@@ -8,16 +8,23 @@
 #include <iostream>
 #include <vector>
 
+<<<<<<< HEAD
 #include <pybind11/pybind11.h>
-
 
 //-------------------------------------------------------------------------------------------------
 // Implements the Connection class declared in connection.h.
 // This class wraps low-level ODBC operations like connect/disconnect,
 // transaction control, and autocommit configuration.
 //-------------------------------------------------------------------------------------------------
+<<<<<<< HEAD
 Connection::Connection(const std::wstring& conn_str, bool autocommit)
     : _conn_str(conn_str) , _autocommit(autocommit) {}
+=======
+Connection::Connection(const std::wstring& conn_str, bool autocommit) : _conn_str(conn_str) , _autocommit(autocommit) {}
+=======
+Connection::Connection(const std::wstring& conn_str) : _conn_str(conn_str) {}
+>>>>>>> fcd64d4 (working flow with c++ connection class)
+>>>>>>> 29a7a65 (working flow with c++ connection class)
 
 Connection::~Connection() {
     close();    // Ensure the connection is closed when the object is destroyed.
@@ -118,13 +125,6 @@ bool Connection::getAutocommit() const {
     return value == SQL_AUTOCOMMIT_ON;
 }
 
-<<<<<<< HEAD
-SqlHandlePtr Connection::allocStatementHandle() {
-    if (!_dbc_handle) {
-        throw std::runtime_error("Connection handle not allocated");
-    }
-    LOG("Allocating statement handle");
-=======
 SQLRETURN set_attribute(SQLINTEGER Attribute, py::object ValuePtr) {
     LOG("Set SQL Connection Attribute");
     if (!SQLSetConnectAttr_ptr) {
@@ -165,8 +165,8 @@ SQLRETURN set_attribute(SQLINTEGER Attribute, py::object ValuePtr) {
     return ret;
 }
 
-SqlHandlePtr Connection::alloc_statement_handle() {
->>>>>>> 52a2dba (initial edit)
+SqlHandlePtr Connection::allocStatementHandle() {
+    LOG("Allocating statement handle");
     SQLHANDLE stmt = nullptr;
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbc_handle->get(), &stmt);
     if (!SQL_SUCCEEDED(ret)) {
