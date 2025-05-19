@@ -4,7 +4,6 @@
 // INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
 //             taken up in future.
 
->>>>>>> 1182190 (resolve review comments)
 #pragma once
 
 #include <Windows.h>
