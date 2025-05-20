@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+// INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
+//             taken up in future.
+
 #pragma once
 
 #include <Windows.h>
@@ -110,10 +113,20 @@ void LOG(const std::string& formatString, Args&&... args);
 // -- Exception helper --
 void ThrowStdException(const std::string& message);
 
-// -- Driver loader --
+//-------------------------------------------------------------------------------------------------
+// Loads the ODBC driver and resolves function pointers.
+// Throws if loading or resolution fails.
+//-------------------------------------------------------------------------------------------------
 std::wstring LoadDriverOrThrowException();
 
-// -- Singleton wrapper --
+//-------------------------------------------------------------------------------------------------
+// DriverLoader (Singleton)
+//
+// Ensures the ODBC driver and all function pointers are loaded exactly once across the process.
+// This avoids redundant work and ensures thread-safe, centralized initialization.
+//
+// Not copyable or assignable.
+//-------------------------------------------------------------------------------------------------
 class DriverLoader {
     public:
         static DriverLoader& getInstance();
@@ -125,7 +138,12 @@ class DriverLoader {
         bool m_driverLoaded;
     };
 
-// -- SqlHandle wrapper --
+//-------------------------------------------------------------------------------------------------
+// SqlHandle
+//
+// RAII wrapper around ODBC handles (ENV, DBC, STMT).
+// Use `std::shared_ptr<SqlHandle>` (alias: SqlHandlePtr) for shared ownership.
+//-------------------------------------------------------------------------------------------------
 class SqlHandle {
     public:
         SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle);

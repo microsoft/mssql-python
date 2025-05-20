@@ -530,7 +530,6 @@ std::wstring LoadDriverOrThrowException() {
     dllDir += L"\\msodbcsql18.dll";
 
     // Preload mssql-auth.dll from the same path if available
-    // TODO: Only load mssql-auth.dll if using Entra ID Authentication modes (Active Directory modes)
     HMODULE hAuthModule = LoadLibraryW(mssqlauthDllPath.c_str());
     if (hAuthModule) {
         LOG("Authentication library loaded successfully from - {}", mssqlauthDllPath.c_str());
@@ -2144,6 +2143,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     
     try {
         // Try loading the ODBC driver when the module is imported
+        LOG("Loading ODBC driver");
         DriverLoader::getInstance().loadDriver();  // Load the driver
     } catch (const std::exception& e) {
         // Log the error but don't throw - let the error happen when functions are called
