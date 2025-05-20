@@ -633,17 +633,7 @@ SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle)
 // Native ODBC handles must be explicitly released by calling `free()` directly from Python.
 // This avoids nondeterministic crashes during GC or shutdown during pytest.
 // Read the documentation for more details (https://aka.ms/CPPvsPythonGC)
-SqlHandle::~SqlHandle() {}
-
-SQLHANDLE SqlHandle::get() const {
-    return _handle;
-}
-
-SQLSMALLINT SqlHandle::type() const {
-    return _type;
-}
-
-void SqlHandle::free() {
+SqlHandle::~SqlHandle() {
     if (_handle && SQLFreeHandle_ptr) {
         const char* type_str = nullptr;
         switch (_type) {
@@ -659,6 +649,14 @@ void SqlHandle::free() {
         ss << "Freed SQL Handle of type: " << type_str;
         LOG(ss.str());
     }
+}
+
+SQLHANDLE SqlHandle::get() const {
+    return _handle;
+}
+
+SQLSMALLINT SqlHandle::type() const {
+    return _type;
 }
 
 // Wrap SQLSetConnectAttr
@@ -1963,8 +1961,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("sqlState", &ErrorInfo::sqlState)
         .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);
         
-    py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
-        .def("free", &SqlHandle::free);
+    py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle");
     py::class_<Connection>(m, "Connection")
         .def(py::init<const std::wstring&, bool>(), py::arg("conn_str"), py::arg("autocommit") = false)
         .def("connect", &Connection::connect, py::arg("attrs_before") = py::dict(), "Establish a connection to the database")
