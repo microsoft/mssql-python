@@ -15,7 +15,7 @@
 
 class Connection {
 public:
-    Connection(const std::wstring& conn_str);
+    Connection(const std::wstring& conn_str, bool autocommit = false);
     ~Connection();
 
     // Establish the connection using the stored connection string.
@@ -23,12 +23,6 @@ public:
 
     // Close the connection and free resources.
     SQLRETURN close();
-
-    // Commit the current transaction.
-    SQLRETURN commit();
-
-    // Rollback the current transaction.
-    SQLRETURN rollback();
 
     // End the transaction with the specified completion type.
     SQLRETURN end_transaction(SQLSMALLINT completion_type);
@@ -39,6 +33,8 @@ public:
     //  Check whether autocommit is enabled.
     bool get_autocommit() const;
 
+    SqlHandlePtr alloc_statement_handle(); // Will later be moved to cursor c++ class
+
 private:
 
     std::wstring _conn_str;     // Connection string
@@ -46,6 +42,5 @@ private:
     SqlHandlePtr _dbc_handle;   // Connection handle
 
     bool _autocommit = false;
-    std::shared_ptr<Connection> _conn; 
 };
 #endif // CONNECTION_H
