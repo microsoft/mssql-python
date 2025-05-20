@@ -629,10 +629,6 @@ void DriverLoader::loadDriver() {
 SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle)
     : _type(type), _handle(rawHandle) {}
 
-// Note: Destructor is intentionally a no-op. Python owns the lifecycle.
-// Native ODBC handles must be explicitly released by calling `free()` directly from Python.
-// This avoids nondeterministic crashes during GC or shutdown during pytest.
-// Read the documentation for more details (https://aka.ms/CPPvsPythonGC)
 SqlHandle::~SqlHandle() {
     if (_handle && SQLFreeHandle_ptr) {
         const char* type_str = nullptr;
@@ -658,46 +654,6 @@ SQLHANDLE SqlHandle::get() const {
 SQLSMALLINT SqlHandle::type() const {
     return _type;
 }
-
-// Wrap SQLSetConnectAttr
-// SQLRETURN SQLSetConnectAttr_wrap(SqlHandlePtr ConnectionHandle, SQLINTEGER Attribute, 
-//                                  py::object ValuePtr) {
-//     LOG("Set SQL Connection Attribute");
-//     if (!SQLSetConnectAttr_ptr) {
-//         LOG("Function pointer not initialized. Loading the driver.");
-//         DriverLoader::getInstance().loadDriver();  // Load the driver
-//     }
-
-//     // Print the type of ValuePtr and attribute value - helpful for debugging
-//     LOG("Type of ValuePtr: {}, Attribute: {}", py::type::of(ValuePtr).attr("__name__").cast<std::string>(), Attribute);
-
-//     SQLPOINTER value = 0;
-//     SQLINTEGER length = 0;
-
-//     if (py::isinstance<py::int_>(ValuePtr)) {
-//         // Handle integer values
-//         int intValue = ValuePtr.cast<int>();
-//         value = reinterpret_cast<SQLPOINTER>(intValue);
-//         length = SQL_IS_INTEGER;  // Integer values don't require a length
-//     } else if (py::isinstance<py::bytes>(ValuePtr) || py::isinstance<py::bytearray>(ValuePtr)) {
-//         // Handle byte or bytearray values (like access tokens)
-//         // Store in static buffer to ensure memory remains valid during connection
-//         static std::vector<std::string> bytesBuffers;
-//         bytesBuffers.push_back(ValuePtr.cast<std::string>());
-//         value = const_cast<char*>(bytesBuffers.back().c_str());
-//         length = SQL_IS_POINTER;  // Indicates we're passing a pointer (required for token)
-//     } else {
-//         LOG("Unsupported ValuePtr type");
-//         return SQL_ERROR;
-//     }
-
-//     SQLRETURN ret = SQLSetConnectAttr_ptr(ConnectionHandle->get(), Attribute, value, length);
-//     if (!SQL_SUCCEEDED(ret)) {
-//         LOG("Failed to set Connection attribute");
-//     }
-//     LOG("Set Connection attribute successfully");
-//     return ret;
-// }
 
 // Helper function to check for driver errors
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode) {
