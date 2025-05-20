@@ -95,7 +95,7 @@ SQLRETURN Connection::setAutocommit(bool enable) {
         throw std::runtime_error("Connection handle not allocated");
     }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
-    LOG("Set SQL Connection Attribute");
+    LOG("Set SQL Connection Attribute - Autocommit");   
     SQLRETURN ret = SQLSetConnectAttr_ptr(_dbc_handle->get(), SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)value, 0);
     if (!SQL_SUCCEEDED(ret)) {
         throw std::runtime_error("Failed to set autocommit mode.");
@@ -167,7 +167,7 @@ SqlHandlePtr Connection::allocStatementHandle() {
 }
 
 SQLRETURN Connection::set_attribute(SQLINTEGER attribute, py::object value) {
-    LOG("Setting SQL attribute {}");
+    LOG("Setting SQL attribute");
 
     SQLPOINTER ptr = nullptr;
     SQLINTEGER length = 0;
@@ -188,7 +188,10 @@ SQLRETURN Connection::set_attribute(SQLINTEGER attribute, py::object value) {
 
     SQLRETURN ret = SQLSetConnectAttr_ptr(_dbc_handle->get(), attribute, ptr, length);
     if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to set attribute {}");
+        LOG("Failed to set attribute");
+    }
+    else {
+        LOG("Set attribute successfully");
     }
     return ret;
 }
