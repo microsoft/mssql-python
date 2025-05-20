@@ -1,6 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+// Implements the Connection class declared in connection.h.
+// This class wraps low-level ODBC operations like connect/disconnect,
+// transaction control, and autocommit configuration.
+
 #include "connection.h"
 #include <iostream>
 
