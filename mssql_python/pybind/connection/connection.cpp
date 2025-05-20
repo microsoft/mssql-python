@@ -116,46 +116,6 @@ bool Connection::getAutocommit() const {
     return value == SQL_AUTOCOMMIT_ON;
 }
 
-SQLRETURN set_attribute(SQLINTEGER Attribute, py::object ValuePtr) {
-    LOG("Set SQL Connection Attribute");
-    if (!SQLSetConnectAttr_ptr) {
-        LOG("Function pointer not initialized. Loading the driver.");
-        DriverLoader::getInstance().loadDriver();  // Load the driver
-    }
-
-    // Print the type of ValuePtr and attribute value - helpful for debugging
-    LOG("Type of ValuePtr: {}, Attribute: {}", py::type::of(ValuePtr).attr("__name__").cast<std::string>(), Attribute);
-
-    SQLPOINTER value = 0;
-    SQLINTEGER length = 0;
-
-    if (py::isinstance<py::int_>(ValuePtr)) {
-        // Handle integer values
-        int intValue = ValuePtr.cast<int>();
-        value = reinterpret_cast<SQLPOINTER>(intValue);
-        length = SQL_IS_INTEGER;  // Integer values don't require a length
-    } else if (py::isinstance<py::bytes>(ValuePtr) || py::isinstance<py::bytearray>(ValuePtr)) {
-        // Handle byte or bytearray values (like access tokens)
-        // Store in static buffer to ensure memory remains valid during connection
-        static std::vector<std::string> bytesBuffers;
-        bytesBuffers.push_back(ValuePtr.cast<std::string>());
-        value = const_cast<char*>(bytesBuffers.back().c_str());
-        length = SQL_IS_POINTER;  // Indicates we're passing a pointer (required for token)
-    } else {
-        LOG("Unsupported ValuePtr type");
-        return SQL_ERROR;
-    }
-
-    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbc_handle->get(), Attribute, value, length);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to set Connection attribute");
-    }
-    else {
-        LOG("Set Connection attribute successfully");
-    }
-    return ret;
-}
-
 SqlHandlePtr Connection::allocStatementHandle() {
     LOG("Allocating statement handle");
     SQLHANDLE stmt = nullptr;
@@ -205,8 +165,7 @@ void Connection::apply_attrs_before(const py::dict& attrs) {
             continue;
         }
 
-        //do not hard code the key values
-        if (key == 1256) {   
+        if (key == SQL_COPT_SS_ACCESS_TOKEN) {   
             SQLRETURN ret = set_attribute(key, py::reinterpret_borrow<py::object>(item.second));
             if (!SQL_SUCCEEDED(ret)) {
                 throw std::runtime_error("Failed to set access token before connect");

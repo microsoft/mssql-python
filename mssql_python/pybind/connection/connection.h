@@ -18,6 +18,7 @@ public:
     Connection(const std::wstring& conn_str, bool autocommit = false);
     ~Connection();
 
+    // Establish the connection using the stored connection string.
     SQLRETURN connect(const py::dict& attrs_before = py::dict());
 
     // Close the connection and free resources.
