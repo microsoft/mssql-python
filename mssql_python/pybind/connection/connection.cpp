@@ -1,17 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-// Implements the Connection class declared in connection.h.
-// This class wraps low-level ODBC operations like connect/disconnect,
-// transaction control, and autocommit configuration.
-
 #include "connection.h"
 #include <iostream>
 
+//-------------------------------------------------------------------------------------------------
+// Implements the Connection class declared in connection.h.
+// This class wraps low-level ODBC operations like connect/disconnect,
+// transaction control, and autocommit configuration.
+//-------------------------------------------------------------------------------------------------
 Connection::Connection(const std::wstring& conn_str) : _conn_str(conn_str) {}
 
 Connection::~Connection() {
-    close();
+    LOG("Connection destructor called");
+    close();    // Ensure the connection is closed when the object is destroyed.
 }
 
 SQLRETURN Connection::connect() {
@@ -39,11 +41,11 @@ SQLRETURN Connection::end_transaction(SQLSMALLINT completion_type) {
 }
 
 SQLRETURN Connection::set_autocommit(bool enable) {
-    LOG("Setting autocommit mode C++");
+    LOG("Setting autocommit mode");
     // to be added
 }
 
 bool Connection::get_autocommit() const {
-    LOG("Getting autocommit mode C++");
+    LOG("Getting autocommit mode");
     // to be added
 }
