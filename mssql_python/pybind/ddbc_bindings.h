@@ -1,0 +1,158 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+// INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
+//             taken up in future.
+
+#pragma once
+
+#include <Windows.h>
+#include <string>
+#include <sql.h>
+#include <sqlext.h>
+#include <memory>
+
+//-------------------------------------------------------------------------------------------------
+// Function pointer typedefs
+//-------------------------------------------------------------------------------------------------
+
+// Handle APIs
+typedef SQLRETURN (SQL_API* SQLAllocHandleFunc)(SQLSMALLINT, SQLHANDLE, SQLHANDLE*);
+typedef SQLRETURN (SQL_API* SQLSetEnvAttrFunc)(SQLHANDLE, SQLINTEGER, SQLPOINTER, SQLINTEGER);
+typedef SQLRETURN (SQL_API* SQLSetConnectAttrFunc)(SQLHDBC, SQLINTEGER, SQLPOINTER, SQLINTEGER);
+typedef SQLRETURN (SQL_API* SQLSetStmtAttrFunc)(SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER);
+typedef SQLRETURN (SQL_API* SQLGetConnectAttrFunc)(SQLHDBC, SQLINTEGER, SQLPOINTER, SQLINTEGER, SQLINTEGER*);
+
+// Connection and Execution APIs
+typedef SQLRETURN (SQL_API* SQLDriverConnectFunc)(SQLHANDLE, SQLHWND, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*,
+                                          SQLSMALLINT, SQLSMALLINT*, SQLUSMALLINT);
+typedef SQLRETURN (SQL_API* SQLExecDirectFunc)(SQLHANDLE, SQLWCHAR*, SQLINTEGER);
+typedef SQLRETURN (SQL_API* SQLPrepareFunc)(SQLHANDLE, SQLWCHAR*, SQLINTEGER);
+typedef SQLRETURN (SQL_API* SQLBindParameterFunc)(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLSMALLINT,
+                                          SQLSMALLINT, SQLULEN, SQLSMALLINT, SQLPOINTER, SQLLEN,
+                                          SQLLEN*);
+typedef SQLRETURN (SQL_API* SQLExecuteFunc)(SQLHANDLE);
+typedef SQLRETURN (SQL_API* SQLRowCountFunc)(SQLHSTMT, SQLLEN*);
+typedef SQLRETURN (SQL_API* SQLSetDescFieldFunc)(SQLHDESC, SQLSMALLINT, SQLSMALLINT, SQLPOINTER, SQLINTEGER);
+typedef SQLRETURN (SQL_API* SQLGetStmtAttrFunc)(SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER, SQLINTEGER*);
+
+// Data retrieval APIs
+typedef SQLRETURN (SQL_API* SQLFetchFunc)(SQLHANDLE);
+typedef SQLRETURN (SQL_API* SQLFetchScrollFunc)(SQLHANDLE, SQLSMALLINT, SQLLEN);
+typedef SQLRETURN (SQL_API* SQLGetDataFunc)(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER, SQLLEN,
+                                    SQLLEN*);
+typedef SQLRETURN (SQL_API* SQLNumResultColsFunc)(SQLHSTMT, SQLSMALLINT*);
+typedef SQLRETURN (SQL_API* SQLBindColFunc)(SQLHSTMT, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER, SQLLEN,
+                                    SQLLEN*);
+typedef SQLRETURN (SQL_API* SQLDescribeColFunc)(SQLHSTMT, SQLUSMALLINT, SQLWCHAR*, SQLSMALLINT,
+                                        SQLSMALLINT*, SQLSMALLINT*, SQLULEN*, SQLSMALLINT*,
+                                        SQLSMALLINT*);
+typedef SQLRETURN (SQL_API* SQLMoreResultsFunc)(SQLHSTMT);
+typedef SQLRETURN (SQL_API* SQLColAttributeFunc)(SQLHSTMT, SQLUSMALLINT, SQLUSMALLINT, SQLPOINTER,
+                                         SQLSMALLINT, SQLSMALLINT*, SQLPOINTER);
+
+// Transaction APIs
+typedef SQLRETURN (SQL_API* SQLEndTranFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT);
+
+// Disconnect/free APIs
+typedef SQLRETURN (SQL_API* SQLFreeHandleFunc)(SQLSMALLINT, SQLHANDLE);
+typedef SQLRETURN (SQL_API* SQLDisconnectFunc)(SQLHDBC);
+typedef SQLRETURN (SQL_API* SQLFreeStmtFunc)(SQLHSTMT, SQLUSMALLINT);
+
+// Diagnostic APIs
+typedef SQLRETURN (SQL_API* SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLWCHAR*, SQLINTEGER*,
+                                       SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*);
+
+//-------------------------------------------------------------------------------------------------
+// Extern function pointer declarations (defined in ddbc_bindings.cpp)
+//-------------------------------------------------------------------------------------------------
+
+// Handle APIs
+extern SQLAllocHandleFunc SQLAllocHandle_ptr;
+extern SQLSetEnvAttrFunc SQLSetEnvAttr_ptr;
+extern SQLSetConnectAttrFunc SQLSetConnectAttr_ptr;
+extern SQLSetStmtAttrFunc SQLSetStmtAttr_ptr;
+extern SQLGetConnectAttrFunc SQLGetConnectAttr_ptr;
+
+// Connection and Execution APIs
+extern SQLDriverConnectFunc SQLDriverConnect_ptr;
+extern SQLExecDirectFunc SQLExecDirect_ptr;
+extern SQLPrepareFunc SQLPrepare_ptr;
+extern SQLBindParameterFunc SQLBindParameter_ptr;
+extern SQLExecuteFunc SQLExecute_ptr;
+extern SQLRowCountFunc SQLRowCount_ptr;
+extern SQLSetDescFieldFunc SQLSetDescField_ptr;
+extern SQLGetStmtAttrFunc SQLGetStmtAttr_ptr;
+
+// Data retrieval APIs
+extern SQLFetchFunc SQLFetch_ptr;
+extern SQLFetchScrollFunc SQLFetchScroll_ptr;
+extern SQLGetDataFunc SQLGetData_ptr;
+extern SQLNumResultColsFunc SQLNumResultCols_ptr;
+extern SQLBindColFunc SQLBindCol_ptr;
+extern SQLDescribeColFunc SQLDescribeCol_ptr;
+extern SQLMoreResultsFunc SQLMoreResults_ptr;
+extern SQLColAttributeFunc SQLColAttribute_ptr;
+
+// Transaction APIs
+extern SQLEndTranFunc SQLEndTran_ptr;
+
+// Disconnect/free APIs
+extern SQLFreeHandleFunc SQLFreeHandle_ptr;
+extern SQLDisconnectFunc SQLDisconnect_ptr;
+extern SQLFreeStmtFunc SQLFreeStmt_ptr;
+
+// Diagnostic APIs
+extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
+
+
+// -- Logging utility --
+template <typename... Args>
+void LOG(const std::string& formatString, Args&&... args);
+
+// -- Exception helper --
+void ThrowStdException(const std::string& message);
+
+//-------------------------------------------------------------------------------------------------
+// Loads the ODBC driver and resolves function pointers.
+// Throws if loading or resolution fails.
+//-------------------------------------------------------------------------------------------------
+std::wstring LoadDriverOrThrowException();
+
+//-------------------------------------------------------------------------------------------------
+// DriverLoader (Singleton)
+//
+// Ensures the ODBC driver and all function pointers are loaded exactly once across the process.
+// This avoids redundant work and ensures thread-safe, centralized initialization.
+//
+// Not copyable or assignable.
+//-------------------------------------------------------------------------------------------------
+class DriverLoader {
+    public:
+        static DriverLoader& getInstance();
+        void loadDriver();
+    private:
+        DriverLoader();
+        DriverLoader(const DriverLoader&) = delete;
+        DriverLoader& operator=(const DriverLoader&) = delete;
+        bool m_driverLoaded;
+    };
+
+//-------------------------------------------------------------------------------------------------
+// SqlHandle
+//
+// RAII wrapper around ODBC handles (ENV, DBC, STMT).
+// Use `std::shared_ptr<SqlHandle>` (alias: SqlHandlePtr) for shared ownership.
+//-------------------------------------------------------------------------------------------------
+class SqlHandle {
+    public:
+        SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle);
+        ~SqlHandle();
+        SQLHANDLE get() const;
+        SQLSMALLINT type() const;
+        void free();
+    private:
+        SQLSMALLINT _type;
+        SQLHANDLE _handle;
+    };
+    using SqlHandlePtr = std::shared_ptr<SqlHandle>;
