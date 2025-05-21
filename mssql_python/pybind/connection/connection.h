@@ -30,9 +30,6 @@ public:
     // Rollback the current transaction.
     SQLRETURN rollback();
 
-    // End the transaction with the specified completion type.
-    SQLRETURN end_transaction(SQLSMALLINT completion_type);
-
     // Enable or disable autocommit mode.
     SQLRETURN set_autocommit(bool value);
 

@@ -39,10 +39,6 @@ SQLRETURN Connection::rollback() {
     // to be added
 }
 
-SQLRETURN Connection::end_transaction(SQLSMALLINT completion_type) {
-    // to be added
-}
-
 SQLRETURN Connection::set_autocommit(bool enable) {
     LOG("Setting autocommit mode");
     // to be added
