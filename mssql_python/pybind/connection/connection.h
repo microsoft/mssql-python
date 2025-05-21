@@ -10,7 +10,7 @@
 #include "ddbc_bindings.h"
 
 // Represents a single ODBC database connection.
-// Manages its own environment and connection handles.
+// Manages connection handles.
 // Note: This class does NOT implement pooling logic directly.
 
 class Connection {
@@ -24,23 +24,30 @@ public:
     // Close the connection and free resources.
     SQLRETURN close();
 
-    // End the transaction with the specified completion type.
-    SQLRETURN end_transaction(SQLSMALLINT completion_type);
+    // Commit the current transaction.
+    SQLRETURN commit();
+
+    // Rollback the current transaction.
+    SQLRETURN rollback();
 
     // Enable or disable autocommit mode.
-    SQLRETURN set_autocommit(bool value);
+    SQLRETURN setAutocommit(bool value);
 
     //  Check whether autocommit is enabled.
-    bool get_autocommit() const;
+    bool getAutocommit() const;
 
-    SqlHandlePtr alloc_statement_handle(); // Will later be moved to cursor c++ class
+    // Allocate a new statement handle on this connection.
+    SqlHandlePtr allocStatementHandle();
 
 private:
+    void allocDbcHandle();
+    SQLRETURN connectToDb();
 
-    std::wstring _conn_str;     // Connection string
-    SqlHandlePtr _env_handle;   // Environment handle
-    SqlHandlePtr _dbc_handle;   // Connection handle
-
+    std::wstring _conn_str;
+    SqlHandlePtr _dbc_handle;
     bool _autocommit = false;
+
+    static SqlHandlePtr getSharedEnvHandle();
 };
+
 #endif // CONNECTION_H
