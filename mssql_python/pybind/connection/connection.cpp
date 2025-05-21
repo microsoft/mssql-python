@@ -5,7 +5,6 @@
 //             taken up in future
 
 #include "connection.h"
-#include <iostream>
 #include <vector>
 #include <pybind11/pybind11.h>
 
@@ -19,9 +18,7 @@
 Connection::Connection(const std::wstring& conn_str, bool autocommit)
     : _conn_str(conn_str) , _autocommit(autocommit) {}
 
-Connection::~Connection() {
-    close();    // Ensure the connection is closed when the object is destroyed.
-}
+Connection::~Connection() {}
 
 SQLRETURN Connection::connect(const py::dict& attrs_before) {
     allocDbcHandle();
@@ -54,7 +51,7 @@ SQLRETURN Connection::connectToDb() {
                                          (SQLWCHAR*)_conn_str.c_str(), SQL_NTS,
                                          nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     if (!SQL_SUCCEEDED(ret)) {
-        throw std::runtime_error("Failed to connect to database");
+        ThrowStdException("Client unable to establish connection");
     }
     LOG("Connected to database successfully");
     return ret;
@@ -72,7 +69,7 @@ SQLRETURN Connection::close() {
     }
 
     SQLRETURN ret = SQLDisconnect_ptr(_dbc_handle->get());
-    _dbc_handle.reset();
+    _dbc_handle->free();
     return ret;
 }
 
@@ -119,7 +116,6 @@ bool Connection::getAutocommit() const {
     SQLINTEGER value;
     SQLINTEGER string_length;
     SQLGetConnectAttr_ptr(_dbc_handle->get(), SQL_ATTR_AUTOCOMMIT, &value, sizeof(value), &string_length);
-    
     return value == SQL_AUTOCOMMIT_ON;
 }
 

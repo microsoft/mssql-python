@@ -630,6 +630,20 @@ SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle)
     : _type(type), _handle(rawHandle) {}
 
 SqlHandle::~SqlHandle() {
+    if (_handle) {
+        free();
+    }
+}
+
+SQLHANDLE SqlHandle::get() const {
+    return _handle;
+}
+
+SQLSMALLINT SqlHandle::type() const {
+    return _type;
+}
+
+void SqlHandle::free() {
     if (_handle && SQLFreeHandle_ptr) {
         const char* type_str = nullptr;
         switch (_type) {
@@ -645,14 +659,6 @@ SqlHandle::~SqlHandle() {
         ss << "Freed SQL Handle of type: " << type_str;
         LOG(ss.str());
     }
-}
-
-SQLHANDLE SqlHandle::get() const {
-    return _handle;
-}
-
-SQLSMALLINT SqlHandle::type() const {
-    return _type;
 }
 
 // Helper function to check for driver errors
@@ -1917,7 +1923,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("sqlState", &ErrorInfo::sqlState)
         .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);
         
-    py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle");
+    py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
+        .def("free", &SqlHandle::free, "Free the handle");
     py::class_<Connection>(m, "Connection")
         .def(py::init<const std::wstring&, bool>(), py::arg("conn_str"), py::arg("autocommit") = false)
         .def("connect", &Connection::connect, py::arg("attrs_before") = py::dict(), "Establish a connection to the database")

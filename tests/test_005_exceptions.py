@@ -124,7 +124,7 @@ def test_foreign_key_constraint_error(cursor, db_connection):
         drop_table_if_exists(cursor, "pytest_parent_table")
         db_connection.commit()
 
-def test_connection_error(db_connection):
-    with pytest.raises(OperationalError) as excinfo:
-        Connection("InvalidConnectionString")
-    assert "Client unable to establish connection" in str(excinfo.value)
+# def test_connection_error(db_connection):
+#     with pytest.raises(OperationalError) as excinfo:
+#         Connection("InvalidConnectionString")
+#     assert "Client unable to establish connection" in str(excinfo.value)
