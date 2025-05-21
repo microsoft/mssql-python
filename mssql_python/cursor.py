@@ -48,8 +48,6 @@ class Cursor:
         Args:
             connection: Database connection object.
         """
-        if connection.hdbc is None:
-            raise Exception("Connection is closed. Cannot create a cursor.")
         self.connection = connection
         # self.connection.autocommit = False
         self.hstmt = None
@@ -417,19 +415,14 @@ class Cursor:
         """
         Allocate the DDBC statement handle.
         """
-        ret, handle = ddbc_bindings.DDBCSQLAllocHandle(
-            ddbc_sql_const.SQL_HANDLE_STMT.value,
-            self.connection.hdbc
-        )
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, handle, ret)
-        self.hstmt = handle
+        self.hstmt = self.connection._conn.alloc_statement_handle()
 
     def _reset_cursor(self) -> None:
         """
         Reset the DDBC statement handle.
         """
         if self.hstmt:
-            self.hstmt.free()  # Free the existing statement handle
+            self.hstmt.free()
             self.hstmt = None
             if ENABLE_LOGGING:
                 logger.debug("SQLFreeHandle succeeded")     
@@ -557,7 +550,6 @@ class Cursor:
             reset_cursor: Whether to reset the cursor before execution.
         """
         self._check_closed()  # Check if the cursor is closed
-
         if reset_cursor:
             self._reset_cursor()
 

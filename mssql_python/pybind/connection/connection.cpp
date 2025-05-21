@@ -5,7 +5,10 @@
 //             taken up in future
 
 #include "connection.h"
-#include <iostream>
+#include <vector>
+#include <pybind11/pybind11.h>
+
+#define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
 
 //-------------------------------------------------------------------------------------------------
 // Implements the Connection class declared in connection.h.
@@ -15,12 +18,18 @@
 Connection::Connection(const std::wstring& conn_str, bool autocommit)
     : _conn_str(conn_str) , _autocommit(autocommit) {}
 
-Connection::~Connection() {
-    close();    // Ensure the connection is closed when the object is destroyed.
-}
+Connection::~Connection() {}
 
-SQLRETURN Connection::connect() {
+SQLRETURN Connection::connect(const py::dict& attrs_before) {
     allocDbcHandle();
+    // Apply access token before connect
+    if (!attrs_before.is_none() && py::len(attrs_before) > 0) {
+        LOG("Apply attributes before connect");
+        applyAttrsBefore(attrs_before);
+        if (_autocommit) {
+            setAutocommit(_autocommit);
+        }
+    }
     return connectToDb();
 }
 
@@ -42,7 +51,7 @@ SQLRETURN Connection::connectToDb() {
                                          (SQLWCHAR*)_conn_str.c_str(), SQL_NTS,
                                          nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     if (!SQL_SUCCEEDED(ret)) {
-        throw std::runtime_error("Failed to connect to database");
+        ThrowStdException("Client unable to establish connection");
     }
     LOG("Connected to database successfully");
     return ret;
@@ -60,7 +69,7 @@ SQLRETURN Connection::close() {
     }
 
     SQLRETURN ret = SQLDisconnect_ptr(_dbc_handle->get());
-    _dbc_handle.reset();
+    _dbc_handle->free();
     return ret;
 }
 
@@ -89,11 +98,8 @@ SQLRETURN Connection::rollback() {
 }
 
 SQLRETURN Connection::setAutocommit(bool enable) {
-    if (!_dbc_handle) {
-        throw std::runtime_error("Connection handle not allocated");
-    }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
-    LOG("Set SQL Connection Attribute");
+    LOG("Set SQL Connection Attribute - Autocommit");
     SQLRETURN ret = SQLSetConnectAttr_ptr(_dbc_handle->get(), SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)value, 0);
     if (!SQL_SUCCEEDED(ret)) {
         throw std::runtime_error("Failed to set autocommit mode.");
@@ -110,7 +116,6 @@ bool Connection::getAutocommit() const {
     SQLINTEGER value;
     SQLINTEGER string_length;
     SQLGetConnectAttr_ptr(_dbc_handle->get(), SQL_ATTR_AUTOCOMMIT, &value, sizeof(value), &string_length);
-    
     return value == SQL_AUTOCOMMIT_ON;
 }
 
@@ -125,6 +130,54 @@ SqlHandlePtr Connection::allocStatementHandle() {
         throw std::runtime_error("Failed to allocate statement handle");
     }
     return std::make_shared<SqlHandle>(SQL_HANDLE_STMT, stmt);
+}
+
+SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
+    LOG("Setting SQL attribute");
+
+    SQLPOINTER ptr = nullptr;
+    SQLINTEGER length = 0;
+
+    if (py::isinstance<py::int_>(value)) {
+        int intValue = value.cast<int>();
+        ptr = reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(intValue));
+        length = SQL_IS_INTEGER;
+    } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
+        static std::vector<std::string> buffers;
+        buffers.emplace_back(value.cast<std::string>());
+        ptr = const_cast<char*>(buffers.back().c_str());
+        length = static_cast<SQLINTEGER>(buffers.back().size());
+    } else {
+        LOG("Unsupported attribute value type");
+        return SQL_ERROR;
+    }
+
+    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbc_handle->get(), attribute, ptr, length);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to set attribute");
+    }
+    else {
+        LOG("Set attribute successfully");
+    }
+    return ret;
+}
+
+void Connection::applyAttrsBefore(const py::dict& attrs) {
+    for (const auto& item : attrs) {
+        int key;
+        try {
+            key = py::cast<int>(item.first);
+        } catch (...) {
+            continue;
+        }
+
+        if (key == SQL_COPT_SS_ACCESS_TOKEN) {   
+            SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
+            if (!SQL_SUCCEEDED(ret)) {
+                throw std::runtime_error("Failed to set access token before connect");
+            }
+        }
+    }
 }
 
 SqlHandlePtr Connection::getSharedEnvHandle() {
