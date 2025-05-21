@@ -1922,14 +1922,11 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def(py::init<const std::wstring&, bool>(), py::arg("conn_str"), py::arg("autocommit") = false)
         .def("connect", &Connection::connect, py::arg("attrs_before") = py::dict(), "Establish a connection to the database")
         .def("close", &Connection::close, "Close the connection")
-        .def("commit", [](Connection& self) {
-            self.end_transaction(SQL_COMMIT);
-        })
-        .def("rollback", [](Connection& self) {
-            self.end_transaction(SQL_ROLLBACK);})
-        .def("set_autocommit", &Connection::set_autocommit)
-        .def("get_autocommit", &Connection::get_autocommit)
-        .def("alloc_statement_handle", &Connection::alloc_statement_handle);
+        .def("commit", &Connection::commit, "Commit the current transaction")
+        .def("rollback", &Connection::rollback, "Rollback the current transaction")
+        .def("set_autocommit", &Connection::setAutocommit)
+        .def("get_autocommit", &Connection::getAutocommit)
+        .def("alloc_statement_handle", &Connection::allocStatementHandle);
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");
     m.def("DDBCSQLRowCount", &SQLRowCount_wrap,

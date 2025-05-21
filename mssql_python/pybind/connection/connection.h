@@ -46,10 +46,10 @@ private:
     std::wstring _conn_str;
     SqlHandlePtr _dbc_handle;
     bool _autocommit = false;
-    std::shared_ptr<Connection> _conn; 
-
-    SQLRETURN set_attribute(SQLINTEGER attribute, pybind11::object value);
-    void apply_attrs_before(const pybind11::dict& attrs);
+    
+    static SqlHandlePtr getSharedEnvHandle();
+    SQLRETURN setAttribute(SQLINTEGER attribute, pybind11::object value);
+    void applyAttrsBefore(const pybind11::dict& attrs);
 };
 
 #endif // CONNECTION_H
