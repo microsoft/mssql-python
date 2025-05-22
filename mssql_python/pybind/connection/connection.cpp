@@ -7,6 +7,8 @@
 #include "connection.h"
 #include <vector>
 #include <pybind11/pybind11.h>
+#include "connection_pool.h"
+#include <iostream>
 
 #define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
 
@@ -15,15 +17,46 @@
 // This class wraps low-level ODBC operations like connect/disconnect,
 // transaction control, and autocommit configuration.
 //-------------------------------------------------------------------------------------------------
-Connection::Connection(const std::wstring& conn_str, bool autocommit)
-    : _conn_str(conn_str) , _autocommit(autocommit) {}
+Connection::Connection(const std::wstring& conn_str, bool autocommit, bool usePool)
+    : _conn_str(conn_str), _is_closed(true), _usePool(usePool), _autocommit(autocommit) {}
 
-Connection::~Connection() {}
+Connection::~Connection() {
+    std::cout << "[Connection::dtor] Destructor called" << std::endl;
+    disconnect();
+}
 
 SQLRETURN Connection::connect(const py::dict& attrs_before) {
+    std::cout << "[connect] Starting connection. usePool=" << (_usePool ? "true" : "false") << std::endl;
+    if (_usePool) {
+        _conn = ConnectionPoolManager::getInstance().acquireConnection(_conn_str);
+        if (!_conn || !_conn->_dbc_handle) {
+            std::cout << "[connect] Failed to acquire pooled connection." << std::endl;
+            throw std::runtime_error("Failed to acquire pooled connection.");
+        }
+        std::cout << "[connect] Acquired pooled connection." << std::endl;
+        _dbc_handle = _conn->_dbc_handle;
+        _usePool = true;
+        _is_closed = false;
+    } else {
+        std::cout << "[connect] Connecting without pooling..." << std::endl;
+        SQLRETURN ret = directConnect(attrs_before);
+        if (SQL_SUCCEEDED(ret)) {
+            std::cout << "[connect] Direct connection successful." << std::endl;
+            _is_closed = false;
+        }else {
+            std::cout << "[connect] Direct connection failed." << std::endl;
+        }
+        return ret;
+    }
+    return SQL_SUCCESS;
+}
+
+SQLRETURN Connection::directConnect(const py::dict& attrs_before) {
+    std::cout << "[directConnect] Allocating DBC handle..." << std::endl;
     allocDbcHandle();
     // Apply access token before connect
     if (!attrs_before.is_none() && py::len(attrs_before) > 0) {
+        std::cout << "[directConnect] Applying attributes before connect..." << std::endl;
         LOG("Apply attributes before connect");
         applyAttrsBefore(attrs_before);
         if (_autocommit) {
@@ -35,87 +68,135 @@ SQLRETURN Connection::connect(const py::dict& attrs_before) {
 
 // Allocates DBC handle
 void Connection::allocDbcHandle() {
+    std::cout << "[allocDbcHandle] Allocating SQL handle..." << std::endl;
     SQLHANDLE dbc = nullptr;
     LOG("Allocate SQL Connection Handle");
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, getSharedEnvHandle()->get(), &dbc);
     if (!SQL_SUCCEEDED(ret)) {
+        std::cout << "[allocDbcHandle] Failed to allocate DBC handle." << std::endl;
         throw std::runtime_error("Failed to allocate connection handle");
     }
     _dbc_handle = std::make_shared<SqlHandle>(SQL_HANDLE_DBC, dbc);
+    std::cout << "[allocDbcHandle] Handle allocated successfully." << std::endl;
 }
 
 // Connects to the database
 SQLRETURN Connection::connectToDb() {
+    std::cout << "[connectToDb] Connecting to database..." << std::endl;
     LOG("Connecting to database");
     SQLRETURN ret = SQLDriverConnect_ptr(_dbc_handle->get(), nullptr,
                                          (SQLWCHAR*)_conn_str.c_str(), SQL_NTS,
                                          nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     if (!SQL_SUCCEEDED(ret)) {
+        std::cout << "[connectToDb] Connection failed." << std::endl;
         ThrowStdException("Client unable to establish connection");
     }
-    LOG("Connected to database successfully");
+    std::cout << "[connectToDb] Connected successfully." << std::endl;
     return ret;
 }
 
 SQLRETURN Connection::close() {
-    if (!_dbc_handle) {
-        LOG("No connection handle to close");
-        return SQL_SUCCESS;
-    }
-    LOG("Disconnect from MSSQL");
-    if (!SQLDisconnect_ptr) {
-        LOG("Function pointer not initialized. Loading the driver.");
-        DriverLoader::getInstance().loadDriver();
-    }
+    std::cout << "[close] Closing connection. usePool=" << (_usePool ? "true" : "false") << std::endl;
+    if (_is_closed) return SQL_SUCCESS;
 
-    SQLRETURN ret = SQLDisconnect_ptr(_dbc_handle->get());
-    _dbc_handle->free();
-    return ret;
+    if (_usePool) {
+        if (_conn) {
+            std::cout << "[close] Returning connection to pool." << std::endl;
+            ConnectionPoolManager::getInstance().returnConnection(_conn_str, _conn);
+        }
+    } else {
+        std::cout << "[close] Disconnecting non-pooled connection." << std::endl;
+        disconnect();
+    }
+    _is_closed = true;
+    return SQL_SUCCESS;
+}
+
+SQLRETURN Connection::disconnect() {
+    std::cout << "[disconnect] Disconnecting..." << std::endl;
+    if (_dbc_handle) {
+        std::cout << "[disconnect] Disconnecting from database..." << std::endl;
+        SQLDisconnect_ptr(_dbc_handle->get());
+        SQLFreeHandle_ptr(SQL_HANDLE_DBC, _dbc_handle->get());
+        _dbc_handle.reset();
+        std::cout << "[disconnect] Disconnected successfully." << std::endl;
+    }
+    return SQL_SUCCESS;
 }
 
 SQLRETURN Connection::commit() {
-    if (!_dbc_handle) {
-        throw std::runtime_error("Connection handle not allocated");
+    if (_usePool) {
+        if (!_conn || !_conn->_dbc_handle) {
+            throw std::runtime_error("Cannot commit: invalid pooled connection.");
+        }
+        LOG("Committing pooled transaction");
+        SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _conn->_dbc_handle->get(), SQL_COMMIT);
+        if (!SQL_SUCCEEDED(ret)) {
+            throw std::runtime_error("Failed to commit transaction (pooled)");
+        }
+        return ret;
+    } else {
+        if (_is_closed || !_dbc_handle) {
+            throw std::runtime_error("Cannot commit: connection is closed.");
+        }
+        LOG("Committing direct transaction");
+        SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbc_handle->get(), SQL_COMMIT);
+        if (!SQL_SUCCEEDED(ret)) {
+            throw std::runtime_error("Failed to commit transaction");
+        }
+        return ret;
     }
-    LOG("Committing transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbc_handle->get(), SQL_COMMIT);
-    if (!SQL_SUCCEEDED(ret)) {
-        throw std::runtime_error("Failed to commit transaction");
-    }
-    return ret;
 }
 
 SQLRETURN Connection::rollback() {
-    if (!_dbc_handle) {
-        throw std::runtime_error("Connection handle not allocated");
+    if (_usePool) {
+        if (!_conn || !_conn->_dbc_handle) {
+            throw std::runtime_error("Cannot rollback: invalid pooled connection.");
+        }
+        LOG("Rolling back pooled transaction");
+        SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _conn->_dbc_handle->get(), SQL_ROLLBACK);
+        if (!SQL_SUCCEEDED(ret)) {
+            throw std::runtime_error("Failed to rollback transaction (pooled)");
+        }
+        return ret;
+    } else {
+        if (_is_closed || !_dbc_handle) {
+            throw std::runtime_error("Cannot rollback: connection is closed.");
+        }
+        LOG("Rolling back direct transaction");
+        SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbc_handle->get(), SQL_ROLLBACK);
+        if (!SQL_SUCCEEDED(ret)) {
+            throw std::runtime_error("Failed to rollback transaction");
+        }
+        return ret;
     }
-    LOG("Rolling back transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbc_handle->get(), SQL_ROLLBACK);
-    if (!SQL_SUCCEEDED(ret)) {
-        throw std::runtime_error("Failed to rollback transaction");
-    }
-    return ret;
 }
 
 SQLRETURN Connection::setAutocommit(bool enable) {
+    SQLHANDLE handle = _usePool ? (_conn ? _conn->_dbc_handle->get() : nullptr)
+                                : (_dbc_handle ? _dbc_handle->get() : nullptr);
+    if (!handle) {
+        throw std::runtime_error("Cannot get autocommit: Connection handle is null.");
+    }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
-    LOG("Set SQL Connection Attribute - Autocommit");
-    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbc_handle->get(), SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)value, 0);
+    SQLRETURN ret = SQLSetConnectAttr_ptr(handle, SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)value, 0);
     if (!SQL_SUCCEEDED(ret)) {
         throw std::runtime_error("Failed to set autocommit mode.");
     }
     _autocommit = enable;
+    std::cout << "[setAutocommit] Autocommit set successfully." << std::endl;
     return ret;
 }
 
 bool Connection::getAutocommit() const {
-    if (!_dbc_handle) {
-        throw std::runtime_error("Connection handle not allocated");
+    SQLHANDLE handle = _usePool ? (_conn ? _conn->_dbc_handle->get() : nullptr)
+                                : (_dbc_handle ? _dbc_handle->get() : nullptr);
+    if (!handle) {
+        throw std::runtime_error("Cannot get autocommit: Connection handle is null.");
     }
-    LOG("Get SQL Connection Attribute");
     SQLINTEGER value;
     SQLINTEGER string_length;
-    SQLGetConnectAttr_ptr(_dbc_handle->get(), SQL_ATTR_AUTOCOMMIT, &value, sizeof(value), &string_length);
+    SQLGetConnectAttr_ptr(handle, SQL_ATTR_AUTOCOMMIT, &value, sizeof(value), &string_length);
     return value == SQL_AUTOCOMMIT_ON;
 }
 
@@ -123,6 +204,7 @@ SqlHandlePtr Connection::allocStatementHandle() {
     if (!_dbc_handle) {
         throw std::runtime_error("Connection handle not allocated");
     }
+    std::cout << "[allocStatementHandle] Allocating statement handle..." << std::endl;
     LOG("Allocating statement handle");
     SQLHANDLE stmt = nullptr;
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbc_handle->get(), &stmt);
@@ -134,6 +216,7 @@ SqlHandlePtr Connection::allocStatementHandle() {
 
 SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     LOG("Setting SQL attribute");
+    std::cout << "[setAttribute] Setting attribute " << attribute << std::endl;
 
     SQLPOINTER ptr = nullptr;
     SQLINTEGER length = 0;
@@ -163,14 +246,10 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
 }
 
 void Connection::applyAttrsBefore(const py::dict& attrs) {
+    std::cout << "[applyAttrsBefore] Applying attributes..." << std::endl;
     for (const auto& item : attrs) {
         int key;
-        try {
-            key = py::cast<int>(item.first);
-        } catch (...) {
-            continue;
-        }
-
+        key = py::cast<int>(item.first);
         if (key == SQL_COPT_SS_ACCESS_TOKEN) {   
             SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
             if (!SQL_SUCCEEDED(ret)) {
@@ -185,6 +264,7 @@ SqlHandlePtr Connection::getSharedEnvHandle() {
     static SqlHandlePtr env_handle;
 
     std::call_once(flag, []() {
+        std::cout << "[getSharedEnvHandle] Allocating environment handle..." << std::endl;
         LOG("Allocating environment handle");
         SQLHANDLE env = nullptr;
         if (!SQLAllocHandle_ptr) {
@@ -204,4 +284,31 @@ SqlHandlePtr Connection::getSharedEnvHandle() {
         }
     });
     return env_handle;
+}
+
+bool Connection::isAlive() const {
+    if (!_dbc_handle)
+        return false;
+    SQLINTEGER value;
+    bool alive = SQL_SUCCEEDED(SQLGetConnectAttr_ptr(_dbc_handle->get(), SQL_ATTR_CONNECTION_DEAD, &value, sizeof(value), nullptr))
+                 && value == SQL_CD_FALSE;
+    std::cout << "[isAlive] Connection is " << (alive ? "alive" : "dead") << std::endl;
+    return alive;
+}
+
+void Connection::reset() {
+    // Reset the connection state
+    if (_dbc_handle) {
+        std::cout << "[reset] Resetting connection..." << std::endl;
+        SQLRETURN ret = SQLSetConnectAttr_ptr(_dbc_handle->get(), SQL_ATTR_CONNECTION_TIMEOUT, (SQLPOINTER)(uintptr_t)1, 0);
+        if (!SQL_SUCCEEDED(ret)) {
+            throw std::runtime_error("Failed to reset connection");
+        }
+        std::cout << "[reset] Reset successful." << std::endl;
+    }
+}
+
+void Connection::updateLastUsed() {
+    std::cout << "[updateLastUsed] Updating last used time." << std::endl;
+    _last_used = std::chrono::steady_clock::now();
 }

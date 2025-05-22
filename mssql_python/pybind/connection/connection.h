@@ -15,14 +15,17 @@
 
 class Connection {
 public:
-    Connection(const std::wstring& conn_str, bool autocommit = false);
+    Connection(const std::wstring& conn_str, bool autocommit, bool usePool);
     ~Connection();
 
-    // Establish the connection using the stored connection string.
     SQLRETURN connect(const py::dict& attrs_before = py::dict());
 
-    // Close the connection and free resources.
+    SQLRETURN directConnect(const py::dict& attrs_before = py::dict());
+
     SQLRETURN close();
+
+    // Close the connection and free resources.
+    SQLRETURN disconnect();
 
     // Commit the current transaction.
     SQLRETURN commit();
@@ -39,9 +42,14 @@ public:
     // Allocate a new statement handle on this connection.
     SqlHandlePtr allocStatementHandle();
 
+    bool isAlive() const;
+    void reset();
+    void updateLastUsed();
+    std::chrono::steady_clock::time_point lastUsed() const { return _last_used; }
+
 private:
     void allocDbcHandle();
-    SQLRETURN connectToDb();
+    SQLRETURN connectToDb();    
 
     std::wstring _conn_str;
     SqlHandlePtr _dbc_handle;
@@ -50,6 +58,11 @@ private:
     static SqlHandlePtr getSharedEnvHandle();
     SQLRETURN setAttribute(SQLINTEGER attribute, pybind11::object value);
     void applyAttrsBefore(const pybind11::dict& attrs);
+
+    bool _usePool;
+    bool _is_closed;
+    std::chrono::steady_clock::time_point _last_used;
+    std::shared_ptr<Connection> _conn;
 };
 
 #endif // CONNECTION_H

@@ -33,7 +33,7 @@ class Connection:
         close() -> None:
     """
 
-    def __init__(self, connection_str: str = "", autocommit: bool = False, attrs_before: dict = None, **kwargs) -> None:
+    def __init__(self, connection_str: str = "", autocommit: bool = False, attrs_before: dict = None, use_pool: bool = False, **kwargs) -> None:
         """
         Initialize the connection object with the specified connection string and parameters.
 
@@ -57,7 +57,7 @@ class Connection:
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
-        self._conn = ddbc_bindings.Connection(self.connection_str, autocommit)
+        self._conn = ddbc_bindings.Connection(self.connection_str, autocommit, use_pool)
         self._conn.connect(self._attrs_before)
         self._autocommit = autocommit
         self.setautocommit(autocommit)

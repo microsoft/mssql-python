@@ -5,6 +5,7 @@
 //             taken up in beta release
 #include "ddbc_bindings.h"
 #include "connection/connection.h"
+#include "connection/connection_pool.h"
 
 #include <cstdint>
 #include <iomanip>  // std::setw, std::setfill
@@ -1926,7 +1927,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle");
     py::class_<Connection>(m, "Connection")
-        .def(py::init<const std::wstring&, bool>(), py::arg("conn_str"), py::arg("autocommit") = false)
+        .def(py::init<const std::wstring&, bool, bool>(), py::arg("conn_str"), 
+             py::arg("autocommit"), py::arg("usePool"))
         .def("connect", &Connection::connect, py::arg("attrs_before") = py::dict(), "Establish a connection to the database")
         .def("close", &Connection::close, "Close the connection")
         .def("commit", &Connection::commit, "Commit the current transaction")
@@ -1934,6 +1936,12 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("set_autocommit", &Connection::setAutocommit)
         .def("get_autocommit", &Connection::getAutocommit)
         .def("alloc_statement_handle", &Connection::allocStatementHandle);
+    // m.def("acquire_pooled", &acquire_pooled, py::arg("conn_str"),
+    //       "Acquire a pooled connection given a connection string");
+
+    m.def("configure_pooling", &configure_pooling, 
+          py::arg("max_size"), py::arg("idle_timeout_secs"),
+          "Configure global connection pooling parameters");
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");
     m.def("DDBCSQLRowCount", &SQLRowCount_wrap,

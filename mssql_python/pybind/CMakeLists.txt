@@ -90,7 +90,7 @@ execute_process(
 )
 
 # Add module library
-add_library(ddbc_bindings MODULE ddbc_bindings.cpp connection/connection.cpp)
+add_library(ddbc_bindings MODULE ddbc_bindings.cpp connection/connection.cpp connection/connection_pool.cpp)
 
 # Add include directories for your project
 target_include_directories(ddbc_bindings PRIVATE

@@ -4,7 +4,22 @@ Licensed under the MIT license.
 This module provides a way to create a new connection object to interact with the database.
 """
 from mssql_python.connection import Connection
+from mssql_python import ddbc_bindings
 
+# Module-level pooling config
+_pooling_config = {
+    "enabled": False,
+    "max_size": 10,
+    "idle_timeout": 300
+}
+
+def enable_pooling(max_size=10, idle_timeout=300):
+    _pooling_config.update({
+        "enabled": True,
+        "max_size": max_size,
+        "idle_timeout": idle_timeout
+    })
+    ddbc_bindings.configure_pooling(max_size, idle_timeout)
 
 def connect(connection_str: str = "", autocommit: bool = True, attrs_before: dict = None, **kwargs) -> Connection:
     """
@@ -34,5 +49,6 @@ def connect(connection_str: str = "", autocommit: bool = True, attrs_before: dic
     be used to perform database operations such as executing queries, committing
     transactions, and closing the connection.
     """
-    conn = Connection(connection_str, autocommit=autocommit, attrs_before=attrs_before, **kwargs)
+    use_pool = _pooling_config["enabled"]
+    conn = Connection(connection_str, autocommit=autocommit, attrs_before=attrs_before, use_pool = use_pool, **kwargs)
     return conn
