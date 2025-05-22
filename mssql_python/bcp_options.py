@@ -54,11 +54,10 @@ class BCPOptions:
     """
     Represents the options for a bulk copy operation.
     Attributes:
-        direction (Literal(str)): 'in' or 'out'. Option: (-i or -o).
+        direction (Literal[str]): 'in' or 'out'. Option: (-i or -o).
         data_file (str): The data file. Option: (positional argument).
         error_file (Optional[str]): The error file. Option: (-e).
-        format_file (Optional[str]): The format file. Option: (-f).
-        write_format_file (Optional[str]): Write a format file. Option: (-x).
+        format_file (Optional[str]): The format file to use for 'in'/'out'. Option: (-f).
         batch_size (Optional[int]): The batch size. Option: (-b).
         max_errors (Optional[int]): The maximum number of errors allowed. Option: (-m).
         first_row (Optional[int]): The first row to process. Option: (-F).
@@ -68,17 +67,15 @@ class BCPOptions:
         keep_nulls (bool): Keep null values. Option: (-k).
         hints (Optional[str]): Additional hints. Option: (-h).
         bulk_mode (str): Bulk mode ('native', 'char', 'unicode'). Option: (-n, -c, -w).
-            Defaults to "native". Native format is typically the most performant for
-            SQL Server to SQL Server data transfers as it uses the database's internal
-            data representation, minimizing conversions and preserving data fidelity.
-        columns (List[ColumnFormat]): Column formats. Option: (format_file) or (columns).
+            Defaults to "native".
+        columns (List[ColumnFormat]): Column formats.
     """
 
     direction: Literal["in", "out"]
-    data_file: str
+    data_file: str  # data_file is mandatory for 'in' and 'out'
     error_file: Optional[str] = None
     format_file: Optional[str] = None
-    write_format_file: Optional[str] = None
+    # write_format_file is removed as 'format' direction is not actively supported
     batch_size: Optional[int] = None
     max_errors: Optional[int] = None
     first_row: Optional[int] = None
@@ -94,15 +91,12 @@ class BCPOptions:
         if self.direction not in ["in", "out"]:
             raise ValueError("direction must be 'in' or 'out'.")
         if not self.data_file:
-            raise ValueError("data_file must not be an empty string.")
-        if self.error_file is not None and not self.error_file:
-            raise ValueError("error_file, if provided, must not be an empty string.")
+            raise ValueError("data_file must be provided and non-empty for 'in' or 'out' directions.")
+        if self.error_file is None or not self.error_file:  # Making error_file mandatory for in/out
+            raise ValueError("error_file must be provided and non-empty for 'in' or 'out' directions.")
+
         if self.format_file is not None and not self.format_file:
             raise ValueError("format_file, if provided, must not be an empty string.")
-        if self.write_format_file is not None and not self.write_format_file:
-            raise ValueError(
-                "write_format_file, if provided, must not be an empty string."
-            )
         if self.batch_size is not None and self.batch_size <= 0:
             raise ValueError("batch_size must be a positive integer.")
         if self.max_errors is not None and self.max_errors < 0:
