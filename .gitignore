@@ -48,3 +48,6 @@ build/
 .vscode/
 .idea/
 *.swp
+
+# .DS_Store files
+.DS_Store
