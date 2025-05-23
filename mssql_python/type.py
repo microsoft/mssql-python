@@ -97,7 +97,7 @@ def TimestampFromTicks(ticks: int) -> datetime.datetime:
     """
     Generates a timestamp object from ticks.
     """
-    return datetime.datetime.fromtimestamp(ticks, datetime.timezone.utc)
+    return datetime.datetime.fromtimestamp(ticks, datetime.UTC)
 
 
 def Binary(string: str) -> bytes:

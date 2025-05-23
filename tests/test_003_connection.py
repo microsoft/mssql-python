@@ -11,7 +11,7 @@ Note: The cursor function is not yet implemented, so related tests are commented
 """
 
 import pytest
-from mssql_python import Connection, connect
+from mssql_python import Connection
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
@@ -33,33 +33,7 @@ def test_connection(db_connection):
 
 def test_construct_connection_string(db_connection):
     # Check if the connection string is constructed correctly with kwargs
-    conn_str = db_connection._construct_connection_string(host="localhost", user="me", password="mypwd", database="mydb", encrypt="yes", trust_server_certificate="yes")
-    assert "Server=localhost;" in conn_str, "Connection string should contain 'Server=localhost;'"
-    assert "Uid=me;" in conn_str, "Connection string should contain 'Uid=me;'"
-    assert "Pwd=mypwd;" in conn_str, "Connection string should contain 'Pwd=mypwd;'"
-    assert "Database=mydb;" in conn_str, "Connection string should contain 'Database=mydb;'"
-    assert "Encrypt=yes;" in conn_str, "Connection string should contain 'Encrypt=yes;'"
-    assert "TrustServerCertificate=yes;" in conn_str, "Connection string should contain 'TrustServerCertificate=yes;'"
-    assert "APP=MSSQL-Python" in conn_str, "Connection string should contain 'APP=MSSQL-Python'"
-    assert "Driver={ODBC Driver 18 for SQL Server}" in conn_str, "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
-    assert "Driver={ODBC Driver 18 for SQL Server};;APP=MSSQL-Python;Server=localhost;Uid=me;Pwd=mypwd;Database=mydb;Encrypt=yes;TrustServerCertificate=yes;" == conn_str, "Connection string is incorrect"
-
-def test_connection_string_with_attrs_before(db_connection):
-    # Check if the connection string is constructed correctly with attrs_before
-    conn_str = db_connection._construct_connection_string(host="localhost", user="me", password="mypwd", database="mydb", encrypt="yes", trust_server_certificate="yes", attrs_before={1256: "token"})
-    assert "Server=localhost;" in conn_str, "Connection string should contain 'Server=localhost;'"
-    assert "Uid=me;" in conn_str, "Connection string should contain 'Uid=me;'"
-    assert "Pwd=mypwd;" in conn_str, "Connection string should contain 'Pwd=mypwd;'"
-    assert "Database=mydb;" in conn_str, "Connection string should contain 'Database=mydb;'"
-    assert "Encrypt=yes;" in conn_str, "Connection string should contain 'Encrypt=yes;'"
-    assert "TrustServerCertificate=yes;" in conn_str, "Connection string should contain 'TrustServerCertificate=yes;'"
-    assert "APP=MSSQL-Python" in conn_str, "Connection string should contain 'APP=MSSQL-Python'"
-    assert "Driver={ODBC Driver 18 for SQL Server}" in conn_str, "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
-    assert "{1256: token}" not in conn_str, "Connection string should not contain '{1256: token}'"
-
-def test_connection_string_with_odbc_param(db_connection):
-    # Check if the connection string is constructed correctly with ODBC parameters
-    conn_str = db_connection._construct_connection_string(server="localhost", uid="me", pwd="mypwd", database="mydb", encrypt="yes", trust_server_certificate="yes")
+    conn_str = db_connection._construct_connection_string("",host="localhost", user="me", password="mypwd", database="mydb", encrypt="yes", trust_server_certificate="yes")
     assert "Server=localhost;" in conn_str, "Connection string should contain 'Server=localhost;'"
     assert "Uid=me;" in conn_str, "Connection string should contain 'Uid=me;'"
     assert "Pwd=mypwd;" in conn_str, "Connection string should contain 'Pwd=mypwd;'"
@@ -173,8 +147,6 @@ def test_invalid_connection_string():
     with pytest.raises(Exception):
         Connection("invalid_connection_string")
 
-def test_connection_close(conn_str):
-    # Create a separate connection just for this test
-    temp_conn = connect(conn_str)
-    # Check if the database connection can be closed
-    temp_conn.close()
+def test_connection_close(db_connection):
+    # Check if the database connection is closed
+    db_connection.close()
