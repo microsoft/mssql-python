@@ -153,6 +153,16 @@ SQLFreeStmtFunc SQLFreeStmt_ptr = nullptr;
 // Diagnostic APIs
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
 
+// BCP APIs
+BCPInitWFunc BCPInitW_ptr = nullptr;
+BCPControlWFunc BCPControlW_ptr = nullptr;
+BCPControlAFunc BCPControlA_ptr = nullptr;
+BCPReadFmtWFunc BCPReadFmtW_ptr = nullptr;
+BCPColumnsFunc BCPColumns_ptr = nullptr;
+BCPColFmtWFunc BCPColFmtW_ptr = nullptr;
+BCPExecFunc BCPExec_ptr = nullptr;
+BCPDoneFunc BCPDone_ptr = nullptr;
+
 namespace {
 
 const char* GetSqlCTypeAsString(const SQLSMALLINT cType) {
@@ -602,6 +612,16 @@ std::wstring LoadDriverOrThrowException() {
     // Diagnostic record function Loading
     SQLGetDiagRec_ptr = (SQLGetDiagRecFunc)GetProcAddress(hModule, "SQLGetDiagRecW");
 
+    // Load BCP functions
+    BCPInitW_ptr = (BCPInitWFunc)GetProcAddress(hModule, "bcp_initW");
+    BCPControlW_ptr = (BCPControlWFunc)GetProcAddress(hModule, "bcp_controlW");
+    BCPControlA_ptr = (BCPControlAFunc)GetProcAddress(hModule, "bcp_controlA");
+    BCPReadFmtW_ptr = (BCPReadFmtWFunc)GetProcAddress(hModule, "bcp_readfmtW");
+    BCPColumns_ptr = (BCPColumnsFunc)GetProcAddress(hModule, "bcp_columns");
+    BCPColFmtW_ptr = (BCPColFmtWFunc)GetProcAddress(hModule, "bcp_colfmtW");
+    BCPExec_ptr = (BCPExecFunc)GetProcAddress(hModule, "bcp_exec");
+    BCPDone_ptr = (BCPDoneFunc)GetProcAddress(hModule, "bcp_done");
+   
     bool success = SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
                    SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
                    SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
@@ -609,7 +629,10 @@ std::wstring LoadDriverOrThrowException() {
                    SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr &&
                    SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr &&
                    SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr &&
-                   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
+                   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr &&
+                   BCPInitW_ptr && BCPControlW_ptr && BCPControlA_ptr && 
+                   BCPReadFmtW_ptr && BCPColumns_ptr && BCPColFmtW_ptr &&
+                   BCPExec_ptr && BCPDone_ptr;
 
     if (!success) {
         LOG("Failed to load required function pointers from driver - {}", dllDirStr);

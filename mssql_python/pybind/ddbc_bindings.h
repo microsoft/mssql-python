@@ -63,6 +63,17 @@ typedef SQLRETURN (SQL_API* SQLFreeStmtFunc)(SQLHSTMT, SQLUSMALLINT);
 typedef SQLRETURN (SQL_API* SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLWCHAR*, SQLINTEGER*,
                                        SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*);
 
+// BCP APIs (Bulk Copy Program)
+// Typedefs (ensure these match the function signatures in odbcss.h)
+typedef SQLRETURN (SQL_API* BCPInitWFunc)(SQLHDBC, LPCWSTR, LPCWSTR, LPCWSTR, INT);
+typedef SQLRETURN (SQL_API* BCPControlWFunc)(SQLHDBC, INT, LPVOID);
+typedef SQLRETURN (SQL_API* BCPControlAFunc)(SQLHDBC, INT, LPVOID); // For options like BCPROWTERM
+typedef SQLRETURN (SQL_API* BCPReadFmtWFunc)(SQLHDBC, LPCWSTR);
+typedef SQLRETURN (SQL_API* BCPColumnsFunc)(SQLHDBC, INT);
+typedef SQLRETURN (SQL_API* BCPColFmtWFunc)(SQLHDBC, INT, INT, INT, DBINT, LPCBYTE, INT, INT);
+typedef DBINT     (SQL_API* BCPExecFunc)(SQLHDBC, DBINT*); // Note: Returns DBINT
+typedef SQLRETURN (SQL_API* BCPDoneFunc)(SQLHDBC);
+
 //-------------------------------------------------------------------------------------------------
 // Extern function pointer declarations (defined in ddbc_bindings.cpp)
 //-------------------------------------------------------------------------------------------------
@@ -105,6 +116,16 @@ extern SQLFreeStmtFunc SQLFreeStmt_ptr;
 // Diagnostic APIs
 extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
 
+// BCP APIs (Bulk Copy Program)
+// Extern function pointer declarations for BCP APIs
+extern BCPInitWFunc BCPInitW_ptr;
+extern BCPControlWFunc BCPControlW_ptr;
+extern BCPControlAFunc BCPControlA_ptr;
+extern BCPReadFmtWFunc BCPReadFmtW_ptr;
+extern BCPColumnsFunc BCPColumns_ptr;
+extern BCPColFmtWFunc BCPColFmtW_ptr;
+extern BCPExecFunc BCPExec_ptr;
+extern BCPDoneFunc BCPDone_ptr;
 
 // -- Logging utility --
 template <typename... Args>
