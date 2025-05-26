@@ -14,17 +14,17 @@ class BCPWrapper {
 public:
     // Constructor: Requires a reference to an active Connection object.
     // The BCPWrapper does not take ownership of the Connection object.
-    BCPWrapper(Connection& conn);
+    BCPWrapper(std::shared_ptr<Connection> conn);
 
     // Destructor: Ensures BCP operations are properly terminated if active.
     ~BCPWrapper();
 
     // Initializes a BCP operation for a specific table, data file, error file, and direction.
     // Maps to ODBC bcp_init.
-    SQLRETURN bcp_init(const std::wstring& table,
-                       const std::wstring& data_file,
-                       const std::wstring& error_file,
-                       const std::wstring& direction);
+    SQLRETURN bcp_initialize_operation(const std::wstring& table,
+                                       const std::wstring& data_file,
+                                       const std::wstring& error_file,
+                                       const std::wstring& direction);
 
     // Sets various BCP control options using an integer value.
     // Maps to ODBC bcp_control.
@@ -71,7 +71,7 @@ public:
     SQLRETURN close();
 
 private:
-    Connection& _conn; // Reference to the database connection object
+    std::shared_ptr<Connection> _conn; // Reference to the database connection object
     bool _bcp_initialized; // Flag to track if bcp_init has been called successfully
     bool _bcp_finished;    // Flag to track if bcp_finish (or bcp_done) has been called
 

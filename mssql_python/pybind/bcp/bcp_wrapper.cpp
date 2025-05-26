@@ -11,9 +11,7 @@
 #include <memory>   // For std::shared_ptr
 
 // Required ODBC headers (can be removed if ddbc_bindings.h includes them sufficiently)
-// #include <sql.h>
-// #include <sqlext.h>
-// #include <odbcss.h> 
+#include <odbcss.h> 
 
 // Helper function to convert wstring to UTF-8 string
 static std::string wstring_to_utf8(const std::wstring& wstr) {
@@ -48,7 +46,7 @@ BCPWrapper::~BCPWrapper() {
     // }
 }
 
-SQLRETURN BCPWrapper::bcp_init(const std::wstring& /*table*/,
+SQLRETURN BCPWrapper::bcp_initialize_operation(const std::wstring& /*table*/,
                                const std::wstring& /*data_file*/,
                                const std::wstring& /*error_file*/,
                                const std::wstring& /*direction*/) {
@@ -73,7 +71,7 @@ static const std::map<std::wstring, INT> bcp_int_options_map = {
     {L"BCPKEEPNULLS", BCPKEEPNULLS}    
 };
 static const std::map<std::wstring, INT> bcp_string_options_map = {
-    {L"BCPHINTS", BCPHINTSW}, {L"BCPSETROWTERM", BCPROWTERM}  
+    {L"BCPHINTS", BCPHINTSW}  
 };
 
 SQLRETURN BCPWrapper::bcp_control(const std::wstring& /*property_name*/, int /*value*/) {
