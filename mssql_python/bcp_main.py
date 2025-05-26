@@ -48,7 +48,7 @@ class BCPClient:
         current_options = self._validate_options(options)
 
         # BCPOptions.__post_init__ ensures data_file and error_file are set for 'in'/'out'
-        self.wrapper.bcp_init(table, current_options.data_file, current_options.error_file, current_options.direction)
+        self.wrapper.bcp_initialize_operation(table, current_options.data_file, current_options.error_file, current_options.direction)
 
         # Set BCP control options
         if current_options.batch_size is not None:
