@@ -4,9 +4,6 @@
 #ifndef BCP_WRAPPER_H
 #define BCP_WRAPPER_H
 
-#include <string>
-#include <vector>
-#include <optional>
 #include "ddbc_bindings.h" // For SQLRETURN and other ODBC types/macros
 #include "../connection/connection.h" // For the Connection class
 

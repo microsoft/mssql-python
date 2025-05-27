@@ -5,10 +5,8 @@
 #include "ddbc_bindings.h" // For BCP function pointers
 #include <stdexcept> 
 #include <map>
-#include <vector>
 #include <locale>
 #include <codecvt>  // For wstring_to_utf8
-#include <memory>   // For std::shared_ptr
 
 // Required ODBC headers (can be removed if ddbc_bindings.h includes them sufficiently)
 #include <odbcss.h> 
