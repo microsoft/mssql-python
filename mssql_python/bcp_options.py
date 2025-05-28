@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Literal
+from typing import List, Optional, Union
+from mssql_python.constants import BCPControlOptions
 
 
 @dataclass
@@ -23,12 +24,13 @@ class ColumnFormat:
             Must be a positive integer.
     """
 
-    prefix_len: int
-    data_len: int
+    prefix_len: int = 0
+    data_len: int = 0
     field_terminator: Optional[bytes] = None
     row_terminator: Optional[bytes] = None
     server_col: int = 1
     file_col: int = 1
+    col_name: Optional[str] = None
 
     def __post_init__(self):
         if self.prefix_len < 0:
@@ -71,51 +73,78 @@ class BCPOptions:
         columns (List[ColumnFormat]): Column formats.
     """
 
-    direction: Literal["in", "out"]
+    direction: str
     data_file: str  # data_file is mandatory for 'in' and 'out'
     error_file: Optional[str] = None
     format_file: Optional[str] = None
     # write_format_file is removed as 'format' direction is not actively supported
+    bulk_mode: Optional[str] = "native"  # Default to 'native' mode
     batch_size: Optional[int] = None
     max_errors: Optional[int] = None
     first_row: Optional[int] = None
     last_row: Optional[int] = None
-    code_page: Optional[str] = None
+    code_page: Optional[Union[int, str]] = None
+    hints: Optional[str] = None
+    columns: Optional[List[ColumnFormat]] = field(default_factory=list)
     keep_identity: bool = False
     keep_nulls: bool = False
-    hints: Optional[str] = None
-    bulk_mode: Literal["native", "char", "unicode"] = "native"
-    columns: List[ColumnFormat] = field(default_factory=list)
 
     def __post_init__(self):
-        if self.direction not in ["in", "out"]:
-            raise ValueError("direction must be 'in' or 'out'.")
-        if not self.data_file:
-            raise ValueError("data_file must be provided and non-empty for 'in' or 'out' directions.")
-        if self.error_file is None or not self.error_file:  # Making error_file mandatory for in/out
-            raise ValueError("error_file must be provided and non-empty for 'in' or 'out' directions.")
+        if (
+            not self.direction
+        ):  # Should be caught by dataclass if no default, but good for explicit check
+            raise ValueError("BCPOptions.direction is a required field.")
 
-        if self.format_file is not None and not self.format_file:
-            raise ValueError("format_file, if provided, must not be an empty string.")
-        if self.batch_size is not None and self.batch_size <= 0:
-            raise ValueError("batch_size must be a positive integer.")
-        if self.max_errors is not None and self.max_errors < 0:
-            raise ValueError("max_errors must be a non-negative integer.")
-        if self.first_row is not None and self.first_row <= 0:
-            raise ValueError("first_row must be a positive integer.")
-        if self.last_row is not None and self.last_row <= 0:
-            raise ValueError("last_row must be a positive integer.")
-        if self.last_row is not None and self.first_row is None:
-            raise ValueError("first_row must be specified if last_row is specified.")
+        if self.direction not in BCPControlOptions.ALLOWED_DIRECTIONS.values():
+            raise ValueError(
+                f"BCPOptions.direction '{self.direction}' is invalid. "
+                f"Allowed directions are: {', '.join(BCPControlOptions.ALLOWED_DIRECTIONS.values())}."
+            )
+
+        if self.direction in ["in", "out"]:
+            if not self.data_file:
+                raise ValueError(
+                    f"BCPOptions.data_file is required for BCP direction '{self.direction}'."
+                )
+
+        if not self.data_file:
+            raise ValueError(
+                "data_file must be provided and non-empty for 'in' or 'out' directions."
+            )
+        if (
+            self.error_file is None or not self.error_file
+        ):  # Making error_file mandatory for in/out
+            raise ValueError(
+                "error_file must be provided and non-empty for 'in' or 'out' directions."
+            )
+
+        if self.columns and self.format_file:
+            raise ValueError(
+                "Cannot specify both 'columns' (for bcp_colfmt) and 'format_file' (for bcp_readfmt). Choose one."
+            )
+
+        if isinstance(self.code_page, int) and self.code_page < 0:
+            raise ValueError(
+                "BCPOptions.code_page, if an integer, must be non-negative."
+            )
+        
+        if self.bulk_mode not in BCPControlOptions.ALLOWED_FILE_MODES.values():
+            raise ValueError(
+                f"BCPOptions.bulk_mode '{self.bulk_mode}' is invalid. "
+                f"Allowed modes are: {', '.join(BCPControlOptions.ALLOWED_FILE_MODES.values())}."
+            )
+        for attr_name in ["batch_size", "max_errors", "first_row", "last_row"]:
+            attr_value = getattr(self, attr_name)
+            if attr_value is not None and attr_value < 0:
+                raise ValueError(
+                    f"BCPOptions.{attr_name} must be non-negative if specified. Got {attr_value}"
+                )
+
         if (
             self.first_row is not None
             and self.last_row is not None
-            and self.last_row < self.first_row
+            and self.first_row > self.last_row
         ):
-            raise ValueError("last_row must be greater than or equal to first_row.")
-        if self.code_page is not None and not self.code_page:
-            raise ValueError("code_page, if provided, must not be an empty string.")
-        if self.hints is not None and not self.hints:
-            raise ValueError("hints, if provided, must not be an empty string.")
-        if self.bulk_mode not in ["native", "char", "unicode"]:
-            raise ValueError("bulk_mode must be 'native', 'char', or 'unicode'.")
+            raise ValueError(
+                "BCPOptions.first_row cannot be greater than BCPOptions.last_row."
+            )
