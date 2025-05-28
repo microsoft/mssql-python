@@ -95,10 +95,10 @@ class BCPOptions:
         ):  # Should be caught by dataclass if no default, but good for explicit check
             raise ValueError("BCPOptions.direction is a required field.")
 
-        if self.direction not in BCPControlOptions.ALLOWED_DIRECTIONS.values():
+        if self.direction not in BCPControlOptions.ALLOWED_DIRECTIONS:
             raise ValueError(
                 f"BCPOptions.direction '{self.direction}' is invalid. "
-                f"Allowed directions are: {', '.join(BCPControlOptions.ALLOWED_DIRECTIONS.values())}."
+                f"Allowed directions are: {', '.join(BCPControlOptions.ALLOWED_DIRECTIONS)}."
             )
 
         if self.direction in ["in", "out"]:
@@ -128,10 +128,10 @@ class BCPOptions:
                 "BCPOptions.code_page, if an integer, must be non-negative."
             )
         
-        if self.bulk_mode not in BCPControlOptions.ALLOWED_FILE_MODES.values():
+        if self.bulk_mode not in BCPControlOptions.ALLOWED_FILE_MODES:
             raise ValueError(
                 f"BCPOptions.bulk_mode '{self.bulk_mode}' is invalid. "
-                f"Allowed modes are: {', '.join(BCPControlOptions.ALLOWED_FILE_MODES.values())}."
+                f"Allowed modes are: {', '.join(BCPControlOptions.ALLOWED_FILE_MODES)}."
             )
         for attr_name in ["batch_size", "max_errors", "first_row", "last_row"]:
             attr_value = getattr(self, attr_name)

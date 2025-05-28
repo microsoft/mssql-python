@@ -56,10 +56,10 @@ class BCPClient:
 
         # BCPOptions.__post_init__ has already performed its internal validation.
         # BCPClient can add its own operational constraints:
-        if options.direction not in BCPControlOptions.SUPPORTED_DIRECTIONS.values():
-            logger.error(f"Validation failed: Unsupported BCP direction '{options.direction}'. Supported: {BCPControlOptions.SUPPORTED_DIRECTIONS.values()}")
+        if options.direction not in BCPControlOptions.SUPPORTED_DIRECTIONS:
+            logger.error(f"Validation failed: Unsupported BCP direction '{options.direction}'. Supported: {BCPControlOptions.SUPPORTED_DIRECTIONS}")
             raise ValueError(
-                f"BCPClient currently only supports directions: {', '.join(BCPControlOptions.SUPPORTED_DIRECTIONS.values())}. "
+                f"BCPClient currently only supports directions: {', '.join(BCPControlOptions.SUPPORTED_DIRECTIONS)}. "
                 f"Got '{options.direction}'."
             )
 
