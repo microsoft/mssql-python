@@ -6,11 +6,22 @@
 
 #pragma once
 
+#include <pybind11/pybind11.h> // pybind11.h must be the first include - https://pybind11.readthedocs.io/en/latest/basics.html#header-and-namespace-conventions
+
 #include <Windows.h>
 #include <string>
 #include <sql.h>
 #include <sqlext.h>
 #include <memory>
+#include <mutex>
+
+#include <pybind11/chrono.h>
+#include <pybind11/complex.h>
+#include <pybind11/functional.h>
+#include <pybind11/pytypes.h>  // Add this line for datetime support
+#include <pybind11/stl.h>
+namespace py = pybind11;
+using namespace pybind11::literals;
 
 //-------------------------------------------------------------------------------------------------
 // Function pointer typedefs
@@ -106,11 +117,12 @@ extern SQLFreeStmtFunc SQLFreeStmt_ptr;
 extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
 
 
-// -- Logging utility --
+// Logging utility
 template <typename... Args>
 void LOG(const std::string& formatString, Args&&... args);
 
-// -- Exception helper --
+
+// Throws a std::runtime_error with the given message
 void ThrowStdException(const std::string& message);
 
 //-------------------------------------------------------------------------------------------------
@@ -135,7 +147,9 @@ class DriverLoader {
         DriverLoader();
         DriverLoader(const DriverLoader&) = delete;
         DriverLoader& operator=(const DriverLoader&) = delete;
+
         bool m_driverLoaded;
+        std::once_flag m_onceFlag;
     };
 
 //-------------------------------------------------------------------------------------------------
@@ -156,3 +170,10 @@ class SqlHandle {
         SQLHANDLE _handle;
     };
     using SqlHandlePtr = std::shared_ptr<SqlHandle>;
+
+// This struct is used to relay error info obtained from SQLDiagRec API to the Python module
+struct ErrorInfo {
+    std::wstring sqlState;
+    std::wstring ddbcErrorMsg;
+};
+ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);
