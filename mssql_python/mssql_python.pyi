@@ -190,3 +190,9 @@ def connect(connection_str: str) -> Connection:
     Constructor for creating a connection to the database.
     """
     ...
+
+def enable_pooling(max_size: int, idle_timeout: int) -> None:
+    """
+    Enable connection pooling with the specified maximum size and idle timeout.
+    """
+    ...
