@@ -18,7 +18,7 @@
 namespace mac_buffers {
 
 // Constants for Unicode character encoding
-constexpr const char* ODBC_DECODING = "utf-16";
+constexpr const char* ODBC_DECODING = "utf-16-le";
 constexpr size_t UCS_LENGTH = 2;
 
 /**
