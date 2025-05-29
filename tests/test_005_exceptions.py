@@ -87,7 +87,9 @@ def test_data_truncation_error(cursor, db_connection):
     try:
         cursor.execute("CREATE TABLE pytest_test_truncation (id INT, name NVARCHAR(5))")
         cursor.execute("INSERT INTO pytest_test_truncation (id, name) VALUES (?, ?)", [1, 'TooLongName'])
-    except ProgrammingError as excinfo:
+    except (ProgrammingError, DataError) as excinfo:
+        # Catching specific exceptions for SQL Server truncation error
+        # A DataError is raised on Windows but ProgrammingError on MacOS
         assert "String or binary data would be truncated" in str(excinfo)
     finally:
         drop_table_if_exists(cursor, "pytest_test_truncation")
