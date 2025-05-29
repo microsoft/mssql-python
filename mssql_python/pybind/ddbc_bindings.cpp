@@ -629,10 +629,10 @@ DriverLoader& DriverLoader::getInstance() {
 }
 
 void DriverLoader::loadDriver() {
-    if (!m_driverLoaded) {
+    std::call_once(m_onceFlag, [this]() {
         LoadDriverOrThrowException();
         m_driverLoaded = true;
-    }
+    });
 }
 
 // SqlHandle definition

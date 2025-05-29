@@ -11,6 +11,7 @@
 #include <sql.h>
 #include <sqlext.h>
 #include <memory>
+#include <mutex>
 
 //-------------------------------------------------------------------------------------------------
 // Function pointer typedefs
@@ -135,7 +136,9 @@ class DriverLoader {
         DriverLoader();
         DriverLoader(const DriverLoader&) = delete;
         DriverLoader& operator=(const DriverLoader&) = delete;
+
         bool m_driverLoaded;
+        std::once_flag m_onceFlag;
     };
 
 //-------------------------------------------------------------------------------------------------
