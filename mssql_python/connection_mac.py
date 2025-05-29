@@ -6,7 +6,7 @@ The class provides methods to establish a connection, create cursors, commit tra
 roll back transactions, and close the connection.
 """
 import ctypes
-from mssql_python.cursor import Cursor
+from mssql_python.cursor_mac import Cursor
 from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import add_driver_to_connection_str, check_error
