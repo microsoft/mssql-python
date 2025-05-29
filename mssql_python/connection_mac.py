@@ -62,7 +62,7 @@ class Connection:
         self._autocommit = autocommit
         self.setautocommit(autocommit)
 
-    def _construct_connection_string(self, connection_str: str, **kwargs) -> str:
+    def _construct_connection_string(self, connection_str: str = "", **kwargs) -> str:
         """
         Construct the connection string by concatenating the connection string 
         with key/value pairs from kwargs.
@@ -76,13 +76,14 @@ class Connection:
         """
         # Add the driver attribute to the connection string
         conn_str = add_driver_to_connection_str(connection_str)
+
         # Add additional key-value pairs to the connection string
         for key, value in kwargs.items():
-            if key.lower() == "host":
+            if key.lower() == "host" or key.lower() == "server":
                 key = "Server"
-            elif key.lower() == "user":
+            elif key.lower() == "user" or key.lower() == "uid":
                 key = "Uid"
-            elif key.lower() == "password":
+            elif key.lower() == "password" or key.lower() == "pwd":
                 key = "Pwd"
             elif key.lower() == "database":
                 key = "Database"
@@ -93,6 +94,10 @@ class Connection:
             else:
                 continue
             conn_str += f"{key}={value};"
+
+        if ENABLE_LOGGING:
+            logger.info("Final connection string: %s", conn_str)
+
         return conn_str
 
     def _initializer(self) -> None:

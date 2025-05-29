@@ -87,7 +87,7 @@ def test_data_truncation_error(cursor, db_connection):
     try:
         cursor.execute("CREATE TABLE pytest_test_truncation (id INT, name NVARCHAR(5))")
         cursor.execute("INSERT INTO pytest_test_truncation (id, name) VALUES (?, ?)", [1, 'TooLongName'])
-    except ProgrammingError as excinfo:
+    except DataError as excinfo:
         assert "String or binary data would be truncated" in str(excinfo)
     finally:
         drop_table_if_exists(cursor, "pytest_test_truncation")
@@ -126,5 +126,5 @@ def test_foreign_key_constraint_error(cursor, db_connection):
 
 def test_connection_error(db_connection):
     with pytest.raises(OperationalError) as excinfo:
-        Connection("InvalidConnectionString")
+        connect("InvalidConnectionString")
     assert "Client unable to establish connection" in str(excinfo.value)
