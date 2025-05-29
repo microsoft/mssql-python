@@ -11,6 +11,7 @@
 #include <sql.h>
 #include <sqlext.h>
 #include <memory>
+#include <mutex>
 
 //-------------------------------------------------------------------------------------------------
 // Function pointer typedefs
@@ -135,7 +136,9 @@ class DriverLoader {
         DriverLoader();
         DriverLoader(const DriverLoader&) = delete;
         DriverLoader& operator=(const DriverLoader&) = delete;
+
         bool m_driverLoaded;
+        std::once_flag m_onceFlag;
     };
 
 //-------------------------------------------------------------------------------------------------
@@ -156,3 +159,10 @@ class SqlHandle {
         SQLHANDLE _handle;
     };
     using SqlHandlePtr = std::shared_ptr<SqlHandle>;
+
+// This struct is used to relay error info obtained from SQLDiagRec API to the Python module
+struct ErrorInfo {
+    std::wstring sqlState;
+    std::wstring ddbcErrorMsg;
+};
+ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);

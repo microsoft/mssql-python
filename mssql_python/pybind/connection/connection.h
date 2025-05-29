@@ -4,9 +4,7 @@
 // INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
 //             taken up in future.
 
-#ifndef CONNECTION_H
-#define CONNECTION_H
-
+#pragma once
 #include "ddbc_bindings.h"
 
 // Represents a single ODBC database connection.
@@ -19,19 +17,19 @@ public:
     ~Connection();
 
     // Establish the connection using the stored connection string.
-    SQLRETURN connect();
+    void connect();
 
-    // Close the connection and free resources.
-    SQLRETURN close();
+    // Disconnect and free the connection handle.
+    void disconnect();
 
     // Commit the current transaction.
-    SQLRETURN commit();
+    void commit();
 
     // Rollback the current transaction.
-    SQLRETURN rollback();
+    void rollback();
 
     // Enable or disable autocommit mode.
-    SQLRETURN setAutocommit(bool value);
+    void setAutocommit(bool value);
 
     //  Check whether autocommit is enabled.
     bool getAutocommit() const;
@@ -40,14 +38,13 @@ public:
     SqlHandlePtr allocStatementHandle();
 
 private:
-    void allocDbcHandle();
-    SQLRETURN connectToDb();
+    void allocateDbcHandle();
+    void checkError(SQLRETURN ret) const;
 
-    std::wstring _conn_str;
-    SqlHandlePtr _dbc_handle;
-    bool _autocommit = false;
+    std::wstring _connStr;
+    bool _usePool = false;
+    bool _autocommit = true;
+    SqlHandlePtr _dbcHandle;
 
-    static SqlHandlePtr getSharedEnvHandle();
+    static SqlHandlePtr _envHandle;
 };
-
-#endif // CONNECTION_H

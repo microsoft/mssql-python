@@ -105,12 +105,6 @@ struct ColumnBuffers {
           indicators(numCols, std::vector<SQLLEN>(fetchSize)) {}
 };
 
-// This struct is used to relay error info obtained from SQLDiagRec API to the Python module
-struct ErrorInfo {
-    std::wstring sqlState;
-    std::wstring ddbcErrorMsg;
-};
-
 //-------------------------------------------------------------------------------------------------
 // Function pointer initialization
 //-------------------------------------------------------------------------------------------------
@@ -629,10 +623,10 @@ DriverLoader& DriverLoader::getInstance() {
 }
 
 void DriverLoader::loadDriver() {
-    if (!m_driverLoaded) {
+    std::call_once(m_onceFlag, [this]() {
         LoadDriverOrThrowException();
         m_driverLoaded = true;
-    }
+    });
 }
 
 // SqlHandle definition

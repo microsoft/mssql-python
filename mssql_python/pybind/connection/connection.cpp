@@ -7,131 +7,15 @@
 #include "connection.h"
 #include <iostream>
 
+SqlHandlePtr Connection::_envHandle = nullptr;
 //-------------------------------------------------------------------------------------------------
 // Implements the Connection class declared in connection.h.
 // This class wraps low-level ODBC operations like connect/disconnect,
 // transaction control, and autocommit configuration.
 //-------------------------------------------------------------------------------------------------
 Connection::Connection(const std::wstring& conn_str, bool autocommit)
-    : _conn_str(conn_str) , _autocommit(autocommit) {}
-
-Connection::~Connection() {
-    close();    // Ensure the connection is closed when the object is destroyed.
-}
-
-SQLRETURN Connection::connect() {
-    allocDbcHandle();
-    return connectToDb();
-}
-
-// Allocates DBC handle
-void Connection::allocDbcHandle() {
-    SQLHANDLE dbc = nullptr;
-    LOG("Allocate SQL Connection Handle");
-    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, getSharedEnvHandle()->get(), &dbc);
-    if (!SQL_SUCCEEDED(ret)) {
-        throw std::runtime_error("Failed to allocate connection handle");
-    }
-    _dbc_handle = std::make_shared<SqlHandle>(SQL_HANDLE_DBC, dbc);
-}
-
-// Connects to the database
-SQLRETURN Connection::connectToDb() {
-    LOG("Connecting to database");
-    SQLRETURN ret = SQLDriverConnect_ptr(_dbc_handle->get(), nullptr,
-                                         (SQLWCHAR*)_conn_str.c_str(), SQL_NTS,
-                                         nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
-    if (!SQL_SUCCEEDED(ret)) {
-        throw std::runtime_error("Failed to connect to database");
-    }
-    LOG("Connected to database successfully");
-    return ret;
-}
-
-SQLRETURN Connection::close() {
-    if (!_dbc_handle) {
-        LOG("No connection handle to close");
-        return SQL_SUCCESS;
-    }
-    LOG("Disconnect from MSSQL");
-    if (!SQLDisconnect_ptr) {
-        LOG("Function pointer not initialized. Loading the driver.");
-        DriverLoader::getInstance().loadDriver();
-    }
-
-    SQLRETURN ret = SQLDisconnect_ptr(_dbc_handle->get());
-    _dbc_handle.reset();
-    return ret;
-}
-
-SQLRETURN Connection::commit() {
-    if (!_dbc_handle) {
-        throw std::runtime_error("Connection handle not allocated");
-    }
-    LOG("Committing transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbc_handle->get(), SQL_COMMIT);
-    if (!SQL_SUCCEEDED(ret)) {
-        throw std::runtime_error("Failed to commit transaction");
-    }
-    return ret;
-}
-
-SQLRETURN Connection::rollback() {
-    if (!_dbc_handle) {
-        throw std::runtime_error("Connection handle not allocated");
-    }
-    LOG("Rolling back transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbc_handle->get(), SQL_ROLLBACK);
-    if (!SQL_SUCCEEDED(ret)) {
-        throw std::runtime_error("Failed to rollback transaction");
-    }
-    return ret;
-}
-
-SQLRETURN Connection::setAutocommit(bool enable) {
-    if (!_dbc_handle) {
-        throw std::runtime_error("Connection handle not allocated");
-    }
-    SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
-    LOG("Set SQL Connection Attribute");
-    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbc_handle->get(), SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)value, 0);
-    if (!SQL_SUCCEEDED(ret)) {
-        throw std::runtime_error("Failed to set autocommit mode.");
-    }
-    _autocommit = enable;
-    return ret;
-}
-
-bool Connection::getAutocommit() const {
-    if (!_dbc_handle) {
-        throw std::runtime_error("Connection handle not allocated");
-    }
-    LOG("Get SQL Connection Attribute");
-    SQLINTEGER value;
-    SQLINTEGER string_length;
-    SQLGetConnectAttr_ptr(_dbc_handle->get(), SQL_ATTR_AUTOCOMMIT, &value, sizeof(value), &string_length);
-    
-    return value == SQL_AUTOCOMMIT_ON;
-}
-
-SqlHandlePtr Connection::allocStatementHandle() {
-    if (!_dbc_handle) {
-        throw std::runtime_error("Connection handle not allocated");
-    }
-    LOG("Allocating statement handle");
-    SQLHANDLE stmt = nullptr;
-    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbc_handle->get(), &stmt);
-    if (!SQL_SUCCEEDED(ret)) {
-        throw std::runtime_error("Failed to allocate statement handle");
-    }
-    return std::make_shared<SqlHandle>(SQL_HANDLE_STMT, stmt);
-}
-
-SqlHandlePtr Connection::getSharedEnvHandle() {
-    static std::once_flag flag;
-    static SqlHandlePtr env_handle;
-
-    std::call_once(flag, []() {
+    : _connStr(conn_str) , _autocommit(autocommit) {
+    if (!_envHandle) {
         LOG("Allocating environment handle");
         SQLHANDLE env = nullptr;
         if (!SQLAllocHandle_ptr) {
@@ -139,16 +23,108 @@ SqlHandlePtr Connection::getSharedEnvHandle() {
             DriverLoader::getInstance().loadDriver();
         }
         SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &env);
-        if (!SQL_SUCCEEDED(ret)) {
-            throw std::runtime_error("Failed to allocate environment handle");
-        }
-        env_handle = std::make_shared<SqlHandle>(SQL_HANDLE_ENV, env);
+        checkError(ret);
+        _envHandle = std::make_shared<SqlHandle>(SQL_HANDLE_ENV, env);
 
         LOG("Setting environment attributes");
-        ret = SQLSetEnvAttr_ptr(env_handle->get(), SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3_80, 0);
-        if (!SQL_SUCCEEDED(ret)) {
-            throw std::runtime_error("Failed to set environment attribute");
-        }
-    });
-    return env_handle;
+        ret = SQLSetEnvAttr_ptr(_envHandle->get(), SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3_80, 0);
+        checkError(ret);
+    }
+    allocateDbcHandle();
+}
+
+Connection::~Connection() {
+    disconnect();   // fallback if user forgets to disconnect
+}
+
+// Allocates connection handle
+void Connection::allocateDbcHandle() {
+    SQLHANDLE dbc = nullptr;
+    LOG("Allocate SQL Connection Handle");
+    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(), &dbc);
+    checkError(ret);
+    _dbcHandle = std::make_shared<SqlHandle>(SQL_HANDLE_DBC, dbc);
+}
+
+void Connection::connect() {
+    LOG("Connecting to database");
+    SQLRETURN ret = SQLDriverConnect_ptr(
+        _dbcHandle->get(), nullptr,
+        (SQLWCHAR*)_connStr.c_str(), SQL_NTS,
+        nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    checkError(ret);
+    setAutocommit(_autocommit);
+}
+
+void Connection::disconnect() {
+    if (_dbcHandle) {
+        LOG("Disconnecting from database");
+        SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
+        checkError(ret);
+        _dbcHandle.reset(); // triggers SQLFreeHandle via destructor, if last owner
+    }
+    else {
+        LOG("No connection handle to disconnect");
+    }
+}
+
+// TODO: Add an exception class in C++ for error handling, DB spec compliant
+void Connection::checkError(SQLRETURN ret) const{
+    if (!SQL_SUCCEEDED(ret)) {
+        ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
+        std::string errorMsg = std::string(err.ddbcErrorMsg.begin(), err.ddbcErrorMsg.end());
+        ThrowStdException(errorMsg);
+    }
+}
+
+void Connection::commit() {
+    if (!_dbcHandle) {
+        ThrowStdException("Connection handle not allocated");
+    }
+    LOG("Committing transaction");
+    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_COMMIT);
+    checkError(ret);
+}
+
+void Connection::rollback() {
+    if (!_dbcHandle) {
+        ThrowStdException("Connection handle not allocated");
+    }
+    LOG("Rolling back transaction");
+    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
+    checkError(ret);
+}
+
+void Connection::setAutocommit(bool enable) {
+    if (!_dbcHandle) {
+        ThrowStdException("Connection handle not allocated");
+    }
+    SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
+    LOG("Set SQL Connection Attribute");
+    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)value, 0);
+    checkError(ret);
+    _autocommit = enable;
+}
+
+bool Connection::getAutocommit() const {
+    if (!_dbcHandle) {
+        ThrowStdException("Connection handle not allocated");
+    }
+    LOG("Get SQL Connection Attribute");
+    SQLINTEGER value;
+    SQLINTEGER string_length;
+    SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, &value, sizeof(value), &string_length);
+    checkError(ret);
+    return value == SQL_AUTOCOMMIT_ON;
+}
+
+SqlHandlePtr Connection::allocStatementHandle() {
+    if (!_dbcHandle) {
+        ThrowStdException("Connection handle not allocated");
+    }
+    LOG("Allocating statement handle");
+    SQLHANDLE stmt = nullptr;
+    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbcHandle->get(), &stmt);
+    checkError(ret);
+    return std::make_shared<SqlHandle>(SQL_HANDLE_STMT, stmt);
 }
