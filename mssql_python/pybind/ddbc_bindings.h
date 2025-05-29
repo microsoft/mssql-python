@@ -13,6 +13,7 @@
 #include <sql.h>
 #include <sqlext.h>
 #include <memory>
+#include <mutex>
 
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
@@ -145,7 +146,9 @@ class DriverLoader {
         DriverLoader();
         DriverLoader(const DriverLoader&) = delete;
         DriverLoader& operator=(const DriverLoader&) = delete;
+
         bool m_driverLoaded;
+        std::once_flag m_onceFlag;
     };
 
 //-------------------------------------------------------------------------------------------------
