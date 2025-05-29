@@ -9,7 +9,7 @@ if platform.system() == 'Windows':
 else:
     from mssql_python.connection_mac import Connection
 
-def connect(connection_str: str, autocommit: bool = True, **kwargs) -> Connection:
+def connect(connection_str: str = "", autocommit: bool = True, attrs_before: dict = None, **kwargs) -> Connection:
     """
     Constructor for creating a connection to the database.
 
@@ -37,5 +37,5 @@ def connect(connection_str: str, autocommit: bool = True, **kwargs) -> Connectio
     be used to perform database operations such as executing queries, committing
     transactions, and closing the connection.
     """
-    conn = Connection(connection_str, autocommit=autocommit, **kwargs)
+    conn = Connection(connection_str, autocommit=autocommit, attrs_before=attrs_before, **kwargs)
     return conn
