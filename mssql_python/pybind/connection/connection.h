@@ -13,7 +13,7 @@
 
 class Connection {
 public:
-    Connection(const std::wstring& conn_str, bool autocommit = false);
+    Connection(const std::wstring& connStr, bool fromPool);
     ~Connection();
 
     // Establish the connection using the stored connection string.
@@ -34,8 +34,16 @@ public:
     //  Check whether autocommit is enabled.
     bool getAutocommit() const;
 
+    bool isAlive() const;
+
+    bool reset();
+
+    void updateLastUsed();
+
+    std::chrono::steady_clock::time_point lastUsed() const;
+
     // Allocate a new statement handle on this connection.
-    SqlHandlePtr allocStatementHandle();
+    SqlHandlePtr allocStatementHandle();    
 
 private:
     void allocateDbcHandle();
@@ -44,9 +52,26 @@ private:
     void applyAttrsBefore(const py::dict& attrs_before);
 
     std::wstring _connStr;
-    bool _usePool = false;
+    bool _fromPool = false;
     bool _autocommit = true;
     SqlHandlePtr _dbcHandle;
-
     static SqlHandlePtr _envHandle;
+    std::chrono::steady_clock::time_point _lastUsed;
+};
+
+class ConnectionHandle {
+public:
+    ConnectionHandle(const std::wstring& connStr, bool usePool, const py::dict& attrsBefore = py::dict());
+
+    void close();
+    void commit();
+    void rollback();
+    void setAutocommit(bool enabled);
+    bool getAutocommit() const;
+    SqlHandlePtr allocStatementHandle();
+
+private:
+    std::shared_ptr<Connection> _conn;
+    bool _usePool;
+    std::wstring _connStr;
 };
