@@ -95,12 +95,6 @@ struct ColumnBuffers {
           indicators(numCols, std::vector<SQLLEN>(fetchSize)) {}
 };
 
-// This struct is used to relay error info obtained from SQLDiagRec API to the Python module
-struct ErrorInfo {
-    std::wstring sqlState;
-    std::wstring ddbcErrorMsg;
-};
-
 //-------------------------------------------------------------------------------------------------
 // Function pointer initialization
 //-------------------------------------------------------------------------------------------------
@@ -1927,8 +1921,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("free", &SqlHandle::free, "Free the handle");
     py::class_<Connection>(m, "Connection")
         .def(py::init<const std::wstring&, bool>(), py::arg("conn_str"), py::arg("autocommit") = false)
-        .def("connect", &Connection::connect, py::arg("attrs_before") = py::dict(), "Establish a connection to the database")
-        .def("close", &Connection::close, "Close the connection")
+        .def("connect", &Connection::connect)
+        .def("close", &Connection::disconnect, "Close the connection")
         .def("commit", &Connection::commit, "Commit the current transaction")
         .def("rollback", &Connection::rollback, "Rollback the current transaction")
         .def("set_autocommit", &Connection::setAutocommit)

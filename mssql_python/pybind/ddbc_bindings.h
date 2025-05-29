@@ -121,6 +121,7 @@ extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
 template <typename... Args>
 void LOG(const std::string& formatString, Args&&... args);
 
+
 // Throws a std::runtime_error with the given message
 void ThrowStdException(const std::string& message);
 
@@ -169,3 +170,10 @@ class SqlHandle {
         SQLHANDLE _handle;
     };
     using SqlHandlePtr = std::shared_ptr<SqlHandle>;
+
+// This struct is used to relay error info obtained from SQLDiagRec API to the Python module
+struct ErrorInfo {
+    std::wstring sqlState;
+    std::wstring ddbcErrorMsg;
+};
+ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);
