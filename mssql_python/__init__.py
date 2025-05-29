@@ -38,6 +38,7 @@ from .type import (
 # Connection Objects
 from .connection import Connection
 from .db_connection import connect
+from .pool_config import enable_pooling
 
 # Cursor Objects
 from .cursor import Cursor

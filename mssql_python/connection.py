@@ -11,6 +11,7 @@ from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import add_driver_to_connection_str, check_error
 from mssql_python import ddbc_bindings
+from .pool_config import _pooling_enabled
 
 logger = get_logger()
 
@@ -57,7 +58,7 @@ class Connection:
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
-        self._conn = ddbc_bindings.Connection(self.connection_str, autocommit)
+        self._conn = ddbc_bindings.Connection(self.connection_str, autocommit, _pooling_enabled)
         self._conn.connect(self._attrs_before)
         self.setautocommit(autocommit)
 
