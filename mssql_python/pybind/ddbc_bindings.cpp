@@ -3,8 +3,9 @@
 
 // INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
 //             taken up in beta release
-
-#include <pybind11/pybind11.h> // pybind11.h must be the first include - https://pybind11.readthedocs.io/en/latest/basics.html#header-and-namespace-conventions
+#include "ddbc_bindings.h"
+#include "connection/connection.h"
+#include "bcp/bcp_wrapper.h" // For BCPWrapper
 
 #include <cstdint>
 #include <iomanip>  // std::setw, std::setfill
@@ -105,12 +106,6 @@ struct ColumnBuffers {
           timeBuffers(numCols),
           guidBuffers(numCols),
           indicators(numCols, std::vector<SQLLEN>(fetchSize)) {}
-};
-
-// This struct is used to relay error info obtained from SQLDiagRec API to the Python module
-struct ErrorInfo {
-    std::wstring sqlState;
-    std::wstring ddbcErrorMsg;
 };
 
 //-------------------------------------------------------------------------------------------------
@@ -656,21 +651,21 @@ DriverLoader& DriverLoader::getInstance() {
 }
 
 void DriverLoader::loadDriver() {
-    if (!m_driverLoaded) {
+    std::call_once(m_onceFlag, [this]() {
         LoadDriverOrThrowException();
         m_driverLoaded = true;
-    }
+    });
 }
 
 // SqlHandle definition
 SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle)
     : _type(type), _handle(rawHandle) {}
 
-// Note: Destructor is intentionally a no-op. Python owns the lifecycle.
-// Native ODBC handles must be explicitly released by calling `free()` directly from Python.
-// This avoids nondeterministic crashes during GC or shutdown during pytest.
-// Read the documentation for more details (https://aka.ms/CPPvsPythonGC)
-SqlHandle::~SqlHandle() {}
+SqlHandle::~SqlHandle() {
+    if (_handle) {
+        free();
+    }
+}
 
 SQLHANDLE SqlHandle::get() const {
     return _handle;
@@ -696,134 +691,6 @@ void SqlHandle::free() {
         ss << "Freed SQL Handle of type: " << type_str;
         LOG(ss.str());
     }
-}
-
-// Wrap SQLAllocHandle
-SQLRETURN SQLAllocHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr InputHandle, SqlHandlePtr& OutputHandle) {
-    LOG("Allocate SQL Handle");
-    if (!SQLAllocHandle_ptr) {
-        LOG("Function pointer not initialized. Loading the driver.");
-        DriverLoader::getInstance().loadDriver();  // Load the driver
-    }
-
-    SQLHANDLE rawOutputHandle = nullptr;
-    SQLRETURN ret = SQLAllocHandle_ptr(HandleType, InputHandle ? InputHandle->get() : nullptr, &rawOutputHandle);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to allocate handle");
-        return ret;
-    }
-    OutputHandle = std::make_shared<SqlHandle>(HandleType, rawOutputHandle);
-    return ret;
-}
-
-// Wrap SQLSetEnvAttr
-SQLRETURN SQLSetEnvAttr_wrap(SqlHandlePtr EnvHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
-                             SQLINTEGER StringLength) {
-    LOG("Set SQL environment Attribute");
-    if (!SQLSetEnvAttr_ptr) {
-        LOG("Function pointer not initialized. Loading the driver.");
-        DriverLoader::getInstance().loadDriver();  // Load the driver
-    }
-
-    // TODO: Does ValuePtr need to be converted from Python to C++ object?
-    SQLRETURN ret =  SQLSetEnvAttr_ptr(EnvHandle->get(), Attribute, reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to set environment attribute");
-    }
-    return ret;
-}
-
-// Wrap SQLSetConnectAttr
-SQLRETURN SQLSetConnectAttr_wrap(SqlHandlePtr ConnectionHandle, SQLINTEGER Attribute, 
-                                 py::object ValuePtr) {
-    LOG("Set SQL Connection Attribute");
-    if (!SQLSetConnectAttr_ptr) {
-        LOG("Function pointer not initialized. Loading the driver.");
-        DriverLoader::getInstance().loadDriver();  // Load the driver
-    }
-
-    // Print the type of ValuePtr and attribute value - helpful for debugging
-    LOG("Type of ValuePtr: {}, Attribute: {}", py::type::of(ValuePtr).attr("__name__").cast<std::string>(), Attribute);
-
-    SQLPOINTER value = 0;
-    SQLINTEGER length = 0;
-
-    if (py::isinstance<py::int_>(ValuePtr)) {
-        // Handle integer values
-        int intValue = ValuePtr.cast<int>();
-        value = reinterpret_cast<SQLPOINTER>(intValue);
-        length = SQL_IS_INTEGER;  // Integer values don't require a length
-    // } else if (py::isinstance<py::str>(ValuePtr)) {
-    //     // Handle Unicode string values
-    //     static std::wstring unicodeValueBuffer;
-    //     unicodeValueBuffer = ValuePtr.cast<std::wstring>();
-    //     value = const_cast<SQLWCHAR*>(unicodeValueBuffer.c_str());
-    //     length = SQL_NTS;  // Indicates null-terminated string
-    } else if (py::isinstance<py::bytes>(ValuePtr) || py::isinstance<py::bytearray>(ValuePtr)) {
-        // Handle byte or bytearray values (like access tokens)
-        // Store in static buffer to ensure memory remains valid during connection
-        static std::vector<std::string> bytesBuffers;
-        bytesBuffers.push_back(ValuePtr.cast<std::string>());
-        value = const_cast<char*>(bytesBuffers.back().c_str());
-        length = SQL_IS_POINTER;  // Indicates we're passing a pointer (required for token)
-    // } else if (py::isinstance<py::list>(ValuePtr) || py::isinstance<py::tuple>(ValuePtr)) {
-    //     // Handle list or tuple values
-    //     LOG("ValuePtr is a sequence (list or tuple)");
-    //     for (py::handle item : ValuePtr) {
-    //         LOG("Processing item in sequence");
-    //         SQLRETURN ret = SQLSetConnectAttr_wrap(ConnectionHandle, Attribute, py::reinterpret_borrow<py::object>(item));
-    //         if (!SQL_SUCCEEDED(ret)) {
-    //             LOG("Failed to set attribute for item in sequence");
-    //             return ret;
-    //         }
-    //     }    
-    } else {
-        LOG("Unsupported ValuePtr type");
-        return SQL_ERROR;
-    }
-
-    SQLRETURN ret = SQLSetConnectAttr_ptr(ConnectionHandle->get(), Attribute, value, length);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to set Connection attribute");
-    }
-    LOG("Set Connection attribute successfully");
-    return ret;
-}
-
-// Wrap SQLSetStmtAttr
-SQLRETURN SQLSetStmtAttr_wrap(SqlHandlePtr StatementHandle, SQLINTEGER Attribute, intptr_t ValuePtr,
-                              SQLINTEGER StringLength) {
-    LOG("Set SQL Statement Attribute");
-    if (!SQLSetConnectAttr_ptr) {
-        LOG("Function pointer not initialized. Loading the driver.");
-        DriverLoader::getInstance().loadDriver();  // Load the driver
-    }
-
-    // TODO: Does ValuePtr need to be converted from Python to C++ object?
-    SQLRETURN ret = SQLSetStmtAttr_ptr(StatementHandle->get(), Attribute, reinterpret_cast<SQLPOINTER>(ValuePtr), StringLength);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to set Statement attribute");
-    }
-    return ret;
-}
-
-// Wrap SQLGetConnectionAttrA
-// Currently only supports retrieval of int-valued attributes
-// TODO: add support to retrieve all types of attributes
-SQLINTEGER SQLGetConnectionAttr_wrap(SqlHandlePtr ConnectionHandle, SQLINTEGER attribute) {
-    LOG("Get SQL COnnection Attribute");
-    if (!SQLGetConnectAttr_ptr) {
-        LOG("Function pointer not initialized. Loading the driver.");
-        DriverLoader::getInstance().loadDriver();  // Load the driver
-    }
-
-    SQLINTEGER stringLength;
-    SQLINTEGER intValue;
-
-    // Try to get the attribute as an integer
-    SQLGetConnectAttr_ptr(ConnectionHandle->get(), attribute, &intValue,
-                          sizeof(SQLINTEGER), &stringLength);
-    return intValue;
 }
 
 // Helper function to check for driver errors
@@ -857,23 +724,6 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
         }
     }
     return errorInfo;
-}
-
-// Wrap SQLDriverConnect
-SQLRETURN SQLDriverConnect_wrap(SqlHandlePtr ConnectionHandle, intptr_t WindowHandle, const std::wstring& ConnectionString) {
-    LOG("Driver Connect to MSSQL");
-    if (!SQLDriverConnect_ptr) {
-        LOG("Function pointer not initialized. Loading the driver.");
-        DriverLoader::getInstance().loadDriver();  // Load the driver
-    }
-    SQLRETURN ret = SQLDriverConnect_ptr(ConnectionHandle->get(),
-                                reinterpret_cast<SQLHWND>(WindowHandle),
-                                const_cast<SQLWCHAR*>(ConnectionString.c_str()), SQL_NTS, nullptr,
-                                0, nullptr, SQL_DRIVER_NOPROMPT);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to connect to DB");
-    }
-    return ret;
 }
 
 // Wrap SQLExecDirect
@@ -2031,17 +1881,6 @@ SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
     return SQLMoreResults_ptr(StatementHandle->get());
 }
 
-// Wrap SQLEndTran
-SQLRETURN SQLEndTran_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle, SQLSMALLINT CompletionType) {
-    LOG("End SQL Transaction");
-    if (!SQLEndTran_ptr) {
-        LOG("Function pointer not initialized. Loading the driver.");
-        DriverLoader::getInstance().loadDriver();  // Load the driver
-    }
-
-    return SQLEndTran_ptr(HandleType, Handle->get(), CompletionType);
-}
-
 // Wrap SQLFreeHandle
 SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
     LOG("Free SQL handle");
@@ -2055,17 +1894,6 @@ SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
         LOG("SQLFreeHandle failed with error code - {}", ret);
     }
     return ret;
-}
-
-// Wrap SQLDisconnect
-SQLRETURN SQLDisconnect_wrap(SqlHandlePtr ConnectionHandle) {
-    LOG("Disconnect from MSSQL");
-    if (!SQLDisconnect_ptr) {
-        LOG("Function pointer not initialized. Loading the driver.");
-        DriverLoader::getInstance().loadDriver();  // Load the driver
-    }
-
-    return SQLDisconnect_ptr(ConnectionHandle->get());
 }
 
 // Wrap SQLRowCount
@@ -2128,23 +1956,16 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);
         
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
-        .def("free", &SqlHandle::free);
-        
-    m.def("DDBCSQLAllocHandle", [](SQLSMALLINT HandleType, SqlHandlePtr InputHandle = nullptr) {
-            SqlHandlePtr OutputHandle;
-            SQLRETURN rc = SQLAllocHandle_wrap(HandleType, InputHandle, OutputHandle);
-            return py::make_tuple(rc, OutputHandle);
-        }, "Allocate an environment, connection, statement, or descriptor handle");
-    m.def("DDBCSQLSetEnvAttr", &SQLSetEnvAttr_wrap,
-          "Set an attribute that governs aspects of environments");
-    m.def("DDBCSQLSetConnectAttr", &SQLSetConnectAttr_wrap,
-          "Set an attribute that governs aspects of connections");
-    m.def("DDBCSQLSetStmtAttr", &SQLSetStmtAttr_wrap,
-          "Set an attribute that governs aspects of statements");
-    m.def("DDBCSQLGetConnectionAttr", &SQLGetConnectionAttr_wrap,
-          "Get an attribute that governs aspects of connections");
-    m.def("DDBCSQLDriverConnect", &SQLDriverConnect_wrap,
-          "Connect to a data source with a connection string");
+        .def("free", &SqlHandle::free, "Free the handle");
+    py::class_<Connection>(m, "Connection")
+        .def(py::init<const std::wstring&, bool>(), py::arg("conn_str"), py::arg("autocommit") = false)
+        .def("connect", &Connection::connect)
+        .def("close", &Connection::disconnect, "Close the connection")
+        .def("commit", &Connection::commit, "Commit the current transaction")
+        .def("rollback", &Connection::rollback, "Rollback the current transaction")
+        .def("set_autocommit", &Connection::setAutocommit)
+        .def("get_autocommit", &Connection::getAutocommit)
+        .def("alloc_statement_handle", &Connection::allocStatementHandle);
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");
     m.def("DDBCSQLRowCount", &SQLRowCount_wrap,
@@ -2160,9 +1981,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchMany", &FetchMany_wrap, py::arg("StatementHandle"), py::arg("rows"),
           py::arg("fetchSize") = 1, "Fetch many rows from the result set");
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set");
-    m.def("DDBCSQLEndTran", &SQLEndTran_wrap, "End a transaction");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
-    m.def("DDBCSQLDisconnect", &SQLDisconnect_wrap, "Disconnect from a data source");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
 
     // BCPWrapper bindings

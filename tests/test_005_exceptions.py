@@ -125,6 +125,6 @@ def test_foreign_key_constraint_error(cursor, db_connection):
         db_connection.commit()
 
 def test_connection_error(db_connection):
-    with pytest.raises(OperationalError) as excinfo:
+    with pytest.raises(RuntimeError) as excinfo:
         Connection("InvalidConnectionString")
-    assert "Client unable to establish connection" in str(excinfo.value)
+    assert "Neither DSN nor SERVER keyword supplied" in str(excinfo.value)
