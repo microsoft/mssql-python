@@ -36,6 +36,12 @@ public:
     //  Check whether autocommit is enabled.
     bool get_autocommit() const;
 
+    // Get the underlying ODBC connection handle (HDBC).
+    SQLHDBC get_hdbc() const;
+
+    // Check if the connection is currently active.
+    bool is_connected() const;
+
 private:
 
     std::wstring _conn_str;     // Connection string

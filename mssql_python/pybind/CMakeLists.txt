@@ -90,12 +90,13 @@ execute_process(
 )
 
 # Add module library
-add_library(ddbc_bindings MODULE ddbc_bindings.cpp connection/connection.cpp)
+add_library(ddbc_bindings MODULE ddbc_bindings.cpp connection/connection.cpp bcp/bcp_wrapper.cpp)
 
 # Add include directories for your project
 target_include_directories(ddbc_bindings PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}             # Root directory (for ddbc_bindings.h)
     ${CMAKE_CURRENT_SOURCE_DIR}/connection  # connection directory (for connection.h)
+    ${CMAKE_CURRENT_SOURCE_DIR}/bcp         # bcp directory (for bcp_wrapper.h)
 ) 
 
 # Set the output name to include Python version and architecture

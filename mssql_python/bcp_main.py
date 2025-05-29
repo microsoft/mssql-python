@@ -4,6 +4,7 @@ from mssql_python.bcp_options import (
 )  # BCPOptions now handles more validation
 from ddbc_bindings import BCPWrapper
 from mssql_python.constants import BCPControlOptions
+from typing import Optional  # Import Optional for type hints
 
 logger = logging.getLogger(__name__) # Add a logger instance
 
@@ -136,7 +137,23 @@ class BCPClient:
 
             if current_options.bulk_mode:
                 logger.debug(f"Setting bulk mode to '{current_options.bulk_mode}'")
-                self.wrapper.set_bulk_mode(current_options.bulk_mode)
+                field_term_bytes: Optional[bytes] = None 
+                row_term_bytes: Optional[bytes] = None 
+
+                # Example logic: use terminators from the first column definition
+                # if columns are provided. Adjust this logic as needed.
+                if current_options.columns: # Check if the list is not empty
+                    first_col_format = current_options.columns[0]
+                    if first_col_format.field_terminator is not None:
+                        field_term_bytes = first_col_format.field_terminator
+                    if first_col_format.row_terminator is not None: # This was likely intended for row_terminator
+                        row_term_bytes = first_col_format.row_terminator
+                
+                self.wrapper.set_bulk_mode(
+                    current_options.bulk_mode,
+                    field_terminator=field_term_bytes,
+                    row_terminator=row_term_bytes
+                )
 
             # Handle format file or column definitions
             if current_options.format_file:
@@ -147,15 +164,14 @@ class BCPClient:
                 logger.info(f"Defining {len(current_options.columns)} columns programmatically.")
                 self.wrapper.define_columns(len(current_options.columns))
                 for i, col_format_obj in enumerate(current_options.columns):
-                    logger.debug(f"Defining column {i+1}: {col_format_obj}")
+                    logger.debug(f"Defining column format for file column {col_format_obj.file_col}: {col_format_obj}")
                     self.wrapper.define_column_format(
-                        col_num_ordinal=i + 1,
-                        prefix_len=col_format_obj.prefix_len,
-                        data_len=col_format_obj.data_len,
-                        terminator_wstr=col_format_obj.field_terminator,
-                        col_name=col_format_obj.col_name,
-                        server_col=col_format_obj.server_col,
-                        file_col=col_format_obj.file_col,
+                        file_col_idx=col_format_obj.file_col,
+                        user_data_type=col_format_obj.user_data_type, # New field from ColumnFormat
+                        indicator_length=col_format_obj.prefix_len,
+                        user_data_length=col_format_obj.data_len,
+                        terminator_bytes=col_format_obj.field_terminator, # Pass bytes directly
+                        server_col_idx=col_format_obj.server_col
                     )
             else:
                 logger.info("No format file or explicit column definitions provided. Relying on BCP defaults or server types.")

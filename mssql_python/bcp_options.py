@@ -30,6 +30,7 @@ class ColumnFormat:
     row_terminator: Optional[bytes] = None
     server_col: int = 1
     file_col: int = 1
+    user_data_type: int = 0
     col_name: Optional[str] = None
 
     def __post_init__(self):

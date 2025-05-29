@@ -48,3 +48,19 @@ bool Connection::get_autocommit() const {
     LOG("Getting autocommit mode");
     // to be added
 }
+
+SQLHDBC Connection::get_hdbc() const {
+    if (_dbc_handle && _dbc_handle->get()) { // Assuming SqlHandle has get_handle()
+        return static_cast<SQLHDBC>(_dbc_handle->get());
+    }
+    return SQL_NULL_HDBC;
+}
+
+bool Connection::is_connected() const {
+    // A basic check: is the dbc_handle allocated and valid?
+    // More robust checks might involve querying connection attributes.
+    if (_dbc_handle && _dbc_handle->get() != SQL_NULL_HANDLE) {
+        return true; 
+    }
+    return false;
+}
