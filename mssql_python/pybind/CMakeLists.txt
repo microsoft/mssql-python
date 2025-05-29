@@ -83,7 +83,7 @@ if(DEFINED PYTHON_INCLUDE_DIR AND NOT "${PYTHON_INCLUDE_DIR}" STREQUAL "")
 else()
     # Try to detect Python include directory
     execute_process(
-        COMMAND python3 -c "import sysconfig; print(sysconfig.get_path('include'))"
+        COMMAND python -c "import sysconfig; print(sysconfig.get_path('include'))"
         OUTPUT_VARIABLE PYTHON_INCLUDE_DIR
         OUTPUT_STRIP_TRAILING_WHITESPACE
     )
@@ -95,7 +95,7 @@ if(DEFINED PYBIND11_INCLUDE_DIR AND NOT "${PYBIND11_INCLUDE_DIR}" STREQUAL "")
 else()
     # Try to detect pybind11 include directory
     execute_process(
-        COMMAND python3 -c "import pybind11; print(pybind11.get_include())"
+        COMMAND python -c "import pybind11; print(pybind11.get_include())"
         OUTPUT_VARIABLE PYBIND11_INCLUDE_DIR
         OUTPUT_STRIP_TRAILING_WHITESPACE
     )
@@ -104,19 +104,19 @@ endif()
 
 # Find Python Library for linking
 execute_process(
-    COMMAND python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
-    OUTPUT_VARIABLE PYTHON_LIBDIR
+    COMMAND python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
+    OUTPUT_VARIABLE PYTHON_LIB_DIR
     OUTPUT_STRIP_TRAILING_WHITESPACE
 )
-message(STATUS "Python LIBDIR from sysconfig: ${PYTHON_LIBDIR}")
+message(STATUS "Python LIBDIR from sysconfig: ${PYTHON_LIB_DIR}")
 
 # On macOS, we may need additional work to find the Python library
-if(APPLE AND (NOT PYTHON_LIBDIR OR "${PYTHON_LIBDIR}" STREQUAL ""))
+if(APPLE AND (NOT PYTHON_LIB_DIR OR "${PYTHON_LIB_DIR}" STREQUAL ""))
     message(STATUS "LIBDIR is None or empty, trying alternative methods")
     
     # Get Python executable path
     execute_process(
-        COMMAND python3 -c "import sys; print(sys.executable)"
+        COMMAND python -c "import sys; print(sys.executable)"
         OUTPUT_VARIABLE PYTHON_EXECUTABLE
         OUTPUT_STRIP_TRAILING_WHITESPACE
     )
@@ -134,7 +134,7 @@ if(APPLE AND (NOT PYTHON_LIBDIR OR "${PYTHON_LIBDIR}" STREQUAL ""))
     
     # Get Python version for library name
     execute_process(
-        COMMAND python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+        COMMAND python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
         OUTPUT_VARIABLE PYTHON_VERSION_FULL
         OUTPUT_STRIP_TRAILING_WHITESPACE
     )
@@ -211,7 +211,7 @@ if(APPLE)
     else()
         # Otherwise, try to link to the framework
         execute_process(
-            COMMAND python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+            COMMAND python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
             OUTPUT_VARIABLE PYTHON_VERSION_FULL
             OUTPUT_STRIP_TRAILING_WHITESPACE
         )
