@@ -1,3 +1,9 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+// INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
+//             taken up in future.
+
 #include "connection_pool.h"
 #include <iostream>
 #include <exception>
@@ -36,6 +42,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::wstring& connStr,
     if (_current_size < _max_size) {
         auto conn = std::make_shared<Connection>(connStr, true);
         conn->connect(attrs_before);
+        ++_current_size;
         return conn;
     } else {
         LOG("Cannot acquire connection: pool size limit reached");

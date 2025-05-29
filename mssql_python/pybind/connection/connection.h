@@ -33,17 +33,13 @@ public:
 
     //  Check whether autocommit is enabled.
     bool getAutocommit() const;
-
     bool isAlive() const;
-
     bool reset();
-
     void updateLastUsed();
-
     std::chrono::steady_clock::time_point lastUsed() const;
 
     // Allocate a new statement handle on this connection.
-    SqlHandlePtr allocStatementHandle();    
+    SqlHandlePtr allocStatementHandle();
 
 private:
     void allocateDbcHandle();
