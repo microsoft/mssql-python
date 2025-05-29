@@ -17,7 +17,7 @@ public:
     ~Connection();
 
     // Establish the connection using the stored connection string.
-    SQLRETURN connect(const py::dict& attrs_before = py::dict());
+    void connect(const py::dict& attrs_before = py::dict());
 
     // Disconnect and free the connection handle.
     void disconnect();

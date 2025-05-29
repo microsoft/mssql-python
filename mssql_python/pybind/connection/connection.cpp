@@ -49,7 +49,7 @@ void Connection::allocateDbcHandle() {
     _dbcHandle = std::make_shared<SqlHandle>(SQL_HANDLE_DBC, dbc);
 }
 
-SQLRETURN Connection::connect(const py::dict& attrs_before) {
+void Connection::connect(const py::dict& attrs_before) {
     LOG("Connecting to database");
     // Apply access token before connect
     if (!attrs_before.is_none() && py::len(attrs_before) > 0) {
