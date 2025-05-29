@@ -29,7 +29,7 @@ class BCPClient:
         self.wrapper = BCPWrapper(connection)
         logger.info("BCPClient initialized successfully.")
 
-    def run_bcp(self, table: str, options: BCPOptions):  # options is no longer Optional
+    def sql_bulk_copy(self, table: str, options: BCPOptions):  # options is no longer Optional
         """
         Executes a bulk copy operation to or from a specified table or using a query.
 
@@ -43,9 +43,9 @@ class BCPClient:
             TypeError: If 'options' is not an instance of BCPOptions.
             RuntimeError: If the BCPWrapper was not initialized.
         """
-        logger.info(f"Starting run_bcp for table/query: '{table}', direction: '{options.direction}'.")
+        logger.info(f"Starting sql_bulk_copy for table/query: '{table}', direction: '{options.direction}'.")
         if not table:
-            logger.error("Validation failed: 'table' (or query) not provided for run_bcp.")
+            logger.error("Validation failed: 'table' (or query) not provided for sql_bulk_copy.")
             raise ValueError(
                 "The 'table' name (or query for queryout) must be provided."
             )
@@ -68,7 +68,7 @@ class BCPClient:
         logger.debug(f"Using BCPOptions: {current_options}")
 
         if not self.wrapper:  # Should be caught by __init__ ideally
-            logger.error("BCPWrapper was not initialized before calling run_bcp.")
+            logger.error("BCPWrapper was not initialized before calling sql_bulk_copy.")
             raise RuntimeError("BCPWrapper was not initialized.")
 
         try:
@@ -190,4 +190,4 @@ class BCPClient:
                 self.wrapper.finish()
                 self.wrapper.close()
                 logger.debug("BCPWrapper finished and closed.")
-            logger.info(f"run_bcp for table/query: '{table}' completed.")
+            logger.info(f"sql_bulk_copy for table/query: '{table}' completed.")
