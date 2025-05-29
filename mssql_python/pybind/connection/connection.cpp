@@ -78,6 +78,7 @@ void Connection::disconnect() {
     }
 }
 
+// TODO: Add an exception class in C++ for error handling, DB spec compliant
 void Connection::checkError(SQLRETURN ret) const{
     if (!SQL_SUCCEEDED(ret)) {
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
@@ -88,7 +89,7 @@ void Connection::checkError(SQLRETURN ret) const{
 
 void Connection::commit() {
     if (!_dbcHandle) {
-        throw std::runtime_error("Connection handle not allocated");
+        ThrowStdException("Connection handle not allocated");
     }
     LOG("Committing transaction");
     SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_COMMIT);
@@ -97,7 +98,7 @@ void Connection::commit() {
 
 void Connection::rollback() {
     if (!_dbcHandle) {
-        throw std::runtime_error("Connection handle not allocated");
+        ThrowStdException("Connection handle not allocated");
     }
     LOG("Rolling back transaction");
     SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
@@ -106,7 +107,7 @@ void Connection::rollback() {
 
 void Connection::setAutocommit(bool enable) {
     if (!_dbcHandle) {
-        throw std::runtime_error("Connection handle not allocated");
+        ThrowStdException("Connection handle not allocated");
     }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     LOG("Set SQL Connection Attribute");
@@ -117,7 +118,7 @@ void Connection::setAutocommit(bool enable) {
 
 bool Connection::getAutocommit() const {
     if (!_dbcHandle) {
-        throw std::runtime_error("Connection handle not allocated");
+        ThrowStdException("Connection handle not allocated");
     }
     LOG("Get SQL Connection Attribute");
     SQLINTEGER value;
@@ -129,7 +130,7 @@ bool Connection::getAutocommit() const {
 
 SqlHandlePtr Connection::allocStatementHandle() {
     if (!_dbcHandle) {
-        throw std::runtime_error("Connection handle not allocated");
+        ThrowStdException("Connection handle not allocated");
     }
     LOG("Allocating statement handle");
     SQLHANDLE stmt = nullptr;
@@ -180,7 +181,7 @@ void Connection::applyAttrsBefore(const py::dict& attrs) {
         if (key == SQL_COPT_SS_ACCESS_TOKEN) {   
             SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
             if (!SQL_SUCCEEDED(ret)) {
-                throw std::runtime_error("Failed to set access token before connect");
+                ThrowStdException("Failed to set access token before connect");
             }
         }
     }

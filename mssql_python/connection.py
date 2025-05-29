@@ -59,7 +59,6 @@ class Connection:
         self._attrs_before = attrs_before or {}
         self._conn = ddbc_bindings.Connection(self.connection_str, autocommit)
         self._conn.connect(self._attrs_before)
-        self._autocommit = autocommit
         self.setautocommit(autocommit)
 
     def _construct_connection_string(self, connection_str: str = "", **kwargs) -> str:
@@ -133,7 +132,6 @@ class Connection:
             DatabaseError: If there is an error while setting the autocommit mode.
         """
         self._conn.set_autocommit(value)
-        self._autocommit = value
 
     def cursor(self) -> Cursor:
         """
