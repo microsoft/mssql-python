@@ -237,7 +237,7 @@ if(APPLE)
     )
 else()
     # For other platforms, use standard include and link setup
-    target_include_directories(ddbc_bindings PRIVATE ${ODBC_INCLUDE_DIR})
+    # target_include_directories(ddbc_bindings PRIVATE ${ODBC_INCLUDE_DIR})
     
     if(WIN32 AND DEFINED PYTHON_LIB_DIR)
         # On Windows, link with the Python lib

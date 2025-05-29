@@ -1,5 +1,8 @@
 #!/bin/bash
 # Build script for macOS to compile the ddbc_bindings C++ code
+# This script is designed to be run from the mssql_python/pybind directory
+# Running this script will require CMake and a C++ compiler installed on your MacOS system
+# It will also require Python 3.x, pybind11 and msodbcsql18 and unixODBC to be installed
 
 # Usage: build.sh [ARCH], If ARCH is not specified, it defaults to the current architecture
 ARCH=${1:-$(uname -m)}
@@ -46,16 +49,6 @@ echo "[DIAGNOSTIC] Source directory: ${SOURCE_DIR}"
 
 # Special handling for macOS ODBC headers and string conversion issues
 if [ "$(uname)" = "Darwin" ]; then
-    # Use project's odbc_include directory instead of Homebrew headers
-    ODBC_INCLUDE_DIR="${SOURCE_DIR}/../libs/macos/odbc_include"
-    
-    if [ ! -f "${ODBC_INCLUDE_DIR}/sql.h" ]; then
-        echo "[ERROR] Could not find ODBC headers in project directory at ${ODBC_INCLUDE_DIR}"
-        exit 1
-    fi
-    
-    echo "[DIAGNOSTIC] Using ODBC headers from project directory: ${ODBC_INCLUDE_DIR}"
-    
     # Check if macOS-specific source file exists
     if [ -f "${SOURCE_DIR}/ddbc_bindings_mac.cpp" ]; then
         echo "[DIAGNOSTIC] Using macOS-specific source file: ddbc_bindings_mac.cpp"
@@ -64,17 +57,11 @@ if [ "$(uname)" = "Darwin" ]; then
         echo "[WARNING] Falling back to standard source file ddbc_bindings.cpp"
     fi
     
-    # Set compiler flags directly to ensure headers are found
-    export CXXFLAGS="-I${ODBC_INCLUDE_DIR}"
-    export CFLAGS="-I${ODBC_INCLUDE_DIR}"
-    
     # Configure CMake with macOS-specific flags
     echo "[DIAGNOSTIC] Running CMake configure with macOS-specific settings"
     cmake -DCMAKE_OSX_ARCHITECTURES=${CMAKE_ARCH} \
           -DARCHITECTURE=${ARCH} \
           -DMACOS_STRING_FIX=ON \
-          -DODBC_INCLUDE_DIR=${ODBC_INCLUDE_DIR} \
-          -DCMAKE_CXX_FLAGS="-I${ODBC_INCLUDE_DIR}" \
           "${SOURCE_DIR}"
 else
     # Configure CMake for other platforms

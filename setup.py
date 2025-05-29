@@ -2,6 +2,7 @@ import os
 import sys
 from setuptools import setup, find_packages
 from setuptools.dist import Distribution
+from setuptools.command.bdist_wheel import bdist_wheel
 
 # Custom distribution to force platform-specific wheel
 class BinaryDistribution(Distribution):
@@ -79,15 +80,13 @@ elif sys.platform.startswith('darwin'):
     if arch is None:
         if platform.machine() == 'arm64':
             arch = 'arm64'
-            platform_tag = 'macosx_11_0_arm64'
+            platform_tag = 'macosx_15_0_arm64'
         else:
-            arch = 'x64'
-            platform_tag = 'macosx_10_9_x86_64'
-    
+            raise Exception("Unsupported architecture for macOS. Please set the ARCHITECTURE environment variable to 'arm64'.")
+
     # Add architecture-specific packages for macOS
     packages.extend([
-        f'mssql_python.libs.{arch}',
-        f'mssql_python.libs.{arch}.macos'
+        f'mssql_python.libs.macos',
     ])
 else:
     platform_tag = 'any'  # Fallback
