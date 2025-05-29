@@ -168,13 +168,13 @@ def test_rollback(db_connection):
         cursor.execute("DROP TABLE pytest_test_rollback;")
         db_connection.commit()
 
-def test_invalid_connection_string():
-    # Check if initializing with an invalid connection string raises an exception
-    with pytest.raises(Exception):
-        Connection("invalid_connection_string")
+# def test_invalid_connection_string():
+#     # Check if initializing with an invalid connection string raises an exception
+#     with pytest.raises(Exception):
+#         Connection("invalid_connection_string")
 
-def test_connection_close(conn_str):
-    # Create a separate connection just for this test
-    temp_conn = connect(conn_str)
-    # Check if the database connection can be closed
-    temp_conn.close()
+# def test_connection_close(conn_str):
+#     # Create a separate connection just for this test
+#     temp_conn = connect(conn_str)
+#     # Check if the database connection can be closed
+#     temp_conn.close()

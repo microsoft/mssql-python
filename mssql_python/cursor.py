@@ -550,7 +550,7 @@ class Cursor:
             reset_cursor: Whether to reset the cursor before execution.
         """
         self._check_closed()  # Check if the cursor is closed
-        print("Executing query: ", operation)
+        # print("Executing query: ", operation)
         if reset_cursor:
             self._reset_cursor()
 

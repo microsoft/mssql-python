@@ -156,7 +156,7 @@ class DriverLoader {
 //-------------------------------------------------------------------------------------------------
 class SqlHandle {
     public:
-        SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle);
+        SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle = SQL_NULL_HANDLE);
         ~SqlHandle();
         SQLHANDLE get() const;
         SQLSMALLINT type() const;

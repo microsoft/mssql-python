@@ -57,10 +57,13 @@ class Connection:
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
-        self._conn = ddbc_bindings.Connection(self.connection_str, autocommit, use_pool)
-        self._conn.connect(self._attrs_before)
-        self._autocommit = autocommit
-        self.setautocommit(autocommit)
+        # self._conn = ddbc_bindings.Connection(self.connection_str, autocommit, use_pool)
+        # self._conn.connect(self._attrs_before)
+        # print("Connection string: ", self.connection_str)
+        self._conn = ddbc_bindings.Connection(self.connection_str, use_pool)
+        # print("Connection object: ", self._conn)
+        # self._autocommit = autocommit
+        # self.setautocommit(autocommit)
 
     def _construct_connection_string(self, connection_str: str = "", **kwargs) -> str:
         """
@@ -200,5 +203,6 @@ class Connection:
         """
         # Close the connection
         self._conn.close()
+        self._conn = None
         if ENABLE_LOGGING:
             logger.info("Connection closed successfully.")
