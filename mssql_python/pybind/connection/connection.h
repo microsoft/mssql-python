@@ -17,7 +17,7 @@ public:
     ~Connection();
 
     // Establish the connection using the stored connection string.
-    void connect();
+    void connect(const py::dict& attrs_before = py::dict());
 
     // Disconnect and free the connection handle.
     void disconnect();
@@ -40,6 +40,8 @@ public:
 private:
     void allocateDbcHandle();
     void checkError(SQLRETURN ret) const;
+    SQLRETURN setAttribute(SQLINTEGER attribute, py::object value);
+    void applyAttrsBefore(const py::dict& attrs_before);
 
     std::wstring _connStr;
     bool _usePool = false;
