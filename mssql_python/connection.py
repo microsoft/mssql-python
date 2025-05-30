@@ -59,7 +59,8 @@ class Connection:
         )
         self._attrs_before = attrs_before or {}
         self._pooling = PoolingManager.is_enabled()
-        self._conn = ddbc_bindings.Connection(self.connection_str, self._pooling)
+        self._conn = ddbc_bindings.Connection(self.connection_str, autocommit, self._pooling)
+        self._conn.connect(self._attrs_before)
         self.setautocommit(autocommit)
 
     def _construct_connection_string(self, connection_str: str = "", **kwargs) -> str:
