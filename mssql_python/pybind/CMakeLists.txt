@@ -200,6 +200,8 @@ message(STATUS "Using ODBC include directory: ${ODBC_INCLUDE_DIR}")
 
 # Configure target include directories and link libraries
 target_include_directories(ddbc_bindings PRIVATE 
+    ${CMAKE_CURRENT_SOURCE_DIR}             # Root directory (for ddbc_bindings.h)
+    ${CMAKE_CURRENT_SOURCE_DIR}/connection  # connection directory (for connection.h)
     ${PYTHON_INCLUDE_DIR}
     ${PYBIND11_INCLUDE_DIR}
 )
