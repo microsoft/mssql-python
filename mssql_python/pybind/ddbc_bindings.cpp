@@ -1927,6 +1927,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle");
+  
     py::class_<ConnectionHandle>(m, "Connection")
         .def(py::init<const std::wstring&, bool, const py::dict&>(), py::arg("conn_str"), py::arg("use_pool"), py::arg("attrs_before") = py::dict())
         .def("close", &ConnectionHandle::close, "Close the connection")

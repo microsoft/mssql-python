@@ -14,6 +14,7 @@
 class Connection {
 public:
     Connection(const std::wstring& connStr, bool fromPool);
+
     ~Connection();
 
     // Establish the connection using the stored connection string.
