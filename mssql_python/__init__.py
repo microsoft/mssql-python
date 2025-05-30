@@ -36,8 +36,7 @@ from .type import (
 )
 
 # Connection Objects
-from .connection import Connection
-from .db_connection import connect
+from .db_connection import connect, Connection
 
 # Cursor Objects
 from .cursor import Cursor
