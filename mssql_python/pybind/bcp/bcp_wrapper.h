@@ -7,11 +7,16 @@
 #include "../connection/connection.h" // For the Connection class
 #include <optional> // For std::optional
 
+#define BCP_OUT_CHARACTER_MODE       0x00000001  // Corresponds to -c option: character data format
+#define BCP_OUT_NATIVE_MODE          0x00000002  // Corresponds to -n option: native data format
+#define BCP_OUT_WIDE_CHARACTER_MODE  0x00000080  // Corresponds to -w option: Unicode character format
+#define BCP_OUT_WIDE_NATIVE_MODE     0x00000100  // Corresponds to -N option: Unicode native format
+
 class BCPWrapper {
 public:
     // Constructor: Requires a reference to an active Connection object.
     // The BCPWrapper does not take ownership of the Connection object.
-    BCPWrapper(std::shared_ptr<Connection> conn);
+    BCPWrapper(Connection& conn); // Changed to Connection&
 
     // Destructor: Ensures BCP operations are properly terminated if active.
     ~BCPWrapper();
@@ -69,12 +74,10 @@ public:
     SQLRETURN close();
 
 private:
-    std::shared_ptr<Connection> _conn; // Reference to the database connection object
+    Connection& _conn; // Changed to Connection&
     bool _bcp_initialized; // Flag to track if bcp_init has been called successfully
     bool _bcp_finished;    // Flag to track if bcp_finish (or bcp_done) has been called
 
     // Helper to get the HDBC handle from the Connection object
     // SQLHDBC get_hdbc() const; // Implementation would be in .cpp
 };
-
-#endif // BCP_WRAPPER_H

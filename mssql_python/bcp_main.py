@@ -1,12 +1,15 @@
-import logging # Add this import
+import logging 
 from mssql_python.bcp_options import (
     BCPOptions,
-)  # BCPOptions now handles more validation
-from ddbc_bindings import BCPWrapper
+)
+from ddbc_bindings import BCPWrapper 
 from mssql_python.constants import BCPControlOptions
 from typing import Optional  # Import Optional for type hints
 
 logger = logging.getLogger(__name__) # Add a logger instance
+
+# defining constants for BCP control options
+SUPPORTED_DIRECTIONS = ("in", "out")
 
 class BCPClient:
     """
@@ -14,11 +17,11 @@ class BCPClient:
     This class provides methods to initialize and execute BCP operations.
     """
 
-    def __init__(self, connection):
+    def __init__(self, connection): # connection is an instance of mssql_python.connection.Connection
         """
         Initializes the BCPClient with a database connection.
         Args:
-            connection: A database connection object that will be used by BCPWrapper.
+            connection: A mssql_python.connection.Connection object.
         """
         logger.info("Initializing BCPClient.")
         if connection is None:
@@ -26,7 +29,14 @@ class BCPClient:
             raise ValueError(
                 "A valid connection object is required to initialize BCPClient."
             )
-        self.wrapper = BCPWrapper(connection)
+        
+        # Access the underlying C++ ddbc_bindings.Connection object
+        # stored in the _conn attribute of your Python Connection wrapper.
+        if not hasattr(connection, '_conn'):
+            logger.error("The provided Python connection object does not have the expected '_conn' attribute.")
+            raise TypeError("The Python Connection object is missing the '_conn' attribute holding the native C++ connection.")
+
+        self.wrapper = BCPWrapper(connection._conn)
         logger.info("BCPClient initialized successfully.")
 
     def sql_bulk_copy(self, table: str, options: BCPOptions):  # options is no longer Optional
@@ -57,10 +67,10 @@ class BCPClient:
 
         # BCPOptions.__post_init__ has already performed its internal validation.
         # BCPClient can add its own operational constraints:
-        if options.direction not in BCPControlOptions.SUPPORTED_DIRECTIONS:
-            logger.error(f"Validation failed: Unsupported BCP direction '{options.direction}'. Supported: {BCPControlOptions.SUPPORTED_DIRECTIONS}")
+        if options.direction not in SUPPORTED_DIRECTIONS:
+            logger.error(f"Validation failed: Unsupported BCP direction '{options.direction}'. Supported: {SUPPORTED_DIRECTIONS}")
             raise ValueError(
-                f"BCPClient currently only supports directions: {', '.join(BCPControlOptions.SUPPORTED_DIRECTIONS)}. "
+                f"BCPClient currently only supports directions: {', '.join(SUPPORTED_DIRECTIONS)}. "
                 f"Got '{options.direction}'."
             )
 

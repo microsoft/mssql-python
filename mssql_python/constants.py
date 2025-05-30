@@ -133,6 +133,3 @@ class BCPControlOptions(Enum):
     KEEP_NULLS = "BCPKEEPNULLS"
     HINTS = "BCPHINTS"
     SET_ROW_TERMINATOR = "BCPSETROWTERM"
-    ALLOWED_DIRECTIONS = ("in", "out", "format", "query")
-    ALLOWED_FILE_MODES = ("native", "char", "unicode")
-    SUPPORTED_DIRECTIONS = ("in", "out")

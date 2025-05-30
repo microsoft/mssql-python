@@ -1965,7 +1965,9 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("rollback", &Connection::rollback, "Rollback the current transaction")
         .def("set_autocommit", &Connection::setAutocommit)
         .def("get_autocommit", &Connection::getAutocommit)
-        .def("alloc_statement_handle", &Connection::allocStatementHandle);
+        .def("alloc_statement_handle", &Connection::allocStatementHandle)
+        .def("get_hdbc", &Connection::get_hdbc)
+        .def("is_connected", &Connection::is_connected);
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");
     m.def("DDBCSQLRowCount", &SQLRowCount_wrap,
@@ -1985,43 +1987,23 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
 
     // BCPWrapper bindings
-    py::class_<BCPWrapper>(m, "BCPWrapper")
-        .def(py::init<std::shared_ptr<Connection>>(), py::arg("connection"),
-             "Initializes the BCP wrapper with a database connection.")
-        .def("bcp_initialize_operation", &BCPWrapper::bcp_initialize_operation,
-             py::arg("table"), py::arg("data_file"), py::arg("error_file"), py::arg("direction"),
-             "Initializes a BCP operation.")
-        .def("bcp_control", static_cast<SQLRETURN (BCPWrapper::*)(const std::wstring&, int)>(&BCPWrapper::bcp_control),
-             py::arg("property_name"), py::arg("value"),
-             "Sets a BCP control option with an integer value.")
-        .def("bcp_control", static_cast<SQLRETURN (BCPWrapper::*)(const std::wstring&, const std::wstring&)>(&BCPWrapper::bcp_control),
-             py::arg("property_name"), py::arg("value"),
-             "Sets a BCP control option with a string value.")
-        .def("set_bulk_mode", &BCPWrapper::set_bulk_mode,
-             py::arg("mode"), 
-             py::arg("field_terminator") = std::nullopt, 
-             py::arg("row_terminator") = std::nullopt,
-             "Sets the bulk copy mode and optional global terminators using bcp_setbulkmode.")
-        .def("read_format_file", &BCPWrapper::read_format_file,
-             py::arg("file_path"),
-             "Reads column format information from a BCP format file.")
-        .def("define_columns", &BCPWrapper::define_columns,
-             py::arg("num_cols"),
-             "Specifies the total number of columns in the user data file.")
-        .def("define_column_format", &BCPWrapper::define_column_format,
-             py::arg("file_col_idx"), py::arg("user_data_type"), py::arg("indicator_length"),
-             py::arg("user_data_length"), py::arg("terminator_bytes"), py::arg("server_col_idx"),
-             "Defines the format of data in the data file for a specific column.")
-        .def("exec_bcp", &BCPWrapper::exec_bcp,
-             "Executes the BCP operation, transferring data.")
-        .def("finish", &BCPWrapper::finish,
-             "Completes the BCP operation and releases associated resources.")
-        .def("close", &BCPWrapper::close,
-             "Explicitly closes/cleans up BCP resources, finishing active operations.");
+    py::class_<BCPWrapper, std::shared_ptr<BCPWrapper>>(m, "BCPWrapper")
+        .def(py::init<Connection&>())
+        .def("bcp_initialize_operation", &BCPWrapper::bcp_initialize_operation)
+        .def("bcp_control", static_cast<SQLRETURN (BCPWrapper::*)(const std::wstring&, int)>(&BCPWrapper::bcp_control))
+        .def("bcp_control", static_cast<SQLRETURN (BCPWrapper::*)(const std::wstring&, const std::wstring&)>(&BCPWrapper::bcp_control))
+        .def("set_bulk_mode", &BCPWrapper::set_bulk_mode)
+        .def("read_format_file", &BCPWrapper::read_format_file)
+        .def("define_columns", &BCPWrapper::define_columns)
+        .def("define_column_format", &BCPWrapper::define_column_format)
+        .def("exec_bcp", &BCPWrapper::exec_bcp)
+        .def("finish", &BCPWrapper::finish)
+        .def("close", &BCPWrapper::close)
+        // ... other BCPWrapper methods
+        ;
 
-    // Add a version attribute
-    m.attr("__version__") = "1.0.0";
-    
+    // ... other bindings ...
+
     try {
         // Try loading the ODBC driver when the module is imported
         LOG("Loading ODBC driver");

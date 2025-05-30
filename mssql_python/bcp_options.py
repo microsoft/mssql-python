@@ -2,6 +2,9 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Union
 from mssql_python.constants import BCPControlOptions
 
+# defining constants for BCP control options
+ALLOWED_DIRECTIONS = ("in", "out", "format", "query")
+ALLOWED_FILE_MODES = ("native", "char", "unicode")
 
 @dataclass
 class ColumnFormat:
@@ -75,7 +78,7 @@ class BCPOptions:
     """
 
     direction: str
-    data_file: str  # data_file is mandatory for 'in' and 'out'
+    data_file: Optional[str] = None # data_file is mandatory for 'in' and 'out'
     error_file: Optional[str] = None
     format_file: Optional[str] = None
     # write_format_file is removed as 'format' direction is not actively supported
@@ -96,10 +99,10 @@ class BCPOptions:
         ):  # Should be caught by dataclass if no default, but good for explicit check
             raise ValueError("BCPOptions.direction is a required field.")
 
-        if self.direction not in BCPControlOptions.ALLOWED_DIRECTIONS:
+        if self.direction not in ALLOWED_DIRECTIONS:
             raise ValueError(
                 f"BCPOptions.direction '{self.direction}' is invalid. "
-                f"Allowed directions are: {', '.join(BCPControlOptions.ALLOWED_DIRECTIONS)}."
+                f"Allowed directions are: {', '.join(ALLOWED_DIRECTIONS)}."
             )
 
         if self.direction in ["in", "out"]:
@@ -129,10 +132,10 @@ class BCPOptions:
                 "BCPOptions.code_page, if an integer, must be non-negative."
             )
         
-        if self.bulk_mode not in BCPControlOptions.ALLOWED_FILE_MODES:
+        if self.bulk_mode not in ALLOWED_FILE_MODES:
             raise ValueError(
                 f"BCPOptions.bulk_mode '{self.bulk_mode}' is invalid. "
-                f"Allowed modes are: {', '.join(BCPControlOptions.ALLOWED_FILE_MODES)}."
+                f"Allowed modes are: {', '.join(ALLOWED_FILE_MODES)}."
             )
         for attr_name in ["batch_size", "max_errors", "first_row", "last_row"]:
             attr_value = getattr(self, attr_name)

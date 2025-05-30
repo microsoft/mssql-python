@@ -129,8 +129,8 @@ bool Connection::getAutocommit() const {
 }
 
 SQLHDBC Connection::get_hdbc() const {
-    if (_dbc_handle && _dbc_handle->get()) { // Assuming SqlHandle has get_handle()
-        return static_cast<SQLHDBC>(_dbc_handle->get());
+    if (_dbcHandle && _dbcHandle->get()) { 
+        return static_cast<SQLHDBC>(_dbcHandle->get());
     }
     return SQL_NULL_HDBC;
 }
@@ -138,7 +138,7 @@ SQLHDBC Connection::get_hdbc() const {
 bool Connection::is_connected() const {
     // A basic check: is the dbc_handle allocated and valid?
     // More robust checks might involve querying connection attributes.
-    if (_dbc_handle && _dbc_handle->get() != SQL_NULL_HANDLE) {
+    if (_dbcHandle && _dbcHandle->get() != SQL_NULL_HANDLE) {
         return true; 
     }
     return false;

@@ -75,7 +75,7 @@ typedef SQLRETURN (SQL_API* BCPReadFmtWFunc)(SQLHDBC, LPCWSTR);
 typedef SQLRETURN (SQL_API* BCPColumnsFunc)(SQLHDBC, INT);
 typedef SQLRETURN (SQL_API* BCPColFmtWFunc)(SQLHDBC, INT, INT, INT, DBINT, LPCBYTE, INT, INT);
 typedef SQLRETURN  (SQL_API* BCPExecFunc)(SQLHDBC, DBINT*); 
-typedef SQLRETURN (SQL_API* BCPSetBulkModeFunc)(SQLHDBC, INT, LPCBYTE, INT, LPCBYTE, INT); 
+typedef SQLRETURN (SQL_API* BCPSetBulkModeFunc)(SQLHDBC, INT, LPVOID, INT, LPVOID, INT); 
 typedef SQLRETURN (SQL_API* BCPDoneFunc)(SQLHDBC);
 
 //-------------------------------------------------------------------------------------------------

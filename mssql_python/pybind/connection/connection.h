@@ -7,6 +7,8 @@
 #pragma once
 #include "ddbc_bindings.h"
 
+namespace py = pybind11; 
+
 // Represents a single ODBC database connection.
 // Manages connection handles.
 // Note: This class does NOT implement pooling logic directly.
