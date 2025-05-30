@@ -118,3 +118,21 @@ class ConstantsDDBC(Enum):
     SQL_MAX_NUMERIC_LEN = 16
     SQL_IS_POINTER = -4
     SQL_COPT_SS_ACCESS_TOKEN = 1256
+
+class BCPControlOptions(Enum):
+    """
+    Constants for BCP control options.
+    The values are the string representations expected by the BCP API.
+    """
+    BATCH_SIZE = "BCPBATCH"
+    MAX_ERRORS = "BCPMAXERRS"
+    FIRST_ROW = "BCPFIRST"
+    LAST_ROW = "BCPLAST"
+    FILE_CODE_PAGE = "BCPFILECP"
+    KEEP_IDENTITY = "BCPKEEPIDENTITY"
+    KEEP_NULLS = "BCPKEEPNULLS"
+    HINTS = "BCPHINTS"
+    SET_ROW_TERMINATOR = "BCPSETROWTERM"
+    ALLOWED_DIRECTIONS = ("in", "out", "format", "query")
+    ALLOWED_FILE_MODES = ("native", "char", "unicode")
+    SUPPORTED_DIRECTIONS = ("in", "out")
