@@ -1,6 +1,6 @@
 name: pr-validation-pipeline
 
-# Trigger the pipeline on pushes to these branches
+# Trigger the pipeline on push to main branch
 trigger:
   branches:
     include:
