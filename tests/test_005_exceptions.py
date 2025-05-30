@@ -126,7 +126,10 @@ def test_foreign_key_constraint_error(cursor, db_connection):
         drop_table_if_exists(cursor, "pytest_parent_table")
         db_connection.commit()
 
-def test_connection_error(db_connection):
-    with pytest.raises(OperationalError) as excinfo:
+def test_connection_error():
+    # RuntimeError is raised on Windows, while on MacOS it raises OperationalError
+    # In  MacOS the error goes by "Client unable to establish connection"
+    # and on Windows it goes by "Neither DSN nor SERVER keyword supplied"
+    with pytest.raises((RuntimeError, OperationalError)) as excinfo:
         connect("InvalidConnectionString")
-    assert "Client unable to establish connection" in str(excinfo.value)
+    assert "Client unable to establish connection" in str(excinfo.value) or "Neither DSN nor SERVER keyword supplied" in str(excinfo.value)
