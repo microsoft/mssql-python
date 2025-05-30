@@ -1,4 +1,10 @@
-name: test-pipeline
+name: pr-validation-pipeline
+
+# Trigger the pipeline on pushes to these branches
+trigger:
+  branches:
+    include:
+      - main
 
 jobs:
 - job: PytestOnWindows
