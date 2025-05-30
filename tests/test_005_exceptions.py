@@ -88,8 +88,9 @@ def test_data_truncation_error(cursor, db_connection):
         cursor.execute("CREATE TABLE pytest_test_truncation (id INT, name NVARCHAR(5))")
         cursor.execute("INSERT INTO pytest_test_truncation (id, name) VALUES (?, ?)", [1, 'TooLongName'])
     except (ProgrammingError, DataError) as excinfo:
-        # Catching specific exceptions for SQL Server truncation error
-        # A DataError is raised on Windows but ProgrammingError on MacOS
+        # DataError is raised on Windows but ProgrammingError on MacOS
+        # Included catching both ProgrammingError and DataError in this test
+        # TODO: Make this test platform independent
         assert "String or binary data would be truncated" in str(excinfo)
     finally:
         drop_table_if_exists(cursor, "pytest_test_truncation")
@@ -129,7 +130,8 @@ def test_foreign_key_constraint_error(cursor, db_connection):
 def test_connection_error():
     # RuntimeError is raised on Windows, while on MacOS it raises OperationalError
     # In  MacOS the error goes by "Client unable to establish connection"
-    # and on Windows it goes by "Neither DSN nor SERVER keyword supplied"
+    # In Windows it goes by "Neither DSN nor SERVER keyword supplied"
+    # TODO: Make this test platform independent
     with pytest.raises((RuntimeError, OperationalError)) as excinfo:
         connect("InvalidConnectionString")
     assert "Client unable to establish connection" in str(excinfo.value) or "Neither DSN nor SERVER keyword supplied" in str(excinfo.value)
