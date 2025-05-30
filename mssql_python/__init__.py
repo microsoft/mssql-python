@@ -38,7 +38,6 @@ from .type import (
 # Connection Objects
 from .connection import Connection
 from .db_connection import connect
-from .pool_config import enable_pooling
 
 # Cursor Objects
 from .cursor import Cursor
@@ -54,3 +53,18 @@ from .constants import ConstantsDDBC
 apilevel = "2.0"
 paramstyle = "qmark"
 threadsafety = 1
+
+from .pooling import PoolingManager
+def pooling(max_size=100, idle_timeout=600):
+#     """
+#     Enable connection pooling with the specified parameters.
+    
+#     Args:
+#         max_size (int): Maximum number of connections in the pool.
+#         idle_timeout (int): Time in seconds before idle connections are closed.
+    
+#     Returns:
+#         None
+#     """
+    PoolingManager.enable(max_size, idle_timeout) 
+      
