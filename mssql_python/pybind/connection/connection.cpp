@@ -9,6 +9,9 @@
 #include <pybind11/pybind11.h>
 
 #define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
+#define SQL_COPT_SS_BCP            1219  // Custom attribute ID for BCP mode
+#define SQL_BCP_OFF                0     // BCP mode off
+#define SQL_BCP_ON                 1     // BCP mode on
 
 SqlHandlePtr Connection::_envHandle = nullptr;
 //-------------------------------------------------------------------------------------------------
@@ -16,8 +19,8 @@ SqlHandlePtr Connection::_envHandle = nullptr;
 // This class wraps low-level ODBC operations like connect/disconnect,
 // transaction control, and autocommit configuration.
 //-------------------------------------------------------------------------------------------------
-Connection::Connection(const std::wstring& conn_str, bool autocommit)
-    : _connStr(conn_str) , _autocommit(autocommit) {
+Connection::Connection(const std::wstring& conn_str, bool autocommit, bool use_pooling)
+    : _connStr(conn_str) , _autocommit(autocommit), _usePool(use_pooling) {
     if (!_envHandle) {
         LOG("Allocating environment handle");
         SQLHANDLE env = nullptr;
@@ -128,6 +131,21 @@ bool Connection::getAutocommit() const {
     return value == SQL_AUTOCOMMIT_ON;
 }
 
+SQLHDBC Connection::get_hdbc() const {
+    if (_dbcHandle && _dbcHandle->get()) { 
+        return static_cast<SQLHDBC>(_dbcHandle->get());
+    }
+    return SQL_NULL_HDBC;
+}
+
+bool Connection::is_connected() const {
+    // A basic check: is the dbc_handle allocated and valid?
+    // More robust checks might involve querying connection attributes.
+    if (_dbcHandle && _dbcHandle->get() != SQL_NULL_HANDLE) {
+        return true; 
+    }
+    return false;
+}
 SqlHandlePtr Connection::allocStatementHandle() {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
@@ -182,6 +200,12 @@ void Connection::applyAttrsBefore(const py::dict& attrs) {
             SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
             if (!SQL_SUCCEEDED(ret)) {
                 ThrowStdException("Failed to set access token before connect");
+            }
+        }
+        if (key == SQL_COPT_SS_BCP) {   
+            SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
+            if (!SQL_SUCCEEDED(ret)) {
+                ThrowStdException("Failed to set bcp before connect");
             }
         }
     }

@@ -5,6 +5,7 @@
 //             taken up in beta release
 #include "ddbc_bindings.h"
 #include "connection/connection.h"
+#include "bcp/bcp_wrapper.h" // For BCPWrapper
 
 #include <cstdint>
 #include <iomanip>  // std::setw, std::setfill
@@ -14,6 +15,18 @@
 // Replace std::filesystem usage with Windows-specific headers
 #include <shlwapi.h>
 #pragma comment(lib, "shlwapi.lib")
+
+#include "ddbc_bindings.h"
+#include "bcp/bcp_wrapper.h" // For BCPWrapper
+#include "connection/connection.h" // For Connection, if not already included transitively
+#include <pybind11/chrono.h>
+#include <pybind11/complex.h>
+#include <pybind11/functional.h>
+#include <pybind11/pytypes.h>  // Add this line for datetime support
+#include <pybind11/stl.h>
+
+namespace py = pybind11;
+using namespace pybind11::literals;
 
 //-------------------------------------------------------------------------------------------------
 // Macro definitions
@@ -136,6 +149,17 @@ SQLFreeStmtFunc SQLFreeStmt_ptr = nullptr;
 
 // Diagnostic APIs
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
+
+// BCP APIs
+BCPInitWFunc BCPInitW_ptr = nullptr;
+BCPControlWFunc BCPControlW_ptr = nullptr;
+BCPControlAFunc BCPControlA_ptr = nullptr;
+BCPReadFmtWFunc BCPReadFmtW_ptr = nullptr;
+BCPColumnsFunc BCPColumns_ptr = nullptr;
+BCPColFmtWFunc BCPColFmtW_ptr = nullptr;
+BCPSetBulkModeFunc BCPSetBulkMode_ptr = nullptr;
+BCPExecFunc BCPExec_ptr = nullptr;
+BCPDoneFunc BCPDone_ptr = nullptr;
 
 namespace {
 
@@ -586,6 +610,17 @@ std::wstring LoadDriverOrThrowException() {
     // Diagnostic record function Loading
     SQLGetDiagRec_ptr = (SQLGetDiagRecFunc)GetProcAddress(hModule, "SQLGetDiagRecW");
 
+    // Load BCP functions
+    BCPInitW_ptr = (BCPInitWFunc)GetProcAddress(hModule, "bcp_initW");
+    BCPControlW_ptr = (BCPControlWFunc)GetProcAddress(hModule, "bcp_control");
+    BCPControlA_ptr = (BCPControlAFunc)GetProcAddress(hModule, "bcp_control");
+    BCPSetBulkMode_ptr = (BCPSetBulkModeFunc)GetProcAddress(hModule, "bcp_setbulkmode");
+    BCPReadFmtW_ptr = (BCPReadFmtWFunc)GetProcAddress(hModule, "bcp_readfmtW");
+    BCPColumns_ptr = (BCPColumnsFunc)GetProcAddress(hModule, "bcp_columns");
+    BCPColFmtW_ptr = (BCPColFmtWFunc)GetProcAddress(hModule, "bcp_colfmt");
+    BCPExec_ptr = (BCPExecFunc)GetProcAddress(hModule, "bcp_exec");
+    BCPDone_ptr = (BCPDoneFunc)GetProcAddress(hModule, "bcp_done");
+   
     bool success = SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
                    SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
                    SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
@@ -593,7 +628,10 @@ std::wstring LoadDriverOrThrowException() {
                    SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr &&
                    SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr &&
                    SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr &&
-                   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
+                   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr &&
+                   BCPInitW_ptr && BCPControlW_ptr && BCPControlA_ptr && 
+                   BCPReadFmtW_ptr && BCPColumns_ptr && BCPColFmtW_ptr &&
+                   BCPExec_ptr && BCPDone_ptr && BCPSetBulkMode_ptr;
 
     if (!success) {
         LOG("Failed to load required function pointers from driver - {}", dllDirStr);
@@ -1920,14 +1958,18 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle");
     py::class_<Connection>(m, "Connection")
-        .def(py::init<const std::wstring&, bool>(), py::arg("conn_str"), py::arg("autocommit") = false)
+        .def(py::init<const std::wstring&, bool, bool>(), py::arg("conn_str"), py::arg("autocommit") = false, py::arg("use_pooling") = false,
+             "Create a new connection with the given connection string, "
+             "autocommit mode, and pooling option")
         .def("connect", &Connection::connect)
         .def("close", &Connection::disconnect, "Close the connection")
         .def("commit", &Connection::commit, "Commit the current transaction")
         .def("rollback", &Connection::rollback, "Rollback the current transaction")
         .def("set_autocommit", &Connection::setAutocommit)
         .def("get_autocommit", &Connection::getAutocommit)
-        .def("alloc_statement_handle", &Connection::allocStatementHandle);
+        .def("alloc_statement_handle", &Connection::allocStatementHandle)
+        .def("get_hdbc", &Connection::get_hdbc)
+        .def("is_connected", &Connection::is_connected);
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");
     m.def("DDBCSQLRowCount", &SQLRowCount_wrap,
@@ -1946,9 +1988,28 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
 
-    // Add a version attribute
-    m.attr("__version__") = "1.0.0";
-    
+    // BCPWrapper bindings
+    py::class_<BCPWrapper, std::shared_ptr<BCPWrapper>>(m, "BCPWrapper")
+        .def(py::init<Connection&>())
+        .def("bcp_initialize_operation", &BCPWrapper::bcp_initialize_operation)
+        .def("bcp_control", static_cast<SQLRETURN (BCPWrapper::*)(const std::wstring&, int)>(&BCPWrapper::bcp_control))
+        .def("bcp_control", static_cast<SQLRETURN (BCPWrapper::*)(const std::wstring&, const std::wstring&)>(&BCPWrapper::bcp_control))
+        .def("set_bulk_mode", &BCPWrapper::set_bulk_mode,
+             py::arg("mode"),
+             py::arg("field_terminator") = std::nullopt, // pybind11 handles std::optional<py::bytes>
+             py::arg("row_terminator") = std::nullopt)   // pybind11 handles std::optional<py::bytes>
+        .def("read_format_file", &BCPWrapper::read_format_file)
+        .def("define_columns", &BCPWrapper::define_columns)
+        .def("define_column_format", &BCPWrapper::define_column_format,
+             py::arg("file_col_idx"),
+             py::arg("user_data_type"),
+             py::arg("indicator_length"),
+             py::arg("user_data_length"),
+             py::arg("terminator_bytes") = std::nullopt, // pybind11 handles std::optional<py::bytes>
+             py::arg("server_col_idx"))
+        .def("exec_bcp", &BCPWrapper::exec_bcp)
+        .def("finish", &BCPWrapper::finish)
+        .def("close", &BCPWrapper::close);
     try {
         // Try loading the ODBC driver when the module is imported
         LOG("Loading ODBC driver");

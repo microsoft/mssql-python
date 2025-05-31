@@ -1,11 +1,15 @@
-import logging # Add this import
+import logging 
 from mssql_python.bcp_options import (
     BCPOptions,
-)  # BCPOptions now handles more validation
-from ddbc_bindings import BCPWrapper
+)
+from ddbc_bindings import BCPWrapper 
 from mssql_python.constants import BCPControlOptions
+from typing import Optional  # Import Optional for type hints
 
 logger = logging.getLogger(__name__) # Add a logger instance
+
+# defining constants for BCP control options
+SUPPORTED_DIRECTIONS = ("in", "out")
 
 class BCPClient:
     """
@@ -13,11 +17,11 @@ class BCPClient:
     This class provides methods to initialize and execute BCP operations.
     """
 
-    def __init__(self, connection):
+    def __init__(self, connection): # connection is an instance of mssql_python.connection.Connection
         """
         Initializes the BCPClient with a database connection.
         Args:
-            connection: A database connection object that will be used by BCPWrapper.
+            connection: A mssql_python.connection.Connection object.
         """
         logger.info("Initializing BCPClient.")
         if connection is None:
@@ -25,10 +29,17 @@ class BCPClient:
             raise ValueError(
                 "A valid connection object is required to initialize BCPClient."
             )
-        self.wrapper = BCPWrapper(connection)
+        
+        # Access the underlying C++ ddbc_bindings.Connection object
+        # stored in the _conn attribute of your Python Connection wrapper.
+        if not hasattr(connection, '_conn'):
+            logger.error("The provided Python connection object does not have the expected '_conn' attribute.")
+            raise TypeError("The Python Connection object is missing the '_conn' attribute holding the native C++ connection.")
+
+        self.wrapper = BCPWrapper(connection._conn)
         logger.info("BCPClient initialized successfully.")
 
-    def run_bcp(self, table: str, options: BCPOptions):  # options is no longer Optional
+    def sql_bulk_copy(self, table: str, options: BCPOptions):  # options is no longer Optional
         """
         Executes a bulk copy operation to or from a specified table or using a query.
 
@@ -42,9 +53,9 @@ class BCPClient:
             TypeError: If 'options' is not an instance of BCPOptions.
             RuntimeError: If the BCPWrapper was not initialized.
         """
-        logger.info(f"Starting run_bcp for table/query: '{table}', direction: '{options.direction}'.")
+        logger.info(f"Starting sql_bulk_copy for table/query: '{table}', direction: '{options.direction}'.")
         if not table:
-            logger.error("Validation failed: 'table' (or query) not provided for run_bcp.")
+            logger.error("Validation failed: 'table' (or query) not provided for sql_bulk_copy.")
             raise ValueError(
                 "The 'table' name (or query for queryout) must be provided."
             )
@@ -56,10 +67,10 @@ class BCPClient:
 
         # BCPOptions.__post_init__ has already performed its internal validation.
         # BCPClient can add its own operational constraints:
-        if options.direction not in BCPControlOptions.SUPPORTED_DIRECTIONS:
-            logger.error(f"Validation failed: Unsupported BCP direction '{options.direction}'. Supported: {BCPControlOptions.SUPPORTED_DIRECTIONS}")
+        if options.direction not in SUPPORTED_DIRECTIONS:
+            logger.error(f"Validation failed: Unsupported BCP direction '{options.direction}'. Supported: {SUPPORTED_DIRECTIONS}")
             raise ValueError(
-                f"BCPClient currently only supports directions: {', '.join(BCPControlOptions.SUPPORTED_DIRECTIONS)}. "
+                f"BCPClient currently only supports directions: {', '.join(SUPPORTED_DIRECTIONS)}. "
                 f"Got '{options.direction}'."
             )
 
@@ -67,7 +78,7 @@ class BCPClient:
         logger.debug(f"Using BCPOptions: {current_options}")
 
         if not self.wrapper:  # Should be caught by __init__ ideally
-            logger.error("BCPWrapper was not initialized before calling run_bcp.")
+            logger.error("BCPWrapper was not initialized before calling sql_bulk_copy.")
             raise RuntimeError("BCPWrapper was not initialized.")
 
         try:
@@ -124,19 +135,38 @@ class BCPClient:
                 self.wrapper.bcp_control(
                     BCPControlOptions.HINTS.value, current_options.hints
                 )
-            if (
-                current_options.columns
-                and current_options.columns[0].row_terminator is not None
-            ):  # Check if columns list is not empty
-                logger.debug(f"Setting BCPControlOptions.SET_ROW_TERMINATOR to '{current_options.columns[0].row_terminator}'")
-                self.wrapper.bcp_control(
-                    BCPControlOptions.SET_ROW_TERMINATOR.value,
-                    current_options.columns[0].row_terminator,
-                )
+            # if (
+            #     current_options.columns
+            #     and current_options.columns[0].row_terminator is not None
+            # ):  # Check if columns list is not empty
+            #     logger.debug(f"Setting BCPControlOptions.SET_ROW_TERMINATOR to '{current_options.columns[0].row_terminator}'")
+            #     self.wrapper.bcp_control(
+            #         BCPControlOptions.SET_ROW_TERMINATOR.value,
+            #         current_options.columns[0].row_terminator,
+            #     )
 
             if current_options.bulk_mode:
                 logger.debug(f"Setting bulk mode to '{current_options.bulk_mode}'")
-                self.wrapper.set_bulk_mode(current_options.bulk_mode)
+                field_term_bytes: Optional[bytes] = None
+                row_term_bytes: Optional[bytes] = None
+
+                if current_options.columns: # Check if the list is not empty
+                    # Use the field terminator from the first column as a default for the file
+                    if current_options.columns[0].field_terminator is not None:
+                        field_term_bytes = current_options.columns[0].field_terminator
+                    
+                    # Find the row terminator from any column that defines it
+                    # Often, it's defined on the last column's ColumnFormat object
+                    for col_fmt in current_options.columns:
+                        if col_fmt.row_terminator is not None:
+                            row_term_bytes = col_fmt.row_terminator
+                            break # Use the first one found
+                
+                self.wrapper.set_bulk_mode(
+                    current_options.bulk_mode,
+                    field_terminator=field_term_bytes, 
+                    row_terminator=row_term_bytes
+                )
 
             # Handle format file or column definitions
             if current_options.format_file:
@@ -147,15 +177,14 @@ class BCPClient:
                 logger.info(f"Defining {len(current_options.columns)} columns programmatically.")
                 self.wrapper.define_columns(len(current_options.columns))
                 for i, col_format_obj in enumerate(current_options.columns):
-                    logger.debug(f"Defining column {i+1}: {col_format_obj}")
+                    logger.debug(f"Defining column format for file column {col_format_obj.file_col}: {col_format_obj}")
                     self.wrapper.define_column_format(
-                        col_num_ordinal=i + 1,
-                        prefix_len=col_format_obj.prefix_len,
-                        data_len=col_format_obj.data_len,
-                        terminator_wstr=col_format_obj.field_terminator,
-                        col_name=col_format_obj.col_name,
-                        server_col=col_format_obj.server_col,
-                        file_col=col_format_obj.file_col,
+                        file_col_idx=col_format_obj.file_col,
+                        user_data_type=col_format_obj.user_data_type, # New field from ColumnFormat
+                        indicator_length=col_format_obj.prefix_len,
+                        user_data_length=col_format_obj.data_len,
+                        terminator_bytes=col_format_obj.field_terminator, # Pass bytes directly
+                        server_col_idx=col_format_obj.server_col
                     )
             else:
                 logger.info("No format file or explicit column definitions provided. Relying on BCP defaults or server types.")
@@ -174,4 +203,4 @@ class BCPClient:
                 self.wrapper.finish()
                 self.wrapper.close()
                 logger.debug("BCPWrapper finished and closed.")
-            logger.info(f"run_bcp for table/query: '{table}' completed.")
+            logger.info(f"sql_bulk_copy for table/query: '{table}' completed.")
