@@ -19,8 +19,8 @@ SqlHandlePtr Connection::_envHandle = nullptr;
 // This class wraps low-level ODBC operations like connect/disconnect,
 // transaction control, and autocommit configuration.
 //-------------------------------------------------------------------------------------------------
-Connection::Connection(const std::wstring& conn_str, bool autocommit)
-    : _connStr(conn_str) , _autocommit(autocommit) {
+Connection::Connection(const std::wstring& conn_str, bool autocommit, bool use_pooling)
+    : _connStr(conn_str) , _autocommit(autocommit), _usePool(use_pooling) {
     if (!_envHandle) {
         LOG("Allocating environment handle");
         SQLHANDLE env = nullptr;

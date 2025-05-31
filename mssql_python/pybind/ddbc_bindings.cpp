@@ -1958,7 +1958,9 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle");
     py::class_<Connection>(m, "Connection")
-        .def(py::init<const std::wstring&, bool>(), py::arg("conn_str"), py::arg("autocommit") = false)
+        .def(py::init<const std::wstring&, bool, bool>(), py::arg("conn_str"), py::arg("autocommit") = false, py::arg("use_pooling") = false,
+             "Create a new connection with the given connection string, "
+             "autocommit mode, and pooling option")
         .def("connect", &Connection::connect)
         .def("close", &Connection::disconnect, "Close the connection")
         .def("commit", &Connection::commit, "Commit the current transaction")
