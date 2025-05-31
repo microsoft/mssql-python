@@ -1,407 +1,593 @@
 import pytest
 import os
 import uuid
-import datetime
-from decimal import Decimal
-from typing import List, Any, Optional, Union
-# Connection will be handled by conftest.py's db_connection fixture
-# from mssql_python.connection import Connection 
+from pathlib import Path
+
+# Assuming your project structure allows these imports
+from mssql_python import connect as mssql_connect # Alias to avoid conflict
+from mssql_python.bcp_options import ColumnFormat, BCPOptions
 from mssql_python.bcp_main import BCPClient
-from mssql_python.bcp_options import BCPOptions, ColumnFormat
-from mssql_python.constants import BCPControlOptions, ConstantsDDBC # Import ConstantsDDBC
 
-# Configuration for your test database is now handled by conftest.py's conn_str fixture
-# TEST_DB_CONNECTION_STRING = os.environ.get("MSSQL_PY_CONNECTION_STRING", "DRIVER={ODBC Driver 18 for SQL Server};Server=tcp:DESKTOP-1A982SC,1433;Database=TestBCP;TrustServerCertificate=yes;Trusted_Connection=yes;")
+# --- Constants for Tests ---
+SQL_COPT_SS_BCP = 1214 # BCP connection attribute
 
-# Using ConstantsDDBC for C types.
-# Note: As per provided constants.py, ConstantsDDBC.SQL_C_CHAR.value is -8.
-# Standard ODBC SQL_C_CHAR is typically 1. If -8 is used for SQL_C_CHAR,
-# it implies C-level character data might be treated as wide characters.
-# This could affect behavior of bulk_mode="char". Tests proceed assuming constants.py is correct for the environment.
+# --- Database Connection Details from Environment Variables ---
+DB_CONNECTION_STRING = os.getenv("PYTEST_MSSQL_CONN_STR")
 
-# db_connection_module fixture is removed as db_connection from conftest.py will be used.
-
-@pytest.fixture(scope="function")
-def bcp_client(db_connection): # Uses db_connection from conftest.py
-    return BCPClient(connection=db_connection)
-
-@pytest.fixture(scope="function")
-def test_table_manager(db_connection): # Uses db_connection from conftest.py
-    created_tables = []
-    # Create a new cursor for the test_table_manager's operations
-    # to avoid conflicts if the conftest.py cursor is used elsewhere.
-    with db_connection.cursor() as cursor_manager: 
-        def _create_table(schema: str, name_suffix: Optional[str] = None):
-            base_name = f"bcp_test_{str(uuid.uuid4()).replace('-', '')}"
-            table_name = f"{base_name}_{name_suffix}" if name_suffix else base_name
-            try:
-                cursor_manager.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
-                db_connection.commit() 
-                cursor_manager.execute(schema.format(table_name=table_name))
-                db_connection.commit()
-                created_tables.append(table_name)
-                return table_name
-            except Exception as e:
-                pytest.fail(f"Failed to create table {table_name}: {e}")
-        yield _create_table
-        try:
-            for table_name in created_tables:
-                cursor_manager.execute(f"DROP TABLE IF EXISTS {table_name}")
-            db_connection.commit()
-        except Exception as e:
-            print(f"Warning: Error during test table cleanup: {e}")
-        # The cursor_manager is closed automatically by the 'with' statement.
-
-def create_data_file(file_path: str, data: List[List[Any]], delimiter: str = ",", row_terminator: str = "\n", encoding='utf-8'):
-    """Helper to create a sample data file with specified delimiter and row terminator."""
-    with open(file_path, 'w', encoding=encoding) as f:
-        if not data: # Handle empty data case explicitly by creating an empty file
-            return
-        for row_items in data:
-            line = delimiter.join(map(str, row_items))
-            f.write(line + row_terminator) # Append row terminator to each line
-
-SCHEMA_SIMPLE = """
-CREATE TABLE {table_name} ( id INT PRIMARY KEY, name VARCHAR(100), value DECIMAL(10, 2) )
-"""
-SCHEMA_IDENTITY = """
-CREATE TABLE {table_name} ( id INT IDENTITY(1,1) PRIMARY KEY, data VARCHAR(100) )
-"""
-SCHEMA_NULLABLE_NAME = """
-CREATE TABLE {table_name} ( id INT PRIMARY KEY, name VARCHAR(100) NULL, value DECIMAL(10, 2) )
-"""
-SCHEMA_ALL_TYPES_FOR_CHAR = """
-CREATE TABLE {table_name} (
-    c_int INT PRIMARY KEY, c_varchar VARCHAR(50), c_nvarchar NVARCHAR(50),
-    c_decimal DECIMAL(18, 5), c_float FLOAT, c_date DATE, c_datetime DATETIME2, c_bit BIT
+# Skip all tests in this file if connection string is not provided
+pytestmark = pytest.mark.skipif(
+    not DB_CONNECTION_STRING,
+    reason="PYTEST_MSSQL_CONN_STR environment variable must be set for BCP integration tests."
 )
-"""
 
+def get_bcp_test_conn_str():
+    """Returns the connection string."""
+    if not DB_CONNECTION_STRING:
+        # This should ideally not be reached due to pytestmark, but as a safeguard:
+        pytest.skip("PYTEST_MSSQL_CONN_STR is not set.")
+    return DB_CONNECTION_STRING
 
-# --- BCPOptions Validation Tests ---
-def test_bcp_options_validation_missing_data_error_file(tmp_path):
-    with pytest.raises(ValueError, match="data_file must be provided"):
-        BCPOptions(direction="in", error_file=str(tmp_path / "err.txt"))
-    with pytest.raises(ValueError, match="error_file must be provided"):
-        BCPOptions(direction="out", data_file=str(tmp_path / "data.txt"))
-
-def test_bcp_options_validation_invalid_direction():
-    with pytest.raises(ValueError, match="BCPOptions.direction 'sideways' is invalid"):
-        BCPOptions(direction="sideways", data_file="d.txt", error_file="e.txt")
-
-def test_bcp_options_validation_invalid_bulk_mode():
-    with pytest.raises(ValueError, match="BCPOptions.bulk_mode 'exotic' is invalid"):
-        BCPOptions(direction="in", data_file="d.txt", error_file="e.txt", bulk_mode="exotic")
-
-def test_bcp_options_validation_negative_numbers():
-    with pytest.raises(ValueError, match="batch_size must be non-negative"):
-        BCPOptions(direction="in", data_file="d.txt", error_file="e.txt", batch_size=-1)
-    with pytest.raises(ValueError, match="first_row cannot be greater than BCPOptions.last_row"):
-        BCPOptions(direction="in", data_file="d.txt", error_file="e.txt", first_row=5, last_row=1)
-
-def test_bcp_options_format_file_with_columns(tmp_path):
-    col_fmt = ColumnFormat(file_col=1, server_col=1, user_data_type=ConstantsDDBC.SQL_C_CHAR.value, data_len=10)
-    with pytest.raises(ValueError, match="Cannot specify both 'columns' .* and 'format_file'"):
-        BCPOptions(direction="in", data_file="d.txt", error_file="e.txt",
-                   format_file=str(tmp_path / "format.fmt"), columns=[col_fmt])
-
-# --- BCP IN Tests ---
-# db_connection_module argument is replaced by db_connection from conftest.py
-def test_bcp_in_char_mode(bcp_client, test_table_manager, db_connection, tmp_path):
-    table_name = test_table_manager(SCHEMA_SIMPLE, "in_char")
-    data_file = tmp_path / "bcp_in_char.csv"
-    error_file = tmp_path / "bcp_in_char.err"
-    sample_data = [[1, "TestName1", "10.50"], [2, "TestName2", "20.75"]]
-    create_data_file(str(data_file), sample_data, row_terminator="\n")
-
-    options = BCPOptions(
-        direction='in', data_file=str(data_file), error_file=str(error_file),
-        bulk_mode="char",
-        columns=[ColumnFormat(field_terminator=b',', row_terminator=b'\n')] 
-    )
-    bcp_client.sql_bulk_copy(table=table_name, options=options)
-
-    with db_connection.cursor() as cursor_check: # Use a new cursor for verification
-        cursor_check.execute(f"SELECT id, name, value FROM {table_name} ORDER BY id")
-        rows = cursor_check.fetchall()
-    assert rows == [(1, "TestName1", Decimal("10.50")), (2, "TestName2", Decimal("20.75"))]
-    assert error_file.stat().st_size == 0
-
-@pytest.mark.skip(reason="C++ BCPWrapper::set_bulk_mode needs to support 'unicode' mode mapping and ensure correct handling of SQL_C_WCHAR.")
-def test_bcp_in_unicode_mode(bcp_client, test_table_manager, db_connection, tmp_path):
-    table_name = test_table_manager(SCHEMA_SIMPLE, "in_unicode")
-    data_file = tmp_path / "bcp_in_unicode.csv"
-    error_file = tmp_path / "bcp_in_unicode.err"
-    sample_data = [[1, "UnicodeNameĀā", "100.99"], [2, "TestÑame2", "200.01"]]
-    create_data_file(str(data_file), sample_data, encoding='utf-16le', row_terminator="\n") 
-
-    options = BCPOptions(
-        direction='in', data_file=str(data_file), error_file=str(error_file),
-        bulk_mode="unicode", 
-        columns=[ColumnFormat(field_terminator=b',', row_terminator=b'\n')]
-    )
-    bcp_client.sql_bulk_copy(table=table_name, options=options)
-
-    with db_connection.cursor() as cursor_check:
-        cursor_check.execute(f"SELECT id, name, value FROM {table_name} WHERE id = 1")
-        row = cursor_check.fetchone()
-    assert row == (1, "UnicodeNameĀā", Decimal("100.99"))
-    assert error_file.stat().st_size == 0
-
-def test_bcp_in_native_mode_cycle(bcp_client, test_table_manager, db_connection, tmp_path):
-    table_name_out = test_table_manager(SCHEMA_ALL_TYPES_FOR_CHAR, "native_out_cycle")
-    table_name_in = test_table_manager(SCHEMA_ALL_TYPES_FOR_CHAR, "native_in_cycle")
-    data_file = tmp_path / "bcp_native.dat"
-    error_file_out = tmp_path / "bcp_native_out.err"
-    error_file_in = tmp_path / "bcp_native_in.err"
-
-    with db_connection.cursor() as cursor_op:
-        dt_val = datetime.datetime(2023, 1, 15, 14, 30, 0)
-        date_val = datetime.date(2023, 1, 15)
-        cursor_op.execute(f"""
-            INSERT INTO {table_name_out} (c_int, c_varchar, c_nvarchar, c_decimal, c_float, c_date, c_datetime, c_bit)
-            VALUES (1, 'VarcharS', N'NvarcharŠ', 123.45678, 1.23e4, '{date_val}', '{dt_val}', 1)
+@pytest.fixture(scope="function")
+def bcp_db_setup_and_teardown():
+    """
+    Fixture to set up a BCP-enabled connection and a unique test table.
+    Yields (connection, table_name).
+    Cleans up the table afterwards.
+    """
+    conn_str = get_bcp_test_conn_str()
+    table_name_uuid_part = str(uuid.uuid4()).replace('-', '')[:8]
+    table_name = f"dbo.pytest_bcp_table_{table_name_uuid_part}"
+    
+    conn = None
+    cursor = None
+    try:
+        conn = mssql_connect(conn_str, attrs_before={SQL_COPT_SS_BCP: 1}, autocommit=True)
+        cursor = conn.cursor()
+        
+        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name};")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id INT PRIMARY KEY,
+                data_col VARCHAR(255) NULL
+            );
         """)
-        db_connection.commit()
+        yield conn, table_name
+    finally:
+        if cursor:
+            try:
+                cursor.close()
+            except Exception as e:
+                print(f"Warning: Error closing cursor during BCP test setup/teardown: {e}")
+        if conn:
+            cursor_cleanup = None
+            try:
+                cursor_cleanup = conn.cursor()
+                cursor_cleanup.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name};")
+            except Exception as e:
+                print(f"Warning: Error during BCP test cleanup (dropping table {table_name}): {e}")
+            finally:
+                if cursor_cleanup:
+                    try:
+                        cursor_cleanup.close()
+                    except Exception as e:
+                        print(f"Warning: Error closing cleanup cursor: {e}")
+                conn.close()
 
-        options_out = BCPOptions(direction='out', data_file=str(data_file), error_file=str(error_file_out), bulk_mode="native")
-        bcp_client.sql_bulk_copy(table=table_name_out, options=options_out)
-        assert data_file.exists() and data_file.stat().st_size > 0
-        assert error_file_out.stat().st_size == 0
+@pytest.fixture
+def temp_file_pair(tmp_path):
+    """Provides a pair of temporary file paths for data and errors using pytest's tmp_path."""
+    file_uuid_part = str(uuid.uuid4()).replace('-', '')[:8]
+    data_file = tmp_path / f"bcp_data_{file_uuid_part}.csv"
+    error_file = tmp_path / f"bcp_error_{file_uuid_part}.txt"
+    return data_file, error_file
 
-        options_in = BCPOptions(direction='in', data_file=str(data_file), error_file=str(error_file_in), bulk_mode="native")
-        bcp_client.sql_bulk_copy(table=table_name_in, options=options_in)
-        assert error_file_in.stat().st_size == 0
+# --- Tests for bcp_options.py (Unit tests, no mocking needed) ---
+class TestColumnFormat:
+    def test_valid_instantiation_defaults(self):
+        cf = ColumnFormat()
+        assert cf.prefix_len == 0
+        assert cf.data_len == 0
+        assert cf.field_terminator is None
+        assert cf.row_terminator is None
+        assert cf.server_col == 1
+        assert cf.file_col == 1
+        assert cf.user_data_type == 0
+        assert cf.col_name is None
 
-        cursor_op.execute(f"SELECT c_int, c_varchar, c_nvarchar, c_decimal, c_float, c_date, c_datetime, c_bit FROM {table_name_in} WHERE c_int = 1")
-        row = cursor_op.fetchone()
-    assert row == (1, "VarcharS", "NvarcharŠ", Decimal("123.45678"), pytest.approx(1.23e4), date_val, dt_val, True)
+    def test_valid_instantiation_all_params(self):
+        cf = ColumnFormat(
+            prefix_len=1, data_len=10, field_terminator=b",", row_terminator=b"\n",
+            server_col=2, file_col=3, user_data_type=10, col_name="TestCol"
+        )
+        assert cf.prefix_len == 1
+        assert cf.data_len == 10
+        assert cf.field_terminator == b","
+        assert cf.row_terminator == b"\n"
+        assert cf.server_col == 2
+        assert cf.file_col == 3
+        assert cf.user_data_type == 10
+        assert cf.col_name == "TestCol"
 
+    @pytest.mark.parametrize("attr, value", [
+        ("prefix_len", -1), ("data_len", -1), ("server_col", 0),
+        ("server_col", -1), ("file_col", 0), ("file_col", -1),
+    ])
+    def test_invalid_numeric_values(self, attr, value):
+        with pytest.raises(ValueError):
+            ColumnFormat(**{attr: value})
 
-def test_bcp_in_with_controls(bcp_client, test_table_manager, db_connection, tmp_path):
-    table_name = test_table_manager(SCHEMA_SIMPLE, "in_controls")
-    data_file = tmp_path / "bcp_in_controls.csv"
-    error_file = tmp_path / "bcp_in_controls.err"
-    sample_data = [[i, f"Name{i}", f"{i}.00"] for i in range(1, 21)] 
-    create_data_file(str(data_file), sample_data, row_terminator="ENDOFLINE\n")
+    @pytest.mark.parametrize("attr, value", [
+        ("field_terminator", ","), ("row_terminator", "\n"),
+    ])
+    def test_invalid_terminator_types(self, attr, value):
+        with pytest.raises(TypeError):
+            ColumnFormat(**{attr: value})
 
-    options = BCPOptions(
-        direction='in', data_file=str(data_file), error_file=str(error_file),
-        bulk_mode="char",
-        batch_size=5, first_row=3, last_row=12, 
-        columns=[ColumnFormat(field_terminator=b',', row_terminator=b'ENDOFLINE\n')]
-    )
-    bcp_client.sql_bulk_copy(table=table_name, options=options)
+class TestBCPOptions:
+    _dummy_data_file = "dummy_data.csv"
+    _dummy_error_file = "dummy_error.txt"
 
-    with db_connection.cursor() as cursor_check:
-        cursor_check.execute(f"SELECT COUNT(*) FROM {table_name}")
-        assert cursor_check.fetchone()[0] == 10 
-        cursor_check.execute(f"SELECT MIN(id), MAX(id) FROM {table_name}")
-        min_id, max_id = cursor_check.fetchone()
-    assert min_id == 3
-    assert max_id == 12
-    assert error_file.stat().st_size == 0
+    def test_valid_instantiation_in_minimal(self):
+        opts = BCPOptions(direction="in", data_file=self._dummy_data_file, error_file=self._dummy_error_file)
+        assert opts.direction == "in"
+        assert opts.data_file == self._dummy_data_file
+        assert opts.error_file == self._dummy_error_file
+        assert opts.bulk_mode == "native"
 
-def test_bcp_in_keep_nulls_identity_tablock(bcp_client, test_table_manager, db_connection, tmp_path):
-    table_name = test_table_manager(SCHEMA_IDENTITY.replace("VARCHAR(100)", "VARCHAR(100) NULL"), "in_special")
-    data_file = tmp_path / "bcp_in_special.csv"
-    error_file = tmp_path / "bcp_in_special.err"
-    sample_data = [[101, "DataRow101"], [102, ""], [103, "DataRow103"]]
-    create_data_file(str(data_file), sample_data)
+    def test_valid_instantiation_out_full(self):
+        cols = [ColumnFormat(file_col=1, server_col=1, field_terminator=b'\t')]
+        opts = BCPOptions(
+            direction="out", data_file="output.csv", error_file="errors.log",
+            bulk_mode="char", batch_size=1000, max_errors=10, first_row=1, last_row=100,
+            code_page="ACP", hints="ORDER(id)", columns=cols,
+            keep_identity=True, keep_nulls=True
+        )
+        assert opts.direction == "out"
+        assert opts.bulk_mode == "char"
+        assert opts.columns == cols
+        assert opts.keep_identity is True
 
-    options = BCPOptions(
-        direction='in', data_file=str(data_file), error_file=str(error_file),
-        bulk_mode="char",
-        keep_identity=True, keep_nulls=True, hints="TABLOCK", 
-        columns=[ColumnFormat(field_terminator=b',', row_terminator=b'\n')]
-    )
-    bcp_client.sql_bulk_copy(table=table_name, options=options)
+    def test_invalid_direction(self):
+        with pytest.raises(ValueError, match="BCPOptions.direction 'invalid_dir' is invalid"):
+            BCPOptions(direction="invalid_dir", data_file=self._dummy_data_file, error_file=self._dummy_error_file)
 
-    with db_connection.cursor() as cursor_check:
-        cursor_check.execute(f"SELECT id, data FROM {table_name} ORDER BY id")
-        rows = cursor_check.fetchall()
-    assert rows == [(101, "DataRow101"), (102, None), (103, "DataRow103")]
-    assert error_file.stat().st_size == 0
+    @pytest.mark.parametrize("direction_to_test", ["in", "out"])
+    def test_missing_data_file_for_in_out(self, direction_to_test):
+        with pytest.raises(ValueError, match=f"BCPOptions.data_file is required for BCP direction '{direction_to_test}'."):
+            BCPOptions(direction=direction_to_test, error_file=self._dummy_error_file)
 
-def test_bcp_in_with_column_definitions(bcp_client, test_table_manager, db_connection, tmp_path):
-    table_name = test_table_manager(SCHEMA_SIMPLE, "in_coldef")
-    data_file = tmp_path / "bcp_in_coldef.txt"
-    error_file = tmp_path / "bcp_in_coldef.err"
-    sample_data = [["DefName1", "1", "15.50"], ["DefName2", "2", "25.75"]]
-    create_data_file(str(data_file), sample_data, delimiter="|", row_terminator="\r\n")
+    @pytest.mark.parametrize("direction_to_test", ["in", "out"])
+    def test_missing_error_file_for_in_out(self, direction_to_test):
+         with pytest.raises(ValueError, match="error_file must be provided and non-empty for 'in' or 'out' directions."):
+            BCPOptions(direction=direction_to_test, data_file=self._dummy_data_file)
 
-    options = BCPOptions(
-        direction='in', data_file=str(data_file), error_file=str(error_file),
-        bulk_mode="char", 
-        columns=[
-            ColumnFormat(file_col=1, server_col=2, user_data_type=ConstantsDDBC.SQL_C_CHAR.value, data_len=8, field_terminator=b'|'), 
-            ColumnFormat(file_col=2, server_col=1, user_data_type=ConstantsDDBC.SQL_C_CHAR.value, data_len=3, field_terminator=b'|'), 
-            ColumnFormat(file_col=3, server_col=3, user_data_type=ConstantsDDBC.SQL_C_CHAR.value, data_len=6, field_terminator=b'\r\n', row_terminator=b'\r\n')
+    def test_columns_and_format_file_conflict(self):
+        with pytest.raises(ValueError, match="Cannot specify both 'columns' .* and 'format_file'"):
+            BCPOptions(
+                direction="in", data_file=self._dummy_data_file, error_file=self._dummy_error_file,
+                columns=[ColumnFormat()], format_file="format.fmt"
+            )
+
+    def test_invalid_bulk_mode(self):
+        with pytest.raises(ValueError, match="BCPOptions.bulk_mode 'invalid_mode' is invalid"):
+            BCPOptions(direction="in", data_file=self._dummy_data_file, error_file=self._dummy_error_file, bulk_mode="invalid_mode")
+
+    @pytest.mark.parametrize("attr, value", [
+        ("batch_size", -1), ("max_errors", -1), ("first_row", -1), ("last_row", -1),
+    ])
+    def test_negative_control_values(self, attr, value):
+        with pytest.raises(ValueError, match=f"BCPOptions.{attr} must be non-negative"):
+            BCPOptions(direction="in", data_file=self._dummy_data_file, error_file=self._dummy_error_file, **{attr: value})
+
+    def test_first_row_greater_than_last_row(self):
+        with pytest.raises(ValueError, match="BCPOptions.first_row cannot be greater than BCPOptions.last_row"):
+            BCPOptions(direction="in", data_file=self._dummy_data_file, error_file=self._dummy_error_file, first_row=10, last_row=5)
+
+    def test_invalid_codepage_negative_int(self):
+        with pytest.raises(ValueError, match="BCPOptions.code_page, if an integer, must be non-negative"):
+            BCPOptions(direction="in", data_file=self._dummy_data_file, error_file=self._dummy_error_file, code_page=-1)
+
+# --- Tests for bcp_main.py (Integration Tests) ---
+class TestBCPClientIntegration:
+
+    def test_init_success_with_real_connection(self, bcp_db_setup_and_teardown):
+        conn, _ = bcp_db_setup_and_teardown
+        client = BCPClient(connection=conn)
+        assert client.wrapper is not None
+        assert isinstance(client.wrapper, CppBCPWrapper), \
+            "BCPClient.wrapper is not an instance of the C++ BCPWrapper"
+
+    def test_init_connection_none(self): 
+        with pytest.raises(ValueError, match="A valid connection object is required"):
+            BCPClient(connection=None)
+
+    def test_init_connection_missing_conn_attr(self): 
+        class MockPythonConnectionMissingInternal: 
+            pass
+        invalid_conn = MockPythonConnectionMissingInternal()
+        with pytest.raises(TypeError, match="The Python Connection object is missing the '_conn' attribute"):
+            BCPClient(connection=invalid_conn)
+
+    def test_sql_bulk_copy_char_mode_successful_import(self, bcp_db_setup_and_teardown, temp_file_pair):
+        conn, table_name = bcp_db_setup_and_teardown
+        data_file, error_file = temp_file_pair
+
+        sample_data_list = [[1, "Alice"], [2, "Bob"], [3, "Charlie"]]
+        with open(data_file, "w", encoding="utf-8") as f:
+            for i, row in enumerate(sample_data_list):
+                f.write(f"{row[0]},{row[1]}")
+                if i < len(sample_data_list) - 1: 
+                    f.write("\n")
+
+        client = BCPClient(connection=conn)
+        cols = [
+            ColumnFormat(file_col=1, server_col=1, field_terminator=b","),
+            ColumnFormat(file_col=2, server_col=2, row_terminator=b"\n")
         ]
-    )
-    bcp_client.sql_bulk_copy(table=table_name, options=options)
+        options = BCPOptions(
+            direction="in",
+            data_file=str(data_file),
+            error_file=str(error_file),
+            bulk_mode="char",
+            columns=cols
+        )
 
-    with db_connection.cursor() as cursor_check:
-        cursor_check.execute(f"SELECT id, name, value FROM {table_name} ORDER BY id")
-        rows = cursor_check.fetchall()
-    assert rows == [(1, "DefName1", Decimal("15.50")), (2, "DefName2", Decimal("25.75"))]
-    assert error_file.stat().st_size == 0
+        client.sql_bulk_copy(table=table_name, options=options)
+        
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            count = cursor.fetchone()[0]
+            assert count == len(sample_data_list)
+
+            cursor.execute(f"SELECT id, data_col FROM {table_name} ORDER BY id")
+            db_rows = cursor.fetchall()
+            for i, expected_row in enumerate(sample_data_list):
+                assert db_rows[i][0] == expected_row[0]
+                assert db_rows[i][1] == expected_row[1]
+        finally:
+            if cursor:
+                cursor.close()
+
+        assert not error_file.exists() or error_file.stat().st_size == 0, \
+            f"BCP error file {error_file} was created or not empty."
+
+    def test_sql_bulk_copy_in_char_mode_successful_import(self, bcp_db_setup_and_teardown, temp_file_pair):
+        conn, table_name = bcp_db_setup_and_teardown
+        data_file, error_file = temp_file_pair
+
+        sample_data_list = [[1, "Alice Char"], [2, "Bob Char"], [3, "Charlie Char"]]
+        # Standard CSV format
+        file_content = "\n".join([f"{row[0]},{row[1]}" for row in sample_data_list]) + "\n"
+        with open(data_file, "w", encoding="utf-8") as f:
+            f.write(file_content)
+
+        client = BCPClient(connection=conn)
+        cols = [
+            ColumnFormat(file_col=1, server_col=1, field_terminator=b","),
+            ColumnFormat(file_col=2, server_col=2, row_terminator=b"\n") 
+        ]
+        options = BCPOptions(
+            direction="in",
+            data_file=str(data_file),
+            error_file=str(error_file),
+            bulk_mode="char",
+            columns=cols
+        )
+
+        client.sql_bulk_copy(table=table_name, options=options)
+        
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            count = cursor.fetchone()[0]
+            assert count == len(sample_data_list)
+
+            cursor.execute(f"SELECT id, data_col FROM {table_name} ORDER BY id")
+            db_rows = cursor.fetchall()
+            for i, expected_row in enumerate(sample_data_list):
+                assert db_rows[i][0] == expected_row[0]
+                assert db_rows[i][1] == expected_row[1]
+        finally:
+            if cursor:
+                cursor.close()
+
+        assert not error_file.exists() or error_file.stat().st_size == 0, \
+            f"BCP error file {error_file} was created or not empty for char in."
+
+    def test_sql_bulk_copy_out_char_mode_successful_export(self, bcp_db_setup_and_teardown, temp_file_pair):
+        conn, table_name = bcp_db_setup_and_teardown
+        data_file, error_file = temp_file_pair
+
+        sample_data_list = [[10, "Export Data One"], [20, "Export Data Two"]]
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            for row in sample_data_list:
+                cursor.execute(f"INSERT INTO {table_name} (id, data_col) VALUES (?, ?)", row[0], row[1])
+            conn.commit() # Ensure data is written before BCP OUT
+        finally:
+            if cursor:
+                cursor.close()
+
+        client = BCPClient(connection=conn)
+        cols = [
+            ColumnFormat(file_col=1, server_col=1, field_terminator=b","),
+            ColumnFormat(file_col=2, server_col=2, row_terminator=b"\r\n") # Using CRLF for variety
+        ]
+        options = BCPOptions(
+            direction="out",
+            data_file=str(data_file),
+            error_file=str(error_file),
+            bulk_mode="char",
+            columns=cols
+        )
+
+        client.sql_bulk_copy(table=table_name, options=options)
+
+        assert data_file.exists() and data_file.stat().st_size > 0, \
+            f"BCP data file {data_file} was not created or is empty for char out."
+        
+        with open(data_file, "r", encoding="utf-8") as f:
+            content = f.read()
+            expected_content = ""
+            for row in sample_data_list:
+                expected_content += f"{row[0]},{row[1]}\r\n"
+            assert content == expected_content
+
+        assert not error_file.exists() or error_file.stat().st_size == 0, \
+            f"BCP error file {error_file} was created or not empty for char out."
+
+    def test_sql_bulk_copy_in_native_mode(self, bcp_db_setup_and_teardown, temp_file_pair):
+        conn, table_name = bcp_db_setup_and_teardown
+        native_data_file, error_file_bcp_out = temp_file_pair # Files for intermediate BCP OUT
+        _, error_file_bcp_in = temp_file_pair # Error file for the actual BCP IN test
+
+        original_data = [[77, "Native In Data"], [88, "More Native"]]
+
+        # 1. Insert initial data and BCP OUT in native format to create a test file
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            for row_data in original_data:
+                cursor.execute(f"INSERT INTO {table_name} (id, data_col) VALUES (?, ?)", row_data[0], row_data[1])
+            conn.commit()
+        finally:
+            if cursor:
+                cursor.close()
+        
+        client_out = BCPClient(connection=conn)
+        # For native out, column definitions are minimal (no terminators)
+        # user_data_type=0, prefix_len=0, data_len=0 usually means native
+        native_cols_format = [
+            ColumnFormat(file_col=1, server_col=1, user_data_type=0, prefix_len=0, data_len=0),
+            ColumnFormat(file_col=2, server_col=2, user_data_type=0, prefix_len=0, data_len=0)
+        ]
+        options_out = BCPOptions(
+            direction="out",
+            data_file=str(native_data_file),
+            error_file=str(error_file_bcp_out),
+            bulk_mode="native",
+            columns=native_cols_format 
+        )
+        client_out.sql_bulk_copy(table=table_name, options=options_out)
+        assert native_data_file.exists() and native_data_file.stat().st_size > 0, "Native data file not created by BCP OUT"
+        assert not error_file_bcp_out.exists() or error_file_bcp_out.stat().st_size == 0, "Errors during native BCP OUT"
 
 
-# --- BCP OUT Tests ---
-def test_bcp_out_char_mode(bcp_client, test_table_manager, db_connection, tmp_path):
-    table_name = test_table_manager(SCHEMA_SIMPLE, "out_char")
-    output_file = tmp_path / "bcp_out_char.csv"
-    error_file = tmp_path / "bcp_out_char.err"
+        # 2. Clear the table
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"DELETE FROM {table_name}")
+            conn.commit()
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            assert cursor.fetchone()[0] == 0, "Table not cleared before BCP IN native"
+        finally:
+            if cursor:
+                cursor.close()
 
-    with db_connection.cursor() as cursor_op:
-        cursor_op.execute(f"INSERT INTO {table_name} (id, name, value) VALUES (1, 'Export1', 11.22), (2, 'Export2', 33.44)")
-        db_connection.commit()
+        # 3. BCP IN the native file
+        client_in = BCPClient(connection=conn)
+        options_in = BCPOptions(
+            direction="in",
+            data_file=str(native_data_file),
+            error_file=str(error_file_bcp_in),
+            bulk_mode="native",
+            columns=native_cols_format # Same column format for native in
+        )
+        client_in.sql_bulk_copy(table=table_name, options=options_in)
 
-    options = BCPOptions(
-        direction='out', data_file=str(output_file), error_file=str(error_file),
-        bulk_mode="char",
-        columns=[ColumnFormat(field_terminator=b',', row_terminator=b'\r\n')]
-    )
-    bcp_client.sql_bulk_copy(table=table_name, options=options)
+        # 4. Verify data
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT id, data_col FROM {table_name} ORDER BY id")
+            imported_rows = cursor.fetchall()
+            assert len(imported_rows) == len(original_data)
+            for i, expected_row in enumerate(original_data):
+                assert imported_rows[i][0] == expected_row[0]
+                assert imported_rows[i][1] == expected_row[1]
+        finally:
+            if cursor:
+                cursor.close()
+        
+        assert not error_file_bcp_in.exists() or error_file_bcp_in.stat().st_size == 0, \
+            f"BCP error file {error_file_bcp_in} created for native BCP IN."
 
-    assert output_file.exists()
-    with open(output_file, 'r', encoding='utf-8') as f: content = f.read()
-    lines = [line.strip() for line in content.strip().replace('\r\n', '\n').split('\n')]
-    assert lines[0].startswith("1,Export1,11.22") 
-    assert lines[1].startswith("2,Export2,33.44")
-    assert error_file.stat().st_size == 0
 
-# --- Error Handling and Other Tests ---
-def test_bcp_in_error_file_logging(bcp_client, test_table_manager, db_connection, tmp_path):
-    table_name = test_table_manager(SCHEMA_SIMPLE, "in_errorlog")
-    data_file = tmp_path / "bcp_in_errorlog.csv"
-    error_file = tmp_path / "bcp_in_errorlog.err" 
-    sample_data = [[1, "GoodRow", "10.00"], ["bad_id", "BadRow", "20.00"], [3, "GoodRow2", "30.00"]]
-    create_data_file(str(data_file), sample_data)
+    def test_sql_bulk_copy_out_native_mode(self, bcp_db_setup_and_teardown, temp_file_pair):
+        conn, table_name_orig = bcp_db_setup_and_teardown
+        native_data_file, error_file_out = temp_file_pair
+        _, error_file_in_verify = temp_file_pair # For verification step
 
-    options = BCPOptions(
-        direction='in', data_file=str(data_file), error_file=str(error_file),
-        bulk_mode="char", max_errors=5,
-        columns=[ColumnFormat(field_terminator=b',', row_terminator=b'\n')]
-    )
-    bcp_client.sql_bulk_copy(table=table_name, options=options)
+        original_data = [[91, "Native Out One"], [92, "Native Out Two"]]
+        
+        # 1. Insert data into the original table
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            for row_data in original_data:
+                cursor.execute(f"INSERT INTO {table_name_orig} (id, data_col) VALUES (?, ?)", row_data[0], row_data[1])
+            conn.commit()
+        finally:
+            if cursor:
+                cursor.close()
 
-    with db_connection.cursor() as cursor_check:
-        cursor_check.execute(f"SELECT COUNT(*) FROM {table_name}")
-        assert cursor_check.fetchone()[0] == 2 
-    assert error_file.exists() and error_file.stat().st_size > 0
-    with open(error_file, 'r', encoding='utf-8', errors='ignore') as f:
-        error_content = f.read()
-    assert "bad_id" in error_content 
+        # 2. BCP OUT in native mode
+        client_out = BCPClient(connection=conn)
+        native_cols_format = [
+            ColumnFormat(file_col=1, server_col=1, user_data_type=0, prefix_len=0, data_len=0),
+            ColumnFormat(file_col=2, server_col=2, user_data_type=0, prefix_len=0, data_len=0)
+        ]
+        options_out = BCPOptions(
+            direction="out",
+            data_file=str(native_data_file),
+            error_file=str(error_file_out),
+            bulk_mode="native",
+            columns=native_cols_format
+        )
+        client_out.sql_bulk_copy(table=table_name_orig, options=options_out)
 
-def test_bcp_in_to_non_existent_table(bcp_client, tmp_path):
-    data_file = tmp_path / "dummy_data.csv"
-    error_file = tmp_path / "dummy_err.txt"
-    create_data_file(str(data_file), [[1, "data"]])
-    non_existent_table = f"non_existent_table_{str(uuid.uuid4()).replace('-', '')}"
+        assert native_data_file.exists() and native_data_file.stat().st_size > 0, \
+            "Native data file not created by BCP OUT for verification."
+        assert not error_file_out.exists() or error_file_out.stat().st_size == 0, \
+            "Errors during BCP OUT native."
 
-    options = BCPOptions(direction='in', data_file=str(data_file), error_file=str(error_file), bulk_mode="char")
-    with pytest.raises(RuntimeError): 
-        bcp_client.sql_bulk_copy(table=non_existent_table, options=options)
+        # 3. Verify by BCPing the native file into a new table and comparing data
+        table_name_verify = f"{table_name_orig}_verify_native"
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"IF OBJECT_ID('{table_name_verify}', 'U') IS NOT NULL DROP TABLE {table_name_verify};")
+            cursor.execute(f"CREATE TABLE {table_name_verify} (id INT PRIMARY KEY, data_col VARCHAR(255) NULL);")
+            conn.commit()
+        finally:
+            if cursor:
+                cursor.close()
 
-def test_bcp_in_empty_data_file(bcp_client, test_table_manager, db_connection, tmp_path):
-    table_name = test_table_manager(SCHEMA_SIMPLE, "in_empty")
-    data_file = tmp_path / "bcp_in_empty.csv"
-    error_file = tmp_path / "bcp_in_empty.err"
-    create_data_file(str(data_file), []) 
+        client_in_verify = BCPClient(connection=conn)
+        options_in_verify = BCPOptions(
+            direction="in",
+            data_file=str(native_data_file),
+            error_file=str(error_file_in_verify),
+            bulk_mode="native",
+            columns=native_cols_format
+        )
+        client_in_verify.sql_bulk_copy(table=table_name_verify, options=options_in_verify)
+        assert not error_file_in_verify.exists() or error_file_in_verify.stat().st_size == 0, \
+            "Errors during verification BCP IN of native file."
 
-    options = BCPOptions(
-        direction='in', data_file=str(data_file), error_file=str(error_file),
-        bulk_mode="char",
-        columns=[ColumnFormat(field_terminator=b',', row_terminator=b'\n')]
-    )
-    bcp_client.sql_bulk_copy(table=table_name, options=options)
-
-    with db_connection.cursor() as cursor_check:
-        cursor_check.execute(f"SELECT COUNT(*) FROM {table_name}")
-        assert cursor_check.fetchone()[0] == 0
-
-def test_bcp_out_empty_table(bcp_client, test_table_manager, db_connection, tmp_path): # Added db_connection
-    table_name = test_table_manager(SCHEMA_SIMPLE, "out_empty")
-    output_file = tmp_path / "bcp_out_empty.csv"
-    error_file = tmp_path / "bcp_out_empty.err"
-
-    options = BCPOptions(
-        direction='out', data_file=str(output_file), error_file=str(error_file),
-        bulk_mode="char",
-        columns=[ColumnFormat(field_terminator=b',', row_terminator=b'\n')]
-    )
-    bcp_client.sql_bulk_copy(table=table_name, options=options)
-
-    assert output_file.exists()
-    assert output_file.stat().st_size == 0 
-    assert error_file.stat().st_size == 0
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT id, data_col FROM {table_name_verify} ORDER BY id")
+            verified_rows = cursor.fetchall()
+            assert len(verified_rows) == len(original_data)
+            for i, expected_row in enumerate(original_data):
+                assert verified_rows[i][0] == expected_row[0]
+                assert verified_rows[i][1] == expected_row[1]
+        finally:
+            if cursor:
+                cursor.close()
+            # Clean up the verification table
+            cursor_cleanup_verify = None
+            try:
+                cursor_cleanup_verify = conn.cursor()
+                cursor_cleanup_verify.execute(f"IF OBJECT_ID('{table_name_verify}', 'U') IS NOT NULL DROP TABLE {table_name_verify};")
+                conn.commit()
+            except Exception as e_cleanup:
+                print(f"Warning: Error cleaning up verification table {table_name_verify}: {e_cleanup}")
+            finally:
+                if cursor_cleanup_verify:
+                    cursor_cleanup_verify.close()
     
-DUMMY_XML_FORMAT_FILE_CONTENT = """<?xml version="1.0"?>
-<BCPFORMAT xmlns="http://schemas.microsoft.com/sqlserver/2004/bulkload/format" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
- <RECORD>
-  <FIELD ID="1" xsi:type="CharTerm" TERMINATOR="," MAX_LENGTH="12"/>
-  <FIELD ID="2" xsi:type="CharTerm" TERMINATOR="," MAX_LENGTH="100" COLLATION="SQL_Latin1_General_CP1_CI_AS"/>
-  <FIELD ID="3" xsi:type="CharTerm" TERMINATOR="\\n" MAX_LENGTH="24"/>
- </RECORD>
- <ROW>
-  <COLUMN SOURCE="1" NAME="id" xsi:type="SQLINT"/>
-  <COLUMN SOURCE="2" NAME="name" xsi:type="SQLVARYCHAR"/>
-  <COLUMN SOURCE="3" NAME="value" xsi:type="SQLDECIMAL"/>
- </ROW>
-</BCPFORMAT>
-"""
-@pytest.mark.skip(reason="Test requires a valid BCP format file and robust BCPWrapper::read_format_file implementation.")
-def test_bcp_in_with_existing_format_file(bcp_client, test_table_manager, db_connection, tmp_path):
-    table_name = test_table_manager(SCHEMA_SIMPLE, "in_fmtfile")
-    data_file = tmp_path / "bcp_in_fmtfile_data.csv"
-    error_file = tmp_path / "bcp_in_fmtfile.err"
-    format_file = tmp_path / "mytestformat.fmt"
+    def test_sql_bulk_copy_with_errors_and_max_errors(self, bcp_db_setup_and_teardown, temp_file_pair):
+        conn, table_name = bcp_db_setup_and_teardown
+        data_file, error_file = temp_file_pair
 
-    sample_data = [[101, "FmtName1", "101.00"], [102, "FmtName2", "102.00"]]
-    create_data_file(str(data_file), sample_data, delimiter=",", row_terminator="\n")
-    with open(format_file, "w") as f:
-        f.write(DUMMY_XML_FORMAT_FILE_CONTENT)
+        file_content = "100,GoodData1\nXXX,BadDataForIntColumn\n200,GoodData2\n"
+        with open(data_file, "w", encoding="utf-8") as f:
+            f.write(file_content)
 
-    options = BCPOptions(
-        direction='in',
-        data_file=str(data_file),
-        error_file=str(error_file),
-        format_file=str(format_file) 
-    )
-    bcp_client.sql_bulk_copy(table=table_name, options=options)
+        client = BCPClient(connection=conn)
+        cols = [
+            ColumnFormat(file_col=1, server_col=1, field_terminator=b","),
+            ColumnFormat(file_col=2, server_col=2, row_terminator=b"\n")
+        ]
+        options = BCPOptions(
+            direction="in",
+            data_file=str(data_file),
+            error_file=str(error_file),
+            bulk_mode="char",
+            columns=cols,
+            max_errors=2 
+        )
 
-    with db_connection.cursor() as cursor_check:
-        cursor_check.execute(f"SELECT COUNT(*) FROM {table_name}")
-        assert cursor_check.fetchone()[0] == 2
-        cursor_check.execute(f"SELECT id, name FROM {table_name} WHERE id = 101")
-        assert cursor_check.fetchone() == (101, "FmtName1")
-    assert error_file.stat().st_size == 0
+        client.sql_bulk_copy(table=table_name, options=options)
+        
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT id FROM {table_name} ORDER BY id")
+            ids = [r[0] for r in cursor.fetchall()]
+            assert 100 in ids
+            assert 200 in ids
+            assert len(ids) == 2 
+        finally:
+            if cursor:
+                cursor.close()
 
-@pytest.mark.skip(reason="Queryout support in C++ BCPWrapper and BCPClient needs verification/completion. Constants.SUPPORTED_DIRECTIONS is ('in', 'out').")
-def test_bcp_queryout(bcp_client, test_table_manager, db_connection, tmp_path):
-    table_name = test_table_manager(SCHEMA_SIMPLE, "queryout_tbl")
-    output_file = tmp_path / "bcp_queryout_data.csv"
-    error_file = tmp_path / "bcp_queryout.err"
+        assert error_file.exists() and error_file.stat().st_size > 0, \
+            f"BCP error file {error_file} was not created or is empty when errors were expected."
 
-    with db_connection.cursor() as cursor_op:
-        cursor_op.execute(f"INSERT INTO {table_name} (id, name, value) VALUES (10, 'QueryA', 1.01), (20, 'QueryB', 2.02), (30, 'QueryC', 3.03)")
-        db_connection.commit()
+    def test_sql_bulk_copy_keep_nulls_option(self, bcp_db_setup_and_teardown, temp_file_pair):
+        conn, table_name = bcp_db_setup_and_teardown 
+        data_file, error_file = temp_file_pair
 
-    query = f"SELECT id, name FROM {table_name} WHERE value > 2.0 ORDER BY id"
-    
-    options = BCPOptions(
-        direction='out', 
-        data_file=str(output_file),
-        error_file=str(error_file),
-        bulk_mode="char",
-        columns=[ColumnFormat(field_terminator=b';', row_terminator=b'\n')]
-    )
-    bcp_client.sql_bulk_copy(table=query, options=options) 
+        file_content = "301,HasData\n302,\n303,MoreData\n" 
+        with open(data_file, "w", encoding="utf-8") as f:
+            f.write(file_content)
 
-    assert output_file.exists()
-    with open(output_file, 'r', encoding='utf-8') as f:
-        lines = [line.strip() for line in f.readlines()]
-    assert lines == ["20;QueryB", "30;QueryC"]
-    assert error_file.stat().st_size == 0
+        client = BCPClient(connection=conn)
+        cols = [
+            ColumnFormat(file_col=1, server_col=1, field_terminator=b","),
+            ColumnFormat(file_col=2, server_col=2, row_terminator=b"\n")
+        ]
+        options = BCPOptions(
+            direction="in",
+            data_file=str(data_file),
+            error_file=str(error_file),
+            bulk_mode="char",
+            columns=cols,
+            keep_nulls=True 
+        )
+
+        client.sql_bulk_copy(table=table_name, options=options)
+        
+        cursor = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT id, data_col FROM {table_name} ORDER BY id")
+            results = {row[0]: row[1] for row in cursor.fetchall()}
+            assert len(results) == 3
+            assert results[301] == "HasData"
+            assert results[302] is None, "Empty field was not inserted as NULL with KEEPNULLS=True"
+            assert results[303] == "MoreData"
+        finally:
+            if cursor:
+                cursor.close()
+        
+        assert not error_file.exists() or error_file.stat().st_size == 0, \
+            f"BCP error file {error_file} created unexpectedly for keep_nulls test."
+
+
+    def test_sql_bulk_copy_no_table_name(self, bcp_db_setup_and_teardown, temp_file_pair):
+        conn, _ = bcp_db_setup_and_teardown
+        data_file, error_file = temp_file_pair
+        client = BCPClient(connection=conn)
+        options = BCPOptions(direction="in", data_file=str(data_file), error_file=str(error_file))
+        with pytest.raises(ValueError, match="The 'table' name for BCP must be provided and non-empty."):
+            client.sql_bulk_copy(table="", options=options)

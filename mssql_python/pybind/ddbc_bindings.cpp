@@ -612,12 +612,12 @@ std::wstring LoadDriverOrThrowException() {
 
     // Load BCP functions
     BCPInitW_ptr = (BCPInitWFunc)GetProcAddress(hModule, "bcp_initW");
-    BCPControlW_ptr = (BCPControlWFunc)GetProcAddress(hModule, "bcp_controlW");
-    BCPControlA_ptr = (BCPControlAFunc)GetProcAddress(hModule, "bcp_controlA");
+    BCPControlW_ptr = (BCPControlWFunc)GetProcAddress(hModule, "bcp_control");
+    BCPControlA_ptr = (BCPControlAFunc)GetProcAddress(hModule, "bcp_control");
     BCPSetBulkMode_ptr = (BCPSetBulkModeFunc)GetProcAddress(hModule, "bcp_setbulkmode");
     BCPReadFmtW_ptr = (BCPReadFmtWFunc)GetProcAddress(hModule, "bcp_readfmtW");
     BCPColumns_ptr = (BCPColumnsFunc)GetProcAddress(hModule, "bcp_columns");
-    BCPColFmtW_ptr = (BCPColFmtWFunc)GetProcAddress(hModule, "bcp_colfmtW");
+    BCPColFmtW_ptr = (BCPColFmtWFunc)GetProcAddress(hModule, "bcp_colfmt");
     BCPExec_ptr = (BCPExecFunc)GetProcAddress(hModule, "bcp_exec");
     BCPDone_ptr = (BCPDoneFunc)GetProcAddress(hModule, "bcp_done");
    
@@ -1992,18 +1992,22 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("bcp_initialize_operation", &BCPWrapper::bcp_initialize_operation)
         .def("bcp_control", static_cast<SQLRETURN (BCPWrapper::*)(const std::wstring&, int)>(&BCPWrapper::bcp_control))
         .def("bcp_control", static_cast<SQLRETURN (BCPWrapper::*)(const std::wstring&, const std::wstring&)>(&BCPWrapper::bcp_control))
-        .def("set_bulk_mode", &BCPWrapper::set_bulk_mode)
+        .def("set_bulk_mode", &BCPWrapper::set_bulk_mode,
+             py::arg("mode"),
+             py::arg("field_terminator") = std::nullopt, // pybind11 handles std::optional<py::bytes>
+             py::arg("row_terminator") = std::nullopt)   // pybind11 handles std::optional<py::bytes>
         .def("read_format_file", &BCPWrapper::read_format_file)
         .def("define_columns", &BCPWrapper::define_columns)
-        .def("define_column_format", &BCPWrapper::define_column_format)
+        .def("define_column_format", &BCPWrapper::define_column_format,
+             py::arg("file_col_idx"),
+             py::arg("user_data_type"),
+             py::arg("indicator_length"),
+             py::arg("user_data_length"),
+             py::arg("terminator_bytes") = std::nullopt, // pybind11 handles std::optional<py::bytes>
+             py::arg("server_col_idx"))
         .def("exec_bcp", &BCPWrapper::exec_bcp)
         .def("finish", &BCPWrapper::finish)
-        .def("close", &BCPWrapper::close)
-        // ... other BCPWrapper methods
-        ;
-
-    // ... other bindings ...
-
+        .def("close", &BCPWrapper::close);
     try {
         // Try loading the ODBC driver when the module is imported
         LOG("Loading ODBC driver");

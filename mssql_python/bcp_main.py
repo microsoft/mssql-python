@@ -135,33 +135,36 @@ class BCPClient:
                 self.wrapper.bcp_control(
                     BCPControlOptions.HINTS.value, current_options.hints
                 )
-            if (
-                current_options.columns
-                and current_options.columns[0].row_terminator is not None
-            ):  # Check if columns list is not empty
-                logger.debug(f"Setting BCPControlOptions.SET_ROW_TERMINATOR to '{current_options.columns[0].row_terminator}'")
-                self.wrapper.bcp_control(
-                    BCPControlOptions.SET_ROW_TERMINATOR.value,
-                    current_options.columns[0].row_terminator,
-                )
+            # if (
+            #     current_options.columns
+            #     and current_options.columns[0].row_terminator is not None
+            # ):  # Check if columns list is not empty
+            #     logger.debug(f"Setting BCPControlOptions.SET_ROW_TERMINATOR to '{current_options.columns[0].row_terminator}'")
+            #     self.wrapper.bcp_control(
+            #         BCPControlOptions.SET_ROW_TERMINATOR.value,
+            #         current_options.columns[0].row_terminator,
+            #     )
 
             if current_options.bulk_mode:
                 logger.debug(f"Setting bulk mode to '{current_options.bulk_mode}'")
-                field_term_bytes: Optional[bytes] = None 
-                row_term_bytes: Optional[bytes] = None 
+                field_term_bytes: Optional[bytes] = None
+                row_term_bytes: Optional[bytes] = None
 
-                # Example logic: use terminators from the first column definition
-                # if columns are provided. Adjust this logic as needed.
                 if current_options.columns: # Check if the list is not empty
-                    first_col_format = current_options.columns[0]
-                    if first_col_format.field_terminator is not None:
-                        field_term_bytes = first_col_format.field_terminator
-                    if first_col_format.row_terminator is not None: # This was likely intended for row_terminator
-                        row_term_bytes = first_col_format.row_terminator
+                    # Use the field terminator from the first column as a default for the file
+                    if current_options.columns[0].field_terminator is not None:
+                        field_term_bytes = current_options.columns[0].field_terminator
+                    
+                    # Find the row terminator from any column that defines it
+                    # Often, it's defined on the last column's ColumnFormat object
+                    for col_fmt in current_options.columns:
+                        if col_fmt.row_terminator is not None:
+                            row_term_bytes = col_fmt.row_terminator
+                            break # Use the first one found
                 
                 self.wrapper.set_bulk_mode(
                     current_options.bulk_mode,
-                    field_terminator=field_term_bytes,
+                    field_terminator=field_term_bytes, 
                     row_terminator=row_term_bytes
                 )
 
