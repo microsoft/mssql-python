@@ -12,42 +12,64 @@ ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
     : _max_size(max_size),  _idle_timeout_secs(idle_timeout_secs), _current_size(0) {}
 
 std::shared_ptr<Connection> ConnectionPool::acquire(const std::wstring& connStr, const py::dict& attrs_before) {
-    std::lock_guard<std::mutex> lock(_mutex);
-    auto now = std::chrono::steady_clock::now();
-    size_t before = _pool.size();
-    _pool.erase(std::remove_if(_pool.begin(), _pool.end(), [&](const std::shared_ptr<Connection>& conn) {
-        auto idle_time = std::chrono::duration_cast<std::chrono::seconds>(now - conn->lastUsed()).count();
-        if (idle_time > _idle_timeout_secs) {
-            conn->disconnect();
-            return true;
-        }
-        return false;
-    }), _pool.end());
-    size_t pruned = before - _pool.size();
-    _current_size = (_current_size >= pruned) ? (_current_size - pruned) : 0;
+    std::vector<std::shared_ptr<Connection>> to_disconnect;
+    std::shared_ptr<Connection> valid_conn = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        auto now = std::chrono::steady_clock::now();
+        size_t before = _pool.size();
 
-    while (!_pool.empty()) {
-        auto conn = _pool.front();
-        _pool.pop_front();
-        if (conn->isAlive()) {
-            if (!conn->reset()) {
-                continue;
+        // Phase 1: Remove stale connections, collect for later disconnect
+        _pool.erase(std::remove_if(_pool.begin(), _pool.end(),
+            [&](const std::shared_ptr<Connection>& conn) {
+                auto idle_time = std::chrono::duration_cast<std::chrono::seconds>(now - conn->lastUsed()).count();
+                if (idle_time > _idle_timeout_secs) {
+                    to_disconnect.push_back(conn);
+                    return true;
+                }
+                return false;
+            }), _pool.end());
+
+        size_t pruned = before - _pool.size();
+        _current_size = (_current_size >= pruned) ? (_current_size - pruned) : 0;
+
+        // Phase 2: Attempt to reuse healthy connections
+        while (!_pool.empty()) {
+            auto conn = _pool.front();
+            _pool.pop_front();
+            if (conn->isAlive()) {
+                if (!conn->reset()) {
+                    to_disconnect.push_back(conn);
+                    --_current_size;
+                    continue;
+                }
+                valid_conn = conn;
+                break;
+            } else {
+                to_disconnect.push_back(conn);
+                --_current_size;
             }
-            return conn;
-        } else {
-            conn->disconnect();
-            --_current_size;
+        }
+
+        // Create new connection if none reusable
+        if (!valid_conn && _current_size < _max_size) {
+            valid_conn = std::make_shared<Connection>(connStr, true);
+            valid_conn->connect(attrs_before);
+            ++_current_size;
+        } else if (!valid_conn) {
+            throw std::runtime_error("ConnectionPool::acquire: pool size limit reached");
         }
     }
-    if (_current_size < _max_size) {
-        auto conn = std::make_shared<Connection>(connStr, true);
-        conn->connect(attrs_before);
-        ++_current_size;
-        return conn;
-    } else {
-        LOG("Cannot acquire connection: pool size limit reached");
-        return nullptr;
+
+    // Phase 3: Disconnect expired/bad connections outside lock
+    for (auto& conn : to_disconnect) {
+        try {
+            conn->disconnect();
+        } catch (const std::exception& ex) {
+            std::cout << "disconnect() failed: " << ex.what() << std::endl;
+        }
     }
+    return valid_conn;
 }
 
 void ConnectionPool::release(std::shared_ptr<Connection> conn) {

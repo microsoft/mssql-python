@@ -11,7 +11,28 @@
 
 #define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
 
-SqlHandlePtr Connection::_envHandle = nullptr;
+static SqlHandlePtr getEnvHandle() {
+    static SqlHandlePtr envHandle = []() -> SqlHandlePtr {
+        LOG("Allocating ODBC environment handle");
+        if (!SQLAllocHandle_ptr) {
+            LOG("Function pointers not initialized, loading driver");
+            DriverLoader::getInstance().loadDriver();
+        }
+        SQLHANDLE env = nullptr;
+        SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &env);
+        if (!SQL_SUCCEEDED(ret)) {
+            ThrowStdException("Failed to allocate environment handle");
+        }
+        ret = SQLSetEnvAttr_ptr(env, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3_80, 0);
+        if (!SQL_SUCCEEDED(ret)) {
+            ThrowStdException("Failed to set environment attributes");
+        }
+        return std::make_shared<SqlHandle>(SQL_HANDLE_ENV, env);
+    }();
+
+    return envHandle;
+}
+
 //-------------------------------------------------------------------------------------------------
 // Implements the Connection class declared in connection.h.
 // This class wraps low-level ODBC operations like connect/disconnect,
@@ -19,21 +40,6 @@ SqlHandlePtr Connection::_envHandle = nullptr;
 //-------------------------------------------------------------------------------------------------
 Connection::Connection(const std::wstring& conn_str, bool use_pool)
     : _connStr(conn_str), _autocommit(false), _fromPool(use_pool) {
-    if (!_envHandle) {
-        LOG("Allocating environment handle");
-        SQLHANDLE env = nullptr;
-        if (!SQLAllocHandle_ptr) {
-            LOG("Function pointers not initialized, loading driver");
-            DriverLoader::getInstance().loadDriver();
-        }
-        SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &env);
-        checkError(ret);
-        _envHandle = std::make_shared<SqlHandle>(SQL_HANDLE_ENV, env);
-
-        LOG("Setting environment attributes");
-        ret = SQLSetEnvAttr_ptr(_envHandle->get(), SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3_80, 0);
-        checkError(ret);
-    }
     allocateDbcHandle();
 }
 
@@ -43,6 +49,7 @@ Connection::~Connection() {
 
 // Allocates connection handle
 void Connection::allocateDbcHandle() {
+    auto _envHandle = getEnvHandle();
     SQLHANDLE dbc = nullptr;
     LOG("Allocate SQL Connection Handle");
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(), &dbc);
@@ -237,6 +244,12 @@ ConnectionHandle::ConnectionHandle(const std::wstring& connStr, bool usePool, co
     } else {
         _conn = std::make_shared<Connection>(connStr, false);
         _conn->connect(attrsBefore);
+    }
+}
+
+ConnectionHandle::~ConnectionHandle() {
+    if (_conn) {
+        close();
     }
 }
 

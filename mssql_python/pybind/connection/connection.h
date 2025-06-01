@@ -52,13 +52,13 @@ private:
     bool _fromPool = false;
     bool _autocommit = true;
     SqlHandlePtr _dbcHandle;
-    static SqlHandlePtr _envHandle;
     std::chrono::steady_clock::time_point _lastUsed;
 };
 
 class ConnectionHandle {
 public:
     ConnectionHandle(const std::wstring& connStr, bool usePool, const py::dict& attrsBefore = py::dict());
+    ~ConnectionHandle();
 
     void close();
     void commit();
