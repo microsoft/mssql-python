@@ -704,8 +704,6 @@ class Cursor:
         rows = []
         ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-        if ret != ddbc_sql_const.SQL_NO_DATA.value:
-            return []
         return list(rows)
 
     def nextset(self) -> Union[bool, None]:

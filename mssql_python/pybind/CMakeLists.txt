@@ -168,9 +168,8 @@ else()
     set(DDBC_SOURCE "ddbc_bindings.cpp")
     message(STATUS "Using standard source file: ${DDBC_SOURCE}")
     # Include connection module for Windows
-    add_library(ddbc_bindings MODULE ${DDBC_SOURCE} connection/connection.cpp)
+    add_library(ddbc_bindings MODULE ${DDBC_SOURCE} connection/connection.cpp connection/connection_pool.cpp)
 endif()
-
 
 # Set the output name to include Python version and architecture
 # Use appropriate file extension based on platform
