@@ -1095,8 +1095,10 @@ std::wstring SanitizeConnectionString(const std::wstring& connectionString) {
         size_t endPos = sanitizedString.find(L';', uidPos);
         if (endPos != std::wstring::npos) {
             sanitizedString.erase(uidPos, endPos - uidPos + 1);
+            lowerCaseString.erase(uidPos, endPos - uidPos + 1);
         } else {
             sanitizedString.erase(uidPos);
+            lowerCaseString.erase(uidPos);
         }
     }
     // Can be Pwd or pwd or PWD, test only on lowercase pwd
@@ -1105,8 +1107,10 @@ std::wstring SanitizeConnectionString(const std::wstring& connectionString) {
         size_t endPos = sanitizedString.find(L';', pwdPos);
         if (endPos != std::wstring::npos) {
             sanitizedString.erase(pwdPos, endPos - pwdPos + 1);
+            lowerCaseString.erase(pwdPos, endPos - pwdPos + 1);
         } else {
             sanitizedString.erase(pwdPos);
+            lowerCaseString.erase(pwdPos);
         }
     }
     return sanitizedString;
