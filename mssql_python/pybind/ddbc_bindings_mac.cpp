@@ -1083,23 +1083,34 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, intptr_t handle, SQLRETURN 
 std::wstring SanitizeConnectionString(const std::wstring& connectionString) {
     // This function will remove the UID and Pwd parameters for security reasons
     std::wstring sanitizedString = connectionString;
-    // Remove UID and Pwd parameters
-    size_t uidPos = sanitizedString.find(L"UID=");
+    std::wstring lowerCaseString = sanitizedString;
+    // Convert the string to lowercase for case-insensitive search
+    // Using lowerCaseString to avoid modifying the original string
+    // This is necessary because towlower works on wide characters
+    std::transform(lowerCaseString.begin(), lowerCaseString.end(), lowerCaseString.begin(),
+                   ::towlower);
+    // Can be UID or uid or UID, test only on lowercase uid
+    size_t uidPos = lowerCaseString.find(L"uid=");
     if (uidPos != std::wstring::npos) {
         size_t endPos = sanitizedString.find(L';', uidPos);
         if (endPos != std::wstring::npos) {
             sanitizedString.erase(uidPos, endPos - uidPos + 1);
+            lowerCaseString.erase(uidPos, endPos - uidPos + 1);
         } else {
             sanitizedString.erase(uidPos);
+            lowerCaseString.erase(uidPos);
         }
     }
-    size_t pwdPos = sanitizedString.find(L"Pwd=");
+    // Can be Pwd or pwd or PWD, test only on lowercase pwd
+    size_t pwdPos = lowerCaseString.find(L"pwd=");
     if (pwdPos != std::wstring::npos) {
         size_t endPos = sanitizedString.find(L';', pwdPos);
         if (endPos != std::wstring::npos) {
             sanitizedString.erase(pwdPos, endPos - pwdPos + 1);
+            lowerCaseString.erase(pwdPos, endPos - pwdPos + 1);
         } else {
             sanitizedString.erase(pwdPos);
+            lowerCaseString.erase(pwdPos);
         }
     }
     return sanitizedString;

@@ -102,6 +102,7 @@ else()
     message(STATUS "Auto-detected pybind11 include directory: ${PYBIND11_INCLUDE_DIR}")
 endif()
 
+
 # Find Python Library for linking
 execute_process(
     COMMAND python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
@@ -154,7 +155,28 @@ if(APPLE AND (NOT PYTHON_LIB_DIR OR "${PYTHON_LIB_DIR}" STREQUAL ""))
         message(STATUS "Python library not found in standard locations, will try using framework")
         # When using a framework, we don't specify the library directly
     endif()
+elseif(WIN32 AND (NOT PYTHON_LIB_DIR OR "${PYTHON_LIB_DIR}" STREQUAL "" OR "${PYTHON_LIB_DIR}" STREQUAL "None"))
+    # On Windows, if PYTHON_LIB_DIR is not set, we will try to find it using sysconfig
+    message(STATUS "PYTHON_LIB_DIR is None or empty for Windows, trying to find it using sysconfig")
+    # Use Python Executable to find the library directory
+    execute_process(
+        COMMAND python -c "import sys, os; print(os.path.dirname(sys.executable))"
+        OUTPUT_VARIABLE PYTHON_EXEC_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    message(STATUS "Python executable directory: ${PYTHON_EXEC_DIR}")
+    # Set the library directory based on the executable directory
+    set(PYTHON_LIB_DIR "${PYTHON_EXEC_DIR}/libs")
+    message(STATUS "Using Python library directory: ${PYTHON_LIB_DIR}")
 endif()
+
+if(DEFINED ENV{CUSTOM_PYTHON_LIB_DIR} AND NOT "$ENV{CUSTOM_PYTHON_LIB_DIR}" STREQUAL "" AND NOT "$ENV{CUSTOM_PYTHON_LIB_DIR}" STREQUAL "None")
+    message(STATUS "CUSTOM_PYTHON_LIB_DIR is set, using it")
+    set(PYTHON_LIB_DIR $ENV{CUSTOM_PYTHON_LIB_DIR})
+    message(STATUS "Using custom Python library directory: ${PYTHON_LIB_DIR}")
+endif()
+
+message(STATUS "Final Python library directory: ${PYTHON_LIB_DIR}")
 
 # Determine which source file to use based on platform
 if(APPLE)
