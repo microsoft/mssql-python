@@ -95,9 +95,6 @@ class Connection:
                 continue
             conn_str += f"{key}={value};"
 
-        if ENABLE_LOGGING:
-            logger.info("Final connection string: %s", conn_str)
-
         return conn_str
 
     def _initializer(self) -> None:
