@@ -102,6 +102,7 @@ else()
     message(STATUS "Auto-detected pybind11 include directory: ${PYBIND11_INCLUDE_DIR}")
 endif()
 
+
 # Find Python Library for linking
 execute_process(
     COMMAND python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
@@ -167,6 +168,12 @@ elseif(WIN32 AND (NOT PYTHON_LIB_DIR OR "${PYTHON_LIB_DIR}" STREQUAL "" OR "${PY
     # Set the library directory based on the executable directory
     set(PYTHON_LIB_DIR "${PYTHON_EXEC_DIR}/libs")
     message(STATUS "Using Python library directory: ${PYTHON_LIB_DIR}")
+endif()
+
+if(DEFINED ENV{CUSTOM_PYTHON_LIB_DIR} AND NOT "$ENV{CUSTOM_PYTHON_LIB_DIR}" STREQUAL "" AND NOT "$ENV{CUSTOM_PYTHON_LIB_DIR}" STREQUAL "None")Add commentMore actions
+    message(STATUS "CUSTOM_PYTHON_LIB_DIR is set, using it")
+    set(PYTHON_LIB_DIR $ENV{CUSTOM_PYTHON_LIB_DIR})
+    message(STATUS "Using custom Python library directory: ${PYTHON_LIB_DIR}")
 endif()
 
 message(STATUS "Final Python library directory: ${PYTHON_LIB_DIR}")
