@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 def main():
     # BCP connection attribute
-    SQL_COPT_SS_BCP = 1214
+    SQL_COPT_SS_BCP = 1219
     
     # Connection string - same as your C++ version
     conn_str = "Driver={ODBC Driver 18 for SQL Server};Server=tcp:DESKTOP-1A982SC,1433;Database=TestBCP;TrustServerCertificate=yes;Trusted_Connection=yes;"

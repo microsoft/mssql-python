@@ -123,7 +123,7 @@ BCPWrapper::BCPWrapper(Connection& conn) // Changed to Connection&
     SQLHDBC hdbc = SQL_NULL_HDBC;
     try {
         hdbc = get_valid_hdbc_for_bcp(_conn); // Pass the reference _conn
-        std::cout << "BCPWrapper: BCP mode setup attempted on HDBC." << std::endl; // General message
+
     } catch (const std::runtime_error& e) {
         // Re-throw with more context or just let it propagate
         throw std::runtime_error(std::string("BCPWrapper Constructor: Failed to get valid HDBC - ") + e.what());
@@ -186,55 +186,86 @@ SQLRETURN BCPWrapper::bcp_initialize_operation(const std::wstring& table,
               << "', error_file '" << pErrorFile
               << "', direction '" << dir_code << "'." << std::endl;
 
-    SQLRETURN retcode = BCPInitW_ptr(hdbc, L"[TestBCP].[dbo].[EmployeeFullNames]", L"C:\\Users\\jathakkar\\OneDrive - Microsoft\\Documents\\Github_mssql_python\\mssql-python\\EmployeeFullNames.bcp", L"C:\\Users\\jathakkar\\OneDrive - Microsoft\\Documents\\Github_mssql_python\\mssql-python\\bcp_wide_error.txt", DB_IN);
-    std::cout << "BCPWrapper: HELLOOOO " << retcode << std::endl;
-    ErrorInfo errorInfo;
-    if (retcode == SQL_INVALID_HANDLE) {
-        LOG("Invalid handle received");
-        std::cout << "Invalid handle received" << std::endl;
-        errorInfo.ddbcErrorMsg = std::wstring( L"Invalid handle!");
-        return retcode;
+
+    // Check if SQL_COPT_SS_BCP is set
+    if (SQLGetConnectAttr_ptr) {
+        SQLUINTEGER bcp_mode = 0;
+        SQLINTEGER bcp_mode_len = 0;
+        SQLRETURN ret_ga = SQLGetConnectAttr_ptr(hdbc, SQL_COPT_SS_BCP, &bcp_mode, sizeof(bcp_mode), &bcp_mode_len);
+        if (SQL_SUCCEEDED(ret_ga)) {
+            if (bcp_mode == SQL_BCP_ON) {
+                std::cout << "BCPWrapper: SQL_COPT_SS_BCP is set to SQL_BCP_ON." << bcp_mode << std::endl;
+            } else {
+                std::cout << "BCPWrapper: SQL_COPT_SS_BCP is NOT set to SQL_BCP_ON. Current value: " << bcp_mode << std::endl;
+                    // Optionally, you might want to throw an error here if BCP mode is required
+                // throw std::runtime_error("BCPWrapper Constructor: SQL_COPT_SS_BCP is not enabled.");
+            }
+        } else {
+            std::cout << "BCPWrapper: Failed to get SQL_COPT_SS_BCP attribute. Return code: " << ret_ga << std::endl;
+            ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, hdbc);
+            std::wcout << L"BCPWrapper: ODBC Diag for SQLGetConnectAttr: SQLState: " << diag.sqlState 
+                        << L", Message: " << diag.ddbcErrorMsg << std::endl;
+        }
+    } else {
+        std::cout << "BCPWrapper: SQLGetConnectAttr_ptr is null, cannot check SQL_COPT_SS_BCP." << std::endl;
     }
-    
-    SQLHANDLE rawHandle = hdbc;
-    if (retcode == FAIL) {
-        if (!SQLGetDiagRec_ptr) {
-            LOG("Function pointer not initialized. Loading the driver.");
-            std::cout << "Function pointer not initialized. Loading the driver." << std::endl;
-            DriverLoader::getInstance().loadDriver();  // Load the driver
-        }
+    std::cout << "BCPWrapper: BCP mode setup attempted on HDBC." << std::endl; // General message
 
-        SQLWCHAR sqlState[6], message[SQL_MAX_MESSAGE_LENGTH];
-        SQLINTEGER nativeError;
-        SQLSMALLINT messageLen;
 
-        SQLRETURN diagReturn =
-            SQLGetDiagRec_ptr(SQL_HANDLE_DBC, rawHandle, 1, sqlState,
-                              &nativeError, message, SQL_MAX_MESSAGE_LENGTH, &messageLen);
-        
-
-        if (SQL_SUCCEEDED(diagReturn)) {
-            errorInfo.sqlState = std::wstring(sqlState);
-            errorInfo.ddbcErrorMsg = std::wstring(message);
-            std::wcout << L"SQL State: " << errorInfo.sqlState << std::endl;
-            std::wcout << L"Error Message: " << errorInfo.ddbcErrorMsg << std::endl;
-        }
-        else {
-            LOG("Failed to retrieve diagnostic record");
-            std::cout << "Failed to retrieve diagnostic record" << std::endl;
-            errorInfo.ddbcErrorMsg = std::wstring(L"Failed to retrieve diagnostic record");
-        }
+    SQLHSTMT hstmt = SQL_NULL_HSTMT;
+    SQLRETURN retcode = SQLAllocHandle_ptr(SQL_HANDLE_STMT, hdbc, &hstmt);
+    if (retcode != SQL_SUCCESS && retcode != SQL_SUCCESS_WITH_INFO) {
+        std::cout << "BCPWrapper Error: Failed to allocate statement handle for insert." << std::endl;
+        return SQL_ERROR;
     }
 
+    std::wstring insert_sql = L"INSERT INTO [TestBCP].[dbo].[EmployeeFullNames] (FirstName, LastName) VALUES (?, ?)";
+    retcode = SQLPrepare_ptr(hstmt, (SQLWCHAR*)insert_sql.c_str(), SQL_NTS);
+    if (retcode != SQL_SUCCESS && retcode != SQL_SUCCESS_WITH_INFO) {
+        std::cout << "BCPWrapper Error: Failed to prepare insert statement." << std::endl;
+        SQLFreeHandle_ptr(SQL_HANDLE_STMT, hstmt);
+        return SQL_ERROR;
+    }
+
+    // Example data for demonstration
+    std::wstring first_name = L"John";
+    std::wstring last_name = L"Doe";
+
+    retcode = SQLBindParameter_ptr(hstmt, 1, SQL_PARAM_INPUT, SQL_C_WCHAR, SQL_WVARCHAR, 100, 0, (SQLPOINTER)first_name.c_str(), 0, nullptr);
+    if (retcode != SQL_SUCCESS && retcode != SQL_SUCCESS_WITH_INFO) {
+        std::cout << "BCPWrapper Error: Failed to bind first parameter." << std::endl;
+        SQLFreeHandle_ptr(SQL_HANDLE_STMT, hstmt);
+        return SQL_ERROR;
+    }
+    retcode = SQLBindParameter_ptr(hstmt, 2, SQL_PARAM_INPUT, SQL_C_WCHAR, SQL_WVARCHAR, 100, 0, (SQLPOINTER)last_name.c_str(), 0, nullptr);
+    if (retcode != SQL_SUCCESS && retcode != SQL_SUCCESS_WITH_INFO) {
+        std::cout << "BCPWrapper Error: Failed to bind second parameter." << std::endl;
+        SQLFreeHandle_ptr(SQL_HANDLE_STMT, hstmt);
+        return SQL_ERROR;
+    }
+
+    retcode = SQLExecute_ptr(hstmt);
+    if (retcode != SQL_SUCCESS && retcode != SQL_SUCCESS_WITH_INFO) {
+        std::cout << "BCPWrapper Error: Failed to execute insert statement." << std::endl;
+        SQLFreeHandle_ptr(SQL_HANDLE_STMT, hstmt);
+        return SQL_ERROR;
+    }
+
+    SQLFreeHandle_ptr(SQL_HANDLE_STMT, hstmt);
+
+    SQLRETURN ret = BCPInitW_ptr(hdbc, L"[TestBCP].[dbo].[EmployeeFullNames]", L"C:\\Users\\jathakkar\\OneDrive - Microsoft\\Documents\\Github_mssql_python\\mssql-python\\EmployeeFullNames.bcp", L"C:\\Users\\jathakkar\\OneDrive - Microsoft\\Documents\\Github_mssql_python\\mssql-python\\bcp_wide_error.txt", DB_IN);
+    std::cout << "BCPWrapper: HELLOOOO " << ret << std::endl;
     
-    if (retcode != FAIL) {
+
+    
+    if (ret != FAIL) {
         _bcp_initialized = true;
         _bcp_finished = false;
         std::cout << "BCPWrapper: bcp_initW successful." << std::endl;
     } else {
-        std::cout << "BCPWrapper Error: bcp_initW failed. Ret: " << retcode << std::endl;
+        std::cout << "BCPWrapper Error: bcp_initW failed. Ret: " << ret << std::endl;
     }
-    return retcode;
+    return ret;
 }
 
 SQLRETURN BCPWrapper::bcp_control(const std::wstring& property_name, int value) {
