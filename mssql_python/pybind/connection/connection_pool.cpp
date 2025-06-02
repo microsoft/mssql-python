@@ -66,7 +66,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::wstring& connStr,
         try {
             conn->disconnect();
         } catch (const std::exception& ex) {
-            std::cout << "disconnect() failed: " << ex.what() << std::endl;
+            LOG("Disconnect bad/expired connections failed: {}", ex.what());
         }
     }
     return valid_conn;
