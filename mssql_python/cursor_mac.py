@@ -666,8 +666,6 @@ class Cursor:
         row = []
         ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt.value, row)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt.value, ret)
-        if ret == ddbc_sql_const.SQL_NO_DATA.value:
-            return None
         return list(row)
 
     def fetchmany(self, size: int = None) -> List[tuple]:
