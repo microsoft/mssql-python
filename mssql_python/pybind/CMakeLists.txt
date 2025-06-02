@@ -111,7 +111,7 @@ execute_process(
 message(STATUS "Python LIBDIR from sysconfig: ${PYTHON_LIB_DIR}")
 
 # On macOS, we may need additional work to find the Python library
-if(APPLE AND (NOT PYTHON_LIB_DIR OR "${PYTHON_LIB_DIR}" STREQUAL ""))
+if(NOT PYTHON_LIB_DIR OR "${PYTHON_LIB_DIR}" STREQUAL "")
     message(STATUS "LIBDIR is None or empty, trying alternative methods")
     
     # Get Python executable path
