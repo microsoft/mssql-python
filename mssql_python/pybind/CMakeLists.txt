@@ -159,7 +159,7 @@ elseif(WIN32 AND (NOT PYTHON_LIB_DIR OR "${PYTHON_LIB_DIR}" STREQUAL "" OR "${PY
     message(STATUS "PYTHON_LIB_DIR is None or empty for Windows, trying to find it using sysconfig")
     # Use Python Executable to find the library directory
     execute_process(
-        COMMAND python -c "import sys, os; print(os.path.dirname(sys.executable))"Add commentMore actions
+        COMMAND python -c "import sys, os; print(os.path.dirname(sys.executable))"
         OUTPUT_VARIABLE PYTHON_EXEC_DIR
         OUTPUT_STRIP_TRAILING_WHITESPACE
     )
