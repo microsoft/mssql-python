@@ -2,7 +2,7 @@ import os
 import sys
 from setuptools import setup, find_packages
 from setuptools.dist import Distribution
-from setuptools.command.bdist_wheel import bdist_wheel
+from wheel.bdist_wheel import bdist_wheel
 
 # Custom distribution to force platform-specific wheel
 class BinaryDistribution(Distribution):
