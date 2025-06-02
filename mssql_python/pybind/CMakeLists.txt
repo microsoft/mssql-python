@@ -111,7 +111,7 @@ execute_process(
 message(STATUS "Python LIBDIR from sysconfig: ${PYTHON_LIB_DIR}")
 
 # On macOS, we may need additional work to find the Python library
-if(NOT PYTHON_LIB_DIR OR "${PYTHON_LIB_DIR}" STREQUAL "")
+if(APPLE AND (NOT PYTHON_LIB_DIR OR "${PYTHON_LIB_DIR}" STREQUAL ""))
     message(STATUS "LIBDIR is None or empty, trying alternative methods")
     
     # Get Python executable path
@@ -154,7 +154,17 @@ if(NOT PYTHON_LIB_DIR OR "${PYTHON_LIB_DIR}" STREQUAL "")
         message(STATUS "Python library not found in standard locations, will try using framework")
         # When using a framework, we don't specify the library directly
     endif()
+elseif(WIN32 AND (NOT PYTHON_LIB_DIR OR "${PYTHON_LIB_DIR}" STREQUAL "" OR "${PYTHON_LIB_DIR}" STREQUAL "None"))
+    # On Windows, if PYTHON_LIB_DIR is not set, we will try to find it using sysconfig
+    message(STATUS "PYTHON_LIB_DIR is None or empty for Windows, trying to find it using sysconfig")
+    execute_process(
+        COMMAND python -c "import sysconfig; print(sysconfig.get_config_var('LIBRARY'))"
+        OUTPUT_VARIABLE PYTHON_LIB_DIR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
 endif()
+
+message(STATUS "Final Python library directory: ${PYTHON_LIB_DIR}")
 
 # Determine which source file to use based on platform
 if(APPLE)
