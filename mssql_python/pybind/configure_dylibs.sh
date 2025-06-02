@@ -15,6 +15,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 # Get platform and configure paths
 ARCH=$(get_mac_platform_architecture)
 LIB_DIR="$PROJECT_DIR/libs/macos/lib"
+
 LIBMSODBCSQL_PATH="$LIB_DIR/libmsodbcsql.18.dylib"
 LIBODBCINST_PATH="$LIB_DIR/libodbcinst.2.dylib"
 LIBLTDL_PATH="$LIB_DIR/libltdl.7.dylib"
@@ -66,8 +67,8 @@ done <<< "$OTOOL_LIST"
 if [ -n "$OLD_LIBODBCINST_PATH" ]; then
   echo "Fixing libmsodbcsql.18.dylib dependency on libodbcinst.2.dylib..."
   echo "  Changing: $OLD_LIBODBCINST_PATH"
-  echo "  To: $LIBODBCINST_PATH"
-  install_name_tool -change "$OLD_LIBODBCINST_PATH" "$LIBODBCINST_PATH" "$LIBMSODBCSQL_PATH"
+  echo "  To: @loader_path/libodbcinst.2.dylib"
+  install_name_tool -change "$OLD_LIBODBCINST_PATH" "@loader_path/libodbcinst.2.dylib" "$LIBMSODBCSQL_PATH"
 else
   echo "Warning: libodbcinst dependency not found in libmsodbcsql.18.dylib"
 fi
@@ -75,13 +76,27 @@ fi
 if [ -n "$OLD_LIBLTDL_PATH" ] && [ -f "$LIBLTDL_PATH" ]; then
   echo "Fixing libodbcinst.2.dylib dependency on libltdl.7.dylib..."
   echo "  Changing: $OLD_LIBLTDL_PATH"
-  echo "  To: $LIBLTDL_PATH"
-  install_name_tool -change "$OLD_LIBLTDL_PATH" "$LIBLTDL_PATH" "$LIBODBCINST_PATH"
+  echo "  To: @loader_path/libltdl.7.dylib"
+  install_name_tool -change "$OLD_LIBLTDL_PATH" "@loader_path/libltdl.7.dylib" "$LIBODBCINST_PATH"
 else
   echo "Note: libltdl dependency not found or not needed"
 fi
 
 # Force codesign the dylibs
+
+# First set the IDs of the libraries using @loader_path
+echo "Setting library IDs with @loader_path..."
+echo "Setting ID for libmsodbcsql.18.dylib..."
+install_name_tool -id "@loader_path/libmsodbcsql.18.dylib" "$LIBMSODBCSQL_PATH"
+
+echo "Setting ID for libodbcinst.2.dylib..."
+install_name_tool -id "@loader_path/libodbcinst.2.dylib" "$LIBODBCINST_PATH"
+
+if [ -f "$LIBLTDL_PATH" ]; then
+  echo "Setting ID for libltdl.7.dylib..."
+  install_name_tool -id "@loader_path/libltdl.7.dylib" "$LIBLTDL_PATH"
+fi
+
 echo "Codesigning libmsodbcsql.18.dylib..."
 codesign -s - -f "$LIBMSODBCSQL_PATH" 2>/dev/null
 
