@@ -128,13 +128,21 @@ jobs:
         python setup.py bdist_wheel
       displayName: 'Build wheel package for Python $(pythonVersion) ($(targetArch))'
     
-    # Copy the wheel file to the artifacts
+    # Copy the windows wheel files to the artifacts
     - task: CopyFiles@2
       inputs:
         SourceFolder: '$(Build.SourcesDirectory)\dist'
         Contents: '*.whl'
         TargetFolder: '$(Build.ArtifactStagingDirectory)\dist'
-      displayName: 'Collect wheel package'    
+      displayName: 'Collect windows wheel packages'    
+    
+    # Copy the macos_release wheel file to the wheel artifacts
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)\macos_release'
+        Contents: '*.whl'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)\dist'
+      displayName: 'Collect macos_release wheel package'
 
     # Publish the collected .pyd file(s) as build artifacts
     - task: PublishBuildArtifacts@1
