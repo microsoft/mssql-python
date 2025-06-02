@@ -285,8 +285,6 @@ std::string GetModuleDirectory() {
     py::object module_path = module.attr("__file__");
     std::string module_file = module_path.cast<std::string>();
     
-    std::cerr << "DEBUG: Module file path: " << module_file << std::endl;
-    
 #ifdef _WIN32
     // Windows-specific path handling
     char path[MAX_PATH];
@@ -298,7 +296,6 @@ std::string GetModuleDirectory() {
     std::string::size_type pos = module_file.find_last_of('/');
     if (pos != std::string::npos) {
         std::string dir = module_file.substr(0, pos);
-        std::cerr << "DEBUG: Module directory: " << dir << std::endl;
         return dir;
     }
     std::cerr << "DEBUG: Could not extract directory from path: " << module_file << std::endl;
@@ -1081,6 +1078,33 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, intptr_t handle, SQLRETURN 
     return errorInfo;
 }
 
+
+// Sanitize connection string to remove sensitive information
+std::wstring SanitizeConnectionString(const std::wstring& connectionString) {
+    // This function will remove the UID and Pwd parameters for security reasons
+    std::wstring sanitizedString = connectionString;
+    // Remove UID and Pwd parameters
+    size_t uidPos = sanitizedString.find(L"UID=");
+    if (uidPos != std::wstring::npos) {
+        size_t endPos = sanitizedString.find(L';', uidPos);
+        if (endPos != std::wstring::npos) {
+            sanitizedString.erase(uidPos, endPos - uidPos + 1);
+        } else {
+            sanitizedString.erase(uidPos);
+        }
+    }
+    size_t pwdPos = sanitizedString.find(L"Pwd=");
+    if (pwdPos != std::wstring::npos) {
+        size_t endPos = sanitizedString.find(L';', pwdPos);
+        if (endPos != std::wstring::npos) {
+            sanitizedString.erase(pwdPos, endPos - pwdPos + 1);
+        } else {
+            sanitizedString.erase(pwdPos);
+        }
+    }
+    return sanitizedString;
+}
+
 // Wrap SQLDriverConnect
 SQLRETURN SQLDriverConnect_wrap(intptr_t ConnectionHandle, intptr_t WindowHandle,
                                 const std::wstring& ConnectionString) {
@@ -1100,10 +1124,8 @@ SQLRETURN SQLDriverConnect_wrap(intptr_t ConnectionHandle, intptr_t WindowHandle
 #else
     connStrPtr = const_cast<SQLWCHAR*>(ConnectionString.c_str());
 #endif
-
-    // Log the actual connection string, not the pointer value
-    LOG("Connection string - {}", ConnectionString);
-
+    // Log the sanitized connection string
+    LOG("Connection string - {}", SanitizeConnectionString(ConnectionString).c_str());
     return SQLDriverConnect_ptr(reinterpret_cast<SQLHANDLE>(ConnectionHandle),
                                reinterpret_cast<SQLHWND>(WindowHandle),
                                connStrPtr, SQL_NTS, nullptr,
