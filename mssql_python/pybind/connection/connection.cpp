@@ -7,7 +7,7 @@
 #include "connection.h"
 #include <vector>
 #include <pybind11/pybind11.h>
-
+#include <iostream>
 #define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
 #define SQL_COPT_SS_BCP            1219  // Custom attribute ID for BCP mode
 #define SQL_BCP_OFF                0     // BCP mode off
@@ -50,6 +50,7 @@ void Connection::allocateDbcHandle() {
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(), &dbc);
     checkError(ret);
     _dbcHandle = std::make_shared<SqlHandle>(SQL_HANDLE_DBC, dbc);
+    std::cout << "Allocated SQL Connection Handle: " << _dbcHandle->get() << std::endl;
 }
 
 void Connection::connect(const py::dict& attrs_before) {
@@ -146,6 +147,7 @@ bool Connection::is_connected() const {
     }
     return false;
 }
+
 SqlHandlePtr Connection::allocStatementHandle() {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");

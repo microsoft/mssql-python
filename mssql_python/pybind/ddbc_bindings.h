@@ -75,7 +75,6 @@ typedef SQLRETURN (SQL_API* BCPReadFmtWFunc)(SQLHDBC, LPCWSTR);
 typedef SQLRETURN (SQL_API* BCPColumnsFunc)(SQLHDBC, INT);
 typedef SQLRETURN (SQL_API* BCPColFmtWFunc)(SQLHDBC, INT, INT, INT, DBINT, LPCBYTE, INT, INT);
 typedef SQLRETURN  (SQL_API* BCPExecFunc)(SQLHDBC, DBINT*); 
-typedef SQLRETURN (SQL_API* BCPSetBulkModeFunc)(SQLHDBC, INT, LPVOID, INT, LPVOID, INT); 
 typedef SQLRETURN (SQL_API* BCPDoneFunc)(SQLHDBC);
 
 //-------------------------------------------------------------------------------------------------
@@ -130,7 +129,6 @@ extern BCPColumnsFunc BCPColumns_ptr;
 extern BCPColFmtWFunc BCPColFmtW_ptr;
 extern BCPExecFunc BCPExec_ptr;
 extern BCPDoneFunc BCPDone_ptr;
-extern BCPSetBulkModeFunc BCPSetBulkMode_ptr;
 
 // -- Logging utility --
 template <typename... Args>
