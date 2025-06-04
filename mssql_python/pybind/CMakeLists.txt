@@ -190,24 +190,8 @@ else()
     set(DDBC_SOURCE "ddbc_bindings.cpp")
     message(STATUS "Using standard source file: ${DDBC_SOURCE}")
     # Include connection module for Windows
-    add_library(ddbc_bindings MODULE ${DDBC_SOURCE} connection/connection.cpp connection/connection_pool.cpp)
+    add_library(ddbc_bindings MODULE ${DDBC_SOURCE} connection/connection.cpp connection/connection_pool.cpp bcp/bcp_wrapper.cpp)
 endif()
-
-execute_process(
-    COMMAND python -c "import pybind11; print(pybind11.get_include())"
-    OUTPUT_VARIABLE PYBIND11_INCLUDE_DIR
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-
-# Add module library
-add_library(ddbc_bindings MODULE ddbc_bindings.cpp connection/connection.cpp bcp/bcp_wrapper.cpp)
-
-# Add include directories for your project
-target_include_directories(ddbc_bindings PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}             # Root directory (for ddbc_bindings.h)
-    ${CMAKE_CURRENT_SOURCE_DIR}/connection  # connection directory (for connection.h)
-    ${CMAKE_CURRENT_SOURCE_DIR}/bcp         # bcp directory (for bcp_wrapper.h)
-) 
 
 # Set the output name to include Python version and architecture
 # Use appropriate file extension based on platform
@@ -239,6 +223,7 @@ message(STATUS "Using ODBC include directory: ${ODBC_INCLUDE_DIR}")
 target_include_directories(ddbc_bindings PRIVATE 
     ${CMAKE_CURRENT_SOURCE_DIR}             # Root directory (for ddbc_bindings.h)
     ${CMAKE_CURRENT_SOURCE_DIR}/connection  # connection directory (for connection.h)
+    ${CMAKE_CURRENT_SOURCE_DIR}/bcp         # bcp directory (for bcp.h)
     ${PYTHON_INCLUDE_DIR}
     ${PYBIND11_INCLUDE_DIR}
 )
