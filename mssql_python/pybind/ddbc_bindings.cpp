@@ -6,6 +6,7 @@
 #include "ddbc_bindings.h"
 #include "connection/connection.h"
 #include "bcp/bcp_wrapper.h" // For BCPWrapper
+#include "connection/connection_pool.h"
 
 #include <cstdint>
 #include <iomanip>  // std::setw, std::setfill
@@ -1923,6 +1924,13 @@ SQLLEN SQLRowCount_wrap(SqlHandlePtr StatementHandle) {
     return rowCount;
 }
 
+static std::once_flag pooling_init_flag;
+void enable_pooling(int maxSize, int idleTimeout) {
+    std::call_once(pooling_init_flag, [&]() {
+        ConnectionPoolManager::getInstance().configure(maxSize, idleTimeout);
+    });
+}
+
 // Architecture-specific defines
 #ifndef ARCHITECTURE
 #define ARCHITECTURE "win64"  // Default to win64 if not defined during compilation
@@ -1966,19 +1974,16 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle");
-    py::class_<Connection>(m, "Connection")
-        .def(py::init<const std::wstring&, bool, bool>(), py::arg("conn_str"), py::arg("autocommit") = false, py::arg("use_pooling") = false,
-             "Create a new connection with the given connection string, "
-             "autocommit mode, and pooling option")
-        .def("connect", &Connection::connect)
-        .def("close", &Connection::disconnect, "Close the connection")
-        .def("commit", &Connection::commit, "Commit the current transaction")
-        .def("rollback", &Connection::rollback, "Rollback the current transaction")
-        .def("set_autocommit", &Connection::setAutocommit)
-        .def("get_autocommit", &Connection::getAutocommit)
-        .def("alloc_statement_handle", &Connection::allocStatementHandle)
-        .def("get_hdbc", &Connection::get_hdbc)
-        .def("is_connected", &Connection::is_connected);
+  
+    py::class_<ConnectionHandle>(m, "Connection")
+        .def(py::init<const std::wstring&, bool, const py::dict&>(), py::arg("conn_str"), py::arg("use_pool"), py::arg("attrs_before") = py::dict())
+        .def("close", &ConnectionHandle::close, "Close the connection")
+        .def("commit", &ConnectionHandle::commit, "Commit the current transaction")
+        .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")
+        .def("set_autocommit", &ConnectionHandle::setAutocommit)
+        .def("get_autocommit", &ConnectionHandle::getAutocommit)
+        .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle);
+    m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");
     m.def("DDBCSQLRowCount", &SQLRowCount_wrap,
