@@ -8,7 +8,7 @@
 #include "connection_pool.h"
 #include <vector>
 #include <pybind11/pybind11.h>
-
+#include <iostream>
 #define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
 
 static SqlHandlePtr getEnvHandle() {
@@ -55,6 +55,7 @@ void Connection::allocateDbcHandle() {
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(), &dbc);
     checkError(ret);
     _dbcHandle = std::make_shared<SqlHandle>(SQL_HANDLE_DBC, dbc);
+    std::cout << "Allocated SQL Connection Handle: " << _dbcHandle->get() << std::endl;
 }
 
 void Connection::connect(const py::dict& attrs_before) {
@@ -139,6 +140,22 @@ bool Connection::getAutocommit() const {
     return value == SQL_AUTOCOMMIT_ON;
 }
 
+SQLHDBC Connection::get_hdbc() const {
+    if (_dbcHandle && _dbcHandle->get()) { 
+        return static_cast<SQLHDBC>(_dbcHandle->get());
+    }
+    return SQL_NULL_HDBC;
+}
+
+bool Connection::is_connected() const {
+    // A basic check: is the dbc_handle allocated and valid?
+    // More robust checks might involve querying connection attributes.
+    if (_dbcHandle && _dbcHandle->get() != SQL_NULL_HANDLE) {
+        return true; 
+    }
+    return false;
+}
+
 SqlHandlePtr Connection::allocStatementHandle() {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
@@ -194,6 +211,12 @@ void Connection::applyAttrsBefore(const py::dict& attrs) {
             SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
             if (!SQL_SUCCEEDED(ret)) {
                 ThrowStdException("Failed to set access token before connect");
+            }
+        }
+        if (key == SQL_COPT_SS_BCP) {   
+            SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
+            if (!SQL_SUCCEEDED(ret)) {
+                ThrowStdException("Failed to set bcp before connect");
             }
         }
     }

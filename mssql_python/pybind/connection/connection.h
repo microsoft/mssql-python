@@ -7,6 +7,8 @@
 #pragma once
 #include "ddbc_bindings.h"
 
+namespace py = pybind11; 
+
 // Represents a single ODBC database connection.
 // Manages connection handles.
 // Note: This class does NOT implement pooling logic directly.
@@ -41,6 +43,12 @@ public:
 
     // Allocate a new statement handle on this connection.
     SqlHandlePtr allocStatementHandle();
+
+    // Get the underlying ODBC connection handle (HDBC).
+    SQLHDBC get_hdbc() const;
+
+    // Check if the connection is currently active.
+    bool is_connected() const;
 
 private:
     void allocateDbcHandle();

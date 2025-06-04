@@ -5,6 +5,7 @@
 //             taken up in beta release
 #include "ddbc_bindings.h"
 #include "connection/connection.h"
+#include "bcp/bcp_wrapper.h" // For BCPWrapper
 #include "connection/connection_pool.h"
 
 #include <cstdint>
@@ -15,6 +16,18 @@
 // Replace std::filesystem usage with Windows-specific headers
 #include <shlwapi.h>
 #pragma comment(lib, "shlwapi.lib")
+
+#include "ddbc_bindings.h"
+#include "bcp/bcp_wrapper.h" // For BCPWrapper
+#include "connection/connection.h" // For Connection, if not already included transitively
+#include <pybind11/chrono.h>
+#include <pybind11/complex.h>
+#include <pybind11/functional.h>
+#include <pybind11/pytypes.h>  // Add this line for datetime support
+#include <pybind11/stl.h>
+
+namespace py = pybind11;
+using namespace pybind11::literals;
 
 //-------------------------------------------------------------------------------------------------
 // Macro definitions
@@ -137,6 +150,16 @@ SQLFreeStmtFunc SQLFreeStmt_ptr = nullptr;
 
 // Diagnostic APIs
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
+
+// BCP APIs
+BCPInitWFunc BCPInitW_ptr = nullptr;
+BCPControlWFunc BCPControlW_ptr = nullptr;
+BCPControlAFunc BCPControlA_ptr = nullptr;
+BCPReadFmtWFunc BCPReadFmtW_ptr = nullptr;
+BCPColumnsFunc BCPColumns_ptr = nullptr;
+BCPColFmtWFunc BCPColFmtW_ptr = nullptr;
+BCPExecFunc BCPExec_ptr = nullptr;
+BCPDoneFunc BCPDone_ptr = nullptr;
 
 namespace {
 
@@ -587,6 +610,16 @@ std::wstring LoadDriverOrThrowException() {
     // Diagnostic record function Loading
     SQLGetDiagRec_ptr = (SQLGetDiagRecFunc)GetProcAddress(hModule, "SQLGetDiagRecW");
 
+    // Load BCP functions
+    BCPInitW_ptr = (BCPInitWFunc)GetProcAddress(hModule, "bcp_initW");
+    BCPControlW_ptr = (BCPControlWFunc)GetProcAddress(hModule, "bcp_control");
+    BCPControlA_ptr = (BCPControlAFunc)GetProcAddress(hModule, "bcp_control"); // Often bcp_control is used for both A and W versions by name
+    BCPReadFmtW_ptr = (BCPReadFmtWFunc)GetProcAddress(hModule, "bcp_readfmtW");
+    BCPColumns_ptr = (BCPColumnsFunc)GetProcAddress(hModule, "bcp_columns");
+    BCPColFmtW_ptr = (BCPColFmtWFunc)GetProcAddress(hModule, "bcp_colfmt"); // Corrected from bcp_colfmtW to bcp_colfmt if that's the export name
+    BCPExec_ptr = (BCPExecFunc)GetProcAddress(hModule, "bcp_exec");
+    BCPDone_ptr = (BCPDoneFunc)GetProcAddress(hModule, "bcp_done");
+   
     bool success = SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
                    SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
                    SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
@@ -594,7 +627,10 @@ std::wstring LoadDriverOrThrowException() {
                    SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr &&
                    SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr &&
                    SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr &&
-                   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
+                   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr &&
+                   BCPInitW_ptr && BCPControlW_ptr && BCPControlA_ptr && // BCPControlA_ptr added here
+                   BCPReadFmtW_ptr && BCPColumns_ptr && BCPColFmtW_ptr &&
+                   BCPExec_ptr && BCPDone_ptr; // REMOVED BCPSetBulkMode_ptr from success check
 
     if (!success) {
         LOG("Failed to load required function pointers from driver - {}", dllDirStr);
@@ -659,9 +695,11 @@ void SqlHandle::free() {
 // Helper function to check for driver errors
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode) {
     LOG("Checking errors for retcode - {}" , retcode);
+    std::cout << "Checking errors for retcode - " << retcode << std::endl;
     ErrorInfo errorInfo;
     if (retcode == SQL_INVALID_HANDLE) {
         LOG("Invalid handle received");
+        std::cout << "Invalid handle received" << std::endl;
         errorInfo.ddbcErrorMsg = std::wstring( L"Invalid handle!");
         return errorInfo;
     }
@@ -670,6 +708,7 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
     if (!SQL_SUCCEEDED(retcode)) {
         if (!SQLGetDiagRec_ptr) {
             LOG("Function pointer not initialized. Loading the driver.");
+            std::cout << "Function pointer not initialized. Loading the driver." << std::endl;
             DriverLoader::getInstance().loadDriver();  // Load the driver
         }
 
@@ -680,10 +719,18 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
         SQLRETURN diagReturn =
             SQLGetDiagRec_ptr(handleType, rawHandle, 1, sqlState,
                               &nativeError, message, SQL_MAX_MESSAGE_LENGTH, &messageLen);
+        
 
         if (SQL_SUCCEEDED(diagReturn)) {
             errorInfo.sqlState = std::wstring(sqlState);
             errorInfo.ddbcErrorMsg = std::wstring(message);
+            std::wcout << L"SQL State: " << errorInfo.sqlState << std::endl;
+            std::wcout << L"Error Message: " << errorInfo.ddbcErrorMsg << std::endl;
+        }
+        else {
+            LOG("Failed to retrieve diagnostic record");
+            std::cout << "Failed to retrieve diagnostic record" << std::endl;
+            errorInfo.ddbcErrorMsg = std::wstring(L"Failed to retrieve diagnostic record");
         }
     }
     return errorInfo;
@@ -1955,9 +2002,24 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
 
-    // Add a version attribute
-    m.attr("__version__") = "1.0.0";
-    
+    // BCPWrapper bindings
+    py::class_<BCPWrapper, std::shared_ptr<BCPWrapper>>(m, "BCPWrapper")
+        .def(py::init<Connection&>())
+        .def("bcp_initialize_operation", &BCPWrapper::bcp_initialize_operation)
+        .def("bcp_control", static_cast<SQLRETURN (BCPWrapper::*)(const std::wstring&, int)>(&BCPWrapper::bcp_control), "Sets BCP control option with an integer value.")
+        .def("bcp_control", static_cast<SQLRETURN (BCPWrapper::*)(const std::wstring&, const std::wstring&)>(&BCPWrapper::bcp_control), "Sets BCP control option with a string value.")
+        .def("read_format_file", &BCPWrapper::read_format_file)
+        .def("define_columns", &BCPWrapper::define_columns)
+        .def("define_column_format", &BCPWrapper::define_column_format,
+             py::arg("file_col_idx"),
+             py::arg("user_data_type"),
+             py::arg("indicator_length"),
+             py::arg("user_data_length"),
+             py::arg("terminator_bytes") = std::nullopt,
+             py::arg("server_col_idx"))
+        .def("exec_bcp", &BCPWrapper::exec_bcp)
+        .def("finish", &BCPWrapper::finish)
+        .def("close", &BCPWrapper::close);
     try {
         // Try loading the ODBC driver when the module is imported
         LOG("Loading ODBC driver");
