@@ -59,6 +59,9 @@ class Connection:
         )
         self._attrs_before = attrs_before or {}
         self._pooling = PoolingManager.is_enabled()
+        self._conn = ddbc_bindings.Connection(self.connection_str, autocommit, self._pooling)
+        self._conn.connect(self._attrs_before)
+        print("Connection", self._conn)
         self._conn = ddbc_bindings.Connection(self.connection_str, self._pooling, self._attrs_before)
         self.setautocommit(autocommit)
 
