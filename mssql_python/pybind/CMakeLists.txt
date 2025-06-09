@@ -5,6 +5,12 @@ project(ddbc_bindings)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if (MSVC)
+    # Enable PDB generation for all target types
+    add_compile_options("$<$<CONFIG:Release>:/Zi>")
+    add_link_options("$<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>")
+endif()
+
 # Set default architecture if not provided
 if(NOT DEFINED ARCHITECTURE)
     set(ARCHITECTURE "win64")
@@ -103,6 +109,13 @@ set_target_properties(ddbc_bindings PROPERTIES
     PREFIX ""
     OUTPUT_NAME "ddbc_bindings.cp${PYTHON_VERSION}-${WHEEL_ARCH}"
     SUFFIX ".pyd"
+)
+# Ensure PDB is generated in Release
+set_target_properties(ddbc_bindings PROPERTIES
+    COMPILE_PDB_NAME "ddbc_bindings.cp${PYTHON_VERSION}-${WHEEL_ARCH}"
+    COMPILE_PDB_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    PDB_NAME "ddbc_bindings.cp${PYTHON_VERSION}-${WHEEL_ARCH}"
+    PDB_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
 )
 
 # Include directories for all architectures

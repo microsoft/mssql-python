@@ -144,6 +144,15 @@ if exist "%OUTPUT_DIR%\%PYD_NAME%" (
     copy /Y "%OUTPUT_DIR%\%PYD_NAME%" "%SOURCE_DIR%\.."
     echo [SUCCESS] Copied %PYD_NAME% to %SOURCE_DIR%..
 
+    echo [DIAGNOSTIC] Copying PDB file if it exists...
+    set PDB_NAME=ddbc_bindings.cp%PYTAG%-%WHEEL_ARCH%.pdb
+    if exist "%OUTPUT_DIR%\%PDB_NAME%" (
+        copy /Y "%OUTPUT_DIR%\%PDB_NAME%" "%SOURCE_DIR%\.."
+        echo [SUCCESS] Copied %PDB_NAME% to %SOURCE_DIR%..
+    ) else (
+        echo [WARNING] PDB file %PDB_NAME% not found in output directory.
+    )
+
     setlocal enabledelayedexpansion
     for %%I in ("%SOURCE_DIR%..") do (
         set PARENT_DIR=%%~fI
