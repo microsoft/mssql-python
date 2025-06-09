@@ -91,7 +91,7 @@ void Connection::disconnect() {
 void Connection::checkError(SQLRETURN ret) const{
     if (!SQL_SUCCEEDED(ret)) {
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
-        std::string errorMsg = std::string(err.ddbcErrorMsg.begin(), err.ddbcErrorMsg.end());
+        std::string errorMsg = WideToUTF8(err.ddbcErrorMsg);
         ThrowStdException(errorMsg);
     }
 }
@@ -122,7 +122,7 @@ void Connection::setAutocommit(bool enable) {
     }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     LOG("Set SQL Connection Attribute");
-    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)value, 0);
+    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
     checkError(ret);
     _autocommit = enable;
 }

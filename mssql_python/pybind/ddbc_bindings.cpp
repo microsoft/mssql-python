@@ -372,7 +372,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 decimalPtr->scale = decimalParam.scale;
                 decimalPtr->sign = decimalParam.sign;
                 // Convert the integer decimalParam.val to char array
-                std:memset(static_cast<void*>(decimalPtr->val), 0, sizeof(decimalPtr->val));
+                std::memset(static_cast<void*>(decimalPtr->val), 0, sizeof(decimalPtr->val));
                 std::memcpy(static_cast<void*>(decimalPtr->val),
 			    reinterpret_cast<char*>(&decimalParam.val),
                             sizeof(decimalParam.val));
@@ -469,6 +469,14 @@ void LOG(const std::string& formatString, Args&&... args) {
     logging.attr("debug")(message);
 }
 
+std::string WideToUTF8(const std::wstring& wstr) {
+    if (wstr.empty()) return {};
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
+    std::string result(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), result.data(), size_needed, nullptr, nullptr);
+    return result;
+}
+
 // TODO: Add more nuanced exception classes
 void ThrowStdException(const std::string& message) { throw std::runtime_error(message); }
 
@@ -523,8 +531,7 @@ std::wstring LoadDriverOrThrowException() {
     }
 
     // Convert wstring to string for logging
-    std::string dllDirStr(dllDir.begin(), dllDir.end());
-    LOG("Attempting to load driver from - {}", dllDirStr);
+    LOG("Attempting to load driver from - {}", WideToUTF8(dllDir));
     
     HMODULE hModule = LoadLibraryW(dllDir.c_str());
     if (!hModule) {
@@ -597,7 +604,6 @@ std::wstring LoadDriverOrThrowException() {
                    SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
 
     if (!success) {
-        LOG("Failed to load required function pointers from driver - {}", dllDirStr);
         ThrowStdException("Failed to load required function pointers from driver");
     }
     LOG("Successfully loaded function pointers from driver");
@@ -1137,7 +1143,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 if (SQL_SUCCEEDED(ret)) {
                     // TODO: Refactor these if's across other switches to avoid code duplication
                     if (dataLen > 0) {
-						if (dataLen <= columnSize) {
+						if (static_cast<size_t>(dataLen) <= columnSize) {
                             row.append(py::bytes(reinterpret_cast<const char*>(
                                 dataBuffer.get()), dataLen));
 						} else {
@@ -1551,7 +1557,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     // TODO: variable length data needs special handling, this logic wont suffice
                     SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
                     HandleZeroColumnSizeAtFetch(columnSize);
-                    if (dataLen <= columnSize) {
+                    if (static_cast<size_t>(dataLen) <= columnSize) {
                         row.append(py::bytes(reinterpret_cast<const char*>(
                                                  &buffers.charBuffers[col - 1][i * columnSize]),
                                              dataLen));
@@ -1702,7 +1708,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     }
 
     SQLULEN numRowsFetched;
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)fetchSize, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
     ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched);
@@ -1790,7 +1796,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
     }
 
     SQLULEN numRowsFetched;
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)fetchSize, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
     while (ret != SQL_NO_DATA) {
