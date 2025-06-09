@@ -32,7 +32,7 @@ int main() {
     checkODBCError(retcode, hdbc, L"SQLSetConnectAttr");
 
     // Connect
-    SQLWCHAR connStr[] = L"";
+    SQLWCHAR connStr[] = L"Driver={ODBC Driver 18 for SQL Server};Server=tcp:DESKTOP-1A982SC,1433;Database=TestBCP;TrustServerCertificate=yes;Trusted_Connection=yes;";
     retcode = SQLDriverConnectW(hdbc, NULL, connStr, SQL_NTS, NULL, 0, NULL, SQL_DRIVER_NOPROMPT);
     checkODBCError(retcode, hdbc, L"SQLDriverConnect");
 
@@ -58,8 +58,8 @@ int main() {
 
     //// Prepare file paths
     LPCWSTR table =  L"[TestBCP].[dbo].[EmployeeFullNames]";
-    LPCWSTR datafile =  L"EmployeeFullNames.bcp";
-    LPCWSTR errorfile = L"bcp_wide_error.txt";
+    LPCWSTR datafile =  L"C:\\Users\\jathakkar\\OneDrive - Microsoft\\Documents\\Github_mssql_python\\mssql-python\\EmployeeFullNames.bcp";
+    LPCWSTR errorfile = L"C:\\Users\\jathakkar\\OneDrive - Microsoft\\Documents\\Github_mssql_python\\mssql-python\\bcp_wide_error.txt";
     // Initialize BCP
     if (bcp_initW(hdbc, table, datafile, errorfile, DB_IN) == FAIL) {
         std::wcerr << L"bcp_initW failed" << std::endl;
@@ -74,7 +74,7 @@ int main() {
     // std::wcout << L"BCP format file created." << std::endl;
 
     // Read format file
-    if (bcp_readfmtW(hdbc,  L"EmployeeFullNames.fmt") == FAIL) {
+    if (bcp_readfmtW(hdbc,  L"C:\\Users\\jathakkar\\OneDrive - Microsoft\\Documents\\Github_mssql_python\\mssql-python\\EmployeeFullNames.fmt") == FAIL) {
         std::wcerr << L"bcp_readfmtW failed" << std::endl;
         return 1;
     }

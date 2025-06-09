@@ -7,6 +7,7 @@
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
 #include "bcp/bcp_wrapper.h" // For BCPWrapper
+#include "connection/connection_pool.h"
 
 #include <cstdint>
 #include <iomanip>  // std::setw, std::setfill
