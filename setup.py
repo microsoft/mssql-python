@@ -71,6 +71,23 @@ if sys.platform.startswith('win'):
         f'mssql_python.libs.{arch}.1033',
         f'mssql_python.libs.{arch}.vcredist'
     ])
+elif sys.platform.startswith('darwin'):
+    # macOS platform
+    import platform
+    arch = os.environ.get('ARCHITECTURE', None)
+    
+    # Auto-detect architecture if not specified
+    if arch is None:
+        if platform.machine() == 'arm64':
+            arch = 'arm64'
+            platform_tag = 'macosx_15_0_arm64'
+        else:
+            raise Exception("Unsupported architecture for macOS. Please set the ARCHITECTURE environment variable to 'arm64'.")
+
+    # Add architecture-specific packages for macOS
+    packages.extend([
+        f'mssql_python.libs.macos',
+    ])
 else:
     platform_tag = 'any'  # Fallback
 
@@ -88,6 +105,7 @@ setup(
         # Include PYD and DLL files inside mssql_python, exclude YML files
         'mssql_python': [
             'ddbc_bindings.cp*.pyd',  # Include all PYD files
+            'ddbc_bindings.cp*.so',  # Include all SO files
             'libs/*', 
             'libs/**/*', 
             '*.dll'
@@ -98,6 +116,7 @@ setup(
     python_requires='>=3.10',
     classifiers=[
         'Operating System :: Microsoft :: Windows',
+        'Operating System :: MacOS',
     ],
     zip_safe=False,
     # Force binary distribution
