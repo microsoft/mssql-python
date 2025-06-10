@@ -142,17 +142,19 @@ set OUTPUT_DIR=%BUILD_DIR%\Release
 
 if exist "%OUTPUT_DIR%\%PYD_NAME%" (
     copy /Y "%OUTPUT_DIR%\%PYD_NAME%" "%SOURCE_DIR%\.."
-    echo [SUCCESS] Copied %PYD_NAME% to %SOURCE_DIR%..
+    echo [SUCCESS] Copied %PYD_NAME% to %SOURCE_DIR%\..
 
     echo [DIAGNOSTIC] Copying PDB file if it exists...
     set PDB_NAME=ddbc_bindings.cp%PYTAG%-%WHEEL_ARCH%.pdb
-    if exist "%OUTPUT_DIR%\%PDB_NAME%" (
-        echo [DIAGNOSTIC] Found PDB file: %PDB_NAME%
+    echo [DEBUG] Computed PDB_NAME: !PDB_NAME!
+
+    if exist "%OUTPUT_DIR%\!PDB_NAME!" (
+        echo [DIAGNOSTIC] Found PDB file: "!PDB_NAME!"
         echo [DIAGNOSTIC] Copying PDB file to source directory...
-        copy /Y "%OUTPUT_DIR%\%PDB_NAME%" "%SOURCE_DIR%\.."
-        echo [SUCCESS] Copied %PDB_NAME% to %SOURCE_DIR%..
+        copy /Y "%OUTPUT_DIR%\!PDB_NAME!" "%SOURCE_DIR%\.."
+        echo [SUCCESS] Copied !PDB_NAME! to %SOURCE_DIR%..
     ) else (
-        echo [WARNING] PDB file %PDB_NAME% not found in output directory.
+        echo [WARNING] PDB file !PDB_NAME! not found in output directory.
     )
 
     setlocal enabledelayedexpansion

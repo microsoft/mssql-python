@@ -58,6 +58,13 @@ jobs:
       publishLocation: 'Container'
     displayName: 'Publish pyd file as artifact'
 
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pdb'
+      ArtifactName: 'ddbc_bindings'
+      publishLocation: 'Container'
+    displayName: 'Publish pdb file as artifact'
+
   - task: PublishTestResults@2
     condition: succeededOrFailed()
     inputs:
