@@ -147,6 +147,8 @@ if exist "%OUTPUT_DIR%\%PYD_NAME%" (
     echo [DIAGNOSTIC] Copying PDB file if it exists...
     set PDB_NAME=ddbc_bindings.cp%PYTAG%-%WHEEL_ARCH%.pdb
     if exist "%OUTPUT_DIR%\%PDB_NAME%" (
+        echo [DIAGNOSTIC] Found PDB file: %PDB_NAME%
+        echo [DIAGNOSTIC] Copying PDB file to source directory...
         copy /Y "%OUTPUT_DIR%\%PDB_NAME%" "%SOURCE_DIR%\.."
         echo [SUCCESS] Copied %PDB_NAME% to %SOURCE_DIR%..
     ) else (
