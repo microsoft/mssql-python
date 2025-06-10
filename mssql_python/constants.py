@@ -116,3 +116,18 @@ class ConstantsDDBC(Enum):
     SQL_C_WCHAR = -8
     SQL_NULLABLE = 1
     SQL_MAX_NUMERIC_LEN = 16
+
+class BCPControlOptions(Enum):
+    """
+    Constants for BCP control options.
+    The values are the string representations expected by the BCP API.
+    """
+    BATCH_SIZE = "BCPBATCH"
+    MAX_ERRORS = "BCPMAXERRS"
+    FIRST_ROW = "BCPFIRST"
+    LAST_ROW = "BCPLAST"
+    FILE_CODE_PAGE = "BCPFILECP"
+    KEEP_IDENTITY = "BCPKEEPIDENTITY"
+    KEEP_NULLS = "BCPKEEPNULLS"
+    HINTS = "BCPHINTS"
+    SET_ROW_TERMINATOR = "BCPSETROWTERM"

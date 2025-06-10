@@ -1,0 +1,14 @@
+14.0
+12
+1       SQLCHAR             0       50      "\t"     1     FirstName              SQL_Latin1_General_CP1_CI_AS
+2       SQLCHAR             0       50      "\t"     2     LastName               SQL_Latin1_General_CP1_CI_AS
+3       SQLCHAR             0       11      "\t"     3     date_                  ""
+4       SQLCHAR             0       19      "\t"     4     time_                  ""
+5       SQLCHAR             0       16      "\t"     5     datetime_              ""
+6       SQLCHAR             0       20      "\t"     6     wchar_                 SQL_Latin1_General_CP1_CI_AS
+7       SQLCHAR             0       1       "\t"     7     bool_                  ""
+8       SQLCHAR             0       5       "\t"     8     tinyint_               ""
+9       SQLCHAR             0       21      "\t"     9     bigint_                ""
+10      SQLCHAR             0       30      "\t"     10    float_                 ""
+11      SQLCHAR             0       30      "\t"     11    double_                ""
+12      SQLCHAR             0       41      "\r\n"   12    numeric_               ""
