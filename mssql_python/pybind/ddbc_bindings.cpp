@@ -320,9 +320,9 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 }
                 // TODO: can be moved to python by registering SQL_DATE_STRUCT in pybind
                 SQL_DATE_STRUCT* sqlDatePtr = AllocateParamBuffer<SQL_DATE_STRUCT>(paramBuffers);
-                sqlDatePtr->year = param.attr("year").cast<int>();
-                sqlDatePtr->month = param.attr("month").cast<int>();
-                sqlDatePtr->day = param.attr("day").cast<int>();
+                sqlDatePtr->year = static_cast<SQLSMALLINT>(param.attr("year").cast<int>());
+                sqlDatePtr->month = static_cast<SQLUSMALLINT>(param.attr("month").cast<int>());
+                sqlDatePtr->day = static_cast<SQLUSMALLINT>(param.attr("day").cast<int>());
                 dataPtr = static_cast<void*>(sqlDatePtr);
                 break;
             }
@@ -333,9 +333,9 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 }
                 // TODO: can be moved to python by registering SQL_TIME_STRUCT in pybind
                 SQL_TIME_STRUCT* sqlTimePtr = AllocateParamBuffer<SQL_TIME_STRUCT>(paramBuffers);
-                sqlTimePtr->hour = param.attr("hour").cast<int>();
-                sqlTimePtr->minute = param.attr("minute").cast<int>();
-                sqlTimePtr->second = param.attr("second").cast<int>();
+                sqlTimePtr->hour = static_cast<SQLUSMALLINT>(param.attr("hour").cast<int>());
+                sqlTimePtr->minute = static_cast<SQLUSMALLINT>(param.attr("minute").cast<int>());
+                sqlTimePtr->second = static_cast<SQLUSMALLINT>(param.attr("second").cast<int>());
                 dataPtr = static_cast<void*>(sqlTimePtr);
                 break;
             }
@@ -346,12 +346,12 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 }
                 SQL_TIMESTAMP_STRUCT* sqlTimestampPtr =
                     AllocateParamBuffer<SQL_TIMESTAMP_STRUCT>(paramBuffers);
-                sqlTimestampPtr->year = param.attr("year").cast<int>();
-                sqlTimestampPtr->month = param.attr("month").cast<int>();
-                sqlTimestampPtr->day = param.attr("day").cast<int>();
-                sqlTimestampPtr->hour = param.attr("hour").cast<int>();
-                sqlTimestampPtr->minute = param.attr("minute").cast<int>();
-                sqlTimestampPtr->second = param.attr("second").cast<int>();
+                sqlTimestampPtr->year = static_cast<SQLSMALLINT>(param.attr("year").cast<int>());
+                sqlTimestampPtr->month = static_cast<SQLUSMALLINT>(param.attr("month").cast<int>());
+                sqlTimestampPtr->day = static_cast<SQLUSMALLINT>(param.attr("day").cast<int>());
+                sqlTimestampPtr->hour = static_cast<SQLUSMALLINT>(param.attr("hour").cast<int>());
+                sqlTimestampPtr->minute = static_cast<SQLUSMALLINT>(param.attr("minute").cast<int>());
+                sqlTimestampPtr->second = static_cast<SQLUSMALLINT>(param.attr("second").cast<int>());
                 // SQL server supports in ns, but python datetime supports in µs
                 sqlTimestampPtr->fraction = static_cast<SQLUINTEGER>(
                     param.attr("microsecond").cast<int>() * 1000);  // Convert µs to ns
@@ -395,8 +395,11 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
         assert(SQLBindParameter_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr);
 
         RETCODE rc = SQLBindParameter_ptr(
-            hStmt, paramIndex + 1 /* 1-based indexing */, paramInfo.inputOutputType,
-            paramInfo.paramCType, paramInfo.paramSQLType, paramInfo.columnSize,
+            hStmt,
+            static_cast<SQLUSMALLINT>(paramIndex + 1),  /* 1-based indexing */
+            static_cast<SQLUSMALLINT>(paramInfo.inputOutputType),
+            static_cast<SQLSMALLINT>(paramInfo.paramCType),
+            static_cast<SQLSMALLINT>(paramInfo.paramSQLType), paramInfo.columnSize,
             paramInfo.decimalDigits, dataPtr, bufferLength, strLenOrIndPtr);
         if (!SQL_SUCCEEDED(rc)) {
             LOG("Error when binding parameter - {}", paramIndex);
@@ -406,7 +409,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
 	// https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/retrieve-numeric-data-sql-numeric-struct-kb222831?view=sql-server-ver16#sql_c_numeric-overview
         if (paramInfo.paramCType == SQL_C_NUMERIC) {
             SQLHDESC hDesc = nullptr;
-            RETCODE rc = SQLGetStmtAttr_ptr(hStmt, SQL_ATTR_APP_PARAM_DESC, &hDesc, 0, NULL);
+            rc = SQLGetStmtAttr_ptr(hStmt, SQL_ATTR_APP_PARAM_DESC, &hDesc, 0, NULL);
             if(!SQL_SUCCEEDED(rc)) {
                 LOG("Error when getting statement attribute - {}", paramIndex);
                 return rc;
@@ -866,7 +869,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    SQLRETURN ret;
+    SQLRETURN ret = SQL_SUCCESS;
     SQLHSTMT hStmt = StatementHandle->get();
     for (SQLSMALLINT i = 1; i <= colCount; ++i) {
         SQLWCHAR columnName[256];
