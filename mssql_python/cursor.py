@@ -649,8 +649,8 @@ class Cursor:
         Fetch the next row of a query result set.
 
         Returns:
-            A named tuple representing a single row or None if no more data is available.
-            The named tuple allows access by column name (e.g., row.column_name) or by index.
+            A tuple representing a single row or None if no more data is available.
+            The tuple allows access by index.
 
         Raises:
             Error: If the previous call to execute did not produce any result set.
@@ -665,29 +665,28 @@ class Cursor:
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             return None
         
-        print(f"DEBUG - Row list from C++: {row_list}")
-        
         # If the row list is empty, return None
         if not row_list:
             return None
         
         # Get field names from the description attribute
         field_names = [desc[0] for desc in self.description]
-        print(f"DEBUG - Field names: {field_names}")
         
-        # Create a namedtuple on the Python side
-        RowRecord = collections.namedtuple('RowRecord', field_names, rename=True)
+        # Check if field names are valid for namedtuple
+        valid_fieldnames = all(isinstance(name, str) and name.isidentifier() for name in field_names)
         
-        try:
-            result = RowRecord(*row_list)
-            print(f"DEBUG - Created named tuple: {result}")
-            return result
-        except TypeError as e:
-            print(f"ERROR creating namedtuple: {e}")
-            print(f"Row list: {row_list}")
-            print(f"Field names: {field_names}")
-            # Fall back to returning the list directly
-            return tuple(row_list) if row_list else None
+        if valid_fieldnames:
+            # Create a namedtuple on the Python side
+            try:
+                RowRecord = collections.namedtuple('RowRecord', field_names, rename=True)
+                result = RowRecord(*row_list)
+                return result
+            except (TypeError, ValueError) as e:
+                # Fall back to a regular tuple for any error in namedtuple creation
+                return tuple(row_list)
+        else:
+            # If field names aren't valid identifiers, return a regular tuple
+            return tuple(row_list)
 
     def fetchmany(self, size: int = None) -> List[tuple]:
         """
