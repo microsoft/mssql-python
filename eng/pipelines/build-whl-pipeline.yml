@@ -1,11 +1,18 @@
 # Pipeline name shown in ADO UI
 name: build-whl-pipeline
 
-# Trigger the pipeline on merge to main branch only
+# Trigger the pipeline on changes to the main branch & on pull requests
 trigger:
+  # Trigger on changes to the main branch
   branches:
     include:
       - main
+
+# Trigger on pull requests targeting the main branch
+pr:
+  branches:
+    include:
+      - main  
 
 # Use Microsoft-hosted Windows VM
 pool:
