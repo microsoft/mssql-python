@@ -14,7 +14,10 @@ jobs:
   steps:
   - task: UsePythonVersion@0
     inputs:
-      versionSpec: '3.13'
+      # TODO: Update to latest Python version.
+      # For now, we use Python 3.13.3 since 3.13.4 has issues with compilation.
+      # See https://github.com/python/cpython/issues/135151, next release should fix it.
+      versionSpec: '3.13.3'
       addToPath: true
       githubToken: $(GITHUB_TOKEN)
     displayName: 'Use Python 3.13'
