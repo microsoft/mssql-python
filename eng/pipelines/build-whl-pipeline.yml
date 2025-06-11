@@ -81,7 +81,7 @@ jobs:
       inputs:
         buildType: 'specific'
         project: '$(System.TeamProject)'
-        definition: 2162
+        definition: 117614
         buildVersionToDownload: 'latest'
         artifactName: 'mssql-python-arm64-libs'
         targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
