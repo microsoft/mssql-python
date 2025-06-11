@@ -6,6 +6,7 @@ This module contains the Cursor class, which represents a database cursor.
 import ctypes
 import decimal
 import uuid
+import collections
 import datetime
 from typing import List, Union
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
@@ -655,12 +656,22 @@ class Cursor:
         """
         self._check_closed()  # Check if the cursor is closed
 
-        row = []
-        ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row)
+        # Use a list to receive the row data
+        row_list = []
+        ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_list)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             return None
-        return list(row)
+
+        # Get field names from the description attribute
+        field_names = [desc[0] for desc in self.description]
+        
+        # Create a namedtuple on the Python side
+        RowRecord = collections.namedtuple('RowRecord', field_names, rename=True)
+        result = RowRecord(*row_list)
+        
+        print(f"DEBUG - Row type: {type(result)}, value: {result}")
+        return result
 
     def fetchmany(self, size: int = None) -> List[tuple]:
         """

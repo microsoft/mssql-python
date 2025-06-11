@@ -1807,7 +1807,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
 // FetchOne_wrap - Fetches a single row of data from the result set.
 //
 // @param StatementHandle: Handle to the statement from which data is to be fetched.
-// @param row: A Python list that will be populated with the fetched row data.
+// @param row: A Python object reference that will be populated with a named tuple containing the fetched row data.
 //
 // @return SQLRETURN: SQL_SUCCESS or SQL_SUCCESS_WITH_INFO if data is fetched successfully,
 //                    SQL_NO_DATA if there are no more rows to fetch,
@@ -1815,21 +1815,98 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
 //
 // This function assumes that the statement handle (hStmt) is already allocated and a query has been
 // executed. It fetches the next row of data from the result set and populates the provided Python
-// list with the row data. If there are no more rows to fetch, it returns SQL_NO_DATA. If an error
-// occurs during fetching, it throws a runtime error.
-SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row) {
+// object with a named tuple containing the row data. If there are no more rows to fetch, it returns 
+// SQL_NO_DATA. If an error occurs during fetching, it throws a runtime error.
+SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::object& row) {
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
 
-    // Assume hStmt is already allocated and a query has been executed
-    ret = SQLFetch_ptr(hStmt);
-    if (SQL_SUCCEEDED(ret)) {
-        // Retrieve column count
-        SQLSMALLINT colCount = SQLNumResultCols_wrap(StatementHandle);
-        ret = SQLGetData_wrap(StatementHandle, colCount, row);
-    } else if (ret != SQL_NO_DATA) {
-        LOG("Error when fetching data");
+    if (!SQLFetch_ptr) {
+        LOG("Function pointer not initialized in FetchOne_wrap. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();
     }
+    
+    ret = SQLFetch_ptr(hStmt);
+    if (ret == SQL_NO_DATA) {
+        row = py::none();
+        return ret;
+    } else if (!SQL_SUCCEEDED(ret)) {
+        LOG("Error when fetching data: SQLFetch_ptr failed with retcode {}", ret);
+        row = py::none();
+        return ret;
+    }
+
+    // Retrieve column metadata
+    py::list columnMetadata;
+    SQLRETURN descRet = SQLDescribeCol_wrap(StatementHandle, columnMetadata);
+    if (!SQL_SUCCEEDED(descRet)) {
+        LOG("Error when fetching column metadata: SQLDescribeCol_wrap failed with retcode {}", descRet);
+        row = py::none();
+        return descRet;
+    }
+
+    // Extract column names for namedtuple
+    py::list columnNames;
+    for (const auto& item : columnMetadata) {
+        py::dict colDict = item.cast<py::dict>();
+        std::wstring wColumnName = colDict["ColumnName"].cast<std::wstring>();
+        
+        // Convert wstring to UTF-8 string first
+        std::string utf8ColumnName;
+        
+        // Windows-specific wide string to UTF-8 conversion
+        int size_needed = WideCharToMultiByte(CP_UTF8, 0, wColumnName.c_str(), 
+                                            (int)wColumnName.length(), NULL, 0, NULL, NULL);
+        utf8ColumnName.resize(size_needed);
+        WideCharToMultiByte(CP_UTF8, 0, wColumnName.c_str(), (int)wColumnName.length(),
+                            &utf8ColumnName[0], size_needed, NULL, NULL);
+        
+        // Now create a Python string from the UTF-8 encoded string
+        py::str pyColumnName = py::str(utf8ColumnName);
+        columnNames.append(pyColumnName);
+    }
+    
+    // Get column count
+    SQLSMALLINT colCount = static_cast<SQLSMALLINT>(columnMetadata.size());
+    
+    // Get row data
+    py::list rowDataList;
+    ret = SQLGetData_wrap(StatementHandle, colCount, rowDataList);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Error when fetching data values: SQLGetData_wrap failed with retcode {}", ret);
+        row = py::none();
+        return ret;
+    }
+
+    // Create named tuple with column names and data
+    try {
+        py::module_ collections = py::module_::import("collections");
+        
+        // Create namedtuple type with column names
+        // Use rename=True to handle invalid identifiers (e.g., names with spaces)
+        py::object namedtuple_type = collections.attr("namedtuple")(
+            "RowRecord", columnNames, py::arg("rename") = true);
+        
+        // Convert rowDataList to tuple arguments
+        py::tuple data_args(rowDataList.size());
+        for (size_t i = 0; i < rowDataList.size(); ++i) {
+            data_args[i] = rowDataList[i];
+        }
+        
+        // Create named tuple instance and assign to the output row parameter
+        row = namedtuple_type(*data_args);
+    }
+    catch (const py::error_already_set& e) {
+        LOG("Error creating namedtuple: {}. Falling back to returning data as list.", e.what());
+        // Fall back to returning the list if namedtuple creation fails
+        row = rowDataList;
+    }
+    printf("Column names: %s\n", py::str(columnNames).cast<std::string>().c_str());
+    printf("Row data: %s\n", py::str(rowDataList).cast<std::string>().c_str());
+    // After creating the named tuple:
+    printf("Named tuple created successfully: %s\n", py::str(row).cast<std::string>().c_str());
+
+    
     return ret;
 }
 
