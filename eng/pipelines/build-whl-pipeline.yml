@@ -119,6 +119,14 @@ jobs:
         TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pyds'
       displayName: 'Place PYD file into artifacts directory'
 
+    # Copy the built .pdb files to staging folder for artifacts
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+        Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pdbs'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pdbs'
+      displayName: 'Place PDB file into artifacts directory'
+
     # Build wheel package for the current architecture
     - script: |
         python -m pip install --upgrade pip
