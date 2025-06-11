@@ -81,7 +81,7 @@ jobs:
       inputs:
         buildType: 'specific'
         project: '$(System.TeamProject)'
-        definition: 2134
+        definition: 2162
         buildVersionToDownload: 'latestFromBranch'
         branchName: 'refs/heads/main'
         artifactName: 'mssql-python-arm64-libs'
