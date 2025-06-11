@@ -3,7 +3,6 @@ name: build-whl-pipeline
 
 # Trigger the pipeline on changes to the main branch & on pull requests
 trigger:
-  # Trigger on changes to the main branch
   branches:
     include:
       - main
@@ -57,12 +56,12 @@ jobs:
 
       # Python 3.13
       py313_x64:
-        pythonVersion: '3.13'
+        pythonVersion: '3.13.3'
         shortPyVer: '313'
         architecture: 'x64'
         targetArch: 'x64'
       py313_arm64:
-        pythonVersion: '3.13'
+        pythonVersion: '3.13.3'
         shortPyVer: '313'
         architecture: 'x64'
         targetArch: 'arm64'
@@ -83,16 +82,16 @@ jobs:
         pip install cmake pybind11
       displayName: 'Install dependencies'
 
-    - task: DownloadPipelineArtifact@2
-      condition: eq(variables['targetArch'], 'arm64')
-      inputs:
-        buildType: 'specific'
-        project: '$(System.TeamProject)'
-        definition: 2162
-        buildVersionToDownload: 'latest'
-        artifactName: 'mssql-python-arm64-libs'
-        targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
-      displayName: 'Download ARM64 Python libs from latest successful run on branches'
+    # - task: DownloadPipelineArtifact@2
+    #   condition: eq(variables['targetArch'], 'arm64')
+    #   inputs:
+    #     buildType: 'specific'
+    #     project: '$(System.TeamProject)'
+    #     definition: 2162
+    #     buildVersionToDownload: 'latest'
+    #     artifactName: 'mssql-python-arm64-libs'
+    #     targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
+    #   displayName: 'Download ARM64 Python libs from latest successful run on branches'
 
     # Build the PYD file by calling build.bat
     - script: |
