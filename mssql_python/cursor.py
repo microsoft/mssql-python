@@ -688,49 +688,78 @@ class Cursor:
             # If field names aren't valid identifiers, return a regular tuple
             return tuple(row_list)
 
-    def fetchmany(self, size: int = None) -> List[tuple]:
+    def fetchmany(self, size: int = None) -> list:
         """
-        Fetch the next set of rows of a query result.
+        Fetch the next set of rows of a query result, returning a list of tuples.
+        An empty list is returned when no more rows are available.
 
         Args:
-            size: Number of rows to fetch at a time.
+            size (int): The number of rows to fetch. If not provided, the cursor's arraysize
+                        is used.
 
         Returns:
-            Sequence of sequences (e.g. list of tuples).
+            A list of tuples, each representing a row of the result set.
 
         Raises:
             Error: If the previous call to execute did not produce any result set.
         """
         self._check_closed()  # Check if the cursor is closed
-
+        
         if size is None:
             size = self.arraysize
-
-        # Fetch the next set of rows
+        
         rows = []
         ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows, size)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-        if ret == ddbc_sql_const.SQL_NO_DATA.value:
-            return []
+        
+        # Get field names from the description attribute for named tuple creation
+        if rows and self.description:
+            field_names = [desc[0] for desc in self.description]
+            
+            # Check if field names are valid for namedtuple
+            valid_fieldnames = all(isinstance(name, str) and name.isidentifier() for name in field_names)
+            
+            if valid_fieldnames:
+                # Create a named tuple class for the rows
+                RowRecord = collections.namedtuple('RowRecord', field_names, rename=True)
+                
+                # Transform each row from list to named tuple
+                return [RowRecord(*row) for row in rows]
+        
         return rows
 
-    def fetchall(self) -> List[tuple]:
+    def fetchall(self) -> list:
         """
-        Fetch all (remaining) rows of a query result.
+        Fetch all (remaining) rows of a query result, returning a list of tuples.
+        An empty list is returned when no more rows are available.
 
         Returns:
-            Sequence of sequences (e.g. list of tuples).
+            A list of tuples, each representing a row of the result set.
 
         Raises:
             Error: If the previous call to execute did not produce any result set.
         """
         self._check_closed()  # Check if the cursor is closed
-
-        # Fetch all remaining rows
+        
         rows = []
         ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-        return list(rows)
+        
+        # Get field names from the description attribute for named tuple creation
+        if rows and self.description:
+            field_names = [desc[0] for desc in self.description]
+            
+            # Check if field names are valid for namedtuple
+            valid_fieldnames = all(isinstance(name, str) and name.isidentifier() for name in field_names)
+            
+            if valid_fieldnames:
+                # Create a named tuple class for the rows
+                RowRecord = collections.namedtuple('RowRecord', field_names, rename=True)
+                
+                # Transform each row from list to named tuple
+                return [RowRecord(*row) for row in rows]
+        
+        return rows
 
     def nextset(self) -> Union[bool, None]:
         """

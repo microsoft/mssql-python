@@ -1822,7 +1822,7 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row_list) {
     SQLHSTMT hStmt = StatementHandle->get();
 
     if (!SQLFetch_ptr) {
-        printf("Function pointer not initialized in FetchOne_wrap. Loading the driver.\n");
+        LOG("Function pointer not initialized in FetchOne_wrap. Loading the driver.\n");
         DriverLoader::getInstance().loadDriver();
     }
     
@@ -1830,7 +1830,7 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row_list) {
     if (ret == SQL_NO_DATA) {
         return ret;
     } else if (!SQL_SUCCEEDED(ret)) {
-        printf("Error when fetching data: SQLFetch_ptr failed with retcode %d\n", ret);
+        LOG("Error when fetching data: SQLFetch_ptr failed with retcode {}\n", ret);
         return ret;
     }
 
@@ -1838,18 +1838,17 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row_list) {
     SQLSMALLINT colCount;
     SQLRETURN colRet = SQLNumResultCols_ptr(hStmt, &colCount);
     if (!SQL_SUCCEEDED(colRet)) {
-        printf("Error when getting column count: SQLNumResultCols_ptr failed with retcode %d\n", colRet);
+        LOG("Error when getting column count: SQLNumResultCols_ptr failed with retcode {}\n", colRet);
         return colRet;
     }
     
     // Get row data into the list
     ret = SQLGetData_wrap(StatementHandle, colCount, row_list);
     if (!SQL_SUCCEEDED(ret)) {
-        printf("Error when fetching data values: SQLGetData_wrap failed with retcode %d\n", ret);
+        LOG("Error when fetching data values: SQLGetData_wrap failed with retcode {}\n", ret);
         return ret;
     }
 
-    printf("Row data: %s\n", py::str(row_list).cast<std::string>().c_str());
     return ret;
 }
 

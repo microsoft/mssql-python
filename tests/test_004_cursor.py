@@ -334,7 +334,7 @@ def test_varchar_full_capacity(cursor, db_connection):
         # fetchall test
         cursor.execute("SELECT varchar_column FROM pytest_varchar_test")
         rows = cursor.fetchall()
-        assert rows[0] == ['123456789'], "SQL_VARCHAR parsing failed for fetchall"
+        assert compare_row_value(rows[0], ['123456789']), "SQL_VARCHAR parsing failed for fetchall"
     except Exception as e:
         pytest.fail(f"SQL_VARCHAR parsing test failed: {e}")
     finally:
@@ -356,7 +356,7 @@ def test_wvarchar_full_capacity(cursor, db_connection):
         # fetchall test
         cursor.execute("SELECT wvarchar_column FROM pytest_wvarchar_test")
         rows = cursor.fetchall()
-        assert rows[0] == ['123456'], "SQL_WVARCHAR parsing failed for fetchall"
+        assert compare_row_value(rows[0],['123456']), "SQL_WVARCHAR parsing failed for fetchall"
     except Exception as e:
         pytest.fail(f"SQL_WVARCHAR parsing test failed: {e}")
     finally:
@@ -391,8 +391,8 @@ def test_varbinary_full_capacity(cursor, db_connection):
         # fetchall test
         cursor.execute("SELECT varbinary_column FROM pytest_varbinary_test")
         rows = cursor.fetchall()
-        assert rows[0] == [bytes("12345", 'utf-8')], "SQL_VARBINARY parsing failed for fetchall - row 0"
-        assert rows[1] == [bytes("12345678", 'utf-8')], "SQL_VARBINARY parsing failed for fetchall - row 1"
+        assert compare_row_value(rows[0],[bytes("12345", 'utf-8')]), "SQL_VARBINARY parsing failed for fetchall - row 0"
+        assert compare_row_value(rows[1],[bytes("12345678", 'utf-8')]), "SQL_VARBINARY parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_VARBINARY parsing test failed: {e}")
     finally:
@@ -421,8 +421,8 @@ def test_varchar_max(cursor, db_connection):
         # fetchall test
         cursor.execute("SELECT varchar_column FROM pytest_varchar_test")
         rows = cursor.fetchall()
-        assert rows[0] == ["ABCDEFGHI"], "SQL_VARCHAR parsing failed for fetchall - row 0"
-        assert rows[1] == [None], "SQL_VARCHAR parsing failed for fetchall - row 1"
+        assert compare_row_value(rows[0],["ABCDEFGHI"]), "SQL_VARCHAR parsing failed for fetchall - row 0"
+        assert compare_row_value(rows[1],[None]), "SQL_VARCHAR parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_VARCHAR parsing test failed: {e}")
 
@@ -447,8 +447,8 @@ def test_wvarchar_max(cursor, db_connection):
         # fetchall test
         cursor.execute("SELECT wvarchar_column FROM pytest_wvarchar_test")
         rows = cursor.fetchall()
-        assert rows[0] == ["!@#$%^&*()_+"], "SQL_WVARCHAR parsing failed for fetchall - row 0"
-        assert rows[1] == [None], "SQL_WVARCHAR parsing failed for fetchall - row 1"
+        assert compare_row_value(rows[0],["!@#$%^&*()_+"]), "SQL_WVARCHAR parsing failed for fetchall - row 0"
+        assert compare_row_value(rows[1],[None]), "SQL_WVARCHAR parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_WVARCHAR parsing test failed: {e}")
 
@@ -478,8 +478,8 @@ def test_varbinary_max(cursor, db_connection):
         # fetchall test
         cursor.execute("SELECT varbinary_column FROM pytest_varbinary_test")
         rows = cursor.fetchall()
-        assert rows[0] == [bytearray("ABCDEF", 'utf-8')], "SQL_VARBINARY parsing failed for fetchall - row 0"
-        assert rows[1] == [bytes("123!@#", 'utf-8')], "SQL_VARBINARY parsing failed for fetchall - row 1"
+        assert compare_row_value(rows[0],[bytearray("ABCDEF", 'utf-8')]), "SQL_VARBINARY parsing failed for fetchall - row 0"
+        assert compare_row_value(rows[1],[bytes("123!@#", 'utf-8')]), "SQL_VARBINARY parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_VARBINARY parsing test failed: {e}")
     finally:
@@ -511,8 +511,8 @@ def test_longvarchar(cursor, db_connection):
         # fetchall test
         cursor.execute("SELECT longvarchar_column FROM pytest_longvarchar_test")
         rows = cursor.fetchall()
-        assert rows[0] == ["ABCDEFGHI"], "SQL_LONGVARCHAR parsing failed for fetchall - row 0"
-        assert rows[1] == [None], "SQL_LONGVARCHAR parsing failed for fetchall - row 1"
+        assert compare_row_value(rows[0],["ABCDEFGHI"]), "SQL_LONGVARCHAR parsing failed for fetchall - row 0"
+        assert compare_row_value(rows[1],[None]), "SQL_LONGVARCHAR parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_LONGVARCHAR parsing test failed: {e}")
     finally:
@@ -544,8 +544,8 @@ def test_longwvarchar(cursor, db_connection):
         # fetchall test
         cursor.execute("SELECT longwvarchar_column FROM pytest_longwvarchar_test")
         rows = cursor.fetchall()
-        assert rows[0] == ["ABCDEFGHI"], "SQL_LONGWVARCHAR parsing failed for fetchall - row 0"
-        assert rows[1] == [None], "SQL_LONGWVARCHAR parsing failed for fetchall - row 1"
+        assert compare_row_value(rows[0],["ABCDEFGHI"]), "SQL_LONGWVARCHAR parsing failed for fetchall - row 0"
+        assert compare_row_value(rows[1],[None]), "SQL_LONGWVARCHAR parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_LONGWVARCHAR parsing test failed: {e}")
     finally:
@@ -577,8 +577,8 @@ def test_longvarbinary(cursor, db_connection):
         # fetchall test
         cursor.execute("SELECT longvarbinary_column FROM pytest_longvarbinary_test")
         rows = cursor.fetchall()
-        assert rows[0] == [bytearray("ABCDEFGHI", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchall - row 0"        
-        assert rows[1] == [bytes("123!@#\0\0\0", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchall - row 1"
+        assert compare_row_value(rows[0],[bytearray("ABCDEFGHI", 'utf-8')]), "SQL_LONGVARBINARY parsing failed for fetchall - row 0"        
+        assert compare_row_value(rows[1],[bytes("123!@#\0\0\0", 'utf-8')]), "SQL_LONGVARBINARY parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_LONGVARBINARY parsing test failed: {e}")
     finally:
@@ -872,9 +872,9 @@ def test_join_operations(cursor):
         """)
         rows = cursor.fetchall()
         assert len(rows) == 3, "Join operation returned incorrect number of rows"
-        assert rows[0] == ['Alice', 'HR', 'Project A'], "Join operation returned incorrect data for row 1"
-        assert rows[1] == ['Bob', 'Engineering', 'Project B'], "Join operation returned incorrect data for row 2"
-        assert rows[2] == ['Charlie', 'HR', 'Project C'], "Join operation returned incorrect data for row 3"
+        assert compare_row_value(rows[0],['Alice', 'HR', 'Project A']), "Join operation returned incorrect data for row 1"
+        assert compare_row_value(rows[1],['Bob', 'Engineering', 'Project B']), "Join operation returned incorrect data for row 2"
+        assert compare_row_value(rows[2],['Charlie', 'HR', 'Project C']), "Join operation returned incorrect data for row 3"
     except Exception as e:
         pytest.fail(f"Join operation failed: {e}")
 
@@ -892,8 +892,8 @@ def test_join_operations_with_parameters(cursor):
         cursor.execute(query, employee_ids)
         rows = cursor.fetchall()
         assert len(rows) == 2, "Join operation with parameters returned incorrect number of rows"
-        assert rows[0] == ['Alice', 'HR', 'Project A'], "Join operation with parameters returned incorrect data for row 1"
-        assert rows[1] == ['Bob', 'Engineering', 'Project B'], "Join operation with parameters returned incorrect data for row 2"
+        assert compare_row_value(rows[0],['Alice', 'HR', 'Project A']), "Join operation with parameters returned incorrect data for row 1"
+        assert compare_row_value(rows[1],['Bob', 'Engineering', 'Project B']), "Join operation with parameters returned incorrect data for row 2"
     except Exception as e:
         pytest.fail(f"Join operation with parameters failed: {e}")
 
@@ -924,7 +924,7 @@ def test_execute_stored_procedure_with_parameters(cursor):
         cursor.execute("{CALL GetEmployeeProjects(?)}", [1])
         rows = cursor.fetchall()
         assert len(rows) == 1, "Stored procedure with parameters returned incorrect number of rows"
-        assert rows[0] == ['Alice', 'Project A'], "Stored procedure with parameters returned incorrect data"
+        assert compare_row_value(rows[0],['Alice', 'Project A']), "Stored procedure with parameters returned incorrect data"
     except Exception as e:
         pytest.fail(f"Stored procedure execution with parameters failed: {e}")
 
@@ -937,7 +937,7 @@ def test_execute_stored_procedure_without_parameters(cursor):
         """)
         rows = cursor.fetchall()
         assert len(rows) == 1, "Stored procedure without parameters returned incorrect number of rows"
-        assert rows[0] == ['Bob', 'Project B'], "Stored procedure without parameters returned incorrect data"
+        assert compare_row_value(rows[0],['Bob', 'Project B']), "Stored procedure without parameters returned incorrect data"
     except Exception as e:
         pytest.fail(f"Stored procedure execution without parameters failed: {e}")
 
@@ -1208,6 +1208,9 @@ def compare_row_value(actual, expected):
         # For single column result, compare the first field's value directly
         if len(actual) == 1:
             return getattr(actual, actual._fields[0]) == expected[0]
+        # For multiple columns, extract all values and compare as lists
+        actual_values = [getattr(actual, field) for field in actual._fields]
+        return actual_values == expected
     # For regular list or tuple
     elif isinstance(actual, (list, tuple)):
         return actual == expected
