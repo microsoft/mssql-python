@@ -41,6 +41,10 @@ public:
 
     // Allocate a new statement handle on this connection.
     SqlHandlePtr allocStatementHandle();
+    // Get connection handle.
+    SqlHandlePtr getDbcHandle() const {
+        return _dbcHandle;
+    }
 
 private:
     void allocateDbcHandle();
@@ -66,6 +70,9 @@ public:
     void setAutocommit(bool enabled);
     bool getAutocommit() const;
     SqlHandlePtr allocStatementHandle();
+    std::shared_ptr<Connection> getConnection() const {
+        return _conn;
+    }
 
 private:
     std::shared_ptr<Connection> _conn;
