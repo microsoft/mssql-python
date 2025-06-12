@@ -132,7 +132,6 @@ extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
 // Extern function pointer declarations for BCP APIs
 extern BCPInitWFunc BCPInitW_ptr;
 extern BCPControlWFunc BCPControlW_ptr;
-extern BCPControlAFunc BCPControlA_ptr;
 extern BCPReadFmtWFunc BCPReadFmtW_ptr;
 extern BCPColumnsFunc BCPColumns_ptr;
 extern BCPColFmtWFunc BCPColFmtW_ptr;

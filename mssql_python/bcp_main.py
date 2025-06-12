@@ -199,7 +199,7 @@ class BCPClient:
             raise # Re-raise the exception after logging
         finally:
             if self.wrapper:
-                # logger.info("Finishing and closing BCPWrapper.")
+                logger.info("Finishing and closing BCPWrapper.")
                 # self.wrapper.finish()
                 # self.wrapper.close()
                 logger.debug("BCPWrapper finished and closed.")

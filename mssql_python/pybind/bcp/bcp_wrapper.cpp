@@ -41,42 +41,6 @@ INT get_bcp_direction_code(const std::wstring& direction_str) {
     throw std::runtime_error("Invalid BCP direction string: " + py::cast(direction_str).cast<std::string>());
 }
 
-// Helper to get HDBC, ensuring driver and BCP function pointers are loaded.
-// Assumes Connection class has getHdbc() and isConnected() methods.
-SQLHDBC get_valid_hdbc_for_bcp(ConnectionHandle& conn) { // Changed to Connection&
-    if (!(conn._dbcHandle && conn._dbcHandle->get() != SQL_NULL_HANDLE)) { // Use . instead of ->
-        std::cout << "BCPWrapper: Connection is not connected." << std::endl;
-        throw std::runtime_error("BCPWrapper: Connection is not connected.");
-    }
-
-    // Check critical BCP and related function pointers
-    // REMOVED BCPSetBulkMode_ptr from this check
-    if (!SQLSetConnectAttr_ptr || !BCPInitW_ptr || !BCPControlW_ptr || 
-        !BCPReadFmtW_ptr || !BCPColumns_ptr || !BCPColFmtW_ptr || 
-        !BCPExec_ptr || !BCPDone_ptr ) { 
-         std::cout << "BCPWrapper: Critical ODBC/BCP function pointers not loaded. Attempting to load via DriverLoader." << std::endl;
-         DriverLoader::getInstance().loadDriver(); 
-         // REMOVED BCPSetBulkMode_ptr from this check
-         if (!SQLSetConnectAttr_ptr || !BCPInitW_ptr || !BCPControlW_ptr || 
-             !BCPReadFmtW_ptr || !BCPColumns_ptr || !BCPColFmtW_ptr || 
-             !BCPExec_ptr || !BCPDone_ptr ) { 
-            std::cout << "BCPWrapper Error: ODBC/BCP function pointers still not loaded after attempt." << std::endl;
-            throw std::runtime_error("BCPWrapper: ODBC/BCP function pointers not loaded.");
-         }
-    }
-
-    SQLHDBC hdbc = SQL_NULL_HANDLE;
-    if (conn._dbcHandle && conn._dbcHandle->get() != SQL_NULL_HANDLE) {
-        hdbc = static_cast<SQLHDBC>(conn._dbcHandle->get());
-    } 
-    std::cout << "HDBC from direct check: " << hdbc << std::endl; // Debugging output
-    if (!hdbc || hdbc == SQL_NULL_HDBC) { // Combined check
-        std::cout << "BCPWrapper Error: Failed to get valid HDBC from Connection object (direct check)." << std::endl;
-        throw std::runtime_error("BCPWrapper: Failed to get valid HDBC from Connection object (direct check).");
-    }
-    return hdbc;
-}
-
 // Helper function (can be a static private method or a lambda in C++11 and later)
 // to retrieve ODBC diagnostic messages and populate ErrorInfo.
 // This uses SQLGetDiagRec_ptr directly, which is loaded by DriverLoader.
@@ -117,11 +81,13 @@ static ErrorInfo get_odbc_diagnostics_for_handle(SQLSMALLINT handle_type, SQLHAN
 }
 
 BCPWrapper::BCPWrapper(ConnectionHandle& conn) // Changed to Connection&
-    : _conn(conn), _bcp_initialized(false), _bcp_finished(true) { // Initialize reference
-    SQLHDBC hdbc = SQL_NULL_HDBC;
+    : _bcp_initialized(false), _bcp_finished(true) { // Initialize reference
     try {
-        hdbc = get_valid_hdbc_for_bcp(_conn); // Pass the reference _conn
-
+        _hdbc = conn.getConnection()->getDbcHandle()->get();
+        if (!_hdbc || _hdbc == SQL_NULL_HDBC) {
+            std::cout << "BCPWrapper Error: Invalid HDBC from Connection object." << std::endl;
+            throw std::runtime_error("BCPWrapper: Invalid HDBC from Connection object.");
+        }
     } catch (const std::runtime_error& e) {
         // Re-throw with more context or just let it propagate
         throw std::runtime_error(std::string("BCPWrapper Constructor: Failed to get valid HDBC - ") + e.what());
@@ -130,31 +96,13 @@ BCPWrapper::BCPWrapper(ConnectionHandle& conn) // Changed to Connection&
 
 BCPWrapper::~BCPWrapper() {
     std::cout << "BCPWrapper: Destructor called." << std::endl;
-    try {
-        close(); 
-
-        if (_conn.isConnected() && SQLSetConnectAttr_ptr) { 
-            SQLHDBC hdbc = SQL_NULL_HDBC;
-            try {
-                 hdbc = _conn.getHdbc(); 
-            } catch (const std::exception& e) {
-                std::cout << "BCPWrapper Destructor: Exception getting HDBC to disable BCP mode: " << e.what() << std::endl;
-            }
-
-            if (hdbc != SQL_NULL_HDBC) {
-                std::cout << "BCPWrapper: Disabling BCP mode on connection in destructor." << std::endl;
-                SQLSetConnectAttr_ptr(hdbc, SQL_COPT_SS_BCP, (SQLPOINTER)SQL_BCP_OFF, SQL_IS_INTEGER);
-            } else {
-                 std::cout << "BCPWrapper Destructor: Could not get HDBC, unable to disable BCP mode explicitly." << std::endl;
-            }
-        } else {
-            std::cout << "BCPWrapper Destructor: Connection not connected, or SQLSetConnectAttr_ptr null; cannot disable BCP mode." << std::endl;
-        }
-    } catch (const std::exception& e) {
-        std::cout << "BCPWrapper Error: Exception in destructor: " << e.what() << std::endl;
-    } catch (...) {
-        std::cout << "BCPWrapper Error: Unknown exception in destructor." << std::endl;
-    }
+    // try {
+    //     close(); 
+    // } catch (const std::exception& e) {
+    //     std::cout << "BCPWrapper Error: Exception in destructor: " << e.what() << std::endl;
+    // } catch (...) {
+    //     std::cout << "BCPWrapper Error: Unknown exception in destructor." << std::endl;
+    // }
     std::cout << "BCPWrapper: Destructor finished." << std::endl;
 }
 
@@ -166,7 +114,6 @@ SQLRETURN BCPWrapper::bcp_initialize_operation(const std::wstring& table,
         std::cout << "BCPWrapper Warning: bcp_initialize_operation called but BCP already initialized. Call finish() or close() first." << std::endl;
         return SQL_ERROR; 
     }
-    SQLHDBC hdbc = get_valid_hdbc_for_bcp(_conn); 
 
     INT dir_code = get_bcp_direction_code(direction);
     
@@ -174,15 +121,17 @@ SQLRETURN BCPWrapper::bcp_initialize_operation(const std::wstring& table,
     LPCWSTR pDataFile = data_file.empty() ? nullptr : data_file.c_str();
     LPCWSTR pErrorFile = error_file.empty() ? nullptr : error_file.c_str();
 
-    std::cout << "BCPWrapper: Calling bcp_initW for table '" << py::cast(table).cast<std::string>() 
-              << "', data_file '" << (pDataFile ? py::cast(data_file).cast<std::string>() : "nullptr")
-              << "', error_file '" << (pErrorFile ? py::cast(error_file).cast<std::string>() : "nullptr")
-              << "', direction '" << py::cast(direction).cast<std::string>() << "'." << std::endl;
+    // std::cout << "BCPWrapper: Calling bcp_initW for table '" << py::cast(table).cast<std::string>() 
+    //           << "', data_file '" << (pDataFile ? py::cast(data_file).cast<std::string>() : "nullptr")
+    //           << "', error_file '" << (pErrorFile ? py::cast(error_file).cast<std::string>() : "nullptr")
+    //           << "', direction '" << py::cast(direction).cast<std::string>() << "'." << std::endl;
+    std::cout << "BCPWrapper: BCPInitW_ptr: " << (BCPInitW_ptr ? "Loaded" : "Not Loaded") << std::endl;
+    std::cout << "BCPWrapper: BCPInitW_ptr val" << BCPInitW_ptr << std::endl;
 
     // Call BCPInitW with the correct parameters
-    SQLRETURN ret = BCPInitW_ptr(hdbc, pTable, pDataFile, pErrorFile, dir_code);
+    SQLRETURN ret = BCPInitW_ptr(_hdbc, pTable, pDataFile, pErrorFile, dir_code);
+    std::cout << "BCPWrapper: HELLOOOO " << ret << std::endl;
     
-    // Check the return value
     if (ret != FAIL) {
         _bcp_initialized = true;
         _bcp_finished = false;
@@ -199,7 +148,6 @@ SQLRETURN BCPWrapper::bcp_control(const std::wstring& property_name, int value) 
         // Throw an exception instead of returning SQL_ERROR for better Python-side error handling
         throw std::runtime_error("BCPWrapper: bcp_control(int) called in invalid state.");
     }
-    SQLHDBC hdbc = get_valid_hdbc_for_bcp(_conn);
 
     auto it = bcp_control_properties.find(property_name);
     if (it == bcp_control_properties.end() || it->second.type != BCPCtrlPropType::INT) {
@@ -213,10 +161,10 @@ SQLRETURN BCPWrapper::bcp_control(const std::wstring& property_name, int value) 
     // The third argument (pvValue) for integer options is typically the value itself, cast to LPVOID,
     // or a pointer to the value. For BCP options like BCPMAXERRS, BCPBATCH, BCPKEEPNULLS, BCPKEEPIDENTITY,
     // passing the value directly cast to LPVOID after ensuring it's the correct size (e.g. SQLLEN) is common.
-    SQLRETURN ret = BCPControlW_ptr(hdbc, it->second.option_code, (LPVOID)(SQLLEN)value);
+    SQLRETURN ret = BCPControlW_ptr(_hdbc, it->second.option_code, (LPVOID)(SQLLEN)value);
     if (ret == FAIL) {
         std::string msg = "BCPWrapper Error: bcp_controlW (int value) failed for property '" + py::cast(property_name).cast<std::string>() + "'. Ret: " + std::to_string(ret);
-        ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, hdbc);
+        ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, _hdbc);
         msg += " ODBC Diag: SQLState: " + py::cast(diag.sqlState).cast<std::string>() + ", Message: " + py::cast(diag.ddbcErrorMsg).cast<std::string>();
         std::cout << msg << std::endl;
         throw std::runtime_error(msg);
@@ -229,7 +177,6 @@ SQLRETURN BCPWrapper::bcp_control(const std::wstring& property_name, const std::
         std::cout << "BCPWrapper Warning: bcp_control(wstring) called in invalid state." << std::endl;
         return SQL_ERROR;
     }
-    SQLHDBC hdbc = get_valid_hdbc_for_bcp(_conn);
 
     auto it = bcp_control_properties.find(property_name);
     if (it == bcp_control_properties.end() || it->second.type != BCPCtrlPropType::WSTRING) {
@@ -238,7 +185,7 @@ SQLRETURN BCPWrapper::bcp_control(const std::wstring& property_name, const std::
     }
     
     std::cout << "BCPWrapper: Calling bcp_controlW for property '" << py::cast(property_name).cast<std::string>() << "' with wstring value '" << py::cast(value).cast<std::string>() << "'." << std::endl;
-    SQLRETURN ret = BCPControlW_ptr(hdbc, it->second.option_code, (LPVOID)value.c_str());
+    SQLRETURN ret = BCPControlW_ptr(_hdbc, it->second.option_code, (LPVOID)value.c_str());
     if (ret == FAIL) {
         std::cout << "BCPWrapper Error: bcp_controlW (wstring value) failed for property '" << py::cast(property_name).cast<std::string>() << "'. Ret: " << ret << std::endl;
     }
@@ -254,10 +201,9 @@ SQLRETURN BCPWrapper::read_format_file(const std::wstring& file_path) {
         std::cout << "BCPWrapper Error: read_format_file - file path cannot be empty." << std::endl;
         return SQL_ERROR;
     }
-    SQLHDBC hdbc = get_valid_hdbc_for_bcp(_conn);
 
     std::cout << "BCPWrapper: Calling bcp_readfmtW for file '" << py::cast(file_path).cast<std::string>() << "'." << std::endl;
-    SQLRETURN ret = BCPReadFmtW_ptr(hdbc, file_path.c_str());
+    SQLRETURN ret = BCPReadFmtW_ptr(_hdbc, file_path.c_str());
     if (ret == FAIL) {
         std::cout << "BCPWrapper Error: bcp_readfmtW failed for file '" << py::cast(file_path).cast<std::string>() << "'. Ret: " << ret << std::endl;
     }
@@ -273,10 +219,9 @@ SQLRETURN BCPWrapper::define_columns(int num_cols) {
         std::cout << "BCPWrapper Error: define_columns - invalid number of columns: " << num_cols << std::endl;
         return SQL_ERROR;
     }
-    SQLHDBC hdbc = get_valid_hdbc_for_bcp(_conn);
 
     std::cout << "BCPWrapper: Calling bcp_columns with " << num_cols << " columns." << std::endl;
-    SQLRETURN ret = BCPColumns_ptr(hdbc, num_cols);
+    SQLRETURN ret = BCPColumns_ptr(_hdbc, num_cols);
     if (ret == FAIL) {
         std::cout << "BCPWrapper Error: bcp_columns failed for " << num_cols << " columns. Ret: " << ret << std::endl;
     }
@@ -293,7 +238,6 @@ SQLRETURN BCPWrapper::define_column_format(int file_col_idx,
     if (!_bcp_initialized || _bcp_finished) {
          throw std::runtime_error("BCPWrapper: define_column_format called in invalid state.");
     }
-    SQLHDBC hdbc = get_valid_hdbc_for_bcp(_conn);
 
     const BYTE* pTerminator = nullptr;
     INT cbTerminate = 0;
@@ -318,7 +262,7 @@ SQLRETURN BCPWrapper::define_column_format(int file_col_idx,
               << ", terminator_ptr " << (void*)pTerminator
               << "." << std::endl;
     
-    SQLRETURN ret = BCPColFmtW_ptr(hdbc,
+    SQLRETURN ret = BCPColFmtW_ptr(_hdbc,
                                    file_col_idx,
                                    static_cast<BYTE>(user_data_type),
                                    indicator_length,
@@ -331,7 +275,7 @@ SQLRETURN BCPWrapper::define_column_format(int file_col_idx,
         std::string msg = "BCPWrapper Error: bcp_colfmtW failed for file_col " + std::to_string(file_col_idx)
                   + ", server_col " + std::to_string(server_col_idx)
                   + ". Ret: " + std::to_string(ret);
-        ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, hdbc);
+        ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, _hdbc);
         msg += " ODBC Diag: SQLState: " + py::cast(diag.sqlState).cast<std::string>() + ", Message: " + py::cast(diag.ddbcErrorMsg).cast<std::string>();
         std::cout << msg << std::endl;
         throw std::runtime_error(msg);
@@ -343,15 +287,14 @@ SQLRETURN BCPWrapper::exec_bcp() {
     if (!_bcp_initialized || _bcp_finished) {
         throw std::runtime_error("BCPWrapper: exec_bcp called in invalid state.");
     }
-    SQLHDBC hdbc = get_valid_hdbc_for_bcp(_conn);
 
     DBINT rows_copied_in_batch = 0; 
     std::cout << "BCPWrapper: Calling bcp_exec." << std::endl;
-    DBINT bcp_ret = BCPExec_ptr(hdbc, &rows_copied_in_batch);
+    DBINT bcp_ret = BCPExec_ptr(_hdbc, &rows_copied_in_batch);
     
     if (bcp_ret == FAIL) { 
         std::string msg = "BCPWrapper Error: bcp_exec failed (returned -1). Rows in this batch (if any before error): " + std::to_string(static_cast<long long>(rows_copied_in_batch));
-        ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, hdbc);
+        ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, _hdbc);
         msg += " ODBC Diag: SQLState: " + py::cast(diag.sqlState).cast<std::string>() + ", Message: " + py::cast(diag.ddbcErrorMsg).cast<std::string>();
         std::cout << msg << std::endl;
         throw std::runtime_error(msg);
@@ -370,10 +313,8 @@ SQLRETURN BCPWrapper::finish() {
         return SQL_SUCCESS;
     }
 
-    SQLHDBC hdbc = get_valid_hdbc_for_bcp(_conn);
-
     std::cout << "BCPWrapper: Calling bcp_done." << std::endl;
-    SQLRETURN ret = BCPDone_ptr(hdbc);
+    SQLRETURN ret = BCPDone_ptr(_hdbc);
     if (ret != FAIL) {
         _bcp_finished = true;
         std::cout << "BCPWrapper: bcp_done successful." << std::endl;

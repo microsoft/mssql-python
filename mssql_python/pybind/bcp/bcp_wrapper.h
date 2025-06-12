@@ -70,10 +70,7 @@ public:
     SQLRETURN close();
 
 private:
-    Connection& _conn; // Changed to Connection&
+    SQLHDBC _hdbc;
     bool _bcp_initialized; // Flag to track if bcp_init has been called successfully
     bool _bcp_finished;    // Flag to track if bcp_finish (or bcp_done) has been called
-
-    // Helper to get the HDBC handle from the Connection object
-    // SQLHDBC get_hdbc() const; // Implementation would be in .cpp
 };
