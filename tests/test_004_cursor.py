@@ -563,7 +563,7 @@ def test_longvarbinary(cursor, db_connection):
         db_connection.commit()
         cursor.execute("INSERT INTO pytest_longvarbinary_test (longvarbinary_column) VALUES (?), (?)", [bytearray("ABCDEFGHI", 'utf-8'), bytes("123!@#", 'utf-8')])
         db_connection.commit()
-        expectedRows = 2  # Note: Your test has expectedRows = 3 but only inserts 2 rows
+        expectedRows = 2  # The test is intentionally designed for 2 rows
         # fetchone test
         cursor.execute("SELECT longvarbinary_column FROM pytest_longvarbinary_test")
         rows = []
