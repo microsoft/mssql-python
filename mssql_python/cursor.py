@@ -70,6 +70,10 @@ class Cursor:
         # Hence, we can't pass around bools by reference & modify them.
         # Therefore, it must be a list with exactly one bool element.
 
+        # Cache for the named tuple class for the current result set
+        self._row_namedtuple_class = None
+        self._row_field_names = None
+
     def _is_unicode_string(self, param):
         """
         Check if a string contains non-ASCII characters.
@@ -554,6 +558,10 @@ class Cursor:
         if reset_cursor:
             self._reset_cursor()
 
+        # Reset the named tuple class cache when executing a new query
+        self._row_namedtuple_class = None
+        self._row_field_names = None
+
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
 
@@ -649,11 +657,20 @@ class Cursor:
         Fetch the next row of a query result set.
 
         Returns:
-            A tuple representing a single row or None if no more data is available.
-            The tuple allows access by index.
+            If data is available:
+              - A named tuple if column names are valid Python identifiers
+              - A regular tuple otherwise
+            None if no more data is available
+            
+            Named tuples allow access by attribute name (row.column_name) 
+            in addition to index access (row[0]).
 
         Raises:
             Error: If the previous call to execute did not produce any result set.
+            
+        Note:
+            Valid Python identifiers cannot start with numbers and can only 
+            contain alphanumeric characters and underscores.
         """
         self._check_closed()  # Check if the cursor is closed
 
@@ -662,30 +679,20 @@ class Cursor:
         ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_list)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
         
-        if ret == ddbc_sql_const.SQL_NO_DATA.value:
-            return None
-        
-        # If the row list is empty, return None
-        if not row_list:
+        if ret == ddbc_sql_const.SQL_NO_DATA.value or not row_list:
             return None
         
         # Get field names from the description attribute
         field_names = [desc[0] for desc in self.description]
         
-        # Check if field names are valid for namedtuple
-        valid_fieldnames = all(isinstance(name, str) and name.isidentifier() for name in field_names)
+        # Get or create the named tuple class
+        RowRecord = self._get_row_namedtuple_class(field_names)
         
-        if valid_fieldnames:
-            # Create a namedtuple on the Python side
-            try:
-                RowRecord = collections.namedtuple('RowRecord', field_names, rename=True)
-                result = RowRecord(*row_list)
-                return result
-            except (TypeError, ValueError) as e:
-                # Fall back to a regular tuple for any error in namedtuple creation
-                return tuple(row_list)
+        if RowRecord:
+            # Use the cached named tuple class
+            return RowRecord(*row_list)
         else:
-            # If field names aren't valid identifiers, return a regular tuple
+            # Fall back to a regular tuple
             return tuple(row_list)
 
     def fetchmany(self, size: int = None) -> list:
@@ -695,13 +702,22 @@ class Cursor:
 
         Args:
             size (int): The number of rows to fetch. If not provided, the cursor's arraysize
-                        is used.
+                      is used.
 
         Returns:
-            A list of tuples, each representing a row of the result set.
-
+            A list of row objects where each row is:
+              - A named tuple if column names are valid Python identifiers
+              - A regular tuple otherwise
+            
+            Named tuples allow access by attribute name (row.column_name)
+            in addition to index access (row[0]).
+            
         Raises:
             Error: If the previous call to execute did not produce any result set.
+            
+        Note:
+            Valid Python identifiers cannot start with numbers and can only 
+            contain alphanumeric characters and underscores.
         """
         self._check_closed()  # Check if the cursor is closed
         
@@ -712,21 +728,21 @@ class Cursor:
         ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows, size)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
         
-        # Get field names from the description attribute for named tuple creation
-        if rows and self.description:
-            field_names = [desc[0] for desc in self.description]
-            
-            # Check if field names are valid for namedtuple
-            valid_fieldnames = all(isinstance(name, str) and name.isidentifier() for name in field_names)
-            
-            if valid_fieldnames:
-                # Create a named tuple class for the rows
-                RowRecord = collections.namedtuple('RowRecord', field_names, rename=True)
-                
-                # Transform each row from list to named tuple
-                return [RowRecord(*row) for row in rows]
+        if not rows:
+            return rows
         
-        return rows
+        # Get field names from the description attribute
+        field_names = [desc[0] for desc in self.description]
+        
+        # Get or create the named tuple class
+        RowRecord = self._get_row_namedtuple_class(field_names)
+        
+        if RowRecord:
+            # Convert each row to a named tuple
+            return [RowRecord(*row) for row in rows]
+        else:
+            # Return rows as regular tuples
+            return [tuple(row) for row in rows]
 
     def fetchall(self) -> list:
         """
@@ -734,10 +750,19 @@ class Cursor:
         An empty list is returned when no more rows are available.
 
         Returns:
-            A list of tuples, each representing a row of the result set.
+            A list of row objects where each row is:
+              - A named tuple if column names are valid Python identifiers
+              - A regular tuple otherwise
+              
+            Named tuples allow access by attribute name (row.column_name)
+            in addition to index access (row[0]).
 
         Raises:
             Error: If the previous call to execute did not produce any result set.
+            
+        Note:
+            Valid Python identifiers cannot start with numbers and can only 
+            contain alphanumeric characters and underscores.
         """
         self._check_closed()  # Check if the cursor is closed
         
@@ -745,21 +770,21 @@ class Cursor:
         ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
         
-        # Get field names from the description attribute for named tuple creation
-        if rows and self.description:
-            field_names = [desc[0] for desc in self.description]
-            
-            # Check if field names are valid for namedtuple
-            valid_fieldnames = all(isinstance(name, str) and name.isidentifier() for name in field_names)
-            
-            if valid_fieldnames:
-                # Create a named tuple class for the rows
-                RowRecord = collections.namedtuple('RowRecord', field_names, rename=True)
-                
-                # Transform each row from list to named tuple
-                return [RowRecord(*row) for row in rows]
+        if not rows:
+            return rows
         
-        return rows
+        # Get field names from the description attribute
+        field_names = [desc[0] for desc in self.description]
+        
+        # Get or create the named tuple class
+        RowRecord = self._get_row_namedtuple_class(field_names)
+        
+        if RowRecord:
+            # Convert each row to a named tuple
+            return [RowRecord(*row) for row in rows]
+        else:
+            # Return rows as regular tuples
+            return [tuple(row) for row in rows]
 
     def nextset(self) -> Union[bool, None]:
         """
@@ -767,9 +792,6 @@ class Cursor:
 
         Returns:
             True if there is another result set, None otherwise.
-
-        Raises:
-            Error: If the previous call to execute did not produce any result set.
         """
         self._check_closed()  # Check if the cursor is closed
 
@@ -779,3 +801,39 @@ class Cursor:
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             return False
         return True
+
+    def _get_row_namedtuple_class(self, field_names):
+        """
+        Get a cached named tuple class or create a new one if needed.
+        
+        Args:
+            field_names: List of column names from the result set
+            
+        Returns:
+            A named tuple class for the current result set's schema, or None if
+            the field names are not valid Python identifiers.
+        """
+        # Check if field names are valid for namedtuple
+        invalid_fields = [name for name in field_names if not (isinstance(name, str) and name.isidentifier())]
+        if invalid_fields:
+            if ENABLE_LOGGING:
+                logger.debug("Cannot create named tuple due to invalid field names: %s", invalid_fields)
+            return None
+            
+        # Check if we already have a cached class with these exact field names
+        if (self._row_namedtuple_class is not None and 
+                self._row_field_names == field_names):
+            return self._row_namedtuple_class
+            
+        # Create a new named tuple class and cache it
+        try:
+            self._row_namedtuple_class = collections.namedtuple('RowRecord', field_names, rename=True)
+            self._row_field_names = field_names
+            return self._row_namedtuple_class
+        except (TypeError, ValueError) as e:
+            # Log the exception for debugging purposes
+            if ENABLE_LOGGING:
+                logger.debug("Failed to create named tuple: %s", str(e))
+            self._row_namedtuple_class = None
+            self._row_field_names = None
+            return None
