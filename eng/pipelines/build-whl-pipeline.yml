@@ -56,12 +56,12 @@ jobs:
 
       # Python 3.13
       py313_x64:
-        pythonVersion: '3.13.3'
+        pythonVersion: '3.13.5'
         shortPyVer: '313'
         architecture: 'x64'
         targetArch: 'x64'
       py313_arm64:
-        pythonVersion: '3.13.3'
+        pythonVersion: '3.13.5'
         shortPyVer: '313'
         architecture: 'x64'
         targetArch: 'arm64'
