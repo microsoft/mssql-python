@@ -1,11 +1,17 @@
 # Pipeline name shown in ADO UI
 name: build-whl-pipeline
 
-# Trigger the pipeline on merge to main branch only
+# Trigger the pipeline on changes to the main branch & on pull requests
 trigger:
   branches:
     include:
       - main
+
+# Trigger on pull requests targeting the main branch
+pr:
+  branches:
+    include:
+      - main  
 
 # Use Microsoft-hosted Windows VM
 pool:
@@ -50,11 +56,13 @@ jobs:
 
       # Python 3.13
       py313_x64:
+        # TODO: Remove this once Python 3.13.5 is available in ADO
         pythonVersion: '3.13.5'
         shortPyVer: '313'
         architecture: 'x64'
         targetArch: 'x64'
       py313_arm64:
+        # TODO: Remove this once Python 3.13.5 is available in ADO
         pythonVersion: '3.13.5'
         shortPyVer: '313'
         architecture: 'x64'
@@ -81,9 +89,8 @@ jobs:
       inputs:
         buildType: 'specific'
         project: '$(System.TeamProject)'
-        definition: 2134
-        buildVersionToDownload: 'latestFromBranch'
-        branchName: 'refs/heads/main'
+        definition: 2162
+        buildVersionToDownload: 'latest'
         artifactName: 'mssql-python-arm64-libs'
         targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
       displayName: 'Download ARM64 Python libs from latest successful run on branches'
