@@ -177,3 +177,5 @@ struct ErrorInfo {
     std::wstring ddbcErrorMsg;
 };
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);
+
+std::string WideToUTF8(const std::wstring& wstr);
