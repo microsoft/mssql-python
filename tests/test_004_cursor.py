@@ -334,7 +334,7 @@ def test_varchar_full_capacity(cursor, db_connection):
         # fetchall test
         cursor.execute("SELECT varchar_column FROM pytest_varchar_test")
         rows = cursor.fetchall()
-        assert compare_row_value(rows[0], ['123456789']), "SQL_VARCHAR parsing failed for fetchall"
+        assert rows[0] == ['123456789'], "SQL_VARCHAR parsing failed for fetchall"
     except Exception as e:
         pytest.fail(f"SQL_VARCHAR parsing test failed: {e}")
     finally:
@@ -356,7 +356,7 @@ def test_wvarchar_full_capacity(cursor, db_connection):
         # fetchall test
         cursor.execute("SELECT wvarchar_column FROM pytest_wvarchar_test")
         rows = cursor.fetchall()
-        assert compare_row_value(rows[0],['123456']), "SQL_WVARCHAR parsing failed for fetchall"
+        assert rows[0] == ['123456'], "SQL_WVARCHAR parsing failed for fetchall"
     except Exception as e:
         pytest.fail(f"SQL_WVARCHAR parsing test failed: {e}")
     finally:
@@ -367,13 +367,10 @@ def test_wvarchar_full_capacity(cursor, db_connection):
 def test_varbinary_full_capacity(cursor, db_connection):
     """Test SQL_VARBINARY"""
     try:
-        # Drop the table if it exists first
-        drop_table_if_exists(cursor, "pytest_varbinary_test")
-        
         cursor.execute("CREATE TABLE pytest_varbinary_test (varbinary_column VARBINARY(8))")
         db_connection.commit()
         # Try inserting binary using both bytes & bytearray
-        cursor.execute("INSERT INTO pytest_varbinary_test (varbinary_column) VALUES (?)", bytearray("12345", 'utf-8'))      
+        cursor.execute("INSERT INTO pytest_varbinary_test (varbinary_column) VALUES (?)", bytearray("12345", 'utf-8'))
         cursor.execute("INSERT INTO pytest_varbinary_test (varbinary_column) VALUES (?)", bytes("12345678", 'utf-8')) # Full capacity
         db_connection.commit()
         expectedRows = 2
@@ -383,21 +380,17 @@ def test_varbinary_full_capacity(cursor, db_connection):
         for i in range(0, expectedRows):
             rows.append(cursor.fetchone())
         assert cursor.fetchone() == None, "varbinary_column is expected to have only {} rows".format(expectedRows)
-        
-        # Use the compare_row_value function for assertions
-        assert compare_row_value(rows[0], [bytes("12345", 'utf-8')]), "SQL_VARBINARY parsing failed for fetchone - row 0"
-        assert compare_row_value(rows[1], [bytes("12345678", 'utf-8')]), "SQL_VARBINARY parsing failed for fetchone - row 1"
-        
+        assert rows[0] == [bytes("12345", 'utf-8')], "SQL_VARBINARY parsing failed for fetchone - row 0"
+        assert rows[1] == [bytes("12345678", 'utf-8')], "SQL_VARBINARY parsing failed for fetchone - row 1"
         # fetchall test
         cursor.execute("SELECT varbinary_column FROM pytest_varbinary_test")
         rows = cursor.fetchall()
-        assert compare_row_value(rows[0],[bytes("12345", 'utf-8')]), "SQL_VARBINARY parsing failed for fetchall - row 0"
-        assert compare_row_value(rows[1],[bytes("12345678", 'utf-8')]), "SQL_VARBINARY parsing failed for fetchall - row 1"
+        assert rows[0] == [bytes("12345", 'utf-8')], "SQL_VARBINARY parsing failed for fetchall - row 0"
+        assert rows[1] == [bytes("12345678", 'utf-8')], "SQL_VARBINARY parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_VARBINARY parsing test failed: {e}")
     finally:
-        # Clean up the table
-        drop_table_if_exists(cursor, "pytest_varbinary_test")
+        cursor.execute("DROP TABLE pytest_varbinary_test")
         db_connection.commit()
 
 def test_varchar_max(cursor, db_connection):
@@ -414,24 +407,25 @@ def test_varchar_max(cursor, db_connection):
         for i in range(0, expectedRows):
             rows.append(cursor.fetchone())
         assert cursor.fetchone() == None, "varchar_column is expected to have only {} rows".format(expectedRows)
-        
-        assert compare_row_value(rows[0], ["ABCDEFGHI"]), "SQL_VARCHAR parsing failed for fetchone - row 0"
-        assert compare_row_value(rows[1], [None]), "SQL_VARCHAR parsing failed for fetchone - row 1"
-        
+        assert rows[0] == ["ABCDEFGHI"], "SQL_VARCHAR parsing failed for fetchone - row 0"
+        assert rows[1] == [None], "SQL_VARCHAR parsing failed for fetchone - row 1"
         # fetchall test
         cursor.execute("SELECT varchar_column FROM pytest_varchar_test")
         rows = cursor.fetchall()
-        assert compare_row_value(rows[0],["ABCDEFGHI"]), "SQL_VARCHAR parsing failed for fetchall - row 0"
-        assert compare_row_value(rows[1],[None]), "SQL_VARCHAR parsing failed for fetchall - row 1"
+        assert rows[0] == ["ABCDEFGHI"], "SQL_VARCHAR parsing failed for fetchall - row 0"
+        assert rows[1] == [None], "SQL_VARCHAR parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_VARCHAR parsing test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_varchar_test")
+        db_connection.commit()
 
 def test_wvarchar_max(cursor, db_connection):
     """Test SQL_WVARCHAR with MAX length"""
     try:
         cursor.execute("CREATE TABLE pytest_wvarchar_test (wvarchar_column NVARCHAR(MAX))")
         db_connection.commit()
-        cursor.execute("INSERT INTO pytest_wvarchar_test (wvarchar_column) VALUES (?), (?)", ["!@#$%^&*()_+", None])        
+        cursor.execute("INSERT INTO pytest_wvarchar_test (wvarchar_column) VALUES (?), (?)", ["!@#$%^&*()_+", None])
         db_connection.commit()
         expectedRows = 2
         # fetchone test
@@ -440,24 +434,22 @@ def test_wvarchar_max(cursor, db_connection):
         for i in range(0, expectedRows):
             rows.append(cursor.fetchone())
         assert cursor.fetchone() == None, "wvarchar_column is expected to have only {} rows".format(expectedRows)
-        
-        assert compare_row_value(rows[0], ["!@#$%^&*()_+"]), "SQL_WVARCHAR parsing failed for fetchone - row 0"
-        assert compare_row_value(rows[1], [None]), "SQL_WVARCHAR parsing failed for fetchone - row 1"
-        
+        assert rows[0] == ["!@#$%^&*()_+"], "SQL_WVARCHAR parsing failed for fetchone - row 0"
+        assert rows[1] == [None], "SQL_WVARCHAR parsing failed for fetchone - row 1"
         # fetchall test
         cursor.execute("SELECT wvarchar_column FROM pytest_wvarchar_test")
         rows = cursor.fetchall()
-        assert compare_row_value(rows[0],["!@#$%^&*()_+"]), "SQL_WVARCHAR parsing failed for fetchall - row 0"
-        assert compare_row_value(rows[1],[None]), "SQL_WVARCHAR parsing failed for fetchall - row 1"
+        assert rows[0] == ["!@#$%^&*()_+"], "SQL_WVARCHAR parsing failed for fetchall - row 0"
+        assert rows[1] == [None], "SQL_WVARCHAR parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_WVARCHAR parsing test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_wvarchar_test")
+        db_connection.commit()
 
 def test_varbinary_max(cursor, db_connection):
     """Test SQL_VARBINARY with MAX length"""
     try:
-        # Drop the table if it exists first
-        drop_table_if_exists(cursor, "pytest_varbinary_test")
-        
         cursor.execute("CREATE TABLE pytest_varbinary_test (varbinary_column VARBINARY(MAX))")
         db_connection.commit()
         # TODO: Uncomment this execute after adding null binary support
@@ -471,31 +463,25 @@ def test_varbinary_max(cursor, db_connection):
         for i in range(0, expectedRows):
             rows.append(cursor.fetchone())
         assert cursor.fetchone() == None, "varbinary_column is expected to have only {} rows".format(expectedRows)
-        
-        assert compare_row_value(rows[0], [bytearray("ABCDEF", 'utf-8')]), "SQL_VARBINARY parsing failed for fetchone - row 0"
-        assert compare_row_value(rows[1], [bytes("123!@#", 'utf-8')]), "SQL_VARBINARY parsing failed for fetchone - row 1"
-        
+        assert rows[0] == [bytearray("ABCDEF", 'utf-8')], "SQL_VARBINARY parsing failed for fetchone - row 0"
+        assert rows[1] == [bytes("123!@#", 'utf-8')], "SQL_VARBINARY parsing failed for fetchone - row 1"
         # fetchall test
         cursor.execute("SELECT varbinary_column FROM pytest_varbinary_test")
         rows = cursor.fetchall()
-        assert compare_row_value(rows[0],[bytearray("ABCDEF", 'utf-8')]), "SQL_VARBINARY parsing failed for fetchall - row 0"
-        assert compare_row_value(rows[1],[bytes("123!@#", 'utf-8')]), "SQL_VARBINARY parsing failed for fetchall - row 1"
+        assert rows[0] == [bytearray("ABCDEF", 'utf-8')], "SQL_VARBINARY parsing failed for fetchall - row 0"
+        assert rows[1] == [bytes("123!@#", 'utf-8')], "SQL_VARBINARY parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_VARBINARY parsing test failed: {e}")
     finally:
-        # Clean up the table
-        drop_table_if_exists(cursor, "pytest_varbinary_test")
+        cursor.execute("DROP TABLE pytest_varbinary_test")
         db_connection.commit()
 
 def test_longvarchar(cursor, db_connection):
     """Test SQL_LONGVARCHAR"""
     try:
-        # Drop the table if it exists first
-        drop_table_if_exists(cursor, "pytest_longvarchar_test")
-        
         cursor.execute("CREATE TABLE pytest_longvarchar_test (longvarchar_column TEXT)")
         db_connection.commit()
-        cursor.execute("INSERT INTO pytest_longvarchar_test (longvarchar_column) VALUES (?), (?)", ["ABCDEFGHI", None])     
+        cursor.execute("INSERT INTO pytest_longvarchar_test (longvarchar_column) VALUES (?), (?)", ["ABCDEFGHI", None])
         db_connection.commit()
         expectedRows = 2
         # fetchone test
@@ -503,32 +489,26 @@ def test_longvarchar(cursor, db_connection):
         rows = []
         for i in range(0, expectedRows):
             rows.append(cursor.fetchone())
-        assert cursor.fetchone() == None, "longvarchar_column is expected to have only {} rows".format(expectedRows)        
-        
-        assert compare_row_value(rows[0], ["ABCDEFGHI"]), "SQL_LONGVARCHAR parsing failed for fetchone - row 0"
-        assert compare_row_value(rows[1], [None]), "SQL_LONGVARCHAR parsing failed for fetchone - row 1"
-        
+        assert cursor.fetchone() == None, "longvarchar_column is expected to have only {} rows".format(expectedRows)
+        assert rows[0] == ["ABCDEFGHI"], "SQL_LONGVARCHAR parsing failed for fetchone - row 0"
+        assert rows[1] == [None], "SQL_LONGVARCHAR parsing failed for fetchone - row 1"
         # fetchall test
         cursor.execute("SELECT longvarchar_column FROM pytest_longvarchar_test")
         rows = cursor.fetchall()
-        assert compare_row_value(rows[0],["ABCDEFGHI"]), "SQL_LONGVARCHAR parsing failed for fetchall - row 0"
-        assert compare_row_value(rows[1],[None]), "SQL_LONGVARCHAR parsing failed for fetchall - row 1"
+        assert rows[0] == ["ABCDEFGHI"], "SQL_LONGVARCHAR parsing failed for fetchall - row 0"
+        assert rows[1] == [None], "SQL_LONGVARCHAR parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_LONGVARCHAR parsing test failed: {e}")
     finally:
-        # Clean up the table
-        drop_table_if_exists(cursor, "pytest_longvarchar_test")
+        cursor.execute("DROP TABLE pytest_longvarchar_test")
         db_connection.commit()
 
 def test_longwvarchar(cursor, db_connection):
     """Test SQL_LONGWVARCHAR"""
     try:
-        # Drop the table if it exists first
-        drop_table_if_exists(cursor, "pytest_longwvarchar_test")
-        
         cursor.execute("CREATE TABLE pytest_longwvarchar_test (longwvarchar_column NTEXT)")
         db_connection.commit()
-        cursor.execute("INSERT INTO pytest_longwvarchar_test (longwvarchar_column) VALUES (?), (?)", ["ABCDEFGHI", None])   
+        cursor.execute("INSERT INTO pytest_longwvarchar_test (longwvarchar_column) VALUES (?), (?)", ["ABCDEFGHI", None])
         db_connection.commit()
         expectedRows = 2
         # fetchone test
@@ -536,54 +516,45 @@ def test_longwvarchar(cursor, db_connection):
         rows = []
         for i in range(0, expectedRows):
             rows.append(cursor.fetchone())
-        assert cursor.fetchone() == None, "longwvarchar_column is expected to have only {} rows".format(expectedRows)       
-        
-        assert compare_row_value(rows[0], ["ABCDEFGHI"]), "SQL_LONGWVARCHAR parsing failed for fetchone - row 0"
-        assert compare_row_value(rows[1], [None]), "SQL_LONGWVARCHAR parsing failed for fetchone - row 1"
-        
+        assert cursor.fetchone() == None, "longwvarchar_column is expected to have only {} rows".format(expectedRows)
+        assert rows[0] == ["ABCDEFGHI"], "SQL_LONGWVARCHAR parsing failed for fetchone - row 0"
+        assert rows[1] == [None], "SQL_LONGWVARCHAR parsing failed for fetchone - row 1"
         # fetchall test
         cursor.execute("SELECT longwvarchar_column FROM pytest_longwvarchar_test")
         rows = cursor.fetchall()
-        assert compare_row_value(rows[0],["ABCDEFGHI"]), "SQL_LONGWVARCHAR parsing failed for fetchall - row 0"
-        assert compare_row_value(rows[1],[None]), "SQL_LONGWVARCHAR parsing failed for fetchall - row 1"
+        assert rows[0] == ["ABCDEFGHI"], "SQL_LONGWVARCHAR parsing failed for fetchall - row 0"
+        assert rows[1] == [None], "SQL_LONGWVARCHAR parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_LONGWVARCHAR parsing test failed: {e}")
     finally:
-        # Clean up the table
-        drop_table_if_exists(cursor, "pytest_longwvarchar_test")
+        cursor.execute("DROP TABLE pytest_longwvarchar_test")
         db_connection.commit()
 
 def test_longvarbinary(cursor, db_connection):
     """Test SQL_LONGVARBINARY"""
     try:
-        # Drop the table if it exists first
-        drop_table_if_exists(cursor, "pytest_longvarbinary_test")
-        
         cursor.execute("CREATE TABLE pytest_longvarbinary_test (longvarbinary_column IMAGE)")
         db_connection.commit()
         cursor.execute("INSERT INTO pytest_longvarbinary_test (longvarbinary_column) VALUES (?), (?)", [bytearray("ABCDEFGHI", 'utf-8'), bytes("123!@#", 'utf-8')])
         db_connection.commit()
-        expectedRows = 2  # The test is intentionally designed for 2 rows
+        expectedRows = 3
         # fetchone test
         cursor.execute("SELECT longvarbinary_column FROM pytest_longvarbinary_test")
         rows = []
         for i in range(0, expectedRows):
             rows.append(cursor.fetchone())
-        assert cursor.fetchone() == None, "longvarbinary_column is expected to have only {} rows".format(expectedRows)      
-        
-        assert compare_row_value(rows[0], [bytearray("ABCDEFGHI", 'utf-8')]), "SQL_LONGVARBINARY parsing failed for fetchone - row 0"        
-        assert compare_row_value(rows[1], [bytes("123!@#\0\0\0", 'utf-8')]), "SQL_LONGVARBINARY parsing failed for fetchone - row 1"
-        
+        assert cursor.fetchone() == None, "longvarbinary_column is expected to have only {} rows".format(expectedRows)
+        assert rows[0] == [bytearray("ABCDEFGHI", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchone - row 0"
+        assert rows[1] == [bytes("123!@#\0\0\0", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchone - row 1"
         # fetchall test
         cursor.execute("SELECT longvarbinary_column FROM pytest_longvarbinary_test")
         rows = cursor.fetchall()
-        assert compare_row_value(rows[0],[bytearray("ABCDEFGHI", 'utf-8')]), "SQL_LONGVARBINARY parsing failed for fetchall - row 0"        
-        assert compare_row_value(rows[1],[bytes("123!@#\0\0\0", 'utf-8')]), "SQL_LONGVARBINARY parsing failed for fetchall - row 1"
+        assert rows[0] == [bytearray("ABCDEFGHI", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchall - row 0"
+        assert rows[1] == [bytes("123!@#\0\0\0", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_LONGVARBINARY parsing test failed: {e}")
     finally:
-        # Clean up the table
-        drop_table_if_exists(cursor, "pytest_longvarbinary_test")
+        cursor.execute("DROP TABLE pytest_longvarbinary_test")
         db_connection.commit()
 
 def test_create_table(cursor, db_connection):
@@ -872,9 +843,9 @@ def test_join_operations(cursor):
         """)
         rows = cursor.fetchall()
         assert len(rows) == 3, "Join operation returned incorrect number of rows"
-        assert compare_row_value(rows[0],['Alice', 'HR', 'Project A']), "Join operation returned incorrect data for row 1"
-        assert compare_row_value(rows[1],['Bob', 'Engineering', 'Project B']), "Join operation returned incorrect data for row 2"
-        assert compare_row_value(rows[2],['Charlie', 'HR', 'Project C']), "Join operation returned incorrect data for row 3"
+        assert rows[0] == ['Alice', 'HR', 'Project A'], "Join operation returned incorrect data for row 1"
+        assert rows[1] == ['Bob', 'Engineering', 'Project B'], "Join operation returned incorrect data for row 2"
+        assert rows[2] == ['Charlie', 'HR', 'Project C'], "Join operation returned incorrect data for row 3"
     except Exception as e:
         pytest.fail(f"Join operation failed: {e}")
 
@@ -892,8 +863,8 @@ def test_join_operations_with_parameters(cursor):
         cursor.execute(query, employee_ids)
         rows = cursor.fetchall()
         assert len(rows) == 2, "Join operation with parameters returned incorrect number of rows"
-        assert compare_row_value(rows[0],['Alice', 'HR', 'Project A']), "Join operation with parameters returned incorrect data for row 1"
-        assert compare_row_value(rows[1],['Bob', 'Engineering', 'Project B']), "Join operation with parameters returned incorrect data for row 2"
+        assert rows[0] == ['Alice', 'HR', 'Project A'], "Join operation with parameters returned incorrect data for row 1"
+        assert rows[1] == ['Bob', 'Engineering', 'Project B'], "Join operation with parameters returned incorrect data for row 2"
     except Exception as e:
         pytest.fail(f"Join operation with parameters failed: {e}")
 
@@ -924,7 +895,7 @@ def test_execute_stored_procedure_with_parameters(cursor):
         cursor.execute("{CALL GetEmployeeProjects(?)}", [1])
         rows = cursor.fetchall()
         assert len(rows) == 1, "Stored procedure with parameters returned incorrect number of rows"
-        assert compare_row_value(rows[0],['Alice', 'Project A']), "Stored procedure with parameters returned incorrect data"
+        assert rows[0] == ['Alice', 'Project A'], "Stored procedure with parameters returned incorrect data"
     except Exception as e:
         pytest.fail(f"Stored procedure execution with parameters failed: {e}")
 
@@ -937,7 +908,7 @@ def test_execute_stored_procedure_without_parameters(cursor):
         """)
         rows = cursor.fetchall()
         assert len(rows) == 1, "Stored procedure without parameters returned incorrect number of rows"
-        assert compare_row_value(rows[0],['Bob', 'Project B']), "Stored procedure without parameters returned incorrect data"
+        assert rows[0] == ['Bob', 'Project B'], "Stored procedure without parameters returned incorrect data"
     except Exception as e:
         pytest.fail(f"Stored procedure execution without parameters failed: {e}")
 
@@ -1103,9 +1074,6 @@ def test_boolean(cursor, db_connection):
 def test_sql_wvarchar(cursor, db_connection):
     """Test SQL_WVARCHAR"""
     try:
-        # Drop the table if it exists first
-        drop_table_if_exists(cursor, "pytest_wvarchar_test")
-        
         cursor.execute("CREATE TABLE pytest_wvarchar_test (wvarchar_column NVARCHAR(255))")
         db_connection.commit()
         cursor.execute("INSERT INTO pytest_wvarchar_test (wvarchar_column) VALUES (?)", ['nvarchar data'])
@@ -1116,16 +1084,12 @@ def test_sql_wvarchar(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"SQL_WVARCHAR parsing test failed: {e}")
     finally:
-        # Clean up
-        drop_table_if_exists(cursor, "pytest_wvarchar_test") 
+        cursor.execute("DROP TABLE pytest_wvarchar_test")
         db_connection.commit()
 
 def test_sql_varchar(cursor, db_connection):
     """Test SQL_VARCHAR"""
     try:
-        # Drop the table if it exists first
-        drop_table_if_exists(cursor, "pytest_varchar_test")
-        
         cursor.execute("CREATE TABLE pytest_varchar_test (varchar_column VARCHAR(255))")
         db_connection.commit()
         cursor.execute("INSERT INTO pytest_varchar_test (varchar_column) VALUES (?)", ['varchar data'])
@@ -1136,8 +1100,7 @@ def test_sql_varchar(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"SQL_VARCHAR parsing test failed: {e}")
     finally:
-        # Clean up
-        drop_table_if_exists(cursor, "pytest_varchar_test")
+        cursor.execute("DROP TABLE pytest_varchar_test")
         db_connection.commit()
 
 def test_numeric_precision_scale_positive_exponent(cursor, db_connection):
@@ -1192,27 +1155,3 @@ def test_close(db_connection):
         pytest.fail(f"Cursor close test failed: {e}")
     finally:
         cursor = db_connection.cursor()
-
-def compare_row_value(actual, expected):
-    """Compare a row with expected values, supporting both namedtuple and list formats.
-    
-    Args:
-        actual: The actual row returned from fetchone() or similar (could be namedtuple)
-        expected: The expected values as a list
-        
-    Returns:
-        bool: True if the values match, False otherwise
-    """
-    # If the actual row is a namedtuple (has _fields attribute)
-    if hasattr(actual, '_fields'):
-        # For single column result, compare the first field's value directly
-        if len(actual) == 1:
-            return getattr(actual, actual._fields[0]) == expected[0]
-        # For multiple columns, extract all values and compare as lists
-        actual_values = [getattr(actual, field) for field in actual._fields]
-        return actual_values == expected
-    # For regular list or tuple
-    elif isinstance(actual, (list, tuple)):
-        return actual == expected
-    
-    return False

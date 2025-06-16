@@ -1816,7 +1816,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
 // FetchOne_wrap - Fetches a single row of data from the result set.
 //
 // @param StatementHandle: Handle to the statement from which data is to be fetched.
-// @param row: A Python object reference that will be populated with a named tuple containing the fetched row data.
+// @param row: A Python list that will be populated with the fetched row data.
 //
 // @return SQLRETURN: SQL_SUCCESS or SQL_SUCCESS_WITH_INFO if data is fetched successfully,
 //                    SQL_NO_DATA if there are no more rows to fetch,
@@ -1824,40 +1824,21 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
 //
 // This function assumes that the statement handle (hStmt) is already allocated and a query has been
 // executed. It fetches the next row of data from the result set and populates the provided Python
-// object with a named tuple containing the row data. If there are no more rows to fetch, it returns 
-// SQL_NO_DATA. If an error occurs during fetching, it throws a runtime error.
-SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row_list) {
+// list with the row data. If there are no more rows to fetch, it returns SQL_NO_DATA. If an error
+// occurs during fetching, it throws a runtime error.
+SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row) {
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
 
-    if (!SQLFetch_ptr) {
-        LOG("Function pointer not initialized in FetchOne_wrap. Loading the driver.\n");
-        DriverLoader::getInstance().loadDriver();
-    }
-    
+    // Assume hStmt is already allocated and a query has been executed
     ret = SQLFetch_ptr(hStmt);
-    if (ret == SQL_NO_DATA) {
-        return ret;
-    } else if (!SQL_SUCCEEDED(ret)) {
-        LOG("Error when fetching data: SQLFetch_ptr failed with retcode {}\n", ret);
-        return ret;
+    if (SQL_SUCCEEDED(ret)) {
+        // Retrieve column count
+        SQLSMALLINT colCount = SQLNumResultCols_wrap(StatementHandle);
+        ret = SQLGetData_wrap(StatementHandle, colCount, row);
+    } else if (ret != SQL_NO_DATA) {
+        LOG("Error when fetching data");
     }
-
-    // Get column count - we don't need column names in C++ anymore
-    SQLSMALLINT colCount;
-    SQLRETURN colRet = SQLNumResultCols_ptr(hStmt, &colCount);
-    if (!SQL_SUCCEEDED(colRet)) {
-        LOG("Error when getting column count: SQLNumResultCols_ptr failed with retcode {}\n", colRet);
-        return colRet;
-    }
-    
-    // Get row data into the list
-    ret = SQLGetData_wrap(StatementHandle, colCount, row_list);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Error when fetching data values: SQLGetData_wrap failed with retcode {}\n", ret);
-        return ret;
-    }
-
     return ret;
 }
 
