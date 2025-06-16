@@ -320,9 +320,9 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 }
                 // TODO: can be moved to python by registering SQL_DATE_STRUCT in pybind
                 SQL_DATE_STRUCT* sqlDatePtr = AllocateParamBuffer<SQL_DATE_STRUCT>(paramBuffers);
-                sqlDatePtr->year = param.attr("year").cast<int>();
-                sqlDatePtr->month = param.attr("month").cast<int>();
-                sqlDatePtr->day = param.attr("day").cast<int>();
+                sqlDatePtr->year = static_cast<SQLSMALLINT>(param.attr("year").cast<int>());
+                sqlDatePtr->month = static_cast<SQLUSMALLINT>(param.attr("month").cast<int>());
+                sqlDatePtr->day = static_cast<SQLUSMALLINT>(param.attr("day").cast<int>());
                 dataPtr = static_cast<void*>(sqlDatePtr);
                 break;
             }
@@ -333,9 +333,9 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 }
                 // TODO: can be moved to python by registering SQL_TIME_STRUCT in pybind
                 SQL_TIME_STRUCT* sqlTimePtr = AllocateParamBuffer<SQL_TIME_STRUCT>(paramBuffers);
-                sqlTimePtr->hour = param.attr("hour").cast<int>();
-                sqlTimePtr->minute = param.attr("minute").cast<int>();
-                sqlTimePtr->second = param.attr("second").cast<int>();
+                sqlTimePtr->hour = static_cast<SQLUSMALLINT>(param.attr("hour").cast<int>());
+                sqlTimePtr->minute = static_cast<SQLUSMALLINT>(param.attr("minute").cast<int>());
+                sqlTimePtr->second = static_cast<SQLUSMALLINT>(param.attr("second").cast<int>());
                 dataPtr = static_cast<void*>(sqlTimePtr);
                 break;
             }
@@ -346,12 +346,12 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 }
                 SQL_TIMESTAMP_STRUCT* sqlTimestampPtr =
                     AllocateParamBuffer<SQL_TIMESTAMP_STRUCT>(paramBuffers);
-                sqlTimestampPtr->year = param.attr("year").cast<int>();
-                sqlTimestampPtr->month = param.attr("month").cast<int>();
-                sqlTimestampPtr->day = param.attr("day").cast<int>();
-                sqlTimestampPtr->hour = param.attr("hour").cast<int>();
-                sqlTimestampPtr->minute = param.attr("minute").cast<int>();
-                sqlTimestampPtr->second = param.attr("second").cast<int>();
+                sqlTimestampPtr->year = static_cast<SQLSMALLINT>(param.attr("year").cast<int>());
+                sqlTimestampPtr->month = static_cast<SQLUSMALLINT>(param.attr("month").cast<int>());
+                sqlTimestampPtr->day = static_cast<SQLUSMALLINT>(param.attr("day").cast<int>());
+                sqlTimestampPtr->hour = static_cast<SQLUSMALLINT>(param.attr("hour").cast<int>());
+                sqlTimestampPtr->minute = static_cast<SQLUSMALLINT>(param.attr("minute").cast<int>());
+                sqlTimestampPtr->second = static_cast<SQLUSMALLINT>(param.attr("second").cast<int>());
                 // SQL server supports in ns, but python datetime supports in µs
                 sqlTimestampPtr->fraction = static_cast<SQLUINTEGER>(
                     param.attr("microsecond").cast<int>() * 1000);  // Convert µs to ns
@@ -372,7 +372,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 decimalPtr->scale = decimalParam.scale;
                 decimalPtr->sign = decimalParam.sign;
                 // Convert the integer decimalParam.val to char array
-                std:memset(static_cast<void*>(decimalPtr->val), 0, sizeof(decimalPtr->val));
+                std::memset(static_cast<void*>(decimalPtr->val), 0, sizeof(decimalPtr->val));
                 std::memcpy(static_cast<void*>(decimalPtr->val),
 			    reinterpret_cast<char*>(&decimalParam.val),
                             sizeof(decimalParam.val));
@@ -395,8 +395,11 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
         assert(SQLBindParameter_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr);
 
         RETCODE rc = SQLBindParameter_ptr(
-            hStmt, paramIndex + 1 /* 1-based indexing */, paramInfo.inputOutputType,
-            paramInfo.paramCType, paramInfo.paramSQLType, paramInfo.columnSize,
+            hStmt,
+            static_cast<SQLUSMALLINT>(paramIndex + 1),  /* 1-based indexing */
+            static_cast<SQLUSMALLINT>(paramInfo.inputOutputType),
+            static_cast<SQLSMALLINT>(paramInfo.paramCType),
+            static_cast<SQLSMALLINT>(paramInfo.paramSQLType), paramInfo.columnSize,
             paramInfo.decimalDigits, dataPtr, bufferLength, strLenOrIndPtr);
         if (!SQL_SUCCEEDED(rc)) {
             LOG("Error when binding parameter - {}", paramIndex);
@@ -406,7 +409,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
 	// https://learn.microsoft.com/en-us/sql/odbc/reference/appendixes/retrieve-numeric-data-sql-numeric-struct-kb222831?view=sql-server-ver16#sql_c_numeric-overview
         if (paramInfo.paramCType == SQL_C_NUMERIC) {
             SQLHDESC hDesc = nullptr;
-            RETCODE rc = SQLGetStmtAttr_ptr(hStmt, SQL_ATTR_APP_PARAM_DESC, &hDesc, 0, NULL);
+            rc = SQLGetStmtAttr_ptr(hStmt, SQL_ATTR_APP_PARAM_DESC, &hDesc, 0, NULL);
             if(!SQL_SUCCEEDED(rc)) {
                 LOG("Error when getting statement attribute - {}", paramIndex);
                 return rc;
@@ -469,6 +472,14 @@ void LOG(const std::string& formatString, Args&&... args) {
     logging.attr("debug")(message);
 }
 
+std::string WideToUTF8(const std::wstring& wstr) {
+    if (wstr.empty()) return {};
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
+    std::string result(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), result.data(), size_needed, nullptr, nullptr);
+    return result;
+}
+
 // TODO: Add more nuanced exception classes
 void ThrowStdException(const std::string& message) { throw std::runtime_error(message); }
 
@@ -523,8 +534,7 @@ std::wstring LoadDriverOrThrowException() {
     }
 
     // Convert wstring to string for logging
-    std::string dllDirStr(dllDir.begin(), dllDir.end());
-    LOG("Attempting to load driver from - {}", dllDirStr);
+    LOG("Attempting to load driver from - {}", WideToUTF8(dllDir));
     
     HMODULE hModule = LoadLibraryW(dllDir.c_str());
     if (!hModule) {
@@ -597,7 +607,6 @@ std::wstring LoadDriverOrThrowException() {
                    SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
 
     if (!success) {
-        LOG("Failed to load required function pointers from driver - {}", dllDirStr);
         ThrowStdException("Failed to load required function pointers from driver");
     }
     LOG("Successfully loaded function pointers from driver");
@@ -860,7 +869,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    SQLRETURN ret;
+    SQLRETURN ret = SQL_SUCCESS;
     SQLHSTMT hStmt = StatementHandle->get();
     for (SQLSMALLINT i = 1; i <= colCount; ++i) {
         SQLWCHAR columnName[256];
@@ -1137,7 +1146,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 if (SQL_SUCCEEDED(ret)) {
                     // TODO: Refactor these if's across other switches to avoid code duplication
                     if (dataLen > 0) {
-						if (dataLen <= columnSize) {
+						if (static_cast<size_t>(dataLen) <= columnSize) {
                             row.append(py::bytes(reinterpret_cast<const char*>(
                                 dataBuffer.get()), dataLen));
 						} else {
@@ -1551,7 +1560,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     // TODO: variable length data needs special handling, this logic wont suffice
                     SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
                     HandleZeroColumnSizeAtFetch(columnSize);
-                    if (dataLen <= columnSize) {
+                    if (static_cast<size_t>(dataLen) <= columnSize) {
                         row.append(py::bytes(reinterpret_cast<const char*>(
                                                  &buffers.charBuffers[col - 1][i * columnSize]),
                                              dataLen));
@@ -1702,7 +1711,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     }
 
     SQLULEN numRowsFetched;
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)fetchSize, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
     ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched);
@@ -1790,7 +1799,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
     }
 
     SQLULEN numRowsFetched;
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)fetchSize, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
     while (ret != SQL_NO_DATA) {
