@@ -6,9 +6,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if (MSVC)
-    # Enable PDB generation for all target types
-    add_compile_options("$<$<CONFIG:Release>:/Zi>")
-    add_link_options("$<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>")
+    # Enable PDB generation for the ddbc_bindings target
+    target_compile_options(ddbc_bindings PRIVATE "$<$<CONFIG:Release>:/Zi>")
+    target_link_options(ddbc_bindings PRIVATE "$<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>")
 endif()
 
 # Detect platform
