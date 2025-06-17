@@ -265,6 +265,11 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 if (!py::isinstance<py::int_>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
+                int value = param.cast<int>();
+                // Range validation for signed 16-bit integer
+                if (value < std::numeric_limits<short>::min() || value > std::numeric_limits<short>::max()) {
+                    ThrowStdException("Signed short integer parameter out of range at paramIndex " + std::to_string(paramIndex));
+                }
                 dataPtr =
                     static_cast<void*>(AllocateParamBuffer<int>(paramBuffers, param.cast<int>()));
                 break;
@@ -273,6 +278,10 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
             case SQL_C_USHORT: {
                 if (!py::isinstance<py::int_>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
+                }
+                unsigned int value = param.cast<unsigned int>();
+                if (value > std::numeric_limits<unsigned short>::max()) {
+                    ThrowStdException("Unsigned short integer parameter out of range at paramIndex " + std::to_string(paramIndex));
                 }
                 dataPtr = static_cast<void*>(
                     AllocateParamBuffer<unsigned int>(paramBuffers, param.cast<unsigned int>()));
@@ -284,6 +293,11 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 if (!py::isinstance<py::int_>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
+                int64_t value = param.cast<int64_t>();
+                // Range validation for signed 64-bit integer
+                if (value < std::numeric_limits<int64_t>::min() || value > std::numeric_limits<int64_t>::max()) {
+                    ThrowStdException("Signed 64-bit integer parameter out of range at paramIndex " + std::to_string(paramIndex));
+                }
                 dataPtr = static_cast<void*>(
                     AllocateParamBuffer<int64_t>(paramBuffers, param.cast<int64_t>()));
                 break;
@@ -292,6 +306,11 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
             case SQL_C_ULONG: {
                 if (!py::isinstance<py::int_>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
+                }
+                uint64_t value = param.cast<uint64_t>();
+                // Range validation for unsigned 64-bit integer
+                if (value > std::numeric_limits<uint64_t>::max()) {
+                    ThrowStdException("Unsigned 64-bit integer parameter out of range at paramIndex " + std::to_string(paramIndex));
                 }
                 dataPtr = static_cast<void*>(
                     AllocateParamBuffer<uint64_t>(paramBuffers, param.cast<uint64_t>()));
@@ -317,6 +336,10 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 py::object dateType = py::module_::import("datetime").attr("date");
                 if (!py::isinstance(param, dateType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
+                }
+                int year = param.attr("year").cast<int>();
+                if (year < 1753 || year > 9999) {
+                    ThrowStdException("Date out of range for SQL Server (1753-9999) at paramIndex " + std::to_string(paramIndex));
                 }
                 // TODO: can be moved to python by registering SQL_DATE_STRUCT in pybind
                 SQL_DATE_STRUCT* sqlDatePtr = AllocateParamBuffer<SQL_DATE_STRUCT>(paramBuffers);
