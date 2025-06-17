@@ -18,7 +18,12 @@ class Row:
             cursor_description: The cursor description containing column metadata
         """
         self._values = values
-        self.cursor_description = cursor_description
+        
+        # TODO: ADO task - Optimize memory usage by sharing column map across rows
+        # Instead of storing the full cursor_description in each Row object:
+        # 1. Build the column map once at the cursor level after setting description
+        # 2. Pass only this map to each Row instance
+        # 3. Remove cursor_description from Row objects entirely
         
         # Create mapping of column names to indices
         self._column_map = {}
@@ -43,6 +48,8 @@ class Row:
         """
         if isinstance(other, list):
             return self._values == other
+        elif isinstance(other, Row):
+            return self._values == other._values
         return super().__eq__(other)
     
     def __len__(self):

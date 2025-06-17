@@ -3,33 +3,19 @@ from mssql_python import setup_logging
 import os
 import decimal
 
-# setup_logging('stdout')
+setup_logging('stdout')
 
 conn_str = os.getenv("DB_CONNECTION_STRING")
 conn = connect(conn_str)
 
+# conn.autocommit = True
+
 cursor = conn.cursor()
 cursor.execute("SELECT database_id, name from sys.databases;")
-rows = cursor.fetchone()
+rows = cursor.fetchall()
 
-# Debug: Print the type and content of rows
-print(f"Type of rows: {type(rows)}")
-print(f"Value of rows: {rows}")
-
-# Only try to access properties if rows is not None
-if rows is not None:
-    try:
-        # Try different ways to access the data
-        print(f"First column by index: {rows[0]}")
-        
-        # Access by attribute name (these should now work)
-        print(f"First column by name: {rows.database_id}")
-        print(f"Second column by name: {rows.name}")
-        
-        # Print all available attributes
-        print(f"Available attributes: {dir(rows)}")
-    except Exception as e:
-        print(f"Exception accessing row data: {e}")
+for row in rows:
+    print(f"Database ID: {row[0]}, Name: {row[1]}")
 
 cursor.close()
 conn.close()

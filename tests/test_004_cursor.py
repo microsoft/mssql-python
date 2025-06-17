@@ -1145,6 +1145,101 @@ def test_numeric_precision_scale_negative_exponent(cursor, db_connection):
         cursor.execute("DROP TABLE pytest_numeric_test")
         db_connection.commit()
 
+def test_row_attribute_access(cursor, db_connection):
+    """Test accessing row values by column name as attributes"""
+    try:
+        # Create test table with multiple columns
+        cursor.execute("""
+            CREATE TABLE pytest_row_attr_test (
+                id INT PRIMARY KEY,
+                name VARCHAR(50),
+                email VARCHAR(100),
+                age INT
+            )
+        """)
+        db_connection.commit()
+        
+        # Insert test data
+        cursor.execute("""
+            INSERT INTO pytest_row_attr_test (id, name, email, age)
+            VALUES (1, 'John Doe', 'john@example.com', 30)
+        """)
+        db_connection.commit()
+        
+        # Test attribute access
+        cursor.execute("SELECT * FROM pytest_row_attr_test")
+        row = cursor.fetchone()
+        
+        # Access by attribute
+        assert row.id == 1, "Failed to access 'id' by attribute"
+        assert row.name == 'John Doe', "Failed to access 'name' by attribute"
+        assert row.email == 'john@example.com', "Failed to access 'email' by attribute"
+        assert row.age == 30, "Failed to access 'age' by attribute"
+        
+        # Compare attribute access with index access
+        assert row.id == row[0], "Attribute access for 'id' doesn't match index access"
+        assert row.name == row[1], "Attribute access for 'name' doesn't match index access"
+        assert row.email == row[2], "Attribute access for 'email' doesn't match index access"
+        assert row.age == row[3], "Attribute access for 'age' doesn't match index access"
+        
+        # Test attribute that doesn't exist
+        with pytest.raises(AttributeError):
+            value = row.nonexistent_column
+            
+    except Exception as e:
+        pytest.fail(f"Row attribute access test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_row_attr_test")
+        db_connection.commit()
+
+def test_row_comparison_with_list(cursor, db_connection):
+    """Test comparing Row objects with lists (__eq__ method)"""
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE pytest_row_comparison_test (col1 INT, col2 VARCHAR(20), col3 FLOAT)")
+        db_connection.commit()
+        
+        # Insert test data
+        cursor.execute("INSERT INTO pytest_row_comparison_test VALUES (10, 'test_string', 3.14)")
+        db_connection.commit()
+        
+        # Test fetchone comparison with list
+        cursor.execute("SELECT * FROM pytest_row_comparison_test")
+        row = cursor.fetchone()
+        assert row == [10, 'test_string', 3.14], "Row did not compare equal to matching list"
+        assert row != [10, 'different', 3.14], "Row compared equal to non-matching list"
+        
+        # Test full row equality
+        cursor.execute("SELECT * FROM pytest_row_comparison_test")
+        row1 = cursor.fetchone()
+        cursor.execute("SELECT * FROM pytest_row_comparison_test")
+        row2 = cursor.fetchone()
+        assert row1 == row2, "Identical rows should be equal"
+        
+        # Insert different data
+        cursor.execute("INSERT INTO pytest_row_comparison_test VALUES (20, 'other_string', 2.71)")
+        db_connection.commit()
+        
+        # Test different rows are not equal
+        cursor.execute("SELECT * FROM pytest_row_comparison_test WHERE col1 = 10")
+        row1 = cursor.fetchone()
+        cursor.execute("SELECT * FROM pytest_row_comparison_test WHERE col1 = 20")
+        row2 = cursor.fetchone()
+        assert row1 != row2, "Different rows should not be equal"
+        
+        # Test fetchmany row comparison with lists
+        cursor.execute("SELECT * FROM pytest_row_comparison_test ORDER BY col1")
+        rows = cursor.fetchmany(2)
+        assert len(rows) == 2, "Should have fetched 2 rows"
+        assert rows[0] == [10, 'test_string', 3.14], "First row didn't match expected list"
+        assert rows[1] == [20, 'other_string', 2.71], "Second row didn't match expected list"
+        
+    except Exception as e:
+        pytest.fail(f"Row comparison test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE pytest_row_comparison_test")
+        db_connection.commit()
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
