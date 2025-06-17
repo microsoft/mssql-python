@@ -1155,3 +1155,4 @@ def test_close(db_connection):
         pytest.fail(f"Cursor close test failed: {e}")
     finally:
         cursor = db_connection.cursor()
+        
