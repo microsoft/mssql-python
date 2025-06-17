@@ -80,3 +80,61 @@ jobs:
       codeCoverageTool: 'Cobertura'
       summaryFileLocation: 'coverage.xml'
     displayName: 'Publish code coverage results'
+
+- job: PytestOnMacOS
+  pool:
+    vmImage: 'macos-latest'
+
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.13.5'
+      addToPath: true
+    displayName: 'Use Python 3.13 on macOS'
+
+  - script: |
+      brew update
+      brew install cmake unixodbc
+    displayName: 'Install CMake and unixODBC'
+
+  - script: |
+      docker pull mcr.microsoft.com/mssql/server:2022-latest
+      docker run --name sql2022 -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD=$(DB_PASSWORD) \
+        --platform linux/amd64 -p 1433:1433 -d mcr.microsoft.com/mssql/server:2022-latest
+      # Wait for SQL Server to start up (~30 secs)
+      for i in {1..30}; do
+        docker exec sql2022 /opt/mssql-tools/bin/sqlcmd -U SA -P $(DB_PASSWORD) -Q "SELECT 1" && break
+        sleep 2
+      done
+    displayName: 'Pull & start SQL Server (Docker)'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+    displayName: 'Install Python dependencies'
+
+  - script: |
+      cd mssql_python/pybind
+      ./build.sh
+    displayName: 'Build pybind bindings (.so)'
+
+  - script: |
+      pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
+    displayName: 'Run pytest with coverage'
+    env:
+      DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFiles: '**/test-results.xml'
+      testRunTitle: 'Publish pytest results on macOS'
+
+  - task: PublishCodeCoverageResults@1
+    inputs:
+      codeCoverageTool: 'Cobertura'
+      summaryFileLocation: 'coverage.xml'
+    displayName: 'Publish code coverage results'
