@@ -122,11 +122,9 @@ jobs:
     displayName: 'Build pybind bindings (.so)'
 
   - script: |
-      echo "Running on architecture: $(uname -m)"
+      echo "Running main.py to ensure the build is successful"
       python main.py
-    displayName: 'Debugging - Get Architecture Details of MacOS'
-
-  - script: |
+      echo "Build successful, running tests now"
       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run pytest with coverage'
     env:
