@@ -118,75 +118,75 @@ def test_insert_nvarchar_column(cursor, db_connection):
 def test_insert_time_column(cursor, db_connection):
     """Test inserting data into the time_column"""
     try:
-        drop_table_if_exists(cursor, "single_column")
-        cursor.execute("CREATE TABLE single_column (time_column TIME)")
+        drop_table_if_exists(cursor, "#pytest_single_column")
+        cursor.execute("CREATE TABLE #pytest_single_column (time_column TIME)")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (time_column) VALUES (?)", [time(12, 34, 56)])
+        cursor.execute("INSERT INTO #pytest_single_column (time_column) VALUES (?)", [time(12, 34, 56)])
         db_connection.commit()
-        cursor.execute("SELECT time_column FROM single_column")
+        cursor.execute("SELECT time_column FROM #pytest_single_column")
         row = cursor.fetchone()
         assert row[0] == time(12, 34, 56), "Time column insertion/fetch failed"
     except Exception as e:
         pytest.fail(f"Time column insertion/fetch failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE #pytest_single_column")
         db_connection.commit()
 
 def test_insert_datetime_column(cursor, db_connection):
     """Test inserting data into the datetime_column"""
     try:
-        drop_table_if_exists(cursor, "single_column")
-        cursor.execute("CREATE TABLE single_column (datetime_column DATETIME)")
+        drop_table_if_exists(cursor, "#pytest_single_column")
+        cursor.execute("CREATE TABLE #pytest_single_column (datetime_column DATETIME)")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (datetime_column) VALUES (?)", [datetime(2024, 5, 20, 12, 34, 56, 123000)])
+        cursor.execute("INSERT INTO #pytest_single_column (datetime_column) VALUES (?)", [datetime(2024, 5, 20, 12, 34, 56, 123000)])
         db_connection.commit()
-        cursor.execute("SELECT datetime_column FROM single_column")
+        cursor.execute("SELECT datetime_column FROM #pytest_single_column")
         row = cursor.fetchone()
         assert row[0] == datetime(2024, 5, 20, 12, 34, 56, 123000), "Datetime column insertion/fetch failed"
     except Exception as e:
         pytest.fail(f"Datetime column insertion/fetch failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE #pytest_single_column")
         db_connection.commit()
 
 def test_insert_datetime2_column(cursor, db_connection):
-    """Test inserting data into the datetime_column"""
+    """Test inserting data into the datetime2_column"""
     try:
-        drop_table_if_exists(cursor, "single_column")
-        cursor.execute("CREATE TABLE single_column (datetime2_column DATETIME2)")
+        drop_table_if_exists(cursor, "#pytest_single_column")
+        cursor.execute("CREATE TABLE #pytest_single_column (datetime2_column DATETIME2)")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (datetime2_column) VALUES (?)", [datetime(2024, 5, 20, 12, 34, 56, 123456)])
+        cursor.execute("INSERT INTO #pytest_single_column (datetime2_column) VALUES (?)", [datetime(2024, 5, 20, 12, 34, 56, 123456)])
         db_connection.commit()
-        cursor.execute("SELECT datetime2_column FROM single_column")
+        cursor.execute("SELECT datetime2_column FROM #pytest_single_column")
         row = cursor.fetchone()
         assert row[0] == datetime(2024, 5, 20, 12, 34, 56, 123456), "Datetime2 column insertion/fetch failed"
     except Exception as e:
         pytest.fail(f"Datetime2 column insertion/fetch failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE #pytest_single_column")
         db_connection.commit()
 
 def test_insert_smalldatetime_column(cursor, db_connection):
-    """Test inserting data into the datetime_column"""
+    """Test inserting data into the smalldatetime_column"""
     try:
-        drop_table_if_exists(cursor, "single_column")
-        cursor.execute("CREATE TABLE single_column (smalldatetime_column SMALLDATETIME)")
+        drop_table_if_exists(cursor, "#pytest_single_column")
+        cursor.execute("CREATE TABLE #pytest_single_column (smalldatetime_column SMALLDATETIME)")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (smalldatetime_column) VALUES (?)", [datetime(2024, 5, 20, 12, 34)])
+        cursor.execute("INSERT INTO #pytest_single_column (smalldatetime_column) VALUES (?)", [datetime(2024, 5, 20, 12, 34)])
         db_connection.commit()
-        cursor.execute("SELECT smalldatetime_column FROM single_column")
+        cursor.execute("SELECT smalldatetime_column FROM #pytest_single_column")
         row = cursor.fetchone()
         assert row[0] == datetime(2024, 5, 20, 12, 34), "Smalldatetime column insertion/fetch failed"
     except Exception as e:
         pytest.fail(f"Smalldatetime column insertion/fetch failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE #pytest_single_column")
         db_connection.commit()
 
 def test_insert_date_column(cursor, db_connection):
     """Test inserting data into the date_column"""
     try:
-        drop_table_if_exists(cursor, "single_column")
+        drop_table_if_exists(cursor, "#pytest_single_column")
         cursor.execute("CREATE TABLE #pytest_single_column (date_column DATE)")
         db_connection.commit()
         cursor.execute("INSERT INTO #pytest_single_column (date_column) VALUES (?)", [date(2024, 5, 20)])
@@ -203,7 +203,7 @@ def test_insert_date_column(cursor, db_connection):
 def test_insert_real_column(cursor, db_connection):
     """Test inserting data into the real_column"""
     try:
-        drop_table_if_exists(cursor, "single_column")
+        drop_table_if_exists(cursor, "#pytest_single_column")
         cursor.execute("CREATE TABLE #pytest_single_column (real_column REAL)")
         db_connection.commit()
         cursor.execute("INSERT INTO #pytest_single_column (real_column) VALUES (?)", [1.23456789])
@@ -220,23 +220,23 @@ def test_insert_real_column(cursor, db_connection):
 def test_insert_decimal_column(cursor, db_connection):
     """Test inserting data into the decimal_column"""
     try:
-        cursor.execute("CREATE TABLE single_column (decimal_column DECIMAL(10, 2))")
+        cursor.execute("CREATE TABLE #pytest_single_column (decimal_column DECIMAL(10, 2))")
         db_connection.commit()
-        cursor.execute("INSERT INTO single_column (decimal_column) VALUES (?)", [decimal.Decimal(123.45).quantize(decimal.Decimal('0.00'))])
+        cursor.execute("INSERT INTO #pytest_single_column (decimal_column) VALUES (?)", [decimal.Decimal(123.45).quantize(decimal.Decimal('0.00'))])
         db_connection.commit()
-        cursor.execute("SELECT decimal_column FROM single_column")
+        cursor.execute("SELECT decimal_column FROM #pytest_single_column")
         row = cursor.fetchone()
         assert row[0] == decimal.Decimal(123.45).quantize(decimal.Decimal('0.00')), "Decimal column insertion/fetch failed"
-        cursor.execute("TRUNCATE TABLE single_column")
-        cursor.execute("INSERT INTO single_column (decimal_column) VALUES (?)", [decimal.Decimal(-123.45).quantize(decimal.Decimal('0.00'))])
+        cursor.execute("TRUNCATE TABLE #pytest_single_column")
+        cursor.execute("INSERT INTO #pytest_single_column (decimal_column) VALUES (?)", [decimal.Decimal(-123.45).quantize(decimal.Decimal('0.00'))])
         db_connection.commit()
-        cursor.execute("SELECT decimal_column FROM single_column")
+        cursor.execute("SELECT decimal_column FROM #pytest_single_column")
         row = cursor.fetchone()
         assert row[0] == decimal.Decimal(-123.45).quantize(decimal.Decimal('0.00')), "Negative Decimal insertion/fetch failed"
     except Exception as e:
         pytest.fail(f"Decimal column insertion/fetch failed: {e}")
     finally:
-        cursor.execute("DROP TABLE single_column")
+        cursor.execute("DROP TABLE #pytest_single_column")
         db_connection.commit()
 
 def test_insert_tinyint_column(cursor, db_connection):
