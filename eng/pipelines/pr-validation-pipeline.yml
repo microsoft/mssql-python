@@ -101,8 +101,8 @@ jobs:
       brew update
       brew install docker colima
 
-      # Start Colima VM
-      colima start
+      # Start Colima with extra resources
+      colima start --cpu 4 --memory 8 --disk 50
 
       # Optional: set Docker context (usually automatic)
       docker context use colima >/dev/null || true
@@ -144,33 +144,36 @@ jobs:
     displayName: 'Build pybind bindings (.so)'
 
   - script: |
-      echo "Installing Intel ODBC driver msodbcsql18 via Homebrew"
+      echo "Installing msodbcsql18 via Homebrew"
 
-      # Tap Microsoft repo and install only msodbcsql18
       brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
       brew update
       HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18
 
-      # Set paths
       INTEL_MS="$(ls -d /usr/local/Cellar/msodbcsql18/*)"
       DEST="mssql_python/libs/macos"
 
-      # Overwrite existing directories
+      echo "Replacing $DEST/lib and $DEST/share with Intel msodbcsql18"
+
       rm -rf "$DEST/lib" "$DEST/share"
       cp -R "$INTEL_MS/lib" "$DEST/lib"
       cp -R "$INTEL_MS/share" "$DEST/share"
 
-      # Confirm update
-      find "$DEST/lib" "$DEST/share" -type f
+      echo "Copying additional ODBC libraries into $DEST/lib"
+      cp /usr/local/opt/unixodbc/lib/libodbc.2.dylib "$DEST/lib/" || echo "libodbc.2.dylib not found"
+      cp /usr/local/opt/unixodbc/lib/libodbcinst.2.dylib "$DEST/lib/" || echo "libodbcinst.2.dylib not found"
+      cp /usr/local/opt/libtool/lib/libltdl.7.dylib "$DEST/lib/" || echo "libltdl.7.dylib not found"
 
-    displayName: 'Install Intel msodbcsql18 and overwrite macOS lib/share'
+      echo "Final contents of $DEST:"
+      find "$DEST/lib" "$DEST/share" -type f
+    displayName: 'Install msodbcsql18, overwrite libs/share, add ODBC dylibs'
 
   - task: PublishBuildArtifacts@1
     inputs:
       PathtoPublish: 'mssql_python/libs/macos'
       ArtifactName: intel_macos_libs
       publishLocation: Container
-    displayName: 'Publish Intel macOS libs/share artifact'
+    displayName: 'Publish Intel lib/share artifact'
 
   - script: |
       echo "Running main.py to ensure the build is successful"
