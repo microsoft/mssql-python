@@ -3,6 +3,7 @@
 This README provides instructions to build the DDBC Bindings PYD for your system (supports Windows x64 and arm64).
 
 ## Building on Windows
+> Supporting Windows x64 & ARM64 only
 
 1. **PyBind11**: Install PyBind11 using pip.
     ```sh
@@ -28,6 +29,7 @@ This README provides instructions to build the DDBC Bindings PYD for your system
     - Move the built PYD file to the parent `mssql_python` directory
 
 ## Building on MacOS
+> Supporting Apple Silicon Chip M Series (ARM64) as well as Intel based processors (x86_64)
 
 1. **Install CMake & PyBind11**
    ```bash
@@ -55,7 +57,7 @@ This README provides instructions to build the DDBC Bindings PYD for your system
 
 - The script will:
    - Clean any existing build artifacts
-   - Detect system architecture (only `arm64` is supported for MacOS)
+   - Detect system architecture
    - Configure CMake with appropriate include/library paths
    - Compile `ddbc_bindings_mac.cpp` using CMake
    - Generate the `.so` file (e.g., `ddbc_bindings.cp313-arm64.so`)

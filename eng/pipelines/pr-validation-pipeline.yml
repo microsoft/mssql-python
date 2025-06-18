@@ -7,79 +7,79 @@ trigger:
       - main
 
 jobs:
-# - job: PytestOnWindows
-#   pool:
-#     vmImage: 'windows-latest'
+- job: PytestOnWindows
+  pool:
+    vmImage: 'windows-latest'
   
-#   steps:
-#   - task: UsePythonVersion@0
-#     inputs:
-#       # TODO: Remove this once Python 3.13 is available in ADO
-#       # ADO indexing will take some time to reflect 3.13 as 3.13.5, right now it is pointing to 3.13.4.
-#       # We're specifying to use Python 3.13.5 since 3.13.4 has issues with compilation
-#       # See https://github.com/python/cpython/issues/135151, next release should fix it.
-#       versionSpec: '3.13.5'
-#       addToPath: true
-#       githubToken: $(GITHUB_TOKEN)
-#     displayName: 'Use Python 3.13'
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      # TODO: Remove this once Python 3.13 is available in ADO
+      # ADO indexing will take some time to reflect 3.13 as 3.13.5, right now it is pointing to 3.13.4.
+      # We're specifying to use Python 3.13.5 since 3.13.4 has issues with compilation
+      # See https://github.com/python/cpython/issues/135151, next release should fix it.
+      versionSpec: '3.13.5'
+      addToPath: true
+      githubToken: $(GITHUB_TOKEN)
+    displayName: 'Use Python 3.13'
 
-#   - script: |
-#       python -m pip install --upgrade pip
-#       pip install -r requirements.txt
-#     displayName: 'Install dependencies'
+  - script: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+    displayName: 'Install dependencies'
 
-#   # Start LocalDB instance
-#   - powershell: |
-#       sqllocaldb create MSSQLLocalDB
-#       sqllocaldb start MSSQLLocalDB
-#     displayName: 'Start LocalDB instance'
+  # Start LocalDB instance
+  - powershell: |
+      sqllocaldb create MSSQLLocalDB
+      sqllocaldb start MSSQLLocalDB
+    displayName: 'Start LocalDB instance'
 
-#   # Create database and user
-#   - powershell: |
-#       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
-#       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
-#       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
-#       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
-#     displayName: 'Setup database and user'
-#     env:
-#       DB_PASSWORD: $(DB_PASSWORD)
+  # Create database and user
+  - powershell: |
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+      sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+    displayName: 'Setup database and user'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
 
-#   - script: |
-#       cd mssql_python\pybind
-#       build.bat x64
-#     displayName: 'Build .pyd file'
+  - script: |
+      cd mssql_python\pybind
+      build.bat x64
+    displayName: 'Build .pyd file'
 
-#   - script: |
-#       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
-#     displayName: 'Run tests with coverage'
-#     env:
-#       DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+  - script: |
+      python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
+    displayName: 'Run tests with coverage'
+    env:
+      DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
-#   - task: PublishBuildArtifacts@1
-#     inputs:
-#       PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pyd'
-#       ArtifactName: 'ddbc_bindings'
-#       publishLocation: 'Container'
-#     displayName: 'Publish pyd file as artifact'
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pyd'
+      ArtifactName: 'ddbc_bindings'
+      publishLocation: 'Container'
+    displayName: 'Publish pyd file as artifact'
 
-#   - task: PublishBuildArtifacts@1
-#     inputs:
-#       PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pdb'
-#       ArtifactName: 'ddbc_bindings'
-#       publishLocation: 'Container'
-#     displayName: 'Publish pdb file as artifact'
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pdb'
+      ArtifactName: 'ddbc_bindings'
+      publishLocation: 'Container'
+    displayName: 'Publish pdb file as artifact'
 
-#   - task: PublishTestResults@2
-#     condition: succeededOrFailed()
-#     inputs:
-#       testResultsFiles: '**/test-results.xml'
-#       testRunTitle: 'Publish test results'
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFiles: '**/test-results.xml'
+      testRunTitle: 'Publish test results'
 
-#   - task: PublishCodeCoverageResults@1
-#     inputs:
-#       codeCoverageTool: 'Cobertura'
-#       summaryFileLocation: 'coverage.xml'
-#     displayName: 'Publish code coverage results'
+  - task: PublishCodeCoverageResults@1
+    inputs:
+      codeCoverageTool: 'Cobertura'
+      summaryFileLocation: 'coverage.xml'
+    displayName: 'Publish code coverage results'
 
 - job: PytestOnMacOS
   pool:
@@ -97,45 +97,44 @@ jobs:
       brew install cmake
     displayName: 'Install CMake'
 
-  - script: |
-      brew update
-      brew install docker colima
+  # - script: |
+  #     brew update
+  #     brew install docker colima
 
-      # Start Colima with extra resources
-      colima start --cpu 4 --memory 8 --disk 50
+  #     # Start Colima with extra resources
+  #     colima start --cpu 4 --memory 8 --disk 50
 
-      # Optional: set Docker context (usually automatic)
-      docker context use colima >/dev/null || true
+  #     # Optional: set Docker context (usually automatic)
+  #     docker context use colima >/dev/null || true
 
-      # Confirm Docker is operational
-      docker version
-      docker ps
-    displayName: 'Install and start Colima-based Docker'
+  #     # Confirm Docker is operational
+  #     docker version
+  #     docker ps
+  #   displayName: 'Install and start Colima-based Docker'
 
-  - script: |
-      # Pull and run SQL Server container
-      docker pull mcr.microsoft.com/mssql/server:2022-latest
-      docker run \
-        --name sqlserver \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
-        -p 1433:1433 \
-        -d mcr.microsoft.com/mssql/server:2022-latest
+  # - script: |
+  #     # Pull and run SQL Server container
+  #     docker pull mcr.microsoft.com/mssql/server:2022-latest
+  #     docker run \
+  #       --name sqlserver \
+  #       -e ACCEPT_EULA=Y \
+  #       -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+  #       -p 1433:1433 \
+  #       -d mcr.microsoft.com/mssql/server:2022-latest
 
-      # Starting SQL Server container…
-      for i in {1..30}; do
-        docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$DB_PASSWORD" \
-          -C -Q "SELECT 1" && break
-        sleep 2
-      done
-
-    displayName: 'Pull & start SQL Server (Docker)'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+  #     # Starting SQL Server container…
+  #     for i in {1..30}; do
+  #       docker exec sqlserver \
+  #         /opt/mssql-tools18/bin/sqlcmd \
+  #         -S localhost \
+  #         -U SA \
+  #         -P "$DB_PASSWORD" \
+  #         -C -Q "SELECT 1" && break
+  #       sleep 2
+  #     done
+  #   displayName: 'Pull & start SQL Server (Docker)'
+  #   env:
+  #     DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
       python -m pip install --upgrade pip
@@ -152,7 +151,9 @@ jobs:
       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run pytest with coverage'
     env:
-      DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      # Temporarily Use Azure SQL Database connection string for testing purposes since Docker takes too long to install & start in MacOS
+      DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
+      # DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
       DB_PASSWORD: $(DB_PASSWORD)
 
   - task: PublishTestResults@2
