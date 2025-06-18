@@ -36,7 +36,8 @@ jobs:
       signcertname: '$(AuthSignCertName)'
       clientid: '$(EsrpClientId)'
       Intent: 'PackageDistribution'
-      ContentType: 'PyPI'
+      # Dummy content type to make it Maven release (NOT PyPI)
+      ContentType: 'Maven'
       ContentSource: 'Folder'
       FolderLocation: '$(Build.SourcesDirectory)/dist'
       WaitForReleaseCompletion: true
