@@ -148,40 +148,6 @@ jobs:
     displayName: 'Build pybind bindings (.so)'
 
   - script: |
-      echo "Installing msodbcsql18 via Homebrew"
-
-      brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
-      brew update
-      HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18
-
-      INTEL_MS="$(ls -d /usr/local/Cellar/msodbcsql18/*)"
-      DEST="mssql_python/libs/macos"
-
-      echo "Replacing $DEST/lib and $DEST/share with Intel msodbcsql18"
-
-      rm -rf "$DEST/lib" "$DEST/share"
-      cp -R "$INTEL_MS/lib" "$DEST/lib"
-      cp -R "$INTEL_MS/share" "$DEST/share"
-
-      echo "Copying additional ODBC libraries into $DEST/lib"
-      cp /usr/local/opt/unixodbc/lib/libodbc.2.dylib "$DEST/lib/" || echo "libodbc.2.dylib not found"
-      cp /usr/local/opt/unixodbc/lib/libodbcinst.2.dylib "$DEST/lib/" || echo "libodbcinst.2.dylib not found"
-      cp /usr/local/opt/libtool/lib/libltdl.7.dylib "$DEST/lib/" || echo "libltdl.7.dylib not found"
-
-      echo "Final contents of $DEST:"
-      find "$DEST/lib" "$DEST/share" -type f
-    displayName: 'Install msodbcsql18, overwrite libs/share, add ODBC dylibs'
-
-  - task: PublishBuildArtifacts@1
-    inputs:
-      PathtoPublish: 'mssql_python/libs/macos'
-      ArtifactName: intel_macos_libs
-      publishLocation: Container
-    displayName: 'Publish Intel lib/share artifact'
-
-  - script: |
-      echo "Running main.py to ensure the build is successful"
-      python main.py
       echo "Build successful, running tests now"
       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run pytest with coverage'

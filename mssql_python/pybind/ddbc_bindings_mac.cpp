@@ -407,9 +407,16 @@ DriverHandle LoadDriverOrThrowException() {
 #ifdef _WIN32
     // Windows: Build path to msodbcsql18.dll
     driverPath = moduleDir + "\\libs\\" + archDir + "\\msodbcsql18.dll";
-#elif defined(__APPLE__)    // macOS: Build path to libmsodbcsql.18.dylib - first check in lib subdirectory
-    // We will only support arm64 (Apple Silicon Chip) architecture for macOS
-    std::string macosDriverPath = moduleDir + "/libs/macos/lib/libmsodbcsql.18.dylib"; 
+#elif defined(__APPLE__)    
+    // macOS: Build path to libmsodbcsql.18.dylib - first check in lib subdirectory
+    // We are supporting both Intel and Apple Silicon architectures, so we need to check the architecture
+    std::string archDir;
+    if (ARCHITECTURE == "arm64") {
+        archDir = "arm64";
+    } else {
+        archDir = "x86_64";
+    }
+    std::string macosDriverPath = moduleDir + "/libs/macos/" + archDir + "/libmsodbcsql.18.dylib"; 
     // Check if file exists using traditional C file functions instead of std::filesystem
     FILE* file = fopen(macosDriverPath.c_str(), "r");
     if (file) {
