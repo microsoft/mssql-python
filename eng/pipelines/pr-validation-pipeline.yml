@@ -122,13 +122,17 @@ jobs:
         -p 1433:1433 \
         -d mcr.microsoft.com/mssql/server:2022-latest
 
-      # Wait until sqlcmd is available and responsive
+      # Starting SQL Server container…
       for i in {1..30}; do
         docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P "${DB_PASSWORD}" -Q "SELECT 1" \
-          && break
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -P "$DB_PASSWORD" \
+          -C -Q "SELECT 1" && break
         sleep 2
       done
+
     displayName: 'Pull & start SQL Server (Docker)'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
