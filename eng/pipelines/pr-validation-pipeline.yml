@@ -99,23 +99,18 @@ jobs:
 
   - script: |
       brew update
-      brew install --cask docker
-      # Ensure CLI is available
-      ln -sf /Applications/Docker.app/Contents/Resources/bin/docker /usr/local/bin/docker || true
+      brew install docker colima
 
-      # Launch Docker Desktop in background
-      open --background -a Docker.app
+      # Start Colima VM
+      colima start
 
-      # Wait for Docker daemon to be ready
-      for i in {1..60}; do
-        docker info &>/dev/null && break
-        sleep 2
-      done
+      # Optional: set Docker context (usually automatic)
+      docker context use colima >/dev/null || true
 
-      # Confirm it's running
-      docker --version
+      # Confirm Docker is operational
+      docker version
       docker ps
-    displayName: 'Install & start Docker Desktop'
+    displayName: 'Install and start Colima-based Docker'
 
   - script: |
       docker pull mcr.microsoft.com/mssql/server:2022-latest
