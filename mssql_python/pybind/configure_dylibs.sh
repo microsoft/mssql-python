@@ -19,6 +19,13 @@ LIBMSODBCSQL_PATH="$LIB_DIR/libmsodbcsql.18.dylib"
 LIBODBCINST_PATH="$LIB_DIR/libodbcinst.2.dylib"
 LIBLTDL_PATH="$LIB_DIR/libltdl.7.dylib"
 
+echo "Initial configuration:"
+otool -L "$LIBMSODBCSQL_PATH"
+otool -L "$LIBODBCINST_PATH"
+if [ -f "$LIBLTDL_PATH" ]; then
+  otool -L "$LIBLTDL_PATH"
+fi
+
 echo "Configuring dylibs in: $LIB_DIR"
 
 # Check if the directories and files exist
@@ -108,3 +115,9 @@ if [ -f "$LIBLTDL_PATH" ]; then
 fi
 
 echo "Library configuration complete!"
+echo "Final configuration:"
+otool -L "$LIBMSODBCSQL_PATH"
+otool -L "$LIBODBCINST_PATH"
+if [ -f "$LIBLTDL_PATH" ]; then
+  otool -L "$LIBLTDL_PATH"
+fi

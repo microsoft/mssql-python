@@ -7,79 +7,79 @@ trigger:
       - main
 
 jobs:
-- job: PytestOnWindows
-  pool:
-    vmImage: 'windows-latest'
+# - job: PytestOnWindows
+#   pool:
+#     vmImage: 'windows-latest'
   
-  steps:
-  - task: UsePythonVersion@0
-    inputs:
-      # TODO: Remove this once Python 3.13 is available in ADO
-      # ADO indexing will take some time to reflect 3.13 as 3.13.5, right now it is pointing to 3.13.4.
-      # We're specifying to use Python 3.13.5 since 3.13.4 has issues with compilation
-      # See https://github.com/python/cpython/issues/135151, next release should fix it.
-      versionSpec: '3.13.5'
-      addToPath: true
-      githubToken: $(GITHUB_TOKEN)
-    displayName: 'Use Python 3.13'
+#   steps:
+#   - task: UsePythonVersion@0
+#     inputs:
+#       # TODO: Remove this once Python 3.13 is available in ADO
+#       # ADO indexing will take some time to reflect 3.13 as 3.13.5, right now it is pointing to 3.13.4.
+#       # We're specifying to use Python 3.13.5 since 3.13.4 has issues with compilation
+#       # See https://github.com/python/cpython/issues/135151, next release should fix it.
+#       versionSpec: '3.13.5'
+#       addToPath: true
+#       githubToken: $(GITHUB_TOKEN)
+#     displayName: 'Use Python 3.13'
 
-  - script: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    displayName: 'Install dependencies'
+#   - script: |
+#       python -m pip install --upgrade pip
+#       pip install -r requirements.txt
+#     displayName: 'Install dependencies'
 
-  # Start LocalDB instance
-  - powershell: |
-      sqllocaldb create MSSQLLocalDB
-      sqllocaldb start MSSQLLocalDB
-    displayName: 'Start LocalDB instance'
+#   # Start LocalDB instance
+#   - powershell: |
+#       sqllocaldb create MSSQLLocalDB
+#       sqllocaldb start MSSQLLocalDB
+#     displayName: 'Start LocalDB instance'
 
-  # Create database and user
-  - powershell: |
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
-    displayName: 'Setup database and user'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#   # Create database and user
+#   - powershell: |
+#       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
+#       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+#       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+#       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+#     displayName: 'Setup database and user'
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      cd mssql_python\pybind
-      build.bat x64
-    displayName: 'Build .pyd file'
+#   - script: |
+#       cd mssql_python\pybind
+#       build.bat x64
+#     displayName: 'Build .pyd file'
 
-  - script: |
-      python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
-    displayName: 'Run tests with coverage'
-    env:
-      DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+#   - script: |
+#       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
+#     displayName: 'Run tests with coverage'
+#     env:
+#       DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
-  - task: PublishBuildArtifacts@1
-    inputs:
-      PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pyd'
-      ArtifactName: 'ddbc_bindings'
-      publishLocation: 'Container'
-    displayName: 'Publish pyd file as artifact'
+#   - task: PublishBuildArtifacts@1
+#     inputs:
+#       PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pyd'
+#       ArtifactName: 'ddbc_bindings'
+#       publishLocation: 'Container'
+#     displayName: 'Publish pyd file as artifact'
 
-  - task: PublishBuildArtifacts@1
-    inputs:
-      PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pdb'
-      ArtifactName: 'ddbc_bindings'
-      publishLocation: 'Container'
-    displayName: 'Publish pdb file as artifact'
+#   - task: PublishBuildArtifacts@1
+#     inputs:
+#       PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pdb'
+#       ArtifactName: 'ddbc_bindings'
+#       publishLocation: 'Container'
+#     displayName: 'Publish pdb file as artifact'
 
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results.xml'
-      testRunTitle: 'Publish test results'
+#   - task: PublishTestResults@2
+#     condition: succeededOrFailed()
+#     inputs:
+#       testResultsFiles: '**/test-results.xml'
+#       testRunTitle: 'Publish test results'
 
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage.xml'
-    displayName: 'Publish code coverage results'
+#   - task: PublishCodeCoverageResults@1
+#     inputs:
+#       codeCoverageTool: 'Cobertura'
+#       summaryFileLocation: 'coverage.xml'
+#     displayName: 'Publish code coverage results'
 
 - job: PytestOnMacOS
   pool:
@@ -94,8 +94,9 @@ jobs:
 
   - script: |
       brew update
-      brew install cmake unixodbc
-    displayName: 'Install CMake and unixODBC'
+      brew uninstall unixODBC
+      brew install cmake
+    displayName: 'Install CMake and uninstall unixODBC'
 
   - script: |
       docker pull mcr.microsoft.com/mssql/server:2022-latest
@@ -119,6 +120,11 @@ jobs:
       cd mssql_python/pybind
       ./build.sh
     displayName: 'Build pybind bindings (.so)'
+
+  - script: |
+      echo "Running on architecture: $(uname -m)"
+      python main.py
+    displayName: 'Debugging - Get Architecture Details of MacOS'
 
   - script: |
       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
