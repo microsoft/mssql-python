@@ -12,6 +12,7 @@ from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import check_error
 from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 from mssql_python import ddbc_bindings
+from .row import Row
 
 logger = get_logger()
 
@@ -58,7 +59,8 @@ class Cursor:
             1  # Default number of rows to fetch at a time is 1, user can change it
         )
         self.buffer_length = 1024  # Default buffer length for string data
-        self.closed = False  # Flag to indicate if the cursor is closed
+        self.closed = False
+        self._result_set_empty = False  # Add this initialization
         self.last_executed_stmt = (
             ""  # Stores the last statement executed by this cursor
         )
@@ -643,68 +645,65 @@ class Cursor:
                 total_rowcount = -1
         self.rowcount = total_rowcount
 
-    def fetchone(self) -> Union[None, tuple]:
+    def fetchone(self) -> Union[None, Row]:
         """
         Fetch the next row of a query result set.
-
+        
         Returns:
-            Single sequence or None if no more data is available.
-
-        Raises:
-            Error: If the previous call to execute did not produce any result set.
+            Single Row object or None if no more data is available.
         """
         self._check_closed()  # Check if the cursor is closed
 
-        row = []
-        ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row)
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+        # Fetch raw data
+        row_data = []
+        ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
+        
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             return None
-        return list(row)
+        
+        # Create and return a Row object
+        return Row(row_data, self.description)
 
-    def fetchmany(self, size: int = None) -> List[tuple]:
+    def fetchmany(self, size: int = None) -> List[Row]:
         """
         Fetch the next set of rows of a query result.
-
+        
         Args:
             size: Number of rows to fetch at a time.
-
+        
         Returns:
-            Sequence of sequences (e.g. list of tuples).
-
-        Raises:
-            Error: If the previous call to execute did not produce any result set.
+            List of Row objects.
         """
         self._check_closed()  # Check if the cursor is closed
 
         if size is None:
             size = self.arraysize
 
-        # Fetch the next set of rows
-        rows = []
-        ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows, size)
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-        if ret == ddbc_sql_const.SQL_NO_DATA.value:
+        if size <= 0:
             return []
-        return rows
+        
+        # Fetch raw data
+        rows_data = []
+        ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
+        
+        # Convert raw data to Row objects
+        return [Row(row_data, self.description) for row_data in rows_data]
 
-    def fetchall(self) -> List[tuple]:
+    def fetchall(self) -> List[Row]:
         """
         Fetch all (remaining) rows of a query result.
-
+        
         Returns:
-            Sequence of sequences (e.g. list of tuples).
-
-        Raises:
-            Error: If the previous call to execute did not produce any result set.
+            List of Row objects.
         """
         self._check_closed()  # Check if the cursor is closed
 
-        # Fetch all remaining rows
-        rows = []
-        ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows)
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-        return list(rows)
+        # Fetch raw data
+        rows_data = []
+        ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+        
+        # Convert raw data to Row objects
+        return [Row(row_data, self.description) for row_data in rows_data]
 
     def nextset(self) -> Union[bool, None]:
         """
