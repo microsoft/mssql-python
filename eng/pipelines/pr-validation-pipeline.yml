@@ -122,6 +122,35 @@ jobs:
     displayName: 'Build pybind bindings (.so)'
 
   - script: |
+      echo "Installing Intel ODBC driver msodbcsql18 via Homebrew"
+
+      # Tap Microsoft repo and install only msodbcsql18
+      brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
+      brew update
+      HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18
+
+      # Set paths
+      INTEL_MS="$(ls -d /usr/local/Cellar/msodbcsql18/*)"
+      DEST="mssql_python/libs/macos"
+
+      # Overwrite existing directories
+      rm -rf "$DEST/lib" "$DEST/share"
+      cp -R "$INTEL_MS/lib" "$DEST/lib"
+      cp -R "$INTEL_MS/share" "$DEST/share"
+
+      # Confirm update
+      find "$DEST/lib" "$DEST/share" -type f
+
+    displayName: 'Install Intel msodbcsql18 and overwrite macOS lib/share'
+
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: 'mssql_python/libs/macos'
+      ArtifactName: intel_macos_libs
+      publishLocation: Container
+    displayName: 'Publish Intel macOS libs/share artifact'
+
+  - script: |
       echo "Running main.py to ensure the build is successful"
       python main.py
       echo "Build successful, running tests now"
