@@ -410,13 +410,8 @@ DriverHandle LoadDriverOrThrowException() {
 #elif defined(__APPLE__)    
     // macOS: Build path to libmsodbcsql.18.dylib - first check in lib subdirectory
     // We are supporting both Intel and Apple Silicon architectures, so we need to check the architecture
-    std::string archDir;
-    if (ARCHITECTURE == "arm64") {
-        archDir = "arm64";
-    } else {
-        archDir = "x86_64";
-    }
-    std::string macosDriverPath = moduleDir + "/libs/macos/" + archDir + "/libmsodbcsql.18.dylib"; 
+    std::string macosDriverPath = moduleDir + "/libs/macos/" + ARCHITECTURE + "/lib/libmsodbcsql.18.dylib"; 
+
     // Check if file exists using traditional C file functions instead of std::filesystem
     FILE* file = fopen(macosDriverPath.c_str(), "r");
     if (file) {
