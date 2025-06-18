@@ -94,9 +94,22 @@ jobs:
 
   - script: |
       brew update
-      brew uninstall unixODBC
       brew install cmake
-    displayName: 'Install CMake and uninstall unixODBC'
+    displayName: 'Install CMake'
+
+  - script: |
+      brew update
+      brew install --cask docker
+      export PATH="/usr/local/bin:$PATH"
+      ln -sf /Applications/Docker.app/Contents/Resources/bin/docker /usr/local/bin/docker || true
+      open --background -a Docker.app
+      for i in {1..30}; do
+        docker info &>/dev/null && break
+        sleep 2
+      done
+      docker --version
+      docker ps
+    displayName: 'Install & Launch Docker Desktop'
 
   - script: |
       docker pull mcr.microsoft.com/mssql/server:2022-latest
