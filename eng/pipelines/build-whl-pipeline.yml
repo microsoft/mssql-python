@@ -340,7 +340,7 @@ jobs:
     # Copy the wheel file to the artifacts
     - task: CopyFiles@2
       inputs:
-        SourceFolder: '$(Build.SourcesDirectory)/dist'
+        SourceFolder: '$(Build.SourcesDirectory)/build'
         Contents: '*.whl'
         TargetFolder: '$(Build.ArtifactStagingDirectory)/dist'
       displayName: 'Collect wheel package'
