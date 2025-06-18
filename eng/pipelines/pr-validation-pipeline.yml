@@ -113,12 +113,20 @@ jobs:
     displayName: 'Install and start Colima-based Docker'
 
   - script: |
+      # Pull and run SQL Server container
       docker pull mcr.microsoft.com/mssql/server:2022-latest
-      docker run --name sql2022 -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD=$(DB_PASSWORD) \
-        --platform linux/amd64 -p 1433:1433 -d mcr.microsoft.com/mssql/server:2022-latest
-      # Wait for SQL Server to start up (~30 secs)
+      docker run \
+        --name sqlserver \
+        -e ACCEPT_EULA=Y \
+        -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+        -p 1433:1433 \
+        -d mcr.microsoft.com/mssql/server:2022-latest
+
+      # Wait until sqlcmd is available and responsive
       for i in {1..30}; do
-        docker exec sql2022 /opt/mssql-tools/bin/sqlcmd -U SA -P $(DB_PASSWORD) -Q "SELECT 1" && break
+        docker exec sqlserver \
+          /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P "${DB_PASSWORD}" -Q "SELECT 1" \
+          && break
         sleep 2
       done
     displayName: 'Pull & start SQL Server (Docker)'
