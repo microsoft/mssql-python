@@ -81,8 +81,11 @@ elif sys.platform.startswith('darwin'):
         if platform.machine() == 'arm64':
             arch = 'arm64'
             platform_tag = 'macosx_15_0_arm64'
+        elif platform.machine() == 'x86_64':
+            arch = 'x86_64'
+            platform_tag = 'macosx_15_0_x86_64'
         else:
-            raise Exception("Unsupported architecture for macOS. Please set the ARCHITECTURE environment variable to 'arm64'.")
+            raise Exception("Unsupported architecture for macOS.")
 
     # Add architecture-specific packages for macOS
     packages.extend([
