@@ -236,7 +236,7 @@ jobs:
     # Copy the built .so file to staging folder for artifacts
     - task: CopyFiles@2
       inputs:
-        SourceFolder: '$(Build.SourcesDirectory)/mssql_python/pybind/build/$(targetArch)/py$(shortPyVer)/Release'
+        SourceFolder: '$(Build.SourcesDirectory)/mssql_python/pybind'
         Contents: 'ddbc_bindings.cp$(shortPyVer)-*.so'
         TargetFolder: '$(Build.ArtifactStagingDirectory)/all-pyds'
       displayName: 'Place .so file into artifacts directory'
@@ -252,7 +252,7 @@ jobs:
     # Copy the wheel file to the artifacts
     - task: CopyFiles@2
       inputs:
-        SourceFolder: '$(Build.SourcesDirectory)/build'
+        SourceFolder: '$(Build.SourcesDirectory)/dist'
         Contents: '*.whl'
         TargetFolder: '$(Build.ArtifactStagingDirectory)/dist'
       displayName: 'Collect wheel package'
