@@ -14,10 +14,17 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Get platform and configure paths
 ARCH=$(get_mac_platform_architecture)
-LIB_DIR="$PROJECT_DIR/libs/macos/lib"
+LIB_DIR="$PROJECT_DIR/libs/macos/$ARCH/lib"
 LIBMSODBCSQL_PATH="$LIB_DIR/libmsodbcsql.18.dylib"
 LIBODBCINST_PATH="$LIB_DIR/libodbcinst.2.dylib"
 LIBLTDL_PATH="$LIB_DIR/libltdl.7.dylib"
+
+echo "Initial configuration:"
+otool -L "$LIBMSODBCSQL_PATH"
+otool -L "$LIBODBCINST_PATH"
+if [ -f "$LIBLTDL_PATH" ]; then
+  otool -L "$LIBLTDL_PATH"
+fi
 
 echo "Configuring dylibs in: $LIB_DIR"
 
@@ -108,3 +115,9 @@ if [ -f "$LIBLTDL_PATH" ]; then
 fi
 
 echo "Library configuration complete!"
+echo "Final configuration:"
+otool -L "$LIBMSODBCSQL_PATH"
+otool -L "$LIBODBCINST_PATH"
+if [ -f "$LIBLTDL_PATH" ]; then
+  otool -L "$LIBLTDL_PATH"
+fi
