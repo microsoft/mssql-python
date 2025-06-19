@@ -184,22 +184,22 @@ jobs:
   pool:
     vmImage: 'macos-latest'
   # Display name for the job in Azure DevOps UI
-  displayName: 'Build macOS - '
+  displayName: 'Build macOS Universal2 - '
   strategy:
     matrix:
-      # Python 3.13 (only x86_64 for builds)
-      py313_x86_64:
+      # Python 3.13 (universal2 for both arm64 and x86_64)
+      py313_universal2:
         pythonVersion: '3.13'
         shortPyVer: '313'
-        # targetArch is not used anywhere since build.sh does auto-detection, kept for cross-compilation of ARM64 Builds
-        targetArch: 'x86_64'
+        # Always use universal2 for macOS
+        targetArch: 'universal2'
   steps:
     # Use correct Python version and architecture for the current job
     - task: UsePythonVersion@0
       inputs:
         versionSpec: '$(pythonVersion)'
         addToPath: true
-      displayName: 'Use Python $(pythonVersion) (x86_64)'
+      displayName: 'Use Python $(pythonVersion) (Universal2)'
 
     # Install CMake on macOS
     - script: |
@@ -218,7 +218,7 @@ jobs:
     - script: |
         echo "Python Version: $(pythonVersion)"
         echo "Short Tag: $(shortPyVer)"
-        echo "Architecture: Target=$(targetArch)"
+        echo "Building Universal2 Binary"
         cd "$(Build.SourcesDirectory)/mssql_python/pybind"
         # Call build.sh to build the .so file
         ./build.sh
@@ -232,13 +232,12 @@ jobs:
         TargetFolder: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
       displayName: 'Place .so file into artifacts directory'
     
-    # Build wheel package for the current architecture
+    # Build wheel package for universal2
     - script: |
         python -m pip install --upgrade pip
         pip install wheel setuptools
-        set ARCHITECTURE=$(targetArch)
         python setup.py bdist_wheel
-      displayName: 'Build wheel package for Python $(pythonVersion) ($(targetArch))'
+      displayName: 'Build $(pythonVersion) universal2 whl'
     
     # Copy the wheel file to the artifacts
     - task: CopyFiles@2
