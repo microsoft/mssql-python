@@ -45,7 +45,11 @@ from .cursor import Cursor
 from .logging_config import setup_logging, get_logger
 
 # Constants
-from .constants import ConstantsDDBC
+from .constants import ConstantsDDBC, BCPControlOptions
+
+# BCP
+from .bcp_options import BCPOptions, ColumnFormat
+from .bcp_main import BCPClient
 
 # GLOBALS
 # Read-Only
