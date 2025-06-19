@@ -30,7 +30,7 @@ static SqlHandlePtr getEnvHandle() {
         if (!SQL_SUCCEEDED(ret)) {
             ThrowStdException("Failed to set environment attributes");
         }
-        return std::make_shared<SqlHandle>(SQL_HANDLE_ENV, env);
+        return std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_ENV), env);
     }();
 
     return envHandle;
@@ -57,7 +57,7 @@ void Connection::allocateDbcHandle() {
     LOG("Allocate SQL Connection Handle");
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(), &dbc);
     checkError(ret);
-    _dbcHandle = std::make_shared<SqlHandle>(SQL_HANDLE_DBC, dbc);
+    _dbcHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_DBC), dbc);
 }
 
 void Connection::connect(const py::dict& attrs_before) {
@@ -94,7 +94,7 @@ void Connection::disconnect() {
 void Connection::checkError(SQLRETURN ret) const{
     if (!SQL_SUCCEEDED(ret)) {
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
-        std::string errorMsg = std::string(err.ddbcErrorMsg.begin(), err.ddbcErrorMsg.end());
+        std::string errorMsg = WideToUTF8(err.ddbcErrorMsg);
         ThrowStdException(errorMsg);
     }
 }
@@ -125,7 +125,7 @@ void Connection::setAutocommit(bool enable) {
     }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     LOG("Set SQL Connection Attribute");
-    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)value, 0);
+    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
     checkError(ret);
     _autocommit = enable;
 }
@@ -151,7 +151,7 @@ SqlHandlePtr Connection::allocStatementHandle() {
     SQLHANDLE stmt = nullptr;
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbcHandle->get(), &stmt);
     checkError(ret);
-    return std::make_shared<SqlHandle>(SQL_HANDLE_STMT, stmt);
+    return std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT), stmt);
 }
 
 
@@ -223,7 +223,6 @@ bool Connection::reset() {
         ThrowStdException("Connection handle not allocated");
     }
     LOG("Resetting connection via SQL_ATTR_RESET_CONNECTION");
-    SQLULEN reset = SQL_TRUE;
     SQLRETURN ret = SQLSetConnectAttr_ptr(
         _dbcHandle->get(),
         SQL_ATTR_RESET_CONNECTION,

@@ -14,7 +14,11 @@ jobs:
   steps:
   - task: UsePythonVersion@0
     inputs:
-      versionSpec: '3.13'
+      # TODO: Remove this once Python 3.13 is available in ADO
+      # ADO indexing will take some time to reflect 3.13 as 3.13.5, right now it is pointing to 3.13.4.
+      # We're specifying to use Python 3.13.5 since 3.13.4 has issues with compilation
+      # See https://github.com/python/cpython/issues/135151, next release should fix it.
+      versionSpec: '3.13.5'
       addToPath: true
       githubToken: $(GITHUB_TOKEN)
     displayName: 'Use Python 3.13'
@@ -57,6 +61,13 @@ jobs:
       ArtifactName: 'ddbc_bindings'
       publishLocation: 'Container'
     displayName: 'Publish pyd file as artifact'
+
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pdb'
+      ArtifactName: 'ddbc_bindings'
+      publishLocation: 'Container'
+    displayName: 'Publish pdb file as artifact'
 
   - task: PublishTestResults@2
     condition: succeededOrFailed()
