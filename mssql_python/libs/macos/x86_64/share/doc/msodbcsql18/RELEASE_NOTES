@@ -1,0 +1,465 @@
+ChangeLog (Release Notes)
+
+18.5.1.1 - 2025-03-17
+
+Fixed:
+    - Fix connection recovery to obtain the active primary node when a server moves.
+    - Fix crashes under low-memory conditions.
+
+Added:
+    - Expose Packet Size as a connection string option.
+    - Support macOS 15
+    - Support Azure Linux 3.0
+    - Support Alpine Linux 3.20
+    - Support Oracle Linux 9
+
+
+18.4.1.1 - 2024-07-31
+
+Fixed:
+    - Fix crashes when receiving invalid data from server
+    - Fix sending of null data for fixed-length types using DAE
+    - Fix 10-minute delay upon disconnection after timeout
+    - Fix memory leak upon disconnection when an error occurs
+    - Fix memory leak upon reconnection with Strict encryption
+    - Fix intermittent crash when connecting with Strict encryption and TLS 1.3
+    - Fix crashes under low-memory conditions
+
+Added:
+    - Option to accept EULA via the presence of a file
+    - Renamed Azure Active Directory to Microsoft Entra ID
+    - Support Ubuntu 24.04
+    - Support Alpine 3.19
+
+
+18.3.3.1 - 2024-04-09
+
+Fixed:
+    - Fix crashes when receiving invalid data from server
+    - Fix infinite loop when receiving invalid data from server
+    - Fix App Service Containers MSI Authentication
+    
+18.3.2.1 - 2023-10-10
+
+Fixed:
+    - Fix crashes when receiving invalid data from server
+    - Fix infinite loop when receiving invalid data from server
+    - Fix a crash when attempting to connect under low-memory conditions
+
+
+18.3.1.1 - 2023-07-31
+
+Fixed:
+    - Setting of Data Classification Version connection attribute
+
+Added:
+    - Improved performance via more efficient packet buffer memory allocation
+    - Add support for Managed Identity (MSI) Authentication for Azure Arc and Azure 
+      Cloudshell and updated to a newer Azure App Service API version
+    - Support Ubuntu 23.04
+    - Support Alpine 3.17 and 3.18
+
+18.2.2.1 - 2023-06-13
+
+Fixed:
+    - Fix a crash when retrieving data with AutoTranslate option off
+    - Fix partial writes on Linux in presence of signals
+    - Fix crashes when receiving invalid data from server
+    - Fix memory leak when processing encrypted columns
+    - Fix errors with long enclave queries
+
+18.2.1.1 - 2023-01-31
+
+Fixed:
+    - Fix VBS-NONE enclave attestation protocol
+    - Fix error when retrieving numeric column with Regional=Yes
+    - Fix intermittent lack of error when server is stopped during bcp out operation
+    - Fix error when stored procedure call contains unquoted string parameter
+    - Fix a memory leak upon reconnect
+
+Added:
+    - Add original and redirected server names to connect errors
+    - Support Ubuntu 22.10
+    - Support macOS 13
+    - Support Alpine 3.16
+
+18.1.2.1 - 2022-11-03
+
+Fixed:
+    - Fix VBS-NONE enclave attestation protocol
+    - Fix error when retrieving numeric column with Regional=Yes
+    - Fix intermittent lack of error when server is stopped during bcp out operation
+    - Fix error when stored procedure call contains unquoted string parameter
+
+
+18.1.1.1 - 2022-08-05
+
+Fixed:
+    - Fix polling for first successful connection with MultiSubnetFailover
+    - Fix connecting with Strict and non-Strict encryption modes simultaneously
+    - Allow Azure Active Directory authentication with Strict encryption mode
+    - Fix idle connection resiliency reconnection when using Kerberos authentication
+    - Fix rare hang when using SQLBulkOperations in async mode
+
+Added:
+    - Configurable retry of query execution
+    - Configurable preference of IPv4 or IPv6
+    - VBS-NONE enclave attestation protocol
+    - Wildcard matching of HostnameInCertificate
+    - Exact match for server certificate with ServerCertificate keyword
+    - TrustedConnection_UseAAD keyword controls use of Kerberos or Azure Active Directory
+      authentication modes
+    - Support TDS 8.0 ALPN
+    - Support TLS 1.3 (when using TDS 8.0)
+    - Support Ubuntu 22.04
+    - Support RedHat 9
+    - Support ARM64 Linux platforms: Debian 11, RedHat 8 and 9, Ubuntu 18.04, 20.04, 22.04
+
+
+18.0.1.1 - 2022-02-15
+
+Fixed:
+    - Reduce excessive stack consumption when retrieving diagnostic records
+    - Fix Azure Active Directory Interactive authentication to re-prompt after the user
+      cancels the first dialog and a cached token already exists (Windows)
+    - More compatible federation metadata parsing
+    - Fix automatic idle reconnection when using Azure Active Directory authentication modes
+    - Remove database version check when using XA DTC to support SQL Managed Instance
+
+Added:
+    - Compatibility with OpenSSL 3.0
+    - Ability to send long types as max types
+    - Support for TDS8
+    - Compatibility extensions for SQLGetData
+    - Support Debian 11
+    - Support Ubuntu 21.10
+    - Support macOS 12
+
+
+17.8.1.1 - 2021/07/30
+
+Fixed:
+    - Fix for restrictions on connection string regarding usage of UID and PWD keywords
+    - Fix issue with having multiple connections with different AKV credentials
+
+Added:
+    - Replication option added to the connection string
+    - KeepAlive and KeepAliveInterval options added to the connection string
+    - Support Ubuntu 21.04
+    - Support Alpine 3.13
+
+17.7.2.1 - 2021-03-10
+
+Fixed:
+    - Fix issue with 404 Not Found errors when using Managed Service Identity authentication
+    - Fix for intermittent Encryption Not Supported errors under high multithreaded loads
+    - Fix for intermittent crash under high multithreaded loads
+
+17.7.1.1 - 2021/01/31
+
+Fixed:
+    - Fix character encoding of VARIANT columns in BCP NATIVE mode
+    - Fix setting of SQL_ATTR_PARAMS_PROCESSED_PTR under specific conditions
+    - Fix SQLDescribeParam in FMTONLY mode for statements containing comments
+    - Fix an issue with federated authentication when using Okta
+    - Fix excessive memory usage on multi-processor systems
+    - Fix Azure AD authentication for some variants of Azure SQL DB
+
+Added:
+    - Ability to insert into encrypted money and smallmoney columns
+    - Azure AD Interactive Authentication to Azure Key Vault
+    - Azure AD Service Principal Authentication to Azure SQL
+    - Trusted endpoints for Managed HSM Azure Key Vault
+    - Performance improvements when inserting data
+    - Support for installation with MacPorts package manager
+    - Support Oracle Linux 7
+    - Support Ubuntu 20.10
+    - Support macOS 11.0
+
+17.6.1.1 - 2020/07/31
+
+Known Issues:
+    - Integrated authentication with Azure AD is subject to system library limitations; see the documentation for details
+
+Fixed:
+    - Fix dependency version of libc6 on Ubuntu/Debian to increase portability
+    - Added additional definitions for BCP to msodbcsql.h
+
+Added:
+    - Caching of encryption metadata for prepared statements
+    - Connection attribute SQL_COPT_SS_AUTOBEGINTXN to control automatically beginning a transaction after ending a previous one
+    - Support for federated account authentication with Azure AD
+    - Support for Big5 and GB locales
+    - Support authentication with Managed Identity for Azure App Service
+    - Support for TLS SNI
+    - Support Ubuntu 20.04
+
+17.5.2.2 - 2020/04/20 (Alpine Linux only)
+
+Known Issues:
+
+Fixed:
+    - Fix a crash when using Always Encrypted with Secure Enclaves on Alpine Linux
+
+Added:
+
+17.5.2.1 - 2020/03/03
+
+Known Issues:
+
+Fixed:
+    - Added msodbcsql.h to Alpine Linux package
+
+Added:
+    - Support authentication with Managed Identity for Azure Key Vault
+
+17.5.1.1 - 2020/01/31
+
+Known Issues:
+    - Due to system library limitations, Alpine Linux supports fewer character encodings and locales
+
+Fixed:
+    - Fix AKV CMK metadata hash computation on Linux/Mac
+    - Fix error when loading OpenSSL 1.0.0
+    - Fix conversion issues when using ISO-8859-1 and ISO-8859-2 codepages
+    - Fix internal library name on Mac to include version number
+    - Fix setting of null indicator when separate length and indicator bindings are used
+
+Added:
+    - SQL_COPT_SS_SPID connection attribute to retrieve SPID without round-trip to server
+    - Support for indicating EULA acceptance via debconf on Debian/Ubuntu 
+    - Support Alpine Linux (3.10, 3.11)
+    - Support Oracle Linux 8
+    - Support Ubuntu 19.10
+    - Support macOS 10.15
+
+17.4.2.1 - 2019/09/19
+
+Known Issues:
+
+Fixed:
+    - Fix for an issue where process ID and application name would not be sent correctly to SQL Server (for sys.dm_exec_sessions analysis)
+    - Removed redundant dependency on libuuid
+    - Fix for a bug with sending UTF8 data to SQL Server 2019
+    - Fix for a bug where locales that end in "@euro" were not being correctly detected
+    - Fix for XML data being returned incorrectly when fetched as an output parameter while using Always Encrypted
+
+Added:
+    - Support for additional Azure Key Vault endpoints: vault.azure.cn, vault.usgovcloudapi.net, vault.microsoftazure.de
+    - Support for setting data classification version
+
+17.4.1.1 - 2019/07/17
+
+Known Issues:
+
+Fixed:
+    - Fix for intermittent hang when Multiple Active Results Sets (MARS) is enabled
+    - Fix connection resiliency hang when async notification is enabled
+    - Fix crash when retrieving diagnostic records for multithreaded connection attempts
+    - Fix 'Encryption not supported' upon reconnect after calling SQLGetInfo() with SQL_USER_NAME and SQL_DATA_SOURCE_READ_ONLY
+    - Fix COM initialization error during Azure Active Directory Interactive Authentication
+    - Fix SQLGetData() for multi-byte UTF8 data
+    - Fix retrieving length of sql_variant columns using SQLGetData()
+    - Fix importing of sql_variant columns containing more than 7992 bytes using bcp
+    - Fix sending of correct encoding to server for narrow character data
+
+Added:
+    - Support Always Encrypted with Secure Enclaves
+    - Support dynamic loading of OpenSSL
+    - Support insertion of UTF8 data for SQL Server 2019
+    - Support configurable TCP Keep Alive settings
+    - Support Debian 10
+    - Support RedHat 8
+    - Support Ubuntu 19.04
+    - Support connecting to named instances on Linux and Mac
+
+17.3.1.1 - 2019/02/15
+
+Known Issues:
+
+Fixed:
+    - Fix for detection of the current environment locale
+    - Fix AE streaming encryption for short data values
+    - Fix use-after-free for encrypted DAE parameters
+    - Fix race conditions with multiple threads and sending data.
+    - Fix SQLNumResultCols when SQLExecute returns SQL_NO_DATA_FOUND
+    - Fix infinite loop in comment parsing
+
+Added:
+    - Support Azure Active Directory Managed Service Identity (system and user-assigned) authentication mode
+    - Support SuSE 15
+    - Support Ubuntu 18.10
+    - Support macOS 10.14
+    - Minor optimizations
+
+17.3.0.1 - 2018/09/07
+
+Known Issues:
+
+Fixed:
+    - Fix for tcp send notification event handle memory leak
+    - Fix redefinition issue of enum _SQL_FILESTREAM_DESIRED_ACCESS in msodbcsql.h header file
+    - Fix missing ACCESS_TOKEN and AUTHENTICATION related definition in msodbcsql.h header file for Linux and MAC
+
+Added:
+    - Support AE input parameter streaming
+    - Support XA DTC
+
+17.2.0.1 - 2018/06/20
+
+Known Issues:
+
+Fixed:
+    - Fix Error Message about Azure Active Directory Authentication
+    - Fix encoding detection when locale environment variables are set differently
+    - Fix crash upon disconnect with connection recovery in progress
+    - Fix detection of connection liveness
+    - Fix incorrect detection of closed sockets
+    - Fix the infinite wait when attempting to release a statement handle during failed recovery.
+
+Added:
+    - Support Ubuntu 18.04
+    - Change the dependency to dynamic libcurl loading
+            The libcurl for OpenSSL or NSS is required when using the Azure Key Vault or Azure Active Directory authentication.
+            Manually install libcurl if it is not with the system by default.
+    - Support Idle Connection Resiliency with ConnectRetryCount and ConnectRetryInterval keywords in connection string:
+            Use the SQL_COPT_SS_CONNECT_RETRY_COUNT (read only) connection attribute to retrieve the number of connection retry attempts.
+            Use the SQL_COPT_SS_CONNECT_RETRY_INTERVAL (read only) connection attribute to retrieve the length of the connection retry interval.
+            Connection will be retried at least once by default.
+    - Support UTF8 server encoding
+    - Support Data Classification feature on Azure SQL Database and SQL Server
+    - Support SQLBrowseConnect
+
+17.1.0.1 - 2018/04/06
+
+Known Issues:
+    None
+
+Fixed:
+    - Fixed 1-second delay when calling SQLFreeHandle with MARS enabled and connection attribute "Encrypt=yes"
+    - Fixed truncated ADAL error messages
+    - Fixed an issue where inserting double into decimal field with Always Encrypted on would return data truncation error
+    - Fixed a warning on MacOS installer
+    
+Added:
+    - Support for SQL_COPT_SS_CEKCACHETTL and SQL_COPT_SS_TRUSTEDCMKPATHS connection attributes
+            SQL_COPT_SS_CEKCACHETTL Allows controlling the time that the local cache of Column Encryption Keys exists, as well as flushing it
+            SQL_COPT_SS_TRUSTEDCMKPATHS Allows the application to restrict AE operations to only use the specified list of Column Master Keys
+
+    - Support for loading the .rll from default location
+    
+17.0.1.0 - 2017/01/16
+Known Issues:
+    None
+
+Fixed:
+    Fixed SQLGetData for encrypted varbinary(max) returned data only on first call
+    Conversions to persian collation in column scenarios appears to result in data corruption.
+    Data corruption when streaming UTF-16 or UTF-8 using SQLPutData with split octets or surrogate pairs
+    With async notifications enabled, driver unable to recover from failure (Windows)
+    High cpu consumption when ODBC async execution mode is enabled (Windows)
+    Occasional crash during ODBC shutdown when async execution mode is enabled (Windows)
+	
+Added:
+    Performance improvement for when ODBC async execution mode is enabled
+
+17.0.0.5 - 2017/12/20
+
+Known Issues:
+    - macOS: Homebrew now filters out user set environment variables. You can now install the ODBC driver on macOS using the
+      following command line:
+        HOMEBREW_NO_ENV_FILTERING=1 ACCEPT_EULA=Y brew install --no-sandbox msodbcsql
+
+Fixed:
+    - Parameters bound with any convertable C type with the same precision & scale as a numeric/decimal column are now
+      correctly converted to the appropriate numeric type with the specified precision and scale, and execute successfully
+      instead of erroring our with Operand Type Clash.      
+    - Screen reader usability improvements in DSN Wizard and Login Dialog
+    - Encrypted numeric/decimal values now correctly normalize negative zeros
+    - Hebrew data (varchar) is no longer chopped when returned as wide chars on Linux platforms
+    - Fixed Invalid Descriptor Index error when using unencrypted XML column with AE in some scenarios
+    - Fixed function sequence error when using DAE, SqlPutData, and AE
+    - ODBC Driver on Windows now links directly to secur32.dll, instead of indirectly through security.dll
+
+Added:
+    - Support for macOS High Sierra
+    - Support for Ubuntu 17.10
+    - Always Encrypted support for BCP API
+    - Greater than 10x performance improvement when driver converts to/from UTF-8/16.
+    - New connection string attribute UseFMTOnly causes driver to use legacy metadata in special cases requiring temp tables.
+
+--------------------------------------------------------------------------------
+
+17.0.0.1 - 2017/10/06
+
+Known Issues:
+    None
+
+Fixed:
+    msodbcsql.h - Missing types and constants were added to Linux/Mac header
+    CP1252 encoded files over 32MB were failing to import correctly with bcp on Linux. This has been fixed.
+    Resolved an issue in Linux where system time changes could result in incorrect timeouts in the driver
+    macOS - SQLGetInfo with SQL_DRIVER_NAME retruns .so value instead of .dylib
+
+Added:
+    Support for Debian 9
+    Improved performance of driver character conversion from utf16
+    Changed narrow functions of ODBC API to be sensitive to platform encoding, and not assume UTF-8. Wide encoding is expected to be UTF-16LE
+    Removed Microsoft online service sign-in assistant check in ODBC driver for Windows
+
+--------------------------------------------------------------------------------
+
+13.1.9.0 - 2017/06/14
+
+Known Issues:
+ None
+
+Fixed:
+#10274176: DSN Wizard Help does not load CHM
+#10034310: Fix buffer overrun upon UTF-8 character conversion - Now fully supports UTF-8
+
+Added:
+Support for Ubuntu 14.04.
+Configurable driver location on Linux.  Simply copy the whole driver install directory to the location of your choice after normal installation.
+  You must manually update the ODBCINST.INI file with the new location.
+
+
+--------------------------------------------------------------------------------
+
+13.1.8.0 - 2017/05/18
+
+Known Issues:
+- Due to the buffer overrun fix (#10034310, see below), UTF-8 non-ASCII
+  characters may cause column truncation after conversion to UTF-16. In
+  particular, use of SQLBulkOperations with column bindings may cause
+  this to occur. A future release will fully support UTF-8. See
+  https://docs.microsoft.com/en-us/sql/connect/odbc/linux/known-issues-in-this-version-of-the-driver
+  for more information.
+
+Fixed:
+#10059224: Floating-point numbers formatted incorrectly in French locale
+#10144395: SQLBindParameter input/output parameters may truncate prematurely
+#10060645: Implicit cursor conversion due to comments
+#10034310: Fix buffer overrun upon UTF-8 character conversion
+#1080065: Fixed symbolic link creation for the RPM package
+
+Added:
+Support for SuSE 11 SP4 and Ubuntu 17.04.
+
+--------------------------------------------------------------------------------
+
+13.1.7.0 - 2017/04/11
+Preview Release with support for OS X 10.11 (El Capitan), macOS 10.12 (Sierra), RedHat 6, RedHat 7, Suse 12, Debian 8
+and Ubuntu 15.10, 16.04, and 16.10
+
+Known Issues:
+No new known issues. https://docs.microsoft.com/en-us/sql/connect/odbc/mac/known-issues-in-this-version-of-the-driver
+
+Fixed:
+
+
+Added:
+#1081223: Support for Azure Active Directory authentication
+#9861137: Add ODBC Docs section for TVP on Linux and Mac. https://docs.microsoft.com/en-us/sql/relational-databases/
+native-client-odbc-table-valued-parameters/binding-and-data-transfer-of-table-valued-parameters-and-column-values
+_____________________________________________________________________________________________________________

@@ -33,11 +33,14 @@ cd "${BUILD_DIR}"
 echo "[DIAGNOSTIC] Changed to build directory: ${BUILD_DIR}"
 
 # Set platform-specific flags for different architectures
-if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "x64" ]; then
+if [ "$ARCH" = "x86_64" ]; then
+    # x86_64 architecture
+    echo "[DIAGNOSTIC] Detected Intel Chip x86_64 architecture"
     CMAKE_ARCH="x86_64"
-    ARCH="x64"
     echo "[DIAGNOSTIC] Using x86_64 architecture for CMake"
 elif [ "$ARCH" = "arm64" ]; then
+    # arm64 architecture
+    echo "[DIAGNOSTIC] Detected Apple Silicon Chip arm64 architecture"
     CMAKE_ARCH="arm64"
     echo "[DIAGNOSTIC] Using arm64 architecture for CMake"
 else
