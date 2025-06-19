@@ -11,10 +11,16 @@ The driver is compatible with all the Python versions >= 3.10
 > 
 ## Installation
  
-mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
+**Windows:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
 ```bash
 pip install mssql-python
 ```
+**MacOS:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
+```bash
+brew install openssl
+pip install mssql-python
+```
+
 ## Key Features
 ### Supported Platforms
  
