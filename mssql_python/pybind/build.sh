@@ -1,76 +1,34 @@
 #!/bin/bash
-# Build script for macOS to compile the ddbc_bindings C++ code
+# Build script for macOS to compile a universal2 (arm64 + x86_64) binary
 # This script is designed to be run from the mssql_python/pybind directory
-# Running this script will require CMake and a C++ compiler installed on your MacOS system
-# It will also require Python 3.x, pybind11 and msodbcsql18 and unixODBC to be installed
 
-# Usage: build.sh [ARCH], If ARCH is not specified, it defaults to the current architecture
-ARCH=${1:-$(uname -m)}
-echo "[DIAGNOSTIC] Target Architecture set to: $ARCH"
+# Get Python version from active interpreter
+PYTAG=$(python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')")
+
+echo "==================================="
+echo "Building Universal2 Binary for Python $PYTAG"
+echo "==================================="
+
+# Save absolute source directory
+SOURCE_DIR=$(pwd)
 
 # Clean up main build directory if it exists
-echo "Checking for main build directory..."
+echo "Checking for build directory..."
 if [ -d "build" ]; then
     echo "Removing existing build directory..."
     rm -rf build
     echo "Build directory removed."
 fi
 
-# Get Python version from active interpreter
-PYTAG=$(python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')")
-
-echo "==================================="
-echo "Building for: $ARCH / Python $PYTAG"
-echo "==================================="
-
-# Save absolute source directory
-SOURCE_DIR=$(pwd)
-
-# Go to build output directory
-BUILD_DIR="${SOURCE_DIR}/build/${ARCH}/py${PYTAG}"
+# Create build directory for universal binary
+BUILD_DIR="${SOURCE_DIR}/build"
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 echo "[DIAGNOSTIC] Changed to build directory: ${BUILD_DIR}"
 
-# Set platform-specific flags for different architectures
-if [ "$ARCH" = "x86_64" ]; then
-    # x86_64 architecture
-    echo "[DIAGNOSTIC] Detected Intel Chip x86_64 architecture"
-    CMAKE_ARCH="x86_64"
-    echo "[DIAGNOSTIC] Using x86_64 architecture for CMake"
-elif [ "$ARCH" = "arm64" ]; then
-    # arm64 architecture
-    echo "[DIAGNOSTIC] Detected Apple Silicon Chip arm64 architecture"
-    CMAKE_ARCH="arm64"
-    echo "[DIAGNOSTIC] Using arm64 architecture for CMake"
-else
-    echo "[ERROR] Unsupported architecture: $ARCH"
-    exit 1
-fi
-
-echo "[DIAGNOSTIC] Source directory: ${SOURCE_DIR}"
-
-# Special handling for macOS ODBC headers and string conversion issues
-if [ "$(uname)" = "Darwin" ]; then
-    # Check if macOS-specific source file exists
-    if [ -f "${SOURCE_DIR}/ddbc_bindings_mac.cpp" ]; then
-        echo "[DIAGNOSTIC] Using macOS-specific source file: ddbc_bindings_mac.cpp"
-    else
-        echo "[WARNING] macOS-specific source file ddbc_bindings_mac.cpp not found"
-        echo "[WARNING] Falling back to standard source file ddbc_bindings.cpp"
-    fi
-    
-    # Configure CMake with macOS-specific flags
-    echo "[DIAGNOSTIC] Running CMake configure with macOS-specific settings"
-    cmake -DCMAKE_OSX_ARCHITECTURES=${CMAKE_ARCH} \
-          -DARCHITECTURE=${ARCH} \
-          -DMACOS_STRING_FIX=ON \
-          "${SOURCE_DIR}"
-else
-    # Configure CMake for other platforms
-    echo "[DIAGNOSTIC] Running CMake configure for non-macOS platform"
-    cmake -DARCHITECTURE=${ARCH} "${SOURCE_DIR}"
-fi
+# Configure CMake (architecture settings handled in CMakeLists.txt)
+echo "[DIAGNOSTIC] Running CMake configure (universal2 is set automatically)"
+cmake -DMACOS_STRING_FIX=ON "${SOURCE_DIR}"
 
 # Check if CMake configuration succeeded
 if [ $? -ne 0 ]; then
@@ -87,32 +45,41 @@ if [ $? -ne 0 ]; then
     echo "[ERROR] CMake build failed"
     exit 1
 else
-    echo "[SUCCESS] Build completed successfully"
+    echo "[SUCCESS] Universal2 build completed successfully"
+    
     # List the built files
     echo "Built files:"
     ls -la *.so
     
     # Copy the built .so file to the mssql_python directory
     PARENT_DIR=$(dirname "$SOURCE_DIR")
-    echo "[ACTION] Copying the .so file to $PARENT_DIR"
+    echo "[ACTION] Copying the universal2 .so file to $PARENT_DIR"
     cp -f *.so "$PARENT_DIR"
     if [ $? -eq 0 ]; then
-        echo "[SUCCESS] .so file copied successfully"
+        echo "[SUCCESS] Universal2 .so file copied successfully"
         
-        # Only on macOS, run the dylib configuration script to fix library paths and codesign
-        if [ "$(uname)" = "Darwin" ]; then
-            echo "[ACTION] Configuring and codesigning dylibs for macOS"
-            chmod +x "${SOURCE_DIR}/configure_dylibs.sh"
-            "${SOURCE_DIR}/configure_dylibs.sh"
-            if [ $? -eq 0 ]; then
-                echo "[SUCCESS] macOS dylibs configured and codesigned successfully"
-            else
-                echo "[WARNING] macOS dylib configuration encountered issues"
-                # Don't exit with error, as the build itself was successful
-            fi
+        # Configure dylib paths and codesign
+        echo "[ACTION] Configuring and codesigning dylibs for macOS"
+        chmod +x "${SOURCE_DIR}/configure_dylibs.sh"
+        "${SOURCE_DIR}/configure_dylibs.sh"
+        if [ $? -eq 0 ]; then
+            echo "[SUCCESS] macOS dylibs configured and codesigned successfully"
+        else
+            echo "[WARNING] macOS dylib configuration encountered issues"
         fi
     else
-        echo "[ERROR] Failed to copy .so file"
+        echo "[ERROR] Failed to copy universal2 .so file"
         exit 1
     fi
+fi
+
+# Check if the file is a universal binary
+SO_FILE=$(ls -1 *.so | head -n 1)
+echo "[DIAGNOSTIC] Checking if ${SO_FILE} is a universal binary..."
+lipo -info "${SO_FILE}"
+
+# Check if the file has the correct naming convention
+if [[ "${SO_FILE}" != *universal2* ]]; then
+    echo "[WARNING] The .so file doesn't have 'universal2' in its name, even though it's a universal binary."
+    echo "[WARNING] You may need to run the build again after the CMakeLists.txt changes are applied."
 fi

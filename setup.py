@@ -38,9 +38,10 @@ class CustomBdistWheel(bdist_wheel):
             print(f"Setting wheel platform tag to: {self.plat_name}")
             
             # Force platform-specific paths if bdist_dir is already set
-            if self.bdist_dir and "win-amd64" in self.bdist_dir:
-                self.bdist_dir = self.bdist_dir.replace("win-amd64", f"win-{platform_dir}")
-                print(f"Using build directory: {self.bdist_dir}")
+        elif sys.platform.startswith('darwin'):
+            # For macOS, always use universal2
+            self.plat_name = "macosx_15_0_universal2"
+            print(f"Setting wheel platform tag to: {self.plat_name} (universal2)")
 
 # Find all packages in the current directory
 packages = find_packages()
@@ -72,20 +73,9 @@ if sys.platform.startswith('win'):
         f'mssql_python.libs.{arch}.vcredist'
     ])
 elif sys.platform.startswith('darwin'):
-    # macOS platform
-    import platform
-    arch = os.environ.get('ARCHITECTURE', None)
-    
-    # Auto-detect architecture if not specified
-    if arch is None:
-        if platform.machine() == 'arm64':
-            arch = 'arm64'
-            platform_tag = 'macosx_15_0_arm64'
-        elif platform.machine() == 'x86_64':
-            arch = 'x86_64'
-            platform_tag = 'macosx_15_0_x86_64'
-        else:
-            raise Exception("Unsupported architecture for macOS.")
+    # macOS platform - always use universal2
+    arch = 'universal2'
+    platform_tag = 'macosx_15_0_universal2'  # Use macOS 15.0 (Monterey) as minimum for universal2
 
     # Add architecture-specific packages for macOS
     packages.extend([
