@@ -14,9 +14,9 @@ jobs:
     inputs:
       buildType: 'specific'
       project: '$(System.TeamProject)'
-      definition: 2134
-      buildVersionToDownload: 'latestFromBranch'
-      branchName: 'refs/heads/main'
+      definition: 2162
+      buildVersionToDownload: 'latest'
+      branchName: '$(Build.SourceBranch)'
       artifactName: 'mssql-python-wheels-dist'
       targetPath: '$(Build.SourcesDirectory)\dist'
     displayName: 'Download release wheel files artifact from latest successful run on main branch'
@@ -36,7 +36,11 @@ jobs:
       signcertname: '$(AuthSignCertName)'
       clientid: '$(EsrpClientId)'
       Intent: 'PackageDistribution'
-      ContentType: 'PyPI'
+      # Changing content type to Maven release (NOT PyPI) since we want to do dummy release
+      # for ESRP testing purposes, not for actual PyPI distribution.
+      # This is a workaround to allow ESRP to process the release without actual PyPI content
+      # and to avoid ESRP validation errors.
+      ContentType: 'Maven'
       ContentSource: 'Folder'
       FolderLocation: '$(Build.SourcesDirectory)/dist'
       WaitForReleaseCompletion: true

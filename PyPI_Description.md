@@ -2,21 +2,21 @@
 
 This is a new Python driver for Microsoft SQL Server currently in Alpha phase.
 
-## Alpha Version Release
+## Public Preview Release
 
-We are excited to announce the release of the alpha version of our driver. This marks a significant milestone in our development journey. While this version is still in the early stages, it includes the foundational code and initial logic that will drive future enhancements.
+We are making progress - The Public Preview of our driver is now available! This marks a significant milestone in our development journey. While we saw a few early adopters of our alpha release, we are introducing the following functionalities to support your applications in a more robust and reliable manner.
 
 ### What's Included:
 
-- Basic functionality to get you started.
-- Initial implementation of core features.
-- Placeholder for future improvements and updates.
+- Everything from alpha
+- macOS Support: The mssql-python driver now supports macOS on ARM-based systems, enabling seamless development on Apple Silicon (M-series) devices. This milestone strengthens our cross-platform capabilities—and we’re just getting started. Linux support is on the horizon!
+- Connection Pooling: We've introduced a robust and configurable connection pooling system designed to significantly enhance performance and optimize resource utilization. This feature ensures more efficient management of database connections, especially under high-load scenarios
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
 
 ### What's Next:
 
-As we continue to develop and refine the driver, you can expect regular updates that will introduce new features, optimizations, and bug fixes. We encourage you to provide feedback and report any issues you encounter, as this will help us improve the driver for the final release.
+As we continue to develop and refine the driver, you can expect regular updates that will introduce new features, optimizations, and bug fixes. We encourage you to contribute, provide feedback and report any issues you encounter, as this will help us improve the driver for the final release.
 
 ### Stay Tuned:
 

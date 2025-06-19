@@ -86,7 +86,7 @@ else:
 
 setup(
     name='mssql-python',
-    version='0.1.6',
+    version='0.5.0',
     description='A Python library for interacting with Microsoft SQL Server',
     long_description=open('PyPI_Description.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
