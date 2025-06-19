@@ -252,7 +252,7 @@ jobs:
     - task: PublishBuildArtifacts@1
       condition: succeededOrFailed()
       inputs:
-        PathtoPublish: '$(Build.ArtifactStagingDirectory)\ddbc-bindings'
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
         ArtifactName: 'mssql-python-ddbc-bindings'
         publishLocation: 'Container'
       displayName: 'Publish all .so files as artifacts'
@@ -261,7 +261,7 @@ jobs:
     - task: PublishBuildArtifacts@1
       condition: succeededOrFailed()
       inputs:
-        PathtoPublish: '$(Build.ArtifactStagingDirectory)\dist'
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/dist'
         ArtifactName: 'mssql-python-wheels-dist'
         publishLocation: 'Container'
       displayName: 'Publish all wheels as artifacts'
