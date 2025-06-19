@@ -184,23 +184,11 @@ jobs:
   displayName: 'Build macOS - '
   strategy:
     matrix:
-      # Python 3.10-3.13 (only x86_64)
-      py310_x86_64:
-        pythonVersion: '3.10'
-        shortPyVer: '310'
-        # targetArch is not used anywhere since build.sh does auto-detection, kept for cross-compilation of ARM64 Builds
-        targetArch: 'x86_64'
-      py311_x86_64:
-        pythonVersion: '3.11'
-        shortPyVer: '311'
-        targetArch: 'x86_64'
-      py312_x86_64:
-        pythonVersion: '3.12'
-        shortPyVer: '312'
-        targetArch: 'x86_64'
+      # Python 3.13 (only x86_64 for builds)
       py313_x86_64:
         pythonVersion: '3.13'
         shortPyVer: '313'
+        # targetArch is not used anywhere since build.sh does auto-detection, kept for cross-compilation of ARM64 Builds
         targetArch: 'x86_64'
   steps:
     # Use correct Python version and architecture for the current job
