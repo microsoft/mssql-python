@@ -184,7 +184,7 @@ jobs:
   pool:
     vmImage: 'macos-latest'
   # Display name for the job in Azure DevOps UI
-  displayName: 'Build macOS Universal2 - '
+  displayName: 'Build macOS - '
   strategy:
     matrix:
       # Python 3.13 (universal2 for both arm64 and x86_64)
