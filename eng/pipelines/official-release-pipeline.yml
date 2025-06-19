@@ -14,9 +14,9 @@ jobs:
     inputs:
       buildType: 'specific'
       project: '$(System.TeamProject)'
-      definition: 2134
-      buildVersionToDownload: 'latestFromBranch'
-      branchName: 'refs/heads/main'
+      definition: 2162
+      buildVersionToDownload: 'latest'
+      branchName: '$(Build.SourceBranch)'
       artifactName: 'mssql-python-wheels-dist'
       targetPath: '$(Build.SourcesDirectory)\dist'
     displayName: 'Download release wheel files artifact from latest successful run on main branch'
