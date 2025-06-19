@@ -27,25 +27,25 @@ jobs:
       dir "$(Build.SourcesDirectory)\dist"
     displayName: 'List contents of dist directory'
 
-  # - task: EsrpRelease@9
-  #   displayName: 'ESRP Release'
-  #   inputs:
-  #     connectedservicename: '$(ESRPConnectedServiceName)'
-  #     usemanagedidentity: true
-  #     keyvaultname: '$(AuthAKVName)'
-  #     signcertname: '$(AuthSignCertName)'
-  #     clientid: '$(EsrpClientId)'
-  #     Intent: 'PackageDistribution'
-  #     # Changing content type to Maven release (NOT PyPI) since we want to do dummy release
-  #     # for ESRP testing purposes, not for actual PyPI distribution.
-  #     # This is a workaround to allow ESRP to process the release without actual PyPI content
-  #     # and to avoid ESRP validation errors.
-  #     ContentType: 'Maven'
-  #     ContentSource: 'Folder'
-  #     FolderLocation: '$(Build.SourcesDirectory)/dist'
-  #     WaitForReleaseCompletion: true
-  #     Owners: '$(owner)'
-  #     Approvers: '$(approver)'
-  #     ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
-  #     MainPublisher: 'ESRPRELPACMAN'
-  #     DomainTenantId: '$(DomainTenantId)'
+  - task: EsrpRelease@9
+    displayName: 'ESRP Release'
+    inputs:
+      connectedservicename: '$(ESRPConnectedServiceName)'
+      usemanagedidentity: true
+      keyvaultname: '$(AuthAKVName)'
+      signcertname: '$(AuthSignCertName)'
+      clientid: '$(EsrpClientId)'
+      Intent: 'PackageDistribution'
+      # Changing content type to Maven release (NOT PyPI) since we want to do dummy release
+      # for ESRP testing purposes, not for actual PyPI distribution.
+      # This is a workaround to allow ESRP to process the release without actual PyPI content
+      # and to avoid ESRP validation errors.
+      ContentType: 'Maven'
+      ContentSource: 'Folder'
+      FolderLocation: '$(Build.SourcesDirectory)/dist'
+      WaitForReleaseCompletion: true
+      Owners: '$(owner)'
+      Approvers: '$(approver)'
+      ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
+      MainPublisher: 'ESRPRELPACMAN'
+      DomainTenantId: '$(DomainTenantId)'
