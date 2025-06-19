@@ -47,7 +47,7 @@ Bulk Copy API (BCP) support is coming soon to the Python Driver for SQL Server. 
 
 **6. Asynchronous Query Execution**
 
-We are also working on adding support for asynchronous query execution. This feature will allow developers to execute queries without blocking the main thread, enabling more responsive and efficient applications. Asynchronous query execution will be particularly beneficial for applications that require high concurrency and low latency  .
+We are also working on adding support for asynchronous query execution. This feature will allow developers to execute queries without blocking the main thread, enabling more responsive and efficient applications. Asynchronous query execution will be particularly beneficial for applications that require high concurrency and low latency.
 - No blocking of the main thread
 - Faster parallel processing – ideal for high-concurrency applications
 - Better integration with async frameworks like asyncio
