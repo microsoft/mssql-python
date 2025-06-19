@@ -58,5 +58,5 @@ This README provides instructions to build the DDBC Bindings PYD for your system
    - Detect system architecture (only `arm64` is supported for MacOS)
    - Configure CMake with appropriate include/library paths
    - Compile `ddbc_bindings_mac.cpp` using CMake
-   - Generate the `.so` file (e.g., `ddbc_bindings.cp313-arm64.so`)
+   - Generate the `.so` file (e.g., `ddbc_bindings.cp313-universal2.so`)
    - Copy the output SO file to the parent `mssql_python` directory
