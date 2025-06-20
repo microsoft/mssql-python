@@ -237,6 +237,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     paramIndex, strParam->size(), 
                     strParam->size() <= 100 ? std::string(strParam->begin(), strParam->end()) : 
                                              std::string(strParam->begin(), strParam->begin() + 100) + "...");
+                ///hello
                 
                 // Log each character's code point for debugging
                 if (strParam->size() <= 20) {
