@@ -24,6 +24,11 @@ jobs:
     displayName: 'Install Python dependencies'
 
   - script: |
+      cd mssql_python/pybind
+      ./build.sh
+    displayName: 'Build pybind bindings (.so)'
+
+  - script: |
       python main.py
     displayName: 'Run main.py to ensure Python is working'
     env:
