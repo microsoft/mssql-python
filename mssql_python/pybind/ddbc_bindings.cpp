@@ -239,6 +239,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                                              std::string(strParam->begin(), strParam->begin() + 100) + "...");
                 //hello world
                 std::cout<<"hello world"<<std::endl;
+                std::cout<<"hello world"<<std::endl;
                 // Log each character's code point for debugging
                 if (strParam->size() <= 20) {
                     for (size_t i = 0; i < strParam->size(); i++) {
