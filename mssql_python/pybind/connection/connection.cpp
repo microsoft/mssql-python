@@ -67,9 +67,20 @@ void Connection::connect(const py::dict& attrs_before) {
             setAutocommit(_autocommit);
         }
     }
+    SQLWCHAR* connStrPtr;
+#if defined(__APPLE__) // macOS specific code
+    LOG("Creating connection string buffer for macOS");
+    std::vector<SQLWCHAR> connStrBuffer = WStringToSQLWCHAR(_connStr);
+    // Ensure the buffer is null-terminated
+    LOG("Connection string buffer size - {}", connStrBuffer.size());
+    connStrPtr = connStrBuffer.data();
+    LOG("Connection string buffer created");
+#else
+    connStrPtr = const_cast<SQLWCHAR*>(_connStr.c_str());
+#endif
     SQLRETURN ret = SQLDriverConnect_ptr(
         _dbcHandle->get(), nullptr,
-        (SQLWCHAR*)_connStr.c_str(), SQL_NTS,
+        connStrPtr, SQL_NTS,
         nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     checkError(ret);
     updateLastUsed();
