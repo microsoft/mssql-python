@@ -19,6 +19,11 @@ jobs:
     displayName: 'Use Python 3.13 on macOS'
 
   - script: |
+      brew update
+      brew install cmake
+    displayName: 'Install CMake'
+
+  - script: |
       python -m pip install --upgrade pip
       pip install -r requirements.txt
     displayName: 'Install Python dependencies'
