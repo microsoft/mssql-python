@@ -5,7 +5,9 @@ import decimal
 
 setup_logging('stdout')
 
-conn_str = os.getenv("DB_CONNECTION_STRING")
+# conn_str = os.getenv("DB_CONNECTION_STRING")
+conn_str = "Server=Saumya;DATABASE=master;UID=sa;PWD=HappyPass1234;Trust_Connection=yes;TrustServerCertificate=yes;"
+
 conn = connect(conn_str)
 
 # conn.autocommit = True

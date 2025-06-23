@@ -3,11 +3,12 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 This module provides a way to create a new connection object to interact with the database.
 """
-import platform
-if platform.system() == 'Windows':
-    from mssql_python.connection import Connection
-else:
-    from mssql_python.connection_mac import Connection
+from mssql_python.connection import Connection
+# import platform
+# if platform.system() == 'Windows':
+#     from mssql_python.connection import Connection
+# else:
+#     from mssql_python.connection_mac import Connection
 
 def connect(connection_str: str = "", autocommit: bool = True, attrs_before: dict = None, **kwargs) -> Connection:
     """

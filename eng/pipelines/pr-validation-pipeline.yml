@@ -34,6 +34,11 @@ jobs:
       displayName: 'Build pybind bindings (.so)'
 
     - script: |
+        echo "Running main.py on macOS"
+        python main.py
+        displayName: 'Run main.py to ensure Python is working'
+
+    - script: |
         echo "Build successful, running tests now"
         python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
       displayName: 'Run pytest with coverage'
