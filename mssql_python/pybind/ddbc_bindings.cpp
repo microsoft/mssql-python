@@ -927,8 +927,8 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
             errorInfo.ddbcErrorMsg = std::wstring(message);
 #else
             // On macOS/Linux, need to convert SQLWCHAR (usually unsigned short) to wchar_t
-            errorInfo.sqlState = std::wstring(reinterpret_cast<const wchar_t*>(sqlState), wcslen(reinterpret_cast<const wchar_t*>(sqlState)));
-            errorInfo.ddbcErrorMsg = std::wstring(reinterpret_cast<const wchar_t*>(message), messageLen);
+            errorInfo.sqlState = SQLWCHARToWString(sqlState);
+            errorInfo.ddbcErrorMsg = SQLWCHARToWString(message, messageLen);
 #endif
         }
     }

@@ -7,7 +7,9 @@
 #pragma once
 
 #include <pybind11/pybind11.h> // pybind11.h must be the first include - https://pybind11.readthedocs.io/en/latest/basics.html#header-and-namespace-conventions
-// #include <Windows.h>
+#include <string>
+#include <memory>
+#include <mutex>
 
 #ifdef _WIN32
     // Windows-specific headers
@@ -15,11 +17,17 @@
     #include <shlwapi.h>
     #pragma comment(lib, "shlwapi.lib")
     #define IS_WINDOWS 1
-#elif defined(__APPLE__)
+#else
+    #define IS_WINDOWS 0
+#endif
+
+#include <sql.h>
+#include <sqlext.h>
+
+#if defined(__APPLE__)
     // macOS-specific headers
     #include <dlfcn.h>
     #include <filesystem>
-    #define IS_WINDOWS 0
     
     // String conversion helpers for macOS - wchar_t is 4 bytes on macOS, but SQLWCHAR is 2 bytes
     inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
@@ -47,17 +55,8 @@
         }
         return result;
     }
-#else
-    // Other platforms
-    #include <dlfcn.h>
-    #include <filesystem>
-    #define IS_WINDOWS 0
 #endif
-#include <string>
-#include <sql.h>
-#include <sqlext.h>
-#include <memory>
-#include <mutex>
+
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
