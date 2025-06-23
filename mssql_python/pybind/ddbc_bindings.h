@@ -8,8 +8,7 @@
 
 #include <pybind11/pybind11.h> // pybind11.h must be the first include - https://pybind11.readthedocs.io/en/latest/basics.html#header-and-namespace-conventions
 // #include <Windows.h>
-#include <sql.h>
-#include <sqlext.h>
+
 #ifdef _WIN32
     // Windows-specific headers
     #include <Windows.h>  // windows.h needs to be included before sql.h
@@ -55,7 +54,8 @@
     #define IS_WINDOWS 0
 #endif
 #include <string>
-
+#include <sql.h>
+#include <sqlext.h>
 #include <memory>
 #include <mutex>
 #include <pybind11/chrono.h>
