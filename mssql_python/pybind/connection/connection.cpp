@@ -8,6 +8,7 @@
 #include "connection_pool.h"
 #include <vector>
 #include <pybind11/pybind11.h>
+#include <iostream>
 
 #define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
 
@@ -40,6 +41,7 @@ static SqlHandlePtr getEnvHandle() {
 //-------------------------------------------------------------------------------------------------
 Connection::Connection(const std::wstring& conn_str, bool use_pool)
     : _connStr(conn_str), _autocommit(false), _fromPool(use_pool) {
+        std::cout<< "Creating Connection object with connection string:" << std::endl;
     allocateDbcHandle();
 }
 
@@ -50,6 +52,7 @@ Connection::~Connection() {
 // Allocates connection handle
 void Connection::allocateDbcHandle() {
     auto _envHandle = getEnvHandle();
+    std::cout << "Allocating DBC handle for connection" << std::endl;
     SQLHANDLE dbc = nullptr;
     LOG("Allocate SQL Connection Handle");
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(), &dbc);
@@ -60,6 +63,7 @@ void Connection::allocateDbcHandle() {
 void Connection::connect(const py::dict& attrs_before) {
     LOG("Connecting to database");
     // Apply access token before connect
+    std::cout<<"Connecting to database"<< std::endl;
     if (!attrs_before.is_none() && py::len(attrs_before) > 0) {
         LOG("Apply attributes before connect");
         applyAttrsBefore(attrs_before);
@@ -69,12 +73,14 @@ void Connection::connect(const py::dict& attrs_before) {
     }
     SQLWCHAR* connStrPtr;
 #if defined(__APPLE__) // macOS specific code
+    std::cout << "Using macOS specific connection string handling" << std::endl;
     LOG("Creating connection string buffer for macOS");
     std::vector<SQLWCHAR> connStrBuffer = WStringToSQLWCHAR(_connStr);
     // Ensure the buffer is null-terminated
     LOG("Connection string buffer size - {}", connStrBuffer.size());
     connStrPtr = connStrBuffer.data();
     LOG("Connection string buffer created");
+    std::cout << "Connection string buffer created with size: " << connStrBuffer.size() << std::endl;
 #else
     connStrPtr = const_cast<SQLWCHAR*>(_connStr.c_str());
 #endif
@@ -82,6 +88,7 @@ void Connection::connect(const py::dict& attrs_before) {
         _dbcHandle->get(), nullptr,
         connStrPtr, SQL_NTS,
         nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    std::cout << "SQLDriverConnect returned: " << ret << std::endl;
     checkError(ret);
     updateLastUsed();
 }
@@ -247,12 +254,15 @@ std::chrono::steady_clock::time_point Connection::lastUsed() const {
     return _lastUsed;
 }
 
-ConnectionHandle::ConnectionHandle(const std::wstring& connStr, bool usePool, const py::dict& attrsBefore)
-    : _connStr(connStr), _usePool(usePool) {
+ConnectionHandle::ConnectionHandle(const std::string& connStr, bool usePool, const py::dict& attrsBefore)
+    : _usePool(usePool) {
+        std::cout << "Creating ConnectionHandle for connection string: " << connStr << std::endl;
+    _connStr = Utf8ToWString(connStr);
+    std::cout<< "Converted connection string to wide string:"<< std::endl;
     if (_usePool) {
-        _conn = ConnectionPoolManager::getInstance().acquireConnection(connStr, attrsBefore);
+        _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore);
     } else {
-        _conn = std::make_shared<Connection>(connStr, false);
+        _conn = std::make_shared<Connection>(_connStr, false);
         _conn->connect(attrsBefore);
     }
 }

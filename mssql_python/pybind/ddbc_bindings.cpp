@@ -530,25 +530,25 @@ void LOG(const std::string& formatString, Args&&... args) {
     logging.attr("debug")(message);
 }
 
-std::string WideToUTF8(const std::wstring& wstr) {
-    // if (wstr.empty()) return {};
-    // int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
-    // std::string result(size_needed, 0);
-    // WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), result.data(), size_needed, nullptr, nullptr);
-    // return result;
-    if (wstr.empty()) return {};
+// std::string WideToUTF8(const std::wstring& wstr) {
+//     // if (wstr.empty()) return {};
+//     // int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
+//     // std::string result(size_needed, 0);
+//     // WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), result.data(), size_needed, nullptr, nullptr);
+//     // return result;
+//     if (wstr.empty()) return {};
 
-#ifdef _WIN32
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
-    std::string result(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), result.data(), size_needed, nullptr, nullptr);
-    return result;
-#else
-    // On Unix/macOS use iconv or codecvt (deprecated in C++17 but widely supported)
-    std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
-    return converter.to_bytes(wstr);
-#endif
-}
+// #ifdef _WIN32
+//     int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
+//     std::string result(size_needed, 0);
+//     WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), result.data(), size_needed, nullptr, nullptr);
+//     return result;
+// #else
+//     // On Unix/macOS use iconv or codecvt (deprecated in C++17 but widely supported)
+//     std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+//     return converter.to_bytes(wstr);
+// #endif
+// }
 
 // TODO: Add more nuanced exception classes
 void ThrowStdException(const std::string& message) { throw std::runtime_error(message); }
@@ -1089,7 +1089,7 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
             // Append a named py::dict to ColumnMetadata
             // TODO: Should we define a struct for this task instead of dict?
 #if defined(__APPLE__)
-            ColumnMetadata.append(py::dict("ColumnName"_a = SQLWCHARToWString(ColumnName),
+            ColumnMetadata.append(py::dict("ColumnName"_a = SQLWCHARToWString(ColumnName, SQL_NTS),
 #else
             ColumnMetadata.append(py::dict("ColumnName"_a = std::wstring(ColumnName),
 #endif
@@ -1213,7 +1213,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 						if (numCharsInData < dataBuffer.size()) {
                             // SQLGetData will null-terminate the data
 #if defined(__APPLE__)
-                            row.append(SQLWCHARToWString(dataBuffer.data()));
+                            row.append(SQLWCHARToWString(dataBuffer.data(), SQL_NTS));
 #else
                             row.append(std::wstring(dataBuffer.data()));
 #endif
@@ -2210,7 +2210,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("free", &SqlHandle::free, "Free the handle");
   
     py::class_<ConnectionHandle>(m, "Connection")
-        .def(py::init<const std::wstring&, bool, const py::dict&>(), py::arg("conn_str"), py::arg("use_pool"), py::arg("attrs_before") = py::dict())
+        .def(py::init<const std::string&, bool, const py::dict&>(), py::arg("conn_str"), py::arg("use_pool"), py::arg("attrs_before") = py::dict())
         .def("close", &ConnectionHandle::close, "Close the connection")
         .def("commit", &ConnectionHandle::commit, "Commit the current transaction")
         .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")
