@@ -38,9 +38,10 @@ class CustomBdistWheel(bdist_wheel):
             print(f"Setting wheel platform tag to: {self.plat_name}")
             
             # Force platform-specific paths if bdist_dir is already set
-            if self.bdist_dir and "win-amd64" in self.bdist_dir:
-                self.bdist_dir = self.bdist_dir.replace("win-amd64", f"win-{platform_dir}")
-                print(f"Using build directory: {self.bdist_dir}")
+        elif sys.platform.startswith('darwin'):
+            # For macOS, always use universal2
+            self.plat_name = "macosx_15_0_universal2"
+            print(f"Setting wheel platform tag to: {self.plat_name} (universal2)")
 
 # Find all packages in the current directory
 packages = find_packages()
@@ -72,17 +73,9 @@ if sys.platform.startswith('win'):
         f'mssql_python.libs.{arch}.vcredist'
     ])
 elif sys.platform.startswith('darwin'):
-    # macOS platform
-    import platform
-    arch = os.environ.get('ARCHITECTURE', None)
-    
-    # Auto-detect architecture if not specified
-    if arch is None:
-        if platform.machine() == 'arm64':
-            arch = 'arm64'
-            platform_tag = 'macosx_15_0_arm64'
-        else:
-            raise Exception("Unsupported architecture for macOS. Please set the ARCHITECTURE environment variable to 'arm64'.")
+    # macOS platform - always use universal2
+    arch = 'universal2'
+    platform_tag = 'macosx_15_0_universal2'  # Use macOS 15.0 (Monterey) as minimum for universal2
 
     # Add architecture-specific packages for macOS
     packages.extend([
@@ -93,7 +86,7 @@ else:
 
 setup(
     name='mssql-python',
-    version='0.1.6',
+    version='0.6.0',
     description='A Python library for interacting with Microsoft SQL Server',
     long_description=open('PyPI_Description.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',

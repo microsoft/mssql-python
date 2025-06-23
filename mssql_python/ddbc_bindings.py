@@ -5,15 +5,25 @@ import platform
 
 # Get current Python version and architecture
 python_version = f"cp{sys.version_info.major}{sys.version_info.minor}"
-if platform.machine().lower() in ('amd64', 'x86_64', 'x64'):
-    architecture = "amd64" if sys.platform == 'win32' else "x86_64"
-elif platform.machine().lower() in ('arm64', 'aarch64'):
-    architecture = "arm64"
+
+platform_name = sys.platform.lower()
+architecture = platform.machine().lower()
+
+# On macOS, prioritize universal2 binary regardless of the local architecture
+if platform_name == 'darwin':
+    architecture = "universal2"
+elif platform_name == 'win32':
+    if architecture in ('amd64', 'x86_64', 'x64'):
+        architecture = "amd64" if platform_name == 'win32' else "x86_64"
+    elif architecture in ('arm64', 'aarch64'):
+        architecture = "arm64"
+    else:
+        raise ImportError(f"Unsupported architecture for mssql-python: {platform_name}-{architecture}")
 else:
-    architecture = platform.machine().lower()
+    raise ImportError(f"Unsupported architecture for mssql-python: {platform_name}-{architecture}")
 
 # Determine extension based on platform
-if sys.platform == 'win32':
+if platform_name == 'win32':
     extension = '.pyd'
 else:  # macOS or Linux
     extension = '.so'

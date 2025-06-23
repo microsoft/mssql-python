@@ -36,7 +36,11 @@ jobs:
       signcertname: '$(AuthSignCertName)'
       clientid: '$(EsrpClientId)'
       Intent: 'PackageDistribution'
-      ContentType: 'PyPI'
+      # Changing content type to Maven release (NOT PyPI) since we want to do dummy release
+      # for ESRP testing purposes, not for actual PyPI distribution.
+      # This is a workaround to allow ESRP to process the release without actual PyPI content
+      # and to avoid ESRP validation errors.
+      ContentType: 'Maven'
       ContentSource: 'Folder'
       FolderLocation: '$(Build.SourcesDirectory)/dist'
       WaitForReleaseCompletion: true
