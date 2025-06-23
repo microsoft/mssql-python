@@ -531,11 +531,23 @@ void LOG(const std::string& formatString, Args&&... args) {
 }
 
 std::string WideToUTF8(const std::wstring& wstr) {
+    // if (wstr.empty()) return {};
+    // int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
+    // std::string result(size_needed, 0);
+    // WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), result.data(), size_needed, nullptr, nullptr);
+    // return result;
     if (wstr.empty()) return {};
+
+#ifdef _WIN32
     int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
     std::string result(size_needed, 0);
     WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), result.data(), size_needed, nullptr, nullptr);
     return result;
+#else
+    // On Unix/macOS use iconv or codecvt (deprecated in C++17 but widely supported)
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+    return converter.to_bytes(wstr);
+#endif
 }
 
 // TODO: Add more nuanced exception classes
@@ -907,8 +919,17 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
                               &nativeError, message, SQL_MAX_MESSAGE_LENGTH, &messageLen);
 
         if (SQL_SUCCEEDED(diagReturn)) {
+            // errorInfo.sqlState = std::wstring(sqlState);
+            // errorInfo.ddbcErrorMsg = std::wstring(message);
+            #if defined(_WIN32)
+            // On Windows, SQLWCHAR and wchar_t are compatible
             errorInfo.sqlState = std::wstring(sqlState);
             errorInfo.ddbcErrorMsg = std::wstring(message);
+#else
+            // On macOS/Linux, need to convert SQLWCHAR (usually unsigned short) to wchar_t
+            errorInfo.sqlState = std::wstring(reinterpret_cast<const wchar_t*>(sqlState), wcslen(reinterpret_cast<const wchar_t*>(sqlState)));
+            errorInfo.ddbcErrorMsg = std::wstring(reinterpret_cast<const wchar_t*>(message), messageLen);
+#endif
         }
     }
     return errorInfo;
