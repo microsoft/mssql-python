@@ -114,8 +114,8 @@ class BCPOptions:
                 self.direction, ", ".join(ALLOWED_DIRECTIONS)
             )
             raise ValueError(
-                f"BCPOptions.direction '{self.direction}' is invalid.
-                Allowed directions are: {', '.join(ALLOWED_DIRECTIONS)}."
+                f"BCPOptions.direction '{self.direction}' is invalid. "
+                f"Allowed directions are: {', '.join(ALLOWED_DIRECTIONS)}."
             )
 
         if self.direction in ["in", "out"]:
@@ -170,8 +170,8 @@ class BCPOptions:
                 self.bulk_mode, ", ".join(ALLOWED_FILE_MODES)
             )
             raise ValueError(
-                f"BCPOptions.bulk_mode '{self.bulk_mode}' is invalid.
-                Allowed modes are: {', '.join(ALLOWED_FILE_MODES)}."
+                f"BCPOptions.bulk_mode '{self.bulk_mode}' is invalid. "
+                f"Allowed modes are: {', '.join(ALLOWED_FILE_MODES)}."
             )
         for attr_name in ["batch_size", "max_errors", "first_row", "last_row"]:
             attr_value = getattr(self, attr_name)
