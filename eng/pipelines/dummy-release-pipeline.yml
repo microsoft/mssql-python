@@ -40,7 +40,7 @@ jobs:
       SymbolsVersion: $(Build.BuildId)
       # Default artifact name is the build definition name and build ID
       # This will be used to identify the symbols in the symbol server
-      SymbolsArtifactName: $(Build.DefinitionName)-$(Build.BuildId)
+      SymbolsArtifactName: mssql-python-symbols
       Pat: $(System.AccessToken)
 
   - task: AzureCLI@2
