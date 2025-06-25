@@ -699,7 +699,7 @@ DriverHandle LoadDriverOrThrowException() {
         SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
 
     if (!success) {
-        ThrowStdException("Missing required ODBC function pointers.");
+        ThrowStdException("Failed to load required function pointers from driver.");
     }
     LOG("All driver function pointers successfully loaded.");
     return handle;
