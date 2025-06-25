@@ -158,6 +158,15 @@ jobs:
         publishLocation: 'Container'
       displayName: 'Publish all PYDs as artifacts'
 
+    # Publish the collected .pdb file(s) as build artifacts
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)\all-pdbs'
+        ArtifactName: 'mssql-python-symbols'
+        publishLocation: 'Container'
+      displayName: 'Publish all PDBs as build artifacts'
+
     # Publish the python arm64 libraries as build artifacts for next builds if ARM64
     # We publish them only for ARM64 builds since we cannot install arm64 Python on x64 host
     # This allows us to reuse the libraries in future ARM64 builds
@@ -169,7 +178,7 @@ jobs:
         ArtifactName: 'mssql-python-arm64-libs'
         publishLocation: 'Container'
       displayName: 'Publish arm64 libs as artifacts'
-    
+
     # Publish the collected wheel file(s) as build artifacts
     - task: PublishBuildArtifacts@1
       condition: succeededOrFailed()
