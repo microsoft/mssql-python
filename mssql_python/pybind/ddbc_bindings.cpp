@@ -6,6 +6,7 @@
 #include "ddbc_bindings.h"
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
+#include "bcp/bcp_wrapper.h"
 
 #include <cstdint>
 #include <iomanip>  // std::setw, std::setfill
@@ -116,6 +117,15 @@ SQLExecuteFunc SQLExecute_ptr = nullptr;
 SQLRowCountFunc SQLRowCount_ptr = nullptr;
 SQLGetStmtAttrFunc SQLGetStmtAttr_ptr = nullptr;
 SQLSetDescFieldFunc SQLSetDescField_ptr = nullptr;
+
+// BCP APIs
+BCPInitWFunc BCPInitW_ptr = nullptr;
+BCPControlWFunc BCPControlW_ptr = nullptr;
+BCPReadFmtWFunc BCPReadFmtW_ptr = nullptr;
+BCPColumnsFunc BCPColumns_ptr = nullptr;
+BCPColFmtWFunc BCPColFmtW_ptr = nullptr;
+BCPExecFunc BCPExec_ptr = nullptr;
+BCPDoneFunc BCPDone_ptr = nullptr;
 
 // Data retrieval APIs
 SQLFetchFunc SQLFetch_ptr = nullptr;
@@ -620,6 +630,15 @@ std::wstring LoadDriverOrThrowException() {
     // Diagnostic record function Loading
     SQLGetDiagRec_ptr = (SQLGetDiagRecFunc)GetProcAddress(hModule, "SQLGetDiagRecW");
 
+    // Load BCP functions
+    BCPInitW_ptr = (BCPInitWFunc)GetProcAddress(hModule, "bcp_initW");
+    BCPControlW_ptr = (BCPControlWFunc)GetProcAddress(hModule, "bcp_control");
+    BCPReadFmtW_ptr = (BCPReadFmtWFunc)GetProcAddress(hModule, "bcp_readfmtW");
+    BCPColumns_ptr = (BCPColumnsFunc)GetProcAddress(hModule, "bcp_columns");
+    BCPColFmtW_ptr = (BCPColFmtWFunc)GetProcAddress(hModule, "bcp_colfmt"); // Corrected from bcp_colfmtW to bcp_colfmt if that's the export name
+    BCPExec_ptr = (BCPExecFunc)GetProcAddress(hModule, "bcp_exec");
+    BCPDone_ptr = (BCPDoneFunc)GetProcAddress(hModule, "bcp_done");
+
     bool success = SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
                    SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
                    SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
@@ -627,7 +646,10 @@ std::wstring LoadDriverOrThrowException() {
                    SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr &&
                    SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr &&
                    SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr &&
-                   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
+                   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr &&
+                   BCPInitW_ptr && BCPControlW_ptr && BCPReadFmtW_ptr &&
+                   BCPColumns_ptr && BCPColFmtW_ptr && BCPExec_ptr &&
+                   BCPDone_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver");
@@ -1968,6 +1990,26 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("set_autocommit", &ConnectionHandle::setAutocommit)
         .def("get_autocommit", &ConnectionHandle::getAutocommit)
         .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle);
+
+    // BCPWrapper bindings
+    py::class_<BCPWrapper, std::shared_ptr<BCPWrapper>>(m, "BCPWrapper")
+        .def(py::init<ConnectionHandle&>())
+        .def("bcp_initialize_operation", &BCPWrapper::bcp_initialize_operation)
+        .def("bcp_control", static_cast<SQLRETURN (BCPWrapper::*)(const std::wstring&, int)>(&BCPWrapper::bcp_control), "Sets BCP control option with an integer value.")
+        .def("bcp_control", static_cast<SQLRETURN (BCPWrapper::*)(const std::wstring&, const std::wstring&)>(&BCPWrapper::bcp_control), "Sets BCP control option with a string value.")
+        .def("read_format_file", &BCPWrapper::read_format_file)
+        .def("define_columns", &BCPWrapper::define_columns)
+        .def("define_column_format", &BCPWrapper::define_column_format,
+             py::arg("file_col_idx"),
+             py::arg("user_data_type"),
+             py::arg("indicator_length"),
+             py::arg("user_data_length"),
+             py::arg("terminator_bytes") = std::nullopt,
+             py::arg("terminator_length"),
+             py::arg("server_col_idx"))
+        .def("exec_bcp", &BCPWrapper::exec_bcp)
+        .def("finish", &BCPWrapper::finish)
+        .def("close", &BCPWrapper::close);
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");

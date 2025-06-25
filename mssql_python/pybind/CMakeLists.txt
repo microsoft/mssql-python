@@ -190,7 +190,7 @@ else()
     set(DDBC_SOURCE "ddbc_bindings.cpp")
     message(STATUS "Using standard source file: ${DDBC_SOURCE}")
     # Include connection module for Windows
-    add_library(ddbc_bindings MODULE ${DDBC_SOURCE} connection/connection.cpp connection/connection_pool.cpp)
+    add_library(ddbc_bindings MODULE ${DDBC_SOURCE} connection/connection.cpp connection/connection_pool.cpp bcp/bcp_wrapper.cpp)
 endif()
 
 # Set the output name to include Python version and architecture
@@ -231,6 +231,7 @@ message(STATUS "Using ODBC include directory: ${ODBC_INCLUDE_DIR}")
 target_include_directories(ddbc_bindings PRIVATE 
     ${CMAKE_CURRENT_SOURCE_DIR}             # Root directory (for ddbc_bindings.h)
     ${CMAKE_CURRENT_SOURCE_DIR}/connection  # connection directory (for connection.h)
+    ${CMAKE_CURRENT_SOURCE_DIR}/bcp         # connection directory (for bcp_wrapper.h)
     ${PYTHON_INCLUDE_DIR}
     ${PYBIND11_INCLUDE_DIR}
 )
