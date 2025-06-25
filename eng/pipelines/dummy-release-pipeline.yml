@@ -12,11 +12,15 @@ jobs:
   # Strategy matrix to build all combinations
 
   steps:
-  - script: |
-      # Check what PDB files are available in the artifact staging directory
-      echo "Contents of the $(Build.ArtifactStagingDirectory) directory:"
-      dir "$(Build.ArtifactStagingDirectory)\all-pdbs"
-    displayName: 'List contents of all-pdbs directory'
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      definition: 2162
+      buildVersionToDownload: 'latest'
+      artifactName: 'mssql-python-symbols'
+      targetPath: '$(Build.ArtifactStagingDirectory)\all-pdbs'
+    displayName: 'Download PDB files artifact from latest successful run'
 
   - powershell: 'Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]mssql-python"'
     displayName: 'Update Symbol.AccountName with mssql-python'
