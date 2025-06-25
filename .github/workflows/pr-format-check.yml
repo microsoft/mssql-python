@@ -32,15 +32,27 @@ jobs:
               core.setFailed(`❌ PR should contain a valid ADO Work Item ID.\nExpected a hyperlink in the format: https://sqlclientdrivers.visualstudio.com/.../_workitems/edit/<ID>\nPlease ensure the ADO task hyperlink is present in the PR description.`);
             }
             
-            // Check if PR description contains a non-empty summary section
+            // Check if PR description contains a meaningful summary section with actual content
             const summaryPattern = /###\s*Summary\s*\r?\n([\s\S]*?)(\r?\n###|$)/;
             const summaryMatch = body.match(summaryPattern);
             
-            // If summary section exists, check if it has content (excluding comments and whitespace)
-            const hasSummary = summaryMatch && 
-                              summaryMatch[1] && 
-                              summaryMatch[1].replace(/<!--[\s\S]*?-->/g, '').trim().length > 0;
-                              
-            if (!hasSummary) {
-              core.setFailed(`❌ PR should contain a non-empty summary section. Please add a meaningful summary under the '### Summary' heading in your PR description.`);
+            let hasValidSummary = false;
+            
+            if (summaryMatch && summaryMatch[1]) {
+              // Extract the summary content
+              const summaryContent = summaryMatch[1];
+              
+              // Remove all HTML comments including the template placeholder
+              const contentWithoutComments = summaryContent.replace(/<!--[\s\S]*?-->/g, '');
+              
+              // Remove whitespace and check if there's actual text content
+              const trimmedContent = contentWithoutComments.trim();
+              
+              // Check if there's at least 10 characters of meaningful content
+              hasValidSummary = trimmedContent.length >= 10;
+            }
+            
+            if (!hasValidSummary) {
+              core.setFailed(`❌ PR must contain a meaningful summary section with actual text content (minimum 10 characters). 
+              Please add a clear description under the '### Summary' heading in your PR description.`);
             }
