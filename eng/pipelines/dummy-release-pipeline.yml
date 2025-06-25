@@ -38,9 +38,9 @@ jobs:
       # Have kept the default version as the build ID, which is unique for each build
       # This will be used to identify the symbols in the symbol server
       SymbolsVersion: $(Build.BuildId)
-      # Default artifact name is the build definition name and build ID
-      # This will be used to identify the symbols in the symbol server
-      SymbolsArtifactName: mssql-python-symbols
+      # Ensuring the symbols are uniquely identified
+      # MDS uses symbolsArtifactName as mds_symbols_$(System.TeamProject)_$(Build.Repository.Name)_$(Build.SourceBranchName)_$(NuGetPackageVersion)_$(System.TimelineId)
+      SymbolsArtifactName: $(System.TeamProject)-$(Build.SourceBranchName)-$(Build.DefinitionName)-$(Build.BuildId)
       Pat: $(System.AccessToken)
 
   - task: AzureCLI@2
@@ -48,7 +48,7 @@ jobs:
     env:
       SymbolServer: '$(SymbolServer)'
       SymbolTokenUri: '$(SymbolTokenUri)'
-      requestName: '$(Build.DefinitionName)-$(Build.BuildId)'
+      requestName: '$(System.TeamProject)-$(Build.SourceBranchName)-$(Build.DefinitionName)-$(Build.BuildId)'
     inputs:
       azureSubscription: 'mssql-python-service'
       scriptType: ps
