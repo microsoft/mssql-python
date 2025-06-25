@@ -46,7 +46,7 @@ jobs:
       SymbolTokenUri: '$(SymbolTokenUri)'
       requestName: '$(Build.DefinitionName)-$(Build.BuildId)'
     inputs:
-      azureSubscription: 'SymbolsPublishing'
+      azureSubscription: 'mssql-python'
       scriptType: ps
       scriptLocation: inlineScript
       inlineScript: |
