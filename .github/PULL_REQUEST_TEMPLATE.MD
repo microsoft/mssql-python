@@ -3,13 +3,11 @@
 > AB#<WORK_ITEM_ID>
 -------------------------------------------------------------------
 ### Summary   
-<!-- Insert your Copilot Generated Summary here -->  
+<!-- Insert your Copilot Generated Summary below -->  
 
-### Additional Notes  
-<!-- Any extra details or related links -->
 
 <!-- 
-PR Title Guide
+### PR Title Guide
 
 > For feature requests
 FEAT: (short-description)
@@ -31,5 +29,4 @@ REFACTOR: (short-description)
 
 > For release related changes, without any feature changes
 RELEASE: #<RELEASE_VERSION> (short-description) 
-
 -->
