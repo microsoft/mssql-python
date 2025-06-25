@@ -244,8 +244,6 @@ struct ErrorInfo {
 };
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);
 
-// std::string WideToUTF8(const std::wstring& wstr);
-
 inline std::string WideToUTF8(const std::wstring& wstr) {
     if (wstr.empty()) return {};
 #if defined(_WIN32)

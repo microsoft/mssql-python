@@ -211,9 +211,6 @@ def test_connection_pooling_speed(conn_str):
     end_pool = time.perf_counter()
     pool_duration = end_pool - start_pool
 
-    print(f"No Pool Duration: {no_pool_duration:.4f}s")
-    print(f"Pool Duration:    {pool_duration:.4f}s")
-
     # Assert that pooling reduces connection time (loosely)
     assert pool_duration < no_pool_duration, "Expected faster connection with pooling"
 
