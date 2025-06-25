@@ -178,15 +178,6 @@ endif()
 
 message(STATUS "Final Python library directory: ${PYTHON_LIB_DIR}")
 
-# Determine which source file to use based on platform
-# if(APPLE)
-#     set(DDBC_SOURCE "ddbc_bindings_mac.cpp")
-#     message(STATUS "Using macOS-specific source file: ${DDBC_SOURCE}")
-#     # Only ddbc_bindings_mac.cpp is used on macOS
-#     # TODO: Implement smart pointer in macOS
-#     add_library(ddbc_bindings MODULE ${DDBC_SOURCE})
-# else()
-    # This is just windows block
 set(DDBC_SOURCE "ddbc_bindings.cpp")
 message(STATUS "Using standard source file: ${DDBC_SOURCE}")
 # Include connection module for Windows
@@ -296,7 +287,7 @@ target_compile_definitions(ddbc_bindings PRIVATE
 
 # Add warning level flags for MSVC
 if(MSVC)
-    target_compile_options(ddbc_bindings PRIVATE /W4)
+    target_compile_options(ddbc_bindings PRIVATE /W4 /WX)
 endif()
 
 # Add macOS-specific string conversion fix

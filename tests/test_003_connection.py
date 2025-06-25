@@ -11,7 +11,8 @@ Note: The cursor function is not yet implemented, so related tests are commented
 """
 
 import pytest
-from mssql_python import Connection, connect
+import time
+from mssql_python import Connection, connect, pooling
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
@@ -178,3 +179,64 @@ def test_connection_close(conn_str):
     temp_conn = connect(conn_str)
     # Check if the database connection can be closed
     temp_conn.close()
+
+def test_connection_pooling_speed(conn_str):
+    # Step 1: No pooling
+    start_no_pool = time.perf_counter()
+    conn1 = connect(conn_str)
+    conn1.close()
+    end_no_pool = time.perf_counter()
+    no_pool_duration = end_no_pool - start_no_pool
+
+    # Second connection
+    start2 = time.perf_counter()
+    conn2 = connect(conn_str)
+    conn2.close()
+    end2 = time.perf_counter()
+    duration2 = end2 - start2
+
+    print(f"Connection 1 time: {no_pool_duration:.4f}s")
+    print(f"Connection 2 time: {duration2:.4f}s")
+
+    # Step 2: Enable pooling
+    pooling(max_size=2, idle_timeout=10)
+
+    # First connect (cold start)
+    connect(conn_str).close()
+
+    # Step 3: Pooled connection (should be reused, hence faster)
+    start_pool = time.perf_counter()
+    conn2 = connect(conn_str)
+    conn2.close()
+    end_pool = time.perf_counter()
+    pool_duration = end_pool - start_pool
+
+    print(f"No Pool Duration: {no_pool_duration:.4f}s")
+    print(f"Pool Duration:    {pool_duration:.4f}s")
+
+    # Assert that pooling reduces connection time (loosely)
+    assert pool_duration < no_pool_duration, "Expected faster connection with pooling"
+
+def test_connection_pooling_basic(conn_str):
+    # Enable pooling with small pool size
+    pooling(max_size=2, idle_timeout=5)
+
+    # Create two connections — should both succeed
+    conn1 = connect(conn_str)
+    conn2 = connect(conn_str)
+
+    assert conn1 is not None
+    assert conn2 is not None
+
+    # Try to open a third connection — should wait or fail if max_size is enforced strictly
+    try:
+        conn3 = connect(conn_str)
+        assert conn3 is not None, "Third connection failed — pooling is not working or limit is too strict"
+        conn3.close()
+    except Exception as e:
+        # Optional: if you want to assert that limit is enforced strictly
+        print(f"Expected: Could not open third connection due to max_size=2: {e}")
+
+    # Clean up
+    conn1.close()
+    conn2.close()

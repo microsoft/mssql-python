@@ -43,30 +43,12 @@ jobs:
         # DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
         DB_PASSWORD: $(DB_PASSWORD)
 
-    # - script: |
-    #     echo "Build successful, running tests now"
-    #     python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
-    #   displayName: 'Run pytest with coverage'
-    #   env:
-    #     # Temporarily Use Azure SQL Database connection string for testing purposes since Docker takes too long to install & start in MacOS
-    #     DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
-    #     # DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
-    #     DB_PASSWORD: $(DB_PASSWORD)
-
     - script: |
-        if [ ! -f benchmarks/bench_mssql.py ]; then
-          echo "ERROR: bench_mssql.py not found in benchmarks/"
-          exit 1
-        fi
-        echo "bench_mssql.py found. Proceeding..."
-      displayName: 'Check if benchmarks/bench_mssql.py exists'
-
-    - script: |
-        echo "Installing RichBench and running benchmark script"
-        pip install richbench
-        cd benchmarks
-        richbench bench_mssql.py
-      displayName: 'Run RichBench benchmarks'
+        echo "Build successful, running tests now"
+        python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
+      displayName: 'Run pytest with coverage'
       env:
+        # Temporarily Use Azure SQL Database connection string for testing purposes since Docker takes too long to install & start in MacOS
         DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
+        # DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
         DB_PASSWORD: $(DB_PASSWORD)

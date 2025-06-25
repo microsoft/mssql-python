@@ -233,11 +233,13 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 }
                 
                 // Log detailed parameter information
-                LOG("SQL_C_WCHAR Parameter[{}]: Length={}, Content='{}'", 
-                    paramIndex, strParam->size(), 
-                    strParam->size() <= 100 ? std::string(strParam->begin(), strParam->end()) : 
-                                             std::string(strParam->begin(), strParam->begin() + 100) + "...");
-                //hello world
+                LOG("SQL_C_WCHAR Parameter[{}]: Length={}, Content='{}'",
+                    paramIndex,
+                    strParam->size(),
+                    (strParam->size() <= 100
+                        ? WideToUTF8(std::wstring(strParam->begin(), strParam->end()))
+                        : WideToUTF8(std::wstring(strParam->begin(), strParam->begin() + 100)) + "..."));
+
                 // Log each character's code point for debugging
                 if (strParam->size() <= 20) {
                     for (size_t i = 0; i < strParam->size(); i++) {
@@ -530,26 +532,6 @@ void LOG(const std::string& formatString, Args&&... args) {
     logging.attr("debug")(message);
 }
 
-// std::string WideToUTF8(const std::wstring& wstr) {
-//     // if (wstr.empty()) return {};
-//     // int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
-//     // std::string result(size_needed, 0);
-//     // WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), result.data(), size_needed, nullptr, nullptr);
-//     // return result;
-//     if (wstr.empty()) return {};
-
-// #ifdef _WIN32
-//     int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
-//     std::string result(size_needed, 0);
-//     WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), result.data(), size_needed, nullptr, nullptr);
-//     return result;
-// #else
-//     // On Unix/macOS use iconv or codecvt (deprecated in C++17 but widely supported)
-//     std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
-//     return converter.to_bytes(wstr);
-// #endif
-// }
-
 // TODO: Add more nuanced exception classes
 void ThrowStdException(const std::string& message) { throw std::runtime_error(message); }
 
@@ -575,126 +557,6 @@ std::string GetModuleDirectory() {
     return module_file;
 #endif
 }
-
-// Helper to load the driver
-// TODO: We don't need to do explicit linking using LoadLibrary. We can just use implicit
-//       linking to load this DLL. It will simplify the code a lot.
-// std::wstring LoadDriverOrThrowException() {
-//     const std::wstring& modulePath = L"";
-//     std::wstring ddbcModulePath = modulePath;
-//     if (ddbcModulePath.empty()) {
-//         // Get the module path if not provided
-//         std::string path = GetModuleDirectory();
-//         ddbcModulePath = std::wstring(path.begin(), path.end());
-//     }
-
-//     std::wstring dllDir = ddbcModulePath;
-//     dllDir += L"\\libs\\";
-    
-//     // Convert ARCHITECTURE macro to wstring
-//     std::wstring archStr(ARCHITECTURE, ARCHITECTURE + strlen(ARCHITECTURE));
-    
-//     // Map architecture identifiers to correct subdirectory names
-//     std::wstring archDir;
-//     if (archStr == L"win64" || archStr == L"amd64" || archStr == L"x64") {
-//         archDir = L"x64";
-//     } else if (archStr == L"arm64") {
-//         archDir = L"arm64";
-//     } else {
-//         archDir = L"x86";
-//     }
-//     dllDir += archDir;
-//     std::wstring mssqlauthDllPath = dllDir + L"\\mssql-auth.dll";
-//     dllDir += L"\\msodbcsql18.dll";
-
-//     // Preload mssql-auth.dll from the same path if available
-//     HMODULE hAuthModule = LoadLibraryW(mssqlauthDllPath.c_str());
-//     if (hAuthModule) {
-//         LOG("Authentication library loaded successfully from - {}", mssqlauthDllPath.c_str());
-//     } else {
-//         LOG("Note: Authentication library not found at - {}. This is OK if you're not using Entra ID Authentication.", mssqlauthDllPath.c_str());
-//     }
-
-//     // Convert wstring to string for logging
-//     LOG("Attempting to load driver from - {}", WideToUTF8(dllDir));
-    
-//     HMODULE hModule = LoadLibraryW(dllDir.c_str());
-//     if (!hModule) {
-//         // Failed to load the DLL, get the error message
-//         DWORD error = GetLastError();
-//         char* messageBuffer = nullptr;
-//         size_t size = FormatMessageA(
-//             FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-//             NULL,
-//             error,
-//             MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-//             (LPSTR)&messageBuffer,
-//             0,
-//             NULL
-//         );
-//         std::string errorMessage = messageBuffer ? std::string(messageBuffer, size) : "Unknown error";
-//         LocalFree(messageBuffer);
-
-//         // Log the error message        
-//         LOG("Failed to load the driver with error code: {} - {}", error, errorMessage);
-//         ThrowStdException("Failed to load the ODBC driver. Please check that it is installed correctly.");
-//     }
-
-//     // If we got here, we've successfully loaded the DLL. Now get the function pointers.
-//     // Environment and handle function loading
-//     SQLAllocHandle_ptr = (SQLAllocHandleFunc)GetProcAddress(hModule, "SQLAllocHandle");
-//     SQLSetEnvAttr_ptr = (SQLSetEnvAttrFunc)GetProcAddress(hModule, "SQLSetEnvAttr");
-//     SQLSetConnectAttr_ptr = (SQLSetConnectAttrFunc)GetProcAddress(hModule, "SQLSetConnectAttrW");
-//     SQLSetStmtAttr_ptr = (SQLSetStmtAttrFunc)GetProcAddress(hModule, "SQLSetStmtAttrW");
-//     SQLGetConnectAttr_ptr = (SQLGetConnectAttrFunc)GetProcAddress(hModule, "SQLGetConnectAttrW");
-
-//     // Connection and statement function loading
-//     SQLDriverConnect_ptr = (SQLDriverConnectFunc)GetProcAddress(hModule, "SQLDriverConnectW");
-//     SQLExecDirect_ptr = (SQLExecDirectFunc)GetProcAddress(hModule, "SQLExecDirectW");
-//     SQLPrepare_ptr = (SQLPrepareFunc)GetProcAddress(hModule, "SQLPrepareW");
-//     SQLBindParameter_ptr = (SQLBindParameterFunc)GetProcAddress(hModule, "SQLBindParameter");
-//     SQLExecute_ptr = (SQLExecuteFunc)GetProcAddress(hModule, "SQLExecute");
-//     SQLRowCount_ptr = (SQLRowCountFunc)GetProcAddress(hModule, "SQLRowCount");
-//     SQLGetStmtAttr_ptr = (SQLGetStmtAttrFunc)GetProcAddress(hModule, "SQLGetStmtAttrW");
-//     SQLSetDescField_ptr = (SQLSetDescFieldFunc)GetProcAddress(hModule, "SQLSetDescFieldW");
-
-//     // Fetch and data retrieval function loading
-//     SQLFetch_ptr = (SQLFetchFunc)GetProcAddress(hModule, "SQLFetch");
-//     SQLFetchScroll_ptr = (SQLFetchScrollFunc)GetProcAddress(hModule, "SQLFetchScroll");
-//     SQLGetData_ptr = (SQLGetDataFunc)GetProcAddress(hModule, "SQLGetData");
-//     SQLNumResultCols_ptr = (SQLNumResultColsFunc)GetProcAddress(hModule, "SQLNumResultCols");
-//     SQLBindCol_ptr = (SQLBindColFunc)GetProcAddress(hModule, "SQLBindCol");
-//     SQLDescribeCol_ptr = (SQLDescribeColFunc)GetProcAddress(hModule, "SQLDescribeColW");
-//     SQLMoreResults_ptr = (SQLMoreResultsFunc)GetProcAddress(hModule, "SQLMoreResults");
-//     SQLColAttribute_ptr = (SQLColAttributeFunc)GetProcAddress(hModule, "SQLColAttributeW");
-
-//     // Transaction functions loading
-//     SQLEndTran_ptr = (SQLEndTranFunc)GetProcAddress(hModule, "SQLEndTran");
-
-//     // Disconnect and free functions loading
-//     SQLFreeHandle_ptr = (SQLFreeHandleFunc)GetProcAddress(hModule, "SQLFreeHandle");
-//     SQLDisconnect_ptr = (SQLDisconnectFunc)GetProcAddress(hModule, "SQLDisconnect");
-//     SQLFreeStmt_ptr = (SQLFreeStmtFunc)GetProcAddress(hModule, "SQLFreeStmt");
-
-//     // Diagnostic record function Loading
-//     SQLGetDiagRec_ptr = (SQLGetDiagRecFunc)GetProcAddress(hModule, "SQLGetDiagRecW");
-
-//     bool success = SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
-//                    SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
-//                    SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
-//                    SQLRowCount_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr && SQLFetch_ptr &&
-//                    SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr &&
-//                    SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr &&
-//                    SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr &&
-//                    SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
-
-//     if (!success) {
-//         ThrowStdException("Failed to load required function pointers from driver");
-//     }
-//     LOG("Successfully loaded function pointers from driver");
-    
-//     return dllDir;
-// }
 
 // Platform-agnostic function to load the driver dynamic library
 DriverHandle LoadDriverLibrary(const std::string& driverPath) {
