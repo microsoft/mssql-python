@@ -1,4 +1,4 @@
-name: mssql-python-official-release-pipeline
+name: mssql-python-dummy-release-pipeline
 
 variables:
   - group: 'ESRP Federated Creds (AME)'
@@ -46,11 +46,11 @@ jobs:
       SymbolTokenUri: '$(SymbolTokenUri)'
       requestName: '$(Build.DefinitionName)-$(Build.BuildId)'
     inputs:
-      azureSubscription: 'Symbols publishing Workload Identity federation service-ADO.Net'
+      azureSubscription: 'SymbolsPublishing'
       scriptType: ps
       scriptLocation: inlineScript
       inlineScript: |
-        # Should be true by default for both internal and public servers
+        # Should be true by default for internal server
         $publishToInternalServer = $true 
         $publishToPublicServer = $false
 
