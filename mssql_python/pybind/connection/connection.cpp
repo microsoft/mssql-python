@@ -10,9 +10,9 @@
 #include <pybind11/pybind11.h>
 
 #define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
-#define SQL_COPT_SS_BCP            1219  // Custom attribute ID for BCP mode
-#define SQL_BCP_OFF                0     // BCP mode off
-#define SQL_BCP_ON                 1     // BCP mode on
+// #define SQL_COPT_SS_BCP            1219  // Custom attribute ID for BCP mode
+// #define SQL_BCP_OFF                0     // BCP mode off
+// #define SQL_BCP_ON                 1     // BCP mode on
 
 static SqlHandlePtr getEnvHandle() {
     static SqlHandlePtr envHandle = []() -> SqlHandlePtr {

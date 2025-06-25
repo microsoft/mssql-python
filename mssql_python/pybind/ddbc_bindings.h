@@ -52,7 +52,7 @@ typedef SQLRETURN (SQL_API* SQLGetStmtAttrFunc)(SQLHSTMT, SQLINTEGER, SQLPOINTER
 // Typedefs (ensure these match the function signatures in odbcss.h)
 typedef SQLRETURN (SQL_API* BCPInitWFunc)(SQLHDBC, LPCWSTR, LPCWSTR, LPCWSTR, INT);
 typedef SQLRETURN (SQL_API* BCPControlWFunc)(SQLHDBC, INT, LPVOID);
-typedef SQLRETURN (SQL_API* BCPControlAFunc)(SQLHDBC, INT, LPVOID); 
+// typedef SQLRETURN (SQL_API* BCPControlAFunc)(SQLHDBC, INT, LPVOID); 
 typedef SQLRETURN (SQL_API* BCPReadFmtWFunc)(SQLHDBC, LPCWSTR);
 typedef SQLRETURN (SQL_API* BCPColumnsFunc)(SQLHDBC, INT);
 typedef SQLRETURN (SQL_API* BCPColFmtWFunc)(SQLHDBC, INT, INT, INT, DBINT, LPCBYTE, INT, INT);

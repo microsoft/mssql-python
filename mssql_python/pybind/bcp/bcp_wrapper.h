@@ -54,6 +54,7 @@ public:
                                    int indicator_length,     // Length of prefix/indicator (0, 1, 2, 4, 8, or SQL_VARLEN_DATA), maps to cbIndicator
                                    long long user_data_length, // Max length of data in user file (bytes), maps to cbUserData
                                    const std::optional<py::bytes>& terminator_bytes_py, // Changed type
+                                   int terminator_length, // Length of terminator bytes (1 for single byte, 2 for double byte, etc.), maps to cbTerminator
                                    int server_col_idx        // Server table column number (1-based), maps to idxServerCol
                                    );
 

@@ -36,8 +36,8 @@ const std::unordered_map<std::wstring, BCPCtrlPropertyInfo> bcp_control_properti
 
 // Helper for bcp_init direction string
 INT get_bcp_direction_code(const std::wstring& direction_str) {
-    if (direction_str == L"in" || direction_str == L"IN") return DB_IN;
-    if (direction_str == L"out" || direction_str == L"OUT") return DB_OUT;
+    if (direction_str == L"in") return DB_IN;
+    if (direction_str == L"out" || direction_str == L"queryout") return DB_OUT;
     throw std::runtime_error("Invalid BCP direction string: " + py::cast(direction_str).cast<std::string>());
 }
 
@@ -116,8 +116,8 @@ SQLRETURN BCPWrapper::bcp_initialize_operation(const std::wstring& table,
     }
 
     INT dir_code = get_bcp_direction_code(direction);
-    
-    LPCWSTR pTable = table.c_str();
+
+    LPCWSTR pTable = table.empty() ? nullptr : table.c_str();
     LPCWSTR pDataFile = data_file.empty() ? nullptr : data_file.c_str();
     LPCWSTR pErrorFile = error_file.empty() ? nullptr : error_file.c_str();
 
@@ -125,9 +125,14 @@ SQLRETURN BCPWrapper::bcp_initialize_operation(const std::wstring& table,
     //           << "', data_file '" << (pDataFile ? py::cast(data_file).cast<std::string>() : "nullptr")
     //           << "', error_file '" << (pErrorFile ? py::cast(error_file).cast<std::string>() : "nullptr")
     //           << "', direction '" << py::cast(direction).cast<std::string>() << "'." << std::endl;
-    std::cout << "BCPWrapper: BCPInitW_ptr: " << (BCPInitW_ptr ? "Loaded" : "Not Loaded") << std::endl;
-    std::cout << "BCPWrapper: BCPInitW_ptr val" << BCPInitW_ptr << std::endl;
+    // std::cout << "BCPWrapper: BCPInitW_ptr: " << (BCPInitW_ptr ? "Loaded" : "Not Loaded") << std::endl;
+    // std::cout << "BCPWrapper: BCPInitW_ptr val" << BCPInitW_ptr << std::endl;
 
+    std::cout << "BCPWrapper: Calling BCPInitW_ptr with HDBC: " << _hdbc << ", table: " 
+              << (pTable ? py::cast(table).cast<std::string>() : "nullptr") 
+              << ", data_file: " << (pDataFile ? py::cast(data_file).cast<std::string>() : "nullptr")
+              << ", error_file: " << (pErrorFile ? py::cast(error_file).cast<std::string>() : "nullptr")
+              << ", direction code: " << dir_code << std::endl;
     // Call BCPInitW with the correct parameters
     SQLRETURN ret = BCPInitW_ptr(_hdbc, pTable, pDataFile, pErrorFile, dir_code);
     std::cout << "BCPWrapper: HELLOOOO " << ret << std::endl;
@@ -179,15 +184,25 @@ SQLRETURN BCPWrapper::bcp_control(const std::wstring& property_name, const std::
     }
 
     auto it = bcp_control_properties.find(property_name);
+    std::cout << "BCPWrapper: bcp_control(wstring) called for property '" << py::cast(property_name).cast<std::string>() << "'." << std::endl;
+    // Check if the property exists and is of type WSTRING
+    // Note: For WSTRING properties, we expect the value to be a wide string (std::wstring).
+    // If the property is not found or is not of type WSTRING, we return an error.
+    std::cout << "BCPWrapper: bcp_control value: '" << py::cast(value).cast<std::string>() << "'." << std::endl;
+    std::cout << "BCPWrapper: bcp_control property name: '" << py::cast(property_name).cast<std::string>() << "'." << std::endl;
     if (it == bcp_control_properties.end() || it->second.type != BCPCtrlPropType::WSTRING) {
         std::cout << "BCPWrapper Error: bcp_control(wstring) - property '" << py::cast(property_name).cast<std::string>() << "' not found or type mismatch." << std::endl;
         return SQL_ERROR; 
     }
     
     std::cout << "BCPWrapper: Calling bcp_controlW for property '" << py::cast(property_name).cast<std::string>() << "' with wstring value '" << py::cast(value).cast<std::string>() << "'." << std::endl;
-    SQLRETURN ret = BCPControlW_ptr(_hdbc, it->second.option_code, (LPVOID)value.c_str());
+    std::string narrow_value = py::cast(value).cast<std::string>(); // Convert wstring to string for logging
+    SQLRETURN ret = BCPControlW_ptr(_hdbc, it->second.option_code, (LPVOID)narrow_value.c_str());
     if (ret == FAIL) {
         std::cout << "BCPWrapper Error: bcp_controlW (wstring value) failed for property '" << py::cast(property_name).cast<std::string>() << "'. Ret: " << ret << std::endl;
+        ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, _hdbc);
+        std::cout << "BCPWrapper: ODBC Diag: SQLState: " << py::cast(diag.sqlState).cast<std::string>() << ", Message: " << py::cast(diag.ddbcErrorMsg).cast<std::string>() << std::endl;
+        throw std::runtime_error("BCPWrapper: bcp_controlW (wstring value) failed.");
     }
     return ret;
 }
@@ -225,6 +240,7 @@ SQLRETURN BCPWrapper::define_columns(int num_cols) {
     if (ret == FAIL) {
         std::cout << "BCPWrapper Error: bcp_columns failed for " << num_cols << " columns. Ret: " << ret << std::endl;
     }
+    std::cout << "BCPWrapper: bcp_columns returned " << ret << std::endl;
     return ret;
 }
 
@@ -234,21 +250,32 @@ SQLRETURN BCPWrapper::define_column_format(int file_col_idx,
                                            int indicator_length,
                                            long long user_data_length,
                                            const std::optional<py::bytes>& terminator_bytes_py, 
+                                           int terminator_length,
                                            int server_col_idx) {
     if (!_bcp_initialized || _bcp_finished) {
          throw std::runtime_error("BCPWrapper: define_column_format called in invalid state.");
     }
 
     const BYTE* pTerminator = nullptr;
-    INT cbTerminate = 0;
     std::string terminator_str_holder; 
 
     if (terminator_bytes_py) {
         terminator_str_holder = terminator_bytes_py->cast<std::string>(); 
         if (!terminator_str_holder.empty()) {
+            std::cout << "BCPWrapper: Terminator bytes provided: " << py::cast(terminator_str_holder).cast<std::string>() << std::endl;
             pTerminator = reinterpret_cast<const BYTE*>(terminator_str_holder.data());
-            cbTerminate = static_cast<INT>(terminator_str_holder.length());
+            std::cout << "BCPWrapper: Terminator pointer: " << pTerminator << std::endl;
+            std::cout << "BCPWRapper: Terminator pointer type: " << typeid(pTerminator).name() << std::endl;
+            std::cout << "Terminator content hex dump: ";
+            for (size_t i = 0; i < terminator_str_holder.size(); i++) {
+                std::cout << std::hex << (int)(unsigned char)terminator_str_holder[i] << " ";
+            }
+            std::cout << std::dec << std::endl;
+        } else {
+            std::cout << "Warning: Terminator string is empty!" << std::endl;
         }
+    } else {
+        std::cout << "Warning: No terminator bytes provided!" << std::endl;
     }
     
     DBINT bcp_user_data_len = static_cast<DBINT>(user_data_length); 
@@ -258,17 +285,18 @@ SQLRETURN BCPWrapper::define_column_format(int file_col_idx,
               << ", user_data_type " << user_data_type
               << ", indicator_len " << indicator_length
               << ", user_data_len " << static_cast<long long>(bcp_user_data_len)
-              << ", terminator_len " << cbTerminate 
-              << ", terminator_ptr " << (void*)pTerminator
-              << "." << std::endl;
-    
+              << ", terminator_len " << terminator_length 
+              << ", terminator_ptr " << static_cast<const void*>(pTerminator) << std::endl;
+
+    std::cout << "BCPWrapper: user_data_type: " << static_cast<BYTE>(user_data_type) << std::endl;
+
     SQLRETURN ret = BCPColFmtW_ptr(_hdbc,
                                    file_col_idx,
                                    static_cast<BYTE>(user_data_type),
                                    indicator_length,
                                    bcp_user_data_len,
                                    pTerminator, 
-                                   cbTerminate, 
+                                   terminator_length, 
                                    server_col_idx
                                    );
     if (ret == FAIL) {

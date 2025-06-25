@@ -3,7 +3,7 @@ from typing import List, Optional, Union
 from mssql_python.constants import BCPControlOptions
 
 # defining constants for BCP control options
-ALLOWED_DIRECTIONS = ("in", "out", "format", "query")
+ALLOWED_DIRECTIONS = ("in", "out", "queryout")
 ALLOWED_FILE_MODES = ("native", "char", "unicode")
 
 @dataclass
@@ -27,14 +27,13 @@ class ColumnFormat:
             Must be a positive integer.
     """
 
+    file_col: int = 1
+    user_data_type: int = 0
     prefix_len: int = 0
     data_len: int = 0
     field_terminator: Optional[bytes] = None
-    row_terminator: Optional[bytes] = None
+    terminator_len: int = 0
     server_col: int = 1
-    file_col: int = 1
-    user_data_type: int = 0
-    col_name: Optional[str] = None
 
     def __post_init__(self):
         if self.prefix_len < 0:
@@ -49,10 +48,6 @@ class ColumnFormat:
             self.field_terminator, bytes
         ):
             raise TypeError("field_terminator must be bytes or None.")
-        if self.row_terminator is not None and not isinstance(
-            self.row_terminator, bytes
-        ):
-            raise TypeError("row_terminator must be bytes or None.")
 
 
 @dataclass
@@ -81,7 +76,7 @@ class BCPOptions:
     data_file: Optional[str] = None # data_file is mandatory for 'in' and 'out'
     error_file: Optional[str] = None
     format_file: Optional[str] = None
-    # write_format_file is removed as 'format' direction is not actively supported
+    query: Optional[str] = None  # For 'query' direction
     bulk_mode: Optional[str] = "native"  # Default to 'native' mode
     batch_size: Optional[int] = None
     max_errors: Optional[int] = None
@@ -90,6 +85,7 @@ class BCPOptions:
     code_page: Optional[Union[int, str]] = None
     hints: Optional[str] = None
     columns: Optional[List[ColumnFormat]] = field(default_factory=list)
+    row_terminator: Optional[bytes] = None
     keep_identity: bool = False
     keep_nulls: bool = False
 
@@ -110,6 +106,10 @@ class BCPOptions:
                 raise ValueError(
                     f"BCPOptions.data_file is required for BCP direction '{self.direction}'."
                 )
+        if self.direction == "queryout" and not self.query:
+            raise ValueError(
+                "BCPOptions.query is required for BCP direction 'query'."
+            )
 
         if not self.data_file:
             raise ValueError(
@@ -152,3 +152,8 @@ class BCPOptions:
             raise ValueError(
                 "BCPOptions.first_row cannot be greater than BCPOptions.last_row."
             )
+
+        if self.row_terminator is not None and not isinstance(
+            self.row_terminator, bytes
+        ):
+            raise TypeError("row_terminator must be bytes or None.")

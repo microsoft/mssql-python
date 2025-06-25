@@ -2005,6 +2005,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
              py::arg("indicator_length"),
              py::arg("user_data_length"),
              py::arg("terminator_bytes") = std::nullopt,
+             py::arg("terminator_length"),
              py::arg("server_col_idx"))
         .def("exec_bcp", &BCPWrapper::exec_bcp)
         .def("finish", &BCPWrapper::finish)

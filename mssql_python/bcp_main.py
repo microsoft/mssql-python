@@ -9,7 +9,7 @@ from typing import Optional  # Import Optional for type hints
 logger = logging.getLogger(__name__) # Add a logger instance
 
 # defining constants for BCP control options
-SUPPORTED_DIRECTIONS = ("in", "out")
+SUPPORTED_DIRECTIONS = ("in", "out", "queryout")
 # Define SQL_CHAR if not already available, e.g., from a constants module
 SQL_CHAR = 1 
 
@@ -42,7 +42,7 @@ class BCPClient:
         print(f"connection: {connection._conn}")
         logger.info("BCPClient initialized successfully.")
 
-    def sql_bulk_copy(self, table: str, options: BCPOptions):  # options is no longer Optional
+    def sql_bulk_copy(self, options: BCPOptions, table: str = ""):  # options is no longer optional
         """
         Executes a bulk copy operation to or from a specified table or using a query.
 
@@ -57,7 +57,8 @@ class BCPClient:
             RuntimeError: If the BCPWrapper was not initialized.
         """
         logger.info(f"Starting sql_bulk_copy for table/query: '{table}', direction: '{options.direction}'.")
-        if not table:
+        if not table and options.direction != "queryout":
+            # If 'table' is empty and direction is not 'queryout', raise an error.
             logger.error("Validation failed: 'table' (or query) not provided for sql_bulk_copy.")
             raise ValueError(
                 "The 'table' name (or query for queryout) must be provided."
@@ -68,7 +69,6 @@ class BCPClient:
             # This check is good practice, though type hints help statically.
             raise TypeError("The 'options' argument must be an instance of BCPOptions.")
 
-        # BCPOptions.__post_init__ has already performed its internal validation.
         # BCPClient can add its own operational constraints:
         if options.direction not in SUPPORTED_DIRECTIONS:
             logger.error(f"Validation failed: Unsupported BCP direction '{options.direction}'. Supported: {SUPPORTED_DIRECTIONS}")
@@ -100,6 +100,13 @@ class BCPClient:
                 current_options.direction,
             )
             logger.debug("BCP operation initialized with BCPWrapper.")
+
+            if current_options.query:
+                logger.debug(f"Setting BCPControlOptions.HINTS to '{current_options.query}'")
+                print(f"current_options.query: {current_options.query}")
+                self.wrapper.bcp_control(
+                    BCPControlOptions.HINTS.value, current_options.query
+                )
 
             # # Set BCP control options
             # if current_options.batch_size is not None:
@@ -157,33 +164,32 @@ class BCPClient:
                 self.wrapper.define_columns(len(current_options.columns))
                 for i, col_fmt_obj in enumerate(current_options.columns):
                     logger.debug(f"Defining column format for file column {col_fmt_obj.file_col}: {col_fmt_obj}")
-
-                    col_user_type = col_fmt_obj.user_data_type
-                    col_data_len = col_fmt_obj.data_len
+                    print(f"col_fmt_obj: {col_fmt_obj}")
+                    # col_user_type = col_fmt_obj.user_data_type
+                    # col_data_len = col_fmt_obj.data_len
                     # For bcp_colfmt, the terminator applies to the current column's data in the file.
                     # If a row_terminator is specified on this ColumnFormat object, it means this
                     # column's data is terminated by that row_terminator.
                     # Otherwise, its field_terminator is used.
-                    terminator_for_colfmt = col_fmt_obj.field_terminator
-                    if col_fmt_obj.row_terminator is not None:
-                        terminator_for_colfmt = col_fmt_obj.row_terminator
+                    # terminator_for_colfmt = col_fmt_obj.field_terminator
 
-                    if current_options.bulk_mode == "char":
-                        if col_user_type == 0: # Default to SQL_CHAR if not specified for char mode
-                            col_user_type = SQL_CHAR 
-                        # data_len=0 for char means read until terminator, which is fine.
-                        # If a specific max length is desired, it should be set in ColumnFormat.
-                    elif current_options.bulk_mode == "native":
-                        col_user_type = 0 # Ensure native type
-                        terminator_for_colfmt = None # Native mode does not use explicit terminators in bcp_colfmt
-                        # data_len for native is often 0 or SQL_VARLEN_DATA etc.
+                    # if current_options.bulk_mode == "char":
+                    #     if col_user_type == 0: # Default to SQL_CHAR if not specified for char mode
+                    #         col_user_type = SQLCHARACTER 
+                    #     # data_len=0 for char means read until terminator, which is fine.
+                    #     # If a specific max length is desired, it should be set in ColumnFormat.
+                    # elif current_options.bulk_mode == "native":
+                    #     col_user_type = 0 # Ensure native type
+                    #     terminator_for_colfmt = None # Native mode does not use explicit terminators in bcp_colfmt
+                    #     # data_len for native is often 0 or SQL_VARLEN_DATA etc.
                                         
                     self.wrapper.define_column_format(
                         file_col_idx=col_fmt_obj.file_col,
-                        user_data_type=col_user_type,
+                        user_data_type=col_fmt_obj.user_data_type,
                         indicator_length=col_fmt_obj.prefix_len,
-                        user_data_length=col_data_len, 
-                        terminator_bytes=terminator_for_colfmt,
+                        user_data_length=col_fmt_obj.data_len, 
+                        terminator_bytes=col_fmt_obj.field_terminator,
+                        terminator_length=col_fmt_obj.terminator_len,
                         server_col_idx=col_fmt_obj.server_col
                     )
             else:

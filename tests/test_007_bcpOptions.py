@@ -88,25 +88,21 @@ class TestColumnFormat:
         assert cf.prefix_len == 0
         assert cf.data_len == 0
         assert cf.field_terminator is None
-        assert cf.row_terminator is None
         assert cf.server_col == 1
         assert cf.file_col == 1
         assert cf.user_data_type == 0
-        assert cf.col_name is None
 
     def test_valid_instantiation_all_params(self):
         cf = ColumnFormat(
-            prefix_len=1, data_len=10, field_terminator=b",", row_terminator=b"\n",
-            server_col=2, file_col=3, user_data_type=10, col_name="TestCol"
+            prefix_len=1, data_len=10, field_terminator=b",",
+            server_col=2, file_col=3, user_data_type=10
         )
         assert cf.prefix_len == 1
         assert cf.data_len == 10
         assert cf.field_terminator == b","
-        assert cf.row_terminator == b"\n"
         assert cf.server_col == 2
         assert cf.file_col == 3
         assert cf.user_data_type == 10
-        assert cf.col_name == "TestCol"
 
     @pytest.mark.parametrize("attr, value", [
         ("prefix_len", -1), ("data_len", -1), ("server_col", 0),
@@ -117,7 +113,7 @@ class TestColumnFormat:
             ColumnFormat(**{attr: value})
 
     @pytest.mark.parametrize("attr, value", [
-        ("field_terminator", ","), ("row_terminator", "\n"),
+        ("field_terminator", ","),
     ])
     def test_invalid_terminator_types(self, attr, value):
         with pytest.raises(TypeError):
