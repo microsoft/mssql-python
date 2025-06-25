@@ -196,6 +196,12 @@ void Connection::applyAttrsBefore(const py::dict& attrs) {
                 ThrowStdException("Failed to set access token before connect");
             }
         }
+        if (key == SQL_COPT_SS_BCP) {   
+            SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
+            if (!SQL_SUCCEEDED(ret)) {
+                ThrowStdException("Failed to set bcp before connect");
+            }
+        }
     }
 }
 
