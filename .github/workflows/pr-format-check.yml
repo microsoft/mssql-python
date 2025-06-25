@@ -31,3 +31,16 @@ jobs:
             if (!hasWorkItemLink) {
               core.setFailed(`❌ PR should contain a valid ADO Work Item ID.\nExpected a hyperlink in the format: https://sqlclientdrivers.visualstudio.com/.../_workitems/edit/<ID>\nPlease ensure the ADO task hyperlink is present in the PR description.`);
             }
+            
+            // Check if PR description contains a non-empty summary section
+            const summaryPattern = /###\s*Summary\s*\r?\n([\s\S]*?)(\r?\n###|$)/;
+            const summaryMatch = body.match(summaryPattern);
+            
+            // If summary section exists, check if it has content (excluding comments and whitespace)
+            const hasSummary = summaryMatch && 
+                              summaryMatch[1] && 
+                              summaryMatch[1].replace(/<!--[\s\S]*?-->/g, '').trim().length > 0;
+                              
+            if (!hasSummary) {
+              core.setFailed(`❌ PR should contain a non-empty summary section. Please add a meaningful summary under the '### Summary' heading in your PR description.`);
+            }
