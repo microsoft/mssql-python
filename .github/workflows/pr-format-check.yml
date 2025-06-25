@@ -5,7 +5,7 @@ on:
     types: [opened, edited, reopened, synchronize]
 
 jobs:
-  validate-pr:
+  pr-format-check:
     runs-on: ubuntu-latest
     steps:
       - name: Validate PR title and description content
