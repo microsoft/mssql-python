@@ -1,11 +1,11 @@
-name: PR Format Checker
+name: PR Formatting Check
 
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
 
 jobs:
-  pr-format-check:
+  check:
     runs-on: ubuntu-latest
     steps:
       - name: Validate PR title and description content
