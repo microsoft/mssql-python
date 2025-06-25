@@ -128,7 +128,7 @@ jobs:
     # Copy the built .pdb files to staging folder for artifacts
     - task: CopyFiles@2
       inputs:
-        SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+        SourceFolder: '$(Build.SourcesDirectory)\mssql_python'
         Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pdbs'
         TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pdbs'
       displayName: 'Place PDB file into artifacts directory'
