@@ -13,13 +13,12 @@ pr:
     include:
       - main  
 
-# Use Microsoft-hosted Windows VM
-pool:
-  vmImage: 'windows-latest'
-
 jobs:
-- job: BuildPYDs
-  displayName: 'Build -'
+- job: BuildWindowsWheels
+  # Use the latest Windows image for building
+  pool:
+    vmImage: 'windows-latest'
+  displayName: 'Build Windows -'
   # Strategy matrix to build all combinations
   strategy:
     matrix:
@@ -123,7 +122,7 @@ jobs:
       inputs:
         SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
         Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
-        TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pyds'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)\ddbc-bindings'
       displayName: 'Place PYD file into artifacts directory'
 
     # Copy the built .pdb files to staging folder for artifacts
@@ -154,12 +153,15 @@ jobs:
     - task: PublishBuildArtifacts@1
       condition: succeededOrFailed()
       inputs:
-        PathtoPublish: '$(Build.ArtifactStagingDirectory)\all-pyds'
-        ArtifactName: 'mssql-python-pyds'
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)\ddbc-bindings'
+        ArtifactName: 'mssql-python-ddbc-bindings'
         publishLocation: 'Container'
       displayName: 'Publish all PYDs as artifacts'
 
     # Publish the python arm64 libraries as build artifacts for next builds if ARM64
+    # We publish them only for ARM64 builds since we cannot install arm64 Python on x64 host
+    # This allows us to reuse the libraries in future ARM64 builds
+    # Publishing will retain the libraries in the build artifacts
     - task: PublishBuildArtifacts@1
       condition: eq(variables['targetArch'], 'arm64')
       inputs:
@@ -173,6 +175,92 @@ jobs:
       condition: succeededOrFailed()
       inputs:
         PathtoPublish: '$(Build.ArtifactStagingDirectory)\dist'
+        ArtifactName: 'mssql-python-wheels-dist'
+        publishLocation: 'Container'
+      displayName: 'Publish all wheels as artifacts'
+
+- job: BuildMacOSWheels
+  # Use the latest macOS image for building
+  pool:
+    vmImage: 'macos-latest'
+  # Display name for the job in Azure DevOps UI
+  displayName: 'Build macOS - '
+  strategy:
+    matrix:
+      # Python 3.13 (universal2 for both arm64 and x86_64)
+      py313_universal2:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        # Always use universal2 for macOS
+        targetArch: 'universal2'
+  steps:
+    # Use correct Python version and architecture for the current job
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '$(pythonVersion)'
+        addToPath: true
+      displayName: 'Use Python $(pythonVersion) (Universal2)'
+
+    # Install CMake on macOS
+    - script: |
+        brew update
+        brew install cmake
+      displayName: 'Install CMake'
+
+    # Install required packages: pip, CMake, pybind11
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install cmake pybind11
+      displayName: 'Install dependencies'
+
+    # Build the .so file by calling build.sh
+    - script: |
+        echo "Python Version: $(pythonVersion)"
+        echo "Short Tag: $(shortPyVer)"
+        echo "Building Universal2 Binary"
+        cd "$(Build.SourcesDirectory)/mssql_python/pybind"
+        # Call build.sh to build the .so file
+        ./build.sh
+      displayName: 'Build .so file'
+
+    # Copy the built .so file to staging folder for artifacts
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)/mssql_python'
+        Contents: '*.so'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
+      displayName: 'Place .so file into artifacts directory'
+    
+    # Build wheel package for universal2
+    - script: |
+        python -m pip install --upgrade pip
+        pip install wheel setuptools
+        python setup.py bdist_wheel
+      displayName: 'Build $(pythonVersion) universal2 whl'
+    
+    # Copy the wheel file to the artifacts
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)/dist'
+        Contents: '*.whl'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)/dist'
+      displayName: 'Collect wheel package'
+    
+    # Publish the collected .so file(s) as build artifacts
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
+        ArtifactName: 'mssql-python-ddbc-bindings'
+        publishLocation: 'Container'
+      displayName: 'Publish all .so files as artifacts'
+    
+    # Publish the collected wheel file(s) as build artifacts
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/dist'
         ArtifactName: 'mssql-python-wheels-dist'
         publishLocation: 'Container'
       displayName: 'Publish all wheels as artifacts'

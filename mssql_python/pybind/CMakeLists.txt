@@ -28,17 +28,8 @@ if(NOT DEFINED ARCHITECTURE)
         # Default to x64 for Windows
         set(ARCHITECTURE "win64")
     elseif(APPLE)
-        # Check if we're on Apple Silicon or Intel
-        execute_process(
-            COMMAND sysctl -n machdep.cpu.brand_string
-            OUTPUT_VARIABLE CPU_BRAND
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
-        if(CPU_BRAND MATCHES "Apple")
-            set(ARCHITECTURE "arm64")
-        else()
-            set(ARCHITECTURE "x64")
-        endif()
+        # Always use universal2 for macOS
+        set(ARCHITECTURE "universal2")
     else()
         # Default to x64 for other platforms
         set(ARCHITECTURE "x64")
@@ -48,6 +39,12 @@ endif()
 # Add platform and architecture to compiler definitions
 add_definitions(-DARCHITECTURE="${ARCHITECTURE}")
 add_definitions(-DPLATFORM_NAME="${PLATFORM_NAME}")
+
+# For macOS, always set universal build
+if(APPLE)
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Build architectures for macOS" FORCE)
+    message(STATUS "Setting universal2 build for macOS (arm64 + x86_64)")
+endif()
 
 # Get Python version and platform info
 execute_process(
@@ -69,12 +66,8 @@ if(WIN32)
         message(FATAL_ERROR "Unsupported Windows architecture: ${ARCHITECTURE}. Supported architectures are win32, win64, x86, amd64, arm64.")
     endif()
 elseif(APPLE)
-    # macOS architecture mapping
-    if(ARCHITECTURE STREQUAL "arm64")
-        set(WHEEL_ARCH "arm64")
-    else()
-        set(WHEEL_ARCH "x86_64")
-    endif()
+    # macOS always uses universal2
+    set(WHEEL_ARCH "universal2")
 else()
     # Linux architecture mapping
     if(ARCHITECTURE STREQUAL "arm64")
@@ -209,6 +202,7 @@ else()
     set(MODULE_EXTENSION ".so")
 endif()
 
+# Set the output name based on the Python version and architecture
 set_target_properties(ddbc_bindings PROPERTIES 
     PREFIX ""
     OUTPUT_NAME "ddbc_bindings.cp${PYTHON_VERSION}-${WHEEL_ARCH}"
