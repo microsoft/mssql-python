@@ -11,42 +11,6 @@ jobs:
   displayName: 'Publish Symbols - Windows'
   # Strategy matrix to build all combinations
 
-  parameters:
-    - name: SymAccount
-      type: string
-      default: 'mssql-python'
-
-    - name: symbolsVersion
-      type: string
-      # Default version is the build ID, which is unique for each build
-      # This will be used to identify the symbols in the symbol server
-      default: '$(Build.BuildId)'
-
-    - name: symbolServer
-      type: string
-      default: '$(SymbolServer)'
-    
-    - name: symbolTokenUri
-      type: string
-      default: '$(SymbolTokenUri)'
-    
-    - name: requestName
-      type: string
-      # Default artifact name is the build definition name and build ID
-      # This will be used to identify the symbols in the symbol server
-      default: '$(Build.DefinitionName)-$(Build.BuildId)'
-    
-    - name: publishToServers
-      type: object
-      default: 
-        internal: true
-        public: true
-
-    - name: product
-      default: mssql-python
-      values:
-      - mssql-python
-
   steps:
   - script: |
       # Check what PDB files are available in the artifact staging directory
@@ -54,11 +18,11 @@ jobs:
       dir "$(Build.ArtifactStagingDirectory)\all-pdbs"
     displayName: 'List contents of all-pdbs directory'
 
-  - powershell: 'Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]${{parameters.SymAccount}}"'
-    displayName: 'Update Symbol.AccountName with ${{parameters.SymAccount}}'
+  - powershell: 'Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]mssql-python"'
+    displayName: 'Update Symbol.AccountName with mssql-python'
 
   - task: PublishSymbols@2
-    displayName: 'Upload symbols to ${{parameters.SymAccount }} org'
+    displayName: 'Upload symbols to mssql-python org'
     inputs:
       SymbolsFolder: '$(Build.ArtifactStagingDirectory)\all-pdbs'
       SearchPattern: '**/*.pdb'
@@ -66,28 +30,37 @@ jobs:
       SymbolServerType: TeamServices
       SymbolsMaximumWaitTime: 60
       SymbolExpirationInDays: 1825 # 5 years
-      SymbolsProduct: ${{parameters.product}}
-      SymbolsVersion: ${{parameters.symbolsVersion}}
-      SymbolsArtifactName: ${{parameters.requestName}}
+      SymbolsProduct: mssql-python
+      # Have kept the default version as the build ID, which is unique for each build
+      # This will be used to identify the symbols in the symbol server
+      SymbolsVersion: $(Build.BuildId)
+      # Default artifact name is the build definition name and build ID
+      # This will be used to identify the symbols in the symbol server
+      SymbolsArtifactName: $(Build.DefinitionName)-$(Build.BuildId)
       Pat: $(System.AccessToken)
 
   - task: AzureCLI@2
     displayName: 'Publish symbols'
+    env:
+      SymbolServer: '$(SymbolServer)'
+      SymbolTokenUri: '$(SymbolTokenUri)'
+      requestName: '$(Build.DefinitionName)-$(Build.BuildId)'
     inputs:
       azureSubscription: 'Symbols publishing Workload Identity federation service-ADO.Net'
       scriptType: ps
       scriptLocation: inlineScript
       inlineScript: |
-        $publishToInternalServer = "${{parameters.publishToServers.internal }}".ToLower()
-        $publishToPublicServer = "${{parameters.publishToServers.public }}".ToLower()
+        # Should be true by default for both internal and public servers
+        $publishToInternalServer = $true 
+        $publishToPublicServer = $false
 
-        echo "Publishing request name: ${{parameters.requestName }}"
+        echo "Publishing request name: $requestName"
         echo "Publish to internal server: $publishToInternalServer"
         echo "Publish to public server: $publishToPublicServer"      
 
-        $symbolServer = "${{parameters.symbolServer }}"
-        $tokenUri = "${{parameters.symbolTokenUri }}"
-        $projectName = "${{parameters.SymAccount }}"
+        $symbolServer = '$(SymbolServer)'
+        $tokenUri = '$(SymbolTokenUri)'
+        $projectName = "mssql-python"
 
         # Get the access token for the symbol publishing service
         $symbolPublishingToken = az account get-access-token --resource $tokenUri --query accessToken -o tsv
@@ -95,7 +68,7 @@ jobs:
         echo ">  1.Symbol publishing token acquired."
 
         echo "Registering the request name ..."
-        $requestName = "${{parameters.requestName }}"
+        $requestName = '$(requestName)'
         $requestNameRegistrationBody = "{'requestName': '$requestName'}"
         Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $requestNameRegistrationBody
 
@@ -127,7 +100,7 @@ jobs:
         echo "0	Pending; The request has not completed or has not been requested."
         echo "1	Succeeded; The request has published successfully"
         echo "2	Failed; The request has failed to publish"
-        echo "3	Cancelled; The request was cancelled"
+        echo "3	Cancelled; The request was cancelled"  
 
 # - job: ReleaseESRPPackage
 #   displayName: 'Release ESRP Package'
