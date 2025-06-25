@@ -252,15 +252,13 @@ inline std::string WideToUTF8(const std::wstring& wstr) {
     WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), result.data(), size_needed, nullptr, nullptr);
     return result;
 #else
-    // On macOS or Linux, wstring is already UTF-32, but SQLWCHAR is 2-byte — assume UCS-2/UTF-16
     std::string result;
     result.reserve(wstr.size());
     for (wchar_t wc : wstr) {
-        // This is a minimal fallback — ideally use ICU or iconv for full Unicode
         if (wc < 0x80) {
             result.push_back(static_cast<char>(wc));
         } else {
-            result.push_back('?');  // Replace non-ASCII with placeholder
+            result.push_back('?');
         }
     }
     return result;
@@ -275,7 +273,6 @@ inline std::wstring Utf8ToWString(const std::string& str) {
     MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), result.data(), size_needed);
     return result;
 #else
-    // On macOS/Linux where wchar_t is 4 bytes — this will treat input as ASCII-compatible
     std::wstring result;
     result.reserve(str.size());
     for (char c : str) {

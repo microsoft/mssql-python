@@ -598,62 +598,7 @@ std::string GetLastErrorMessage() {
 #endif
 }
 
-
 DriverHandle LoadDriverOrThrowException() {
-//     std::string moduleDir = GetModuleDirectory();
-//     LOG("Module directory: {}", moduleDir);
-
-//     std::string archStr = ARCHITECTURE;
-//     std::string archDir;
-//     if (archStr == "win64" || archStr == "amd64" || archStr == "x64") archDir = "x64";
-//     else if (archStr == "arm64") archDir = "arm64";
-//     else archDir = "x86";
-
-//     std::string driverPath;
-
-// #ifdef _WIN32
-//     std::string dllDir = moduleDir + "\\libs\\" + archDir + "\\";
-
-//     // Optionally load mssql-auth.dll if it exists
-//     std::string authDllPath = dllDir + "mssql-auth.dll";
-//     HMODULE hAuth = LoadLibraryW(std::wstring(authDllPath.begin(), authDllPath.end()).c_str());
-//     if (hAuth) {
-//         LOG("Authentication DLL loaded: {}", authDllPath);
-//     } else {
-//         LOG("Note: mssql-auth.dll not found. This is OK if Entra ID is not in use.");
-//     }
-
-//     driverPath = dllDir + "msodbcsql18.dll";
-
-// #else // macOS only
-//     // Determine actual runtime architecture
-//     std::string runtimeArch =
-//     #if defined(__arm64__) || defined(__aarch64__)
-//         "arm64";
-//     #else
-//         "x86_64";
-//     #endif
-
-    // std::string primaryPath = moduleDir + "/libs/macos/" + runtimeArch + "/lib/libmsodbcsql.18.dylib";
-    // FILE* file = fopen(primaryPath.c_str(), "r");
-    // if (file) {
-    //     fclose(file);
-    //     driverPath = primaryPath;
-    //     LOG("macOS driver found at: {}", driverPath);
-    // } else {
-    //     driverPath = moduleDir + "/libs/" + archDir + "/macos/libmsodbcsql.18.dylib";
-    //     LOG("Using fallback macOS driver path: {}", driverPath);
-    // }
-//     fs::path primaryPath = fs::path(moduleDir) / "libs" / "macos" / runtimeArch / "lib" / "libmsodbcsql.18.dylib";
-//     if (fs::exists(primaryPath)) {
-//         driverPath = primaryPath;
-//         LOG("macOS driver found at: {}", driverPath.string());
-//     } else {
-//         driverPath = fs::path(moduleDir) / "libs" / archDir / "macos" / "lib" / "libmsodbcsql.18.dylib";
-//         LOG("Using fallback macOS driver path: {}", driverPath.string());
-//     }
-// #endif
-
     namespace fs = std::filesystem;
 
     std::string moduleDir = GetModuleDirectory();
