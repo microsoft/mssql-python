@@ -1,0 +1,4 @@
+14.0
+2
+1       SQLCHAR             0       200     "\t"     1     id             SQL_Latin1_General_CP1_CI_AS
+2       SQLCHAR             0       200     "\r\n"   2     names          SQL_Latin1_General_CP1_CI_AS
