@@ -129,7 +129,7 @@ jobs:
     - task: CopyFiles@2
       inputs:
         SourceFolder: '$(Build.SourcesDirectory)\mssql_python'
-        Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pdbs'
+        Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pdb'
         TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pdbs'
       displayName: 'Place PDB file into artifacts directory'
 
