@@ -41,6 +41,10 @@ from .db_connection import connect, Connection
 # Cursor Objects
 from .cursor import Cursor
 
+# BCP
+from .bcp_options import BCPOptions, ColumnFormat
+from .bcp_main import BCPClient
+
 # Logging Configuration
 from .logging_config import setup_logging, get_logger
 
