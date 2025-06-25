@@ -27,14 +27,11 @@
 #if defined(__APPLE__)
     // macOS-specific headers
     #include <dlfcn.h>
-    #include <filesystem>
     
-    // String conversion helpers for macOS - wchar_t is 4 bytes on macOS, but SQLWCHAR is 2 bytes
     inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
         if (!sqlwStr) return std::wstring();
         
         if (length == SQL_NTS) {
-            // Determine length if not provided
             size_t i = 0;
             while (sqlwStr[i] != 0) ++i;
             length = i;
