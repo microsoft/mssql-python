@@ -11,7 +11,8 @@ Note: The cursor function is not yet implemented, so related tests are commented
 """
 
 import pytest
-from mssql_python import Connection, connect
+import time
+from mssql_python import Connection, connect, pooling
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
@@ -178,3 +179,47 @@ def test_connection_close(conn_str):
     temp_conn = connect(conn_str)
     # Check if the database connection can be closed
     temp_conn.close()
+
+def test_connection_pooling_speed(conn_str):
+    # No pooling
+    start_no_pool = time.perf_counter()
+    conn1 = connect(conn_str)
+    conn1.close()
+    end_no_pool = time.perf_counter()
+    no_pool_duration = end_no_pool - start_no_pool
+
+    # Second connection
+    start2 = time.perf_counter()
+    conn2 = connect(conn_str)
+    conn2.close()
+    end2 = time.perf_counter()
+    duration2 = end2 - start2
+
+    # Pooling enabled
+    pooling(max_size=2, idle_timeout=10)
+    connect(conn_str).close()
+
+    # Pooled connection (should be reused, hence faster)
+    start_pool = time.perf_counter()
+    conn2 = connect(conn_str)
+    conn2.close()
+    end_pool = time.perf_counter()
+    pool_duration = end_pool - start_pool
+    assert pool_duration < no_pool_duration, "Expected faster connection with pooling"
+
+def test_connection_pooling_basic(conn_str):
+    # Enable pooling with small pool size
+    pooling(max_size=2, idle_timeout=5)
+    conn1 = connect(conn_str)
+    conn2 = connect(conn_str)
+    assert conn1 is not None
+    assert conn2 is not None
+    try:
+        conn3 = connect(conn_str)
+        assert conn3 is not None, "Third connection failed — pooling is not working or limit is too strict"
+        conn3.close()
+    except Exception as e:
+        print(f"Expected: Could not open third connection due to max_size=2: {e}")
+
+    conn1.close()
+    conn2.close()
