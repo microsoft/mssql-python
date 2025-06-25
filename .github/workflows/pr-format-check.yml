@@ -1,0 +1,33 @@
+name: Validate PR Title and Description
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+jobs:
+  validate-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title and description content
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const body = context.payload.pull_request.body;
+
+            const validTitlePrefixes = [
+              'FEAT:', 'CHORE:', 'FIX:', 'DOC:', 'STYLE:', 'REFACTOR:', 'RELEASE:'
+            ];
+
+            const hasValidPrefix = validTitlePrefixes.some(prefix => title.startsWith(prefix));
+
+            if (!hasValidPrefix) {
+              core.setFailed(`❌ PR title must start with one of the allowed prefixes:\n${validTitlePrefixes.join(', ')}`);
+            }
+
+            const azureWorkItemLinkPattern = /https:\/\/sqlclientdrivers\.visualstudio\.com\/[^\/]+\/_workitems\/edit\/\d+/i;
+            const hasWorkItemLink = azureWorkItemLinkPattern.test(body);
+
+            if (!hasWorkItemLink) {
+              core.setFailed(`❌ PR should contain a valid ADO Work Item ID.\nExpected a hyperlink in the format: https://sqlclientdrivers.visualstudio.com/.../_workitems/edit/<ID>\nPlease ensure the ADO task hyperlink is present in the PR description.`);
+            }
