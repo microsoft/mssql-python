@@ -554,7 +554,7 @@ std::string GetModuleDirectory() {
         std::string dir = module_file.substr(0, pos);
         return dir;
     }
-    std::cerr << "DEBUG: Could not extract directory from path: " << module_file << std::endl;
+    LOG("DEBUG: Could not extract directory from path: {}", module_file);
     return module_file;
 #endif
 }
@@ -641,7 +641,7 @@ DriverHandle LoadDriverOrThrowException() {
         driverPath = primaryPath;
         LOG("macOS driver found at: {}", driverPath.string());
     } else {
-        driverPath = fs::path(moduleDir) / "libs" / archDir / "macos" / "lib" / "libmsodbcsql.18.dylib";
+        driverPath = fs::path(moduleDir) / "libs" / archDir /  "macos/libmsodbcsql.18.dylib";
         LOG("Using fallback macOS driver path: {}", driverPath.string());
     }
 #endif
