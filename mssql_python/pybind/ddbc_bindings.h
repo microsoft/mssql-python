@@ -8,12 +8,52 @@
 
 #include <pybind11/pybind11.h> // pybind11.h must be the first include - https://pybind11.readthedocs.io/en/latest/basics.html#header-and-namespace-conventions
 
-#include <Windows.h>
 #include <string>
-#include <sql.h>
-#include <sqlext.h>
 #include <memory>
 #include <mutex>
+
+#ifdef _WIN32
+    // Windows-specific headers
+    #include <Windows.h>  // windows.h needs to be included before sql.h
+    #include <shlwapi.h>
+    #pragma comment(lib, "shlwapi.lib")
+    #define IS_WINDOWS 1
+#else
+    #define IS_WINDOWS 0
+#endif
+
+#include <sql.h>
+#include <sqlext.h>
+
+#if defined(__APPLE__)
+    // macOS-specific headers
+    #include <dlfcn.h>
+
+    inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
+        if (!sqlwStr) return std::wstring();
+
+        if (length == SQL_NTS) {
+            size_t i = 0;
+            while (sqlwStr[i] != 0) ++i;
+            length = i;
+        }
+
+        std::wstring result;
+        result.reserve(length);
+        for (size_t i = 0; i < length; ++i) {
+            result.push_back(static_cast<wchar_t>(sqlwStr[i]));
+        }
+        return result;
+    }
+
+    inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
+        std::vector<SQLWCHAR> result(str.size() + 1, 0);  // +1 for null terminator
+        for (size_t i = 0; i < str.size(); ++i) {
+            result[i] = static_cast<SQLWCHAR>(str[i]);
+        }
+        return result;
+    }
+#endif
 
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
@@ -22,6 +62,11 @@
 #include <pybind11/stl.h>
 namespace py = pybind11;
 using namespace pybind11::literals;
+
+#if defined(__APPLE__)
+#include "mac_utils.h"  // For macOS-specific Unicode encoding fixes
+#include "mac_buffers.h"  // For macOS-specific buffer handling
+#endif
 
 //-------------------------------------------------------------------------------------------------
 // Function pointer typedefs
@@ -116,20 +161,37 @@ extern SQLFreeStmtFunc SQLFreeStmt_ptr;
 // Diagnostic APIs
 extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
 
-
 // Logging utility
 template <typename... Args>
 void LOG(const std::string& formatString, Args&&... args);
 
-
 // Throws a std::runtime_error with the given message
 void ThrowStdException(const std::string& message);
+
+// Define a platform-agnostic type for the driver handle
+#ifdef _WIN32
+typedef HMODULE DriverHandle;
+#else
+typedef void* DriverHandle;
+#endif
+
+// Platform-agnostic function to get a function pointer from the loaded library
+template<typename T>
+T GetFunctionPointer(DriverHandle handle, const char* functionName) {
+#ifdef _WIN32
+    // Windows: Use GetProcAddress
+    return reinterpret_cast<T>(GetProcAddress(handle, functionName));
+#else
+    // macOS/Unix: Use dlsym
+    return reinterpret_cast<T>(dlsym(handle, functionName));
+#endif
+}
 
 //-------------------------------------------------------------------------------------------------
 // Loads the ODBC driver and resolves function pointers.
 // Throws if loading or resolution fails.
 //-------------------------------------------------------------------------------------------------
-std::wstring LoadDriverOrThrowException();
+DriverHandle LoadDriverOrThrowException();
 
 //-------------------------------------------------------------------------------------------------
 // DriverLoader (Singleton)
@@ -178,4 +240,40 @@ struct ErrorInfo {
 };
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);
 
-std::string WideToUTF8(const std::wstring& wstr);
+inline std::string WideToUTF8(const std::wstring& wstr) {
+    if (wstr.empty()) return {};
+#if defined(_WIN32)
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+    std::string result(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), result.data(), size_needed, nullptr, nullptr);
+    return result;
+#else
+    std::string result;
+    result.reserve(wstr.size());
+    for (wchar_t wc : wstr) {
+        if (wc < 0x80) {
+            result.push_back(static_cast<char>(wc));
+        } else {
+            result.push_back('?');
+        }
+    }
+    return result;
+#endif
+}
+
+inline std::wstring Utf8ToWString(const std::string& str) {
+    if (str.empty()) return {};
+#if defined(_WIN32)
+    int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
+    std::wstring result(size_needed, 0);
+    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), result.data(), size_needed);
+    return result;
+#else
+    std::wstring result;
+    result.reserve(str.size());
+    for (char c : str) {
+        result.push_back(static_cast<unsigned char>(c));
+    }
+    return result;
+#endif
+}
