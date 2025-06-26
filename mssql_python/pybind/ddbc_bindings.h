@@ -7,6 +7,13 @@
 #pragma once
 
 #include <pybind11/pybind11.h> // pybind11.h must be the first include - https://pybind11.readthedocs.io/en/latest/basics.html#header-and-namespace-conventions
+#include <pybind11/chrono.h>
+#include <pybind11/complex.h>
+#include <pybind11/functional.h>
+#include <pybind11/pytypes.h>  // Add this line for datetime support
+#include <pybind11/stl.h>
+namespace py = pybind11;
+using namespace pybind11::literals;
 
 #include <string>
 #include <memory>
@@ -54,14 +61,6 @@
         return result;
     }
 #endif
-
-#include <pybind11/chrono.h>
-#include <pybind11/complex.h>
-#include <pybind11/functional.h>
-#include <pybind11/pytypes.h>  // Add this line for datetime support
-#include <pybind11/stl.h>
-namespace py = pybind11;
-using namespace pybind11::literals;
 
 #if defined(__APPLE__)
 #include "mac_utils.h"  // For macOS-specific Unicode encoding fixes
@@ -244,20 +243,14 @@ inline std::string WideToUTF8(const std::wstring& wstr) {
     if (wstr.empty()) return {};
 #if defined(_WIN32)
     int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+    if (size_needed == 0) return {};
     std::string result(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), result.data(), size_needed, nullptr, nullptr);
+    int converted = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), result.data(), size_needed, nullptr, nullptr);
+    if (converted == 0) return {};
     return result;
 #else
-    std::string result;
-    result.reserve(wstr.size());
-    for (wchar_t wc : wstr) {
-        if (wc < 0x80) {
-            result.push_back(static_cast<char>(wc));
-        } else {
-            result.push_back('?');
-        }
-    }
-    return result;
+    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+    return converter.to_bytes(wstr);
 #endif
 }
 
@@ -265,15 +258,16 @@ inline std::wstring Utf8ToWString(const std::string& str) {
     if (str.empty()) return {};
 #if defined(_WIN32)
     int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
+    if (size_needed == 0) {
+        LOG("MultiByteToWideChar failed.");
+        return {};
+    }
     std::wstring result(size_needed, 0);
-    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), result.data(), size_needed);
+    int converted = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), result.data(), size_needed);
+    if (converted == 0) return {};
     return result;
 #else
-    std::wstring result;
-    result.reserve(str.size());
-    for (char c : str) {
-        result.push_back(static_cast<unsigned char>(c));
-    }
-    return result;
+    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+    return converter.from_bytes(str);
 #endif
 }

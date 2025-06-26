@@ -185,6 +185,16 @@ ParamType* AllocateParamBuffer(std::vector<std::shared_ptr<void>>& paramBuffers,
     return static_cast<ParamType*>(paramBuffers.back().get());
 }
 
+std::string DescribeChar(unsigned char ch) {
+    if (ch >= 32 && ch <= 126) {
+        return std::string("'") + static_cast<char>(ch) + "'";
+    } else {
+        char buffer[16];
+        snprintf(buffer, sizeof(buffer), "U+%04X", ch);
+        return std::string(buffer);
+    }
+}
+
 // Given a list of parameters and their ParamInfo, calls SQLBindParameter on each of them with
 // appropriate arguments
 SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
@@ -244,9 +254,8 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 // Log each character's code point for debugging
                 if (strParam->size() <= 20) {
                     for (size_t i = 0; i < strParam->size(); i++) {
-                        LOG("  char[{}] = {} ({})", i, static_cast<int>((*strParam)[i]),
-                            ((*strParam)[i] >= 32 && (*strParam)[i] <= 126) ?
-                            static_cast<char>((*strParam)[i]) : '?');
+                        unsigned char ch = static_cast<unsigned char>((*strParam)[i]);
+                        LOG("  char[{}] = {} ({})", i, static_cast<int>(ch), DescribeChar(ch));
                     }
                 }
 #if defined(__APPLE__)
@@ -544,7 +553,11 @@ std::string GetModuleDirectory() {
 #ifdef _WIN32
     // Windows-specific path handling
     char path[MAX_PATH];
-    strncpy_s(path, MAX_PATH, module_file.c_str(), module_file.length());
+    errno_t err = strncpy_s(path, MAX_PATH, module_file.c_str(), module_file.length());
+    if (err != 0) {
+        LOG("strncpy_s failed with error code: {}", err);
+        return {};
+    }
     PathRemoveFileSpecA(path);
     return std::string(path);
 #else
@@ -554,7 +567,6 @@ std::string GetModuleDirectory() {
         std::string dir = module_file.substr(0, pos);
         return dir;
     }
-    LOG("DEBUG: Could not extract directory from path: {}", module_file);
     return module_file;
 #endif
 }
@@ -562,14 +574,21 @@ std::string GetModuleDirectory() {
 // Platform-agnostic function to load the driver dynamic library
 DriverHandle LoadDriverLibrary(const std::string& driverPath) {
     LOG("Loading driver from path: {}", driverPath);
-
 #ifdef _WIN32
     // Windows: Convert string to wide string for LoadLibraryW
     std::wstring widePath(driverPath.begin(), driverPath.end());
-    return LoadLibraryW(widePath.c_str());
+    HMODULE handle = LoadLibraryW(widePath.c_str());
+    if (!handle) {
+        LOG("LoadLibraryW failed.");
+    }
+    return handle;
 #else
     // macOS/Unix: Use dlopen
-    return dlopen(driverPath.c_str(), RTLD_LAZY);
+    void* handle = dlopen(driverPath.c_str(), RTLD_LAZY);
+    if (!handle) {
+        LOG("dlopen failed.");
+    }
+    return handle;
 #endif
 }
 
@@ -618,7 +637,7 @@ DriverHandle LoadDriverOrThrowException() {
     // Optionally load mssql-auth.dll if it exists
     fs::path authDllPath = dllDir / "mssql-auth.dll";
     if (fs::exists(authDllPath)) {
-        HMODULE hAuth = LoadLibraryW(std::wstring(authDllPath.native().begin(), authDllPath.native().end()).c_str());
+        HMODULE hAuth = LoadLibraryW(authDllPath.wstring().c_str());
         if (hAuth) {
             LOG("Authentication DLL loaded: {}", authDllPath.string());
         } else {
