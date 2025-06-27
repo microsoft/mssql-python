@@ -24,7 +24,7 @@
 #include <sql.h>
 #include <sqlext.h>
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
     // macOS-specific headers
     #include <dlfcn.h>
     
@@ -62,7 +62,8 @@
 namespace py = pybind11;
 using namespace pybind11::literals;
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
+// Include macOS/Linux-specific headers
 #include "mac_utils.h"  // For macOS-specific Unicode encoding fixes
 #include "mac_buffers.h"  // For macOS-specific buffer handling
 #endif
