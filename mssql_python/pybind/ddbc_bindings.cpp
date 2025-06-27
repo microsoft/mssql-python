@@ -249,8 +249,8 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                             static_cast<char>((*strParam)[i]) : '?');
                     }
                 }
-#if defined(__APPLE__)
-                // On macOS, we need special handling for wide characters
+#if defined(__APPLE__) || defined(__linux__)
+                // On macOS/Linux, we need special handling for wide characters
                 // Create a properly encoded SQLWCHAR buffer for the parameter
                 std::vector<SQLWCHAR>* sqlwcharBuffer = 
                     AllocateParamBuffer<std::vector<SQLWCHAR>>(paramBuffers);
@@ -630,21 +630,39 @@ DriverHandle LoadDriverOrThrowException() {
 
     driverPath = dllDir / "msodbcsql18.dll";
 
-#else // macOS
+#else // unix-like systems (macOS/Linux)
+
+    // Determine platform and architecture
+    #if defined(__APPLE__)
+        std::string platformName = "macos";
+        std::string driverFileName = "libmsodbcsql.18.dylib";
+    #else
+        // Assuming Linux for other cases
+        std::string platformName = "linux";
+        std::string driverFileName = "libmsodbcsql-18.5.so.1.1";
+    #endif
+    LOG("Detected platform: {}", platformName);
+    std::cout << "Detected platform: " << platformName << std::endl;
+    std::cout << "Detected driver file name: " << driverFileName << std::endl;
+
+    // Determine architecture in a platform-agnostic way
     std::string runtimeArch =
     #if defined(__arm64__) || defined(__aarch64__)
         "arm64";
     #else
         "x86_64";
     #endif
+    LOG("Detected architecture: {}", runtimeArch);
+    std::cout<< "Detected architecture: " << runtimeArch << std::endl;
 
-    fs::path primaryPath = fs::path(moduleDir) / "libs" / "macos" / runtimeArch / "lib" / "libmsodbcsql.18.dylib";
+    fs::path primaryPath = fs::path(moduleDir) / "libs" / platformName / runtimeArch / "lib" / driverFileName;
+    std::cout << "Primary driver path: " << primaryPath.string() << std::endl;
     if (fs::exists(primaryPath)) {
         driverPath = primaryPath;
         LOG("macOS driver found at: {}", driverPath.string());
     } else {
-        driverPath = fs::path(moduleDir) / "libs" / archDir / "macos" / "lib" / "libmsodbcsql.18.dylib";
-        LOG("Using fallback macOS driver path: {}", driverPath.string());
+        // Log and raise an error if the primary path does not exist
+        LOG("macOS driver not found at: {}", primaryPath.string());
     }
 #endif
 
@@ -811,7 +829,7 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Q
     }
 
     SQLWCHAR* queryPtr;
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
     std::vector<SQLWCHAR> queryBuffer = WStringToSQLWCHAR(Query);
     queryPtr = queryBuffer.data();
 #else
@@ -850,7 +868,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         LOG("Statement handle is null or empty");
     }
     SQLWCHAR* queryPtr;
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
     std::vector<SQLWCHAR> queryBuffer = WStringToSQLWCHAR(query);
     queryPtr = queryBuffer.data();
 #else
@@ -955,7 +973,7 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
         if (SQL_SUCCEEDED(retcode)) {
             // Append a named py::dict to ColumnMetadata
             // TODO: Should we define a struct for this task instead of dict?
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
             ColumnMetadata.append(py::dict("ColumnName"_a = SQLWCHARToWString(ColumnName, SQL_NTS),
 #else
             ColumnMetadata.append(py::dict("ColumnName"_a = std::wstring(ColumnName),
@@ -1030,7 +1048,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         // NOTE: dataBuffer.size() includes null-terminator, dataLen doesn't. Hence use '<'.
 						if (numCharsInData < dataBuffer.size()) {
                             // SQLGetData will null-terminate the data
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
                             std::string fullStr(reinterpret_cast<char*>(dataBuffer.data()));
                             row.append(fullStr);
                             LOG("macOS: Appended CHAR string of length {} to result row", fullStr.length());
@@ -1079,7 +1097,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
 						if (numCharsInData < dataBuffer.size()) {
                             // SQLGetData will null-terminate the data
-#if defined(__APPLE__)
+#if defined(__APPLE__)  || defined(__linux__)
                             row.append(SQLWCHARToWString(dataBuffer.data(), SQL_NTS));
 #else
                             row.append(std::wstring(dataBuffer.data()));
@@ -1592,8 +1610,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (numCharsInData < fetchBufferSize) {
                         // SQLFetch will nullterminate the data
-#if defined(__APPLE__)
-                        // Use macOS-specific conversion to handle the wchar_t/SQLWCHAR size difference
+#if defined(__APPLE__) || defined(__linux__)
+                        // Use unix-specific conversion to handle the wchar_t/SQLWCHAR size difference
                         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
                         std::wstring wstr = SQLWCHARToWString(wcharData, numCharsInData);
                         row.append(wstr);

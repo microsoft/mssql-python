@@ -18,7 +18,7 @@
 
 namespace py = pybind11;
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
 // Constants for character encoding
 extern const char* kOdbcEncoding;  // ODBC uses UTF-16LE for SQLWCHAR
 extern const size_t kUcsLength;    // SQLWCHAR is 2 bytes on all platforms
