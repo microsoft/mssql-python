@@ -5,7 +5,6 @@
 //             taken up in future.
 
 #include "connection_pool.h"
-#include <iostream>
 #include <exception>
 
 ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
