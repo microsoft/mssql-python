@@ -1,3 +1,11 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+// This header defines utility functions for safely handling SQLWCHAR-based
+// wide-character data in ODBC operations on macOS. It includes conversions
+// between SQLWCHAR, std::wstring, and UTF-8 strings to bridge encoding
+// differences specific to macOS.
+
 #pragma once
 
 #include <string>
