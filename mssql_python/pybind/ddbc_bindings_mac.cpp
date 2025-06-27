@@ -70,7 +70,7 @@
 #include <sqlext.h>
 
 #if defined(__APPLE__)
-#include "mac_fix.h"  // For macOS-specific Unicode encoding fixes
+#include "mac_utils.h"  // For macOS-specific Unicode encoding fixes
 #include "mac_buffers.h"  // For macOS-specific buffer handling
 #endif
 
