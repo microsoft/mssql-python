@@ -178,3 +178,4 @@ def test_connection_close(conn_str):
     temp_conn = connect(conn_str)
     # Check if the database connection can be closed
     temp_conn.close()
+    
