@@ -229,31 +229,11 @@ if(APPLE)
     # Add ODBC include directories on macOS
     target_include_directories(ddbc_bindings PRIVATE ${CMAKE_SOURCE_DIR}/../libs/odbc_include ${ODBC_INCLUDE_DIR})
     
-    # For macOS, we need to link against the Python framework
-    if(PYTHON_LIBRARY)
-        # If we found a specific library file, use it
-        target_link_libraries(ddbc_bindings PRIVATE ${PYTHON_LIBRARY} dl)
-    else()
-        # Otherwise, try to link to the framework
-        execute_process(
-            COMMAND python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
-            OUTPUT_VARIABLE PYTHON_VERSION_FULL
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
-        
-        # Try to find the Python framework
-        find_library(PYTHON_FRAMEWORK Python HINTS /Library/Frameworks/Python.framework/Versions/${PYTHON_VERSION_FULL}/lib)
-        
-        if(PYTHON_FRAMEWORK)
-            message(STATUS "Found Python framework: ${PYTHON_FRAMEWORK}")
-            target_link_libraries(ddbc_bindings PRIVATE ${PYTHON_FRAMEWORK} dl)
-        else()
-            # As a last resort, try with -undefined dynamic_lookup flag
-            message(STATUS "Python framework not found, using dynamic lookup")
-            set_target_properties(ddbc_bindings PROPERTIES LINK_FLAGS "-undefined dynamic_lookup")
-            target_link_libraries(ddbc_bindings PRIVATE dl)
-        endif()
-    endif()
+    # For macOS, always use dynamic lookup for Python symbols
+    # This ensures the extension works in any Python environment including virtual environments
+    message(STATUS "Using dynamic lookup for Python symbols on macOS (best practice for Python extensions)")
+    set_target_properties(ddbc_bindings PROPERTIES LINK_FLAGS "-undefined dynamic_lookup")
+    target_link_libraries(ddbc_bindings PRIVATE dl)
     
     # Set macOS-specific compile options
     target_compile_options(ddbc_bindings PRIVATE
