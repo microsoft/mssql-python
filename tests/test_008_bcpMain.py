@@ -630,3 +630,215 @@ class TestBCPQueryOut:
 
         # Additional verification could be done here
         assert row_count == 4, f"Expected 4 rows in source table, got {row_count}"
+
+class TestBCPBind:
+    @pytest.fixture(scope="function")
+    def bind_test_setup(self):
+        """
+        Fixture to set up a BCP-enabled connection and a test table with various data types.
+        """
+        conn_str = get_bcp_test_conn_str()
+        table_uuid = str(uuid.uuid4()).replace('-', '')[:8]
+        table_name = f"dbo.pytest_bcp_bind_{table_uuid}"
+        
+        conn = None
+        cursor = None
+        
+        try:
+            # Connect with BCP enabled
+            conn = mssql_connect(conn_str, attrs_before={SQL_COPT_SS_BCP: 1}, autocommit=True)
+            cursor = conn.cursor()
+            
+            # Create test table with various data types
+            cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name};")
+            cursor.execute(f"""
+                CREATE TABLE {table_name} (
+                    int_col INT PRIMARY KEY,
+                    varchar_col VARCHAR(50) NOT NULL,
+                    nvarchar_col NVARCHAR(50) NULL,
+                    date_col DATE NULL,
+                    time_col TIME NULL,
+                    bit_col BIT NULL,
+                    tinyint_col TINYINT NULL,
+                    bigint_col BIGINT NULL,
+                    float_col REAL NULL,
+                    double_col FLOAT NULL,
+                    decimal_col DECIMAL(10,5) NULL,
+                    binary_col VARBINARY(100) NULL
+                );
+            """)
+            
+            yield {
+                'conn': conn,
+                'table_name': table_name
+            }
+            
+        finally:
+            # Cleanup
+            if cursor:
+                try:
+                    cursor.close()
+                except Exception as e:
+                    print(f"Warning: Error closing cursor: {e}")
+                    
+            if conn:
+                try:
+                    cleanup_cursor = conn.cursor()
+                    cleanup_cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name};")
+                    cleanup_cursor.close()
+                except Exception as e:
+                    print(f"Warning: Error during cleanup: {e}")
+                finally:
+                    conn.close()
+    
+    def test_bcp_bind_all_types(self, bind_test_setup):
+        """Test BCP binding with all supported data types."""
+        from mssql_python.bcp_options import BCPOptions, BindData
+        from mssql_python import (
+            SQLINT4, SQLVARCHAR, SQLNVARCHAR, SQLCHARACTER,
+            SQLBIT, SQLINT1, SQLINT8, SQLFLT4, SQLFLT8, 
+            SQLNUMERIC, SQLVARBINARY, SQL_VARLEN_DATA, SQL_NULL_DATA
+        )
+        import os
+        
+        # Get resources from setup
+        conn = bind_test_setup['conn']
+        table_name = bind_test_setup['table_name']
+        
+        # Create BCPClient
+        bcp_client = BCPClient(conn)
+        
+        # Prepare simpler test data with fewer rows
+        rows_data = [
+            # Row 1: Basic data types
+            [
+                BindData(data=1001, data_type=SQLINT4, data_length=4, server_col=1),
+                BindData(
+                    data="Test String", data_type=SQLVARCHAR, 
+                    data_length=SQL_VARLEN_DATA, terminator=b'\0', 
+                    terminator_length=1, server_col=2
+                ),
+                BindData(
+                    data="Unicode Test", data_type=SQLNVARCHAR, 
+                    data_length=SQL_VARLEN_DATA, terminator=b'\0', 
+                    terminator_length=1, server_col=3
+                ),
+                BindData(
+                    data="2023-06-15", data_type=SQLCHARACTER, 
+                    data_length=SQL_VARLEN_DATA, terminator=b'\0', 
+                    terminator_length=1, server_col=4
+                ),
+                BindData(
+                    data="14:30:25", data_type=SQLCHARACTER, 
+                    data_length=SQL_VARLEN_DATA, terminator=b'\0', 
+                    terminator_length=1, server_col=5
+                ),
+                BindData(data=1, data_type=SQLBIT, data_length=1, server_col=6),
+                BindData(data=127, data_type=SQLINT1, data_length=1, server_col=7),
+                BindData(data=1000000, data_type=SQLINT8, data_length=8, server_col=8),
+                BindData(data=3.14159, data_type=SQLFLT4, data_length=4, server_col=9),
+                BindData(data=1234.56789, data_type=SQLFLT8, data_length=8, server_col=10),
+                BindData(
+                    data="123.45678", data_type=SQLNUMERIC, 
+                    data_length=SQL_VARLEN_DATA, terminator=b'\0', 
+                    terminator_length=1, server_col=11
+                ),
+                BindData(
+                    data=b'BinaryData', data_type=SQLVARBINARY, 
+                    data_length=SQL_VARLEN_DATA, terminator=b'\0', 
+                    terminator_length=1, server_col=12
+                )
+            ],
+            
+            # Row 2: NULL values (where allowed)
+            [
+                BindData(data=1002, data_type=SQLINT4, data_length=4, server_col=1),
+                BindData(
+                    data="Not NULL", data_type=SQLVARCHAR, 
+                    data_length=SQL_VARLEN_DATA, terminator=b'\0', 
+                    terminator_length=1, server_col=2
+                ),
+                BindData(
+                    data=None, data_type=SQLNVARCHAR, 
+                    indicator_length=4, data_length=SQL_NULL_DATA, server_col=3
+                ),
+                BindData(
+                    data=None, data_type=SQLCHARACTER, 
+                    indicator_length=4, data_length=SQL_NULL_DATA, server_col=4
+                ),
+                BindData(
+                    data=None, data_type=SQLCHARACTER, 
+                    indicator_length=4, data_length=SQL_NULL_DATA, server_col=5
+                ),
+                BindData(
+                    data=None, data_type=SQLBIT, 
+                    indicator_length=4, data_length=SQL_NULL_DATA, server_col=6
+                ),
+                BindData(
+                    data=None, data_type=SQLINT1, 
+                    indicator_length=4, data_length=SQL_NULL_DATA, server_col=7
+                ),
+                BindData(
+                    data=None, data_type=SQLINT8, 
+                    indicator_length=4, data_length=SQL_NULL_DATA, server_col=8
+                ),
+                BindData(
+                    data=None, data_type=SQLFLT4, 
+                    indicator_length=4, data_length=SQL_NULL_DATA, server_col=9
+                ),
+                BindData(
+                    data=None, data_type=SQLFLT8, 
+                    indicator_length=4, data_length=SQL_NULL_DATA, server_col=10
+                ),
+                BindData(
+                    data=None, data_type=SQLNUMERIC, 
+                    indicator_length=4, data_length=SQL_NULL_DATA, server_col=11
+                ),
+                BindData(
+                    data=None, data_type=SQLVARBINARY, 
+                    indicator_length=4, data_length=SQL_NULL_DATA, server_col=12
+                )
+            ]
+        ]
+        
+        # Create BCP options with multi-row bind data
+        bcp_options = BCPOptions(
+            direction='in',
+            use_memory_bcp=True,
+            bind_data=rows_data,
+            error_file=os.path.abspath("bcp_bind_error.txt")
+        )
+        
+        try:
+            # Execute BCP to insert rows
+            bcp_client.sql_bulk_copy(table=table_name, options=bcp_options)
+            
+            # Verify rows were inserted
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            row_count = cursor.fetchone()[0]
+            
+            assert row_count == 2, f"Expected 2 rows to be inserted, got {row_count}"
+            
+            # Verify data integrity - only check basic values
+            cursor.execute(f"SELECT int_col, varchar_col FROM {table_name} WHERE int_col = 1001")
+            row1 = cursor.fetchone()
+            assert row1 is not None, "Row 1 was not found"
+            assert row1[1] == "Test String", f"Expected 'Test String' for varchar_col, got '{row1[1]}'"
+            
+            # Check NULL values in row 2 - just one check
+            cursor.execute(f"SELECT int_col, varchar_col, nvarchar_col FROM {table_name} WHERE int_col = 1002")
+            row2 = cursor.fetchone()
+            assert row2 is not None, "Row 2 was not found"
+            assert row2[1] == "Not NULL", "varchar_col should not be NULL"
+            assert row2[2] is None, "nvarchar_col should be NULL"
+
+        except Exception as e:
+            # Add better error reporting
+            print(f"\nBCP ERROR: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise
+        finally:
+            if 'cursor' in locals():
+                cursor.close()

@@ -131,3 +131,75 @@ class BCPControlOptions(Enum):
     KEEP_NULLS = "BCPKEEPNULLS"
     HINTS = "BCPHINTS"
     SET_ROW_TERMINATOR = "BCPSETROWTERM"
+
+class BCPDataTypes(Enum):
+    """
+    SQL Server data type constants for BCP operations.
+    These are the native SQL Server data type tokens used with bcp_bind.
+    """
+    # Character/string types
+    SQLTEXT = 35
+    SQLVARCHAR = 39
+    SQLCHARACTER = 47
+    SQLBIGCHAR = 175
+    SQLBIGVARCHAR = 167
+    SQLNCHAR = 239
+    SQLNVARCHAR = 231
+    SQLNTEXT = 99
+
+    # Binary types
+    SQLBINARY = 45
+    SQLVARBINARY = 37
+    SQLBIGBINARY = 173
+    SQLBIGVARBINARY = 165
+    SQLIMAGE = 34
+
+    # Integer types
+    SQLBIT = 50
+    SQLBITN = 104
+    SQLINT1 = 48
+    SQLINT2 = 52
+    SQLINT4 = 56
+    SQLINT8 = 127
+    SQLINTN = 38
+
+    # Floating point types
+    SQLFLT4 = 59
+    SQLFLT8 = 62
+    SQLFLTN = 109
+
+    # Decimal/numeric types
+    SQLDECIMAL = 106
+    SQLNUMERIC = 108
+    SQLDECIMALN = 106
+    SQLNUMERICN = 108
+
+    # Money types
+    SQLMONEY = 60
+    SQLMONEY4 = 122
+    SQLMONEYN = 110
+
+    # Date/time types
+    SQLDATETIME = 61
+    SQLDATETIM4 = 58
+    SQLDATETIMN = 111
+    SQLDATEN = 40
+    SQLTIMEN = 41
+    SQLDATETIME2N = 42
+    SQLDATETIMEOFFSETN = 43
+
+    # Special types
+    SQLUNIQUEID = 36
+    SQLVARIANT = 98
+    SQLUDT = 240
+    SQLXML = 241
+    SQLTABLE = 243
+    
+    # BCP special values
+    SQL_VARLEN_DATA = -10
+    SQL_NULL_DATA = -1
+    
+    # BCP direction codes
+    BCP_IN = 1
+    BCP_OUT = 2
+    BCP_QUERYOUT = 3

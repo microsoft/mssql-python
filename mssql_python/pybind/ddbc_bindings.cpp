@@ -126,6 +126,8 @@ BCPColumnsFunc BCPColumns_ptr = nullptr;
 BCPColFmtWFunc BCPColFmtW_ptr = nullptr;
 BCPExecFunc BCPExec_ptr = nullptr;
 BCPDoneFunc BCPDone_ptr = nullptr;
+BCPBindFunc BCPBind_ptr = nullptr;
+BCPSendRowFunc BCPSendRow_ptr = nullptr;
 
 // Data retrieval APIs
 SQLFetchFunc SQLFetch_ptr = nullptr;
@@ -638,6 +640,8 @@ std::wstring LoadDriverOrThrowException() {
     BCPColFmtW_ptr = (BCPColFmtWFunc)GetProcAddress(hModule, "bcp_colfmt"); // Corrected from bcp_colfmtW to bcp_colfmt if that's the export name
     BCPExec_ptr = (BCPExecFunc)GetProcAddress(hModule, "bcp_exec");
     BCPDone_ptr = (BCPDoneFunc)GetProcAddress(hModule, "bcp_done");
+    BCPBind_ptr = (BCPBindFunc)GetProcAddress(hModule, "bcp_bind");
+    BCPSendRow_ptr = (BCPSendRowFunc)GetProcAddress(hModule, "bcp_sendrow");
 
     bool success = SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
                    SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
@@ -649,13 +653,22 @@ std::wstring LoadDriverOrThrowException() {
                    SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr &&
                    BCPInitW_ptr && BCPControlW_ptr && BCPReadFmtW_ptr &&
                    BCPColumns_ptr && BCPColFmtW_ptr && BCPExec_ptr &&
-                   BCPDone_ptr;
+                   BCPDone_ptr && BCPBind_ptr && BCPSendRow_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver");
     }
     LOG("Successfully loaded function pointers from driver");
     
+    std::cout << "BCPBind_ptr = " << (void*)BCPBind_ptr << std::endl;
+    std::cout << "BCPSendRow_ptr = " << (void*)BCPSendRow_ptr << std::endl;
+
+    // Try a simple test call to validate the function pointers
+    if (BCPBind_ptr && BCPSendRow_ptr) {
+        std::cout << "BCP function pointers loaded, attempting to validate..." << std::endl;
+        // For BCPBind_ptr and BCPSendRow_ptr, we can't easily validate without a valid HDBC
+    }
+
     return dllDir;
 }
 
@@ -1168,7 +1181,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             timestampValue.hour,
                             timestampValue.minute,
                             timestampValue.second,
-                            timestampValue.fraction / 1000  // Convert back ns to µs
+                            timestampValue.fraction / 1000  // Convert µs to ns
                         )
                     );
                 } else {
@@ -1601,6 +1614,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
                 case SQL_BINARY:
                 case SQL_VARBINARY:
+               
                 case SQL_LONGVARBINARY: {
                     // TODO: variable length data needs special handling, this logic wont suffice
                     SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
@@ -2009,7 +2023,16 @@ PYBIND11_MODULE(ddbc_bindings, m) {
              py::arg("server_col_idx"))
         .def("exec_bcp", &BCPWrapper::exec_bcp)
         .def("finish", &BCPWrapper::finish)
-        .def("close", &BCPWrapper::close);
+        .def("close", &BCPWrapper::close)
+        .def("bind_column", &BCPWrapper::bind_column,
+             py::arg("data"),
+             py::arg("indicator_length"),
+             py::arg("data_length"),
+             py::arg("terminator"),
+             py::arg("terminator_length"),
+             py::arg("data_type"),
+             py::arg("server_col_idx"))
+        .def("send_row", &BCPWrapper::send_row);
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");

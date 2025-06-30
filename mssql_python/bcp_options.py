@@ -1,10 +1,41 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Any, Dict
 from mssql_python.constants import BCPControlOptions
 
 # defining constants for BCP control options
 ALLOWED_DIRECTIONS = ("in", "out", "queryout")
 ALLOWED_FILE_MODES = ("native", "char", "unicode")
+
+@dataclass
+class BindData:
+    """
+    Represents the data binding for a column in a bulk copy operation.
+    Used with bcp_bind API.
+    
+    Attributes:
+        data (Any): Pointer to the data to be copied. Can be primitive types or bytes.
+        indicator_length (int): Length of indicator in bytes (0, 1, 2, 4, or 8).
+        data_length (int): Count of bytes of data in the variable (can be SQL_VARLEN_DATA/SQL_NULL_DATA).
+        terminator (Optional[bytes]): Byte pattern marking the end of the variable, if any.
+        terminator_length (int): Count of bytes in the terminator.
+        data_type (int): The C data type of the variable (using SQL Server type tokens).
+        server_col (int): Ordinal position of the column in the database table (1-based).
+    """
+    data: Any = None
+    indicator_length: int = 0
+    data_length: int = 0  # Can be SQL_VARLEN_DATA or SQL_NULL_DATA
+    terminator: Optional[bytes] = None
+    terminator_length: int = 0
+    data_type: int = 0  # SQL Server data type tokens
+    server_col: int = 0  # 1-based column number in table
+    
+    def __post_init__(self):
+        if self.indicator_length not in [0, 1, 2, 4, 8]:
+            raise ValueError("indicator_length must be 0, 1, 2, 4, or 8.")
+        if self.server_col <= 0:
+            raise ValueError("server_col must be a positive integer (1-based).")
+        if self.terminator is not None and not isinstance(self.terminator, bytes):
+            raise TypeError("terminator must be bytes or None.")
 
 @dataclass
 class ColumnFormat:
@@ -70,6 +101,7 @@ class BCPOptions:
         bulk_mode (str): Bulk mode ('native', 'char', 'unicode'). Option: (-n, -c, -w).
             Defaults to "native".
         columns (List[ColumnFormat]): Column formats.
+        bind_data (List[BindData]): Data bindings for in-memory BCP.
     """
 
     direction: str
@@ -85,15 +117,23 @@ class BCPOptions:
     code_page: Optional[Union[int, str]] = None
     hints: Optional[str] = None
     columns: Optional[List[ColumnFormat]] = field(default_factory=list)
+    bind_data: Union[List[BindData], List[List[BindData]]] = field(default_factory=list)  # New field for bind data
     row_terminator: Optional[bytes] = None
     keep_identity: bool = False
     keep_nulls: bool = False
+    use_memory_bcp: bool = False  # Flag to indicate if we're using in-memory BCP (bind and sendrow)
 
     def __post_init__(self):
-        if (
-            not self.direction
-        ):  # Should be caught by dataclass if no default, but good for explicit check
+        if not self.direction:
             raise ValueError("BCPOptions.direction is a required field.")
+        
+        if self.bind_data and not self.use_memory_bcp:
+            self.use_memory_bcp = True  # Automatically set if bind_data is provided
+
+        if self.use_memory_bcp and not self.bind_data:
+            raise ValueError(
+                "BCPOptions.bind_data must be provided when use_memory_bcp is True."
+            )
 
         if self.direction not in ALLOWED_DIRECTIONS:
             raise ValueError(
@@ -101,25 +141,32 @@ class BCPOptions:
                 f"Allowed directions are: {', '.join(ALLOWED_DIRECTIONS)}."
             )
 
-        if self.direction in ["in", "out"]:
-            if not self.data_file:
+        # Add this validation for in-memory BCP requiring 'in' direction
+        if self.use_memory_bcp and self.direction != "in":
+            raise ValueError("in-memory BCP operations require direction='in'")
+
+        # Handle in-memory BCP case separately
+        if self.use_memory_bcp:
+            if not self.bind_data:
                 raise ValueError(
-                    f"BCPOptions.data_file is required for BCP direction '{self.direction}'."
+                    "BCPOptions.bind_data must be provided when use_memory_bcp is True."
                 )
+            # For in-memory BCP, data_file is not needed, but error_file is still useful
+            if not self.error_file:
+                raise ValueError("error_file must be provided even for in-memory BCP operations.")
+        else:
+            # Regular file-based BCP validation
+            if self.direction in ["in", "out"]:
+                if not self.data_file:
+                    raise ValueError(
+                        f"BCPOptions.data_file is required for file-based BCP direction '{self.direction}'."
+                    )
+                if not self.error_file:
+                    raise ValueError("error_file must be provided for file-based BCP operations.")
+
         if self.direction == "queryout" and not self.query:
             raise ValueError(
                 "BCPOptions.query is required for BCP direction 'query'."
-            )
-
-        if not self.data_file:
-            raise ValueError(
-                "data_file must be provided and non-empty for 'in' or 'out' directions."
-            )
-        if (
-            self.error_file is None or not self.error_file
-        ):  # Making error_file mandatory for in/out
-            raise ValueError(
-                "error_file must be provided and non-empty for 'in' or 'out' directions."
             )
 
         if self.columns and self.format_file:

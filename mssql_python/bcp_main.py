@@ -1,10 +1,11 @@
 import logging 
 from mssql_python.bcp_options import (
     BCPOptions,
+    BindData
 )
 from ddbc_bindings import BCPWrapper 
 from mssql_python.constants import BCPControlOptions
-from typing import Optional  # Import Optional for type hints
+from typing import Optional, List, Any  # Import Optional for type hints
 
 logger = logging.getLogger(__name__) # Add a logger instance
 
@@ -12,6 +13,8 @@ logger = logging.getLogger(__name__) # Add a logger instance
 SUPPORTED_DIRECTIONS = ("in", "out", "queryout")
 # Define SQL_CHAR if not already available, e.g., from a constants module
 SQL_CHAR = 1 
+SQL_VARLEN_DATA = -10  # Define these constants for column binding
+SQL_NULL_DATA = -1
 
 class BCPClient:
     """
@@ -85,21 +88,31 @@ class BCPClient:
             raise RuntimeError("BCPWrapper was not initialized.")
 
         try:
-            logger.info(
-                f"Initializing BCP operation: table='{table}', data_file='{current_options.data_file}', "
-                f"error_file='{current_options.error_file}', direction='{current_options.direction}'"
-            )
-            # 'table' here is used as szTable for bcp_init, which can be a table name or view.
-            # For 'queryout', the C++ wrapper would need to handle 'table' as the query string
-            # if bcp_init is used, or use bcp_queryout directly if that's the chosen C++ API.
-            # Assuming bcp_initialize_operation is flexible or maps to bcp_init.
-            self.wrapper.bcp_initialize_operation(
-                table,
-                current_options.data_file,
-                current_options.error_file,
-                current_options.direction,
-            )
-            logger.debug("BCP operation initialized with BCPWrapper.")
+            if not current_options.use_memory_bcp or not current_options.bind_data:
+                # Standard file-based BCP initialization
+                logger.info(
+                    f"Initializing BCP operation: table='{table}', data_file='{current_options.data_file}', "
+                    f"error_file='{current_options.error_file}', direction='{current_options.direction}'"
+                )
+                # Initialize BCP operation for file-based operations
+                self.wrapper.bcp_initialize_operation(
+                    table,
+                    current_options.data_file,
+                    current_options.error_file,
+                    current_options.direction,
+                )
+                logger.debug("BCP operation initialized with BCPWrapper.")
+            else:
+                # In-memory BCP initialization (for bind/sendrow)
+                logger.info(f"Initializing in-memory BCP operation for table: '{table}'")
+                # For in-memory BCP, initialize with no data file
+                self.wrapper.bcp_initialize_operation(
+                    table,
+                    "",  # No data file for in-memory BCP
+                    current_options.error_file or "",
+                    "in"  # Always use "in" for in-memory BCP
+                )
+                logger.debug("In-memory BCP operation initialized with BCPWrapper.")
 
             if current_options.query:
                 logger.debug(f"Setting BCPControlOptions.HINTS to '{current_options.query}'")
@@ -165,24 +178,7 @@ class BCPClient:
                 for i, col_fmt_obj in enumerate(current_options.columns):
                     logger.debug(f"Defining column format for file column {col_fmt_obj.file_col}: {col_fmt_obj}")
                     print(f"col_fmt_obj: {col_fmt_obj}")
-                    # col_user_type = col_fmt_obj.user_data_type
-                    # col_data_len = col_fmt_obj.data_len
-                    # For bcp_colfmt, the terminator applies to the current column's data in the file.
-                    # If a row_terminator is specified on this ColumnFormat object, it means this
-                    # column's data is terminated by that row_terminator.
-                    # Otherwise, its field_terminator is used.
-                    # terminator_for_colfmt = col_fmt_obj.field_terminator
-
-                    # if current_options.bulk_mode == "char":
-                    #     if col_user_type == 0: # Default to SQL_CHAR if not specified for char mode
-                    #         col_user_type = SQLCHARACTER 
-                    #     # data_len=0 for char means read until terminator, which is fine.
-                    #     # If a specific max length is desired, it should be set in ColumnFormat.
-                    # elif current_options.bulk_mode == "native":
-                    #     col_user_type = 0 # Ensure native type
-                    #     terminator_for_colfmt = None # Native mode does not use explicit terminators in bcp_colfmt
-                    #     # data_len for native is often 0 or SQL_VARLEN_DATA etc.
-                                        
+                    
                     self.wrapper.define_column_format(
                         file_col_idx=col_fmt_obj.file_col,
                         user_data_type=col_fmt_obj.user_data_type,
@@ -195,10 +191,70 @@ class BCPClient:
             else:
                 logger.info("No format file or explicit column definitions provided. Relying on BCP defaults or server types.")
 
-
-            logger.info("Executing BCP operation via wrapper.exec_bcp().")
-            self.wrapper.exec_bcp()
-            logger.info("BCP operation executed successfully.")
+            # Handle in-memory BCP binding
+            if current_options.use_memory_bcp and current_options.bind_data:
+                # Check if bind_data is a list of lists (multiple rows)
+                is_multi_row = (len(current_options.bind_data) > 0 and 
+                               isinstance(current_options.bind_data[0], list))
+                
+                if is_multi_row:
+                    # Process multiple rows
+                    row_count = len(current_options.bind_data)
+                    logger.info(f"Processing {row_count} rows in memory")
+                    
+                    for row_idx, row_data in enumerate(current_options.bind_data):
+                        logger.info(f"Processing row {row_idx+1} of {row_count}")
+                        
+                        # Bind each column in this row
+                        col_count = len(row_data)
+                        logger.info(f"Binding {col_count} columns for row {row_idx+1}")
+                        
+                        for bind_data in row_data:
+                            logger.debug(f"Binding column {bind_data.server_col} with data type {bind_data.data_type}")
+                            self.wrapper.bind_column(
+                                data=bind_data.data,
+                                indicator_length=bind_data.indicator_length,
+                                data_length=bind_data.data_length,
+                                terminator=bind_data.terminator,
+                                terminator_length=bind_data.terminator_length,
+                                data_type=bind_data.data_type,
+                                server_col_idx=bind_data.server_col
+                            )
+                        
+                        # Send this row to the server
+                        logger.info(f"Sending row {row_idx+1} to server")
+                        self.wrapper.send_row()
+                    
+                    # Call finish to complete the batch
+                    logger.info("Finishing BCP batch")
+                    self.wrapper.finish()
+                else:
+                    # Original single-row logic
+                    logger.info(f"Binding data for {len(current_options.bind_data)} columns (single row)")
+                    for bind_data in current_options.bind_data:
+                        logger.debug(f"Binding column {bind_data.server_col} with data type {bind_data.data_type}")
+                        self.wrapper.bind_column(
+                            data=bind_data.data,
+                            indicator_length=bind_data.indicator_length,
+                            data_length=bind_data.data_length,
+                            terminator=bind_data.terminator,
+                            terminator_length=bind_data.terminator_length,
+                            data_type=bind_data.data_type,
+                            server_col_idx=bind_data.server_col
+                        )
+                    
+                    # For single-row in-memory BCP, send the row to the server
+                    logger.info("Sending row to server")
+                    self.wrapper.send_row()
+                    
+                    # Call finish to complete the batch
+                    logger.info("Finishing BCP batch")
+                    self.wrapper.finish()
+            else:
+                # For file-based BCP, execute and finish
+                logger.info("Executing BCP operation via wrapper.exec_bcp().")
+                self.wrapper.exec_bcp()
+                logger.info("BCP operation executed successfully.")
 
         except Exception as e:
             logger.exception(f"An error occurred during BCP operation for table '{table}': {e}")
