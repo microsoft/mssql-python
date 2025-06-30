@@ -251,6 +251,11 @@ jobs:
         TargetFolder: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
       displayName: 'Place .so file into artifacts directory'
     
+    # Run Pytest to ensure the bindings work correctly
+    - script: |
+        python -m pytest -v
+      displayName: 'Run Pytest to validate bindings'
+
     # Build wheel package for universal2
     - script: |
         python -m pip install --upgrade pip
