@@ -7,226 +7,288 @@ trigger:
       - main
 
 jobs:
-- job: PytestOnWindows
-  pool:
-    vmImage: 'windows-latest'
+# - job: PytestOnWindows
+#   pool:
+#     vmImage: 'windows-latest'
   
-  steps:
-  - task: UsePythonVersion@0
-    inputs:
-      # TODO: Remove this once Python 3.13 is available in ADO
-      # ADO indexing will take some time to reflect 3.13 as 3.13.5, right now it is pointing to 3.13.4.
-      # We're specifying to use Python 3.13.5 since 3.13.4 has issues with compilation
-      # See https://github.com/python/cpython/issues/135151, next release should fix it.
-      versionSpec: '3.13.5'
-      addToPath: true
-      githubToken: $(GITHUB_TOKEN)
-    displayName: 'Use Python 3.13'
+#   steps:
+#   - task: UsePythonVersion@0
+#     inputs:
+#       # TODO: Remove this once Python 3.13 is available in ADO
+#       # ADO indexing will take some time to reflect 3.13 as 3.13.5, right now it is pointing to 3.13.4.
+#       # We're specifying to use Python 3.13.5 since 3.13.4 has issues with compilation
+#       # See https://github.com/python/cpython/issues/135151, next release should fix it.
+#       versionSpec: '3.13.5'
+#       addToPath: true
+#       githubToken: $(GITHUB_TOKEN)
+#     displayName: 'Use Python 3.13'
 
-  - script: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    displayName: 'Install dependencies'
+#   - script: |
+#       python -m pip install --upgrade pip
+#       pip install -r requirements.txt
+#     displayName: 'Install dependencies'
 
-  # Start LocalDB instance
-  - powershell: |
-      sqllocaldb create MSSQLLocalDB
-      sqllocaldb start MSSQLLocalDB
-    displayName: 'Start LocalDB instance'
+#   # Start LocalDB instance
+#   - powershell: |
+#       sqllocaldb create MSSQLLocalDB
+#       sqllocaldb start MSSQLLocalDB
+#     displayName: 'Start LocalDB instance'
 
-  # Create database and user
-  - powershell: |
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
-    displayName: 'Setup database and user'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#   # Create database and user
+#   - powershell: |
+#       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
+#       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+#       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+#       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+#     displayName: 'Setup database and user'
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      cd mssql_python\pybind
-      build.bat x64
-    displayName: 'Build .pyd file'
+#   - script: |
+#       cd mssql_python\pybind
+#       build.bat x64
+#     displayName: 'Build .pyd file'
 
-  - script: |
-      python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
-    displayName: 'Run tests with coverage'
-    env:
-      DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+#   - script: |
+#       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
+#     displayName: 'Run tests with coverage'
+#     env:
+#       DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
-  - task: PublishBuildArtifacts@1
-    inputs:
-      PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pyd'
-      ArtifactName: 'ddbc_bindings'
-      publishLocation: 'Container'
-    displayName: 'Publish pyd file as artifact'
+#   - task: PublishBuildArtifacts@1
+#     inputs:
+#       PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pyd'
+#       ArtifactName: 'ddbc_bindings'
+#       publishLocation: 'Container'
+#     displayName: 'Publish pyd file as artifact'
 
-  - task: PublishBuildArtifacts@1
-    inputs:
-      PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pdb'
-      ArtifactName: 'ddbc_bindings'
-      publishLocation: 'Container'
-    displayName: 'Publish pdb file as artifact'
+#   - task: PublishBuildArtifacts@1
+#     inputs:
+#       PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pdb'
+#       ArtifactName: 'ddbc_bindings'
+#       publishLocation: 'Container'
+#     displayName: 'Publish pdb file as artifact'
 
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results.xml'
-      testRunTitle: 'Publish test results'
+#   - task: PublishTestResults@2
+#     condition: succeededOrFailed()
+#     inputs:
+#       testResultsFiles: '**/test-results.xml'
+#       testRunTitle: 'Publish test results'
 
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage.xml'
-    displayName: 'Publish code coverage results'
+#   - task: PublishCodeCoverageResults@1
+#     inputs:
+#       codeCoverageTool: 'Cobertura'
+#       summaryFileLocation: 'coverage.xml'
+#     displayName: 'Publish code coverage results'
 
-- job: PytestOnMacOS
-  pool:
-    vmImage: 'macos-latest'
+# - job: PytestOnMacOS
+#   pool:
+#     vmImage: 'macos-latest'
 
-  steps:
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: '3.13.5'
-      addToPath: true
-    displayName: 'Use Python 3.13 on macOS'
+#   steps:
+#   - task: UsePythonVersion@0
+#     inputs:
+#       versionSpec: '3.13.5'
+#       addToPath: true
+#     displayName: 'Use Python 3.13 on macOS'
 
-  - script: |
-      brew update
-      brew install cmake
-    displayName: 'Install CMake'
+#   - script: |
+#       brew update
+#       brew install cmake
+#     displayName: 'Install CMake'
 
-  # - script: |
-  #     brew update
-  #     brew install docker colima
+#   # - script: |
+#   #     brew update
+#   #     brew install docker colima
 
-  #     # Start Colima with extra resources
-  #     colima start --cpu 4 --memory 8 --disk 50
+#   #     # Start Colima with extra resources
+#   #     colima start --cpu 4 --memory 8 --disk 50
 
-  #     # Optional: set Docker context (usually automatic)
-  #     docker context use colima >/dev/null || true
+#   #     # Optional: set Docker context (usually automatic)
+#   #     docker context use colima >/dev/null || true
 
-  #     # Confirm Docker is operational
-  #     docker version
-  #     docker ps
-  #   displayName: 'Install and start Colima-based Docker'
+#   #     # Confirm Docker is operational
+#   #     docker version
+#   #     docker ps
+#   #   displayName: 'Install and start Colima-based Docker'
 
-  # - script: |
-  #     # Pull and run SQL Server container
-  #     docker pull mcr.microsoft.com/mssql/server:2022-latest
-  #     docker run \
-  #       --name sqlserver \
-  #       -e ACCEPT_EULA=Y \
-  #       -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
-  #       -p 1433:1433 \
-  #       -d mcr.microsoft.com/mssql/server:2022-latest
+#   # - script: |
+#   #     # Pull and run SQL Server container
+#   #     docker pull mcr.microsoft.com/mssql/server:2022-latest
+#   #     docker run \
+#   #       --name sqlserver \
+#   #       -e ACCEPT_EULA=Y \
+#   #       -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+#   #       -p 1433:1433 \
+#   #       -d mcr.microsoft.com/mssql/server:2022-latest
 
-  #     # Starting SQL Server container…
-  #     for i in {1..30}; do
-  #       docker exec sqlserver \
-  #         /opt/mssql-tools18/bin/sqlcmd \
-  #         -S localhost \
-  #         -U SA \
-  #         -P "$DB_PASSWORD" \
-  #         -C -Q "SELECT 1" && break
-  #       sleep 2
-  #     done
-  #   displayName: 'Pull & start SQL Server (Docker)'
-  #   env:
-  #     DB_PASSWORD: $(DB_PASSWORD)
+#   #     # Starting SQL Server container…
+#   #     for i in {1..30}; do
+#   #       docker exec sqlserver \
+#   #         /opt/mssql-tools18/bin/sqlcmd \
+#   #         -S localhost \
+#   #         -U SA \
+#   #         -P "$DB_PASSWORD" \
+#   #         -C -Q "SELECT 1" && break
+#   #       sleep 2
+#   #     done
+#   #   displayName: 'Pull & start SQL Server (Docker)'
+#   #   env:
+#   #     DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    displayName: 'Install Python dependencies'
+#   - script: |
+#       python -m pip install --upgrade pip
+#       pip install -r requirements.txt
+#     displayName: 'Install Python dependencies'
 
-  - script: |
-      cd mssql_python/pybind
-      ./build.sh
-    displayName: 'Build pybind bindings (.so)'
+#   - script: |
+#       cd mssql_python/pybind
+#       ./build.sh
+#     displayName: 'Build pybind bindings (.so)'
 
-  - script: |
-      echo "Build successful, running tests now"
-      python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
-    displayName: 'Run pytest with coverage'
-    env:
-      # Temporarily Use Azure SQL Database connection string for testing purposes since Docker takes too long to install & start in MacOS
-      DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
-      # DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
-      DB_PASSWORD: $(DB_PASSWORD)
+#   - script: |
+#       echo "Build successful, running tests now"
+#       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
+#     displayName: 'Run pytest with coverage'
+#     env:
+#       # Temporarily Use Azure SQL Database connection string for testing purposes since Docker takes too long to install & start in MacOS
+#       DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
+#       # DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results.xml'
-      testRunTitle: 'Publish pytest results on macOS'
+#   - task: PublishTestResults@2
+#     condition: succeededOrFailed()
+#     inputs:
+#       testResultsFiles: '**/test-results-$(distroName).xml'
+#       testRunTitle: 'Publish pytest results on $(distroName)'
 
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage.xml'
-    displayName: 'Publish code coverage results'
+#   - task: PublishCodeCoverageResults@1
+#     inputs:
+#       codeCoverageTool: 'Cobertura'
+#       summaryFileLocation: 'coverage-$(distroName).xml'
+#     displayName: 'Publish code coverage results for $(distroName)'
 
-- job: PytestOnUbuntu
+- job: PytestOnLinux
   pool:
     vmImage: 'ubuntu-latest'
+  displayName: 'Test on Linux'
+  strategy:
+    matrix:
+      Ubuntu:
+        dockerImage: 'ubuntu:22.04'
+        distroName: 'Ubuntu'
+      Debian:
+        dockerImage: 'debian:12'
+        distroName: 'Debian'
     
   steps:
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '3.13.5'
       addToPath: true
-    displayName: 'Use Python 3.13 on Ubuntu'
+    displayName: 'Use Python 3.13 on $(distroName)'
 
   - script: |
-      sudo apt-get update
-      sudo apt-get install -y cmake
-    displayName: 'Install CMake'
+      # Create a Docker container for testing
+      docker run -d --name test-container-$(distroName) \
+        -v $(Build.SourcesDirectory):/workspace \
+        -w /workspace \
+        $(dockerImage) \
+        tail -f /dev/null
+    displayName: 'Create $(distroName) container'
 
   - script: |
-      # Install ODBC driver 
-      # Download the package to configure the Microsoft repo
-      curl -sSL -O https://packages.microsoft.com/config/ubuntu/$(grep VERSION_ID /etc/os-release | cut -d '"' -f 2)/packages-microsoft-prod.deb
-      # Install the package
-      sudo dpkg -i packages-microsoft-prod.deb
-      # Delete the file
-      rm packages-microsoft-prod.deb
-
-      # Install the driver
-      sudo apt-get update
-      sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
-      # optional: for bcp and sqlcmd
-      sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18
-      echo 'export PATH="$PATH:/opt/mssql-tools18/bin"' >> ~/.bashrc
-      source ~/.bashrc
-      # optional: for unixODBC development headers
-      sudo apt-get install -y unixodbc-dev
-    displayName: 'Install ODBC Driver'
+      # Install dependencies in the container
+      if [ "$(distroName)" = "Ubuntu" ]; then
+        docker exec test-container-$(distroName) bash -c "
+          apt-get update && 
+          apt-get install -y python3 python3-pip python3-venv cmake curl wget gnupg software-properties-common
+        "
+      else
+        # Debian
+        docker exec test-container-$(distroName) bash -c "
+          apt-get update && 
+          apt-get install -y python3 python3-pip python3-venv cmake curl wget gnupg software-properties-common
+        "
+      fi
+    displayName: 'Install basic dependencies in $(distroName) container'
 
   - script: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    displayName: 'Install Python dependencies'
+      # Install ODBC driver in the container
+      docker exec test-container-$(distroName) bash -c "
+        # Download the package to configure the Microsoft repo
+        if [ '$(distroName)' = 'Ubuntu' ]; then
+          curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+        else
+          # Debian 12
+          curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
+        fi
+        
+        # Install the package
+        dpkg -i packages-microsoft-prod.deb || true
+        rm packages-microsoft-prod.deb
+        
+        # Update package list
+        apt-get update
+        
+        # Install the driver
+        ACCEPT_EULA=Y apt-get install -y msodbcsql18
+        # optional: for bcp and sqlcmd
+        ACCEPT_EULA=Y apt-get install -y mssql-tools18
+        # optional: for unixODBC development headers
+        apt-get install -y unixodbc-dev
+      "
+    displayName: 'Install ODBC Driver in $(distroName) container'
 
   - script: |
-      cd mssql_python/pybind
-      ./build.sh
-    displayName: 'Build pybind bindings (.so)'
+      # Install Python dependencies in the container
+      docker exec test-container-$(distroName) bash -c "
+        python3 -m pip install --upgrade pip
+        python3 -m pip install -r requirements.txt
+      "
+    displayName: 'Install Python dependencies in $(distroName) container'
 
   - script: |
-      # Uninstall ODBC Driver
-      sudo apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
-      rm -f /usr/bin/sqlcmd
-      rm -f /usr/bin/bcp
-      rm -rf /opt/microsoft/msodbcsql
-      odbcinst -u -d -n "ODBC Driver 11 for SQL Server"
-    displayName: 'Uninstall ODBC Driver before running tests'
+      # Build pybind bindings in the container
+      docker exec test-container-$(distroName) bash -c "
+        cd mssql_python/pybind
+        chmod +x build.sh
+        ./build.sh
+      "
+    displayName: 'Build pybind bindings (.so) in $(distroName) container'
 
   - script: |
-      echo "Build successful, running tests now"
-      python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
-    displayName: 'Run pytest with coverage'
+      # Uninstall ODBC Driver before running tests
+      docker exec test-container-$(distroName) bash -c "
+        apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
+        rm -f /usr/bin/sqlcmd
+        rm -f /usr/bin/bcp
+        rm -rf /opt/microsoft/msodbcsql
+        odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
+      "
+    displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
+
+  - script: |
+      # Run tests in the container
+      docker exec test-container-$(distroName) bash -c "
+        echo 'Build successful, running tests now on $(distroName)'
+        python3 -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+      "
+    displayName: 'Run pytest with coverage in $(distroName) container'
     env:
       DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
       DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Copy test results from container to host
+      docker cp test-container-$(distroName):/workspace/test-results-$(distroName).xml $(Build.SourcesDirectory)/
+      docker cp test-container-$(distroName):/workspace/coverage-$(distroName).xml $(Build.SourcesDirectory)/
+    displayName: 'Copy test results from $(distroName) container'
+    condition: always()
+
+  - script: |
+      # Clean up container
+      docker stop test-container-$(distroName)
+      docker rm test-container-$(distroName)
+    displayName: 'Clean up $(distroName) container'
+    condition: always()
