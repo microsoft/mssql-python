@@ -56,6 +56,7 @@ from .constants import ConstantsDDBC, BCPControlOptions, BCPDataTypes
 
 # BCP
 from .bcp_options import BCPOptions, ColumnFormat
+from .bcp_main import BCPClient
 
 # GLOBALS
 # Read-Only - PEP-249 mandates these names
