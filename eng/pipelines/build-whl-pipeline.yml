@@ -193,6 +193,25 @@ jobs:
         shortPyVer: '313'
         # Always use universal2 for macOS
         targetArch: 'universal2'
+      
+      # Python 3.12 (universal2 for both arm64 and x86_64)
+      py312_universal2:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        targetArch: 'universal2'
+
+      # Python 3.11 (universal2 for both arm64 and x86_64)
+      py311_universal2:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'universal2'
+      
+      # Python 3.10 (universal2 for both arm64 and x86_64)
+      py310_universal2:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        targetArch: 'universal2'
+
   steps:
     # Use correct Python version and architecture for the current job
     - task: UsePythonVersion@0
