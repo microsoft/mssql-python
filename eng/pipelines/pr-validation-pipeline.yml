@@ -97,44 +97,44 @@ jobs:
       brew install cmake
     displayName: 'Install CMake'
 
-  # - script: |
-  #     brew update
-  #     brew install docker colima
+  - script: |
+      brew update
+      brew install docker colima
 
-  #     # Start Colima with extra resources
-  #     colima start --cpu 4 --memory 8 --disk 50
+      # Start Colima with extra resources
+      colima start --cpu 4 --memory 8 --disk 50
 
-  #     # Optional: set Docker context (usually automatic)
-  #     docker context use colima >/dev/null || true
+      # Optional: set Docker context (usually automatic)
+      docker context use colima >/dev/null || true
 
-  #     # Confirm Docker is operational
-  #     docker version
-  #     docker ps
-  #   displayName: 'Install and start Colima-based Docker'
+      # Confirm Docker is operational
+      docker version
+      docker ps
+    displayName: 'Install and start Colima-based Docker'
 
-  # - script: |
-  #     # Pull and run SQL Server container
-  #     docker pull mcr.microsoft.com/mssql/server:2022-latest
-  #     docker run \
-  #       --name sqlserver \
-  #       -e ACCEPT_EULA=Y \
-  #       -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
-  #       -p 1433:1433 \
-  #       -d mcr.microsoft.com/mssql/server:2022-latest
+  - script: |
+      # Pull and run SQL Server container
+      docker pull mcr.microsoft.com/mssql/server:2022-latest
+      docker run \
+        --name sqlserver \
+        -e ACCEPT_EULA=Y \
+        -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+        -p 1433:1433 \
+        -d mcr.microsoft.com/mssql/server:2022-latest
 
-  #     # Starting SQL Server container…
-  #     for i in {1..30}; do
-  #       docker exec sqlserver \
-  #         /opt/mssql-tools18/bin/sqlcmd \
-  #         -S localhost \
-  #         -U SA \
-  #         -P "$DB_PASSWORD" \
-  #         -C -Q "SELECT 1" && break
-  #       sleep 2
-  #     done
-  #   displayName: 'Pull & start SQL Server (Docker)'
-  #   env:
-  #     DB_PASSWORD: $(DB_PASSWORD)
+      # Starting SQL Server container…
+      for i in {1..30}; do
+        docker exec sqlserver \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -P "$DB_PASSWORD" \
+          -C -Q "SELECT 1" && break
+        sleep 2
+      done
+    displayName: 'Pull & start SQL Server (Docker)'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
       python -m pip install --upgrade pip
