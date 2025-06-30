@@ -85,7 +85,7 @@ def bcp_db_setup_and_teardown():
         if cursor:
             try:
                 cursor.close()
-            except Exception as e:  # pylint: disable=broad-except
+            except Exception as e:
                 print(
                     f"Warning: Error closing cursor during BCP test setup/teardown: {e}"
                 )
@@ -96,7 +96,7 @@ def bcp_db_setup_and_teardown():
                 cursor_cleanup.execute(
                     f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name};"
                 )
-            except Exception as e:  # pylint: disable=broad-except
+            except Exception as e:
                 print(
                     f"Warning: Error during BCP test cleanup (dropping table {table_name}): {e}"
                 )
@@ -104,7 +104,7 @@ def bcp_db_setup_and_teardown():
                 if cursor_cleanup:
                     try:
                         cursor_cleanup.close()
-                    except Exception as e:  # pylint: disable=broad-except
+                    except Exception as e:
                         print(f"Warning: Error closing cleanup cursor: {e}")
                 conn.close()
 

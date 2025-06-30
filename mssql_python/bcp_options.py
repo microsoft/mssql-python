@@ -95,7 +95,7 @@ class ColumnFormat:
             raise TypeError("field_terminator must be bytes or None.")
 
 
-@dataclass  # pylint: disable=too-many-instance-attributes
+@dataclass
 class BCPOptions:
     """
     Represents the options for a bulk copy operation.
@@ -139,7 +139,7 @@ class BCPOptions:
     keep_nulls: bool = False
     use_memory_bcp: bool = False  # Flag for in-memory BCP (bind and sendrow)
 
-    def __post_init__(self):  # pylint: disable=too-many-branches
+    def __post_init__(self):
         if not self.direction:
             raise ValueError("BCPOptions.direction is a required field.")
 

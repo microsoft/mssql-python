@@ -10,7 +10,7 @@ from .pooling import PoolingManager
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
 from .exceptions import (
-    Warning,  # pylint: disable=redefined-builtin
+    Warning,
     Error,
     InterfaceError,
     DatabaseError,
@@ -54,10 +54,10 @@ from .constants import ConstantsDDBC, BCPControlOptions, BCPDataTypes
 from .bcp_options import BCPOptions, ColumnFormat
 
 # GLOBALS
-# Read-Only - PEP-249 mandates these names, so we disable the invalid-name warning
-apilevel = "2.0"  # pylint: disable=invalid-name
-paramstyle = "qmark"  # pylint: disable=invalid-name
-threadsafety = 1  # pylint: disable=invalid-name
+# Read-Only - PEP-249 mandates these names
+apilevel = "2.0"
+paramstyle = "qmark"
+threadsafety = 1
 
 # Create direct variables for easier access to BCP data type constants Read-only
 # Character/string types
