@@ -1,13 +1,16 @@
 """
 Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
-BCPOptions and ColumnFormat classes for Bulk Copy Program (BCP) operations.
-"""
-import logging
-from dataclasses import dataclass, field
-from typing import List, Optional, Union
+Provides classes for configuring SQL Server Bulk Copy Program (BCP) operations.
 
-# Removed unused import: BCPControlOptions
+This module defines the core classes needed for BCP functionality:
+- BindData: Represents data bindings for in-memory BCP operations
+- ColumnFormat: Defines column formatting for BCP operations
+- BCPOptions: Configures the overall BCP operation settings
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Optional, Union, Any
 
 # defining constants for BCP control options
 ALLOWED_DIRECTIONS = ("in", "out", "queryout")
@@ -15,22 +18,56 @@ ALLOWED_FILE_MODES = ("native", "char", "unicode")
 
 
 @dataclass
+class BindData:
+    """
+    Represents the data binding for a column in a bulk copy operation.
+    Used with bcp_bind API.
+
+    Attributes:
+        data: Pointer to the data to be copied. Can be primitive types or bytes.
+        indicator_length: Length of indicator in bytes (0, 1, 2, 4, or 8).
+        data_length: Count of bytes of data in the variable 
+            (can be SQL_VARLEN_DATA/SQL_NULL_DATA).
+        terminator: Byte pattern marking the end of the variable, if any.
+        terminator_length: Count of bytes in the terminator.
+        data_type: The C data type of the variable (using SQL Server type tokens).
+        server_col: Ordinal position of the column in the database table (1-based).
+    """
+
+    data: Any = None
+    indicator_length: int = 0
+    data_length: int = 0  # Can be SQL_VARLEN_DATA or SQL_NULL_DATA
+    terminator: Optional[bytes] = None
+    terminator_length: int = 0
+    data_type: int = 0  # SQL Server data type tokens
+    server_col: int = 0  # 1-based column number in table
+
+    def __post_init__(self):
+        if self.indicator_length not in [0, 1, 2, 4, 8]:
+            raise ValueError("indicator_length must be 0, 1, 2, 4, or 8.")
+        if self.server_col <= 0:
+            raise ValueError("server_col must be a positive integer (1-based).")
+        if self.terminator is not None and not isinstance(self.terminator, bytes):
+            raise TypeError("terminator must be bytes or None.")
+
+
+@dataclass
 class ColumnFormat:
     """
     Represents the format of a column in a bulk copy operation.
     Attributes:
-        prefix_len (int): Option: (format_file) or (prefix_len, data_len).
+        prefix_len: Option: (format_file) or (prefix_len, data_len).
             The length of the prefix for fixed-length data types. Must be non-negative.
-        data_len (int): Option: (format_file) or (prefix_len, data_len).
+        data_len: Option: (format_file) or (prefix_len, data_len).
             The length of the data. Must be non-negative.
-        field_terminator (Optional[bytes]): Option: (-t). The field terminator string.
+        field_terminator: Option: (-t). The field terminator string.
             e.g., b',' for comma-separated values.
-        row_terminator (Optional[bytes]): Option: (-r). The row terminator string.
+        row_terminator: Option: (-r). The row terminator string.
             e.g., b'\\n' for newline-terminated rows.
-        server_col (int): Option: (format_file) or (server_col). The 1-based column number
+        server_col: Option: (format_file) or (server_col). The 1-based column number
             in the SQL Server table. Defaults to 1, representing the first column.
             Must be a positive integer.
-        file_col (int): Option: (format_file) or (file_col). The 1-based column number
+        file_col: Option: (format_file) or (file_col). The 1-based column number
             in the data file. Defaults to 1, representing the first column.
             Must be a positive integer.
     """
@@ -44,45 +81,41 @@ class ColumnFormat:
     server_col: int = 1
 
     def __post_init__(self):
-        logging.debug("Initializing ColumnFormat: %r", self)
         if self.prefix_len < 0:
-            logging.error("prefix_len must be a non-negative integer.")
             raise ValueError("prefix_len must be a non-negative integer.")
         if self.data_len < 0:
-            logging.error("data_len must be a non-negative integer.")
             raise ValueError("data_len must be a non-negative integer.")
         if self.server_col <= 0:
-            logging.error("server_col must be a positive integer (1-based).")
             raise ValueError("server_col must be a positive integer (1-based).")
         if self.file_col <= 0:
-            logging.error("file_col must be a positive integer (1-based).")
             raise ValueError("file_col must be a positive integer (1-based).")
         if self.field_terminator is not None and not isinstance(
             self.field_terminator, bytes
         ):
-            logging.error("field_terminator must be bytes or None.")
             raise TypeError("field_terminator must be bytes or None.")
 
-@dataclass
+
+@dataclass  # pylint: disable=too-many-instance-attributes
 class BCPOptions:
     """
     Represents the options for a bulk copy operation.
     Attributes:
-        direction (Literal[str]): 'in' or 'out'. Option: (-i or -o).
-        data_file (str): The data file. Option: (positional argument).
-        error_file (Optional[str]): The error file. Option: (-e).
-        format_file (Optional[str]): The format file to use for 'in'/'out'. Option: (-f).
-        batch_size (Optional[int]): The batch size. Option: (-b).
-        max_errors (Optional[int]): The maximum number of errors allowed. Option: (-m).
-        first_row (Optional[int]): The first row to process. Option: (-F).
-        last_row (Optional[int]): The last row to process. Option: (-L).
-        code_page (Optional[str]): The code page. Option: (-C).
-        keep_identity (bool): Keep identity values. Option: (-E).
-        keep_nulls (bool): Keep null values. Option: (-k).
-        hints (Optional[str]): Additional hints. Option: (-h).
-        bulk_mode (str): Bulk mode ('native', 'char', 'unicode'). Option: (-n, -c, -w).
+        direction: 'in' or 'out'. Option: (-i or -o).
+        data_file: The data file. Option: (positional argument).
+        error_file: The error file. Option: (-e).
+        format_file: The format file to use for 'in'/'out'. Option: (-f).
+        batch_size: The batch size. Option: (-b).
+        max_errors: The maximum number of errors allowed. Option: (-m).
+        first_row: The first row to process. Option: (-F).
+        last_row: The last row to process. Option: (-L).
+        code_page: The code page. Option: (-C).
+        keep_identity: Keep identity values. Option: (-E).
+        keep_nulls: Keep null values. Option: (-k).
+        hints: Additional hints. Option: (-h).
+        bulk_mode: Bulk mode ('native', 'char', 'unicode'). Option: (-n, -c, -w).
             Defaults to "native".
-        columns (List[ColumnFormat]): Column formats.
+        columns: Column formats.
+        bind_data: Data bindings for in-memory BCP.
     """
 
     direction: str
@@ -98,77 +131,75 @@ class BCPOptions:
     code_page: Optional[Union[int, str]] = None
     hints: Optional[str] = None
     columns: Optional[List[ColumnFormat]] = field(default_factory=list)
+    bind_data: Union[List[BindData], List[List[BindData]]] = field(
+        default_factory=list
+    )  # New field for bind data
     row_terminator: Optional[bytes] = None
     keep_identity: bool = False
     keep_nulls: bool = False
+    use_memory_bcp: bool = False  # Flag for in-memory BCP (bind and sendrow)
 
-    def __post_init__(self):
-        logging.debug("Initializing BCPOptions: %r", self)
+    def __post_init__(self):  # pylint: disable=too-many-branches
         if not self.direction:
-            logging.error("BCPOptions.direction is a required field.")
             raise ValueError("BCPOptions.direction is a required field.")
 
-        if self.direction not in ALLOWED_DIRECTIONS:
-            logging.error(
-                "BCPOptions.direction '%s' is invalid. Allowed directions are: %s.",
-                self.direction, ", ".join(ALLOWED_DIRECTIONS)
+        if self.bind_data and not self.use_memory_bcp:
+            self.use_memory_bcp = True  # Automatically set if bind_data is provided
+
+        if self.use_memory_bcp and not self.bind_data:
+            raise ValueError(
+                "BCPOptions.bind_data must be provided when use_memory_bcp is True."
             )
+
+        if self.direction not in ALLOWED_DIRECTIONS:
             raise ValueError(
                 f"BCPOptions.direction '{self.direction}' is invalid. "
                 f"Allowed directions are: {', '.join(ALLOWED_DIRECTIONS)}."
             )
 
-        if self.direction in ["in", "out"]:
-            if not self.data_file:
-                logging.error(
-                    "BCPOptions.data_file is required for BCP direction '%s'.",
-                    self.direction
-                )
+        # Add this validation for in-memory BCP requiring 'in' direction
+        if self.use_memory_bcp and self.direction != "in":
+            raise ValueError("in-memory BCP operations require direction='in'")
+
+        # Handle in-memory BCP case separately
+        if self.use_memory_bcp:
+            if not self.bind_data:
                 raise ValueError(
-                    f"BCPOptions.data_file is required for BCP direction '{self.direction}'."
+                    "BCPOptions.bind_data must be provided when use_memory_bcp is True."
                 )
+            # For in-memory BCP, data_file is not needed, but error_file is still useful
+            if not self.error_file:
+                raise ValueError(
+                    "error_file must be provided even for in-memory BCP operations."
+                )
+        else:
+            # Regular file-based BCP validation
+            if self.direction in ["in", "out"]:
+                if not self.data_file:
+                    raise ValueError(
+                        f"BCPOptions.data_file is required for file-based BCP "
+                        f"direction '{self.direction}'."
+                    )
+                if not self.error_file:
+                    raise ValueError(
+                        "error_file must be provided for file-based BCP operations."
+                    )
+
         if self.direction == "queryout" and not self.query:
-            logging.error("BCPOptions.query is required for BCP direction 'query'.")
             raise ValueError("BCPOptions.query is required for BCP direction 'query'.")
 
-        if not self.data_file:
-            logging.error(
-                "data_file must be provided and non-empty for 'in' or 'out' directions."
-            )
-            raise ValueError(
-                "data_file must be provided and non-empty for 'in' or 'out' directions."
-            )
-        if self.error_file is None or not self.error_file:
-            logging.error(
-                "error_file must be provided and non-empty for 'in' or 'out' directions."
-            )
-            raise ValueError(
-                "error_file must be provided and non-empty for 'in' or 'out' directions."
-            )
-
         if self.columns and self.format_file:
-            logging.error(
-                "Cannot specify both 'columns' (for bcp_colfmt) and 'format_file' "
-                "(for bcp_readfmt). Choose one."
-            )
             raise ValueError(
                 "Cannot specify both 'columns' (for bcp_colfmt) and 'format_file' "
                 "(for bcp_readfmt). Choose one."
             )
 
         if isinstance(self.code_page, int) and self.code_page < 0:
-            logging.error(
-                "BCPOptions.code_page, if an integer, must be non-negative."
-            )
             raise ValueError(
                 "BCPOptions.code_page, if an integer, must be non-negative."
             )
 
         if self.bulk_mode not in ALLOWED_FILE_MODES:
-            logging.error(
-                "BCPOptions.bulk_mode '%s' is invalid. Allowed modes are: %s.",
-                self.bulk_mode, ", ".join(ALLOWED_FILE_MODES)
-            )
             raise ValueError(
                 f"BCPOptions.bulk_mode '{self.bulk_mode}' is invalid. "
                 f"Allowed modes are: {', '.join(ALLOWED_FILE_MODES)}."
@@ -176,12 +207,9 @@ class BCPOptions:
         for attr_name in ["batch_size", "max_errors", "first_row", "last_row"]:
             attr_value = getattr(self, attr_name)
             if attr_value is not None and attr_value < 0:
-                logging.error(
-                    "BCPOptions.%s must be non-negative if specified. Got %r",
-                    attr_name, attr_value
-                )
                 raise ValueError(
-                    f"BCPOptions.{attr_name} must be non-negative if specified. Got {attr_value!r}"
+                    f"BCPOptions.{attr_name} must be non-negative if specified. "
+                    f"Got {attr_value}"
                 )
 
         if (
@@ -189,9 +217,6 @@ class BCPOptions:
             and self.last_row is not None
             and self.first_row > self.last_row
         ):
-            logging.error(
-                "BCPOptions.first_row cannot be greater than BCPOptions.last_row."
-            )
             raise ValueError(
                 "BCPOptions.first_row cannot be greater than BCPOptions.last_row."
             )
@@ -199,5 +224,4 @@ class BCPOptions:
         if self.row_terminator is not None and not isinstance(
             self.row_terminator, bytes
         ):
-            logging.error("row_terminator must be bytes or None.")
             raise TypeError("row_terminator must be bytes or None.")

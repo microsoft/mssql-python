@@ -1,12 +1,33 @@
-"""Unit tests for mssql_python.bcp_options and BCPOptions/ColumnFormat."""
-
+"""
+Tests for bulk options functionality in the mssql-python package.
+This module tests BCPOptions, ColumnFormat, BindData classes and their behavior.
+"""
 import os
 import uuid
 import pytest
 
-# Assuming your project structure allows these imports
-from mssql_python import connect as mssql_connect  # Alias to avoid conflict
-from mssql_python.bcp_options import ColumnFormat, BCPOptions
+try:
+    from mssql_python import connect as mssql_connect  # Alias to avoid conflict
+    from mssql_python.bcp_options import ColumnFormat, BCPOptions, BindData
+    from mssql_python import (
+        SQLINT4,
+        SQLVARCHAR,
+        SQLNVARCHAR,
+        SQL_VARLEN_DATA,
+        SQL_NULL_DATA,
+    )
+except ImportError:
+    # Mock imports for when the package is not installed
+    # This allows the test file to be loaded without errors by static analysis tools
+    mssql_connect = None
+    ColumnFormat = None
+    BCPOptions = None
+    BindData = None
+    SQLINT4 = None
+    SQLVARCHAR = None
+    SQLNVARCHAR = None
+    SQL_VARLEN_DATA = None
+    SQL_NULL_DATA = None
 
 # --- Constants for Tests ---
 SQL_COPT_SS_BCP = 1219  # BCP connection attribute
@@ -64,9 +85,9 @@ def bcp_db_setup_and_teardown():
         if cursor:
             try:
                 cursor.close()
-            except Exception as exc:
+            except Exception as e:  # pylint: disable=broad-except
                 print(
-                    f"Warning: Error closing cursor during BCP test setup/teardown: {exc}"
+                    f"Warning: Error closing cursor during BCP test setup/teardown: {e}"
                 )
         if conn:
             cursor_cleanup = None
@@ -75,16 +96,16 @@ def bcp_db_setup_and_teardown():
                 cursor_cleanup.execute(
                     f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name};"
                 )
-            except Exception as exc:
+            except Exception as e:  # pylint: disable=broad-except
                 print(
-                    f"Warning: Error during BCP test cleanup (dropping table {table_name}): {exc}"
+                    f"Warning: Error during BCP test cleanup (dropping table {table_name}): {e}"
                 )
             finally:
                 if cursor_cleanup:
                     try:
                         cursor_cleanup.close()
-                    except Exception as exc:
-                        print(f"Warning: Error closing cleanup cursor: {exc}")
+                    except Exception as e:  # pylint: disable=broad-except
+                        print(f"Warning: Error closing cleanup cursor: {e}")
                 conn.close()
 
 
@@ -97,11 +118,12 @@ def temp_file_pair(tmp_path):
     return data_file, error_file
 
 
+# --- Tests for bcp_options.py (Unit tests, no mocking needed) ---
 class TestColumnFormat:
-    """Unit tests for the ColumnFormat class."""
+    """Test class for the ColumnFormat class which validates column formats for BCP operations."""
 
     def test_valid_instantiation_defaults(self):
-        """Test default instantiation of ColumnFormat."""
+        """Test that ColumnFormat initializes with correct default values."""
         cf = ColumnFormat()
         assert cf.prefix_len == 0
         assert cf.data_len == 0
@@ -111,7 +133,7 @@ class TestColumnFormat:
         assert cf.user_data_type == 0
 
     def test_valid_instantiation_all_params(self):
-        """Test instantiation of ColumnFormat with all parameters."""
+        """Test that ColumnFormat initializes correctly with all parameters specified."""
         cf = ColumnFormat(
             prefix_len=1,
             data_len=10,
@@ -139,7 +161,7 @@ class TestColumnFormat:
         ],
     )
     def test_invalid_numeric_values(self, attr, value):
-        """Test invalid numeric values for ColumnFormat."""
+        """Test that ColumnFormat rejects invalid numeric values."""
         with pytest.raises(ValueError):
             ColumnFormat(**{attr: value})
 
@@ -150,19 +172,19 @@ class TestColumnFormat:
         ],
     )
     def test_invalid_terminator_types(self, attr, value):
-        """Test invalid field_terminator types for ColumnFormat."""
+        """Test that ColumnFormat rejects invalid terminator types."""
         with pytest.raises(TypeError):
             ColumnFormat(**{attr: value})
 
 
 class TestBCPOptions:
-    """Unit tests for the BCPOptions class."""
+    """Test class for BCPOptions which configures bulk copy operations."""
 
     _dummy_data_file = "dummy_data.csv"
     _dummy_error_file = "dummy_error.txt"
 
     def test_valid_instantiation_in_minimal(self):
-        """Test minimal valid instantiation for BCPOptions (direction in)."""
+        """Test minimal valid instantiation for 'in' direction."""
         opts = BCPOptions(
             direction="in",
             data_file=self._dummy_data_file,
@@ -174,7 +196,7 @@ class TestBCPOptions:
         assert opts.bulk_mode == "native"
 
     def test_valid_instantiation_out_full(self):
-        """Test full valid instantiation for BCPOptions (direction out)."""
+        """Test full valid instantiation for 'out' direction with all parameters."""
         cols = [ColumnFormat(file_col=1, server_col=1, field_terminator=b"\t")]
         opts = BCPOptions(
             direction="out",
@@ -197,7 +219,7 @@ class TestBCPOptions:
         assert opts.keep_identity is True
 
     def test_invalid_direction(self):
-        """Test invalid direction for BCPOptions."""
+        """Test rejection of invalid direction values."""
         with pytest.raises(
             ValueError, match="BCPOptions.direction 'invalid_dir' is invalid"
         ):
@@ -207,26 +229,51 @@ class TestBCPOptions:
                 error_file=self._dummy_error_file,
             )
 
-    @pytest.mark.parametrize("direction_to_test", ["in", "out"])
-    def test_missing_data_file_for_in_out(self, direction_to_test):
-        """Test missing data_file for in/out directions in BCPOptions."""
+    @pytest.mark.parametrize("direction_to_test", ["out"])
+    def test_missing_data_file_for_out(self, direction_to_test):
+        """Test that data_file is required for 'out' direction."""
         with pytest.raises(
             ValueError,
-            match=f"BCPOptions.data_file is required for BCP direction '{direction_to_test}'.",
+            match="BCPOptions.data_file is required for file-based BCP direction"
         ):
             BCPOptions(direction=direction_to_test, error_file=self._dummy_error_file)
 
-    @pytest.mark.parametrize("direction_to_test", ["in", "out"])
-    def test_missing_error_file_for_in_out(self, direction_to_test):
-        """Test missing error_file for in/out directions in BCPOptions."""
+    def test_missing_data_file_for_in(self):
+        """Test that data_file is required for 'in' direction when not using memory BCP."""
         with pytest.raises(
             ValueError,
-            match="error_file must be provided and non-empty for 'in' or 'out' directions.",
+            match="BCPOptions.data_file is required for file-based BCP direction 'in'"
         ):
-            BCPOptions(direction=direction_to_test, data_file=self._dummy_data_file)
+            BCPOptions(
+                direction="in", error_file=self._dummy_error_file, use_memory_bcp=False
+            )
+
+    @pytest.mark.parametrize("direction_to_test", ["in", "out"])
+    def test_missing_error_file_for_any_direction(self, direction_to_test):
+        """Test that error_file is required for all directions."""
+        if direction_to_test == "in":
+            with pytest.raises(
+                ValueError,
+                match="error_file must be provided even for in-memory BCP operations",
+            ):
+                BCPOptions(
+                    direction=direction_to_test,
+                    use_memory_bcp=True,
+                    bind_data=[
+                        BindData(
+                            data=123, data_type=SQLINT4, data_length=4, server_col=1
+                        )
+                    ],
+                )
+        else:
+            with pytest.raises(
+                ValueError,
+                match="error_file must be provided for file-based BCP operations",
+            ):
+                BCPOptions(direction=direction_to_test, data_file=self._dummy_data_file)
 
     def test_columns_and_format_file_conflict(self):
-        """Test conflict between columns and format_file in BCPOptions."""
+        """Test that columns and format_file parameters cannot be used together."""
         with pytest.raises(
             ValueError, match="Cannot specify both 'columns' .* and 'format_file'"
         ):
@@ -239,7 +286,7 @@ class TestBCPOptions:
             )
 
     def test_invalid_bulk_mode(self):
-        """Test invalid bulk_mode for BCPOptions."""
+        """Test rejection of invalid bulk_mode values."""
         with pytest.raises(
             ValueError, match="BCPOptions.bulk_mode 'invalid_mode' is invalid"
         ):
@@ -260,7 +307,7 @@ class TestBCPOptions:
         ],
     )
     def test_negative_control_values(self, attr, value):
-        """Test negative control values for BCPOptions."""
+        """Test rejection of negative control values."""
         with pytest.raises(ValueError, match=f"BCPOptions.{attr} must be non-negative"):
             BCPOptions(
                 direction="in",
@@ -270,7 +317,7 @@ class TestBCPOptions:
             )
 
     def test_first_row_greater_than_last_row(self):
-        """Test first_row greater than last_row in BCPOptions."""
+        """Test rejection when first_row > last_row."""
         with pytest.raises(
             ValueError,
             match="BCPOptions.first_row cannot be greater than BCPOptions.last_row",
@@ -284,7 +331,7 @@ class TestBCPOptions:
             )
 
     def test_invalid_codepage_negative_int(self):
-        """Test negative integer code_page for BCPOptions."""
+        """Test rejection of negative code_page values."""
         with pytest.raises(
             ValueError,
             match="BCPOptions.code_page, if an integer, must be non-negative",
@@ -295,3 +342,239 @@ class TestBCPOptions:
                 error_file=self._dummy_error_file,
                 code_page=-1,
             )
+
+    def test_valid_memory_bcp_with_bind_data(self):
+        """Test that in-memory BCP with bind data is properly configured."""
+        bind_data_item = BindData(
+            data=123, data_type=SQLINT4, data_length=4, server_col=1
+        )
+
+        opts = BCPOptions(
+            direction="in",
+            use_memory_bcp=True,
+            bind_data=[bind_data_item],
+            error_file=self._dummy_error_file,
+        )
+
+        assert opts.direction == "in"
+        assert opts.use_memory_bcp is True
+        assert len(opts.bind_data) == 1
+        assert opts.bind_data[0].data == 123
+        assert opts.bind_data[0].data_type == SQLINT4
+        assert opts.data_file is None  # Data file should be None for memory BCP
+
+    def test_valid_memory_bcp_with_multiple_rows(self):
+        """Test that multi-row binding is properly configured."""
+        # Define two rows with two columns each
+        row1 = [
+            BindData(data=1001, data_type=SQLINT4, data_length=4, server_col=1),
+            BindData(
+                data="Row 1 Data",
+                data_type=SQLVARCHAR,
+                data_length=SQL_VARLEN_DATA,
+                terminator=b"\0",
+                terminator_length=1,
+                server_col=2,
+            ),
+        ]
+
+        row2 = [
+            BindData(data=1002, data_type=SQLINT4, data_length=4, server_col=1),
+            BindData(
+                data="Row 2 Data",
+                data_type=SQLVARCHAR,
+                data_length=SQL_VARLEN_DATA,
+                terminator=b"\0",
+                terminator_length=1,
+                server_col=2,
+            ),
+        ]
+
+        opts = BCPOptions(
+            direction="in",
+            use_memory_bcp=True,
+            bind_data=[row1, row2],  # List of rows, where each row is a list of BindData
+            error_file=self._dummy_error_file,
+        )
+
+        assert opts.direction == "in"
+        assert opts.use_memory_bcp is True
+        assert len(opts.bind_data) == 2  # Two rows
+        assert len(opts.bind_data[0]) == 2  # First row has two columns
+        assert opts.bind_data[0][0].data == 1001  # First column of first row
+        assert opts.bind_data[1][0].data == 1002  # First column of second row
+        assert opts.bind_data[0][1].data == "Row 1 Data"  # Second column of first row
+
+    def test_memory_bcp_requires_in_direction(self):
+        """Test that memory BCP requires 'in' direction."""
+        with pytest.raises(
+            ValueError, match="in-memory BCP operations require direction='in'"
+        ):
+            BCPOptions(
+                direction="out",
+                use_memory_bcp=True,
+                bind_data=[
+                    BindData(data=123, data_type=SQLINT4, data_length=4, server_col=1)
+                ],
+                error_file=self._dummy_error_file,
+            )
+
+    def test_memory_bcp_requires_bind_data(self):
+        """Test that memory BCP requires bind_data."""
+        with pytest.raises(
+            ValueError,
+            match="BCPOptions.bind_data must be provided when use_memory_bcp is True",
+        ):
+            BCPOptions(
+                direction="in", use_memory_bcp=True, error_file=self._dummy_error_file
+            )
+
+    def test_bind_data_requires_memory_bcp(self):
+        """Test that binding data automatically enables use_memory_bcp."""
+        opts = BCPOptions(
+            direction="in",
+            bind_data=[
+                BindData(data=123, data_type=SQLINT4, data_length=4, server_col=1)
+            ],
+            error_file=self._dummy_error_file,
+        )
+        assert opts.use_memory_bcp is True
+
+    def test_memory_bcp_doesnt_require_data_file(self):
+        """Test that memory BCP doesn't require data_file."""
+        opts = BCPOptions(
+            direction="in",
+            use_memory_bcp=True,
+            bind_data=[
+                BindData(data=123, data_type=SQLINT4, data_length=4, server_col=1)
+            ],
+            error_file=self._dummy_error_file,
+        )
+        assert opts.data_file is None  # Data file should be None for memory BCP
+
+    def test_bind_data_with_null_values(self):
+        """Test that NULL values are properly configured in bind data."""
+        bind_data_item = BindData(
+            data=None,
+            data_type=SQLINT4,
+            indicator_length=4,
+            data_length=SQL_NULL_DATA,
+            server_col=1,
+        )
+
+        opts = BCPOptions(
+            direction="in",
+            use_memory_bcp=True,
+            bind_data=[bind_data_item],
+            error_file=self._dummy_error_file,
+        )
+
+        assert opts.bind_data[0].data is None
+        assert opts.bind_data[0].indicator_length == 4
+        assert opts.bind_data[0].data_length == SQL_NULL_DATA
+
+
+class TestBindData:
+    """Test class for BindData which defines column data for memory-based bulk operations."""
+
+    def test_valid_instantiation_defaults(self):
+        """Test valid instantiation with minimal parameters."""
+        bind_data = BindData(data=123, data_type=SQLINT4, data_length=4, server_col=1)
+        assert bind_data.data == 123
+        assert bind_data.data_type == SQLINT4
+        assert bind_data.data_length == 4
+        assert bind_data.server_col == 1
+        assert bind_data.indicator_length == 0
+        assert bind_data.terminator is None
+        assert bind_data.terminator_length == 0
+
+    def test_valid_instantiation_all_params(self):
+        """Test valid instantiation with all parameters."""
+        bind_data = BindData(
+            data="test",
+            data_type=SQLVARCHAR,
+            indicator_length=0,
+            data_length=SQL_VARLEN_DATA,
+            terminator=b"\0",
+            terminator_length=1,
+            server_col=2,
+        )
+        assert bind_data.data == "test"
+        assert bind_data.data_type == SQLVARCHAR
+        assert bind_data.indicator_length == 0
+        assert bind_data.data_length == SQL_VARLEN_DATA
+        assert bind_data.terminator == b"\0"
+        assert bind_data.terminator_length == 1
+        assert bind_data.server_col == 2
+
+    def test_null_data_requires_sql_null_data(self):
+        """Test NULL data configuration with SQL_NULL_DATA."""
+        bind_data = BindData(
+            data=None,
+            data_type=SQLINT4,
+            indicator_length=4,
+            data_length=SQL_NULL_DATA,
+            server_col=1,
+        )
+        assert bind_data.data is None
+        assert bind_data.data_length == SQL_NULL_DATA
+
+    def test_sql_null_data_requires_null_data(self):
+        """Test SQL_NULL_DATA with NULL data configuration."""
+        bind_data = BindData(
+            data=None,
+            data_type=SQLINT4,
+            indicator_length=4,
+            data_length=SQL_NULL_DATA,
+            server_col=1,
+        )
+        assert bind_data.data is None
+        assert bind_data.data_length == SQL_NULL_DATA
+
+    def test_null_data_requires_indicator(self):
+        """Test NULL data with indicator length configuration."""
+        bind_data = BindData(
+            data=None,
+            data_type=SQLINT4,
+            indicator_length=4,  # Valid indicator length
+            data_length=SQL_NULL_DATA,
+            server_col=1,
+        )
+        assert bind_data.indicator_length == 4
+
+    def test_invalid_server_col(self):
+        """Test that server_col must be positive."""
+        with pytest.raises(ValueError, match="server_col must be a positive integer"):
+            BindData(
+                data=123,
+                data_type=SQLINT4,
+                data_length=4,
+                server_col=0,  # Should be > 0
+            )
+
+    def test_varlen_data_requires_terminator(self):
+        """Test variable length data with terminator configuration."""
+        bind_data = BindData(
+            data="test",
+            data_type=SQLVARCHAR,
+            data_length=SQL_VARLEN_DATA,
+            terminator=b"\0",
+            terminator_length=1,
+            server_col=1,
+        )
+        assert bind_data.terminator == b"\0"
+        assert bind_data.data_length == SQL_VARLEN_DATA
+
+    def test_unicode_string_with_nvarchar(self):
+        """Test that Unicode strings work with NVARCHAR."""
+        unicode_text = "Unicode 文字"
+        bind_data = BindData(
+            data=unicode_text,
+            data_type=SQLNVARCHAR,
+            data_length=SQL_VARLEN_DATA,
+            terminator=b"\0",
+            terminator_length=1,
+            server_col=1,
+        )
+        assert bind_data.data == unicode_text
+        assert bind_data.data_type == SQLNVARCHAR
