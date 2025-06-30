@@ -178,20 +178,10 @@ endif()
 
 message(STATUS "Final Python library directory: ${PYTHON_LIB_DIR}")
 
-# Determine which source file to use based on platform
-if(APPLE)
-    set(DDBC_SOURCE "ddbc_bindings_mac.cpp")
-    message(STATUS "Using macOS-specific source file: ${DDBC_SOURCE}")
-    # Only ddbc_bindings_mac.cpp is used on macOS
-    # TODO: Implement smart pointer in macOS
-    add_library(ddbc_bindings MODULE ${DDBC_SOURCE})
-else()
-    # This is just windows block
-    set(DDBC_SOURCE "ddbc_bindings.cpp")
-    message(STATUS "Using standard source file: ${DDBC_SOURCE}")
-    # Include connection module for Windows
-    add_library(ddbc_bindings MODULE ${DDBC_SOURCE} connection/connection.cpp connection/connection_pool.cpp bcp/bcp_wrapper.cpp)
-endif()
+set(DDBC_SOURCE "ddbc_bindings.cpp")
+message(STATUS "Using standard source file: ${DDBC_SOURCE}")
+# Include connection module for Windows
+add_library(ddbc_bindings MODULE ${DDBC_SOURCE} connection/connection.cpp connection/connection_pool.cpp bcp/bcp_wrapper.cpp)
 
 # Set the output name to include Python version and architecture
 # Use appropriate file extension based on platform
@@ -240,31 +230,11 @@ if(APPLE)
     # Add ODBC include directories on macOS
     target_include_directories(ddbc_bindings PRIVATE ${CMAKE_SOURCE_DIR}/../libs/odbc_include ${ODBC_INCLUDE_DIR})
     
-    # For macOS, we need to link against the Python framework
-    if(PYTHON_LIBRARY)
-        # If we found a specific library file, use it
-        target_link_libraries(ddbc_bindings PRIVATE ${PYTHON_LIBRARY} dl)
-    else()
-        # Otherwise, try to link to the framework
-        execute_process(
-            COMMAND python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
-            OUTPUT_VARIABLE PYTHON_VERSION_FULL
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
-        
-        # Try to find the Python framework
-        find_library(PYTHON_FRAMEWORK Python HINTS /Library/Frameworks/Python.framework/Versions/${PYTHON_VERSION_FULL}/lib)
-        
-        if(PYTHON_FRAMEWORK)
-            message(STATUS "Found Python framework: ${PYTHON_FRAMEWORK}")
-            target_link_libraries(ddbc_bindings PRIVATE ${PYTHON_FRAMEWORK} dl)
-        else()
-            # As a last resort, try with -undefined dynamic_lookup flag
-            message(STATUS "Python framework not found, using dynamic lookup")
-            set_target_properties(ddbc_bindings PROPERTIES LINK_FLAGS "-undefined dynamic_lookup")
-            target_link_libraries(ddbc_bindings PRIVATE dl)
-        endif()
-    endif()
+    # For macOS, always use dynamic lookup for Python symbols
+    # This ensures the extension works in any Python environment including virtual environments
+    message(STATUS "Using dynamic lookup for Python symbols on macOS (best practice for Python extensions)")
+    set_target_properties(ddbc_bindings PROPERTIES LINK_FLAGS "-undefined dynamic_lookup")
+    target_link_libraries(ddbc_bindings PRIVATE dl)
     
     # Set macOS-specific compile options
     target_compile_options(ddbc_bindings PRIVATE

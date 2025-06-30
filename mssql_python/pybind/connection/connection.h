@@ -61,7 +61,7 @@ private:
 
 class ConnectionHandle {
 public:
-    ConnectionHandle(const std::wstring& connStr, bool usePool, const py::dict& attrsBefore = py::dict());
+    ConnectionHandle(const std::string& connStr, bool usePool, const py::dict& attrsBefore = py::dict());
     ~ConnectionHandle();
 
     void close();
