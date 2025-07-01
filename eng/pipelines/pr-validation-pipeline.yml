@@ -237,12 +237,18 @@ jobs:
       # Install dependencies in the container
       if [ "$(distroName)" = "Ubuntu" ]; then
         docker exec test-container-$(distroName) bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          export TZ=UTC
+          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
           apt-get update && 
           apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
         "
       else
         # Debian
         docker exec test-container-$(distroName) bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          export TZ=UTC
+          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
           apt-get update && 
           apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
         "
@@ -252,6 +258,8 @@ jobs:
   - script: |
       # Install ODBC driver in the container
       docker exec test-container-$(distroName) bash -c "
+        export DEBIAN_FRONTEND=noninteractive
+        
         # Download the package to configure the Microsoft repo
         if [ '$(distroName)' = 'Ubuntu' ]; then
           curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
@@ -305,10 +313,12 @@ jobs:
   - script: |
       # Uninstall ODBC Driver before running tests
       docker exec test-container-$(distroName) bash -c "
+        export DEBIAN_FRONTEND=noninteractive
         apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
         rm -f /usr/bin/sqlcmd
         rm -f /usr/bin/bcp
         rm -rf /opt/microsoft/msodbcsql
+        rm -f /lib/x86_64-linux-gnu/libodbcinst.so.2
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
