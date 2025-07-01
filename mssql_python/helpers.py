@@ -139,11 +139,11 @@ def get_driver_path(module_dir, architecture):
             "arm64": "arm64"
         }
         arch_dir = arch_map.get(architecture.lower(), "x64")
-        driver_path = Path(module_dir) / "libs" / arch_dir / "msodbcsql18.dll"
+        driver_path = Path(module_dir) / "libs" / "windows" / arch_dir / "msodbcsql18.dll"
 
     elif system == "darwin":
         # macOS: libs/macos/lib/libmsodbcsql.18.dylib (universal)
-        driver_path = Path(module_dir) / "libs" / "macos" / "lib" / "libmsodbcsql.18.dylib"
+        driver_path = Path(module_dir) / "libs" / "macos" / arch_dir / "lib" / "libmsodbcsql.18.dylib"
 
     elif system == "linux":
         # Linux: libs/linux/{distro}/{arch}/lib/libmsodbcsql-18.5.so.1.1
