@@ -180,11 +180,10 @@ jobs:
       Debian:
         dockerImage: 'debian:12'
         distroName: 'Debian'
-    
   steps:
   - task: UsePythonVersion@0
     inputs:
-      versionSpec: '3.13.5'
+      versionSpec: '3.13'
       addToPath: true
     displayName: 'Use Python 3.13 on $(distroName)'
 

@@ -639,8 +639,31 @@ DriverHandle LoadDriverOrThrowException() {
     #else
         // Assuming Linux for other cases
         std::string platformName = "linux";
+        // Get OS Name
+        std::string osName = "ubuntu";  // Default to ubuntu
+        if (std::ifstream ifs("/etc/os-release")) {
+            std::string line;
+            while (std::getline(ifs, line)) {
+                if (line.find("ID=") == 0) {
+                    osName = line.substr(3); // Skip "ID="
+                    // Remove quotes if present
+                    osName.erase(std::remove(osName.begin(), osName.end(), '"'), osName.end());
+                    break;
+                }
+            }
+        }
         std::string driverFileName = "libmsodbcsql-18.5.so.1.1";
+        if (osName == "ubuntu" || osName == "debian") {
+            osName = "debian_ubuntu";
+        } else if (osName == "rhel") {
+            osName = "rhel";
+        } else {
+            LOG("Non-supported OS: {}", osName);
+            std::cout << "Non-supported OS: " << osName << std::endl;
+            ThrowStdException("Non-supported OS: " + osName);
+        }
     #endif
+
     LOG("Detected platform: {}", platformName);
     std::cout << "Detected platform: " << platformName << std::endl;
     std::cout << "Detected driver file name: " << driverFileName << std::endl;
