@@ -133,6 +133,8 @@ def get_driver_path(module_dir, architecture):
 
     if system == "windows":
         # Windows: libs/{arch}/msodbcsql18.dll
+        # Defining architecture mapping for Windows since cross-compilation is supported
+        # e.g. You can compile for ARM64 on x64
         arch_map = {
             "win64": "x64", "amd64": "x64", "x64": "x64",
             "win32": "x86", "x86": "x86",
@@ -143,7 +145,9 @@ def get_driver_path(module_dir, architecture):
 
     elif system == "darwin":
         # macOS: libs/macos/{arch}/lib/libmsodbcsql.18.dylib
-        arch_dir = architecture.lower()  # Use architecture directly for macOS (arm64, x86_64)
+        # Since `architecture` variable is set as `universal2` to compile SO as universal2
+        # Get architecture during runtime for macOS using platform.machine()
+        arch_dir = platform.machine().lower()
         driver_path = Path(module_dir) / "libs" / "macos" / arch_dir / "lib" / "libmsodbcsql.18.dylib"
 
     elif system == "linux":
