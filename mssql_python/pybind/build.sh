@@ -94,6 +94,12 @@ else
     fi
 fi
 
+# TODO: Linux-specific: use patchelf to set RPATH of the driver .so file
+# Currently added Driver SO files right now are already patched
+# patchelf --set-rpath '$ORIGIN' libmsodbcsql-18.5.so.1.1
+# This command sets the RPATH of the specified .so file to the directory containing the file (similar to Windows)
+# Needed since libodbcinst.so.2 is located in the same directory and needs to be resolved
+
 # macOS-specific: Check if the file is a universal binary
 if [[ "$OS" == "macOS" ]]; then
     SO_FILE=$(ls -1 *.so | head -n 1)
