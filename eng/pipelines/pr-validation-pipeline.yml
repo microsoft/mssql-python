@@ -171,7 +171,7 @@ jobs:
 - job: PytestOnLinux
   pool:
     vmImage: 'ubuntu-latest'
-  displayName: 'Test on Linux'
+
   strategy:
     matrix:
       Ubuntu:
@@ -180,6 +180,7 @@ jobs:
       Debian:
         dockerImage: 'debian:12'
         distroName: 'Debian'
+
   steps:
   - task: UsePythonVersion@0
     inputs:
