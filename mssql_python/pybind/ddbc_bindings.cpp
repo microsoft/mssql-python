@@ -612,82 +612,81 @@ DriverHandle LoadDriverOrThrowException() {
 
     fs::path driverPath;
 
-#ifdef _WIN32
-    fs::path dllDir = fs::path(moduleDir) / "libs" / archDir;
+    #ifdef _WIN32
+        fs::path dllDir = fs::path(moduleDir) / "libs" / archDir;
 
-    // Optionally load mssql-auth.dll if it exists
-    fs::path authDllPath = dllDir / "mssql-auth.dll";
-    if (fs::exists(authDllPath)) {
-        HMODULE hAuth = LoadLibraryW(std::wstring(authDllPath.native().begin(), authDllPath.native().end()).c_str());
-        if (hAuth) {
-            LOG("Authentication DLL loaded: {}", authDllPath.string());
-        } else {
-            LOG("Failed to load mssql-auth.dll: {}", GetLastErrorMessage());
-        }
-    } else {
-        LOG("Note: mssql-auth.dll not found. This is OK if Entra ID is not in use.");
-    }
-
-    driverPath = dllDir / "msodbcsql18.dll";
-
-#else // unix-like systems (macOS/Linux)
-
-    // Determine platform and architecture
-    #if defined(__APPLE__)
-        std::string platformName = "macos";
-        std::string driverFileName = "libmsodbcsql.18.dylib";
-    #else
-        // Assuming Linux for other cases
-        std::string platformName = "linux";
-        // Get OS Name
-        std::string osName = "ubuntu";  // Default to ubuntu
-        if (std::ifstream ifs("/etc/os-release")) {
-            std::string line;
-            while (std::getline(ifs, line)) {
-                if (line.find("ID=") == 0) {
-                    osName = line.substr(3); // Skip "ID="
-                    // Remove quotes if present
-                    osName.erase(std::remove(osName.begin(), osName.end(), '"'), osName.end());
-                    break;
-                }
+        // Optionally load mssql-auth.dll if it exists
+        fs::path authDllPath = dllDir / "mssql-auth.dll";
+        if (fs::exists(authDllPath)) {
+            HMODULE hAuth = LoadLibraryW(std::wstring(authDllPath.native().begin(), authDllPath.native().end()).c_str());
+            if (hAuth) {
+                LOG("Authentication DLL loaded: {}", authDllPath.string());
+            } else {
+                LOG("Failed to load mssql-auth.dll: {}", GetLastErrorMessage());
             }
-        }
-        std::string driverFileName = "libmsodbcsql-18.5.so.1.1";
-        if (osName == "ubuntu" || osName == "debian") {
-            osName = "debian_ubuntu";
-        } else if (osName == "rhel") {
-            osName = "rhel";
         } else {
-            LOG("Non-supported OS: {}", osName);
-            std::cout << "Non-supported OS: " << osName << std::endl;
-            ThrowStdException("Non-supported OS: " + osName);
+            LOG("Note: mssql-auth.dll not found. This is OK if Entra ID is not in use.");
+        }
+
+        driverPath = dllDir / "msodbcsql18.dll";
+
+    #else // unix-like systems (macOS/Linux)
+
+        // Determine platform and architecture
+        #if defined(__APPLE__)
+            std::string platformName = "macos";
+            std::string driverFileName = "libmsodbcsql.18.dylib";
+            std::string distroName = "";
+        #else
+            // For Linux Distributions
+            // Use the OS name provided by CMake at compile time
+            #ifdef LINUX_DISTRO
+                std::string distroName = LINUX_DISTRO;
+            #else
+                // This should never happen if CMakeLists.txt is set up correctly
+                LOG("LINUX_DISTRO not defined at compile time!");
+                std::cout << "LINUX_DISTRO not defined at compile time!" << std::endl;
+                ThrowStdException("LINUX_DISTRO not defined at compile time");
+            #endif
+
+            std::string platformName = "linux";
+            std::string driverFileName = "libmsodbcsql-18.5.so.1.1";
+            if (distroName == "ubuntu" || distroName == "debian") {
+                distroName = "debian_ubuntu";
+            } else if (distroName == "rhel") {
+                distroName = "rhel";
+            } else {
+                LOG("Non-supported OS: {}", distroName);
+                std::cout << "Non-supported OS: " << distroName << std::endl;
+                ThrowStdException("Non-supported OS: " + distroName);
+            }
+        #endif
+
+        LOG("Detected platform: {}", platformName);
+        std::cout << "Detected platform: " << platformName << std::endl;
+        std::cout << "Detected driver file name: " << driverFileName << std::endl;
+
+        // Determine architecture in a platform-agnostic way
+        std::string runtimeArch =
+        #if defined(__arm64__) || defined(__aarch64__)
+            "arm64";
+        #else
+            "x86_64";
+        #endif
+
+        LOG("Detected architecture: {}", runtimeArch);
+        std::cout<< "Detected architecture: " << runtimeArch << std::endl;
+        // Construct driver path
+        fs::path driverPath = fs::path(moduleDir) / "libs" / platformName / distroName / runtimeArch / "lib" / driverFileName;
+        std::cout << "Final Driver path: " << driverPath.string() << std::endl;
+        if (fs::exists(driverPath)) {
+            LOG("Driver found at: {}", driverPath.string());
+        } else {
+            // Log and raise an error if the primary path does not exist
+            LOG("Driver not found at: {}", driverPath.string());
+            ThrowStdException("Driver not found at: " + driverPath.string());
         }
     #endif
-
-    LOG("Detected platform: {}", platformName);
-    std::cout << "Detected platform: " << platformName << std::endl;
-    std::cout << "Detected driver file name: " << driverFileName << std::endl;
-
-    // Determine architecture in a platform-agnostic way
-    std::string runtimeArch =
-    #if defined(__arm64__) || defined(__aarch64__)
-        "arm64";
-    #else
-        "x86_64";
-    #endif
-    LOG("Detected architecture: {}", runtimeArch);
-    std::cout<< "Detected architecture: " << runtimeArch << std::endl;
-
-    fs::path primaryPath = fs::path(moduleDir) / "libs" / platformName / runtimeArch / "lib" / driverFileName;
-    std::cout << "Primary driver path: " << primaryPath.string() << std::endl;
-    if (fs::exists(primaryPath)) {
-        driverPath = primaryPath;
-        LOG("macOS driver found at: {}", driverPath.string());
-    } else {
-        // Log and raise an error if the primary path does not exist
-        LOG("macOS driver not found at: {}", primaryPath.string());
-    }
-#endif
 
     if (!fs::exists(driverPath)) {
         ThrowStdException("ODBC driver not found at: " + driverPath.string());
