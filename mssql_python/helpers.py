@@ -109,3 +109,82 @@ def add_driver_name_to_app_parameter(connection_string):
 
     # Join the parameters back into a connection string
     return ";".join(modified_parameters) + ";"
+
+
+def get_driver_path(module_dir, architecture):
+    """
+    Get the platform-specific ODBC driver path.
+
+    Args:
+        module_dir (str): Base module directory
+        architecture (str): Target architecture (x64, arm64, x86, etc.)
+
+    Returns:
+        str: Full path to the ODBC driver file
+
+    Raises:
+        RuntimeError: If driver not found or unsupported platform
+    """
+    import platform
+    import os
+    from pathlib import Path
+
+    system = platform.system().lower()
+
+    if system == "windows":
+        # Windows: libs/{arch}/msodbcsql18.dll
+        arch_map = {
+            "win64": "x64", "amd64": "x64", "x64": "x64",
+            "win32": "x86", "x86": "x86",
+            "arm64": "arm64"
+        }
+        arch_dir = arch_map.get(architecture.lower(), "x64")
+        driver_path = Path(module_dir) / "libs" / arch_dir / "msodbcsql18.dll"
+
+    elif system == "darwin":
+        # macOS: libs/macos/lib/libmsodbcsql.18.dylib (universal)
+        driver_path = Path(module_dir) / "libs" / "macos" / "lib" / "libmsodbcsql.18.dylib"
+
+    elif system == "linux":
+        # Linux: libs/linux/{distro}/{arch}/lib/libmsodbcsql-18.5.so.1.1
+
+        # Detect Linux distribution
+        distro_name = "debian_ubuntu"  # default
+        try:
+            if os.path.exists("/etc/os-release"):
+                with open("/etc/os-release", "r") as f:
+                    content = f.read()
+                for line in content.split('\n'):
+                    if line.startswith("ID="):
+                        distro_id = line.split("=", 1)[1].strip('"\'')
+                        if distro_id in ["ubuntu", "debian"]:
+                            distro_name = "debian_ubuntu"
+                        elif distro_id in ["rhel", "centos", "fedora"]:
+                            distro_name = "rhel"
+                        elif distro_id == "alpine":
+                            distro_name = "alpine"
+                        else:
+                            distro_name = distro_id  # use as-is
+                        break
+        except Exception:
+            pass  # use default
+
+        # Map architecture
+        arch_map = {
+            "x64": "x86_64", "amd64": "x86_64",
+            "arm64": "arm64", "aarch64": "arm64"
+        }
+        arch_dir = arch_map.get(architecture.lower(), "x86_64")
+
+        driver_path = Path(module_dir) / "libs" / "linux" / distro_name / arch_dir / "lib" / "libmsodbcsql-18.5.so.1.1"
+
+    else:
+        raise RuntimeError(f"Unsupported platform: {system}")
+
+    driver_path_str = str(driver_path)
+
+    # Check if file exists
+    if not driver_path.exists():
+        raise RuntimeError(f"ODBC driver not found at: {driver_path_str}")
+
+    return driver_path_str

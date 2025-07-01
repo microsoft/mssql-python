@@ -598,6 +598,22 @@ std::string GetLastErrorMessage() {
 #endif
 }
 
+// Function to call Python get_driver_path function
+std::string GetDriverPathFromPython(const std::string& moduleDir, const std::string& architecture) {
+    try {
+        py::module_ helpers = py::module_::import("mssql_python.helpers");
+        py::object get_driver_path = helpers.attr("get_driver_path");
+        py::str result = get_driver_path(moduleDir, architecture);
+        return std::string(result);
+    } catch (const py::error_already_set& e) {
+        LOG("Python error in get_driver_path: {}", e.what());
+        ThrowStdException("Failed to get driver path from Python: " + std::string(e.what()));
+    } catch (const std::exception& e) {
+        LOG("Error calling get_driver_path: {}", e.what());
+        ThrowStdException("Failed to get driver path: " + std::string(e.what()));
+    }
+}
+
 DriverHandle LoadDriverOrThrowException() {
     namespace fs = std::filesystem;
 
@@ -605,17 +621,22 @@ DriverHandle LoadDriverOrThrowException() {
     LOG("Module directory: {}", moduleDir);
 
     std::string archStr = ARCHITECTURE;
-    std::string archDir =
-        (archStr == "win64" || archStr == "amd64" || archStr == "x64") ? "x64" :
-        (archStr == "arm64") ? "arm64" :
-        "x86";
+    LOG("Architecture: {}", archStr);
 
-    fs::path driverPath;
+    // Use Python function to get the correct driver path for the platform
+    std::string driverPathStr = GetDriverPathFromPython(moduleDir, archStr);
+    fs::path driverPath(driverPathStr);
+    
+    LOG("Driver path determined: {}", driverPath.string());
 
     #ifdef _WIN32
+        // On Windows, optionally load mssql-auth.dll if it exists
+        std::string archDir =
+            (archStr == "win64" || archStr == "amd64" || archStr == "x64") ? "x64" :
+            (archStr == "arm64") ? "arm64" :
+            "x86";
+        
         fs::path dllDir = fs::path(moduleDir) / "libs" / archDir;
-
-        // Optionally load mssql-auth.dll if it exists
         fs::path authDllPath = dllDir / "mssql-auth.dll";
         if (fs::exists(authDllPath)) {
             HMODULE hAuth = LoadLibraryW(std::wstring(authDllPath.native().begin(), authDllPath.native().end()).c_str());
@@ -626,65 +647,6 @@ DriverHandle LoadDriverOrThrowException() {
             }
         } else {
             LOG("Note: mssql-auth.dll not found. This is OK if Entra ID is not in use.");
-        }
-
-        driverPath = dllDir / "msodbcsql18.dll";
-
-    #else // unix-like systems (macOS/Linux)
-
-        // Determine platform and architecture
-        #if defined(__APPLE__)
-            std::string platformName = "macos";
-            std::string driverFileName = "libmsodbcsql.18.dylib";
-            std::string distroName = "";
-        #else
-            // For Linux Distributions
-            // Use the OS name provided by CMake at compile time
-            #ifdef LINUX_DISTRO
-                std::string distroName = LINUX_DISTRO;
-            #else
-                // This should never happen if CMakeLists.txt is set up correctly
-                LOG("LINUX_DISTRO not defined at compile time!");
-                std::cout << "LINUX_DISTRO not defined at compile time!" << std::endl;
-                ThrowStdException("LINUX_DISTRO not defined at compile time");
-            #endif
-
-            std::string platformName = "linux";
-            std::string driverFileName = "libmsodbcsql-18.5.so.1.1";
-            if (distroName == "ubuntu" || distroName == "debian") {
-                distroName = "debian_ubuntu";
-            } else if (distroName == "rhel") {
-                distroName = "rhel";
-            } else {
-                LOG("Non-supported OS: {}", distroName);
-                std::cout << "Non-supported OS: " << distroName << std::endl;
-                ThrowStdException("Non-supported OS: " + distroName);
-            }
-        #endif
-
-        LOG("Detected platform: {}", platformName);
-        std::cout << "Detected platform: " << platformName << std::endl;
-        std::cout << "Detected driver file name: " << driverFileName << std::endl;
-
-        // Determine architecture in a platform-agnostic way
-        std::string runtimeArch =
-        #if defined(__arm64__) || defined(__aarch64__)
-            "arm64";
-        #else
-            "x86_64";
-        #endif
-
-        LOG("Detected architecture: {}", runtimeArch);
-        std::cout<< "Detected architecture: " << runtimeArch << std::endl;
-        // Construct driver path
-        fs::path driverPath = fs::path(moduleDir) / "libs" / platformName / distroName / runtimeArch / "lib" / driverFileName;
-        std::cout << "Final Driver path: " << driverPath.string() << std::endl;
-        if (fs::exists(driverPath)) {
-            LOG("Driver found at: {}", driverPath.string());
-        } else {
-            // Log and raise an error if the primary path does not exist
-            LOG("Driver not found at: {}", driverPath.string());
-            ThrowStdException("Driver not found at: " + driverPath.string());
         }
     #endif
 
@@ -2089,6 +2051,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     
     // Expose the C++ functions to Python
     m.def("ThrowStdException", &ThrowStdException);
+    m.def("get_driver_path", &GetDriverPathFromPython, "Get platform-specific ODBC driver path");
 
     // Define parameter info class
     py::class_<ParamInfo>(m, "ParamInfo")
