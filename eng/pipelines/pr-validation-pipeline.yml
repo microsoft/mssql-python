@@ -515,7 +515,8 @@ jobs:
       # Build pybind bindings in the container
       docker exec test-container-rhel9 bash -c "
         source myvenv/bin/activate
-        
+        echo "checking Python.h location"
+        ls -la /usr/include/python3.9/Python.h
         # Set compiler environment variables
         export CC=/usr/bin/gcc
         export CXX=/usr/bin/g++
