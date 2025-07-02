@@ -520,9 +520,9 @@ jobs:
         export CC=/usr/bin/gcc
         export CXX=/usr/bin/g++
         
-        # # Set Python development paths for Python 3.9
-        # export PYTHON_INCLUDE_DIR=/opt/venv/include/python3.9
-        # export PYTHON_LIBRARY=/opt/venv/lib/libpython3.9.so
+        # Set Python development paths for Python 3.9
+        export PYTHON_INCLUDE_DIR=/opt/venv/include/python3.9
+        export PYTHON_LIBRARY=/opt/venv/lib/libpython3.9.so
 
         cd mssql_python/pybind
         chmod +x build.sh
