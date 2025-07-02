@@ -439,6 +439,7 @@ jobs:
         # Install Python 3.9 (available in RHEL 9 UBI) and development tools
         dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 glibc-devel kernel-headers
         dnf install -y gcc gcc-c++ make binutils
+        dnf install -y cmake
         # If that doesn't work, try installing from different repositories
         if ! which gcc; then
           echo 'Trying alternative gcc installation...'
