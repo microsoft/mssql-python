@@ -567,7 +567,7 @@ std::string GetModuleDirectory() {
         std::string dir = module_file.substr(0, pos);
         return dir;
     }
-    LOG("DEBUG: Could not extract directory from path: {}", module_file);
+    std::cerr << "DEBUG: Could not extract directory from path: " << module_file << std::endl;
     return module_file;
 #endif
 }
@@ -579,12 +579,7 @@ DriverHandle LoadDriverLibrary(const std::string& driverPath) {
 #ifdef _WIN32
     // Windows: Convert string to wide string for LoadLibraryW
     std::wstring widePath(driverPath.begin(), driverPath.end());
-    HMODULE handle = LoadLibraryW(widePath.c_str());
-    if (!handle) {
-        LOG("Failed to load library: {}. Error: {}", driverPath, GetLastErrorMessage());
-        ThrowStdException("Failed to load library: " + driverPath);
-    }
-    return handle;
+    return LoadLibraryW(widePath.c_str());
 #else
     // macOS/Unix: Use dlopen
     void* handle = dlopen(driverPath.c_str(), RTLD_LAZY);
