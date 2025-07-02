@@ -437,8 +437,8 @@ jobs:
         subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms || dnf config-manager --set-enabled ubi-9-codeready-builder
         
         # Install Python 3.9 (available in RHEL 9 UBI) and development tools
-        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 gcc gcc-c++ make glibc-devel kernel-headers binutils
-        
+        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 glibc-devel kernel-headers
+        dnf install -y gcc gcc-c++ make binutils
         # If that doesn't work, try installing from different repositories
         if ! which gcc; then
           echo 'Trying alternative gcc installation...'
