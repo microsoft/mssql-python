@@ -523,9 +523,9 @@ jobs:
         export CXX=/usr/bin/g++
         
         # Set Python development paths explicitly
-        export PYTHON_INCLUDE_DIR=/usr/include/python3.13
-        export PYTHON_LIBRARY=/usr/lib64/libpython3.13.so
-        
+        export PYTHON_INCLUDE_DIR=/opt/venv/include/python3.13
+        export PYTHON_LIBRARY=/opt/venv/lib/libpython3.13.so
+
         cd mssql_python/pybind
         chmod +x build.sh
         ./build.sh
