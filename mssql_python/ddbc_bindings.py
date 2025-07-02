@@ -15,7 +15,8 @@ def normalize_architecture(platform_name, architecture):
         str: Normalized architecture name
         
     Raises:
-        ValueError: If architecture is not supported for the given platform
+        ImportError: If architecture is not supported for the given platform
+        OSError: If platform is not supported
     """
     arch_lower = architecture.lower()
     
@@ -29,7 +30,7 @@ def normalize_architecture(platform_name, architecture):
             return arch_map[arch_lower]
         else:
             supported = list(set(arch_map.keys()))
-            raise ValueError(f"Unsupported architecture '{architecture}' for platform '{platform_name}'; expected one of {supported}")
+            raise ImportError(f"Unsupported architecture '{architecture}' for platform '{platform_name}'; expected one of {supported}")
     
     elif platform_name == "darwin":
         # For macOS, return runtime architecture
@@ -44,11 +45,11 @@ def normalize_architecture(platform_name, architecture):
             return arch_map[arch_lower]
         else:
             supported = list(set(arch_map.keys()))
-            raise ValueError(f"Unsupported architecture '{architecture}' for platform '{platform_name}'; expected one of {supported}")
+            raise ImportError(f"Unsupported architecture '{architecture}' for platform '{platform_name}'; expected one of {supported}")
     
     else:
         supported_platforms = ["windows", "darwin", "linux"]
-        raise ValueError(f"Unsupported platform '{platform_name}'; expected one of {supported_platforms}")
+        raise OSError(f"Unsupported platform '{platform_name}'; expected one of {supported_platforms}")
 
 # Get current Python version and architecture
 python_version = f"cp{sys.version_info.major}{sys.version_info.minor}"
