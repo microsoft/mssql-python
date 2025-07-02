@@ -55,14 +55,12 @@ jobs:
 
       # Python 3.13
       py313_x64:
-        # TODO: Remove this once Python 3.13.5 is available in ADO
-        pythonVersion: '3.13.5'
+        pythonVersion: '3.13'
         shortPyVer: '313'
         architecture: 'x64'
         targetArch: 'x64'
       py313_arm64:
-        # TODO: Remove this once Python 3.13.5 is available in ADO
-        pythonVersion: '3.13.5'
+        pythonVersion: '3.13'
         shortPyVer: '313'
         architecture: 'x64'
         targetArch: 'arm64'
@@ -82,6 +80,22 @@ jobs:
         pip install -r requirements.txt
         pip install cmake pybind11
       displayName: 'Install dependencies'
+
+      # Start LocalDB instance
+    - powershell: |
+        sqllocaldb create MSSQLLocalDB
+        sqllocaldb start MSSQLLocalDB
+      displayName: 'Start LocalDB instance'
+
+    # Create database and user
+    - powershell: |
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+      displayName: 'Setup database and user'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
 
     - task: DownloadPipelineArtifact@2
       condition: eq(variables['targetArch'], 'arm64')
@@ -115,8 +129,15 @@ jobs:
         call keep_single_arch.bat $(targetArch)
 
         cd ..\..
-      displayName: 'Build PYD for $(targetArch)'        
-      
+      displayName: 'Build PYD for $(targetArch)'
+
+    # Run pytests before packaging
+    - script: |
+        python -m pytest -v
+      displayName: 'Run pytests'
+      env:
+      DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
     # Copy the built .pyd file to staging folder for artifacts
     - task: CopyFiles@2
       inputs:
@@ -193,6 +214,25 @@ jobs:
         shortPyVer: '313'
         # Always use universal2 for macOS
         targetArch: 'universal2'
+      
+      # Python 3.12 (universal2 for both arm64 and x86_64)
+      py312_universal2:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        targetArch: 'universal2'
+
+      # Python 3.11 (universal2 for both arm64 and x86_64)
+      py311_universal2:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'universal2'
+      
+      # Python 3.10 (universal2 for both arm64 and x86_64)
+      py310_universal2:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        targetArch: 'universal2'
+
   steps:
     # Use correct Python version and architecture for the current job
     - task: UsePythonVersion@0
@@ -231,7 +271,53 @@ jobs:
         Contents: '*.so'
         TargetFolder: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
       displayName: 'Place .so file into artifacts directory'
+
+    - script: |
+        brew update
+        brew install docker colima
+
+        # Start Colima with extra resources
+        colima start --cpu 4 --memory 8 --disk 50
+
+        # Optional: set Docker context (usually automatic)
+        docker context use colima >/dev/null || true
+
+        # Confirm Docker is operational
+        docker version
+        docker ps
+      displayName: 'Install and start Colima-based Docker'
+
+    - script: |
+        # Pull and run SQL Server container
+        docker pull mcr.microsoft.com/mssql/server:2022-latest
+        docker run \
+          --name sqlserver \
+          -e ACCEPT_EULA=Y \
+          -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+          -p 1433:1433 \
+          -d mcr.microsoft.com/mssql/server:2022-latest
+
+        # Starting SQL Server container…
+        for i in {1..30}; do
+          docker exec sqlserver \
+            /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost \
+            -U SA \
+            -P "$DB_PASSWORD" \
+            -C -Q "SELECT 1" && break
+          sleep 2
+        done
+      displayName: 'Pull & start SQL Server (Docker)'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
     
+    # Run Pytest to ensure the bindings work correctly
+    - script: |
+        python -m pytest -v
+      displayName: 'Run Pytest to validate bindings'
+      env:
+        DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
     # Build wheel package for universal2
     - script: |
         python -m pip install --upgrade pip
