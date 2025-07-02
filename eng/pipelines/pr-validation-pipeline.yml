@@ -428,19 +428,44 @@ jobs:
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
+    - script: |
       # Install dependencies in the RHEL 9 container
       docker exec test-container-rhel9 bash -c "
         # Enable EPEL for additional packages
         dnf update -y
         dnf install -y epel-release
-        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 gcc gcc-c++ make
+        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 gcc gcc-c++ make glibc-devel kernel-headers
         # Try to install pybind11-devel, fallback if not available
         dnf install -y pybind11-devel || echo 'pybind11-devel not available via dnf'
-        # Install cmake
-        dnf install -y cmake
       "
     displayName: 'Install basic dependencies in RHEL 9 container'
+
+  - script: |
+      # Verify compiler installation and set environment for RHEL 9
+      docker exec test-container-rhel9 bash -c "
+        # Verify compilers are available
+        which gcc || echo 'GCC not found'
+        which g++ || echo 'G++ not found'
+        gcc --version || echo 'GCC version check failed'
+        g++ --version || echo 'G++ version check failed'
+        
+        # Set compiler environment variables
+        export CC=/usr/bin/gcc
+        export CXX=/usr/bin/g++
+        echo 'CC set to:' \$CC
+        echo 'CXX set to:' \$CXX
+        
+        # Create a wrapper script to preserve environment
+        cat > /workspace/setup_env.sh << 'EOF'
+        #!/bin/bash
+        export CC=/usr/bin/gcc
+        export CXX=/usr/bin/g++
+        export PATH=/usr/bin:\$PATH
+        exec \"\$@\"
+        EOF
+        chmod +x /workspace/setup_env.sh
+      "
+    displayName: 'Verify and configure compilers in RHEL 9 container'
 
   - script: |
       # Install ODBC driver in the RHEL 9 container
@@ -477,67 +502,13 @@ jobs:
       # Build pybind bindings in the container
       docker exec test-container-rhel9 bash -c "
         source /opt/venv/bin/activate
+        
+        # Set compiler environment variables
+        export CC=/usr/bin/gcc
+        export CXX=/usr/bin/g++
+        
         cd mssql_python/pybind
         chmod +x build.sh
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 container'
-
-  - script: |
-      # Uninstall ODBC Driver before running tests
-      docker exec test-container-rhel9 bash -c "
-        dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
-        rm -f /usr/bin/sqlcmd
-        rm -f /usr/bin/bcp
-        rm -rf /opt/microsoft/msodbcsql
-        rm -f /lib64/libodbcinst.so.2
-        odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
-      "
-    displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 container'
-
-  - script: |
-      # Run tests in the container
-      # Get SQL Server container IP
-      SQLSERVER_IP=$(docker inspect sqlserver-rhel9 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-      echo "SQL Server IP: $SQLSERVER_IP"
-      
-      docker exec \
-        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
-        test-container-rhel9 bash -c "
-        source /opt/venv/bin/activate
-        echo 'Build successful, running tests now on RHEL 9'
-        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-        python -m pytest -v --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
-      "
-    displayName: 'Run pytest with coverage in RHEL 9 container'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: |
-      # Copy test results from container to host
-      docker cp test-container-rhel9:/workspace/test-results-rhel9.xml $(Build.SourcesDirectory)/
-      docker cp test-container-rhel9:/workspace/coverage-rhel9.xml $(Build.SourcesDirectory)/
-    displayName: 'Copy test results from RHEL 9 container'
-    condition: always()
-
-  - script: |
-      # Clean up containers
-      docker stop test-container-rhel9 || true
-      docker rm test-container-rhel9 || true
-      docker stop sqlserver-rhel9 || true
-      docker rm sqlserver-rhel9 || true
-    displayName: 'Clean up RHEL 9 containers'
-    condition: always()
-
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results-rhel9.xml'
-      testRunTitle: 'Publish pytest results on RHEL 9'
-
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage-rhel9.xml'
-    displayName: 'Publish code coverage results for RHEL 9'
