@@ -368,7 +368,7 @@ jobs:
       summaryFileLocation: 'coverage-$(distroName).xml'
     displayName: 'Publish code coverage results for $(distroName)'
 
-- job: PytestOnLinux RHEL9
+- job: PytestOnLinux_RHEL9
   pool:
     vmImage: 'ubuntu-latest'
 
