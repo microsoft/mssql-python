@@ -499,30 +499,26 @@ jobs:
       # Install Python dependencies in the container using virtual environment
       docker exec test-container-rhel9 bash -c "
         # Create a virtual environment with Python 3.9
-        python3 -m venv /opt/venv
-        source /opt/venv/bin/activate
-        
+        python3 -m venv myvenv
+        source myvenv/bin/activate
+
         # Install dependencies in the virtual environment
         python -m pip install --upgrade pip
         python -m pip install -r requirements.txt
         
         # Make the virtual environment globally available
-        echo 'source /opt/venv/bin/activate' >> ~/.bashrc
+        echo 'source myvenv/bin/activate' >> ~/.bashrc
       "
     displayName: 'Install Python dependencies in RHEL 9 container'
 
   - script: |
       # Build pybind bindings in the container
       docker exec test-container-rhel9 bash -c "
-        source /opt/venv/bin/activate
+        source myvenv/bin/activate
         
         # Set compiler environment variables
         export CC=/usr/bin/gcc
         export CXX=/usr/bin/g++
-        
-        # Set Python development paths for Python 3.9
-        export PYTHON_INCLUDE_DIR=/opt/venv/include/python3.9
-        export PYTHON_LIBRARY=/opt/venv/lib/libpython3.9.so
 
         cd mssql_python/pybind
         chmod +x build.sh
