@@ -237,9 +237,6 @@ class BCPClient:
                         logger.info("Sending row %s to server", row_idx+1)
                         self.wrapper.send_row()
 
-                    # Call finish to complete the batch
-                    logger.info("Finishing BCP batch")
-                    self.wrapper.finish()
                 else:
                     # Original single-row logic
                     logger.info(
@@ -266,9 +263,9 @@ class BCPClient:
                     logger.info("Sending row to server")
                     self.wrapper.send_row()
 
-                    # Call finish to complete the batch
-                    logger.info("Finishing BCP batch")
-                    self.wrapper.finish()
+                # Call finish to complete the batch
+                logger.info("Finishing BCP batch")
+                self.wrapper.finish()
             else:
                 # For file-based BCP, execute and finish
                 logger.info("Executing BCP operation via wrapper.exec_bcp().")

@@ -248,7 +248,8 @@ SQLRETURN BCPWrapper::define_column_format(int file_col_idx,
                                            int terminator_length,
                                            int server_col_idx) {
     if (!_bcp_initialized || _bcp_finished) {
-         throw std::runtime_error("BCPWrapper: define_column_format called in invalid state.");
+        LOG("BCPWrapper: _bcp_initialized: " + std::to_string(_bcp_initialized) + ", _bcp_finished: " + std::to_string(_bcp_finished));
+        throw std::runtime_error("BCPWrapper: define_column_format called in invalid state.");
     }
 
     const BYTE* pTerminator = nullptr;
@@ -357,5 +358,238 @@ SQLRETURN BCPWrapper::close() {
         LOG("BCPWrapper: Active BCP operation found in close(), calling finish().");
         ret = finish();
     }
+    return ret;
+}
+
+// Helper to allocate and copy data for different data types
+template <typename T>
+T* AllocateAndCopyData(const py::object& data, std::vector<std::shared_ptr<void>>& buffers) {
+    // Create a shared pointer to hold our value
+    auto buffer = std::shared_ptr<T>(new T());
+    
+    try {
+        // For numeric types, handle possible Python type mismatches
+        if constexpr (std::is_same<T, float>::value || std::is_same<T, double>::value) {
+            // For float/double, accept integers or floats
+            if (py::isinstance<py::int_>(data)) {
+                *buffer = static_cast<T>(data.cast<long long>());
+            } else if (py::isinstance<py::float_>(data)) {
+                *buffer = data.cast<T>();
+            } else {
+                throw std::runtime_error("Cannot convert Python type to float/double");
+            }
+        } 
+        else if constexpr (std::is_integral<T>::value) {
+            // For integer types, accept Python integers
+            if (py::isinstance<py::int_>(data)) {
+                *buffer = static_cast<T>(data.cast<long long>());
+            } else {
+                throw std::runtime_error("Cannot convert Python type to integral type");
+            }
+        } 
+        else {
+            // Direct cast for other types
+            *buffer = data.cast<T>();
+        }
+    } 
+    catch (const py::cast_error& e) {
+        std::string msg = "Cast error: ";
+        msg += e.what();
+        msg += " (Python type: ";
+        msg += py::str(py::type::of(data)).cast<std::string>();
+        msg += ")";
+        throw std::runtime_error(msg);
+    }
+    
+    // Store the shared_ptr in the buffers vector to keep track of it
+    buffers.push_back(buffer);
+    
+    // Return the raw pointer for use with C APIs like bcp_bind
+    return buffer.get();
+}
+
+SQLRETURN BCPWrapper::bind_column(const py::object& data, 
+                                  int indicator_length,
+                                  long long data_length,
+                                  const std::optional<py::bytes>& terminator,
+                                  int terminator_length,
+                                  int data_type,
+                                  int server_col_idx) {
+    if (!_bcp_initialized || _bcp_finished) {
+        LOG("BCPWrapper: _bcp_initialized: " + std::to_string(_bcp_initialized) + ", _bcp_finished: " + std::to_string(_bcp_finished));
+        // LOG("BCPWrapper Warning: bind_column called in invalid state.");
+        throw std::runtime_error("BCPWrapper: _bcp_initialized: " + std::to_string(_bcp_initialized) + ", _bcp_finished: " + std::to_string(_bcp_finished)
+                                 + " - bind_column called in invalid state.");
+    }
+    
+    LPCBYTE pData = nullptr;
+    LPCBYTE pTerm = nullptr;
+    std::string terminator_str_holder;
+    
+    // Process terminator bytes if provided
+    if (terminator) {
+        terminator_str_holder = terminator->cast<std::string>();
+        if (!terminator_str_holder.empty()) {
+            pTerm = reinterpret_cast<const LPCBYTE>(terminator_str_holder.data());
+        }
+    }
+    
+    // Handle different data types and convert Python objects to C++ types
+    try {
+        // Note: The allocated memory will be freed in the destructor
+        if (py::isinstance<py::str>(data)) {
+            // Handle string data - convert to either narrow or wide string based on data_type
+            if (data_type == 239 /* SQLNCHAR */ || 
+                data_type == 231 /* SQLNVARCHAR */ || 
+                data_type == 99  /* SQLNTEXT */) {
+                // For wide string types
+                std::wstring wstrValue = data.cast<std::wstring>();
+                auto buffer = std::shared_ptr<wchar_t[]>(new wchar_t[wstrValue.length() + 1]);
+                wcscpy_s(buffer.get(), wstrValue.length() + 1, wstrValue.c_str());
+                _data_buffers.push_back(buffer);
+                pData = reinterpret_cast<LPCBYTE>(buffer.get());
+            } else {
+                // For narrow string types (SQLCHAR, SQLVARCHAR, SQLTEXT, etc.)
+                std::string strValue = data.cast<std::string>();
+                auto buffer = std::shared_ptr<char[]>(new char[strValue.length() + 1]);
+                strcpy_s(buffer.get(), strValue.length() + 1, strValue.c_str());
+                _data_buffers.push_back(buffer);
+                pData = reinterpret_cast<LPCBYTE>(buffer.get());
+            }
+        } else if (py::isinstance<py::bytes>(data) || py::isinstance<py::bytearray>(data)) {
+            // Handle binary data
+            std::string binValue = data.cast<std::string>();
+            auto buffer = std::shared_ptr<unsigned char[]>(new unsigned char[binValue.length()]);
+            memcpy(buffer.get(), binValue.data(), binValue.length());
+            _data_buffers.push_back(buffer);
+            pData = reinterpret_cast<LPCBYTE>(buffer.get());
+        } else if (py::isinstance<py::int_>(data)) {
+            // Handle integer types based on data_type
+            switch (data_type) {
+                case 48:  // SQLINT1
+                case 50:  // SQLBIT
+                case 104: // SQLBITN
+                    pData = reinterpret_cast<LPCBYTE>(AllocateAndCopyData<char>(data, _data_buffers));
+                    break;
+                case 52:  // SQLINT2
+                    pData = reinterpret_cast<LPCBYTE>(AllocateAndCopyData<short>(data, _data_buffers));
+                    break;
+                case 56:  // SQLINT4
+                    pData = reinterpret_cast<LPCBYTE>(AllocateAndCopyData<int>(data, _data_buffers));
+                    break;
+                case 127: // SQLINT8
+                    pData = reinterpret_cast<LPCBYTE>(AllocateAndCopyData<long long>(data, _data_buffers));
+                    break;
+                case 38:  // SQLINTN - need to determine size from indicator_length
+                    if (indicator_length == 1) {
+                        pData = reinterpret_cast<LPCBYTE>(AllocateAndCopyData<char>(data, _data_buffers));
+                    } else if (indicator_length == 2) {
+                        pData = reinterpret_cast<LPCBYTE>(AllocateAndCopyData<short>(data, _data_buffers));
+                    } else if (indicator_length == 4) {
+                        pData = reinterpret_cast<LPCBYTE>(AllocateAndCopyData<int>(data, _data_buffers));
+                    } else if (indicator_length == 8) {
+                        pData = reinterpret_cast<LPCBYTE>(AllocateAndCopyData<long long>(data, _data_buffers));
+                    } else {
+                        // Default to int
+                        pData = reinterpret_cast<LPCBYTE>(AllocateAndCopyData<int>(data, _data_buffers));
+                    }
+                    break;
+                default:
+                    pData = reinterpret_cast<LPCBYTE>(AllocateAndCopyData<int>(data, _data_buffers));
+            }
+        } else if (py::isinstance<py::float_>(data) || py::isinstance<py::int_>(data)) {
+            // Handle float types - accept both float and int Python types
+            switch (data_type) {
+                case 59:  // SQLFLT4
+                    pData = reinterpret_cast<LPCBYTE>(AllocateAndCopyData<float>(data, _data_buffers));
+                    break;
+                case 62:  // SQLFLT8
+                case 109: // SQLFLTN
+                default:
+                    pData = reinterpret_cast<LPCBYTE>(AllocateAndCopyData<double>(data, _data_buffers));
+            }
+        } else if (py::isinstance<py::none>(data)) {
+            // Handle NULL values
+            if (indicator_length > 0) {
+                // Create indicator buffer with SQL_NULL_DATA
+                auto indicator_buffer = std::shared_ptr<SQLLEN>(new SQLLEN(-1)); // SQL_NULL_DATA is -1
+                _data_buffers.push_back(indicator_buffer);
+                pData = reinterpret_cast<LPCBYTE>(indicator_buffer.get());
+            } else {
+                pData = nullptr;
+            }
+        } else {
+            // Default: try to convert to string
+            LOG("BCPWrapper Warning: Unknown data type, attempting to convert to string");
+            std::string strValue = py::str(data).cast<std::string>();
+            auto buffer = std::shared_ptr<char[]>(new char[strValue.length() + 1]);
+            strcpy_s(buffer.get(), strValue.length() + 1, strValue.c_str());
+            _data_buffers.push_back(buffer);
+            pData = reinterpret_cast<LPCBYTE>(buffer.get());
+        }
+    } catch (const std::exception& e) {
+        std::string error_msg = "BCPWrapper Error: Failed to convert Python data for binding: ";
+        error_msg += e.what();
+        LOG(error_msg);
+        throw std::runtime_error(error_msg);
+    }
+
+    // Call bcp_bind with the prepared data
+    LOG("BCPWrapper: Calling bcp_bind for column " + std::to_string(server_col_idx) 
+        + ", data_type " + std::to_string(data_type)
+        + ", indicator_length " + std::to_string(indicator_length)
+        + ", data_length " + std::to_string(data_length));
+              
+    SQLRETURN ret = BCPBind_ptr(_hdbc, 
+                      pData, 
+                      indicator_length, 
+                      static_cast<DBINT>(data_length),
+                      pTerm, 
+                      terminator_length, 
+                      data_type, 
+                      server_col_idx);
+                          
+    if (ret == FAIL) {
+        std::string msg = "BCPWrapper Error: bcp_bind failed for column " + std::to_string(server_col_idx);
+        ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, _hdbc);
+        msg += " ODBC Diag: SQLState: " + py::cast(diag.sqlState).cast<std::string>() + ", Message: " + py::cast(diag.ddbcErrorMsg).cast<std::string>();
+        LOG(msg);
+        throw std::runtime_error(msg);
+    }
+    
+    LOG("BCPWrapper: bcp_bind successful for column " + std::to_string(server_col_idx));
+    
+    return ret;
+}
+
+SQLRETURN BCPWrapper::send_row() {
+    if (!_bcp_initialized || _bcp_finished) {
+        LOG("BCPWrapper Warning: send_row called in invalid state.");
+        throw std::runtime_error("BCPWrapper: send_row called in invalid state.");
+    }
+    
+    LOG("BCPWrapper: Calling bcp_sendrow");
+    SQLRETURN ret = BCPSendRow_ptr(_hdbc);
+
+    LOG("BCPWrapper: bcp_sendrow returned " + std::to_string(ret));
+
+    if (ret == SQL_NO_DATA) {
+        LOG("BCPWrapper: bcp_sendrow returned SQL_NO_DATA, indicating no more rows to send.");
+        return SQL_NO_DATA; // No more rows to send
+    }
+    if (ret == SQL_SUCCESS_WITH_INFO) {
+        LOG("BCPWrapper: bcp_sendrow returned SQL_SUCCESS_WITH_INFO, indicating a warning occurred.");
+        // Handle warnings if needed, but still consider it a success
+    }
+    
+    if (ret == FAIL) {
+        std::string msg = "BCPWrapper Error: bcp_sendrow failed";
+        ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, _hdbc);
+        msg += " ODBC Diag: SQLState: " + py::cast(diag.sqlState).cast<std::string>() + ", Message: " + py::cast(diag.ddbcErrorMsg).cast<std::string>();
+        LOG(msg);
+        throw std::runtime_error(msg);
+    }
+    LOG("BCPWrapper: bcp_sendrow successful.");
+    
     return ret;
 }

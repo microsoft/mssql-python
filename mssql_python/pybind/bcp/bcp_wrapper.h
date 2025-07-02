@@ -61,6 +61,20 @@ public:
     // Executes the BCP operation, transferring data.
     // Maps to ODBC bcp_exec.
     SQLRETURN exec_bcp();
+    
+    // Bind column data for in-memory BCP
+    // Maps to ODBC bcp_bind.
+    SQLRETURN bind_column(const py::object& data,        // Python data object (will be converted to C++ data)
+                          int indicator_length,          // Length of indicator
+                          long long data_length,         // Length of data
+                          const std::optional<py::bytes>& terminator, // Optional terminator
+                          int terminator_length,         // Length of terminator
+                          int data_type,                 // SQL data type
+                          int server_col_idx);           // Server column index (1-based)
+                          
+    // Send the current row to the server
+    // Maps to ODBC bcp_sendrow.
+    SQLRETURN send_row();
 
     // Completes the BCP operation and releases associated resources.
     // Maps to ODBC bcp_done.
@@ -74,4 +88,7 @@ private:
     SQLHDBC _hdbc;
     bool _bcp_initialized; // Flag to track if bcp_init has been called successfully
     bool _bcp_finished;    // Flag to track if bcp_finish (or bcp_done) has been called
+    
+    // Vector of allocated pointers that need to be freed in destructor
+    std::vector<std::shared_ptr<void>> _data_buffers;
 };
