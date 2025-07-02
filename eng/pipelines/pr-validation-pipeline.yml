@@ -539,7 +539,7 @@ jobs:
         -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
         -e DB_PASSWORD="$(DB_PASSWORD)" \
         test-container-rhel9 bash -c "
-        source /opt/venv/bin/activate
+        source myvenv/bin/activate
         echo 'Build successful, running tests now on RHEL 9'
         echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
         python -m pytest -v --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
