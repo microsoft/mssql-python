@@ -676,11 +676,6 @@ DriverHandle LoadDriverOrThrowException() {
         LOG("Failed to load driver: {}", GetLastErrorMessage());
         ThrowStdException("Failed to load ODBC driver. Please check installation.");
     }
-    DriverHandle handle = LoadDriverLibrary(driverPath.string());
-    if (!handle) {
-        LOG("Failed to load driver: {}", GetLastErrorMessage());
-        ThrowStdException("Failed to load ODBC driver. Please check installation.");
-    }
     LOG("Driver library successfully loaded.");
 
     // Load function pointers using helper
