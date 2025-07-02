@@ -435,8 +435,22 @@ jobs:
         dnf update -y
         dnf install -y epel-release
         dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 gcc gcc-c++ make glibc-devel kernel-headers
-        # Try to install pybind11-devel, fallback if not available
-        dnf install -y pybind11-devel || echo 'pybind11-devel not available via dnf'
+        # Install gcc and g++ individually since Development Tools group is not available in UBI
+        # First try to install gcc and g++ from available repositories
+        dnf install -y gcc gcc-c++ make binutils
+
+        # If that doesn't work, try installing from different repositories
+        if ! which gcc; then
+          echo 'Trying alternative gcc installation...'
+          dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
+        fi
+
+        # Verify installation
+        ls -la /usr/bin/gcc* || echo 'No gcc found in /usr/bin'
+        ls -la /usr/bin/g++* || echo 'No g++ found in /usr/bin'
+        which gcc && which g++
+        gcc --version
+        g++ --version
       "
     displayName: 'Install basic dependencies in RHEL 9 container'
 
