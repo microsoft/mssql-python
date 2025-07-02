@@ -12,6 +12,8 @@ if (MSVC)
 endif()
 
 # Detect platform
+# TODO: Have a separate module/function for platform/distribution detection,
+# Maybe a common python/cpp API
 if(WIN32)
     set(PLATFORM_NAME "windows")
 elseif(APPLE)
