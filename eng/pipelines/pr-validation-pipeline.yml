@@ -685,11 +685,11 @@ jobs:
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
 
-  # Run ldd on the driver file to check dependencies
   - script: |
       docker exec test-container-$(distroName) bash -c "
         ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-18.5.so.1.1
       "
+    displayName: 'Check ODBC Driver dependencies in $(distroName) container'
 
   - script: |
       # Run tests in the container
