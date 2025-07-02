@@ -437,6 +437,8 @@ jobs:
         dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 gcc gcc-c++ make
         # Try to install pybind11-devel, fallback if not available
         dnf install -y pybind11-devel || echo 'pybind11-devel not available via dnf'
+        # Install cmake
+        dnf install -y cmake
       "
     displayName: 'Install basic dependencies in RHEL 9 container'
 
