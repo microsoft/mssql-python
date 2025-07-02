@@ -428,7 +428,7 @@ jobs:
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
-    - script: |
+  - script: |
       # Install dependencies in the RHEL 9 container
       docker exec test-container-rhel9 bash -c "
         # Enable EPEL for additional packages
