@@ -377,12 +377,6 @@ jobs:
     distroName: 'RHEL9'
 
   steps:
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: '3.13'
-      addToPath: true
-    displayName: 'Use Python 3.13 on RHEL 9'
-
   - script: |
       # Create a Docker container for testing
       docker run -d --name test-container-rhel9 \
@@ -515,8 +509,7 @@ jobs:
       # Build pybind bindings in the container
       docker exec test-container-rhel9 bash -c "
         source myvenv/bin/activate
-        echo "checking Python.h location"
-        ls -la /usr/include/python3.9/Python.h
+        ls /usr/include/python3.9
         # Set compiler environment variables
         export CC=/usr/bin/gcc
         export CXX=/usr/bin/g++
