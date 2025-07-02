@@ -437,7 +437,7 @@ jobs:
         dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 gcc gcc-c++ make glibc-devel kernel-headers
         # Install gcc and g++ individually since Development Tools group is not available in UBI
         # First try to install gcc and g++ from available repositories
-        dnf install -y gcc gcc-c++ make binutils
+        dnf install -y cmake binutils
 
         # If that doesn't work, try installing from different repositories
         if ! which gcc; then
