@@ -166,7 +166,7 @@ jobs:
       summaryFileLocation: 'coverage.xml'
     displayName: 'Publish code coverage results'
 
-- job: PytestOnDebian
+- job: PytestOnLinux
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -368,7 +368,7 @@ jobs:
       summaryFileLocation: 'coverage-$(distroName).xml'
     displayName: 'Publish code coverage results for $(distroName)'
 
-- job: PytestOnRHEL9
+- job: PytestOnLinux RHEL9
   pool:
     vmImage: 'ubuntu-latest'
 
