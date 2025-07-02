@@ -13,6 +13,9 @@ def normalize_architecture(platform_name, architecture):
         
     Returns:
         str: Normalized architecture name
+        
+    Raises:
+        ValueError: If architecture is not supported for the given platform
     """
     arch_lower = architecture.lower()
     
@@ -22,7 +25,11 @@ def normalize_architecture(platform_name, architecture):
             "win32": "x86", "x86": "x86",
             "arm64": "arm64"
         }
-        return arch_map.get(arch_lower, "x64")
+        if arch_lower in arch_map:
+            return arch_map[arch_lower]
+        else:
+            supported = list(set(arch_map.keys()))
+            raise ValueError(f"Unsupported architecture '{architecture}' for platform '{platform_name}'; expected one of {supported}")
     
     elif platform_name == "darwin":
         # For macOS, return runtime architecture
@@ -33,11 +40,15 @@ def normalize_architecture(platform_name, architecture):
             "x64": "x86_64", "amd64": "x86_64",
             "arm64": "arm64", "aarch64": "arm64"
         }
-        return arch_map.get(arch_lower, "x86_64")
+        if arch_lower in arch_map:
+            return arch_map[arch_lower]
+        else:
+            supported = list(set(arch_map.keys()))
+            raise ValueError(f"Unsupported architecture '{architecture}' for platform '{platform_name}'; expected one of {supported}")
     
     else:
-        # Default fallback
-        return arch_lower
+        supported_platforms = ["windows", "darwin", "linux"]
+        raise ValueError(f"Unsupported platform '{platform_name}'; expected one of {supported_platforms}")
 
 # Get current Python version and architecture
 python_version = f"cp{sys.version_info.major}{sys.version_info.minor}"
@@ -57,7 +68,8 @@ else:
 
 # Validate supported platforms
 if platform_name not in ['windows', 'darwin', 'linux']:
-    raise ImportError(f"Unsupported platform for mssql-python: {platform_name}-{architecture}")
+    supported_platforms = ['windows', 'darwin', 'linux']
+    raise ImportError(f"Unsupported platform '{platform_name}' for mssql-python; expected one of {supported_platforms}")
 
 # Determine extension based on platform
 if platform_name == 'windows':
