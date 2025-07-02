@@ -579,7 +579,12 @@ DriverHandle LoadDriverLibrary(const std::string& driverPath) {
 #ifdef _WIN32
     // Windows: Convert string to wide string for LoadLibraryW
     std::wstring widePath(driverPath.begin(), driverPath.end());
-    return LoadLibraryW(widePath.c_str());
+    HMODULE handle = LoadLibraryW(widePath.c_str());
+    if (!handle) {
+        LOG("Failed to load library: {}. Error: {}", driverPath, GetLastErrorMessage());
+        ThrowStdException("Failed to load library: " + driverPath);
+    }
+    return handle;
 #else
     // macOS/Unix: Use dlopen
     void* handle = dlopen(driverPath.c_str(), RTLD_LAZY);
