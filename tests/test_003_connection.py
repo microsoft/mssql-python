@@ -178,7 +178,7 @@ def test_connection_close(conn_str):
     # Create a separate connection just for this test
     temp_conn = connect(conn_str)
     # Check if the database connection can be closed
-    temp_conn.close()
+    temp_conn.close()    
 
 def test_connection_pooling_speed(conn_str):
     # No pooling
@@ -223,3 +223,4 @@ def test_connection_pooling_basic(conn_str):
 
     conn1.close()
     conn2.close()
+    

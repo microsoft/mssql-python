@@ -7,6 +7,14 @@
 #pragma once
 
 #include <pybind11/pybind11.h> // pybind11.h must be the first include - https://pybind11.readthedocs.io/en/latest/basics.html#header-and-namespace-conventions
+#include <pybind11/chrono.h>
+#include <pybind11/complex.h>
+#include <pybind11/functional.h>
+#include <pybind11/pytypes.h>  // Add this line for datetime support
+#include <pybind11/stl.h>
+namespace py = pybind11;
+using namespace pybind11::literals;
+
 #include <string>
 #include <memory>
 #include <mutex>
@@ -27,16 +35,16 @@
 #if defined(__APPLE__) || defined(__linux__)
     // macOS-specific headers
     #include <dlfcn.h>
-    
+
     inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
         if (!sqlwStr) return std::wstring();
-        
+
         if (length == SQL_NTS) {
             size_t i = 0;
             while (sqlwStr[i] != 0) ++i;
             length = i;
         }
-        
+
         std::wstring result;
         result.reserve(length);
         for (size_t i = 0; i < length; ++i) {
@@ -44,7 +52,7 @@
         }
         return result;
     }
-    
+
     inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
         std::vector<SQLWCHAR> result(str.size() + 1, 0);  // +1 for null terminator
         for (size_t i = 0; i < str.size(); ++i) {
@@ -54,18 +62,9 @@
     }
 #endif
 
-#include <pybind11/chrono.h>
-#include <pybind11/complex.h>
-#include <pybind11/functional.h>
-#include <pybind11/pytypes.h>  // Add this line for datetime support
-#include <pybind11/stl.h>
-namespace py = pybind11;
-using namespace pybind11::literals;
-
 #if defined(__APPLE__) || defined(__linux__)
-// Include macOS/Linux-specific headers
-#include "mac_utils.h"  // For macOS-specific Unicode encoding fixes
-#include "mac_buffers.h"  // For macOS-specific buffer handling
+#include "unix_utils.h"  // For Unix-specific Unicode encoding fixes
+#include "unix_buffers.h"  // For Unix-specific buffer handling
 #endif
 
 //-------------------------------------------------------------------------------------------------
@@ -161,11 +160,9 @@ extern SQLFreeStmtFunc SQLFreeStmt_ptr;
 // Diagnostic APIs
 extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
 
-
 // Logging utility
 template <typename... Args>
 void LOG(const std::string& formatString, Args&&... args);
-
 
 // Throws a std::runtime_error with the given message
 void ThrowStdException(const std::string& message);
@@ -246,20 +243,14 @@ inline std::string WideToUTF8(const std::wstring& wstr) {
     if (wstr.empty()) return {};
 #if defined(_WIN32)
     int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+    if (size_needed == 0) return {};
     std::string result(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), result.data(), size_needed, nullptr, nullptr);
+    int converted = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), result.data(), size_needed, nullptr, nullptr);
+    if (converted == 0) return {};
     return result;
 #else
-    std::string result;
-    result.reserve(wstr.size());
-    for (wchar_t wc : wstr) {
-        if (wc < 0x80) {
-            result.push_back(static_cast<char>(wc));
-        } else {
-            result.push_back('?');
-        }
-    }
-    return result;
+    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+    return converter.to_bytes(wstr);
 #endif
 }
 
@@ -267,16 +258,16 @@ inline std::wstring Utf8ToWString(const std::string& str) {
     if (str.empty()) return {};
 #if defined(_WIN32)
     int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
+    if (size_needed == 0) {
+        LOG("MultiByteToWideChar failed.");
+        return {};
+    }
     std::wstring result(size_needed, 0);
-    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), result.data(), size_needed);
+    int converted = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), result.data(), size_needed);
+    if (converted == 0) return {};
     return result;
 #else
-    std::wstring result;
-    result.reserve(str.size());
-    for (char c : str) {
-        result.push_back(static_cast<unsigned char>(c));
-    }
-    return result;
+    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+    return converter.from_bytes(str);
 #endif
 }
-
