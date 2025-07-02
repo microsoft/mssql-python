@@ -434,7 +434,7 @@ jobs:
         # Enable EPEL for additional packages
         dnf update -y
         dnf install -y epel-release
-        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 gcc gcc-c++ make glibc-devel kernel-headers
+        dnf install -y python3.13 python3.13-pip python3.13-devel cmake curl wget gnupg2 gcc gcc-c++ make glibc-devel kernel-headers
         # Install gcc and g++ individually since Development Tools group is not available in UBI
         # First try to install gcc and g++ from available repositories
         dnf install -y gcc gcc-c++ make binutils
@@ -501,7 +501,7 @@ jobs:
       # Install Python dependencies in the container using virtual environment
       docker exec test-container-rhel9 bash -c "
         # Create a virtual environment
-        python3 -m venv /opt/venv
+        python3.13 -m venv /opt/venv
         source /opt/venv/bin/activate
         
         # Install dependencies in the virtual environment
@@ -521,6 +521,10 @@ jobs:
         # Set compiler environment variables
         export CC=/usr/bin/gcc
         export CXX=/usr/bin/g++
+        
+        # Set Python development paths explicitly
+        export PYTHON_INCLUDE_DIR=/usr/include/python3.13
+        export PYTHON_LIBRARY=/usr/lib64/libpython3.13.so
         
         cd mssql_python/pybind
         chmod +x build.sh
