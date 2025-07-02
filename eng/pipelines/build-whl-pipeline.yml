@@ -55,14 +55,12 @@ jobs:
 
       # Python 3.13
       py313_x64:
-        # TODO: Remove this once Python 3.13.5 is available in ADO
-        pythonVersion: '3.13.5'
+        pythonVersion: '3.13'
         shortPyVer: '313'
         architecture: 'x64'
         targetArch: 'x64'
       py313_arm64:
-        # TODO: Remove this once Python 3.13.5 is available in ADO
-        pythonVersion: '3.13.5'
+        pythonVersion: '3.13'
         shortPyVer: '313'
         architecture: 'x64'
         targetArch: 'arm64'
@@ -82,6 +80,22 @@ jobs:
         pip install -r requirements.txt
         pip install cmake pybind11
       displayName: 'Install dependencies'
+
+      # Start LocalDB instance
+    - powershell: |
+        sqllocaldb create MSSQLLocalDB
+        sqllocaldb start MSSQLLocalDB
+      displayName: 'Start LocalDB instance'
+
+    # Create database and user
+    - powershell: |
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+      displayName: 'Setup database and user'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
 
     - task: DownloadPipelineArtifact@2
       condition: eq(variables['targetArch'], 'arm64')
@@ -115,8 +129,15 @@ jobs:
         call keep_single_arch.bat $(targetArch)
 
         cd ..\..
-      displayName: 'Build PYD for $(targetArch)'        
-      
+      displayName: 'Build PYD for $(targetArch)'
+
+    # Run pytests before packaging
+    - script: |
+        python -m pytest -v
+      displayName: 'Run pytests'
+      env:
+      DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
     # Copy the built .pyd file to staging folder for artifacts
     - task: CopyFiles@2
       inputs:
