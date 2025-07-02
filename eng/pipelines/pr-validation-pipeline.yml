@@ -431,24 +431,16 @@ jobs:
   - script: |
       # Install dependencies in the RHEL 9 container
       docker exec test-container-rhel9 bash -c "
-        # Enable EPEL for additional packages
+        # Enable CodeReady Builder repository for additional packages
         dnf update -y
-        dnf install -y epel-release
-        dnf install -y python3.13 python3.13-pip python3.13-devel cmake curl wget gnupg2 gcc gcc-c++ make glibc-devel kernel-headers
-        # Install gcc and g++ individually since Development Tools group is not available in UBI
-        # First try to install gcc and g++ from available repositories
-        dnf install -y gcc gcc-c++ make binutils
-
-        # If that doesn't work, try installing from different repositories
-        if ! which gcc; then
-          echo 'Trying alternative gcc installation...'
-          dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
-        fi
-        # Install cmake
-        dnf install -y cmake
+        dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
+        subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms || dnf config-manager --set-enabled ubi-9-codeready-builder
+        
+        # Install Python 3.9 (available in RHEL 9 UBI) and development tools
+        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 gcc gcc-c++ make glibc-devel kernel-headers
+        
         # Verify installation
-        ls -la /usr/bin/gcc* || echo 'No gcc found in /usr/bin'
-        ls -la /usr/bin/g++* || echo 'No g++ found in /usr/bin'
+        python3 --version
         which gcc && which g++
         gcc --version
         g++ --version
@@ -500,8 +492,8 @@ jobs:
   - script: |
       # Install Python dependencies in the container using virtual environment
       docker exec test-container-rhel9 bash -c "
-        # Create a virtual environment
-        python3.13 -m venv /opt/venv
+        # Create a virtual environment with Python 3.9
+        python3 -m venv /opt/venv
         source /opt/venv/bin/activate
         
         # Install dependencies in the virtual environment
@@ -522,12 +514,71 @@ jobs:
         export CC=/usr/bin/gcc
         export CXX=/usr/bin/g++
         
-        # Set Python development paths explicitly
-        export PYTHON_INCLUDE_DIR=/opt/venv/include/python3.13
-        export PYTHON_LIBRARY=/opt/venv/lib/libpython3.13.so
+        # # Set Python development paths for Python 3.9
+        # export PYTHON_INCLUDE_DIR=/opt/venv/include/python3.9
+        # export PYTHON_LIBRARY=/opt/venv/lib/libpython3.9.so
 
         cd mssql_python/pybind
         chmod +x build.sh
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 container'
+
+  - script: |
+      # Uninstall ODBC Driver before running tests
+      docker exec test-container-rhel9 bash -c "
+        dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
+        rm -f /usr/bin/sqlcmd
+        rm -f /usr/bin/bcp
+        rm -rf /opt/microsoft/msodbcsql
+        rm -f /lib64/libodbcinst.so.2
+        odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
+      "
+    displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 container'
+
+  - script: |
+      # Run tests in the container
+      # Get SQL Server container IP
+      SQLSERVER_IP=$(docker inspect sqlserver-rhel9 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+      echo "SQL Server IP: $SQLSERVER_IP"
+      
+      docker exec \
+        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        test-container-rhel9 bash -c "
+        source /opt/venv/bin/activate
+        echo 'Build successful, running tests now on RHEL 9'
+        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+        python -m pytest -v --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
+      "
+    displayName: 'Run pytest with coverage in RHEL 9 container'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Copy test results from container to host
+      docker cp test-container-rhel9:/workspace/test-results-rhel9.xml $(Build.SourcesDirectory)/
+      docker cp test-container-rhel9:/workspace/coverage-rhel9.xml $(Build.SourcesDirectory)/
+    displayName: 'Copy test results from RHEL 9 container'
+    condition: always()
+
+  - script: |
+      # Clean up containers
+      docker stop test-container-rhel9 || true
+      docker rm test-container-rhel9 || true
+      docker stop sqlserver-rhel9 || true
+      docker rm sqlserver-rhel9 || true
+    displayName: 'Clean up RHEL 9 containers'
+    condition: always()
+
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFiles: '**/test-results-rhel9.xml'
+      testRunTitle: 'Publish pytest results on RHEL 9'
+
+  - task: PublishCodeCoverageResults@1
+    inputs:
+      codeCoverageTool: 'Cobertura'
+      summaryFileLocation: 'coverage-rhel9.xml'
+    displayName: 'Publish code coverage results for RHEL 9'
