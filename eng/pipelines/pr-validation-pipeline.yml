@@ -166,7 +166,7 @@ jobs:
       summaryFileLocation: 'coverage.xml'
     displayName: 'Publish code coverage results'
 
-- job: PytestOnLinux
+- job: PytestOnDebian
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -320,6 +320,376 @@ jobs:
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
+
+  - script: |
+      # Run tests in the container
+      # Get SQL Server container IP
+      SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+      echo "SQL Server IP: $SQLSERVER_IP"
+      
+      docker exec \
+        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        test-container-$(distroName) bash -c "
+        source /opt/venv/bin/activate
+        echo 'Build successful, running tests now on $(distroName)'
+        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+        python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+      "
+    displayName: 'Run pytest with coverage in $(distroName) container'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Copy test results from container to host
+      docker cp test-container-$(distroName):/workspace/test-results-$(distroName).xml $(Build.SourcesDirectory)/
+      docker cp test-container-$(distroName):/workspace/coverage-$(distroName).xml $(Build.SourcesDirectory)/
+    displayName: 'Copy test results from $(distroName) container'
+    condition: always()
+
+  - script: |
+      # Clean up containers
+      docker stop test-container-$(distroName) || true
+      docker rm test-container-$(distroName) || true
+      docker stop sqlserver-$(distroName) || true
+      docker rm sqlserver-$(distroName) || true
+    displayName: 'Clean up $(distroName) containers'
+    condition: always()
+
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFiles: '**/test-results-$(distroName).xml'
+      testRunTitle: 'Publish pytest results on $(distroName)'
+
+  - task: PublishCodeCoverageResults@1
+    inputs:
+      codeCoverageTool: 'Cobertura'
+      summaryFileLocation: 'coverage-$(distroName).xml'
+    displayName: 'Publish code coverage results for $(distroName)'
+
+- job: PytestOnRHEL9
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  variables:
+    dockerImage: 'redhat/ubi9:latest'
+    distroName: 'RHEL9'
+
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.13'
+      addToPath: true
+    displayName: 'Use Python 3.13 on RHEL 9'
+
+  - script: |
+      # Create a Docker container for testing
+      docker run -d --name test-container-rhel9 \
+        -v $(Build.SourcesDirectory):/workspace \
+        -w /workspace \
+        --network bridge \
+        redhat/ubi9:latest \
+        tail -f /dev/null
+    displayName: 'Create RHEL 9 container'
+
+  - script: |
+      # Start SQL Server container
+      docker run -d --name sqlserver-rhel9 \
+        -e ACCEPT_EULA=Y \
+        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -p 1433:1433 \
+        mcr.microsoft.com/mssql/server:2022-latest
+      
+      # Wait for SQL Server to be ready
+      echo "Waiting for SQL Server to start..."
+      for i in {1..60}; do
+        if docker exec sqlserver-rhel9 \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -P "$(DB_PASSWORD)" \
+          -C -Q "SELECT 1" >/dev/null 2>&1; then
+          echo "SQL Server is ready!"
+          break
+        fi
+        echo "Waiting... ($i/60)"
+        sleep 2
+      done
+      
+      # Create test database
+      docker exec sqlserver-rhel9 \
+        /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost \
+        -U SA \
+        -P "$(DB_PASSWORD)" \
+        -C -Q "CREATE DATABASE TestDB"
+    displayName: 'Start SQL Server container for RHEL 9'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Install dependencies in the RHEL 9 container
+      docker exec test-container-rhel9 bash -c "
+        # Enable EPEL for additional packages
+        dnf update -y
+        dnf install -y epel-release
+        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 gcc gcc-c++ make
+        # Try to install pybind11-devel, fallback if not available
+        dnf install -y pybind11-devel || echo 'pybind11-devel not available via dnf'
+      "
+    displayName: 'Install basic dependencies in RHEL 9 container'
+
+  - script: |
+      # Install ODBC driver in the RHEL 9 container
+      docker exec test-container-rhel9 bash -c "
+        # Add Microsoft repository for RHEL 9
+        curl -sSL -o /etc/yum.repos.d/msprod.repo https://packages.microsoft.com/config/rhel/9/prod.repo
+        
+        # Install the driver
+        ACCEPT_EULA=Y dnf install -y msodbcsql18
+        # optional: for bcp and sqlcmd
+        ACCEPT_EULA=Y dnf install -y mssql-tools18
+        # optional: for unixODBC development headers
+        dnf install -y unixODBC-devel
+      "
+    displayName: 'Install ODBC Driver in RHEL 9 container'
+
+  - script: |
+      # Install Python dependencies in the container using virtual environment
+      docker exec test-container-rhel9 bash -c "
+        # Create a virtual environment
+        python3 -m venv /opt/venv
+        source /opt/venv/bin/activate
+        
+        # Install dependencies in the virtual environment
+        python -m pip install --upgrade pip
+        python -m pip install -r requirements.txt
+        
+        # Make the virtual environment globally available
+        echo 'source /opt/venv/bin/activate' >> ~/.bashrc
+      "
+    displayName: 'Install Python dependencies in RHEL 9 container'
+
+  - script: |
+      # Build pybind bindings in the container
+      docker exec test-container-rhel9 bash -c "
+        source /opt/venv/bin/activate
+        cd mssql_python/pybind
+        chmod +x build.sh
+        ./build.sh
+      "
+    displayName: 'Build pybind bindings (.so) in RHEL 9 container'
+
+  - script: |
+      # Uninstall ODBC Driver before running tests
+      docker exec test-container-rhel9 bash -c "
+        dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
+        rm -f /usr/bin/sqlcmd
+        rm -f /usr/bin/bcp
+        rm -rf /opt/microsoft/msodbcsql
+        rm -f /lib64/libodbcinst.so.2
+        odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
+      "
+    displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 container'
+
+  - script: |
+      # Run tests in the container
+      # Get SQL Server container IP
+      SQLSERVER_IP=$(docker inspect sqlserver-rhel9 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+      echo "SQL Server IP: $SQLSERVER_IP"
+      
+      docker exec \
+        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        test-container-rhel9 bash -c "
+        source /opt/venv/bin/activate
+        echo 'Build successful, running tests now on RHEL 9'
+        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+        python -m pytest -v --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
+      "
+    displayName: 'Run pytest with coverage in RHEL 9 container'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Copy test results from container to host
+      docker cp test-container-rhel9:/workspace/test-results-rhel9.xml $(Build.SourcesDirectory)/
+      docker cp test-container-rhel9:/workspace/coverage-rhel9.xml $(Build.SourcesDirectory)/
+    displayName: 'Copy test results from RHEL 9 container'
+    condition: always()
+
+  - script: |
+      # Clean up containers
+      docker stop test-container-rhel9 || true
+      docker rm test-container-rhel9 || true
+      docker stop sqlserver-rhel9 || true
+      docker rm sqlserver-rhel9 || true
+    displayName: 'Clean up RHEL 9 containers'
+    condition: always()
+
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFiles: '**/test-results-rhel9.xml'
+      testRunTitle: 'Publish pytest results on RHEL 9'
+
+  - task: PublishCodeCoverageResults@1
+    inputs:
+      codeCoverageTool: 'Cobertura'
+      summaryFileLocation: 'coverage-rhel9.xml'
+    displayName: 'Publish code coverage results for RHEL 9'
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  strategy:
+    matrix:
+      RHEL9:
+        dockerImage: 'redhat/ubi9:latest'
+        distroName: 'RHEL9'
+
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.13'
+      addToPath: true
+    displayName: 'Use Python 3.13 on $(distroName)'
+
+  - script: |
+      # Create a Docker container for testing
+      docker run -d --name test-container-$(distroName) \
+        -v $(Build.SourcesDirectory):/workspace \
+        -w /workspace \
+        --network bridge \
+        $(dockerImage) \
+        tail -f /dev/null
+    displayName: 'Create $(distroName) container'
+
+  - script: |
+      # Start SQL Server container
+      docker run -d --name sqlserver-$(distroName) \
+        -e ACCEPT_EULA=Y \
+        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -p 1433:1433 \
+        mcr.microsoft.com/mssql/server:2022-latest
+      
+      # Wait for SQL Server to be ready
+      echo "Waiting for SQL Server to start..."
+      for i in {1..60}; do
+        if docker exec sqlserver-$(distroName) \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -P "$(DB_PASSWORD)" \
+          -C -Q "SELECT 1" >/dev/null 2>&1; then
+          echo "SQL Server is ready!"
+          break
+        fi
+        echo "Waiting... ($i/60)"
+        sleep 2
+      done
+      
+      # Create test database
+      docker exec sqlserver-$(distroName) \
+        /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost \
+        -U SA \
+        -P "$(DB_PASSWORD)" \
+        -C -Q "CREATE DATABASE TestDB"
+    displayName: 'Start SQL Server container for $(distroName)'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Install dependencies in the RHEL-based container
+      # RHEL8, RHEL9, CentOS
+      docker exec test-container-$(distroName) bash -c "
+        # Enable EPEL for additional packages
+        if command -v dnf >/dev/null 2>&1; then
+          dnf update -y
+          dnf install -y epel-release
+          dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 gcc gcc-c++ make
+          # Try to install pybind11-devel, fallback if not available
+          dnf install -y pybind11-devel || echo 'pybind11-devel not available via dnf'
+        else
+          # Fallback to yum for older systems
+          yum update -y
+          yum install -y epel-release
+          yum install -y python3 python3-pip python3-devel cmake curl wget gnupg2 gcc gcc-c++ make
+          yum install -y pybind11-devel || echo 'pybind11-devel not available via yum'
+        fi
+      "
+    displayName: 'Install basic dependencies in $(distroName) container'
+
+  - script: |
+      # Install ODBC driver in the RHEL-based container
+      docker exec test-container-$(distroName) bash -c "
+        # Add Microsoft repository
+        curl -sSL -o /etc/yum.repos.d/msprod.repo https://packages.microsoft.com/config/rhel/9/prod.repo
+        
+        # Install the driver
+        if command -v dnf >/dev/null 2>&1; then
+          ACCEPT_EULA=Y dnf install -y msodbcsql18
+          # optional: for bcp and sqlcmd
+          ACCEPT_EULA=Y dnf install -y mssql-tools18
+          # optional: for unixODBC development headers
+          dnf install -y unixODBC-devel
+        else
+          # Fallback to yum
+          ACCEPT_EULA=Y yum install -y msodbcsql18
+          ACCEPT_EULA=Y yum install -y mssql-tools18
+          yum install -y unixODBC-devel
+        fi
+      "
+    displayName: 'Install ODBC Driver in $(distroName) container'
+
+  - script: |
+      # Install Python dependencies in the container using virtual environment
+      docker exec test-container-$(distroName) bash -c "
+        # Create a virtual environment
+        python3 -m venv /opt/venv
+        source /opt/venv/bin/activate
+        
+        # Install dependencies in the virtual environment
+        python -m pip install --upgrade pip
+        python -m pip install -r requirements.txt
+        
+        # Make the virtual environment globally available
+        echo 'source /opt/venv/bin/activate' >> ~/.bashrc
+      "
+    displayName: 'Install Python dependencies in $(distroName) container'
+
+  - script: |
+      # Build pybind bindings in the container
+      docker exec test-container-$(distroName) bash -c "
+        source /opt/venv/bin/activate
+        cd mssql_python/pybind
+        chmod +x build.sh
+        ./build.sh
+      "
+    displayName: 'Build pybind bindings (.so) in $(distroName) container'
+
+  - script: |
+      # Uninstall ODBC Driver before running tests
+      docker exec test-container-$(distroName) bash -c "
+        if command -v dnf >/dev/null 2>&1; then
+          dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
+        else
+          yum remove -y msodbcsql18 mssql-tools18 unixODBC-devel
+        fi
+        rm -f /usr/bin/sqlcmd
+        rm -f /usr/bin/bcp
+        rm -rf /opt/microsoft/msodbcsql
+        rm -f /lib64/libodbcinst.so.2
+        odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
+      "
+    displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
+
+  # Run ldd on the driver file to check dependencies
+  - script: |
+      docker exec test-container-$(distroName) bash -c "
+        ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-18.5.so.1.1
+      "
 
   - script: |
       # Run tests in the container
