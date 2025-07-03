@@ -180,7 +180,7 @@ jobs:
     inputs:
       versionSpec: '3.13'
       addToPath: true
-    displayName: 'Use Python 3.13 on $(distroName)'
+    displayName: 'Use Python 3.13 on $(distroName) x86_64'
 
   - script: |
       # Create a Docker container for testing
@@ -363,6 +363,226 @@ jobs:
       codeCoverageTool: 'Cobertura'
       summaryFileLocation: 'coverage-$(distroName).xml'
     displayName: 'Publish code coverage results for $(distroName)'
+
+- job: PytestOnLinux_ARM64
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  strategy:
+    matrix:
+      Ubuntu_ARM64:
+        dockerImage: 'ubuntu:22.04'
+        distroName: 'Ubuntu'
+        archName: 'arm64'
+      Debian_ARM64:
+        dockerImage: 'debian:12'
+        distroName: 'Debian'
+        archName: 'arm64'
+
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.13'
+      addToPath: true
+    displayName: 'Use Python 3.13 on $(distroName) ARM64'
+
+  - script: |
+      # Set up Docker buildx for multi-architecture support
+      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      docker buildx create --name multiarch --driver docker-container --use
+      docker buildx inspect --bootstrap
+    displayName: 'Setup Docker buildx for ARM64 emulation'
+
+  - script: |
+      # Create a Docker container for testing on ARM64
+      docker run -d --name test-container-$(distroName)-$(archName) \
+        --platform linux/arm64 \
+        -v $(Build.SourcesDirectory):/workspace \
+        -w /workspace \
+        --network bridge \
+        $(dockerImage) \
+        tail -f /dev/null
+    displayName: 'Create $(distroName) ARM64 container'
+
+  - script: |
+      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
+      docker run -d --name sqlserver-$(distroName)-$(archName) \
+        --platform linux/amd64 \
+        -e ACCEPT_EULA=Y \
+        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -p 1433:1433 \
+        mcr.microsoft.com/mssql/server:2022-latest
+      
+      # Wait for SQL Server to be ready
+      echo "Waiting for SQL Server to start..."
+      for i in {1..60}; do
+        if docker exec sqlserver-$(distroName)-$(archName) \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -P "$(DB_PASSWORD)" \
+          -C -Q "SELECT 1" >/dev/null 2>&1; then
+          echo "SQL Server is ready!"
+          break
+        fi
+        echo "Waiting... ($i/60)"
+        sleep 2
+      done
+      
+      # Create test database
+      docker exec sqlserver-$(distroName)-$(archName) \
+        /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost \
+        -U SA \
+        -P "$(DB_PASSWORD)" \
+        -C -Q "CREATE DATABASE TestDB"
+    displayName: 'Start SQL Server container for $(distroName) ARM64'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Install dependencies in the ARM64 container
+      if [ "$(distroName)" = "Ubuntu" ]; then
+        docker exec test-container-$(distroName)-$(archName) bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          export TZ=UTC
+          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
+          apt-get update && 
+          apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
+          # Verify architecture
+          uname -m
+          dpkg --print-architecture
+        "
+      else
+        # Debian ARM64
+        docker exec test-container-$(distroName)-$(archName) bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          export TZ=UTC
+          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
+          apt-get update && 
+          apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
+          # Verify architecture
+          uname -m
+          dpkg --print-architecture
+        "
+      fi
+    displayName: 'Install basic dependencies in $(distroName) ARM64 container'
+
+  - script: |
+      # Install ODBC driver in the ARM64 container
+      docker exec test-container-$(distroName)-$(archName) bash -c "
+        export DEBIAN_FRONTEND=noninteractive
+        
+        # Download the package to configure the Microsoft repo
+        if [ '$(distroName)' = 'Ubuntu' ]; then
+          curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+        else
+          # Debian 12
+          curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
+        fi
+        
+        # Install the package
+        dpkg -i packages-microsoft-prod.deb || true
+        rm packages-microsoft-prod.deb
+        
+        # Update package list
+        apt-get update
+        
+        # Install the driver (ARM64 version)
+        ACCEPT_EULA=Y apt-get install -y msodbcsql18
+        # optional: for bcp and sqlcmd
+        ACCEPT_EULA=Y apt-get install -y mssql-tools18
+        # optional: for unixODBC development headers
+        apt-get install -y unixodbc-dev
+      "
+    displayName: 'Install ODBC Driver in $(distroName) ARM64 container'
+
+  - script: |
+      # Install Python dependencies in the ARM64 container using virtual environment
+      docker exec test-container-$(distroName)-$(archName) bash -c "
+        # Create a virtual environment
+        python3 -m venv /opt/venv
+        source /opt/venv/bin/activate
+        
+        # Install dependencies in the virtual environment
+        python -m pip install --upgrade pip
+        python -m pip install -r requirements.txt
+        
+        # Make the virtual environment globally available
+        echo 'source /opt/venv/bin/activate' >> ~/.bashrc
+      "
+    displayName: 'Install Python dependencies in $(distroName) ARM64 container'
+
+  - script: |
+      # Build pybind bindings in the ARM64 container
+      docker exec test-container-$(distroName)-$(archName) bash -c "
+        source /opt/venv/bin/activate
+        cd mssql_python/pybind
+        chmod +x build.sh
+        ./build.sh
+      "
+    displayName: 'Build pybind bindings (.so) in $(distroName) ARM64 container'
+
+  - script: |
+      # Uninstall ODBC Driver before running tests
+      docker exec test-container-$(distroName)-$(archName) bash -c "
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
+        rm -f /usr/bin/sqlcmd
+        rm -f /usr/bin/bcp
+        rm -rf /opt/microsoft/msodbcsql
+        rm -f /lib/aarch64-linux-gnu/libodbcinst.so.2
+        odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
+      "
+    displayName: 'Uninstall ODBC Driver before running tests in $(distroName) ARM64 container'
+
+  - script: |
+      # Run tests in the ARM64 container
+      # Get SQL Server container IP
+      SQLSERVER_IP=$(docker inspect sqlserver-$(distroName)-$(archName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+      echo "SQL Server IP: $SQLSERVER_IP"
+      
+      docker exec \
+        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        test-container-$(distroName)-$(archName) bash -c "
+        source /opt/venv/bin/activate
+        echo 'Build successful, running tests now on $(distroName) ARM64'
+        echo 'Architecture:' \$(uname -m)
+        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+        python -m pytest -v --junitxml=test-results-$(distroName)-$(archName).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(archName).xml --capture=tee-sys --cache-clear
+      "
+    displayName: 'Run pytest with coverage in $(distroName) ARM64 container'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Copy test results from container to host
+      docker cp test-container-$(distroName)-$(archName):/workspace/test-results-$(distroName)-$(archName).xml $(Build.SourcesDirectory)/
+      docker cp test-container-$(distroName)-$(archName):/workspace/coverage-$(distroName)-$(archName).xml $(Build.SourcesDirectory)/
+    displayName: 'Copy test results from $(distroName) ARM64 container'
+    condition: always()
+
+  - script: |
+      # Clean up containers
+      docker stop test-container-$(distroName)-$(archName) || true
+      docker rm test-container-$(distroName)-$(archName) || true
+      docker stop sqlserver-$(distroName)-$(archName) || true
+      docker rm sqlserver-$(distroName)-$(archName) || true
+    displayName: 'Clean up $(distroName) ARM64 containers'
+    condition: always()
+
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFiles: '**/test-results-$(distroName)-$(archName).xml'
+      testRunTitle: 'Publish pytest results on $(distroName) ARM64'
+
+  - task: PublishCodeCoverageResults@1
+    inputs:
+      codeCoverageTool: 'Cobertura'
+      summaryFileLocation: 'coverage-$(distroName)-$(archName).xml'
+    displayName: 'Publish code coverage results for $(distroName) ARM64'
 
 - job: PytestOnLinux_RHEL9
   pool:
@@ -571,3 +791,224 @@ jobs:
       codeCoverageTool: 'Cobertura'
       summaryFileLocation: 'coverage-rhel9.xml'
     displayName: 'Publish code coverage results for RHEL 9'
+
+- job: PytestOnLinux_RHEL9_ARM64
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  steps:
+  - script: |
+      # Set up Docker buildx for multi-architecture support
+      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      docker buildx create --name multiarch --driver docker-container --use
+      docker buildx inspect --bootstrap
+    displayName: 'Setup Docker buildx for ARM64 emulation'
+
+  - script: |
+      # Create a Docker container for testing on ARM64
+      docker run -d --name test-container-rhel9-arm64 \
+        --platform linux/arm64 \
+        -v $(Build.SourcesDirectory):/workspace \
+        -w /workspace \
+        --network bridge \
+        redhat/ubi9:latest \
+        tail -f /dev/null
+    displayName: 'Create RHEL 9 ARM64 container'
+
+  - script: |
+      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
+      docker run -d --name sqlserver-rhel9-arm64 \
+        --platform linux/amd64 \
+        -e ACCEPT_EULA=Y \
+        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -p 1433:1433 \
+        mcr.microsoft.com/mssql/server:2022-latest
+      
+      # Wait for SQL Server to be ready
+      echo "Waiting for SQL Server to start..."
+      for i in {1..60}; do
+        if docker exec sqlserver-rhel9-arm64 \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -P "$(DB_PASSWORD)" \
+          -C -Q "SELECT 1" >/dev/null 2>&1; then
+          echo "SQL Server is ready!"
+          break
+        fi
+        echo "Waiting... ($i/60)"
+        sleep 2
+      done
+      
+      # Create test database
+      docker exec sqlserver-rhel9-arm64 \
+        /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost \
+        -U SA \
+        -P "$(DB_PASSWORD)" \
+        -C -Q "CREATE DATABASE TestDB"
+    displayName: 'Start SQL Server container for RHEL 9 ARM64'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Install dependencies in the RHEL 9 ARM64 container
+      docker exec test-container-rhel9-arm64 bash -c "
+        # Enable CodeReady Builder repository for additional packages
+        dnf update -y
+        dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
+        subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms || dnf config-manager --set-enabled ubi-9-codeready-builder
+        
+        # Install Python 3.9 (available in RHEL 9 UBI) and development tools
+        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 glibc-devel kernel-headers
+        dnf install -y python3-libs python3-debug
+        dnf install -y gcc gcc-c++ make binutils
+        dnf install -y cmake
+        # If that doesn't work, try installing from different repositories
+        if ! which gcc; then
+          echo 'Trying alternative gcc installation...'
+          dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
+        fi
+        # Verify installation and architecture
+        python3 --version
+        which gcc && which g++
+        gcc --version
+        g++ --version
+        uname -m
+        echo 'Architecture:' \$(uname -m)
+      "
+    displayName: 'Install basic dependencies in RHEL 9 ARM64 container'
+
+  - script: |
+      # Verify compiler installation and set environment for RHEL 9 ARM64
+      docker exec test-container-rhel9-arm64 bash -c "
+        # Verify compilers are available
+        which gcc || echo 'GCC not found'
+        which g++ || echo 'G++ not found'
+        gcc --version || echo 'GCC version check failed'
+        g++ --version || echo 'G++ version check failed'
+        
+        # Set compiler environment variables
+        export CC=/usr/bin/gcc
+        export CXX=/usr/bin/g++
+        echo 'CC set to:' \$CC
+        echo 'CXX set to:' \$CXX
+        echo 'Running on architecture:' \$(uname -m)
+        
+        # Create a wrapper script to preserve environment
+        cat > /workspace/setup_env.sh << 'EOF'
+        #!/bin/bash
+        export CC=/usr/bin/gcc
+        export CXX=/usr/bin/g++
+        export PATH=/usr/bin:\$PATH
+        exec \"\$@\"
+        EOF
+        chmod +x /workspace/setup_env.sh
+      "
+    displayName: 'Verify and configure compilers in RHEL 9 ARM64 container'
+
+  - script: |
+      # Install ODBC driver in the RHEL 9 ARM64 container
+      docker exec test-container-rhel9-arm64 bash -c "
+        # Add Microsoft repository for RHEL 9
+        curl -sSL -o /etc/yum.repos.d/msprod.repo https://packages.microsoft.com/config/rhel/9/prod.repo
+        
+        # Install the driver (ARM64 version)
+        ACCEPT_EULA=Y dnf install -y msodbcsql18
+        # optional: for bcp and sqlcmd
+        ACCEPT_EULA=Y dnf install -y mssql-tools18
+        # optional: for unixODBC development headers
+        dnf install -y unixODBC-devel
+      "
+    displayName: 'Install ODBC Driver in RHEL 9 ARM64 container'
+
+  - script: |
+      # Install Python dependencies in the container using virtual environment
+      docker exec test-container-rhel9-arm64 bash -c "
+        # Create a virtual environment with Python 3.9
+        python3 -m venv myvenv
+        source myvenv/bin/activate
+
+        # Install dependencies in the virtual environment
+        python -m pip install --upgrade pip
+        python -m pip install -r requirements.txt
+        
+        # Make the virtual environment globally available
+        echo 'source myvenv/bin/activate' >> ~/.bashrc
+      "
+    displayName: 'Install Python dependencies in RHEL 9 ARM64 container'
+
+  - script: |
+      # Build pybind bindings in the ARM64 container
+      docker exec test-container-rhel9-arm64 bash -c "
+        source myvenv/bin/activate
+        ls /usr/include/python3.9
+        # Set compiler environment variables
+        export CC=/usr/bin/gcc
+        export CXX=/usr/bin/g++
+
+        cd mssql_python/pybind
+        chmod +x build.sh
+        ./build.sh
+      "
+    displayName: 'Build pybind bindings (.so) in RHEL 9 ARM64 container'
+
+  - script: |
+      # Uninstall ODBC Driver before running tests
+      docker exec test-container-rhel9-arm64 bash -c "
+        dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
+        rm -f /usr/bin/sqlcmd
+        rm -f /usr/bin/bcp
+        rm -rf /opt/microsoft/msodbcsql
+        rm -f /lib64/libodbcinst.so.2
+        odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
+      "
+    displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 ARM64 container'
+
+  - script: |
+      # Run tests in the ARM64 container
+      # Get SQL Server container IP
+      SQLSERVER_IP=$(docker inspect sqlserver-rhel9-arm64 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+      echo "SQL Server IP: $SQLSERVER_IP"
+      
+      docker exec \
+        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        test-container-rhel9-arm64 bash -c "
+        source myvenv/bin/activate
+        echo 'Build successful, running tests now on RHEL 9 ARM64'
+        echo 'Architecture:' \$(uname -m)
+        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+        python -m pytest -v --junitxml=test-results-rhel9-arm64.xml --cov=. --cov-report=xml:coverage-rhel9-arm64.xml --capture=tee-sys --cache-clear
+      "
+    displayName: 'Run pytest with coverage in RHEL 9 ARM64 container'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Copy test results from container to host
+      docker cp test-container-rhel9-arm64:/workspace/test-results-rhel9-arm64.xml $(Build.SourcesDirectory)/
+      docker cp test-container-rhel9-arm64:/workspace/coverage-rhel9-arm64.xml $(Build.SourcesDirectory)/
+    displayName: 'Copy test results from RHEL 9 ARM64 container'
+    condition: always()
+
+  - script: |
+      # Clean up containers
+      docker stop test-container-rhel9-arm64 || true
+      docker rm test-container-rhel9-arm64 || true
+      docker stop sqlserver-rhel9-arm64 || true
+      docker rm sqlserver-rhel9-arm64 || true
+    displayName: 'Clean up RHEL 9 ARM64 containers'
+    condition: always()
+
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFiles: '**/test-results-rhel9-arm64.xml'
+      testRunTitle: 'Publish pytest results on RHEL 9 ARM64'
+
+  - task: PublishCodeCoverageResults@1
+    inputs:
+      codeCoverageTool: 'Cobertura'
+      summaryFileLocation: 'coverage-rhel9-arm64.xml'
+    displayName: 'Publish code coverage results for RHEL 9 ARM64'
