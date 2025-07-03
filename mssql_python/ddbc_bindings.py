@@ -63,8 +63,6 @@ if platform_name == 'darwin':
 else:
     architecture = normalize_architecture(platform_name, raw_architecture)
 
-print("ARCHITECTURE DEBUGG", architecture)
-
 # Validate supported platforms
 if platform_name not in ['windows', 'darwin', 'linux']:
     supported_platforms = ['windows', 'darwin', 'linux']

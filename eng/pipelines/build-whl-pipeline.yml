@@ -585,14 +585,14 @@ jobs:
 
     # Copy the wheel file to the artifacts
     - script: |
+        mkdir -p $(Build.ArtifactStagingDirectory)/dist
         docker cp build-container-$(targetArch):/workspace/dist/. $(Build.ArtifactStagingDirectory)/dist/
       displayName: 'Copy wheel from container to artifacts'
 
     # Copy the built .so file to staging folder for artifacts
     - script: |
-        # Cascadingly make dir for ddbc-bindings/linux/{os}{targetArch}
-        mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux
-        docker cp build-container-$(targetArch):/workspace/mssql_python/ddbc_bindings.cp$(shortPyVer)-*.so $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux/$(targetArch) || true
+        mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux/$(targetArch)
+        docker cp build-container-$(targetArch):/workspace/mssql_python/ddbc_bindings.cp$(shortPyVer)-$(targetArch).so $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux/$(targetArch)/
       displayName: 'Copy .so file to artifacts directory'
 
     # Clean up containers
