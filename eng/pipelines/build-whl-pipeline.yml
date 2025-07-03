@@ -520,9 +520,10 @@ jobs:
     # Install ODBC Driver to build
     - script: |
         docker exec build-container-$(targetArch) bash -c "
-          apt-get update
-          apt-get install -y unixodbc-dev
+          yum update -y
+          yum install -y unixODBC-devel
         "
+      displayName: 'Install ODBC Driver in manylinux2014 $(targetArch) container'
 
     # Build pybind bindings in manylinux container
     - script: |
