@@ -37,7 +37,11 @@ class PoolingManager:
     def is_enabled(cls):
         return cls._enabled
 
-    @atexit.register
-    def shutdown_pooling():
-        if PoolingManager.is_enabled():
-            ddbc_bindings.close_pooling()
+    @classmethod
+    def is_initialized(cls):
+        return cls._initialized
+    
+@atexit.register
+def shutdown_pooling():
+    if PoolingManager.is_enabled():
+        ddbc_bindings.close_pooling()
