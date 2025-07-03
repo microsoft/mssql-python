@@ -38,7 +38,7 @@ def normalize_architecture(platform_name, architecture):
     
     elif platform_name == "linux":
         arch_map = {
-            "x64": "x86_64", "amd64": "x86_64",
+            "x64": "x86_64", "amd64": "x86_64", "x86_64": "x86_64",
             "arm64": "arm64", "aarch64": "arm64"
         }
         if arch_lower in arch_map:
