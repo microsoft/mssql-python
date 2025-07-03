@@ -7,6 +7,9 @@ This module provides helper functions for the mssql_python package.
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import raise_exception
 from mssql_python.logging_config import get_logger, ENABLE_LOGGING
+import platform
+from pathlib import Path
+from mssql_python.ddbc_bindings import normalize_architecture
 
 logger = get_logger()
 
@@ -111,6 +114,38 @@ def add_driver_name_to_app_parameter(connection_string):
     return ";".join(modified_parameters) + ";"
 
 
+def detect_linux_distro():
+    """
+    Detect Linux distribution for driver path selection.
+
+    Returns:
+        str: Distribution name ('debian_ubuntu', 'rhel', 'alpine', etc.)
+    """
+    import os
+
+    distro_name = "debian_ubuntu"  # default
+
+    try:
+        if os.path.exists("/etc/os-release"):
+            with open("/etc/os-release", "r") as f:
+                content = f.read()
+            for line in content.split("\n"):
+                if line.startswith("ID="):
+                    distro_id = line.split("=", 1)[1].strip('"\'')
+                    if distro_id in ["ubuntu", "debian"]:
+                        distro_name = "debian_ubuntu"
+                    elif distro_id in ["rhel", "centos", "fedora"]:
+                        distro_name = "rhel"
+                    elif distro_id == "alpine":
+                        distro_name = "alpine"
+                    else:
+                        distro_name = distro_id  # use as-is
+                    break
+    except Exception:
+        pass  # use default
+
+    return distro_name
+
 def get_driver_path(module_dir, architecture):
     """
     Get the platform-specific ODBC driver path.
@@ -125,66 +160,22 @@ def get_driver_path(module_dir, architecture):
     Raises:
         RuntimeError: If driver not found or unsupported platform
     """
-    import platform
-    import os
-    from pathlib import Path
 
-    system = platform.system().lower()
+    platform_name = platform.system().lower()
+    normalized_arch = normalize_architecture(platform_name, architecture)
 
-    if system == "windows":
-        # Windows: libs/{arch}/msodbcsql18.dll
-        # Defining architecture mapping for Windows since cross-compilation is supported
-        # e.g. You can compile for ARM64 on x64
-        arch_map = {
-            "win64": "x64", "amd64": "x64", "x64": "x64",
-            "win32": "x86", "x86": "x86",
-            "arm64": "arm64"
-        }
-        arch_dir = arch_map.get(architecture.lower(), "x64")
-        driver_path = Path(module_dir) / "libs" / "windows" / arch_dir / "msodbcsql18.dll"
+    if platform_name == "windows":
+        driver_path = Path(module_dir) / "libs" / "windows" / normalized_arch / "msodbcsql18.dll"
 
-    elif system == "darwin":
-        # macOS: libs/macos/{arch}/lib/libmsodbcsql.18.dylib
-        # Since `architecture` variable is set as `universal2` to compile SO as universal2
-        # Get architecture during runtime for macOS using platform.machine()
-        arch_dir = platform.machine().lower()
-        driver_path = Path(module_dir) / "libs" / "macos" / arch_dir / "lib" / "libmsodbcsql.18.dylib"
+    elif platform_name == "darwin":
+        driver_path = Path(module_dir) / "libs" / "macos" / normalized_arch / "lib" / "libmsodbcsql.18.dylib"
 
-    elif system == "linux":
-        # Linux: libs/linux/{distro}/{arch}/lib/libmsodbcsql-18.5.so.1.1
-
-        # Detect Linux distribution
-        distro_name = "debian_ubuntu"  # default
-        try:
-            if os.path.exists("/etc/os-release"):
-                with open("/etc/os-release", "r") as f:
-                    content = f.read()
-                for line in content.split('\n'):
-                    if line.startswith("ID="):
-                        distro_id = line.split("=", 1)[1].strip('"\'')
-                        if distro_id in ["ubuntu", "debian"]:
-                            distro_name = "debian_ubuntu"
-                        elif distro_id in ["rhel", "centos", "fedora"]:
-                            distro_name = "rhel"
-                        elif distro_id == "alpine":
-                            distro_name = "alpine"
-                        else:
-                            distro_name = distro_id  # use as-is
-                        break
-        except Exception:
-            pass  # use default
-
-        # Map architecture
-        arch_map = {
-            "x64": "x86_64", "amd64": "x86_64",
-            "arm64": "arm64", "aarch64": "arm64"
-        }
-        arch_dir = arch_map.get(architecture.lower(), "x86_64")
-
-        driver_path = Path(module_dir) / "libs" / "linux" / distro_name / arch_dir / "lib" / "libmsodbcsql-18.5.so.1.1"
+    elif platform_name == "linux":
+        distro_name = detect_linux_distro()
+        driver_path = Path(module_dir) / "libs" / "linux" / distro_name / normalized_arch / "lib" / "libmsodbcsql-18.5.so.1.1"
 
     else:
-        raise RuntimeError(f"Unsupported platform: {system}")
+        raise RuntimeError(f"Unsupported platform: {platform_name}")
 
     driver_path_str = str(driver_path)
 

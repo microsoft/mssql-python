@@ -69,7 +69,7 @@ void Connection::connect(const py::dict& attrs_before) {
     }
     SQLWCHAR* connStrPtr;
 #if defined(__APPLE__) || defined(__linux__) // macOS/Linux specific handling
-    LOG("Creating connection string buffer for macOS");
+    LOG("Creating connection string buffer for macOS/Linux");
     std::vector<SQLWCHAR> connStrBuffer = WStringToSQLWCHAR(_connStr);
     // Ensure the buffer is null-terminated
     LOG("Connection string buffer size - {}", connStrBuffer.size());
