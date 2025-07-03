@@ -550,6 +550,7 @@ jobs:
         echo 'Build successful, running tests now on $(distroName) ARM64'
         echo 'Architecture:' \$(uname -m)
         echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+        python main.py
         python -m pytest -v --junitxml=test-results-$(distroName)-$(archName).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(archName).xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in $(distroName) ARM64 container'
@@ -758,6 +759,7 @@ jobs:
         source myvenv/bin/activate
         echo 'Build successful, running tests now on RHEL 9'
         echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+        python main.py
         python -m pytest -v --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
       "
     displayName: 'Run pytest with coverage in RHEL 9 container'
