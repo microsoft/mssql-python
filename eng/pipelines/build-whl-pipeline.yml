@@ -428,20 +428,33 @@ jobs:
     - script: |
         docker run -d --name build-container-$(targetArch) \
           --platform $(dockerPlatform) \
+          --network host \
           -v $(Build.SourcesDirectory):/workspace \
           -w /workspace \
-          --network bridge \
+          --memory=4g \
+          --memory-swap=6g \
+          --cpus="2.0" \
+          --shm-size=1g \
           quay.io/pypa/$(manylinuxTag):latest \
           tail -f /dev/null
-      displayName: 'Create manylinux2014 $(targetArch) container'
+        
+        # Check container resources
+        docker exec build-container-$(targetArch) bash -c "
+          echo 'Container system information:'
+          free -h
+          df -h
+          nproc
+          uname -a
+        "
+      displayName: 'Create manylinux2014 $(targetArch) container with resource limits'
 
     # Start SQL Server container for testing
     - script: |
         docker run -d --name sqlserver-$(targetArch) \
           --platform linux/amd64 \
+          --network host \
           -e ACCEPT_EULA=Y \
           -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-          -p 1433:1433 \
           mcr.microsoft.com/mssql/server:2022-latest
         
         # Wait for SQL Server to be ready
@@ -548,7 +561,7 @@ jobs:
         echo "SQL Server IP: $SQLSERVER_IP"
     
         docker exec \
-          -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+          -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=localhost,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes;Timeout=30;" \
           -e DB_PASSWORD="$(DB_PASSWORD)" \
           build-container-$(targetArch) bash -c "
           echo 'Running tests on manylinux2014 $(targetArch)'
