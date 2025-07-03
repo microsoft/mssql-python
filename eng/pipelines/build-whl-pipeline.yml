@@ -366,29 +366,29 @@ jobs:
   # Strategy matrix to build all combinations
   strategy:
     matrix:
-      # Python 3.10 (x86_64 and ARM64)
-      py310_x86_64:
-        shortPyVer: '310'
-        targetArch: 'x86_64'
-        dockerPlatform: 'linux/amd64'
-        manylinuxTag: 'manylinux2014_x86_64'
-      py310_arm64:
-        shortPyVer: '310'
-        targetArch: 'aarch64'
-        dockerPlatform: 'linux/arm64'
-        manylinuxTag: 'manylinux2014_aarch64'
+      # # Python 3.10 (x86_64 and ARM64)
+      # py310_x86_64:
+      #   shortPyVer: '310'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   manylinuxTag: 'manylinux2014_x86_64'
+      # py310_arm64:
+      #   shortPyVer: '310'
+      #   targetArch: 'aarch64'
+      #   dockerPlatform: 'linux/arm64'
+      #   manylinuxTag: 'manylinux2014_aarch64'
 
-      # Python 3.11 (x86_64 and ARM64)
-      py311_x86_64:
-        shortPyVer: '311'
-        targetArch: 'x86_64'
-        dockerPlatform: 'linux/amd64'
-        manylinuxTag: 'manylinux2014_x86_64'
-      py311_arm64:
-        shortPyVer: '311'
-        targetArch: 'aarch64'
-        dockerPlatform: 'linux/arm64'
-        manylinuxTag: 'manylinux2014_aarch64'
+      # # Python 3.11 (x86_64 and ARM64)
+      # py311_x86_64:
+      #   shortPyVer: '311'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   manylinuxTag: 'manylinux2014_x86_64'
+      # py311_arm64:
+      #   shortPyVer: '311'
+      #   targetArch: 'aarch64'
+      #   dockerPlatform: 'linux/arm64'
+      #   manylinuxTag: 'manylinux2014_aarch64'
 
       # Python 3.12 (x86_64 and ARM64)
       py312_x86_64:
@@ -396,23 +396,23 @@ jobs:
         targetArch: 'x86_64'
         dockerPlatform: 'linux/amd64'
         manylinuxTag: 'manylinux2014_x86_64'
-      py312_arm64:
-        shortPyVer: '312'
-        targetArch: 'aarch64'
-        dockerPlatform: 'linux/arm64'
-        manylinuxTag: 'manylinux2014_aarch64'
+      # py312_arm64:
+      #   shortPyVer: '312'
+      #   targetArch: 'aarch64'
+      #   dockerPlatform: 'linux/arm64'
+      #   manylinuxTag: 'manylinux2014_aarch64'
 
-      # Python 3.13 (x86_64 and ARM64)
-      py313_x86_64:
-        shortPyVer: '313'
-        targetArch: 'x86_64'
-        dockerPlatform: 'linux/amd64'
-        manylinuxTag: 'manylinux2014_x86_64'
-      py313_arm64:
-        shortPyVer: '313'
-        targetArch: 'aarch64'
-        dockerPlatform: 'linux/arm64'
-        manylinuxTag: 'manylinux2014_aarch64'
+      # # Python 3.13 (x86_64 and ARM64)
+      # py313_x86_64:
+      #   shortPyVer: '313'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   manylinuxTag: 'manylinux2014_x86_64'
+      # py313_arm64:
+      #   shortPyVer: '313'
+      #   targetArch: 'aarch64'
+      #   dockerPlatform: 'linux/arm64'
+      #   manylinuxTag: 'manylinux2014_aarch64'
 
   steps:
     # Set up Docker buildx for multi-architecture support
