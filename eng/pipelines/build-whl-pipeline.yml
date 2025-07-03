@@ -135,7 +135,6 @@ jobs:
     # Run pytests before packaging
     - script: |
         echo "Running pytests to validate bindings"
-        # Skip pytests on Windows ARM64 since we cannot install arm64 Python on x64 host
         if [ "$(targetArch)" == "arm64" ]; then
           echo "Skipping pytests on Windows ARM64"
         else
