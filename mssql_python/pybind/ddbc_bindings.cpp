@@ -543,6 +543,7 @@ void LOG(const std::string& formatString, Args&&... args) {
 
 // TODO: Add more nuanced exception classes
 void ThrowStdException(const std::string& message) { throw std::runtime_error(message); }
+std::string GetLastErrorMessage();
 
 // TODO: Move this to Python
 std::string GetModuleDirectory() {
@@ -567,7 +568,7 @@ std::string GetModuleDirectory() {
         std::string dir = module_file.substr(0, pos);
         return dir;
     }
-    std::cerr << "DEBUG: Could not extract directory from path: " << module_file << std::endl;
+    LOG("DEBUG: Could not extract directory from path: {}", module_file);
     return module_file;
 #endif
 }
@@ -579,7 +580,12 @@ DriverHandle LoadDriverLibrary(const std::string& driverPath) {
 #ifdef _WIN32
     // Windows: Convert string to wide string for LoadLibraryW
     std::wstring widePath(driverPath.begin(), driverPath.end());
-    return LoadLibraryW(widePath.c_str());
+    HMODULE handle = LoadLibraryW(widePath.c_str());
+    if (!handle) {
+        LOG("Failed to load library: {}. Error: {}", driverPath, GetLastErrorMessage());
+        ThrowStdException("Failed to load library: " + driverPath);
+    }
+    return handle;
 #else
     // macOS/Unix: Use dlopen
     void* handle = dlopen(driverPath.c_str(), RTLD_LAZY);
@@ -1050,7 +1056,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 #if defined(__APPLE__) || defined(__linux__)
                             std::string fullStr(reinterpret_cast<char*>(dataBuffer.data()));
                             row.append(fullStr);
-                            LOG("macOS: Appended CHAR string of length {} to result row", fullStr.length());
+                            LOG("macOS/Linux: Appended CHAR string of length {} to result row", fullStr.length());
 #else
                             row.append(std::string(reinterpret_cast<char*>(dataBuffer.data())));
 #endif
