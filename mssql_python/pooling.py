@@ -1,4 +1,5 @@
 # mssql_python/pooling.py
+import atexit
 from mssql_python import ddbc_bindings
 import threading
 
@@ -36,6 +37,7 @@ class PoolingManager:
     def is_enabled(cls):
         return cls._enabled
 
-    @classmethod
-    def is_initialized(cls):
-        return cls._initialized
+    @atexit.register
+    def shutdown_pooling():
+        if PoolingManager.is_enabled():
+            ddbc_bindings.close_pooling()
