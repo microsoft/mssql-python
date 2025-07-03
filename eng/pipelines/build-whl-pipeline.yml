@@ -541,11 +541,11 @@ jobs:
     # Run tests to validate the build
     - script: |
         # Get SQL Server container IP
-        SQLSERVER_IP=\$(docker inspect sqlserver-$(targetArch) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-        echo "SQL Server IP: \$SQLSERVER_IP"
+        SQLSERVER_IP=$(docker inspect sqlserver-$(targetArch) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+        echo "SQL Server IP: $SQLSERVER_IP"
         
         docker exec \
-          -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=\$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+          -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
           -e DB_PASSWORD="$(DB_PASSWORD)" \
           build-container-$(targetArch) bash -c "
           echo 'Running tests on manylinux2014 $(targetArch)'
