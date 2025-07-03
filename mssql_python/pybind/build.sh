@@ -10,6 +10,17 @@ if [[ "$OS_TYPE" == "Darwin" ]]; then
 elif [[ "$OS_TYPE" == "Linux" ]]; then
     OS="Linux"
     BUILD_TYPE="Native Binary"
+    
+    # Detect Linux architecture
+    ARCH=$(uname -m)
+    if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
+        DETECTED_ARCH="arm64"
+    elif [[ "$ARCH" == "x86_64" ]]; then
+        DETECTED_ARCH="x86_64"
+    else
+        DETECTED_ARCH="$ARCH"
+    fi
+    echo "[DIAGNOSTIC] Detected Linux architecture: $ARCH, using: $DETECTED_ARCH"
 else
     echo "[ERROR] Unsupported OS: $OS_TYPE"
     exit 1
@@ -20,6 +31,9 @@ PYTAG=$(python -c "import sys; print(f'{sys.version_info.major}{sys.version_info
 
 echo "==================================="
 echo "Building $BUILD_TYPE for Python $PYTAG on $OS"
+if [[ "$OS" == "Linux" ]]; then
+    echo "Architecture: $DETECTED_ARCH"
+fi
 echo "==================================="
 
 # Save absolute source directory
@@ -45,8 +59,8 @@ if [[ "$OS" == "macOS" ]]; then
     echo "[DIAGNOSTIC] Configuring for macOS (universal2 is set automatically)"
     cmake -DMACOS_STRING_FIX=ON "${SOURCE_DIR}"
 else
-    echo "[DIAGNOSTIC] Configuring for Linux"
-    cmake "${SOURCE_DIR}"
+    echo "[DIAGNOSTIC] Configuring for Linux with architecture: $DETECTED_ARCH"
+    cmake -DARCHITECTURE="$DETECTED_ARCH" "${SOURCE_DIR}"
 fi
 
 # Check if CMake configuration succeeded
