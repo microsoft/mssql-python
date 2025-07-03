@@ -4,6 +4,7 @@ import threading
 
 class PoolingManager:
     _enabled = False
+    _initialized = False 
     _lock = threading.Lock()
     _config = {
         "max_size": 100,
@@ -23,7 +24,18 @@ class PoolingManager:
             cls._config["max_size"] = max_size
             cls._config["idle_timeout"] = idle_timeout
             cls._enabled = True
+            cls._initialized = True
+
+    @classmethod
+    def disable(cls):
+        with cls._lock:
+            cls._enabled = False
+            cls._initialized = True
 
     @classmethod
     def is_enabled(cls):
         return cls._enabled
+
+    @classmethod
+    def is_initialized(cls):
+        return cls._initialized
