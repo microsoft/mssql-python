@@ -130,10 +130,17 @@ jobs:
 
         cd ..\..
       displayName: 'Build PYD for $(targetArch)'
+      continueOnError: false
 
     # Run pytests before packaging
     - script: |
-        python -m pytest -v
+        echo "Running pytests to validate bindings"
+        # Skip pytests on Windows ARM64 since we cannot install arm64 Python on x64 host
+        if [ "$(targetArch)" == "arm64" ]; then
+          echo "Skipping pytests on Windows ARM64"
+        else
+          python -m pytest -v
+        fi
       displayName: 'Run pytests'
       env:
         DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -263,6 +270,7 @@ jobs:
         # Call build.sh to build the .so file
         ./build.sh
       displayName: 'Build .so file'
+      continueOnError: false
 
     # Copy the built .so file to staging folder for artifacts
     - task: CopyFiles@2
@@ -521,6 +529,7 @@ jobs:
           ls -la ../ddbc_bindings.*.so
         "
       displayName: 'Build pybind bindings (.so) in manylinux2014 $(targetArch) container'
+      continueOnError: false
 
     # Run tests to validate the build
     - script: |
