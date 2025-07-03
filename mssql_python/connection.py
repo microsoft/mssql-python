@@ -58,6 +58,9 @@ class Connection:
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
+        # Auto-enable pooling if user never called
+        if not PoolingManager.is_initialized():
+            PoolingManager.enable()
         self._pooling = PoolingManager.is_enabled()
         self._conn = ddbc_bindings.Connection(self.connection_str, self._pooling, self._attrs_before)
         self.setautocommit(autocommit)

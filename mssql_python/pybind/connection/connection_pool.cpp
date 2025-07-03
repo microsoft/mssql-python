@@ -83,6 +83,25 @@ void ConnectionPool::release(std::shared_ptr<Connection> conn) {
     }
 }
 
+void ConnectionPool::close() {
+    std::vector<std::shared_ptr<Connection>> to_close;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        while (!_pool.empty()) {
+            to_close.push_back(_pool.front());
+            _pool.pop_front();
+        }
+        _current_size = 0;
+    }
+    for (auto& conn : to_close) {
+        try {
+            conn->disconnect();
+        } catch (const std::exception& ex) {
+            LOG("ConnectionPool::close: disconnect failed: {}", ex.what());
+        }
+    }
+}
+
 ConnectionPoolManager& ConnectionPoolManager::getInstance() {
     static ConnectionPoolManager manager;
     return manager;
@@ -110,4 +129,14 @@ void ConnectionPoolManager::configure(int max_size, int idle_timeout_secs) {
     std::lock_guard<std::mutex> lock(_manager_mutex);
     _default_max_size = max_size;
     _default_idle_secs = idle_timeout_secs;
+}
+
+void ConnectionPoolManager::closePools() {
+    std::lock_guard<std::mutex> lock(_manager_mutex);
+    for (auto& [conn_str, pool] : _pools) {
+        if (pool) {
+            pool->close();
+        }
+    }
+    _pools.clear();
 }
