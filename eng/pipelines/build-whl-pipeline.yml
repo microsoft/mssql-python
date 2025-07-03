@@ -575,7 +575,7 @@ jobs:
           
           # Use auditwheel to create manylinux wheel
           python -m pip install auditwheel
-          auditwheel repair dist/*.whl --plat-tag $(manylinuxTag) -w dist/
+          auditwheel repair dist/*.whl -w dist/
           
           # Remove the original wheel, keep only the manylinux one
           rm -f dist/*-linux_*.whl
