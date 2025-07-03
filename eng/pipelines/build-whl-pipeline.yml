@@ -136,7 +136,7 @@ jobs:
         python -m pytest -v
       displayName: 'Run pytests'
       env:
-      DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+        DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
     # Copy the built .pyd file to staging folder for artifacts
     - task: CopyFiles@2
