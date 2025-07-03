@@ -15,7 +15,7 @@
 #include <sql.h>
 #include <sqlext.h>
 
-namespace mac_buffers {
+namespace unix_buffers {
 
 // Constants for Unicode character encoding
 constexpr const char* ODBC_DECODING = "utf-16-le";
@@ -166,4 +166,4 @@ inline std::wstring UCS_dec(const SQLWCHAR* buffer, size_t maxLength = 0) {
     return result;
 }
 
-} // namespace mac_buffers
+} // namespace unix_buffers

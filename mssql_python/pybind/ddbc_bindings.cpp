@@ -258,8 +258,8 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                         LOG("  char[{}] = {} ({})", i, static_cast<int>(ch), DescribeChar(ch));
                     }
                 }
-#if defined(__APPLE__)
-                // On macOS, we need special handling for wide characters
+#if defined(__APPLE__) || defined(__linux__)
+                // On macOS/Linux, we need special handling for wide characters
                 // Create a properly encoded SQLWCHAR buffer for the parameter
                 std::vector<SQLWCHAR>* sqlwcharBuffer =
                     AllocateParamBuffer<std::vector<SQLWCHAR>>(paramBuffers);
@@ -271,7 +271,6 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 for (size_t i = 0; i < strParam->size(); i++) {
                     (*sqlwcharBuffer)[i] = static_cast<SQLWCHAR>((*strParam)[i]);
                 }
-
                 // Use the SQLWCHAR buffer instead of the wstring directly
                 dataPtr = sqlwcharBuffer->data();
                 bufferLength = (strParam->size() + 1) * sizeof(SQLWCHAR);
@@ -545,6 +544,7 @@ void LOG(const std::string& formatString, Args&&... args) {
 // TODO: Add more nuanced exception classes
 void ThrowStdException(const std::string& message) { throw std::runtime_error(message); }
 
+// TODO: Move this to Python
 std::string GetModuleDirectory() {
     py::object module = py::module::import("mssql_python");
     py::object module_path = module.attr("__file__");
@@ -567,7 +567,7 @@ std::string GetModuleDirectory() {
         std::string dir = module_file.substr(0, pos);
         return dir;
     }
-    LOG("DEBUG: Could not extract directory from path: {}", module_file);
+    std::cerr << "DEBUG: Could not extract directory from path: " << module_file << std::endl;
     return module_file;
 #endif
 }
@@ -575,14 +575,11 @@ std::string GetModuleDirectory() {
 // Platform-agnostic function to load the driver dynamic library
 DriverHandle LoadDriverLibrary(const std::string& driverPath) {
     LOG("Loading driver from path: {}", driverPath);
+    
 #ifdef _WIN32
     // Windows: Convert string to wide string for LoadLibraryW
     std::wstring widePath(driverPath.begin(), driverPath.end());
-    HMODULE handle = LoadLibraryW(widePath.c_str());
-    if (!handle) {
-        LOG("LoadLibraryW failed.");
-    }
-    return handle;
+    return LoadLibraryW(widePath.c_str());
 #else
     // macOS/Unix: Use dlopen
     void* handle = dlopen(driverPath.c_str(), RTLD_LAZY);
@@ -618,56 +615,62 @@ std::string GetLastErrorMessage() {
 #endif
 }
 
-// Helper to load the driver
-// TODO: We don't need to do explicit linking using LoadLibrary. We can just use implicit
-//       linking to load this DLL. It will simplify the code a lot.
+// Function to call Python get_driver_path function
+std::string GetDriverPathFromPython(const std::string& moduleDir, const std::string& architecture) {
+    try {
+        py::module_ helpers = py::module_::import("mssql_python.helpers");
+        py::object get_driver_path = helpers.attr("get_driver_path");
+        py::str result = get_driver_path(moduleDir, architecture);
+        return std::string(result);
+    } catch (const py::error_already_set& e) {
+        LOG("Python error in get_driver_path: {}", e.what());
+        ThrowStdException("Failed to get driver path from Python: " + std::string(e.what()));
+    } catch (const std::exception& e) {
+        LOG("Error calling get_driver_path: {}", e.what());
+        ThrowStdException("Failed to get driver path: " + std::string(e.what()));
+    }
+}
+
 DriverHandle LoadDriverOrThrowException() {
     namespace fs = std::filesystem;
+
     std::string moduleDir = GetModuleDirectory();
     LOG("Module directory: {}", moduleDir);
+
     std::string archStr = ARCHITECTURE;
-    std::string archDir =
-        (archStr == "win64" || archStr == "amd64" || archStr == "x64") ? "x64" :
-        (archStr == "arm64") ? "arm64" :
-        "x86";
+    LOG("Architecture: {}", archStr);
 
-    fs::path driverPath;
-#ifdef _WIN32
-    fs::path dllDir = fs::path(moduleDir) / "libs" / archDir;
+    // Use Python function to get the correct driver path for the platform
+    std::string driverPathStr = GetDriverPathFromPython(moduleDir, archStr);
+    fs::path driverPath(driverPathStr);
+    
+    LOG("Driver path determined: {}", driverPath.string());
 
-    // Optionally load mssql-auth.dll if it exists
-    fs::path authDllPath = dllDir / "mssql-auth.dll";
-    if (fs::exists(authDllPath)) {
-        HMODULE hAuth = LoadLibraryW(authDllPath.wstring().c_str());
-        if (hAuth) {
-            LOG("Authentication DLL loaded: {}", authDllPath.string());
+    #ifdef _WIN32
+        // On Windows, optionally load mssql-auth.dll if it exists
+        std::string archDir =
+            (archStr == "win64" || archStr == "amd64" || archStr == "x64") ? "x64" :
+            (archStr == "arm64") ? "arm64" :
+            "x86";
+        
+        fs::path dllDir = fs::path(moduleDir) / "libs" / archDir;
+        fs::path authDllPath = dllDir / "mssql-auth.dll";
+        if (fs::exists(authDllPath)) {
+            HMODULE hAuth = LoadLibraryW(std::wstring(authDllPath.native().begin(), authDllPath.native().end()).c_str());
+            if (hAuth) {
+                LOG("Authentication DLL loaded: {}", authDllPath.string());
+            } else {
+                LOG("Failed to load mssql-auth.dll: {}", GetLastErrorMessage());
+            }
         } else {
-            LOG("Failed to load mssql-auth.dll: {}", GetLastErrorMessage());
+            LOG("Note: mssql-auth.dll not found. This is OK if Entra ID is not in use.");
         }
-    } else {
-        LOG("Note: mssql-auth.dll not found. This is OK if Entra ID is not in use.");
-    }
-
-    driverPath = dllDir / "msodbcsql18.dll";
-#else // macOS
-    std::string runtimeArch =
-    #if defined(__arm64__) || defined(__aarch64__)
-        "arm64";
-    #else
-        "x86_64";
     #endif
-    fs::path primaryPath = fs::path(moduleDir) / "libs" / "macos" / runtimeArch / "lib" / "libmsodbcsql.18.dylib";
-    if (fs::exists(primaryPath)) {
-        driverPath = primaryPath;
-        LOG("macOS driver found at: {}", driverPath.string());
-    } else {
-        driverPath = fs::path(moduleDir) / "libs" / archDir /  "macos/libmsodbcsql.18.dylib";
-        LOG("Using fallback macOS driver path: {}", driverPath.string());
-    }
-#endif
+
     if (!fs::exists(driverPath)) {
         ThrowStdException("ODBC driver not found at: " + driverPath.string());
     }
+
     DriverHandle handle = LoadDriverLibrary(driverPath.string());
     if (!handle) {
         LOG("Failed to load driver: {}", GetLastErrorMessage());
@@ -825,7 +828,7 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Q
     }
 
     SQLWCHAR* queryPtr;
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
     std::vector<SQLWCHAR> queryBuffer = WStringToSQLWCHAR(Query);
     queryPtr = queryBuffer.data();
 #else
@@ -864,7 +867,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         LOG("Statement handle is null or empty");
     }
     SQLWCHAR* queryPtr;
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
     std::vector<SQLWCHAR> queryBuffer = WStringToSQLWCHAR(query);
     queryPtr = queryBuffer.data();
 #else
@@ -969,7 +972,7 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
         if (SQL_SUCCEEDED(retcode)) {
             // Append a named py::dict to ColumnMetadata
             // TODO: Should we define a struct for this task instead of dict?
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
             ColumnMetadata.append(py::dict("ColumnName"_a = SQLWCHARToWString(ColumnName, SQL_NTS),
 #else
             ColumnMetadata.append(py::dict("ColumnName"_a = std::wstring(ColumnName),
@@ -1044,7 +1047,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         // NOTE: dataBuffer.size() includes null-terminator, dataLen doesn't. Hence use '<'.
 						if (numCharsInData < dataBuffer.size()) {
                             // SQLGetData will null-terminate the data
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
                             std::string fullStr(reinterpret_cast<char*>(dataBuffer.data()));
                             row.append(fullStr);
                             LOG("macOS: Appended CHAR string of length {} to result row", fullStr.length());
@@ -1093,7 +1096,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
 						if (numCharsInData < dataBuffer.size()) {
                             // SQLGetData will null-terminate the data
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
                             row.append(SQLWCHARToWString(dataBuffer.data(), SQL_NTS));
 #else
                             row.append(std::wstring(dataBuffer.data()));
@@ -1606,8 +1609,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (numCharsInData < fetchBufferSize) {
                         // SQLFetch will nullterminate the data
-#if defined(__APPLE__)
-                        // Use macOS-specific conversion to handle the wchar_t/SQLWCHAR size difference
+#if defined(__APPLE__) || defined(__linux__)
+                        // Use unix-specific conversion to handle the wchar_t/SQLWCHAR size difference
                         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
                         std::wstring wstr = SQLWCHARToWString(wcharData, numCharsInData);
                         row.append(wstr);
@@ -2063,6 +2066,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     
     // Expose the C++ functions to Python
     m.def("ThrowStdException", &ThrowStdException);
+    m.def("get_driver_path", &GetDriverPathFromPython, "Get platform-specific ODBC driver path");
 
     // Define parameter info class
     py::class_<ParamInfo>(m, "ParamInfo")

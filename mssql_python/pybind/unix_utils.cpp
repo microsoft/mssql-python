@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-// This file defines utility functions for safely handling SQLWCHAR-based
+// This header defines utility functions for safely handling SQLWCHAR-based
 // wide-character data in ODBC operations on macOS. It includes conversions
 // between SQLWCHAR, std::wstring, and UTF-8 strings to bridge encoding
 // differences specific to macOS.
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
 // Constants for character encoding
 const char* kOdbcEncoding = "utf-16-le";  // ODBC uses UTF-16LE for SQLWCHAR
 const size_t kUcsLength = 2;              // SQLWCHAR is 2 bytes on all platforms
