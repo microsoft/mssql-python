@@ -54,10 +54,12 @@ paramstyle = "qmark"
 threadsafety = 1
 
 from .pooling import PoolingManager
-def pooling(max_size=100, idle_timeout=600):
+def pooling(max_size=100, idle_timeout=600, enabled=True):
 #     """
 #     Enable connection pooling with the specified parameters.
-    
+#     By default:
+#         - If not explicitly called, pooling will be auto-enabled with default values.
+
 #     Args:
 #         max_size (int): Maximum number of connections in the pool.
 #         idle_timeout (int): Time in seconds before idle connections are closed.
@@ -65,5 +67,8 @@ def pooling(max_size=100, idle_timeout=600):
 #     Returns:
 #         None
 #     """
-    PoolingManager.enable(max_size, idle_timeout) 
+    if not enabled:
+        PoolingManager.disable()
+    else:
+        PoolingManager.enable(max_size, idle_timeout)
       
