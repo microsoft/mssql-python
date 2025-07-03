@@ -73,7 +73,7 @@ elseif(APPLE)
     set(WHEEL_ARCH "universal2")
 else()
     # Linux architecture mapping
-    if(ARCHITECTURE STREQUAL "arm64" OR CMAKE_GENERATOR_PLATFORM STREQUAL "aarch64")
+    if(ARCHITECTURE STREQUAL "arm64" OR ARCHITECTURE STREQUAL "aarch64")
         set(WHEEL_ARCH "arm64")
         message(STATUS "Setting Linux wheel architecture to arm64")
     else()
