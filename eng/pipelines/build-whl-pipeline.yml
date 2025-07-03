@@ -134,16 +134,16 @@ jobs:
 
     # TODO: Reactivate and use pytests in build
     # Run pytests before packaging
-    # - powershell: |
-    #     Write-Host "Running pytests to validate bindings"
-    #     if ("$(targetArch)" -eq "arm64") {
-    #       Write-Host "Skipping pytests on Windows ARM64"
-    #     } else {
-    #       python -m pytest -v
-    #     }
-    #   displayName: 'Run pytests'
-    #   env:
-    #     DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+    - powershell: |
+        Write-Host "Running pytests to validate bindings"
+        if ("$(targetArch)" -eq "arm64") {
+          Write-Host "Skipping pytests on Windows ARM64"
+        } else {
+          python -m pytest -v
+        }
+      displayName: 'Run pytests'
+      env:
+        DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
     # Copy the built .pyd file to staging folder for artifacts
     - task: CopyFiles@2
@@ -321,11 +321,11 @@ jobs:
 
     # TODO: Reactivate and use pytests in build
     # Run Pytest to ensure the bindings work correctly
-    # - script: |
-    #     python -m pytest -v
-    #   displayName: 'Run Pytest to validate bindings'
-    #   env:
-    #     DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+    - script: |
+        python -m pytest -v
+      displayName: 'Run Pytest to validate bindings'
+      env:
+        DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
     # Build wheel package for universal2
     - script: |
@@ -541,24 +541,24 @@ jobs:
       continueOnError: false
 
     # TODO: Reactivate and use pytests in build
-    # # Run tests to validate the build
-    # - script: |
-    #     # Get SQL Server container IP
-    #     SQLSERVER_IP=$(docker inspect sqlserver-$(targetArch) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-    #     echo "SQL Server IP: $SQLSERVER_IP"
-    #
-    #     docker exec \
-    #       -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-    #       -e DB_PASSWORD="$(DB_PASSWORD)" \
-    #       build-container-$(targetArch) bash -c "
-    #       echo 'Running tests on manylinux2014 $(targetArch)'
-    #       echo 'Architecture:' \$(uname -m)
-    #       echo 'Python version:' \$(python --version)
-    #       python -m pytest -v
-    #     "
-    #   displayName: 'Run tests in manylinux2014 $(targetArch) container'
-    #   env:
-    #     DB_PASSWORD: $(DB_PASSWORD)
+    # Run tests to validate the build
+    - script: |
+        # Get SQL Server container IP
+        SQLSERVER_IP=$(docker inspect sqlserver-$(targetArch) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+        echo "SQL Server IP: $SQLSERVER_IP"
+    
+        docker exec \
+          -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+          -e DB_PASSWORD="$(DB_PASSWORD)" \
+          build-container-$(targetArch) bash -c "
+          echo 'Running tests on manylinux2014 $(targetArch)'
+          echo 'Architecture:' \$(uname -m)
+          echo 'Python version:' \$(python --version)
+          python -m pytest -v
+        "
+      displayName: 'Run tests in manylinux2014 $(targetArch) container'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
 
     # Build manylinux wheel
     - script: |
