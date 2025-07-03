@@ -7,7 +7,7 @@ import ctypes
 import decimal
 import uuid
 import datetime
-from typing import List, Union
+from typing import List, Union, Optional, Tuple, Any, Sequence
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import check_error
 from mssql_python.logging_config import get_logger, ENABLE_LOGGING
@@ -50,26 +50,9 @@ class Cursor:
             connection: Database connection object.
         """
         self.connection = connection
-        # self.connection.autocommit = False
-        self.hstmt = None
-        self._initialize_cursor()
-        self.description = None
-        self.rowcount = -1
-        self.arraysize = (
-            1  # Default number of rows to fetch at a time is 1, user can change it
-        )
-        self.buffer_length = 1024  # Default buffer length for string data
+        # Create the C++ cursor object
+        self._cursor = ddbc_bindings.Cursor(self.connection._conn)
         self.closed = False
-        self._result_set_empty = False  # Add this initialization
-        self.last_executed_stmt = (
-            ""  # Stores the last statement executed by this cursor
-        )
-        self.is_stmt_prepared = [
-            False
-        ]  # Indicates if last_executed_stmt was prepared by ddbc shim.
-        # Is a list instead of a bool coz bools in Python are immutable.
-        # Hence, we can't pass around bools by reference & modify them.
-        # Therefore, it must be a list with exactly one bool element.
 
     def _is_unicode_string(self, param):
         """
@@ -407,29 +390,33 @@ class Cursor:
             0,
         )
 
-    def _initialize_cursor(self) -> None:
+    def __del__(self):
         """
-        Initialize the DDBC statement handle.
+        Destructor to ensure proper cleanup of resources when the cursor is garbage collected.
+        This prevents segfaults when cursors are not explicitly closed.
         """
-        self._allocate_statement_handle()
-
-    def _allocate_statement_handle(self):
-        """
-        Allocate the DDBC statement handle.
-        """
-        self.hstmt = self.connection._conn.alloc_statement_handle()
-
-    def _reset_cursor(self) -> None:
-        """
-        Reset the DDBC statement handle.
-        """
-        if self.hstmt:
-            self.hstmt.free()
-            self.hstmt = None
-            if ENABLE_LOGGING:
-                logger.debug("SQLFreeHandle succeeded")     
-        # Reinitialize the statement handle
-        self._initialize_cursor()
+        try:
+            if hasattr(self, 'closed') and not self.closed and hasattr(self, '_cursor'):
+                # Check if ddbc_bindings module is still available
+                import sys
+                if 'mssql_python.ddbc_bindings' in sys.modules:
+                    self.close()
+        except (AttributeError, ImportError, TypeError):
+            # During Python shutdown, modules may be None or unavailable
+            # Just ignore cleanup errors to prevent exceptions during garbage collection
+            pass
+        except Exception:
+            # Catch any other exceptions during cleanup
+            pass
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures cursor is always closed."""
+        self.close()
+        return False
 
     def close(self) -> None:
         """
@@ -439,13 +426,11 @@ class Cursor:
             Error: If any operation is attempted with the cursor after it is closed.
         """
         if self.closed:
-            raise Exception("Cursor is already closed.")
-
-        if self.hstmt:
-            self.hstmt.free()
-            self.hstmt = None
-            if ENABLE_LOGGING:
-                logger.debug("SQLFreeHandle succeeded")
+            return
+        
+        if hasattr(self, '_cursor'):
+            self._cursor.close()
+            
         self.closed = True
 
     def _check_closed(self):
@@ -458,47 +443,20 @@ class Cursor:
         if self.closed:
             raise Exception("Operation cannot be performed: the cursor is closed.")
 
-    def _create_parameter_types_list(self, parameter, param_info, parameters_list, i):
-        """
-        Maps parameter types for the given parameter.
-
-        Args:
-            parameter: parameter to bind.
-
-        Returns:
-            paraminfo.
-        """
-        paraminfo = param_info()
-        sql_type, c_type, column_size, decimal_digits = self._map_sql_type(
-            parameter, parameters_list, i
-        )
-        paraminfo.paramCType = c_type
-        paraminfo.paramSQLType = sql_type
-        paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value
-        paraminfo.columnSize = column_size
-        paraminfo.decimalDigits = decimal_digits
-        return paraminfo
+    # _create_parameter_types_list method removed as it's no longer needed with C++ implementation
 
     def _initialize_description(self):
         """
-        Initialize the description attribute using SQLDescribeCol.
+        Initialize the description attribute using the C++ implementation.
+        
+        This method is kept for backward compatibility but now uses
+        the C++ cursor implementation to get the description.
         """
-        col_metadata = []
-        ret = ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, col_metadata)
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-
-        self.description = [
-            (
-                col["ColumnName"],
-                self._map_data_type(col["DataType"]),
-                None,
-                col["ColumnSize"],
-                col["ColumnSize"],
-                col["DecimalDigits"],
-                col["Nullable"] == ddbc_sql_const.SQL_NULLABLE.value,
-            )
-            for col in col_metadata
-        ]
+        if hasattr(self, '_description_cache'):
+            self._description_cache = None
+        
+        # The description will be lazily loaded from the C++ implementation
+        # when the description property is accessed
 
     def _map_data_type(self, sql_type):
         """
@@ -538,7 +496,7 @@ class Cursor:
     def execute(
         self,
         operation: str,
-        *parameters,
+        parameters=None,
         use_prepare: bool = True,
         reset_cursor: bool = True
     ) -> None:
@@ -552,66 +510,39 @@ class Cursor:
             reset_cursor: Whether to reset the cursor before execution.
         """
         self._check_closed()  # Check if the cursor is closed
-        if reset_cursor:
-            self._reset_cursor()
-
-        param_info = ddbc_bindings.ParamInfo
-        parameters_type = []
-
+        
+        # Clear any cached description
+        if hasattr(self, '_description_cache'):
+            self._description_cache = None
+            
+        # Prepare parameters if needed
+        if parameters is None:
+            parameters = []
+            
         # Flatten parameters if a single tuple or list is passed
         if len(parameters) == 1 and isinstance(parameters[0], (tuple, list)):
             parameters = parameters[0]
 
         parameters = list(parameters)
-
-        if parameters:
-            for i, param in enumerate(parameters):
-                paraminfo = self._create_parameter_types_list(
-                    param, param_info, parameters, i
-                )
-                parameters_type.append(paraminfo)
-
-        # TODO: Use a more sophisticated string compare that handles redundant spaces etc.
-        #       Also consider storing last query's hash instead of full query string. This will help
-        #       in low-memory conditions
-        #       (Ex: huge number of parallel queries with huge query string sizes)
-        if operation != self.last_executed_stmt:
-# Executing a new statement. Reset is_stmt_prepared to false
-            self.is_stmt_prepared = [False]
-
+        
         if ENABLE_LOGGING:
             logger.debug("Executing query: %s", operation)
             for i, param in enumerate(parameters):
                 logger.debug(
-                    """Parameter number: %s, Parameter: %s,
-                    Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
+                    "Parameter number: %s, Parameter: %s, Param Python Type: %s",
                     i + 1,
                     param,
-                    str(type(param)),
-                    parameters_type[i].paramSQLType,
-                    parameters_type[i].paramCType,
-                    parameters_type[i].columnSize,
-                    parameters_type[i].decimalDigits,
-                    parameters_type[i].inputOutputType,
+                    str(type(param))
                 )
-
-        ret = ddbc_bindings.DDBCSQLExecute(
-            self.hstmt,
-            operation,
-            parameters,
-            parameters_type,
-            self.is_stmt_prepared,
-            use_prepare,
-        )
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-        self.last_executed_stmt = operation
-
-        # Update rowcount after execution
-        # TODO: rowcount return code from SQL needs to be handled
-        self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
-
-        # Initialize description after execution
-        self._initialize_description()
+                
+        # Use the C++ implementation to execute the query
+        self._cursor.execute(operation, parameters)
+        
+        # Clear cached description
+        if hasattr(self, '_description_cache'):
+            self._description_cache = None
+            
+        # Description and rowcount are now automatically handled by the C++ implementation
 
     def executemany(self, operation: str, seq_of_parameters: list) -> None:
         """
@@ -625,25 +556,13 @@ class Cursor:
             Error: If the operation fails.
         """
         self._check_closed()  # Check if the cursor is closed
-
-        self._reset_cursor()
-
-        first_execution = True
-        total_rowcount = 0
-        for parameters in seq_of_parameters:
-            parameters = list(parameters)
-            if ENABLE_LOGGING:
-                logger.info("Executing query with parameters: %s", parameters)
-            prepare_stmt = first_execution
-            first_execution = False
-            self.execute(
-                operation, parameters, use_prepare=prepare_stmt, reset_cursor=False
-            )
-            if self.rowcount != -1:
-                total_rowcount += self.rowcount
-            else:
-                total_rowcount = -1
-        self.rowcount = total_rowcount
+        
+        # Clear any cached description
+        if hasattr(self, '_description_cache'):
+            self._description_cache = None
+            
+        # Use the C++ implementation
+        self._cursor.executemany(operation, seq_of_parameters)
 
     def fetchone(self) -> Union[None, Row]:
         """
@@ -653,16 +572,14 @@ class Cursor:
             Single Row object or None if no more data is available.
         """
         self._check_closed()  # Check if the cursor is closed
-
-        # Fetch raw data
-        row_data = []
-        ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
         
-        if ret == ddbc_sql_const.SQL_NO_DATA.value:
-            return None
+        # Use the C++ implementation to get raw data
+        row_data = self._cursor.fetchone()
         
-        # Create and return a Row object
-        return Row(row_data, self.description)
+        # Convert raw data to Row object if it's not None
+        if row_data is not None:
+            return Row(row_data, self.description)
+        return None
 
     def fetchmany(self, size: int = None) -> List[Row]:
         """
@@ -679,12 +596,8 @@ class Cursor:
         if size is None:
             size = self.arraysize
 
-        if size <= 0:
-            return []
-        
-        # Fetch raw data
-        rows_data = []
-        ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
+        # Use the C++ implementation to get raw data
+        rows_data = self._cursor.fetchmany(size)
         
         # Convert raw data to Row objects
         return [Row(row_data, self.description) for row_data in rows_data]
@@ -697,10 +610,9 @@ class Cursor:
             List of Row objects.
         """
         self._check_closed()  # Check if the cursor is closed
-
-        # Fetch raw data
-        rows_data = []
-        ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+        
+        # Use the C++ implementation
+        rows_data = self._cursor.fetchall()
         
         # Convert raw data to Row objects
         return [Row(row_data, self.description) for row_data in rows_data]
@@ -716,10 +628,92 @@ class Cursor:
             Error: If the previous call to execute did not produce any result set.
         """
         self._check_closed()  # Check if the cursor is closed
+        
+        # Use the C++ implementation
+        return self._cursor.nextset()
+        
+    def setinputsizes(self, sizes) -> None:
+        """
+        Set sizes of input parameters.
+        
+        This method is optional since the database interface should adapt
+        to input parameters as needed. If implemented, it should be called
+        before execute() or executemany().
+        
+        Args:
+            sizes: A sequence of type information for input parameters.
+        """
+        self._check_closed()  # Check if the cursor is closed
+        
+        # Use the C++ implementation
+        self._cursor.setinputsizes(sizes)
+        
+    def setoutputsize(self, size, column=None) -> None:
+        """
+        Set a column buffer size for fetching large data items.
+        
+        This method is optional since the interface should adapt as needed.
+        
+        Args:
+            size: The buffer size.
+            column: The column index (starting at 0). If None, applies to all columns.
+        """
+        self._check_closed()  # Check if the cursor is closed
+        
+        # Use the C++ implementation
+        col_idx = -1 if column is None else column
+        self._cursor.setoutputsize(size, col_idx)
+        
+    @property
+    def description(self):
+        """
+        Read-only attribute providing information about each result column.
 
-        # Skip to the next result set
-        ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt)
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-        if ret == ddbc_sql_const.SQL_NO_DATA.value:
-            return False
-        return True
+        Returns:
+            Sequence of 7-item sequences describing one result column, or None.
+            The 7 items are: (name, type_code, display_size, internal_size, precision, scale, null_ok)
+        """
+        if not hasattr(self, '_description_cache') or self._description_cache is None:
+            if not self.closed and hasattr(self, '_cursor'):
+                self._description_cache = self._cursor.getDescription()
+            else:
+                self._description_cache = None
+        return self._description_cache
+        
+    @property
+    def rowcount(self):
+        """
+        Read-only attribute specifying the number of rows affected by the last operation.
+
+        Returns:
+            Number of rows affected by the last execute call, or -1 when not determined.
+        """
+        if self.closed:
+            return -1
+        return self._cursor.getRowCount()
+        
+    @property
+    def arraysize(self):
+        """
+        Read/write attribute specifying the number of rows to fetch at a time with fetchmany().
+
+        Returns:
+            The current arraysize.
+        """
+        if not hasattr(self, '_arraysize'):
+            self._arraysize = 1
+        return self._arraysize
+        
+    @arraysize.setter
+    def arraysize(self, value):
+        """
+        Set the number of rows to fetch at a time with fetchmany().
+        
+        Args:
+            value: The new arraysize.
+        """
+        if value <= 0:
+            raise ValueError("arraysize must be positive")
+        self._arraysize = value
+        if hasattr(self, '_cursor') and not self.closed:
+            self._cursor.setArraySize(value)

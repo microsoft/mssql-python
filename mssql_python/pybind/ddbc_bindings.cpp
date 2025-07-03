@@ -6,6 +6,7 @@
 #include "ddbc_bindings.h"
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
+#include "cursor/cursor.h"
 
 #include <cstdint>
 #include <iomanip>  // std::setw, std::setfill
@@ -2108,6 +2109,22 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("set_autocommit", &ConnectionHandle::setAutocommit)
         .def("get_autocommit", &ConnectionHandle::getAutocommit)
         .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle);
+        
+    py::class_<CursorHandle>(m, "Cursor")
+        .def(py::init<std::shared_ptr<ConnectionHandle>>())
+        .def("close", &CursorHandle::close, "Close the cursor")
+        .def("execute", &CursorHandle::execute, py::arg("query"), py::arg("parameters") = py::none(), "Execute a SQL query")
+        .def("executemany", &CursorHandle::executemany, "Execute a SQL query multiple times with different parameters")
+        .def("fetchone", &CursorHandle::fetchone, "Fetch one row from the result set")
+        .def("fetchmany", &CursorHandle::fetchmany, py::arg("size") = 0, "Fetch multiple rows from the result set")
+        .def("fetchall", &CursorHandle::fetchall, "Fetch all rows from the result set")
+        .def("nextset", &CursorHandle::nextset, "Move to the next result set")
+        .def("setinputsizes", &CursorHandle::setinputsizes, "Set input parameter sizes")
+        .def("setoutputsize", &CursorHandle::setoutputsize, py::arg("size"), py::arg("column") = -1, "Set output column size")
+        .def_property_readonly("description", &CursorHandle::getDescription, "Column descriptions")
+        .def_property_readonly("rowcount", &CursorHandle::getRowCount, "Number of affected rows")
+        .def_property("arraysize", &CursorHandle::getArraySize, &CursorHandle::setArraySize, "Number of rows to fetch at a time")
+        .def_property_readonly("closed", &CursorHandle::isClosed, "Whether the cursor is closed");
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("close_pooling", []() {ConnectionPoolManager::getInstance().closePools();});
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
