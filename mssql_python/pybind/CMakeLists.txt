@@ -72,6 +72,7 @@ elseif(APPLE)
     # macOS always uses universal2
     set(WHEEL_ARCH "universal2")
 else()
+    message(STATUS "Setting Linux wheel architecture based on detected architecture (${ARCHITECTURE})")
     # Linux architecture mapping
     if(ARCHITECTURE STREQUAL "arm64" OR ARCHITECTURE STREQUAL "aarch64")
         set(WHEEL_ARCH "arm64")
