@@ -69,8 +69,8 @@ jobs:
             const totalChanges = additions + deletions;
 
             // Threshold constants
-            const SMALL_PR_THRESHOLD = 50;
-            const MEDIUM_PR_THRESHOLD = 200;
+            const SMALL_PR_THRESHOLD = 100;
+            const MEDIUM_PR_THRESHOLD = 500;
 
             let labelToAdd = '';
             if (totalChanges < SMALL_PR_THRESHOLD) {
