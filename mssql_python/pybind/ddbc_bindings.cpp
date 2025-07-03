@@ -568,7 +568,7 @@ std::string GetModuleDirectory() {
         std::string dir = module_file.substr(0, pos);
         return dir;
     }
-    std::cerr << "DEBUG: Could not extract directory from path: " << module_file << std::endl;
+    LOG("DEBUG: Could not extract directory from path: {}", module_file);
     return module_file;
 #endif
 }
