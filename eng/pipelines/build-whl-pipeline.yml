@@ -361,13 +361,11 @@ jobs:
     matrix:
       # Python 3.10 (x86_64 and ARM64)
       py310_x86_64:
-        pythonVersion: '3.10'
         shortPyVer: '310'
         targetArch: 'x86_64'
         dockerPlatform: 'linux/amd64'
         manylinuxTag: 'manylinux2014_x86_64'
       py310_arm64:
-        pythonVersion: '3.10'
         shortPyVer: '310'
         targetArch: 'aarch64'
         dockerPlatform: 'linux/arm64'
@@ -375,13 +373,11 @@ jobs:
 
       # Python 3.11 (x86_64 and ARM64)
       py311_x86_64:
-        pythonVersion: '3.11'
         shortPyVer: '311'
         targetArch: 'x86_64'
         dockerPlatform: 'linux/amd64'
         manylinuxTag: 'manylinux2014_x86_64'
       py311_arm64:
-        pythonVersion: '3.11'
         shortPyVer: '311'
         targetArch: 'aarch64'
         dockerPlatform: 'linux/arm64'
@@ -389,13 +385,11 @@ jobs:
 
       # Python 3.12 (x86_64 and ARM64)
       py312_x86_64:
-        pythonVersion: '3.12'
         shortPyVer: '312'
         targetArch: 'x86_64'
         dockerPlatform: 'linux/amd64'
         manylinuxTag: 'manylinux2014_x86_64'
       py312_arm64:
-        pythonVersion: '3.12'
         shortPyVer: '312'
         targetArch: 'aarch64'
         dockerPlatform: 'linux/arm64'
@@ -403,13 +397,11 @@ jobs:
 
       # Python 3.13 (x86_64 and ARM64)
       py313_x86_64:
-        pythonVersion: '3.13'
         shortPyVer: '313'
         targetArch: 'x86_64'
         dockerPlatform: 'linux/amd64'
         manylinuxTag: 'manylinux2014_x86_64'
       py313_arm64:
-        pythonVersion: '3.13'
         shortPyVer: '313'
         targetArch: 'aarch64'
         dockerPlatform: 'linux/arm64'
@@ -473,17 +465,26 @@ jobs:
     # Install dependencies and set up Python in manylinux container
     - script: |
         docker exec build-container-$(targetArch) bash -c "
-          # Install Python $(pythonVersion) from manylinux
-          PYTHON_VERSION=$(pythonVersion)
-          PYTHON_TAG=cp\${PYTHON_VERSION//./}
+          # List available Python versions in manylinux container
+          echo 'Available Python versions in manylinux container:'
+          ls -la /opt/python/
           
-          # Find the correct Python binary
-          if [ -x /opt/python/\${PYTHON_TAG}-\${PYTHON_TAG}/bin/python ]; then
-            PYTHON_BIN=/opt/python/\${PYTHON_TAG}-\${PYTHON_TAG}/bin/python
-          elif [ -x /opt/python/\${PYTHON_TAG}-\${PYTHON_TAG}m/bin/python ]; then
-            PYTHON_BIN=/opt/python/\${PYTHON_TAG}-\${PYTHON_TAG}m/bin/python
-          else
-            echo 'Python $(pythonVersion) not found in manylinux container'
+          # Find the correct Python binary for cp$(shortPyVer)
+          PYTHON_TAG=cp$(shortPyVer)
+          PYTHON_BIN=''
+          
+          # Try different naming patterns
+          for pattern in \${PYTHON_TAG}-\${PYTHON_TAG} \${PYTHON_TAG}-\${PYTHON_TAG}m; do
+            if [ -x /opt/python/\${pattern}/bin/python ]; then
+              PYTHON_BIN=/opt/python/\${pattern}/bin/python
+              PIP_BIN=/opt/python/\${pattern}/bin/pip
+              break
+            fi
+          done
+          
+          if [ -z \"\$PYTHON_BIN\" ]; then
+            echo 'Python $(shortPyVer) not found in manylinux container'
+            echo 'Available Python versions:'
             ls -la /opt/python/
             exit 1
           fi
@@ -491,9 +492,9 @@ jobs:
           echo \"Using Python binary: \$PYTHON_BIN\"
           \$PYTHON_BIN --version
           
-          # Create symlink for easier access
+          # Create symlinks for easier access
           ln -sf \$PYTHON_BIN /usr/local/bin/python
-          ln -sf \${PYTHON_BIN%/*}/pip /usr/local/bin/pip
+          ln -sf \$PIP_BIN /usr/local/bin/pip
           
           # Install build dependencies
           python -m pip install --upgrade pip
@@ -504,6 +505,8 @@ jobs:
           python --version
           pip --version
           uname -m
+          echo 'Python path:' \$(which python)
+          echo 'Pip path:' \$(which pip)
         "
       displayName: 'Install dependencies in manylinux2014 $(targetArch) container'
 
@@ -531,6 +534,7 @@ jobs:
           build-container-$(targetArch) bash -c "
           echo 'Running tests on manylinux2014 $(targetArch)'
           echo 'Architecture:' \$(uname -m)
+          echo 'Python version:' \$(python --version)
           python -m pytest -v
         "
       displayName: 'Run tests in manylinux2014 $(targetArch) container'
@@ -540,7 +544,8 @@ jobs:
     # Build manylinux wheel
     - script: |
         docker exec build-container-$(targetArch) bash -c "
-          echo 'Building manylinux2014 wheel for Python $(pythonVersion) on $(targetArch)'
+          echo 'Building manylinux2014 wheel for Python cp$(shortPyVer) on $(targetArch)'
+          echo 'Python version:' \$(python --version)
           python -m pip install --upgrade pip wheel setuptools
           
           # Build the wheel
@@ -557,9 +562,10 @@ jobs:
           rm -f dist/*-linux_*.whl
           
           # Verify final wheel
+          echo 'Final manylinux wheel:'
           ls -la dist/
         "
-      displayName: 'Build manylinux2014 wheel for Python $(pythonVersion) ($(targetArch))'
+      displayName: 'Build manylinux2014 wheel for Python cp$(shortPyVer) ($(targetArch))'
 
     # Copy the wheel file to the artifacts
     - script: |

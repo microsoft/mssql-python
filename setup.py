@@ -68,9 +68,9 @@ if sys.platform.startswith('win'):
 
     # Add architecture-specific packages
     packages.extend([
-        f'mssql_python.libs.{arch}',
-        f'mssql_python.libs.{arch}.1033',
-        f'mssql_python.libs.{arch}.vcredist'
+        f'mssql_python.libs.windows.{arch}',
+        f'mssql_python.libs.windows.{arch}.1033',
+        f'mssql_python.libs.windows.{arch}.vcredist'
     ])
 elif sys.platform.startswith('darwin'):
     # macOS platform - always use universal2
