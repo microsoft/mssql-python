@@ -533,6 +533,9 @@ jobs:
         rm -rf /opt/microsoft/msodbcsql
         rm -f /lib/aarch64-linux-gnu/libodbcinst.so.2
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
+        echo 'Uninstalled ODBC Driver and cleaned up libraries'
+        echo 'Verifying arm64 debian_ubuntu driver library signatures:'
+        ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.5.so.1.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) ARM64 container'
 
@@ -743,6 +746,9 @@ jobs:
         rm -rf /opt/microsoft/msodbcsql
         rm -f /lib64/libodbcinst.so.2
         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
+        echo 'Uninstalled ODBC Driver and cleaned up libraries'
+        echo 'Verifying arm64 debian_ubuntu driver library signatures:'
+        ldd mssql_python/libs/linux/debian_ubuntu/rhel/lib/libmsodbcsql-18.5.so.1.1
       "
     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 container'
 
