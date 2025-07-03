@@ -543,6 +543,7 @@ void LOG(const std::string& formatString, Args&&... args) {
 
 // TODO: Add more nuanced exception classes
 void ThrowStdException(const std::string& message) { throw std::runtime_error(message); }
+std::string GetLastErrorMessage();
 
 // TODO: Move this to Python
 std::string GetModuleDirectory() {
