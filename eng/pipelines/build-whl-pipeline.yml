@@ -585,8 +585,18 @@ jobs:
 
     # Copy the wheel file to the artifacts
     - script: |
+        # Debug: Check what's in the dist directory
+        docker exec build-container-$(targetArch) bash -c "
+          echo 'Contents of /workspace/dist after wheel build:'
+          ls -la /workspace/dist/ || echo 'dist directory does not exist'
+        "
+        
         mkdir -p $(Build.ArtifactStagingDirectory)/dist
-        docker cp build-container-$(targetArch):/workspace/dist/. $(Build.ArtifactStagingDirectory)/dist/
+        docker cp build-container-$(targetArch):/workspace/dist/. $(Build.ArtifactStagingDirectory)/dist/ || echo "Failed to copy dist directory"
+        
+        # Verify what was copied
+        echo "Contents of staging dist directory:"
+        ls -la $(Build.ArtifactStagingDirectory)/dist/ || echo "Staging dist directory is empty"
       displayName: 'Copy wheel from container to artifacts'
 
     # Copy the built .so file to staging folder for artifacts
