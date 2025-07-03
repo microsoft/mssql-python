@@ -2109,6 +2109,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("get_autocommit", &ConnectionHandle::getAutocommit)
         .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle);
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
+    m.def("close_pooling", []() {ConnectionPoolManager::getInstance().closePools();});
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");
     m.def("DDBCSQLRowCount", &SQLRowCount_wrap,
