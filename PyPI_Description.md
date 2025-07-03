@@ -8,9 +8,10 @@ We are making progress - The Public Preview of our driver is now available! This
 
 ### What's Included:
 
-- Everything from alpha
-- macOS Support: The mssql-python driver now supports macOS on Intel as well as ARM-based systems, enabling seamless development on Apple Silicon (M-series) devices. This milestone strengthens our cross-platform capabilities—and we’re just getting started. Linux support is on the horizon!
-- Connection Pooling: We've introduced a robust and configurable connection pooling system designed to significantly enhance performance and optimize resource utilization. This feature ensures more efficient management of database connections, especially under high-load scenarios. This feature is only available on Windows as of now.
+- Everything from previous releases
+- **Linux Support**: The mssql-python driver now supports Linux OS (manylinux2014) - Ubuntu, Debian and RHEL, enabling seamless development on Linux based systems. Added Linux driver libraries and related logic for architecture-specific handling and ODBC driver path resolution. Support for other Linux based distros will come in subsequent releases.
+- **Connection Pooling Support for MacOS and Linux**: Implemented connection pooling features for MacOS and Linux, including tests and unified code support for pooling across platforms.
+Expanded Pipeline/Test Matrix: Added/expanded support for Python versions < 3.13 and enhanced database setup for testing, including LocalDB and Docker-based SQL Server.
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
 

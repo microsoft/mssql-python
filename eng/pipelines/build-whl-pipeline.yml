@@ -376,7 +376,7 @@ jobs:
         manylinuxTag: 'manylinux2014_x86_64'
       py310_arm64:
         shortPyVer: '310'
-        targetArch: 'aarch64'
+        targetArch: 'arm64'
         dockerPlatform: 'linux/arm64'
         manylinuxTag: 'manylinux2014_aarch64'
 
@@ -388,7 +388,7 @@ jobs:
         manylinuxTag: 'manylinux2014_x86_64'
       py311_arm64:
         shortPyVer: '311'
-        targetArch: 'aarch64'
+        targetArch: 'arm64'
         dockerPlatform: 'linux/arm64'
         manylinuxTag: 'manylinux2014_aarch64'
 
@@ -400,7 +400,7 @@ jobs:
         manylinuxTag: 'manylinux2014_x86_64'
       py312_arm64:
         shortPyVer: '312'
-        targetArch: 'aarch64'
+        targetArch: 'arm64'
         dockerPlatform: 'linux/arm64'
         manylinuxTag: 'manylinux2014_aarch64'
 
@@ -412,7 +412,7 @@ jobs:
         manylinuxTag: 'manylinux2014_x86_64'
       py313_arm64:
         shortPyVer: '313'
-        targetArch: 'aarch64'
+        targetArch: 'arm64'
         dockerPlatform: 'linux/arm64'
         manylinuxTag: 'manylinux2014_aarch64'
 
