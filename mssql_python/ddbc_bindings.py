@@ -62,6 +62,10 @@ if platform_name == 'darwin':
     architecture = "universal2"
 else:
     architecture = normalize_architecture(platform_name, raw_architecture)
+    
+    # Handle Windows-specific naming for binary files
+    if platform_name == 'windows' and architecture == 'x64':
+        architecture = "amd64"
 
 # Validate supported platforms
 if platform_name not in ['windows', 'darwin', 'linux']:
