@@ -81,6 +81,25 @@ elif sys.platform.startswith('darwin'):
     packages.extend([
         f'mssql_python.libs.macos',
     ])
+elif sys.platform.startswith('linux'):
+    # Linux platform - use manylinux2014 tags
+    import platform
+    machine = platform.machine()
+    
+    if machine == 'x86_64':
+        arch = 'x86_64'
+        platform_tag = 'manylinux2014_x86_64'
+    elif machine in ['aarch64', 'arm64']:
+        arch = 'aarch64'
+        platform_tag = 'manylinux2014_aarch64'
+    else:
+        # Not supported
+        raise OSError(f"Unsupported architecture '{machine}' for Linux; expected 'x86_64' or 'aarch64'.")
+
+    # Add architecture-specific packages for Linux
+    packages.extend([
+        f'mssql_python.libs.linux',
+    ])
 else:
     platform_tag = 'any'  # Fallback
 
@@ -110,6 +129,7 @@ setup(
     classifiers=[
         'Operating System :: Microsoft :: Windows',
         'Operating System :: MacOS',
+        'Operating System :: POSIX :: Linux',
     ],
     zip_safe=False,
     # Force binary distribution
