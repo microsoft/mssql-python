@@ -730,5 +730,4 @@ class Cursor:
 
     def __del__(self):
         # Add logs to cursor closing
-        print("Deleting cursor object")
-        self.close()
+        print("[SEGDEBUGGING] __del__ cursor object called which does nothing")
