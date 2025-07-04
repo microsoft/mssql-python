@@ -875,8 +875,8 @@ CREATE PROCEDURE dbo.GetEmployeeProjects
 AS
 BEGIN
     SELECT e.name, p.project_name
-    FROM dbo.#pytest_employees e
-    JOIN dbo.#pytest_projects p ON e.employee_id = p.employee_id
+    FROM #pytest_employees e
+    JOIN #pytest_projects p ON e.employee_id = p.employee_id
     WHERE e.employee_id = @EmployeeID
 END
 """
