@@ -92,7 +92,7 @@ void Cursor::execute(const std::wstring& query, const py::list& parameters) {
     
     if (hasParameters) {
         // Prepare the statement
-        SQLRETURN ret = SQLPrepare_ptr(_hstmt->handle(), 
+        SQLRETURN ret = SQLPrepare_ptr(_hstmt->get(), 
                                     const_cast<SQLWCHAR*>(query.c_str()), 
                                     SQL_NTS);
         if (!SQL_SUCCEEDED(ret)) {
@@ -106,13 +106,13 @@ void Cursor::execute(const std::wstring& query, const py::list& parameters) {
         bindParameters(parameters);
         
         // Execute the prepared statement
-        ret = SQLExecute_ptr(_hstmt->handle());
+        ret = SQLExecute_ptr(_hstmt->get());
         if (!SQL_SUCCEEDED(ret)) {
             throw py::value_error("Failed to execute prepared statement");
         }
     } else {
         // No parameters, direct execution
-        SQLRETURN ret = SQLExecDirect_ptr(_hstmt->handle(), 
+        SQLRETURN ret = SQLExecDirect_ptr(_hstmt->get(), 
                                       const_cast<SQLWCHAR*>(query.c_str()), 
                                       SQL_NTS);
         if (!SQL_SUCCEEDED(ret)) {
@@ -124,10 +124,10 @@ void Cursor::execute(const std::wstring& query, const py::list& parameters) {
     }
     
     // Get row count
-    SQLRowCount_ptr(_hstmt->handle(), &_rowcount);
+    SQLRowCount_ptr(_hstmt->get(), &_rowcount);
     
     // Prepare result set description if available
-    SQLNumResultCols_ptr(_hstmt->handle(), &_numCols);
+    SQLNumResultCols_ptr(_hstmt->get(), &_numCols);
     
     if (_numCols > 0) {
         prepareDescription();
@@ -142,13 +142,22 @@ void Cursor::bindParameters(const py::list& parameters) {
         py::object param = parameters[i];
         
         if (py::isinstance<py::str>(param)) {
-            // String parameter
+            // String parameter - convert properly from Python string
+            #ifdef _WIN32
+            std::string utf8str = param.cast<std::string>();
+            // Properly convert UTF-8 string to wstring using MultiByteToWideChar
+            int wsize = MultiByteToWideChar(CP_UTF8, 0, utf8str.c_str(), -1, NULL, 0);
+            std::wstring wstr(wsize, 0);
+            MultiByteToWideChar(CP_UTF8, 0, utf8str.c_str(), -1, &wstr[0], wsize);
+            wstr.resize(wsize - 1); // Remove null terminator
+            #else
             std::wstring wstr = param.cast<std::wstring>();
+            #endif
             
             // Bind as WCHAR
-            SQLBindParameter_ptr(_hstmt->handle(), i + 1, SQL_PARAM_INPUT, 
+            SQLBindParameter_ptr(_hstmt->get(), static_cast<SQLUSMALLINT>(i + 1), SQL_PARAM_INPUT, 
                              SQL_C_WCHAR, SQL_WVARCHAR, 
-                             wstr.size(), 0, 
+                             static_cast<SQLUSMALLINT>(wstr.size()), 0, 
                              const_cast<SQLWCHAR*>(wstr.c_str()), 
                              wstr.size() * sizeof(SQLWCHAR), 
                              nullptr);
@@ -156,7 +165,7 @@ void Cursor::bindParameters(const py::list& parameters) {
         else if (py::isinstance<py::int_>(param)) {
             // Integer parameter
             long long val = param.cast<long long>();
-            SQLBindParameter_ptr(_hstmt->handle(), i + 1, SQL_PARAM_INPUT, 
+            SQLBindParameter_ptr(_hstmt->get(), static_cast<SQLUSMALLINT>(i + 1), SQL_PARAM_INPUT, 
                              SQL_C_SBIGINT, SQL_BIGINT, 
                              0, 0, 
                              &val, 
@@ -166,7 +175,7 @@ void Cursor::bindParameters(const py::list& parameters) {
         else if (py::isinstance<py::float_>(param)) {
             // Float parameter
             double val = param.cast<double>();
-            SQLBindParameter_ptr(_hstmt->handle(), i + 1, SQL_PARAM_INPUT, 
+            SQLBindParameter_ptr(_hstmt->get(), static_cast<SQLUSMALLINT>(i + 1), SQL_PARAM_INPUT, 
                              SQL_C_DOUBLE, SQL_DOUBLE, 
                              0, 0, 
                              &val, 
@@ -175,7 +184,7 @@ void Cursor::bindParameters(const py::list& parameters) {
         }
         else if (py::isinstance<py::none>(param)) {
             // NULL parameter
-            SQLBindParameter_ptr(_hstmt->handle(), i + 1, SQL_PARAM_INPUT, 
+            SQLBindParameter_ptr(_hstmt->get(), static_cast<SQLUSMALLINT>(i + 1), SQL_PARAM_INPUT, 
                              SQL_C_DEFAULT, SQL_VARCHAR, 
                              1, 0, 
                              nullptr, 
@@ -187,9 +196,9 @@ void Cursor::bindParameters(const py::list& parameters) {
             std::string str = py::str(param).cast<std::string>();
             
             // Bind as CHAR
-            SQLBindParameter_ptr(_hstmt->handle(), i + 1, SQL_PARAM_INPUT, 
+            SQLBindParameter_ptr(_hstmt->get(), static_cast<SQLUSMALLINT>(i + 1), SQL_PARAM_INPUT, 
                              SQL_C_CHAR, SQL_VARCHAR, 
-                             str.size(), 0, 
+                             static_cast<SQLUSMALLINT>(str.size()), 0, 
                              const_cast<char*>(str.c_str()), 
                              str.size(), 
                              nullptr);
@@ -206,7 +215,7 @@ void Cursor::executemany(const std::wstring& query, const py::list& seq_of_param
     }
     
     // Prepare the statement once
-    SQLRETURN ret = SQLPrepare_ptr(_hstmt->handle(), 
+    SQLRETURN ret = SQLPrepare_ptr(_hstmt->get(), 
                                const_cast<SQLWCHAR*>(query.c_str()), 
                                SQL_NTS);
     if (!SQL_SUCCEEDED(ret)) {
@@ -223,14 +232,14 @@ void Cursor::executemany(const std::wstring& query, const py::list& seq_of_param
         bindParameters(params.cast<py::list>());
         
         // Execute the prepared statement
-        ret = SQLExecute_ptr(_hstmt->handle());
+        ret = SQLExecute_ptr(_hstmt->get());
         if (!SQL_SUCCEEDED(ret)) {
             throw py::value_error("Failed to execute prepared statement");
         }
         
         // Accumulate row count
         SQLLEN rows = 0;
-        SQLRowCount_ptr(_hstmt->handle(), &rows);
+        SQLRowCount_ptr(_hstmt->get(), &rows);
         if (rows >= 0) {
             if (_rowcount < 0) {
                 _rowcount = rows;
@@ -259,7 +268,7 @@ void Cursor::prepareDescription() {
         SQLSMALLINT decimalDigits = 0;
         SQLSMALLINT nullable = 0;
         
-        SQLRETURN ret = SQLDescribeCol_ptr(_hstmt->handle(), i + 1, 
+        SQLRETURN ret = SQLDescribeCol_ptr(_hstmt->get(), i + 1, 
                                        colName, sizeof(colName) / sizeof(SQLWCHAR), 
                                        &colNameLen, &dataType, &colSize, 
                                        &decimalDigits, &nullable);
@@ -267,13 +276,18 @@ void Cursor::prepareDescription() {
         if (SQL_SUCCEEDED(ret)) {
             std::wstring wname(colName);
             #ifdef _WIN32
-            _columnNames[i] = std::string(wname.begin(), wname.end());
+            // Properly convert from wstring to UTF-8 string using WideCharToMultiByte for safe conversion
+            int utf8size = WideCharToMultiByte(CP_UTF8, 0, wname.c_str(), -1, NULL, 0, NULL, NULL);
+            std::string utf8name(utf8size, 0);
+            WideCharToMultiByte(CP_UTF8, 0, wname.c_str(), -1, &utf8name[0], utf8size, NULL, NULL);
+            utf8name.resize(utf8size - 1); // Remove null terminator
+            _columnNames[i] = utf8name;
             #else
             _columnNames[i] = WideToUTF8(wname);
             #endif
             _columnTypes[i] = dataType;
             _columnSizes[i] = colSize;
-            _columnPrecisions[i] = colSize;
+            _columnPrecisions[i] = static_cast<SQLSMALLINT>(colSize);
             _columnScales[i] = decimalDigits;
             _columnNullables[i] = (nullable == SQL_NULLABLE);
             
@@ -302,7 +316,7 @@ py::object Cursor::fetchone() {
         return py::none();
     }
     
-    SQLRETURN ret = SQLFetch_ptr(_hstmt->handle());
+    SQLRETURN ret = SQLFetch_ptr(_hstmt->get());
     
     if (ret == SQL_NO_DATA) {
         _resultSetEmpty = true;
@@ -326,14 +340,14 @@ py::object Cursor::fetchone() {
             case SQL_LONGVARCHAR: {
                 // Get data size first
                 SQLLEN dataSize = 0;
-                SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_CHAR, nullptr, 0, &dataSize);
+                SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_CHAR, nullptr, 0, &dataSize);
                 
                 if (dataSize == SQL_NULL_DATA) {
                     row[i] = py::none();
                 } else {
                     // Allocate buffer and fetch
                     std::string buffer(dataSize + 1, '\0');
-                    SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_CHAR, 
+                    SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_CHAR, 
                                &buffer[0], buffer.size(), &indicator);
                     
                     if (indicator == SQL_NULL_DATA) {
@@ -350,14 +364,14 @@ py::object Cursor::fetchone() {
             case SQL_WLONGVARCHAR: {
                 // Get data size first
                 SQLLEN dataSize = 0;
-                SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_WCHAR, nullptr, 0, &dataSize);
+                SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_WCHAR, nullptr, 0, &dataSize);
                 
                 if (dataSize == SQL_NULL_DATA) {
                     row[i] = py::none();
                 } else {
                     // Allocate buffer and fetch
                     std::wstring buffer(dataSize / sizeof(SQLWCHAR) + 1, L'\0');
-                    SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_WCHAR, 
+                    SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_WCHAR, 
                                &buffer[0], buffer.size() * sizeof(SQLWCHAR), &indicator);
                     
                     if (indicator == SQL_NULL_DATA) {
@@ -365,7 +379,12 @@ py::object Cursor::fetchone() {
                     } else {
                         buffer.resize(indicator / sizeof(SQLWCHAR));
                         #ifdef _WIN32
-                        row[i] = py::str(buffer);
+                        // Use WideCharToMultiByte for safe UTF-16 to UTF-8 conversion
+                        int utf8size = WideCharToMultiByte(CP_UTF8, 0, buffer.c_str(), -1, NULL, 0, NULL, NULL);
+                        std::string utf8str(utf8size, 0);
+                        WideCharToMultiByte(CP_UTF8, 0, buffer.c_str(), -1, &utf8str[0], utf8size, NULL, NULL);
+                        utf8str.resize(utf8size - 1); // Remove null terminator
+                        row[i] = py::str(utf8str);
                         #else
                         row[i] = py::str(WideToUTF8(buffer));
                         #endif
@@ -377,7 +396,7 @@ py::object Cursor::fetchone() {
             case SQL_SMALLINT:
             case SQL_TINYINT: {
                 int value = 0;
-                SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_LONG, &value, sizeof(value), &indicator);
+                SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_LONG, &value, sizeof(value), &indicator);
                 
                 if (indicator == SQL_NULL_DATA) {
                     row[i] = py::none();
@@ -388,7 +407,7 @@ py::object Cursor::fetchone() {
             }
             case SQL_BIGINT: {
                 long long value = 0;
-                SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_SBIGINT, &value, sizeof(value), &indicator);
+                SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_SBIGINT, &value, sizeof(value), &indicator);
                 
                 if (indicator == SQL_NULL_DATA) {
                     row[i] = py::none();
@@ -401,7 +420,7 @@ py::object Cursor::fetchone() {
             case SQL_FLOAT:
             case SQL_DOUBLE: {
                 double value = 0.0;
-                SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_DOUBLE, &value, sizeof(value), &indicator);
+                SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_DOUBLE, &value, sizeof(value), &indicator);
                 
                 if (indicator == SQL_NULL_DATA) {
                     row[i] = py::none();
@@ -412,7 +431,7 @@ py::object Cursor::fetchone() {
             }
             case SQL_BIT: {
                 unsigned char value = 0;
-                SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_BIT, &value, sizeof(value), &indicator);
+                SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_BIT, &value, sizeof(value), &indicator);
                 
                 if (indicator == SQL_NULL_DATA) {
                     row[i] = py::none();
@@ -424,7 +443,7 @@ py::object Cursor::fetchone() {
             case SQL_DATE:
             case SQL_TYPE_DATE: {
                 SQL_DATE_STRUCT date = {0};
-                SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_DATE, &date, sizeof(date), &indicator);
+                SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_DATE, &date, sizeof(date), &indicator);
                 
                 if (indicator == SQL_NULL_DATA) {
                     row[i] = py::none();
@@ -438,7 +457,7 @@ py::object Cursor::fetchone() {
             case SQL_TIMESTAMP:
             case SQL_TYPE_TIMESTAMP: {
                 SQL_TIMESTAMP_STRUCT ts = {0};
-                SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_TIMESTAMP, &ts, sizeof(ts), &indicator);
+                SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_TIMESTAMP, &ts, sizeof(ts), &indicator);
                 
                 if (indicator == SQL_NULL_DATA) {
                     row[i] = py::none();
@@ -454,7 +473,7 @@ py::object Cursor::fetchone() {
             case SQL_TIME:
             case SQL_TYPE_TIME: {
                 SQL_TIME_STRUCT time = {0};
-                SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_TIME, &time, sizeof(time), &indicator);
+                SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_TIME, &time, sizeof(time), &indicator);
                 
                 if (indicator == SQL_NULL_DATA) {
                     row[i] = py::none();
@@ -470,14 +489,14 @@ py::object Cursor::fetchone() {
             case SQL_LONGVARBINARY: {
                 // Get data size first
                 SQLLEN dataSize = 0;
-                SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_BINARY, nullptr, 0, &dataSize);
+                SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_BINARY, nullptr, 0, &dataSize);
                 
                 if (dataSize == SQL_NULL_DATA) {
                     row[i] = py::none();
                 } else {
                     // Allocate buffer and fetch
                     std::vector<unsigned char> buffer(dataSize);
-                    SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_BINARY, 
+                    SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_BINARY, 
                                buffer.data(), buffer.size(), &indicator);
                     
                     if (indicator == SQL_NULL_DATA) {
@@ -492,14 +511,14 @@ py::object Cursor::fetchone() {
             default: {
                 // For all other types, convert to string
                 char buffer[1024] = {0};
-                SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_CHAR, buffer, sizeof(buffer), &indicator);
+                SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_CHAR, buffer, sizeof(buffer), &indicator);
                 
                 if (indicator == SQL_NULL_DATA) {
                     row[i] = py::none();
                 } else if (indicator > sizeof(buffer) - 1) {
                     // Data truncated, need larger buffer
                     std::string largeBuf(indicator + 1, '\0');
-                    SQLGetData_ptr(_hstmt->handle(), i + 1, SQL_C_CHAR, 
+                    SQLGetData_ptr(_hstmt->get(), i + 1, SQL_C_CHAR, 
                                &largeBuf[0], largeBuf.size(), &indicator);
                     largeBuf.resize(indicator);
                     row[i] = py::str(largeBuf);
@@ -564,7 +583,7 @@ py::list Cursor::fetchall() {
 bool Cursor::nextset() {
     checkClosed();
     
-    SQLRETURN ret = SQLMoreResults_ptr(_hstmt->handle());
+    SQLRETURN ret = SQLMoreResults_ptr(_hstmt->get());
     
     if (ret == SQL_NO_DATA) {
         return false;
@@ -576,7 +595,7 @@ bool Cursor::nextset() {
     
     // Update column information for the new result set
     _resultSetEmpty = false;
-    SQLNumResultCols_ptr(_hstmt->handle(), &_numCols);
+    SQLNumResultCols_ptr(_hstmt->get(), &_numCols);
     
     if (_numCols > 0) {
         prepareDescription();
@@ -624,17 +643,30 @@ bool Cursor::isClosed() const {
 // Set input sizes (no-op for now)
 void Cursor::setinputsizes(const py::list& sizes) {
     // This is a no-op in ODBC, but included for API compliance
+    (void)sizes; // Mark parameter as used to avoid warning
 }
 
 // Set output size (no-op for now)
 void Cursor::setoutputsize(int size, int column) {
     // This is a no-op in ODBC, but included for API compliance
     _bufferLength = size;
+    (void)column; // Mark parameter as used to avoid warning
 }
 
 // CursorHandle implementation
 CursorHandle::CursorHandle(std::shared_ptr<ConnectionHandle> connection) {
+    if (!connection) {
+        throw py::value_error("Connection object is null");
+    }
     _cursor = std::make_shared<Cursor>(connection);
+}
+
+// Constructor implementation that takes a reference
+CursorHandle::CursorHandle(ConnectionHandle& connection) {
+    // Create a shared_ptr that won't delete the ConnectionHandle when it goes out of scope
+    // This is safe because Python owns the object and will manage its lifetime
+    std::shared_ptr<ConnectionHandle> conn_ptr(&connection, [](ConnectionHandle*){});
+    _cursor = std::make_shared<Cursor>(conn_ptr);
 }
 
 CursorHandle::~CursorHandle() {
@@ -654,7 +686,11 @@ void CursorHandle::close() {
 void CursorHandle::execute(const std::string& query, const py::object& parameters) {
     // Convert query to wide string
     #ifdef _WIN32
-    std::wstring wquery(query.begin(), query.end());
+    // Properly convert UTF-8 string to wstring using MultiByteToWideChar
+    int wsize = MultiByteToWideChar(CP_UTF8, 0, query.c_str(), -1, NULL, 0);
+    std::wstring wquery(wsize, 0);
+    MultiByteToWideChar(CP_UTF8, 0, query.c_str(), -1, &wquery[0], wsize);
+    wquery.resize(wsize - 1); // Remove null terminator
     #else
     std::wstring wquery = UTF8ToWide(query);
     #endif
@@ -677,7 +713,11 @@ void CursorHandle::execute(const std::string& query, const py::object& parameter
 void CursorHandle::executemany(const std::string& query, const py::list& seq_of_parameters) {
     // Convert query to wide string
     #ifdef _WIN32
-    std::wstring wquery(query.begin(), query.end());
+    // Properly convert UTF-8 string to wstring using MultiByteToWideChar
+    int wsize = MultiByteToWideChar(CP_UTF8, 0, query.c_str(), -1, NULL, 0);
+    std::wstring wquery(wsize, 0);
+    MultiByteToWideChar(CP_UTF8, 0, query.c_str(), -1, &wquery[0], wsize);
+    wquery.resize(wsize - 1); // Remove null terminator
     #else
     std::wstring wquery = UTF8ToWide(query);
     #endif
