@@ -50,7 +50,7 @@ jobs:
     # Run main.py
     - script: |
         python main.py
-        echo $(DB_CONNECTION_STRING:0:10)
+        echo $(DB_CONNECTION_STRING:0:20)
       displayName: 'Run main.py'
       env:
         DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
