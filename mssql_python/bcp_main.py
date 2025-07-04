@@ -89,6 +89,7 @@ class BCPClient:
             table,
             options.direction
         )
+        options.direction = options.direction.lower()
         if not table and options.direction != "queryout":
             # If 'table' is empty and direction is not 'queryout', raise an error.
             logger.error(
@@ -164,6 +165,61 @@ class BCPClient:
                     BCPControlOptions.HINTS.value, current_options.query
                 )
 
+            if current_options.batch_size:
+                logger.debug(
+                    "Setting BCPControlOptions.BATCH_SIZE to '%s'",
+                    current_options.batch_size
+                )
+                self.wrapper.bcp_control(
+                    BCPControlOptions.BATCH_SIZE.value,
+                    current_options.batch_size
+                )
+            if current_options.max_errors:
+                logger.debug(
+                    "Setting BCPControlOptions.MAX_ERRORS to '%s'",
+                    current_options.max_errors
+                )
+                self.wrapper.bcp_control(
+                    BCPControlOptions.MAX_ERRORS.value,
+                    current_options.max_errors
+                )
+            if current_options.first_row:
+                logger.debug(
+                    "Setting BCPControlOptions.FIRST_ROW to '%s'",
+                    current_options.first_row
+                )
+                self.wrapper.bcp_control(
+                    BCPControlOptions.FIRST_ROW.value,
+                    current_options.first_row
+                )
+            if current_options.last_row:
+                logger.debug(
+                    "Setting BCPControlOptions.LAST_ROW to '%s'",
+                    current_options.last_row
+                )
+                self.wrapper.bcp_control(
+                    BCPControlOptions.LAST_ROW.value,
+                    current_options.last_row
+                )
+            if current_options.keep_identity:
+                logger.debug(
+                    "Setting BCPControlOptions.KEEP_IDENTITY to '%s'",
+                    current_options.keep_identity
+                )
+                self.wrapper.bcp_control(
+                    BCPControlOptions.KEEP_IDENTITY.value,
+                    current_options.keep_identity
+                )
+            if current_options.keep_nulls:
+                logger.debug(
+                    "Setting BCPControlOptions.KEEP_NULLS to '%s'",
+                    current_options.keep_nulls
+                )
+                self.wrapper.bcp_control(
+                    BCPControlOptions.KEEP_NULLS.value,
+                    current_options.keep_nulls
+                )
+
             # Handle format file or column definitions
             if current_options.format_file:
                 logger.info("Reading format file: '%s'", current_options.format_file)
@@ -237,9 +293,6 @@ class BCPClient:
                         logger.info("Sending row %s to server", row_idx+1)
                         self.wrapper.send_row()
 
-                    # Call finish to complete the batch
-                    logger.info("Finishing BCP batch")
-                    self.wrapper.finish()
                 else:
                     # Original single-row logic
                     logger.info(
@@ -266,9 +319,9 @@ class BCPClient:
                     logger.info("Sending row to server")
                     self.wrapper.send_row()
 
-                    # Call finish to complete the batch
-                    logger.info("Finishing BCP batch")
-                    self.wrapper.finish()
+                # Call finish to complete the batch
+                logger.info("Finishing BCP batch")
+                self.wrapper.finish()
             else:
                 # For file-based BCP, execute and finish
                 logger.info("Executing BCP operation via wrapper.exec_bcp().")

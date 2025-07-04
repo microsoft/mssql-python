@@ -7,6 +7,15 @@
 #pragma once
 
 #include <pybind11/pybind11.h> // pybind11.h must be the first include - https://pybind11.readthedocs.io/en/latest/basics.html#header-and-namespace-conventions
+
+#include <Windows.h>
+#include <string>
+#include <sql.h>
+#include <sqlext.h>
+#include <memory>
+#include <mutex>
+#include <odbcss.h>
+
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
@@ -91,6 +100,19 @@ typedef SQLRETURN (SQL_API* SQLRowCountFunc)(SQLHSTMT, SQLLEN*);
 typedef SQLRETURN (SQL_API* SQLSetDescFieldFunc)(SQLHDESC, SQLSMALLINT, SQLSMALLINT, SQLPOINTER, SQLINTEGER);
 typedef SQLRETURN (SQL_API* SQLGetStmtAttrFunc)(SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER, SQLINTEGER*);
 
+// BCP APIs (Bulk Copy Program)
+// Typedefs (ensure these match the function signatures in odbcss.h)
+typedef SQLRETURN (SQL_API* BCPInitWFunc)(SQLHDBC, LPCWSTR, LPCWSTR, LPCWSTR, INT);
+typedef SQLRETURN (SQL_API* BCPControlWFunc)(SQLHDBC, INT, LPVOID);
+// typedef SQLRETURN (SQL_API* BCPControlAFunc)(SQLHDBC, INT, LPVOID); 
+typedef SQLRETURN (SQL_API* BCPReadFmtWFunc)(SQLHDBC, LPCWSTR);
+typedef SQLRETURN (SQL_API* BCPColumnsFunc)(SQLHDBC, INT);
+typedef SQLRETURN (SQL_API* BCPColFmtWFunc)(SQLHDBC, INT, INT, INT, DBINT, LPCBYTE, INT, INT);
+typedef SQLRETURN  (SQL_API* BCPExecFunc)(SQLHDBC, DBINT*); 
+typedef SQLRETURN (SQL_API* BCPDoneFunc)(SQLHDBC);
+typedef SQLRETURN (SQL_API* BCPBindFunc)(HDBC, LPCBYTE, INT, DBINT, LPCBYTE, INT, INT, INT);
+typedef SQLRETURN (SQL_API* BCPSendRowFunc)(HDBC);
+
 // Data retrieval APIs
 typedef SQLRETURN (SQL_API* SQLFetchFunc)(SQLHANDLE);
 typedef SQLRETURN (SQL_API* SQLFetchScrollFunc)(SQLHANDLE, SQLSMALLINT, SQLLEN);
@@ -159,6 +181,18 @@ extern SQLFreeStmtFunc SQLFreeStmt_ptr;
 
 // Diagnostic APIs
 extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
+
+// BCP APIs (Bulk Copy Program)
+// Extern function pointer declarations for BCP APIs
+extern BCPInitWFunc BCPInitW_ptr;
+extern BCPControlWFunc BCPControlW_ptr;
+extern BCPReadFmtWFunc BCPReadFmtW_ptr;
+extern BCPColumnsFunc BCPColumns_ptr;
+extern BCPColFmtWFunc BCPColFmtW_ptr;
+extern BCPExecFunc BCPExec_ptr;
+extern BCPDoneFunc BCPDone_ptr;
+extern BCPBindFunc BCPBind_ptr;
+extern BCPSendRowFunc BCPSendRow_ptr;
 
 // Logging utility
 template <typename... Args>
