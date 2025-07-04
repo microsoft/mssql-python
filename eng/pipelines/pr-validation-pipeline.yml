@@ -37,7 +37,7 @@ jobs:
 
     # Run tests
     - script: |
-        python main.py
+        python -u main.py
       displayName: 'Run main.py'
       env:
         DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
@@ -78,7 +78,7 @@ jobs:
 
     # Run main.py
     - script: |
-        python main.py
+        python -u main.py
       displayName: 'Run main.py'
       env:
         DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)

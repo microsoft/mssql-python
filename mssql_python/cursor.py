@@ -417,22 +417,22 @@ class Cursor:
         """
         Allocate the DDBC statement handle.
         """
-        print("[SEGDEBUGGING] Allocating statement handle")
+        print("[SEGDEBUGGING - PYTHON] Allocating statement handle")
         self.hstmt = self.connection._conn.alloc_statement_handle()
-        print("[SEGDEBUGGING] Statement handle allocated", self.hstmt)
+        print("[SEGDEBUGGING - PYTHON] Statement handle allocated", self.hstmt)
 
     def _reset_cursor(self) -> None:
         """Reset the DDBC statement handle."""
         if self.hstmt:
-            print("[SEGDEBUGGING] Freeing statement handle in _reset_cursor", self.hstmt)
+            print("[SEGDEBUGGING - PYTHON] Freeing statement handle in _reset_cursor", self.hstmt)
             try:
                 self.hstmt.free()
-                print("[SEGDEBUGGING] SQLFreeHandle succeeded in _reset_cursor")
+                print("[SEGDEBUGGING - PYTHON] SQLFreeHandle succeeded in _reset_cursor")
             except Exception as e:
-                print(f"[SEGDEBUGGING] Error freeing statement handle: {e}")
+                print(f"[SEGDEBUGGING - PYTHON] Error freeing statement handle: {e}")
             finally:
                 self.hstmt = None  # Always set to None even if free() fails
-                print("[SEGDEBUGGING] Statement handle set to None")
+                print("[SEGDEBUGGING - PYTHON] Statement handle set to None")
         
         # Reinitialize the statement handle
         self._initialize_cursor()
@@ -732,4 +732,4 @@ class Cursor:
 
     def __del__(self):
         # Add logs to cursor closing
-        print("[SEGDEBUGGING] __del__ cursor object called which does nothing")
+        print("[SEGDEBUGGING - PYTHON] __del__ cursor object called which does nothing")
