@@ -15,7 +15,7 @@ schedules:
       include:
         - main
 
-# jobs:
+jobs:
 # - job: BuildWindowsWheels
 #   # Use the latest Windows image for building
 #   pool:
