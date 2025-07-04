@@ -52,8 +52,10 @@ void Connection::allocateDbcHandle() {
     auto _envHandle = getEnvHandle();
     SQLHANDLE dbc = nullptr;
     LOG("Allocate SQL Connection Handle");
+    print("[SEGDEBUGGING] Allocating SQL Connection Handle");
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(), &dbc);
     checkError(ret);
+    print("[SEGDEBUGGING] SQL Connection Handle allocated", dbc);
     _dbcHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_DBC), dbc);
 }
 
@@ -156,9 +158,11 @@ SqlHandlePtr Connection::allocStatementHandle() {
     }
     updateLastUsed();
     LOG("Allocating statement handle");
+    std::cout << "[SEGDEBUGGING] Allocating statement handle" << std::endl;
     SQLHANDLE stmt = nullptr;
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbcHandle->get(), &stmt);
     checkError(ret);
+    std::cout << "[SEGDEBUGGING] Statement handle allocated: " << stmt << std::endl;
     return std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT), stmt);
 }
 
