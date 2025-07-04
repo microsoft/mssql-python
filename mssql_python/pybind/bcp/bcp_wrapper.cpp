@@ -1,4 +1,7 @@
-#include "bcp_wrapper.h" // Includes ddbc_bindings.h (and thus sql.h, sqlext.h, <string>, <memory>) and connection.h
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+#include "bcp_wrapper.h" 
 
 // Pybind11 headers (needed for py::cast and potentially std::optional if used with pybind types)
 #include <pybind11/pybind11.h>
@@ -29,21 +32,21 @@ const std::unordered_map<std::wstring, BCPCtrlPropertyInfo> bcp_control_properti
     {L"BCPKEEPIDENTITY",{BCPKEEPIDENTITY,   BCPCtrlPropType::INT}},
     {L"BCPHINTS",       {BCPHINTS,          BCPCtrlPropType::WSTRING}},
     {L"BCPFILECP",      {BCPFILECP,         BCPCtrlPropType::INT}},
-    // Example if you were to add global terminators via bcp_control:
-    // {L"BCPFIELDTERM",   {BCPFIELDTERM_Constant, BCPCtrlPropType::BYTES}}, // Assuming BCPFIELDTERM_Constant is the ODBC int
-    // {L"BCPROWTERM",     {BCPROWTERM_Constant,   BCPCtrlPropType::BYTES}}, // Assuming BCPROWTERM_Constant is the ODBC int
+    {L"BCPFIRST",       {BCPFIRST,          BCPCtrlPropType::INT}},
+    {L"BCPLAST",        {BCPLAST,           BCPCtrlPropType::INT}},
 };
 
 // Helper for bcp_init direction string
+// Converts a direction string (e.g., "in", "out") to the corresponding ODBC code.
+// Throws if the string is invalid.
 INT get_bcp_direction_code(const std::wstring& direction_str) {
     if (direction_str == L"in") return DB_IN;
     if (direction_str == L"out" || direction_str == L"queryout") return DB_OUT;
     throw std::runtime_error("Invalid BCP direction string: " + py::cast(direction_str).cast<std::string>());
 }
 
-// Helper function (can be a static private method or a lambda in C++11 and later)
-// to retrieve ODBC diagnostic messages and populate ErrorInfo.
-// This uses SQLGetDiagRec_ptr directly, which is loaded by DriverLoader.
+// Helper function to retrieve ODBC diagnostic messages and populate ErrorInfo.
+// Uses SQLGetDiagRec_ptr directly, which is loaded by DriverLoader.
 static ErrorInfo get_odbc_diagnostics_for_handle(SQLSMALLINT handle_type, SQLHANDLE handle) {
     ErrorInfo error_info;
     error_info.sqlState = L""; // Initialize
@@ -80,39 +83,108 @@ static ErrorInfo get_odbc_diagnostics_for_handle(SQLSMALLINT handle_type, SQLHAN
     return error_info;
 }
 
-BCPWrapper::BCPWrapper(ConnectionHandle& conn) // Changed to Connection&
-    : _bcp_initialized(false), _bcp_finished(true) { // Initialize reference
+// BCPWrapper constructor: initializes the wrapper and ensures BCP is enabled on the connection.
+// Throws if the connection handle is invalid.
+BCPWrapper::BCPWrapper(ConnectionHandle& conn) : _bcp_initialized(false), _bcp_finished(true) {
+    std::lock_guard<std::mutex> lock(_mutex); // Add thread safety
+    
     try {
         _hdbc = conn.getConnection()->getDbcHandle()->get();
         if (!_hdbc || _hdbc == SQL_NULL_HDBC) {
             LOG("BCPWrapper Error: Invalid HDBC from Connection object.");
             throw std::runtime_error("BCPWrapper: Invalid HDBC from Connection object.");
         }
+        
+        // Check and potentially set the BCP attribute if it's missing
+        bool bcp_enabled = false;
+        if (SQLGetConnectAttr_ptr) {
+            SQLINTEGER bcp_attr_value = 0;
+            SQLINTEGER string_length = 0;
+            
+            if (SQLGetConnectAttr_ptr(_hdbc, SQL_COPT_SS_BCP, &bcp_attr_value, 
+                                sizeof(bcp_attr_value), &string_length) == SQL_SUCCESS) {
+                if (bcp_attr_value == 1) {
+                    LOG("BCPWrapper: Connection is already enabled for BCP");
+                    bcp_enabled = true;
+                }
+            }
+            
+            // If BCP is not enabled, try to enable it
+            if (!bcp_enabled && SQLSetConnectAttr_ptr) {
+                LOG("BCPWrapper: Attempting to enable BCP on the connection");
+                SQLRETURN set_ret = SQLSetConnectAttr_ptr(_hdbc, SQL_COPT_SS_BCP, (SQLPOINTER)1, SQL_IS_INTEGER);
+                if (set_ret == SQL_SUCCESS || set_ret == SQL_SUCCESS_WITH_INFO) {
+                    LOG("BCPWrapper: Successfully enabled BCP on the connection");
+                    bcp_enabled = true;
+                } else {
+                    LOG("BCPWrapper Warning: Failed to enable BCP on the connection");
+                }
+            }
+        }
+        
+        if (!bcp_enabled) {
+            LOG("BCPWrapper Warning: Connection may not be enabled for BCP. BCP operations might fail.");
+        }
     } catch (const std::runtime_error& e) {
-        // Re-throw with more context or just let it propagate
         throw std::runtime_error(std::string("BCPWrapper Constructor: Failed to get valid HDBC - ") + e.what());
     }
 }
 
+// Destructor: ensures any active BCP operation is finished and memory is released.
+// Never throws from destructor; logs errors instead.
 BCPWrapper::~BCPWrapper() {
     LOG("BCPWrapper: Destructor called.");
-    // try {
-    //     close(); 
-    // } catch (const std::exception& e) {
-    //     LOG("BCPWrapper Error: Exception in destructor: " + std::string(e.what()));
-    // } catch (...) {
-    //     LOG("BCPWrapper Error: Unknown exception in destructor.");
-    // }
+    
+    // No need to lock mutex here since close() already handles it
+    try {
+        // Call close() to properly finish any active BCP operation
+        close(); 
+    } catch (const std::exception& e) {
+        // Never throw from destructors - just log the error
+        LOG("BCPWrapper Error: Exception in destructor: " + std::string(e.what()));
+    } catch (...) {
+        LOG("BCPWrapper Error: Unknown exception in destructor.");
+    }
+    _bcp_initialized = false;
+    _bcp_finished = true;
+
+    // Clear data buffers to release memory
+    _data_buffers.clear();
+    
     LOG("BCPWrapper: Destructor finished.");
 }
 
+// Initializes a BCP operation. Throws if already initialized or if BCP is not enabled.
 SQLRETURN BCPWrapper::bcp_initialize_operation(const std::wstring& table,
                                                const std::wstring& data_file,
                                                const std::wstring& error_file,
                                                const std::wstring& direction) {
+    std::lock_guard<std::mutex> lock(_mutex); // Add thread safety
+    
     if (_bcp_initialized) {
         LOG("BCPWrapper Warning: bcp_initialize_operation called but BCP already initialized. Call finish() or close() first.");
-        return SQL_ERROR; 
+        throw std::runtime_error("BCPWrapper: bcp_initialize_operation called but BCP already initialized. Call finish() or close() first.");
+    }
+
+    // Log memory address of hdbc to help track connection state
+    LOG("BCPWrapper: bcp_initialize_operation using HDBC at address: " + 
+        std::to_string(reinterpret_cast<uintptr_t>(_hdbc)));
+    
+    // Verify BCP is enabled right before initializing
+    if (SQLGetConnectAttr_ptr) {
+        SQLINTEGER bcp_attr_value = 0;
+        SQLINTEGER string_length = 0;
+        std::cout << "BCPWrapper: Checking BCP attribute just before initialization." << std::endl;
+        
+        if (SQLGetConnectAttr_ptr(_hdbc, SQL_COPT_SS_BCP, &bcp_attr_value, 
+                              sizeof(bcp_attr_value), &string_length) == SQL_SUCCESS) {
+            if (bcp_attr_value != 1) {
+                LOG("BCPWrapper CRITICAL WARNING: Connection is not enabled for BCP just before initialization!");
+                throw std::runtime_error("BCPWrapper: Connection is not enabled for BCP just before initialization!");
+            } else {
+                LOG("BCPWrapper: Verified BCP is enabled just before initialization");
+            }
+        }
     }
 
     INT dir_code = get_bcp_direction_code(direction);
@@ -135,12 +207,19 @@ SQLRETURN BCPWrapper::bcp_initialize_operation(const std::wstring& table,
         _bcp_finished = false;
         LOG("BCPWrapper: bcp_initW successful.");
     } else {
-        LOG("BCPWrapper Error: bcp_initW failed. Ret: " + std::to_string(ret));
+        std::string msg = "BCPWrapper Error: bcp_initW failed. Ret: " + std::to_string(ret);
+        ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, _hdbc);
+        msg += " ODBC Diag: SQLState: " + py::cast(diag.sqlState).cast<std::string>() + ", Message: " + py::cast(diag.ddbcErrorMsg).cast<std::string>();
+        LOG(msg);
+        throw std::runtime_error(msg);
     }
     return ret;
 }
 
+// Controls BCP options that take integer values.
+// Throws if called in an invalid state or if the property/type is wrong.
 SQLRETURN BCPWrapper::bcp_control(const std::wstring& property_name, int value) {
+    std::lock_guard<std::mutex> lock(_mutex); // Add thread safety
     if (!_bcp_initialized || _bcp_finished) {
         LOG("BCPWrapper Warning: bcp_control(int) called in invalid state (not initialized or already finished).");
         // Throw an exception instead of returning SQL_ERROR for better Python-side error handling
@@ -167,24 +246,27 @@ SQLRETURN BCPWrapper::bcp_control(const std::wstring& property_name, int value) 
     return ret;
 }
 
+// Controls BCP options that take wide string values.
+// Throws if called in an invalid state or if the property/type is wrong.
 SQLRETURN BCPWrapper::bcp_control(const std::wstring& property_name, const std::wstring& value) {
+    std::lock_guard<std::mutex> lock(_mutex); // Add thread safety
+    
     if (!_bcp_initialized || _bcp_finished) {
         LOG("BCPWrapper Warning: bcp_control(wstring) called in invalid state.");
-        return SQL_ERROR;
+        throw std::runtime_error("BCPWrapper: bcp_control(wstring) called in invalid state.");
     }
 
     auto it = bcp_control_properties.find(property_name);
     LOG("BCPWrapper: bcp_control(wstring) called for property '" + py::cast(property_name).cast<std::string>() + "'.");
     
     // Check if the property exists and is of type WSTRING
-    // Note: For WSTRING properties, we expect the value to be a wide string (std::wstring).
-    // If the property is not found or is not of type WSTRING, we return an error.
     LOG("BCPWrapper: bcp_control value: '" + py::cast(value).cast<std::string>() + "'.");
     LOG("BCPWrapper: bcp_control property name: '" + py::cast(property_name).cast<std::string>() + "'.");
     
     if (it == bcp_control_properties.end() || it->second.type != BCPCtrlPropType::WSTRING) {
-        LOG("BCPWrapper Error: bcp_control(wstring) - property '" + py::cast(property_name).cast<std::string>() + "' not found or type mismatch.");
-        return SQL_ERROR; 
+        std::string msg = "BCPWrapper Error: bcp_control(wstring) - property '" + py::cast(property_name).cast<std::string>() + "' not found or type mismatch.";
+        LOG(msg);
+        throw std::runtime_error(msg);
     }
     
     LOG("BCPWrapper: Calling bcp_controlW for property '" + py::cast(property_name).cast<std::string>() + "' with wstring value '" + py::cast(value).cast<std::string>() + "'.");
@@ -198,48 +280,64 @@ SQLRETURN BCPWrapper::bcp_control(const std::wstring& property_name, const std::
         ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, _hdbc);
         msg += " ODBC Diag: SQLState: " + py::cast(diag.sqlState).cast<std::string>() + ", Message: " + py::cast(diag.ddbcErrorMsg).cast<std::string>();
         LOG(msg);
-        throw std::runtime_error("BCPWrapper: bcp_controlW (wstring value) failed.");
+        throw std::runtime_error(msg);
     }
     return ret;
 }
 
+// Reads a BCP format file. Throws if called in an invalid state or file path is empty.
 SQLRETURN BCPWrapper::read_format_file(const std::wstring& file_path) {
+    std::lock_guard<std::mutex> lock(_mutex); // Add thread safety
+    
     if (!_bcp_initialized || _bcp_finished) {
         LOG("BCPWrapper Warning: read_format_file called in invalid state.");
-        return SQL_ERROR;
+        throw std::runtime_error("BCPWrapper: read_format_file called in invalid state.");
     }
     if (file_path.empty()) {
         LOG("BCPWrapper Error: read_format_file - file path cannot be empty.");
-        return SQL_ERROR;
+        throw std::runtime_error("BCPWrapper: read_format_file - file path cannot be empty.");
     }
 
     LOG("BCPWrapper: Calling bcp_readfmtW for file '" + py::cast(file_path).cast<std::string>() + "'.");
     SQLRETURN ret = BCPReadFmtW_ptr(_hdbc, file_path.c_str());
     if (ret == FAIL) {
-        LOG("BCPWrapper Error: bcp_readfmtW failed for file '" + py::cast(file_path).cast<std::string>() + "'. Ret: " + std::to_string(ret));
+        std::string msg = "BCPWrapper Error: bcp_readfmtW failed for file '" + py::cast(file_path).cast<std::string>() + "'. Ret: " + std::to_string(ret);
+        ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, _hdbc);
+        msg += " ODBC Diag: SQLState: " + py::cast(diag.sqlState).cast<std::string>() + ", Message: " + py::cast(diag.ddbcErrorMsg).cast<std::string>();
+        LOG(msg);
+        throw std::runtime_error(msg);
     }
     return ret;
 }
 
+// Defines the number of columns for BCP. Throws if called in an invalid state or num_cols <= 0.
 SQLRETURN BCPWrapper::define_columns(int num_cols) {
+    std::lock_guard<std::mutex> lock(_mutex); // Add thread safety
+    
     if (!_bcp_initialized || _bcp_finished) {
         LOG("BCPWrapper Warning: define_columns called in invalid state.");
-        return SQL_ERROR;
+        throw std::runtime_error("BCPWrapper: define_columns called in invalid state.");
     }
     if (num_cols <= 0) {
         LOG("BCPWrapper Error: define_columns - invalid number of columns: " + std::to_string(num_cols));
-        return SQL_ERROR;
+        throw std::runtime_error("BCPWrapper: define_columns - invalid number of columns: " + std::to_string(num_cols));
     }
 
     LOG("BCPWrapper: Calling bcp_columns with " + std::to_string(num_cols) + " columns.");
     SQLRETURN ret = BCPColumns_ptr(_hdbc, num_cols);
     if (ret == FAIL) {
-        LOG("BCPWrapper Error: bcp_columns failed for " + std::to_string(num_cols) + " columns. Ret: " + std::to_string(ret));
+        std::string msg = "BCPWrapper Error: bcp_columns failed for " + std::to_string(num_cols) + " columns. Ret: " + std::to_string(ret);
+        ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, _hdbc);
+        msg += " ODBC Diag: SQLState: " + py::cast(diag.sqlState).cast<std::string>() + ", Message: " + py::cast(diag.ddbcErrorMsg).cast<std::string>();
+        LOG(msg);
+        throw std::runtime_error(msg);
     }
     LOG("BCPWrapper: bcp_columns returned " + std::to_string(ret));
     return ret;
 }
 
+// Defines the format for a single BCP column.
+// Handles optional terminator bytes and logs hex dumps for debugging.
 SQLRETURN BCPWrapper::define_column_format(int file_col_idx,
                                            int user_data_type,
                                            int indicator_length,
@@ -310,7 +408,9 @@ SQLRETURN BCPWrapper::define_column_format(int file_col_idx,
     return ret;
 }
 
+// Executes the BCP operation. Throws if called in an invalid state or if bcp_exec fails.
 SQLRETURN BCPWrapper::exec_bcp() {
+    std::lock_guard<std::mutex> lock(_mutex); // Add thread safety
     if (!_bcp_initialized || _bcp_finished) {
         throw std::runtime_error("BCPWrapper: exec_bcp called in invalid state.");
     }
@@ -330,7 +430,11 @@ SQLRETURN BCPWrapper::exec_bcp() {
     return SQL_SUCCESS; 
 }
 
+// Finishes the BCP operation. Safe to call multiple times.
+// Throws if bcp_done fails.
 SQLRETURN BCPWrapper::finish() {
+    std::lock_guard<std::mutex> lock(_mutex); // Add thread safety
+    
     if (!_bcp_initialized) {
         LOG("BCPWrapper Info: finish called but BCP not initialized. No action taken.");
         return SQL_SUCCESS; 
@@ -346,22 +450,30 @@ SQLRETURN BCPWrapper::finish() {
         _bcp_finished = true;
         LOG("BCPWrapper: bcp_done successful.");
     } else {
-        LOG("BCPWrapper Error: bcp_done failed. Ret: " + std::to_string(ret));
+        std::string msg = "BCPWrapper Error: bcp_done failed. Ret: " + std::to_string(ret);
+        ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, _hdbc);
+        msg += " ODBC Diag: SQLState: " + py::cast(diag.sqlState).cast<std::string>() + ", Message: " + py::cast(diag.ddbcErrorMsg).cast<std::string>();
+        LOG(msg);
+        throw std::runtime_error(msg);
     }
     return ret;
 }
 
+// Closes the BCP operation, finishing if necessary.
 SQLRETURN BCPWrapper::close() {
+    std::lock_guard<std::mutex> lock(_mutex); // Add thread safety
+    
     LOG("BCPWrapper: close() called.");
     SQLRETURN ret = SQL_SUCCESS;
     if (_bcp_initialized && !_bcp_finished) {
         LOG("BCPWrapper: Active BCP operation found in close(), calling finish().");
-        ret = finish();
+        ret = finish(); // Note: finish() will throw if there's an error
     }
     return ret;
 }
 
-// Helper to allocate and copy data for different data types
+// Helper to allocate and copy data for different data types.
+// Handles type conversions and stores buffers for memory management.
 template <typename T>
 T* AllocateAndCopyData(const py::object& data, std::vector<std::shared_ptr<void>>& buffers) {
     // Create a shared pointer to hold our value
@@ -408,6 +520,8 @@ T* AllocateAndCopyData(const py::object& data, std::vector<std::shared_ptr<void>
     return buffer.get();
 }
 
+// Binds a column for BCP. Handles type conversions from Python to C++/ODBC types.
+// Edge cases: Handles NULLs, wide/narrow strings, binary, and numeric types.
 SQLRETURN BCPWrapper::bind_column(const py::object& data, 
                                   int indicator_length,
                                   long long data_length,
@@ -415,6 +529,7 @@ SQLRETURN BCPWrapper::bind_column(const py::object& data,
                                   int terminator_length,
                                   int data_type,
                                   int server_col_idx) {
+    std::lock_guard<std::mutex> lock(_mutex); // Add thread safety
     if (!_bcp_initialized || _bcp_finished) {
         LOG("BCPWrapper: _bcp_initialized: " + std::to_string(_bcp_initialized) + ", _bcp_finished: " + std::to_string(_bcp_finished));
         // LOG("BCPWrapper Warning: bind_column called in invalid state.");
@@ -549,6 +664,7 @@ SQLRETURN BCPWrapper::bind_column(const py::object& data,
                       data_type, 
                       server_col_idx);
                           
+
     if (ret == FAIL) {
         std::string msg = "BCPWrapper Error: bcp_bind failed for column " + std::to_string(server_col_idx);
         ErrorInfo diag = get_odbc_diagnostics_for_handle(SQL_HANDLE_DBC, _hdbc);
@@ -562,7 +678,9 @@ SQLRETURN BCPWrapper::bind_column(const py::object& data,
     return ret;
 }
 
+// Sends a row to the server. Throws if called in an invalid state or if bcp_sendrow fails.
 SQLRETURN BCPWrapper::send_row() {
+    std::lock_guard<std::mutex> lock(_mutex); // Add thread safety
     if (!_bcp_initialized || _bcp_finished) {
         LOG("BCPWrapper Warning: send_row called in invalid state.");
         throw std::runtime_error("BCPWrapper: send_row called in invalid state.");

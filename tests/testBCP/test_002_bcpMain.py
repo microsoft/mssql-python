@@ -1,14 +1,17 @@
-import pytest
 import os
 import uuid
 import tempfile
-import time
-import gc
+import pytest
 from pathlib import Path
 
-from mssql_python import connect as mssql_connect
-from mssql_python.bcp_options import BCPOptions, ColumnFormat
+from mssql_python import connect
+from mssql_python.bcp_options import BCPOptions, ColumnFormat, BindData
 from mssql_python.bcp_main import BCPClient
+from mssql_python import (
+    SQLINT4, SQLVARCHAR, SQLNVARCHAR, SQLCHARACTER,
+    SQLBIT, SQLINT1, SQLINT8, SQLFLT4, SQLFLT8, 
+    SQLNUMERIC, SQLVARBINARY, SQL_VARLEN_DATA, SQL_NULL_DATA
+)
 
 # --- Constants for Tests ---
 SQL_COPT_SS_BCP = 1219  # BCP connection attribute
@@ -39,7 +42,7 @@ def format_test_setup():
     table_uuid = str(uuid.uuid4()).replace('-', '')[:8]
     table_name = f"dbo.pytest_bcp_format_{table_uuid}"
     
-    conn = None
+    conn_bcp = None
     cursor = None
     temp_dir = tempfile.TemporaryDirectory()
     
@@ -52,8 +55,8 @@ def format_test_setup():
     
     try:
         # Connect with BCP enabled
-        conn = mssql_connect(conn_str, attrs_before={SQL_COPT_SS_BCP: 1}, autocommit=True)
-        cursor = conn.cursor()
+        conn_bcp = connect(conn_str, attrs_before={SQL_COPT_SS_BCP: 1}, autocommit=True)
+        cursor = conn_bcp.cursor()
         
         # Create test table
         cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name};")
@@ -89,7 +92,7 @@ def format_test_setup():
             
         # Yield resources to test
         yield {
-            'conn': conn,
+            'conn': conn_bcp,
             'table_name': table_name,
             'format_file': str(format_file_path),  # Convert to string to avoid Path object issues
             'data_out': str(data_out_path),
@@ -107,86 +110,28 @@ def format_test_setup():
             except Exception as e:
                 print(f"Warning: Error closing cursor: {e}")
                 
-        if conn:
+        if conn_bcp:
             try:
-                cleanup_cursor = conn.cursor()
+                cleanup_cursor = conn_bcp.cursor()
                 cleanup_cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name};")
                 cleanup_cursor.close()
             except Exception as e:
                 print(f"Warning: Error during cleanup: {e}")
             finally:
-                conn.close()
-
-# Add this function to close active connections before BCP tests
-def close_active_connections():
-    """
-    Close any active connections to ensure clean BCP state.
-    Uses garbage collection to find and close lingering connections.
-    """
-    # Force garbage collection to find any unreferenced connections
-    gc.collect()
-    
-    # Try to find Connection objects in memory and close them
-    connection_count = 0
-    from mssql_python import Connection
-    
-    # Loop through all objects in memory
-    for obj in gc.get_objects():
-        if isinstance(obj, Connection):
-            try:
-                if hasattr(obj, 'close') and callable(obj.close):
-                    obj.close()
-                    connection_count += 1
-            except Exception:
-                # Ignore errors during cleanup
-                pass
-    
-    # Small delay to allow connections to fully close
-    time.sleep(0.1)
-    return connection_count
-
-# Add fixtures for connection cleanup
-@pytest.fixture(scope="session", autouse=True)
-def bcp_test_session():
-    """Setup and teardown for the entire BCP test session."""
-    # Before all tests run
-    closed_count = close_active_connections()
-    print(f"Closed {closed_count} connections before BCP test session")
-    
-    yield
-    
-    # After all tests have run
-    closed_count = close_active_connections()
-    print(f"Closed {closed_count} connections after BCP test session")
-
-@pytest.fixture(autouse=True)
-def bcp_test_case():
-    """Reset connection state before and after each test."""
-    # Before each test
-    closed_count = close_active_connections()
-    if closed_count > 0:
-        print(f"Closed {closed_count} active connections before BCP test")
-    
-    yield
-    
-    # After each test
-    closed_count = close_active_connections()
-    if closed_count > 0:
-        print(f"Closed {closed_count} active connections after BCP test")
+                conn_bcp.close()
 
 class TestBCPFormatFile:
     def test_bcp_out_with_format_file(self, format_test_setup):
         """Test BCP OUT operation using a format file."""
         # Get resources from setup
-        conn_str = get_bcp_test_conn_str()
-        conn = mssql_connect(conn_str, attrs_before={SQL_COPT_SS_BCP: 1}, autocommit=True)
+        conn_bcp = format_test_setup['conn']
         table_name = format_test_setup['table_name']
         format_file = format_test_setup['format_file']
         data_file = format_test_setup['data_out']
         error_file = format_test_setup['error_out']
         
         # Create BCPClient
-        bcp_client = BCPClient(conn)
+        bcp_client = BCPClient(conn_bcp)
         
         # Create options for BCP OUT
         options = BCPOptions(
@@ -205,7 +150,7 @@ class TestBCPFormatFile:
         assert os.path.getsize(data_file) > 0, "Output data file is empty"
         
         # Count rows in table to verify against BCP operation
-        cursor = conn.cursor()
+        cursor = conn_bcp.cursor()
         cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
         row_count = cursor.fetchone()[0]
         
@@ -216,7 +161,7 @@ class TestBCPColumnFmt:
     def test_bcp_colfmt(self, format_test_setup):
         """Test BCP operations with explicit column formatting instead of format files."""
         # Get resources from setup
-        conn = format_test_setup['conn']
+        conn_bcp = format_test_setup['conn']
         table_name = format_test_setup['table_name']
         data_out = format_test_setup['data_out']
         data_in = format_test_setup['data_in']
@@ -225,7 +170,7 @@ class TestBCPColumnFmt:
         
         # Create a new table for column format testing
         col_fmt_table = f"{table_name}_colfmt"
-        cursor = conn.cursor()
+        cursor = conn_bcp.cursor()
         cursor.execute(f"IF OBJECT_ID('{col_fmt_table}', 'U') IS NOT NULL DROP TABLE {col_fmt_table};")
         cursor.execute(f"""
             CREATE TABLE {col_fmt_table} (
@@ -237,7 +182,7 @@ class TestBCPColumnFmt:
         
         try:
             # Create BCPClient for export
-            bcp_client_out = BCPClient(conn)
+            bcp_client_out = BCPClient(conn_bcp)
             
             # Create options for BCP OUT with column formatting
             out_options = BCPOptions(
@@ -256,7 +201,7 @@ class TestBCPColumnFmt:
                 terminator_len=2,  # Length of the terminator
                 server_col=1,
                 file_col=1,
-                user_data_type= 47  # SQLINT
+                user_data_type= SQLCHARACTER
             )
             
             col2 = ColumnFormat(
@@ -266,7 +211,7 @@ class TestBCPColumnFmt:
                 terminator_len=2,  # Length of the terminator
                 server_col=2,
                 file_col=2,
-                user_data_type= 47  # SQLNCHAR would be different, using placeholder
+                user_data_type= SQLCHARACTER
             )
             
             col3 = ColumnFormat(
@@ -276,7 +221,7 @@ class TestBCPColumnFmt:
                 terminator_len=2,  # Length of the terminator
                 server_col=3, 
                 file_col=3,
-                user_data_type= 47  # SQLDECIMAL would be different, using placeholder
+                user_data_type= SQLCHARACTER
             )
             
             # Add columns to the options
@@ -290,7 +235,7 @@ class TestBCPColumnFmt:
             assert os.path.getsize(data_out) > 0, "Output data file is empty"
             
             # Create BCPClient for import
-            bcp_client_in = BCPClient(conn)
+            bcp_client_in = BCPClient(conn_bcp)
             
             # Create options for BCP IN with column formatting
             in_options = BCPOptions(
@@ -309,7 +254,7 @@ class TestBCPColumnFmt:
                     terminator_len=2,  # Length of the terminator
                     server_col=1,
                     file_col=1,
-                    user_data_type= 47  # SQLINT
+                    user_data_type= SQLCHARACTER
                 ),
                 ColumnFormat(
                     prefix_len=0,
@@ -318,7 +263,7 @@ class TestBCPColumnFmt:
                     terminator_len=2,  # Length of the terminator
                     server_col=2,
                     file_col=2,
-                    user_data_type= 47 # SQLNCHAR placeholder
+                    user_data_type= SQLCHARACTER
                 ),
                 ColumnFormat(
                     prefix_len=0,
@@ -327,7 +272,7 @@ class TestBCPColumnFmt:
                     terminator_len=2,  # Length of the terminator
                     server_col=3,
                     file_col=3,
-                    user_data_type= 47  # SQLDECIMAL placeholder
+                    user_data_type= SQLCHARACTER
                 )
             ]
             
@@ -363,7 +308,7 @@ class TestBCPColumnFmt:
     def test_bcp_colfmt_with_row_terminator(self, format_test_setup):
         """Test BCP operations with column formatting and explicit row terminator."""
         # Get resources from setup
-        conn = mssql_connect(get_bcp_test_conn_str(), attrs_before={SQL_COPT_SS_BCP: 1}, autocommit=True)
+        conn_bcp = format_test_setup['conn']
         table_name = format_test_setup['table_name']
         data_out = format_test_setup['data_out'] + ".row"
         data_in = format_test_setup['data_in'] + ".row"
@@ -372,13 +317,13 @@ class TestBCPColumnFmt:
         
         # Create a new table for column format testing
         row_term_table = f"{table_name}_rowterm"
-        cursor = conn.cursor()
+        cursor = conn_bcp.cursor()
         cursor.execute(f"IF OBJECT_ID('{row_term_table}', 'U') IS NOT NULL DROP TABLE {row_term_table};")
         cursor.execute(f"SELECT * INTO {row_term_table} FROM {table_name} WHERE 1=0")
         
         try:
             # Create BCPClient for export
-            bcp_client_out = BCPClient(conn)
+            bcp_client_out = BCPClient(conn_bcp)
             
             # Create options for BCP OUT with column formatting
             # Note: we'll specify row terminator in the last column's row_terminator field
@@ -428,7 +373,7 @@ class TestBCPColumnFmt:
             assert os.path.getsize(data_out) > 0, "Output data file is empty"
             
             # Create BCPClient for import
-            bcp_client_in = BCPClient(conn)
+            bcp_client_in = BCPClient(conn_bcp)
             
             # Create options for BCP IN with column formatting
             in_options = BCPOptions(
@@ -490,14 +435,14 @@ class TestBCPQueryOut:
     def test_bcp_query_out_using_formatfile(self, format_test_setup):
         """Test BCP OUT operation using a query and a format file."""
         # Get resources from setup
-        conn = format_test_setup['conn']
+        conn_bcp = format_test_setup['conn']
         table_name = format_test_setup['table_name']
         format_file = format_test_setup['format_file']
         data_file = format_test_setup['data_out']
         error_file = format_test_setup['error_out']
         
         # Create BCPClient
-        bcp_client = BCPClient(conn)
+        bcp_client = BCPClient(conn_bcp)
         
         # Create options for BCP OUT with query
         options = BCPOptions(
@@ -513,7 +458,7 @@ class TestBCPQueryOut:
             os.remove(data_file)
         
         # Check if table exists and has data
-        cursor = conn.cursor()
+        cursor = conn_bcp.cursor()
         cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
         count = cursor.fetchone()[0]
         if count == 0:
@@ -529,7 +474,7 @@ class TestBCPQueryOut:
         assert os.path.getsize(data_file) > 0, "Output data file is empty"
         
         # Count rows in table to verify against BCP operation
-        cursor = conn.cursor()
+        cursor = conn_bcp.cursor()
         cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
         row_count = cursor.fetchone()[0]
         
@@ -544,12 +489,13 @@ class TestBCPQueryOut:
         error_file = format_test_setup['error_out']
         
         # Use a completely fresh connection for this test
-        conn_str = get_bcp_test_conn_str()
-        conn = mssql_connect(conn_str, attrs_before={SQL_COPT_SS_BCP: 1}, autocommit=True)
+        conn_bcp = connect(get_bcp_test_conn_str(), 
+            attrs_before={SQL_COPT_SS_BCP: 1}, autocommit=True
+        )
         
         try:
             # Check if table exists and has data
-            cursor = conn.cursor()
+            cursor = conn_bcp.cursor()
             cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
             count = cursor.fetchone()[0]
             if count == 0:
@@ -561,7 +507,7 @@ class TestBCPQueryOut:
             
             # Use a simplified approach - don't use column formatting
             # Just use a query with queryout
-            bcp_client = BCPClient(conn)
+            bcp_client = BCPClient(conn_bcp)
             options = BCPOptions(
                 direction="queryout",
                 data_file=data_file,
@@ -580,7 +526,7 @@ class TestBCPQueryOut:
             # Clean up resources
             if 'cursor' in locals() and cursor:
                 cursor.close()
-            conn.close()
+            conn_bcp.close()
 
 class TestBCPBind:
     @pytest.fixture(scope="function")
@@ -592,13 +538,13 @@ class TestBCPBind:
         table_uuid = str(uuid.uuid4()).replace('-', '')[:8]
         table_name = f"dbo.pytest_bcp_bind_{table_uuid}"
         
-        conn = None
+        conn_bcp = None
         cursor = None
         
         try:
             # Connect with BCP enabled
-            conn = mssql_connect(conn_str, attrs_before={SQL_COPT_SS_BCP: 1}, autocommit=True)
-            cursor = conn.cursor()
+            conn_bcp = connect(conn_str, attrs_before={SQL_COPT_SS_BCP: 1}, autocommit=True)
+            cursor = conn_bcp.cursor()
             
             # Create test table with various data types
             cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name};")
@@ -620,7 +566,7 @@ class TestBCPBind:
             """)
             
             yield {
-                'conn': conn,
+                'conn': conn_bcp,
                 'table_name': table_name
             }
             
@@ -632,32 +578,22 @@ class TestBCPBind:
                 except Exception as e:
                     print(f"Warning: Error closing cursor: {e}")
                     
-            if conn:
+            if conn_bcp:
                 try:
-                    cleanup_cursor = conn.cursor()
+                    cleanup_cursor = conn_bcp.cursor()
                     cleanup_cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name};")
                     cleanup_cursor.close()
                 except Exception as e:
                     print(f"Warning: Error during cleanup: {e}")
                 finally:
-                    conn.close()
+                    conn_bcp.close()
     
     def test_bcp_bind_all_types(self, bind_test_setup):
         """Test BCP binding with all supported data types."""
-        from mssql_python.bcp_options import BCPOptions, BindData
-        from mssql_python import (
-            SQLINT4, SQLVARCHAR, SQLNVARCHAR, SQLCHARACTER,
-            SQLBIT, SQLINT1, SQLINT8, SQLFLT4, SQLFLT8, 
-            SQLNUMERIC, SQLVARBINARY, SQL_VARLEN_DATA, SQL_NULL_DATA
-        )
-        import os
         
         # Get resources from setup
-        conn = bind_test_setup['conn']
+        conn_all = bind_test_setup['conn']
         table_name = bind_test_setup['table_name']
-        
-        # Create BCPClient
-        bcp_client = BCPClient(conn)
         
         # Prepare simpler test data with fewer rows
         rows_data = [
@@ -761,11 +697,14 @@ class TestBCPBind:
         )
         
         try:
+
+            # Create BCPClient
+            bcp_client = BCPClient(conn_all)
             # Execute BCP to insert rows
             bcp_client.sql_bulk_copy(table=table_name, options=bcp_options)
             
             # Verify rows were inserted
-            cursor = conn.cursor()
+            cursor = conn_all.cursor()
             cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
             row_count = cursor.fetchone()[0]
             

@@ -7,6 +7,7 @@
 #include "../connection/connection.h" // For the Connection class
 #include <optional> // For std::optional
 #include <pybind11/pytypes.h> // For py::bytes
+#include <mutex>
 
 class BCPWrapper {
 public:
@@ -88,7 +89,10 @@ private:
     SQLHDBC _hdbc;
     bool _bcp_initialized; // Flag to track if bcp_init has been called successfully
     bool _bcp_finished;    // Flag to track if bcp_finish (or bcp_done) has been called
-    
+
+    // Add mutex for thread safety
+    std::mutex _mutex;
+
     // Vector of allocated pointers that need to be freed in destructor
     std::vector<std::shared_ptr<void>> _data_buffers;
 };
