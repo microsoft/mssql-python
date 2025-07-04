@@ -791,10 +791,11 @@ void SqlHandle::free() {
         
         if (!SQL_SUCCEEDED(ret)) {
             std::cout << "[SEGDEBUGGNG] SQLFreeHandle FAILED with return code: " << ret << std::endl;
-            // Common error codes
             if (ret == SQL_INVALID_HANDLE) {
                 std::cout << "[SEGDEBUGGNG] SQL_INVALID_HANDLE - Handle is invalid or already freed!" << std::endl;
             }
+        } else {
+            std::cout << "[SEGDEBUGGNG] SQLFreeHandle SUCCESS for " << type_str << std::endl;
         }
         
         _handle = nullptr;

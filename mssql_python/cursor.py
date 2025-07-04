@@ -417,7 +417,9 @@ class Cursor:
         """
         Allocate the DDBC statement handle.
         """
+        print("[SEGDEBUGGING] Allocating statement handle")
         self.hstmt = self.connection._conn.alloc_statement_handle()
+        print("[SEGDEBUGGING] Statement handle allocated", self.hstmt)
 
     def _reset_cursor(self) -> None:
         """Reset the DDBC statement handle."""

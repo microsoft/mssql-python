@@ -38,7 +38,9 @@ jobs:
     # Run tests
     - script: |
         python main.py
-      displayName: 'Run main.py - not closing cursor'
+      displayName: 'Run main.py'
+      env:
+        DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
 
 - job: SegFaultTestLinux
   # Use the latest Ubuntu image for building
