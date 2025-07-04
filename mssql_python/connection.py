@@ -5,7 +5,6 @@ This module defines the Connection class, which is used to manage a connection t
 The class provides methods to establish a connection, create cursors, commit transactions, 
 roll back transactions, and close the connection.
 """
-import ctypes
 import weakref
 from mssql_python.cursor import Cursor
 from mssql_python.logging_config import get_logger, ENABLE_LOGGING
@@ -61,7 +60,12 @@ class Connection:
         )
         self._attrs_before = attrs_before or {}
         self._closed = False
-        self._cursors = weakref.WeakSet()  # Add this to track cursors
+        
+        # Using WeakSet which automatically removes cursors when they are no longer in use
+        # It is a set that holds weak references to its elements.
+        # When an object is only weakly referenced, it can be garbage collected even if it's still in the set.
+        # It prevents memory leaks by ensuring that cursors are cleaned up when no longer in use without requiring explicit deletion.
+        self._cursors = weakref.WeakSet()
 
         # Auto-enable pooling if user never called
         if not PoolingManager.is_initialized():
