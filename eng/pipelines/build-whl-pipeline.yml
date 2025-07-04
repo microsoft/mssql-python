@@ -381,6 +381,7 @@ jobs:
         dockerPlatform: 'linux/amd64'
         dockerImage: 'ubuntu:22.04'
         distroName: 'Ubuntu'
+        packageManager: 'apt'
       py310_arm64_ubuntu:
         pythonVersion: '3.10'
         shortPyVer: '310'
@@ -388,6 +389,7 @@ jobs:
         dockerPlatform: 'linux/arm64'
         dockerImage: 'ubuntu:22.04'
         distroName: 'Ubuntu'
+        packageManager: 'apt'
       py310_x86_64_debian:
         pythonVersion: '3.10'
         shortPyVer: '310'
@@ -395,6 +397,7 @@ jobs:
         dockerPlatform: 'linux/amd64'
         dockerImage: 'debian:12'
         distroName: 'Debian'
+        packageManager: 'apt'
       py310_arm64_debian:
         pythonVersion: '3.10'
         shortPyVer: '310'
@@ -402,6 +405,23 @@ jobs:
         dockerPlatform: 'linux/arm64'
         dockerImage: 'debian:12'
         distroName: 'Debian'
+        packageManager: 'apt'
+      py310_x86_64_rhel:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
+      py310_arm64_rhel:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
 
       # Python 3.11 (x86_64 and ARM64)
       py311_x86_64_ubuntu:
@@ -411,6 +431,7 @@ jobs:
         dockerPlatform: 'linux/amd64'
         dockerImage: 'ubuntu:22.04'
         distroName: 'Ubuntu'
+        packageManager: 'apt'
       py311_arm64_ubuntu:
         pythonVersion: '3.11'
         shortPyVer: '311'
@@ -418,6 +439,7 @@ jobs:
         dockerPlatform: 'linux/arm64'
         dockerImage: 'ubuntu:22.04'
         distroName: 'Ubuntu'
+        packageManager: 'apt'
       py311_x86_64_debian:
         pythonVersion: '3.11'
         shortPyVer: '311'
@@ -425,6 +447,7 @@ jobs:
         dockerPlatform: 'linux/amd64'
         dockerImage: 'debian:12'
         distroName: 'Debian'
+        packageManager: 'apt'
       py311_arm64_debian:
         pythonVersion: '3.11'
         shortPyVer: '311'
@@ -432,6 +455,23 @@ jobs:
         dockerPlatform: 'linux/arm64'
         dockerImage: 'debian:12'
         distroName: 'Debian'
+        packageManager: 'apt'
+      py311_x86_64_rhel:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
+      py311_arm64_rhel:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
 
       # Python 3.12 (x86_64 and ARM64)
       py312_x86_64_ubuntu:
@@ -441,6 +481,7 @@ jobs:
         dockerPlatform: 'linux/amd64'
         dockerImage: 'ubuntu:22.04'
         distroName: 'Ubuntu'
+        packageManager: 'apt'
       py312_arm64_ubuntu:
         pythonVersion: '3.12'
         shortPyVer: '312'
@@ -448,6 +489,7 @@ jobs:
         dockerPlatform: 'linux/arm64'
         dockerImage: 'ubuntu:22.04'
         distroName: 'Ubuntu'
+        packageManager: 'apt'
       py312_x86_64_debian:
         pythonVersion: '3.12'
         shortPyVer: '312'
@@ -455,6 +497,7 @@ jobs:
         dockerPlatform: 'linux/amd64'
         dockerImage: 'debian:12'
         distroName: 'Debian'
+        packageManager: 'apt'
       py312_arm64_debian:
         pythonVersion: '3.12'
         shortPyVer: '312'
@@ -462,6 +505,23 @@ jobs:
         dockerPlatform: 'linux/arm64'
         dockerImage: 'debian:12'
         distroName: 'Debian'
+        packageManager: 'apt'
+      py312_x86_64_rhel:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
+      py312_arm64_rhel:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
 
       # Python 3.13 (x86_64 and ARM64)
       py313_x86_64_ubuntu:
@@ -471,6 +531,7 @@ jobs:
         dockerPlatform: 'linux/amd64'
         dockerImage: 'ubuntu:22.04'
         distroName: 'Ubuntu'
+        packageManager: 'apt'
       py313_arm64_ubuntu:
         pythonVersion: '3.13'
         shortPyVer: '313'
@@ -478,6 +539,7 @@ jobs:
         dockerPlatform: 'linux/arm64'
         dockerImage: 'ubuntu:22.04'
         distroName: 'Ubuntu'
+        packageManager: 'apt'
       py313_x86_64_debian:
         pythonVersion: '3.13'
         shortPyVer: '313'
@@ -485,6 +547,7 @@ jobs:
         dockerPlatform: 'linux/amd64'
         dockerImage: 'debian:12'
         distroName: 'Debian'
+        packageManager: 'apt'
       py313_arm64_debian:
         pythonVersion: '3.13'
         shortPyVer: '313'
@@ -492,6 +555,23 @@ jobs:
         dockerPlatform: 'linux/arm64'
         dockerImage: 'debian:12'
         distroName: 'Debian'
+        packageManager: 'apt'
+      py313_x86_64_rhel:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
+      py313_arm64_rhel:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
 
   steps:
   # Set up Docker buildx for multi-architecture support
@@ -550,7 +630,8 @@ jobs:
 
   - script: |
       # Install dependencies in the container
-      if [ "$(distroName)" = "Ubuntu" ]; then
+      if [ "$(packageManager)" = "apt" ]; then
+        # Ubuntu/Debian
         docker exec build-container-$(distroName)-$(targetArch) bash -c "
           export DEBIAN_FRONTEND=noninteractive
           export TZ=UTC
@@ -563,13 +644,19 @@ jobs:
           ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python3
         "
       else
-        # Debian
+        # RHEL/DNF
         docker exec build-container-$(distroName)-$(targetArch) bash -c "
-          export DEBIAN_FRONTEND=noninteractive
-          export TZ=UTC
-          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
-          apt-get install -y python$(pythonVersion) python$(pythonVersion)-dev python$(pythonVersion)-venv python3-pip cmake curl wget gnupg software-properties-common build-essential pybind11-dev
+          # Enable CodeReady Builder repository for additional packages
+          dnf install -y dnf-plugins-core epel-release
+          dnf config-manager --set-enabled crb || dnf config-manager --set-enabled powertools || true
+          
+          # Install dependencies
+          dnf update -y
+          dnf groupinstall -y 'Development Tools'
+          dnf install -y python$(pythonVersion) python$(pythonVersion)-devel python$(pythonVersion)-pip cmake curl wget gnupg gcc gcc-c++ make
+          
+          # Install pybind11 development headers
+          dnf install -y python3-pybind11-devel || pip$(pythonVersion) install pybind11
           
           # Create symlinks for easier access
           ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python
@@ -580,31 +667,52 @@ jobs:
 
   - script: |
       # Install ODBC driver in the container
-      docker exec build-container-$(distroName)-$(targetArch) bash -c "
-        export DEBIAN_FRONTEND=noninteractive
-        
-        # Download the package to configure the Microsoft repo
-        if [ '$(distroName)' = 'Ubuntu' ]; then
-          curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
-        else
-          # Debian 12
-          curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
-        fi
-        
-        # Install the package
-        dpkg -i packages-microsoft-prod.deb || true
-        rm packages-microsoft-prod.deb
-        
-        # Update package list
-        apt-get update
-        
-        # Install the driver
-        ACCEPT_EULA=Y apt-get install -y msodbcsql18
-        # optional: for bcp and sqlcmd
-        ACCEPT_EULA=Y apt-get install -y mssql-tools18
-        # optional: for unixODBC development headers
-        apt-get install -y unixodbc-dev
-      "
+      if [ "$(packageManager)" = "apt" ]; then
+        # Ubuntu/Debian
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          
+          # Download the package to configure the Microsoft repo
+          if [ '$(distroName)' = 'Ubuntu' ]; then
+            curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+          else
+            # Debian 12
+            curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
+          fi
+          
+          # Install the package
+          dpkg -i packages-microsoft-prod.deb || true
+          rm packages-microsoft-prod.deb
+          
+          # Update package list
+          apt-get update
+          
+          # Install the driver
+          ACCEPT_EULA=Y apt-get install -y msodbcsql18
+          # optional: for bcp and sqlcmd
+          ACCEPT_EULA=Y apt-get install -y mssql-tools18
+          # optional: for unixODBC development headers
+          apt-get install -y unixodbc-dev
+        "
+      else
+        # RHEL/DNF
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          # Add Microsoft repository for RHEL 9
+          curl -sSL -O https://packages.microsoft.com/config/rhel/9/packages-microsoft-prod.rpm
+          rpm -Uvh packages-microsoft-prod.rpm
+          rm packages-microsoft-prod.rpm
+          
+          # Update package list
+          dnf update -y
+          
+          # Install the driver
+          ACCEPT_EULA=Y dnf install -y msodbcsql18
+          # optional: for bcp and sqlcmd
+          ACCEPT_EULA=Y dnf install -y mssql-tools18
+          # optional: for unixODBC development headers
+          dnf install -y unixODBC-devel
+        "
+      fi
     displayName: 'Install ODBC Driver in $(distroName) $(targetArch) container'
 
   - script: |
@@ -636,23 +744,43 @@ jobs:
 
   - script: |
       # Uninstall ODBC Driver before running tests
-      docker exec build-container-$(distroName)-$(targetArch) bash -c "
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
-        rm -f /usr/bin/sqlcmd
-        rm -f /usr/bin/bcp
-        rm -rf /opt/microsoft/msodbcsql
-        rm -f /lib/x86_64-linux-gnu/libodbcinst.so.2
-        rm -f /lib/aarch64-linux-gnu/libodbcinst.so.2
-        odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
-        echo 'Uninstalled ODBC Driver and cleaned up libraries'
-        echo 'Verifying $(targetArch) debian_ubuntu driver library signatures:'
-        if [ '$(targetArch)' = 'x86_64' ]; then
-          ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.5.so.1.1
-        else
-          ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.5.so.1.1
-        fi
-      "
+      if [ "$(packageManager)" = "apt" ]; then
+        # Ubuntu/Debian
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
+          rm -f /usr/bin/sqlcmd
+          rm -f /usr/bin/bcp
+          rm -rf /opt/microsoft/msodbcsql
+          rm -f /lib/x86_64-linux-gnu/libodbcinst.so.2
+          rm -f /lib/aarch64-linux-gnu/libodbcinst.so.2
+          odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+          echo 'Uninstalled ODBC Driver and cleaned up libraries'
+          echo 'Verifying $(targetArch) debian_ubuntu driver library signatures:'
+          if [ '$(targetArch)' = 'x86_64' ]; then
+            ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.5.so.1.1
+          else
+            ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.5.so.1.1
+          fi
+        "
+      else
+        # RHEL/DNF
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
+          rm -f /usr/bin/sqlcmd
+          rm -f /usr/bin/bcp
+          rm -rf /opt/microsoft/msodbcsql
+          rm -f /lib64/libodbcinst.so.2
+          odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+          echo 'Uninstalled ODBC Driver and cleaned up libraries'
+          echo 'Verifying $(targetArch) rhel driver library signatures:'
+          if [ '$(targetArch)' = 'x86_64' ]; then
+            ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-18.5.so.1.1
+          else
+            ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-18.5.so.1.1
+          fi
+        "
+      fi
     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) $(targetArch) container'
 
   - script: |
