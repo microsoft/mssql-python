@@ -5,7 +5,7 @@ import decimal
 
 # setup_logging('stdout')
 
-conn_str = os.getenv("DB_CONNECTION_STRING")
+conn_str = "Driver={ODBC Driver 18 for SQL Server};" + os.getenv("DB_CONNECTION_STRING")
 
 try:
     print("[SEGDEBUGGING - PYTHON] Declaring the conn variable")
