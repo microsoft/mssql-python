@@ -5,6 +5,7 @@
 //             taken up in future
 
 #include "connection.h"
+#include <iostream>
 #include "connection_pool.h"
 #include <vector>
 #include <pybind11/pybind11.h>
