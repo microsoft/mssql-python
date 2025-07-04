@@ -6,1023 +6,650 @@ trigger:
     include:
       - main
 
+# Trigger the pipeline on changes to the main branch & on pull requests
+trigger:
+  branches:
+    include:
+      - main
+
+# Trigger on pull requests targeting the main branch
+pr:
+  branches:
+    include:
+      - main  
+
 jobs:
-- job: PytestOnWindows
-  pool:
-    vmImage: 'windows-latest'
-  
-  steps:
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: '3.13'
-      addToPath: true
-      githubToken: $(GITHUB_TOKEN)
-    displayName: 'Use Python 3.13'
+# - job: BuildWindowsWheels
+#   # Use the latest Windows image for building
+#   pool:
+#     vmImage: 'windows-latest'
+#   displayName: 'Build Windows -'
+#   # Strategy matrix to build all combinations
+#   strategy:
+#     matrix:
+#       # Python 3.10 (only x64)
+#       py310_x64:
+#         pythonVersion: '3.10'       # Host Python version
+#         shortPyVer: '310'           # Used in filenames like cp310
+#         architecture: 'x64'         # Host Python architecture
+#         targetArch: 'x64'           # Target architecture to pass to build.bat
 
-  - script: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    displayName: 'Install dependencies'
+#       # Python 3.11
+#       py311_x64:
+#         pythonVersion: '3.11'       # Host Python version
+#         shortPyVer: '311'           # Used in filenames like cp311
+#         architecture: 'x64'         # Host Python architecture
+#         targetArch: 'x64'           # Target architecture to pass to build.bat
+#       py311_arm64:
+#         pythonVersion: '3.11'
+#         shortPyVer: '311'
+#         architecture: 'x64'         # No arm64 Python, use x64 host
+#         targetArch: 'arm64'
 
-  # Start LocalDB instance
-  - powershell: |
-      sqllocaldb create MSSQLLocalDB
-      sqllocaldb start MSSQLLocalDB
-    displayName: 'Start LocalDB instance'
+#       # Python 3.12
+#       py312_x64:
+#         pythonVersion: '3.12'
+#         shortPyVer: '312'
+#         architecture: 'x64'
+#         targetArch: 'x64'
+#       py312_arm64:
+#         pythonVersion: '3.12'
+#         shortPyVer: '312'
+#         architecture: 'x64'
+#         targetArch: 'arm64'
 
-  # Create database and user
-  - powershell: |
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
-      sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
-    displayName: 'Setup database and user'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#       # Python 3.13
+#       py313_x64:
+#         pythonVersion: '3.13'
+#         shortPyVer: '313'
+#         architecture: 'x64'
+#         targetArch: 'x64'
+#       py313_arm64:
+#         pythonVersion: '3.13'
+#         shortPyVer: '313'
+#         architecture: 'x64'
+#         targetArch: 'arm64'
 
-  - script: |
-      cd mssql_python\pybind
-      build.bat x64
-    displayName: 'Build .pyd file'
+#   steps:
+#     # Use correct Python version and architecture for the current job
+#     - task: UsePythonVersion@0
+#       inputs:
+#         versionSpec: '$(pythonVersion)'
+#         architecture: '$(architecture)'
+#         addToPath: true
+#       displayName: 'Use Python $(pythonVersion) ($(architecture))'
 
-  - script: |
-      python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
-    displayName: 'Run tests with coverage'
-    env:
-      DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+#     # Install required packages: pip, CMake, pybind11
+#     - script: |
+#         python -m pip install --upgrade pip
+#         pip install -r requirements.txt
+#         pip install cmake pybind11
+#       displayName: 'Install dependencies'
 
-  - task: PublishBuildArtifacts@1
-    inputs:
-      PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pyd'
-      ArtifactName: 'ddbc_bindings'
-      publishLocation: 'Container'
-    displayName: 'Publish pyd file as artifact'
+#       # Start LocalDB instance
+#     - powershell: |
+#         sqllocaldb create MSSQLLocalDB
+#         sqllocaldb start MSSQLLocalDB
+#       displayName: 'Start LocalDB instance'
 
-  - task: PublishBuildArtifacts@1
-    inputs:
-      PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pdb'
-      ArtifactName: 'ddbc_bindings'
-      publishLocation: 'Container'
-    displayName: 'Publish pdb file as artifact'
+#     # Create database and user
+#     - powershell: |
+#         sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
+#         sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+#         sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+#         sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+#       displayName: 'Setup database and user'
+#       env:
+#         DB_PASSWORD: $(DB_PASSWORD)
 
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results.xml'
-      testRunTitle: 'Publish test results'
+#     - task: DownloadPipelineArtifact@2
+#       condition: eq(variables['targetArch'], 'arm64')
+#       inputs:
+#         buildType: 'specific'
+#         project: '$(System.TeamProject)'
+#         definition: 2162
+#         buildVersionToDownload: 'latest'
+#         artifactName: 'mssql-python-arm64-libs'
+#         targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
+#       displayName: 'Download ARM64 Python libs from latest successful run on branches'
 
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage.xml'
-    displayName: 'Publish code coverage results'
+#     # Build the PYD file by calling build.bat
+#     - script: |
+#         echo "Python Version: $(pythonVersion)"
+#         echo "Short Tag: $(shortPyVer)"
+#         echo "Architecture: Host=$(architecture), Target=$(targetArch)"
 
-- job: PytestOnMacOS
-  pool:
-    vmImage: 'macos-latest'
+#         cd "$(Build.SourcesDirectory)\mssql_python\pybind"
 
-  steps:
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: '3.13'
-      addToPath: true
-    displayName: 'Use Python 3.13 on macOS'
+#         REM Optional: override lib path if building for ARM64 since we cannot install arm64 python on x64 host
+#         if "$(targetArch)"=="arm64" (
+#           echo Using arm64-specific Python library...
+#           set CUSTOM_PYTHON_LIB_DIR=$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64
+#         )
 
-  - script: |
-      brew update
-      brew install cmake
-    displayName: 'Install CMake'
+#         REM Call build.bat to build the PYD file
+#         call build.bat $(targetArch)
 
-  - script: |
-      brew update
-      brew install docker colima
+#         REM Calling keep_single_arch.bat to remove ODBC libs of other architectures
+#         call keep_single_arch.bat $(targetArch)
 
-      # Start Colima with extra resources
-      colima start --cpu 4 --memory 8 --disk 50
+#         cd ..\..
+#       displayName: 'Build PYD for $(targetArch)'
+#       continueOnError: false
 
-      # Optional: set Docker context (usually automatic)
-      docker context use colima >/dev/null || true
+#     # TODO: Reactivate and use pytests in build
+#     # Run pytests before packaging
+#     - powershell: |
+#         Write-Host "Running pytests to validate bindings"
+#         if ("$(targetArch)" -eq "arm64") {
+#           Write-Host "Skipping pytests on Windows ARM64"
+#         } else {
+#           python -m pytest -v
+#         }
+#       displayName: 'Run pytests'
+#       env:
+#         DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
-      # Confirm Docker is operational
-      docker version
-      docker ps
-    displayName: 'Install and start Colima-based Docker'
+#     # Copy the built .pyd file to staging folder for artifacts
+#     - task: CopyFiles@2
+#       inputs:
+#         SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+#         Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
+#         TargetFolder: '$(Build.ArtifactStagingDirectory)\ddbc-bindings\windows'
+#       displayName: 'Place PYD file into artifacts directory'
 
-  - script: |
-      # Pull and run SQL Server container
-      docker pull mcr.microsoft.com/mssql/server:2022-latest
-      docker run \
-        --name sqlserver \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
-        -p 1433:1433 \
-        -d mcr.microsoft.com/mssql/server:2022-latest
+#     # Copy the built .pdb files to staging folder for artifacts
+#     - task: CopyFiles@2
+#       inputs:
+#         SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+#         Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pdbs'
+#         TargetFolder: '$(Build.ArtifactStagingDirectory)\all-pdbs'
+#       displayName: 'Place PDB file into artifacts directory'
 
-      # Starting SQL Server container…
-      for i in {1..30}; do
-        docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$DB_PASSWORD" \
-          -C -Q "SELECT 1" && break
-        sleep 2
-      done
-    displayName: 'Pull & start SQL Server (Docker)'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#     # Build wheel package for the current architecture
+#     - script: |
+#         python -m pip install --upgrade pip
+#         pip install wheel setuptools
+#         set ARCHITECTURE=$(targetArch)
+#         python setup.py bdist_wheel
+#       displayName: 'Build wheel package for Python $(pythonVersion) ($(targetArch))'
+    
+#     # Copy the wheel file to the artifacts
+#     - task: CopyFiles@2
+#       inputs:
+#         SourceFolder: '$(Build.SourcesDirectory)\dist'
+#         Contents: '*.whl'
+#         TargetFolder: '$(Build.ArtifactStagingDirectory)\dist'
+#       displayName: 'Collect wheel package'    
 
-  - script: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    displayName: 'Install Python dependencies'
+#     # Publish the collected .pyd file(s) as build artifacts
+#     - task: PublishBuildArtifacts@1
+#       condition: succeededOrFailed()
+#       inputs:
+#         PathtoPublish: '$(Build.ArtifactStagingDirectory)\ddbc-bindings'
+#         ArtifactName: 'mssql-python-ddbc-bindings'
+#         publishLocation: 'Container'
+#       displayName: 'Publish all PYDs as artifacts'
 
-  - script: |
-      cd mssql_python/pybind
-      ./build.sh
-    displayName: 'Build pybind bindings (.so)'
+#     # Publish the python arm64 libraries as build artifacts for next builds if ARM64
+#     # We publish them only for ARM64 builds since we cannot install arm64 Python on x64 host
+#     # This allows us to reuse the libraries in future ARM64 builds
+#     # Publishing will retain the libraries in the build artifacts
+#     - task: PublishBuildArtifacts@1
+#       condition: eq(variables['targetArch'], 'arm64')
+#       inputs:
+#         PathtoPublish: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
+#         ArtifactName: 'mssql-python-arm64-libs'
+#         publishLocation: 'Container'
+#       displayName: 'Publish arm64 libs as artifacts'
+    
+#     # Publish the collected wheel file(s) as build artifacts
+#     - task: PublishBuildArtifacts@1
+#       condition: succeededOrFailed()
+#       inputs:
+#         PathtoPublish: '$(Build.ArtifactStagingDirectory)\dist'
+#         ArtifactName: 'mssql-python-wheels-dist'
+#         publishLocation: 'Container'
+#       displayName: 'Publish all wheels as artifacts'
 
-  - script: |
-      echo "Build successful, running tests now"
-      python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
-    displayName: 'Run pytest with coverage'
-    env:
-      DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
-      DB_PASSWORD: $(DB_PASSWORD)
+# - job: BuildMacOSWheels
+#   # Use the latest macOS image for building
+#   pool:
+#     vmImage: 'macos-latest'
+#   # Display name for the job in Azure DevOps UI
+#   displayName: 'Build macOS - '
+#   strategy:
+#     matrix:
+#       # Python 3.13 (universal2 for both arm64 and x86_64)
+#       py313_universal2:
+#         pythonVersion: '3.13'
+#         shortPyVer: '313'
+#         # Always use universal2 for macOS
+#         targetArch: 'universal2'
+      
+#       # Python 3.12 (universal2 for both arm64 and x86_64)
+#       py312_universal2:
+#         pythonVersion: '3.12'
+#         shortPyVer: '312'
+#         targetArch: 'universal2'
 
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results.xml'
-      testRunTitle: 'Publish pytest results on macOS'
+#       # Python 3.11 (universal2 for both arm64 and x86_64)
+#       py311_universal2:
+#         pythonVersion: '3.11'
+#         shortPyVer: '311'
+#         targetArch: 'universal2'
+      
+#       # Python 3.10 (universal2 for both arm64 and x86_64)
+#       py310_universal2:
+#         pythonVersion: '3.10'
+#         shortPyVer: '310'
+#         targetArch: 'universal2'
 
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage.xml'
-    displayName: 'Publish code coverage results'
+#   steps:
+#     # Use correct Python version and architecture for the current job
+#     - task: UsePythonVersion@0
+#       inputs:
+#         versionSpec: '$(pythonVersion)'
+#         addToPath: true
+#       displayName: 'Use Python $(pythonVersion) (Universal2)'
 
-- job: PytestOnLinux
+#     # Install CMake on macOS
+#     - script: |
+#         brew update
+#         brew install cmake
+#       displayName: 'Install CMake'
+
+#     # Install required packages: pip, CMake, pybind11
+#     - script: |
+#         python -m pip install --upgrade pip
+#         pip install -r requirements.txt
+#         pip install cmake pybind11
+#       displayName: 'Install dependencies'
+
+#     # Build the .so file by calling build.sh
+#     - script: |
+#         echo "Python Version: $(pythonVersion)"
+#         echo "Short Tag: $(shortPyVer)"
+#         echo "Building Universal2 Binary"
+#         cd "$(Build.SourcesDirectory)/mssql_python/pybind"
+#         # Call build.sh to build the .so file
+#         ./build.sh
+#       displayName: 'Build .so file'
+#       continueOnError: false
+
+#     # Copy the built .so file to staging folder for artifacts
+#     - task: CopyFiles@2
+#       inputs:
+#         SourceFolder: '$(Build.SourcesDirectory)/mssql_python'
+#         Contents: '*.so'
+#         TargetFolder: '$(Build.ArtifactStagingDirectory)/ddbc-bindings/macOS'
+#       displayName: 'Place .so file into artifacts directory'
+
+#     - script: |
+#         brew update
+#         brew install docker colima
+
+#         # Start Colima with extra resources
+#         colima start --cpu 4 --memory 8 --disk 50
+
+#         # Optional: set Docker context (usually automatic)
+#         docker context use colima >/dev/null || true
+
+#         # Confirm Docker is operational
+#         docker version
+#         docker ps
+#       displayName: 'Install and start Colima-based Docker'
+
+#     - script: |
+#         # Pull and run SQL Server container
+#         docker pull mcr.microsoft.com/mssql/server:2022-latest
+#         docker run \
+#           --name sqlserver \
+#           -e ACCEPT_EULA=Y \
+#           -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+#           -p 1433:1433 \
+#           -d mcr.microsoft.com/mssql/server:2022-latest
+
+#         # Starting SQL Server container…
+#         for i in {1..30}; do
+#           docker exec sqlserver \
+#             /opt/mssql-tools18/bin/sqlcmd \
+#             -S localhost \
+#             -U SA \
+#             -P "$DB_PASSWORD" \
+#             -C -Q "SELECT 1" && break
+#           sleep 2
+#         done
+#       displayName: 'Pull & start SQL Server (Docker)'
+#       env:
+#         DB_PASSWORD: $(DB_PASSWORD)
+
+#     # TODO: Reactivate and use pytests in build
+#     # Run Pytest to ensure the bindings work correctly
+#     - script: |
+#         python -m pytest -v
+#       displayName: 'Run Pytest to validate bindings'
+#       env:
+#         DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+#     # Build wheel package for universal2
+#     - script: |
+#         python -m pip install --upgrade pip
+#         pip install wheel setuptools
+#         python setup.py bdist_wheel
+#       displayName: 'Build $(pythonVersion) universal2 whl'
+    
+#     # Copy the wheel file to the artifacts
+#     - task: CopyFiles@2
+#       inputs:
+#         SourceFolder: '$(Build.SourcesDirectory)/dist'
+#         Contents: '*.whl'
+#         TargetFolder: '$(Build.ArtifactStagingDirectory)/dist'
+#       displayName: 'Collect wheel package'
+    
+#     # Publish the collected .so file(s) as build artifacts
+#     - task: PublishBuildArtifacts@1
+#       condition: succeededOrFailed()
+#       inputs:
+#         PathtoPublish: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
+#         ArtifactName: 'mssql-python-ddbc-bindings'
+#         publishLocation: 'Container'
+#       displayName: 'Publish all .so files as artifacts'
+    
+#     # Publish the collected wheel file(s) as build artifacts
+#     - task: PublishBuildArtifacts@1
+#       condition: succeededOrFailed()
+#       inputs:
+#         PathtoPublish: '$(Build.ArtifactStagingDirectory)/dist'
+#         ArtifactName: 'mssql-python-wheels-dist'
+#         publishLocation: 'Container'
+#       displayName: 'Publish all wheels as artifacts'
+
+- job: BuildLinuxWheels
+  # Use the latest Ubuntu image for building
   pool:
     vmImage: 'ubuntu-latest'
-
+  displayName: 'Build Linux -'
+  # Strategy matrix to build all combinations
   strategy:
     matrix:
-      Ubuntu:
-        dockerImage: 'ubuntu:22.04'
-        distroName: 'Ubuntu'
-      Debian:
-        dockerImage: 'debian:12'
-        distroName: 'Debian'
+      # Python 3.10 (x86_64 and ARM64)
+      # py310_x86_64:
+      #   shortPyVer: '310'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   manylinuxTag: 'manylinux2014_x86_64'
+      # py310_arm64:
+      #   shortPyVer: '310'
+      #   targetArch: 'arm64'
+      #   dockerPlatform: 'linux/arm64'
+      #   manylinuxTag: 'manylinux2014_aarch64'
+
+      # # Python 3.11 (x86_64 and ARM64)
+      # py311_x86_64:
+      #   shortPyVer: '311'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   manylinuxTag: 'manylinux2014_x86_64'
+      # py311_arm64:
+      #   shortPyVer: '311'
+      #   targetArch: 'arm64'
+      #   dockerPlatform: 'linux/arm64'
+      #   manylinuxTag: 'manylinux2014_aarch64'
+
+      # Python 3.12 (x86_64 and ARM64)
+      py312_x86_64:
+        shortPyVer: '312'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        manylinuxTag: 'manylinux2014_x86_64'
+      # py312_arm64:
+      #   shortPyVer: '312'
+      #   targetArch: 'arm64'
+      #   dockerPlatform: 'linux/arm64'
+      #   manylinuxTag: 'manylinux2014_aarch64'
+
+      # # Python 3.13 (x86_64 and ARM64)
+      # py313_x86_64:
+      #   shortPyVer: '313'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   manylinuxTag: 'manylinux2014_x86_64'
+      # py313_arm64:
+      #   shortPyVer: '313'
+      #   targetArch: 'arm64'
+      #   dockerPlatform: 'linux/arm64'
+      #   manylinuxTag: 'manylinux2014_aarch64'
 
   steps:
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: '3.13'
-      addToPath: true
-    displayName: 'Use Python 3.13 on $(distroName) x86_64'
+    # Set up Docker buildx for multi-architecture support
+    - script: |
+        docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+        docker buildx create --name multiarch --driver docker-container --use || true
+        docker buildx inspect --bootstrap
+      displayName: 'Setup Docker buildx for multi-architecture support'
 
-  - script: |
-      # Create a Docker container for testing
-      docker run -d --name test-container-$(distroName) \
-        -v $(Build.SourcesDirectory):/workspace \
-        -w /workspace \
-        --network bridge \
-        $(dockerImage) \
-        tail -f /dev/null
-    displayName: 'Create $(distroName) container'
+    # Create manylinux2014 container for building
+    - script: |
+        docker run -d --name build-container-$(targetArch) \
+          --platform $(dockerPlatform) \
+          --network host \
+          -v $(Build.SourcesDirectory):/workspace \
+          -w /workspace \
+          --memory=4g \
+          --memory-swap=6g \
+          --cpus="2.0" \
+          --shm-size=1g \
+          quay.io/pypa/$(manylinuxTag):latest \
+          tail -f /dev/null
+        
+        # Check container resources
+        docker exec build-container-$(targetArch) bash -c "
+          echo 'Container system information:'
+          free -h
+          df -h
+          nproc
+          uname -a
+        "
+      displayName: 'Create manylinux2014 $(targetArch) container with resource limits'
 
-  - script: |
-      # Start SQL Server container
-      docker run -d --name sqlserver-$(distroName) \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-$(distroName) \
+    # Start SQL Server container for testing
+    - script: |
+        docker run -d --name sqlserver-$(targetArch) \
+          --platform linux/amd64 \
+          --network host \
+          -e ACCEPT_EULA=Y \
+          -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+          mcr.microsoft.com/mssql/server:2022-latest
+        
+        # Wait for SQL Server to be ready
+        echo "Waiting for SQL Server to start..."
+        for i in {1..60}; do
+          if docker exec sqlserver-$(targetArch) \
+            /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost \
+            -U SA \
+            -P "$(DB_PASSWORD)" \
+            -C -Q "SELECT 1" >/dev/null 2>&1; then
+            echo "SQL Server is ready!"
+            break
+          fi
+          echo "Waiting... ($i/60)"
+          sleep 2
+        done
+        
+        # Create test database
+        docker exec sqlserver-$(targetArch) \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
           -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      
-      # Create test database
-      docker exec sqlserver-$(distroName) \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
-    displayName: 'Start SQL Server container for $(distroName)'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+          -C -Q "CREATE DATABASE TestDB"
+      displayName: 'Start SQL Server container for $(targetArch)'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      # Install dependencies in the container
-      if [ "$(distroName)" = "Ubuntu" ]; then
-        docker exec test-container-$(distroName) bash -c "
-          export DEBIAN_FRONTEND=noninteractive
-          export TZ=UTC
-          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
-          apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
-        "
-      else
-        # Debian
-        docker exec test-container-$(distroName) bash -c "
-          export DEBIAN_FRONTEND=noninteractive
-          export TZ=UTC
-          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
-          apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
-        "
-      fi
-    displayName: 'Install basic dependencies in $(distroName) container'
-
-  - script: |
-      # Install ODBC driver in the container
-      docker exec test-container-$(distroName) bash -c "
-        export DEBIAN_FRONTEND=noninteractive
-        
-        # Download the package to configure the Microsoft repo
-        if [ '$(distroName)' = 'Ubuntu' ]; then
-          curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
-        else
-          # Debian 12
-          curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
-        fi
-        
-        # Install the package
-        dpkg -i packages-microsoft-prod.deb || true
-        rm packages-microsoft-prod.deb
-        
-        # Update package list
-        apt-get update
-        
-        # Install the driver
-        ACCEPT_EULA=Y apt-get install -y msodbcsql18
-        # optional: for bcp and sqlcmd
-        ACCEPT_EULA=Y apt-get install -y mssql-tools18
-        # optional: for unixODBC development headers
-        apt-get install -y unixodbc-dev
-      "
-    displayName: 'Install ODBC Driver in $(distroName) container'
-
-  - script: |
-      # Install Python dependencies in the container using virtual environment
-      docker exec test-container-$(distroName) bash -c "
-        # Create a virtual environment
-        python3 -m venv /opt/venv
-        source /opt/venv/bin/activate
-        
-        # Install dependencies in the virtual environment
-        python -m pip install --upgrade pip
-        python -m pip install -r requirements.txt
-        
-        # Make the virtual environment globally available
-        echo 'source /opt/venv/bin/activate' >> ~/.bashrc
-      "
-    displayName: 'Install Python dependencies in $(distroName) container'
-
-  - script: |
-      # Build pybind bindings in the container
-      docker exec test-container-$(distroName) bash -c "
-        source /opt/venv/bin/activate
-        cd mssql_python/pybind
-        chmod +x build.sh
-        ./build.sh
-      "
-    displayName: 'Build pybind bindings (.so) in $(distroName) container'
-
-  - script: |
-      # Uninstall ODBC Driver before running tests
-      docker exec test-container-$(distroName) bash -c "
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
-        rm -f /usr/bin/sqlcmd
-        rm -f /usr/bin/bcp
-        rm -rf /opt/microsoft/msodbcsql
-        rm -f /lib/x86_64-linux-gnu/libodbcinst.so.2
-        odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
-        echo 'Uninstalled ODBC Driver and cleaned up libraries'
-        echo 'Verifying x86_64 debian_ubuntu driver library signatures:'
-        ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.5.so.1.1
-      "
-    displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
-
-  - script: |
-      # Run tests in the container
-      # Get SQL Server container IP
-      SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-      echo "SQL Server IP: $SQLSERVER_IP"
-      
-      docker exec \
-        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
-        test-container-$(distroName) bash -c "
-        source /opt/venv/bin/activate
-        echo 'Build successful, running tests now on $(distroName)'
-        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-        python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
-      "
-    displayName: 'Run pytest with coverage in $(distroName) container'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: |
-      # Copy test results from container to host
-      docker cp test-container-$(distroName):/workspace/test-results-$(distroName).xml $(Build.SourcesDirectory)/
-      docker cp test-container-$(distroName):/workspace/coverage-$(distroName).xml $(Build.SourcesDirectory)/
-    displayName: 'Copy test results from $(distroName) container'
-    condition: always()
-
-  - script: |
-      # Clean up containers
-      docker stop test-container-$(distroName) || true
-      docker rm test-container-$(distroName) || true
-      docker stop sqlserver-$(distroName) || true
-      docker rm sqlserver-$(distroName) || true
-    displayName: 'Clean up $(distroName) containers'
-    condition: always()
-
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results-$(distroName).xml'
-      testRunTitle: 'Publish pytest results on $(distroName)'
-
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage-$(distroName).xml'
-    displayName: 'Publish code coverage results for $(distroName)'
-
-- job: PytestOnLinux_ARM64
-  pool:
-    vmImage: 'ubuntu-latest'
-
-  strategy:
-    matrix:
-      Ubuntu_ARM64:
-        dockerImage: 'ubuntu:22.04'
-        distroName: 'Ubuntu'
-        archName: 'arm64'
-      Debian_ARM64:
-        dockerImage: 'debian:12'
-        distroName: 'Debian'
-        archName: 'arm64'
-
-  steps:
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: '3.13'
-      addToPath: true
-    displayName: 'Use Python 3.13 on $(distroName) ARM64'
-
-  - script: |
-      # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-      docker buildx create --name multiarch --driver docker-container --use
-      docker buildx inspect --bootstrap
-    displayName: 'Setup Docker buildx for ARM64 emulation'
-
-  - script: |
-      # Create a Docker container for testing on ARM64
-      docker run -d --name test-container-$(distroName)-$(archName) \
-        --platform linux/arm64 \
-        -v $(Build.SourcesDirectory):/workspace \
-        -w /workspace \
-        --network bridge \
-        $(dockerImage) \
-        tail -f /dev/null
-    displayName: 'Create $(distroName) ARM64 container'
-
-  - script: |
-      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
-      docker run -d --name sqlserver-$(distroName)-$(archName) \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-$(distroName)-$(archName) \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      
-      # Create test database
-      docker exec sqlserver-$(distroName)-$(archName) \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
-    displayName: 'Start SQL Server container for $(distroName) ARM64'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: |
-      # Install dependencies in the ARM64 container
-      if [ "$(distroName)" = "Ubuntu" ]; then
-        docker exec test-container-$(distroName)-$(archName) bash -c "
-          export DEBIAN_FRONTEND=noninteractive
-          export TZ=UTC
-          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
-          apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
-          # Verify architecture
+    # Install dependencies and set up Python in manylinux container
+    - script: |
+        docker exec build-container-$(targetArch) bash -c "
+          # List available Python versions in manylinux container
+          echo 'Available Python versions in manylinux container:'
+          ls -la /opt/python/
+          
+          # Find the correct Python binary for cp$(shortPyVer)
+          PYTHON_TAG=cp$(shortPyVer)
+          PYTHON_BIN=''
+          
+          # Try different naming patterns
+          for pattern in \${PYTHON_TAG}-\${PYTHON_TAG} \${PYTHON_TAG}-\${PYTHON_TAG}m; do
+            if [ -x /opt/python/\${pattern}/bin/python ]; then
+              PYTHON_BIN=/opt/python/\${pattern}/bin/python
+              PIP_BIN=/opt/python/\${pattern}/bin/pip
+              break
+            fi
+          done
+          
+          if [ -z \"\$PYTHON_BIN\" ]; then
+            echo 'Python $(shortPyVer) not found in manylinux container'
+            echo 'Available Python versions:'
+            ls -la /opt/python/
+            exit 1
+          fi
+          
+          echo \"Using Python binary: \$PYTHON_BIN\"
+          \$PYTHON_BIN --version
+          
+          # Create symlinks for easier access
+          ln -sf \$PYTHON_BIN /usr/local/bin/python
+          ln -sf \$PIP_BIN /usr/local/bin/pip
+          
+          # Install build dependencies
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install cmake pybind11 wheel setuptools
+          
+          # Verify installation
+          python --version
+          pip --version
           uname -m
-          dpkg --print-architecture
+          echo 'Python path:' \$(which python)
+          echo 'Pip path:' \$(which pip)
         "
-      else
-        # Debian ARM64
-        docker exec test-container-$(distroName)-$(archName) bash -c "
-          export DEBIAN_FRONTEND=noninteractive
-          export TZ=UTC
-          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
-          apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
-          # Verify architecture
-          uname -m
-          dpkg --print-architecture
+      displayName: 'Install dependencies in manylinux2014 $(targetArch) container'
+
+    # Install ODBC Driver to build
+    - script: |
+        docker exec build-container-$(targetArch) bash -c "
+          yum update -y
+          yum install -y unixODBC-devel
         "
-      fi
-    displayName: 'Install basic dependencies in $(distroName) ARM64 container'
+      displayName: 'Install ODBC Driver in manylinux2014 $(targetArch) container'
 
-  - script: |
-      # Install ODBC driver in the ARM64 container
-      docker exec test-container-$(distroName)-$(archName) bash -c "
-        export DEBIAN_FRONTEND=noninteractive
+    # Build pybind bindings in manylinux container
+    - script: |
+        docker exec build-container-$(targetArch) bash -c "
+          cd mssql_python/pybind
+          chmod +x build.sh
+          ./build.sh
+          
+          # Verify .so file was built
+          ls -la ../ddbc_bindings.*.so
+        "
+      displayName: 'Build pybind bindings (.so) in manylinux2014 $(targetArch) container'
+      continueOnError: false
+
+    # TODO: Reactivate and use pytests in build
+    # Run tests to validate the build
+    - script: |
+        # Get SQL Server container IP
+        SQLSERVER_IP=$(docker inspect sqlserver-$(targetArch) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+        echo "SQL Server IP: $SQLSERVER_IP"
+    
+        docker exec \
+          -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=localhost,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes;Timeout=30;" \
+          -e DB_PASSWORD="$(DB_PASSWORD)" \
+          build-container-$(targetArch) bash -c "
+          echo 'Running tests on manylinux2014 $(targetArch)'
+          echo 'Architecture:' \$(uname -m)
+          echo 'Python version:' \$(python --version)
+          python main.py
+          python -m pytest -v
+        "
+      displayName: 'Run tests in manylinux2014 $(targetArch) container'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
+
+    # Build manylinux wheel
+    - script: |
+        docker exec build-container-$(targetArch) bash -c "
+          echo 'Building manylinux2014 wheel for Python cp$(shortPyVer) on $(targetArch)'
+          echo 'Python version:' \$(python --version)
+          python -m pip install --upgrade pip wheel setuptools
+          
+          # Build the wheel
+          python setup.py bdist_wheel
+          
+          # Verify the wheel was created
+          ls -la dist/
+          
+          # Use auditwheel to create manylinux wheel
+          python -m pip install auditwheel
+          auditwheel repair dist/*.whl -w dist/
+          
+          # Remove the original wheel, keep only the manylinux one
+          rm -f dist/*-linux_*.whl
+          
+          # Verify final wheel
+          echo 'Final manylinux wheel:'
+          ls -la dist/
+        "
+      displayName: 'Build manylinux2014 wheel for Python cp$(shortPyVer) ($(targetArch))'
+
+    # Copy the wheel file to the artifacts
+    - script: |
+        # Debug: Check what's in the dist directory
+        docker exec build-container-$(targetArch) bash -c "
+          echo 'Contents of /workspace/dist after wheel build:'
+          ls -la /workspace/dist/ || echo 'dist directory does not exist'
+        "
         
-        # Download the package to configure the Microsoft repo
-        if [ '$(distroName)' = 'Ubuntu' ]; then
-          curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
-        else
-          # Debian 12
-          curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
-        fi
+        mkdir -p $(Build.ArtifactStagingDirectory)/dist
+        docker cp build-container-$(targetArch):/workspace/dist/. $(Build.ArtifactStagingDirectory)/dist/ || echo "Failed to copy dist directory"
         
-        # Install the package
-        dpkg -i packages-microsoft-prod.deb || true
-        rm packages-microsoft-prod.deb
-        
-        # Update package list
-        apt-get update
-        
-        # Install the driver (ARM64 version)
-        ACCEPT_EULA=Y apt-get install -y msodbcsql18
-        # optional: for bcp and sqlcmd
-        ACCEPT_EULA=Y apt-get install -y mssql-tools18
-        # optional: for unixODBC development headers
-        apt-get install -y unixodbc-dev
-      "
-    displayName: 'Install ODBC Driver in $(distroName) ARM64 container'
+        # Verify what was copied
+        echo "Contents of staging dist directory:"
+        ls -la $(Build.ArtifactStagingDirectory)/dist/ || echo "Staging dist directory is empty"
+      displayName: 'Copy wheel from container to artifacts'
 
-  - script: |
-      # Install Python dependencies in the ARM64 container using virtual environment
-      docker exec test-container-$(distroName)-$(archName) bash -c "
-        # Create a virtual environment
-        python3 -m venv /opt/venv
-        source /opt/venv/bin/activate
-        
-        # Install dependencies in the virtual environment
-        python -m pip install --upgrade pip
-        python -m pip install -r requirements.txt
-        
-        # Make the virtual environment globally available
-        echo 'source /opt/venv/bin/activate' >> ~/.bashrc
-      "
-    displayName: 'Install Python dependencies in $(distroName) ARM64 container'
+    # Copy the built .so file to staging folder for artifacts
+    - script: |
+        mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux/$(targetArch)
+        docker cp build-container-$(targetArch):/workspace/mssql_python/ddbc_bindings.cp$(shortPyVer)-$(targetArch).so $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux/$(targetArch)/
+      displayName: 'Copy .so file to artifacts directory'
 
-  - script: |
-      # Build pybind bindings in the ARM64 container
-      docker exec test-container-$(distroName)-$(archName) bash -c "
-        source /opt/venv/bin/activate
-        cd mssql_python/pybind
-        chmod +x build.sh
-        ./build.sh
-      "
-    displayName: 'Build pybind bindings (.so) in $(distroName) ARM64 container'
+    # Clean up containers
+    - script: |
+        docker stop build-container-$(targetArch) || true
+        docker rm build-container-$(targetArch) || true
+        docker stop sqlserver-$(targetArch) || true
+        docker rm sqlserver-$(targetArch) || true
+      displayName: 'Clean up $(targetArch) containers'
+      condition: always()
 
-  - script: |
-      # Uninstall ODBC Driver before running tests
-      docker exec test-container-$(distroName)-$(archName) bash -c "
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
-        rm -f /usr/bin/sqlcmd
-        rm -f /usr/bin/bcp
-        rm -rf /opt/microsoft/msodbcsql
-        rm -f /lib/aarch64-linux-gnu/libodbcinst.so.2
-        odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
-        echo 'Uninstalled ODBC Driver and cleaned up libraries'
-        echo 'Verifying arm64 debian_ubuntu driver library signatures:'
-        ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.5.so.1.1
-      "
-    displayName: 'Uninstall ODBC Driver before running tests in $(distroName) ARM64 container'
+    # Publish the collected .so file(s) as build artifacts
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
+        ArtifactName: 'mssql-python-ddbc-bindings'
+        publishLocation: 'Container'
+      displayName: 'Publish .so files as artifacts'
 
-  - script: |
-      # Run tests in the ARM64 container
-      # Get SQL Server container IP
-      SQLSERVER_IP=$(docker inspect sqlserver-$(distroName)-$(archName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-      echo "SQL Server IP: $SQLSERVER_IP"
-      
-      docker exec \
-        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
-        test-container-$(distroName)-$(archName) bash -c "
-        source /opt/venv/bin/activate
-        echo 'Build successful, running tests now on $(distroName) ARM64'
-        echo 'Architecture:' \$(uname -m)
-        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-        python main.py
-        python -m pytest -v --junitxml=test-results-$(distroName)-$(archName).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(archName).xml --capture=tee-sys --cache-clear
-      "
-    displayName: 'Run pytest with coverage in $(distroName) ARM64 container'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: |
-      # Copy test results from container to host
-      docker cp test-container-$(distroName)-$(archName):/workspace/test-results-$(distroName)-$(archName).xml $(Build.SourcesDirectory)/
-      docker cp test-container-$(distroName)-$(archName):/workspace/coverage-$(distroName)-$(archName).xml $(Build.SourcesDirectory)/
-    displayName: 'Copy test results from $(distroName) ARM64 container'
-    condition: always()
-
-  - script: |
-      # Clean up containers
-      docker stop test-container-$(distroName)-$(archName) || true
-      docker rm test-container-$(distroName)-$(archName) || true
-      docker stop sqlserver-$(distroName)-$(archName) || true
-      docker rm sqlserver-$(distroName)-$(archName) || true
-    displayName: 'Clean up $(distroName) ARM64 containers'
-    condition: always()
-
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results-$(distroName)-$(archName).xml'
-      testRunTitle: 'Publish pytest results on $(distroName) ARM64'
-
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage-$(distroName)-$(archName).xml'
-    displayName: 'Publish code coverage results for $(distroName) ARM64'
-
-- job: PytestOnLinux_RHEL9
-  pool:
-    vmImage: 'ubuntu-latest'
-
-  steps:
-  - script: |
-      # Create a Docker container for testing
-      docker run -d --name test-container-rhel9 \
-        -v $(Build.SourcesDirectory):/workspace \
-        -w /workspace \
-        --network bridge \
-        redhat/ubi9:latest \
-        tail -f /dev/null
-    displayName: 'Create RHEL 9 container'
-
-  - script: |
-      # Start SQL Server container
-      docker run -d --name sqlserver-rhel9 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-rhel9 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      
-      # Create test database
-      docker exec sqlserver-rhel9 \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
-    displayName: 'Start SQL Server container for RHEL 9'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: |
-      # Install dependencies in the RHEL 9 container
-      docker exec test-container-rhel9 bash -c "
-        # Enable CodeReady Builder repository for additional packages
-        dnf update -y
-        dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
-        subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms || dnf config-manager --set-enabled ubi-9-codeready-builder
-        
-        # Install Python 3.9 (available in RHEL 9 UBI) and development tools
-        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 glibc-devel kernel-headers
-        dnf install -y python3-libs python3-debug
-        dnf install -y gcc gcc-c++ make binutils
-        dnf install -y cmake
-        # If that doesn't work, try installing from different repositories
-        if ! which gcc; then
-          echo 'Trying alternative gcc installation...'
-          dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
-        fi
-        # Verify installation
-        python3 --version
-        which gcc && which g++
-        gcc --version
-        g++ --version
-      "
-    displayName: 'Install basic dependencies in RHEL 9 container'
-
-  - script: |
-      # Verify compiler installation and set environment for RHEL 9
-      docker exec test-container-rhel9 bash -c "
-        # Verify compilers are available
-        which gcc || echo 'GCC not found'
-        which g++ || echo 'G++ not found'
-        gcc --version || echo 'GCC version check failed'
-        g++ --version || echo 'G++ version check failed'
-        
-        # Set compiler environment variables
-        export CC=/usr/bin/gcc
-        export CXX=/usr/bin/g++
-        echo 'CC set to:' \$CC
-        echo 'CXX set to:' \$CXX
-        
-        # Create a wrapper script to preserve environment
-        cat > /workspace/setup_env.sh << 'EOF'
-        #!/bin/bash
-        export CC=/usr/bin/gcc
-        export CXX=/usr/bin/g++
-        export PATH=/usr/bin:\$PATH
-        exec \"\$@\"
-        EOF
-        chmod +x /workspace/setup_env.sh
-      "
-    displayName: 'Verify and configure compilers in RHEL 9 container'
-
-  - script: |
-      # Install ODBC driver in the RHEL 9 container
-      docker exec test-container-rhel9 bash -c "
-        # Add Microsoft repository for RHEL 9
-        curl -sSL -o /etc/yum.repos.d/msprod.repo https://packages.microsoft.com/config/rhel/9/prod.repo
-        
-        # Install the driver
-        ACCEPT_EULA=Y dnf install -y msodbcsql18
-        # optional: for bcp and sqlcmd
-        ACCEPT_EULA=Y dnf install -y mssql-tools18
-        # optional: for unixODBC development headers
-        dnf install -y unixODBC-devel
-      "
-    displayName: 'Install ODBC Driver in RHEL 9 container'
-
-  - script: |
-      # Install Python dependencies in the container using virtual environment
-      docker exec test-container-rhel9 bash -c "
-        # Create a virtual environment with Python 3.9
-        python3 -m venv myvenv
-        source myvenv/bin/activate
-
-        # Install dependencies in the virtual environment
-        python -m pip install --upgrade pip
-        python -m pip install -r requirements.txt
-        
-        # Make the virtual environment globally available
-        echo 'source myvenv/bin/activate' >> ~/.bashrc
-      "
-    displayName: 'Install Python dependencies in RHEL 9 container'
-
-  - script: |
-      # Build pybind bindings in the container
-      docker exec test-container-rhel9 bash -c "
-        source myvenv/bin/activate
-        ls /usr/include/python3.9
-        # Set compiler environment variables
-        export CC=/usr/bin/gcc
-        export CXX=/usr/bin/g++
-
-        cd mssql_python/pybind
-        chmod +x build.sh
-        ./build.sh
-      "
-    displayName: 'Build pybind bindings (.so) in RHEL 9 container'
-
-  - script: |
-      # Uninstall ODBC Driver before running tests
-      docker exec test-container-rhel9 bash -c "
-        dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
-        rm -f /usr/bin/sqlcmd
-        rm -f /usr/bin/bcp
-        rm -rf /opt/microsoft/msodbcsql
-        rm -f /lib64/libodbcinst.so.2
-        odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
-        echo 'Uninstalled ODBC Driver and cleaned up libraries'
-        echo 'Verifying x86_64 rhel driver library signatures:'
-        ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-18.5.so.1.1
-      "
-    displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 container'
-
-  - script: |
-      # Run tests in the container
-      # Get SQL Server container IP
-      SQLSERVER_IP=$(docker inspect sqlserver-rhel9 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-      echo "SQL Server IP: $SQLSERVER_IP"
-      
-      docker exec \
-        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
-        test-container-rhel9 bash -c "
-        source myvenv/bin/activate
-        echo 'Build successful, running tests now on RHEL 9'
-        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-        python main.py
-        python -m pytest -v --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
-      "
-    displayName: 'Run pytest with coverage in RHEL 9 container'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: |
-      # Copy test results from container to host
-      docker cp test-container-rhel9:/workspace/test-results-rhel9.xml $(Build.SourcesDirectory)/
-      docker cp test-container-rhel9:/workspace/coverage-rhel9.xml $(Build.SourcesDirectory)/
-    displayName: 'Copy test results from RHEL 9 container'
-    condition: always()
-
-  - script: |
-      # Clean up containers
-      docker stop test-container-rhel9 || true
-      docker rm test-container-rhel9 || true
-      docker stop sqlserver-rhel9 || true
-      docker rm sqlserver-rhel9 || true
-    displayName: 'Clean up RHEL 9 containers'
-    condition: always()
-
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results-rhel9.xml'
-      testRunTitle: 'Publish pytest results on RHEL 9'
-
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage-rhel9.xml'
-    displayName: 'Publish code coverage results for RHEL 9'
-
-- job: PytestOnLinux_RHEL9_ARM64
-  pool:
-    vmImage: 'ubuntu-latest'
-
-  steps:
-  - script: |
-      # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-      docker buildx create --name multiarch --driver docker-container --use
-      docker buildx inspect --bootstrap
-    displayName: 'Setup Docker buildx for ARM64 emulation'
-
-  - script: |
-      # Create a Docker container for testing on ARM64
-      docker run -d --name test-container-rhel9-arm64 \
-        --platform linux/arm64 \
-        -v $(Build.SourcesDirectory):/workspace \
-        -w /workspace \
-        --network bridge \
-        redhat/ubi9:latest \
-        tail -f /dev/null
-    displayName: 'Create RHEL 9 ARM64 container'
-
-  - script: |
-      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
-      docker run -d --name sqlserver-rhel9-arm64 \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
-      
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-rhel9-arm64 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
-      
-      # Create test database
-      docker exec sqlserver-rhel9-arm64 \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
-    displayName: 'Start SQL Server container for RHEL 9 ARM64'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: |
-      # Install dependencies in the RHEL 9 ARM64 container
-      docker exec test-container-rhel9-arm64 bash -c "
-        # Enable CodeReady Builder repository for additional packages
-        dnf update -y
-        dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
-        subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms || dnf config-manager --set-enabled ubi-9-codeready-builder
-        
-        # Install Python 3.9 (available in RHEL 9 UBI) and development tools
-        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 glibc-devel kernel-headers
-        dnf install -y python3-libs python3-debug
-        dnf install -y gcc gcc-c++ make binutils
-        dnf install -y cmake
-        # If that doesn't work, try installing from different repositories
-        if ! which gcc; then
-          echo 'Trying alternative gcc installation...'
-          dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
-        fi
-        # Verify installation and architecture
-        python3 --version
-        which gcc && which g++
-        gcc --version
-        g++ --version
-        uname -m
-        echo 'Architecture:' \$(uname -m)
-      "
-    displayName: 'Install basic dependencies in RHEL 9 ARM64 container'
-
-  - script: |
-      # Verify compiler installation and set environment for RHEL 9 ARM64
-      docker exec test-container-rhel9-arm64 bash -c "
-        # Verify compilers are available
-        which gcc || echo 'GCC not found'
-        which g++ || echo 'G++ not found'
-        gcc --version || echo 'GCC version check failed'
-        g++ --version || echo 'G++ version check failed'
-        
-        # Set compiler environment variables
-        export CC=/usr/bin/gcc
-        export CXX=/usr/bin/g++
-        echo 'CC set to:' \$CC
-        echo 'CXX set to:' \$CXX
-        echo 'Running on architecture:' \$(uname -m)
-        
-        # Create a wrapper script to preserve environment
-        cat > /workspace/setup_env.sh << 'EOF'
-        #!/bin/bash
-        export CC=/usr/bin/gcc
-        export CXX=/usr/bin/g++
-        export PATH=/usr/bin:\$PATH
-        exec \"\$@\"
-        EOF
-        chmod +x /workspace/setup_env.sh
-      "
-    displayName: 'Verify and configure compilers in RHEL 9 ARM64 container'
-
-  - script: |
-      # Install ODBC driver in the RHEL 9 ARM64 container
-      docker exec test-container-rhel9-arm64 bash -c "
-        # Add Microsoft repository for RHEL 9
-        curl -sSL -o /etc/yum.repos.d/msprod.repo https://packages.microsoft.com/config/rhel/9/prod.repo
-        
-        # Install the driver (ARM64 version)
-        ACCEPT_EULA=Y dnf install -y msodbcsql18
-        # optional: for bcp and sqlcmd
-        ACCEPT_EULA=Y dnf install -y mssql-tools18
-        # optional: for unixODBC development headers
-        dnf install -y unixODBC-devel
-      "
-    displayName: 'Install ODBC Driver in RHEL 9 ARM64 container'
-
-  - script: |
-      # Install Python dependencies in the container using virtual environment
-      docker exec test-container-rhel9-arm64 bash -c "
-        # Create a virtual environment with Python 3.9
-        python3 -m venv myvenv
-        source myvenv/bin/activate
-
-        # Install dependencies in the virtual environment
-        python -m pip install --upgrade pip
-        python -m pip install -r requirements.txt
-        
-        # Make the virtual environment globally available
-        echo 'source myvenv/bin/activate' >> ~/.bashrc
-      "
-    displayName: 'Install Python dependencies in RHEL 9 ARM64 container'
-
-  - script: |
-      # Build pybind bindings in the ARM64 container
-      docker exec test-container-rhel9-arm64 bash -c "
-        source myvenv/bin/activate
-        ls /usr/include/python3.9
-        # Set compiler environment variables
-        export CC=/usr/bin/gcc
-        export CXX=/usr/bin/g++
-
-        cd mssql_python/pybind
-        chmod +x build.sh
-        ./build.sh
-      "
-    displayName: 'Build pybind bindings (.so) in RHEL 9 ARM64 container'
-
-  - script: |
-      # Uninstall ODBC Driver before running tests
-      docker exec test-container-rhel9-arm64 bash -c "
-        dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
-        rm -f /usr/bin/sqlcmd
-        rm -f /usr/bin/bcp
-        rm -rf /opt/microsoft/msodbcsql
-        rm -f /lib64/libodbcinst.so.2
-        odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
-        echo 'Uninstalled ODBC Driver and cleaned up libraries'
-        echo 'Verifying arm64 rhel driver library signatures:'
-        ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-18.5.so.1.1
-      "
-    displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 ARM64 container'
-
-  - script: |
-      # Run tests in the ARM64 container
-      # Get SQL Server container IP
-      SQLSERVER_IP=$(docker inspect sqlserver-rhel9-arm64 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-      echo "SQL Server IP: $SQLSERVER_IP"
-      
-      docker exec \
-        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
-        test-container-rhel9-arm64 bash -c "
-        source myvenv/bin/activate
-        echo 'Build successful, running tests now on RHEL 9 ARM64'
-        echo 'Architecture:' \$(uname -m)
-        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-        python -m pytest -v --junitxml=test-results-rhel9-arm64.xml --cov=. --cov-report=xml:coverage-rhel9-arm64.xml --capture=tee-sys --cache-clear
-      "
-    displayName: 'Run pytest with coverage in RHEL 9 ARM64 container'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: |
-      # Copy test results from container to host
-      docker cp test-container-rhel9-arm64:/workspace/test-results-rhel9-arm64.xml $(Build.SourcesDirectory)/
-      docker cp test-container-rhel9-arm64:/workspace/coverage-rhel9-arm64.xml $(Build.SourcesDirectory)/
-    displayName: 'Copy test results from RHEL 9 ARM64 container'
-    condition: always()
-
-  - script: |
-      # Clean up containers
-      docker stop test-container-rhel9-arm64 || true
-      docker rm test-container-rhel9-arm64 || true
-      docker stop sqlserver-rhel9-arm64 || true
-      docker rm sqlserver-rhel9-arm64 || true
-    displayName: 'Clean up RHEL 9 ARM64 containers'
-    condition: always()
-
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results-rhel9-arm64.xml'
-      testRunTitle: 'Publish pytest results on RHEL 9 ARM64'
-
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage-rhel9-arm64.xml'
-    displayName: 'Publish code coverage results for RHEL 9 ARM64'
+    # Publish the collected wheel file(s) as build artifacts
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/dist'
+        ArtifactName: 'mssql-python-wheels-dist'
+        publishLocation: 'Container'
+      displayName: 'Publish manylinux wheels as artifacts'

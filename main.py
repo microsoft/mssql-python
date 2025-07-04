@@ -17,5 +17,5 @@ rows = cursor.fetchall()
 for row in rows:
     print(f"Database ID: {row[0]}, Name: {row[1]}")
 
-cursor.close()
+# cursor.close()
 conn.close()
