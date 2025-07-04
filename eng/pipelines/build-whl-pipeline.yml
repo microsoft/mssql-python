@@ -55,14 +55,12 @@ jobs:
 
       # Python 3.13
       py313_x64:
-        # TODO: Remove this once Python 3.13.5 is available in ADO
-        pythonVersion: '3.13.5'
+        pythonVersion: '3.13'
         shortPyVer: '313'
         architecture: 'x64'
         targetArch: 'x64'
       py313_arm64:
-        # TODO: Remove this once Python 3.13.5 is available in ADO
-        pythonVersion: '3.13.5'
+        pythonVersion: '3.13'
         shortPyVer: '313'
         architecture: 'x64'
         targetArch: 'arm64'
@@ -82,6 +80,22 @@ jobs:
         pip install -r requirements.txt
         pip install cmake pybind11
       displayName: 'Install dependencies'
+
+      # Start LocalDB instance
+    - powershell: |
+        sqllocaldb create MSSQLLocalDB
+        sqllocaldb start MSSQLLocalDB
+      displayName: 'Start LocalDB instance'
+
+    # Create database and user
+    - powershell: |
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+      displayName: 'Setup database and user'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
 
     - task: DownloadPipelineArtifact@2
       condition: eq(variables['targetArch'], 'arm64')
@@ -115,14 +129,28 @@ jobs:
         call keep_single_arch.bat $(targetArch)
 
         cd ..\..
-      displayName: 'Build PYD for $(targetArch)'        
-      
+      displayName: 'Build PYD for $(targetArch)'
+      continueOnError: false
+
+    # TODO: Reactivate and use pytests in build
+    # Run pytests before packaging
+    # - powershell: |
+    #     Write-Host "Running pytests to validate bindings"
+    #     if ("$(targetArch)" -eq "arm64") {
+    #       Write-Host "Skipping pytests on Windows ARM64"
+    #     } else {
+    #       python -m pytest -v
+    #     }
+    #   displayName: 'Run pytests'
+    #   env:
+    #     DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
     # Copy the built .pyd file to staging folder for artifacts
     - task: CopyFiles@2
       inputs:
         SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
         Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
-        TargetFolder: '$(Build.ArtifactStagingDirectory)\ddbc-bindings'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)\ddbc-bindings\windows'
       displayName: 'Place PYD file into artifacts directory'
 
     # Copy the built .pdb files to staging folder for artifacts
@@ -193,6 +221,25 @@ jobs:
         shortPyVer: '313'
         # Always use universal2 for macOS
         targetArch: 'universal2'
+      
+      # Python 3.12 (universal2 for both arm64 and x86_64)
+      py312_universal2:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        targetArch: 'universal2'
+
+      # Python 3.11 (universal2 for both arm64 and x86_64)
+      py311_universal2:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'universal2'
+      
+      # Python 3.10 (universal2 for both arm64 and x86_64)
+      py310_universal2:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        targetArch: 'universal2'
+
   steps:
     # Use correct Python version and architecture for the current job
     - task: UsePythonVersion@0
@@ -223,15 +270,63 @@ jobs:
         # Call build.sh to build the .so file
         ./build.sh
       displayName: 'Build .so file'
+      continueOnError: false
 
     # Copy the built .so file to staging folder for artifacts
     - task: CopyFiles@2
       inputs:
         SourceFolder: '$(Build.SourcesDirectory)/mssql_python'
         Contents: '*.so'
-        TargetFolder: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)/ddbc-bindings/macOS'
       displayName: 'Place .so file into artifacts directory'
-    
+
+    - script: |
+        brew update
+        brew install docker colima
+
+        # Start Colima with extra resources
+        colima start --cpu 4 --memory 8 --disk 50
+
+        # Optional: set Docker context (usually automatic)
+        docker context use colima >/dev/null || true
+
+        # Confirm Docker is operational
+        docker version
+        docker ps
+      displayName: 'Install and start Colima-based Docker'
+
+    - script: |
+        # Pull and run SQL Server container
+        docker pull mcr.microsoft.com/mssql/server:2022-latest
+        docker run \
+          --name sqlserver \
+          -e ACCEPT_EULA=Y \
+          -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+          -p 1433:1433 \
+          -d mcr.microsoft.com/mssql/server:2022-latest
+
+        # Starting SQL Server container…
+        for i in {1..30}; do
+          docker exec sqlserver \
+            /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost \
+            -U SA \
+            -P "$DB_PASSWORD" \
+            -C -Q "SELECT 1" && break
+          sleep 2
+        done
+      displayName: 'Pull & start SQL Server (Docker)'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
+
+    # TODO: Reactivate and use pytests in build
+    # Run Pytest to ensure the bindings work correctly
+    # - script: |
+    #     python -m pytest -v
+    #   displayName: 'Run Pytest to validate bindings'
+    #   env:
+    #     DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
     # Build wheel package for universal2
     - script: |
         python -m pip install --upgrade pip
@@ -264,3 +359,278 @@ jobs:
         ArtifactName: 'mssql-python-wheels-dist'
         publishLocation: 'Container'
       displayName: 'Publish all wheels as artifacts'
+
+- job: BuildLinuxWheels
+  # Use the latest Ubuntu image for building
+  pool:
+    vmImage: 'ubuntu-latest'
+  displayName: 'Build Linux -'
+  # Strategy matrix to build all combinations
+  strategy:
+    matrix:
+      # Python 3.10 (x86_64 and ARM64)
+      py310_x86_64:
+        shortPyVer: '310'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        manylinuxTag: 'manylinux2014_x86_64'
+      py310_arm64:
+        shortPyVer: '310'
+        targetArch: 'aarch64'
+        dockerPlatform: 'linux/arm64'
+        manylinuxTag: 'manylinux2014_aarch64'
+
+      # Python 3.11 (x86_64 and ARM64)
+      py311_x86_64:
+        shortPyVer: '311'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        manylinuxTag: 'manylinux2014_x86_64'
+      py311_arm64:
+        shortPyVer: '311'
+        targetArch: 'aarch64'
+        dockerPlatform: 'linux/arm64'
+        manylinuxTag: 'manylinux2014_aarch64'
+
+      # Python 3.12 (x86_64 and ARM64)
+      py312_x86_64:
+        shortPyVer: '312'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        manylinuxTag: 'manylinux2014_x86_64'
+      py312_arm64:
+        shortPyVer: '312'
+        targetArch: 'aarch64'
+        dockerPlatform: 'linux/arm64'
+        manylinuxTag: 'manylinux2014_aarch64'
+
+      # Python 3.13 (x86_64 and ARM64)
+      py313_x86_64:
+        shortPyVer: '313'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        manylinuxTag: 'manylinux2014_x86_64'
+      py313_arm64:
+        shortPyVer: '313'
+        targetArch: 'aarch64'
+        dockerPlatform: 'linux/arm64'
+        manylinuxTag: 'manylinux2014_aarch64'
+
+  steps:
+    # Set up Docker buildx for multi-architecture support
+    - script: |
+        docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+        docker buildx create --name multiarch --driver docker-container --use || true
+        docker buildx inspect --bootstrap
+      displayName: 'Setup Docker buildx for multi-architecture support'
+
+    # Create manylinux2014 container for building
+    - script: |
+        docker run -d --name build-container-$(targetArch) \
+          --platform $(dockerPlatform) \
+          -v $(Build.SourcesDirectory):/workspace \
+          -w /workspace \
+          --network bridge \
+          quay.io/pypa/manylinux2014_$(targetArch):latest \
+          tail -f /dev/null
+      displayName: 'Create manylinux2014 $(targetArch) container'
+
+    # Start SQL Server container for testing
+    - script: |
+        docker run -d --name sqlserver-$(targetArch) \
+          --platform linux/amd64 \
+          -e ACCEPT_EULA=Y \
+          -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+          -p 1433:1433 \
+          mcr.microsoft.com/mssql/server:2022-latest
+        
+        # Wait for SQL Server to be ready
+        echo "Waiting for SQL Server to start..."
+        for i in {1..60}; do
+          if docker exec sqlserver-$(targetArch) \
+            /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost \
+            -U SA \
+            -P "$(DB_PASSWORD)" \
+            -C -Q "SELECT 1" >/dev/null 2>&1; then
+            echo "SQL Server is ready!"
+            break
+          fi
+          echo "Waiting... ($i/60)"
+          sleep 2
+        done
+        
+        # Create test database
+        docker exec sqlserver-$(targetArch) \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -P "$(DB_PASSWORD)" \
+          -C -Q "CREATE DATABASE TestDB"
+      displayName: 'Start SQL Server container for $(targetArch)'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
+
+    # Install dependencies and set up Python in manylinux container
+    - script: |
+        docker exec build-container-$(targetArch) bash -c "
+          # List available Python versions in manylinux container
+          echo 'Available Python versions in manylinux container:'
+          ls -la /opt/python/
+          
+          # Find the correct Python binary for cp$(shortPyVer)
+          PYTHON_TAG=cp$(shortPyVer)
+          PYTHON_BIN=''
+          
+          # Try different naming patterns
+          for pattern in \${PYTHON_TAG}-\${PYTHON_TAG} \${PYTHON_TAG}-\${PYTHON_TAG}m; do
+            if [ -x /opt/python/\${pattern}/bin/python ]; then
+              PYTHON_BIN=/opt/python/\${pattern}/bin/python
+              PIP_BIN=/opt/python/\${pattern}/bin/pip
+              break
+            fi
+          done
+          
+          if [ -z \"\$PYTHON_BIN\" ]; then
+            echo 'Python $(shortPyVer) not found in manylinux container'
+            echo 'Available Python versions:'
+            ls -la /opt/python/
+            exit 1
+          fi
+          
+          echo \"Using Python binary: \$PYTHON_BIN\"
+          \$PYTHON_BIN --version
+          
+          # Create symlinks for easier access
+          ln -sf \$PYTHON_BIN /usr/local/bin/python
+          ln -sf \$PIP_BIN /usr/local/bin/pip
+          
+          # Install build dependencies
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install cmake pybind11 wheel setuptools
+          
+          # Verify installation
+          python --version
+          pip --version
+          uname -m
+          echo 'Python path:' \$(which python)
+          echo 'Pip path:' \$(which pip)
+        "
+      displayName: 'Install dependencies in manylinux2014 $(targetArch) container'
+
+    # Install ODBC Driver to build
+    - script: |
+        docker exec build-container-$(targetArch) bash -c "
+          yum update -y
+          yum install -y unixODBC-devel
+        "
+      displayName: 'Install ODBC Driver in manylinux2014 $(targetArch) container'
+
+    # Build pybind bindings in manylinux container
+    - script: |
+        docker exec build-container-$(targetArch) bash -c "
+          cd mssql_python/pybind
+          chmod +x build.sh
+          ./build.sh
+          
+          # Verify .so file was built
+          ls -la ../ddbc_bindings.*.so
+        "
+      displayName: 'Build pybind bindings (.so) in manylinux2014 $(targetArch) container'
+      continueOnError: false
+
+    # TODO: Reactivate and use pytests in build
+    # # Run tests to validate the build
+    # - script: |
+    #     # Get SQL Server container IP
+    #     SQLSERVER_IP=$(docker inspect sqlserver-$(targetArch) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+    #     echo "SQL Server IP: $SQLSERVER_IP"
+    #
+    #     docker exec \
+    #       -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+    #       -e DB_PASSWORD="$(DB_PASSWORD)" \
+    #       build-container-$(targetArch) bash -c "
+    #       echo 'Running tests on manylinux2014 $(targetArch)'
+    #       echo 'Architecture:' \$(uname -m)
+    #       echo 'Python version:' \$(python --version)
+    #       python -m pytest -v
+    #     "
+    #   displayName: 'Run tests in manylinux2014 $(targetArch) container'
+    #   env:
+    #     DB_PASSWORD: $(DB_PASSWORD)
+
+    # Build manylinux wheel
+    - script: |
+        docker exec build-container-$(targetArch) bash -c "
+          echo 'Building manylinux2014 wheel for Python cp$(shortPyVer) on $(targetArch)'
+          echo 'Python version:' \$(python --version)
+          python -m pip install --upgrade pip wheel setuptools
+          
+          # Build the wheel
+          python setup.py bdist_wheel
+          
+          # Verify the wheel was created
+          ls -la dist/
+          
+          # Use auditwheel to create manylinux wheel
+          python -m pip install auditwheel
+          auditwheel repair dist/*.whl --plat-tag $(manylinuxTag) -w dist/
+          
+          # Remove the original wheel, keep only the manylinux one
+          rm -f dist/*-linux_*.whl
+          
+          # Verify final wheel
+          echo 'Final manylinux wheel:'
+          ls -la dist/
+        "
+      displayName: 'Build manylinux2014 wheel for Python cp$(shortPyVer) ($(targetArch))'
+
+    # Copy the wheel file to the artifacts
+    - script: |
+        # Debug: Check what's in the dist directory
+        docker exec build-container-$(targetArch) bash -c "
+          echo 'Contents of /workspace/dist after wheel build:'
+          ls -la /workspace/dist/ || echo 'dist directory does not exist'
+        "
+        
+        mkdir -p $(Build.ArtifactStagingDirectory)/dist
+        docker cp build-container-$(targetArch):/workspace/dist/. $(Build.ArtifactStagingDirectory)/dist/ || echo "Failed to copy dist directory"
+        
+        # Verify what was copied
+        echo "Contents of staging dist directory:"
+        ls -la $(Build.ArtifactStagingDirectory)/dist/ || echo "Staging dist directory is empty"
+      displayName: 'Copy wheel from container to artifacts'
+
+    # Copy the built .so file to staging folder for artifacts
+    - script: |
+        mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux/$(targetArch)
+        docker cp build-container-$(targetArch):/workspace/mssql_python/ddbc_bindings.cp$(shortPyVer)-$(targetArch).so $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux/$(targetArch)/
+      displayName: 'Copy .so file to artifacts directory'
+
+    # Clean up containers
+    - script: |
+        docker stop build-container-$(targetArch) || true
+        docker rm build-container-$(targetArch) || true
+        docker stop sqlserver-$(targetArch) || true
+        docker rm sqlserver-$(targetArch) || true
+      displayName: 'Clean up $(targetArch) containers'
+      condition: always()
+
+    # Publish the collected .so file(s) as build artifacts
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
+        ArtifactName: 'mssql-python-ddbc-bindings'
+        publishLocation: 'Container'
+      displayName: 'Publish .so files as artifacts'
+
+    # Publish the collected wheel file(s) as build artifacts
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/dist'
+        ArtifactName: 'mssql-python-wheels-dist'
+        publishLocation: 'Container'
+      displayName: 'Publish manylinux wheels as artifacts'

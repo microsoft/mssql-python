@@ -24,6 +24,9 @@ public:
     // Returns a connection to the pool for reuse
     void release(std::shared_ptr<Connection> conn);
 
+    // Closes all connections in the pool, releasing resources
+    void close();
+
 private:
     size_t _max_size;       // Maximum number of connections allowed
     int _idle_timeout_secs; // Idle time before connections are considered stale
@@ -45,6 +48,9 @@ public:
 
     // Returns a connection to its original pool
     void returnConnection(const std::wstring& conn_str, std::shared_ptr<Connection> conn);
+
+    // Closes all pools and their connections
+    void closePools();
 
 private:
     ConnectionPoolManager() = default;    
