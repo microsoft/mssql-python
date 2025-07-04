@@ -754,9 +754,9 @@ SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle)
     : _type(type), _handle(rawHandle) {}
 
 SqlHandle::~SqlHandle() {
-    std::cout << "[SEGDEBUGGNG] We're in SqlHandle::~SqlHandle()" << std::endl;
+    std::cout << "[SEGDEBUGGING - CPP] We're in SqlHandle::~SqlHandle()" << std::endl;
     if (_handle) {
-        std::cout << "[SEGDEBUGGNG] Calling free() for type: " << _type << std::endl;
+        std::cout << "[SEGDEBUGGING - CPP] Calling free() for type: " << _type << std::endl;
         free();
     }
 }
@@ -770,9 +770,9 @@ SQLSMALLINT SqlHandle::type() const {
 }
 
 void SqlHandle::free() {
-    std::cout << "[SEGDEBUGGNG] We're in SqlHandle::free() for handle: " << _handle << std::endl;
+    std::cout << "[SEGDEBUGGING - CPP] We're in SqlHandle::free() for handle: " << _handle << std::endl;
     if (!_handle) {
-        std::cout << "[SEGDEBUGGNG] Handle already null, skipping free" << std::endl;
+        std::cout << "[SEGDEBUGGING - CPP] Handle already null, skipping free" << std::endl;
         return;
     }
     
@@ -785,18 +785,18 @@ void SqlHandle::free() {
             case SQL_HANDLE_DESC: type_str = "DESC"; break;
             default:              type_str = "UNKNOWN"; break;
         }
-        std::cout << "[SEGDEBUGGNG] Freeing SQL Handle of type: " << type_str 
+        std::cout << "[SEGDEBUGGING - CPP] Freeing SQL Handle of type: " << type_str 
                   << " at address: " << _handle << std::endl;
         
         SQLRETURN ret = SQLFreeHandle_ptr(_type, _handle);
         
         if (!SQL_SUCCEEDED(ret)) {
-            std::cout << "[SEGDEBUGGNG] SQLFreeHandle FAILED with return code: " << ret << std::endl;
+            std::cout << "[SEGDEBUGGING - CPP] SQLFreeHandle FAILED with return code: " << ret << std::endl;
             if (ret == SQL_INVALID_HANDLE) {
-                std::cout << "[SEGDEBUGGNG] SQL_INVALID_HANDLE - Handle is invalid or already freed!" << std::endl;
+                std::cout << "[SEGDEBUGGING - CPP] SQL_INVALID_HANDLE - Handle is invalid or already freed!" << std::endl;
             }
         } else {
-            std::cout << "[SEGDEBUGGNG] SQLFreeHandle SUCCESS for " << type_str << std::endl;
+            std::cout << "[SEGDEBUGGING - CPP] SQLFreeHandle SUCCESS for " << type_str << std::endl;
         }
         
         _handle = nullptr;
@@ -2083,7 +2083,7 @@ void enable_pooling(int maxSize, int idleTimeout) {
 
 // Functions/data to be exposed to Python as a part of ddbc_bindings module
 PYBIND11_MODULE(ddbc_bindings, m) {
-    std::cout << "[SEGDEBUGGING] Module initialization starting" << std::endl;
+    std::cout << "[SEGDEBUGGING - CPP] Module initialization starting" << std::endl;
 
     m.doc() = "msodbcsql driver api bindings for Python";
 
@@ -2162,5 +2162,5 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         // Log the error but don't throw - let the error happen when functions are called
         LOG("Failed to load ODBC driver during module initialization: {}", e.what());
     }
-    std::cout << "[SEGDEBUGGING] Module initialization complete" << std::endl;
+    std::cout << "[SEGDEBUGGING - CPP] Module initialization complete" << std::endl;
 }
