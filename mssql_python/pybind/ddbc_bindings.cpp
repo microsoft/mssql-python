@@ -754,7 +754,9 @@ SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle)
     : _type(type), _handle(rawHandle) {}
 
 SqlHandle::~SqlHandle() {
+    std::cout << "[SEGDEBUGGNG] We're in SqlHandle::~SqlHandle()" << std::endl;
     if (_handle) {
+        std::cout << "[SEGDEBUGGNG] Calling free() for type: " << _type << std::endl;
         free();
     }
 }
@@ -777,6 +779,7 @@ void SqlHandle::free() {
             case SQL_HANDLE_DESC: type_str = "DESC"; break;
             default:              type_str = "UNKNOWN"; break;
         }
+        std::cout << "[SEGDEBUGGNG] Freeing SQL Handle of type: " << type_str << std::endl;
         SQLFreeHandle_ptr(_type, _handle);
         _handle = nullptr;
         std::stringstream ss;

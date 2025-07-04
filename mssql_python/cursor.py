@@ -723,3 +723,8 @@ class Cursor:
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             return False
         return True
+
+    def __del__(self):
+        # Add logs to cursor closing
+        print("Deleting cursor object")
+        self.close()
