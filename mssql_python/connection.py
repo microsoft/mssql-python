@@ -54,6 +54,7 @@ class Connection:
         preparing it for further operations such as connecting to the 
         database, executing queries, etc.
         """
+        print("[SEGDEBUGGING] Connection.__init__ called")
         self.connection_str = self._construct_connection_string(
             connection_str, **kwargs
         )

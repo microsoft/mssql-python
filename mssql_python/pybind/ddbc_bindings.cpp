@@ -770,6 +770,7 @@ SQLSMALLINT SqlHandle::type() const {
 }
 
 void SqlHandle::free() {
+    std::cout << "[SEGDEBUGGNG] We're in SqlHandle::free() for handle: " << _handle << std::endl;
     if (!_handle) {
         std::cout << "[SEGDEBUGGNG] Handle already null, skipping free" << std::endl;
         return;
@@ -2082,6 +2083,8 @@ void enable_pooling(int maxSize, int idleTimeout) {
 
 // Functions/data to be exposed to Python as a part of ddbc_bindings module
 PYBIND11_MODULE(ddbc_bindings, m) {
+    std::cout << "[SEGDEBUGGING] Module initialization starting" << std::endl;
+
     m.doc() = "msodbcsql driver api bindings for Python";
 
     // Add architecture information as module attribute
@@ -2159,4 +2162,5 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         // Log the error but don't throw - let the error happen when functions are called
         LOG("Failed to load ODBC driver during module initialization: {}", e.what());
     }
+    std::cout << "[SEGDEBUGGING] Module initialization complete" << std::endl;
 }

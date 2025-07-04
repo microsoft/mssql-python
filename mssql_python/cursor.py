@@ -424,7 +424,7 @@ class Cursor:
     def _reset_cursor(self) -> None:
         """Reset the DDBC statement handle."""
         if self.hstmt:
-            print("[SEGDEBUGGING] Freeing statement handle in _reset_cursor")
+            print("[SEGDEBUGGING] Freeing statement handle in _reset_cursor", self.hstmt)
             try:
                 self.hstmt.free()
                 print("[SEGDEBUGGING] SQLFreeHandle succeeded in _reset_cursor")
