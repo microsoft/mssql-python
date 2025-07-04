@@ -7,6 +7,12 @@ trigger:
     include:
       - main
 
+# Trigger on pull requests targeting the main branch
+pr:
+  branches:
+    include:
+      - main
+
 # Schedule the pipeline to run on main branch daily at 07:00 AM IST
 schedules:
   - cron: "30 1 * * *"
