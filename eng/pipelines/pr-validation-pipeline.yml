@@ -51,4 +51,3 @@ jobs:
     - script: |
         python main.py
       displayName: 'Run main.py'
-      displayName: 'Publish manylinux wheels as artifacts'
