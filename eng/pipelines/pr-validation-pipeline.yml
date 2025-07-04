@@ -6,12 +6,6 @@ trigger:
     include:
       - main
 
-# Trigger the pipeline on changes to the main branch & on pull requests
-trigger:
-  branches:
-    include:
-      - main
-
 # Trigger on pull requests targeting the main branch
 pr:
   branches:
