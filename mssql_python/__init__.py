@@ -52,6 +52,7 @@ from .constants import ConstantsDDBC, BCPControlOptions, BCPDataTypes
 
 # BCP
 from .bcp_options import BCPOptions, ColumnFormat
+from .bcp_main import BCPClient
 
 # GLOBALS
 # Read-Only - PEP-249 mandates these names
@@ -121,7 +122,6 @@ SQLTABLE = BCPDataTypes.SQLTABLE.value
 # BCP special values
 SQL_VARLEN_DATA = BCPDataTypes.SQL_VARLEN_DATA.value
 SQL_NULL_DATA = BCPDataTypes.SQL_NULL_DATA.value
-
 
 def pooling(max_size=100, idle_timeout=600, enabled=True):
 #     """
