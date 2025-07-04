@@ -6,7 +6,6 @@ import decimal
 setup_logging('stdout')
 
 conn_str = os.getenv("DB_CONNECTION_STRING")
-print(f"Connecting to database with connection string: {conn_str[:20]}")
 
 try:
     conn = connect(conn_str)
