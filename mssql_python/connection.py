@@ -218,15 +218,42 @@ class Connection:
         if self._closed:
             return
         
-        # Close all cursors first
+        # Close all cursors first, but don't let one failure stop the others
         if hasattr(self, '_cursors'):
-            for cursor in list(self._cursors):
-                if not cursor.closed:
-                    cursor.close()
+            # Convert to list to avoid modification during iteration
+            cursors_to_close = list(self._cursors)
+            close_errors = []
+            
+            for cursor in cursors_to_close:
+                try:
+                    if not cursor.closed:
+                        cursor.close()
+                except Exception as e:
+                    # Collect errors but continue closing other cursors
+                    close_errors.append(f"Error closing cursor: {e}")
+                    if ENABLE_LOGGING:
+                        logger.warning(f"Error closing cursor: {e}")
+            
+            # If there were errors closing cursors, log them but continue
+            if close_errors and ENABLE_LOGGING:
+                logger.warning(f"Encountered {len(close_errors)} errors while closing cursors")
 
-        # Then close connection
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+            # Clear the cursor set explicitly to release any internal references
+            self._cursors.clear()
 
-        self._closed = True
+        # Close the connection even if cursor cleanup had issues
+        try:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
+        except Exception as e:
+            if ENABLE_LOGGING:
+                logger.error(f"Error closing database connection: {e}")
+            # Re-raise the connection close error as it's more critical
+            raise
+        finally:
+            # Always mark as closed, even if there were errors
+            self._closed = True
+        
+        if ENABLE_LOGGING:
+            logger.info("Connection closed successfully.")
