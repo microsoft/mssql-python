@@ -12,6 +12,8 @@ if (MSVC)
 endif()
 
 # Detect platform
+# TODO: Have a separate module/function for platform/distribution detection,
+# Maybe a common python/cpp API
 if(WIN32)
     set(PLATFORM_NAME "windows")
 elseif(APPLE)
@@ -66,14 +68,18 @@ if(WIN32)
         message(FATAL_ERROR "Unsupported Windows architecture: ${ARCHITECTURE}. Supported architectures are win32, win64, x86, amd64, arm64.")
     endif()
 elseif(APPLE)
+    message(STATUS "Setting macOS wheel architecture to universal2")
     # macOS always uses universal2
     set(WHEEL_ARCH "universal2")
 else()
+    message(STATUS "Setting Linux wheel architecture based on detected architecture (${ARCHITECTURE})")
     # Linux architecture mapping
-    if(ARCHITECTURE STREQUAL "arm64")
-        set(WHEEL_ARCH "aarch64")
+    if(ARCHITECTURE STREQUAL "arm64" OR ARCHITECTURE STREQUAL "aarch64")
+        set(WHEEL_ARCH "arm64")
+        message(STATUS "Setting Linux wheel architecture to arm64")
     else()
         set(WHEEL_ARCH "x86_64")
+        message(STATUS "Setting Linux wheel architecture to x86_64")
     endif()
 endif()
 

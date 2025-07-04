@@ -163,7 +163,7 @@ if exist "%OUTPUT_DIR%\%PYD_NAME%" (
     )
     echo [DIAGNOSTIC] Parent is: !PARENT_DIR!
 
-    set VCREDIST_DLL_PATH=!PARENT_DIR!\libs\!ARCH!\vcredist\msvcp140.dll
+    set VCREDIST_DLL_PATH=!PARENT_DIR!\libs\windows\!ARCH!\vcredist\msvcp140.dll
     echo [DIAGNOSTIC] Looking for msvcp140.dll at "!VCREDIST_DLL_PATH!"
 
     if exist "!VCREDIST_DLL_PATH!" (

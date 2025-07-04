@@ -9,80 +9,73 @@ class BinaryDistribution(Distribution):
     def has_ext_modules(self):
         return True
 
+def get_platform_info():
+    """Get platform-specific architecture and platform tag information."""
+    if sys.platform.startswith('win'):
+        # Get architecture from environment variable or default to x64
+        arch = os.environ.get('ARCHITECTURE', 'x64')
+        # Strip quotes if present
+        if isinstance(arch, str):
+            arch = arch.strip('"\'')
+
+        # Normalize architecture values
+        if arch in ['x86', 'win32']:
+            return 'x86', 'win32'
+        elif arch == 'arm64':
+            return 'arm64', 'win_arm64'
+        else:  # Default to x64/amd64
+            return 'x64', 'win_amd64'
+            
+    elif sys.platform.startswith('darwin'):
+        # macOS platform - always use universal2
+        return 'universal2', 'macosx_15_0_universal2'
+        
+    elif sys.platform.startswith('linux'):
+        # Linux platform - use manylinux2014 tags
+        # Use targetArch from environment or fallback to platform.machine()
+        import platform
+        target_arch = os.environ.get('targetArch', platform.machine())
+        
+        if target_arch == 'x86_64':
+            return 'x86_64', 'manylinux2014_x86_64'
+        elif target_arch in ['aarch64', 'arm64']:
+            return 'aarch64', 'manylinux2014_aarch64'
+        else:
+            raise OSError(f"Unsupported architecture '{target_arch}' for Linux; expected 'x86_64' or 'aarch64'.")
+
 # Custom bdist_wheel command to override platform tag
 class CustomBdistWheel(bdist_wheel):
     def finalize_options(self):
         # Call the original finalize_options first to initialize self.bdist_dir
         bdist_wheel.finalize_options(self)
         
-        # Override the platform tag with our custom one based on ARCHITECTURE env var
-        if sys.platform.startswith('win'):
-            # Strip quotes if present
-            arch = os.environ.get('ARCHITECTURE', 'x64')
-            if isinstance(arch, str):
-                arch = arch.strip('"\'')
-                
-            print(f"Architecture from environment: '{arch}'")
-            
-            if arch in ['x86', 'win32']:
-                self.plat_name = "win32"
-                platform_dir = "win32"
-            elif arch == 'arm64':
-                self.plat_name = "win_arm64"
-                platform_dir = "win_arm64"
-            else:  # Default to x64/amd64
-                self.plat_name = "win_amd64"
-                platform_dir = "win_amd64"
-            
-            # Override the plat_name for the wheel
-            print(f"Setting wheel platform tag to: {self.plat_name}")
-            
-            # Force platform-specific paths if bdist_dir is already set
-        elif sys.platform.startswith('darwin'):
-            # For macOS, always use universal2
-            self.plat_name = "macosx_15_0_universal2"
-            print(f"Setting wheel platform tag to: {self.plat_name} (universal2)")
+        # Get platform info using consolidated function
+        arch, platform_tag = get_platform_info()
+        self.plat_name = platform_tag
+        print(f"Setting wheel platform tag to: {self.plat_name} (arch: {arch})")
 
 # Find all packages in the current directory
 packages = find_packages()
 
-# Determine the architecture and platform tag for the wheel
+# Get platform info using consolidated function
+arch, platform_tag = get_platform_info()
+print(f"Detected architecture: {arch} (platform tag: {platform_tag})")
+
+# Add platform-specific packages
 if sys.platform.startswith('win'):
-    # Get architecture from environment variable or default to x64
-    arch = os.environ.get('ARCHITECTURE', 'x64')
-    # Strip quotes if present
-    if isinstance(arch, str):
-        arch = arch.strip('"\'')
-    
-    # Normalize architecture values
-    if arch in ['x86', 'win32']:
-        arch = 'x86'
-        platform_tag = 'win32'
-    elif arch == 'arm64':
-        platform_tag = 'win_arm64'
-    else:  # Default to x64/amd64
-        arch = 'x64'
-        platform_tag = 'win_amd64'
-
-    print(f"Detected architecture: {arch} (platform tag: {platform_tag})")
-
-    # Add architecture-specific packages
     packages.extend([
-        f'mssql_python.libs.{arch}',
-        f'mssql_python.libs.{arch}.1033',
-        f'mssql_python.libs.{arch}.vcredist'
+        f'mssql_python.libs.windows.{arch}',
+        f'mssql_python.libs.windows.{arch}.1033',
+        f'mssql_python.libs.windows.{arch}.vcredist'
     ])
 elif sys.platform.startswith('darwin'):
-    # macOS platform - always use universal2
-    arch = 'universal2'
-    platform_tag = 'macosx_15_0_universal2'  # Use macOS 15.0 (Monterey) as minimum for universal2
-
-    # Add architecture-specific packages for macOS
     packages.extend([
         f'mssql_python.libs.macos',
     ])
-else:
-    platform_tag = 'any'  # Fallback
+elif sys.platform.startswith('linux'):
+    packages.extend([
+        f'mssql_python.libs.linux',
+    ])
 
 setup(
     name='mssql-python',
@@ -110,6 +103,7 @@ setup(
     classifiers=[
         'Operating System :: Microsoft :: Windows',
         'Operating System :: MacOS',
+        'Operating System :: POSIX :: Linux',
     ],
     zip_safe=False,
     # Force binary distribution

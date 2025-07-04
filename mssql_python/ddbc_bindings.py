@@ -3,27 +3,77 @@ import importlib.util
 import sys
 import platform
 
+def normalize_architecture(platform_name, architecture):
+    """
+    Normalize architecture names for the given platform.
+    
+    Args:
+        platform_name (str): Platform name ('windows', 'darwin', 'linux')
+        architecture (str): Architecture string to normalize
+        
+    Returns:
+        str: Normalized architecture name
+        
+    Raises:
+        ImportError: If architecture is not supported for the given platform
+        OSError: If platform is not supported
+    """
+    arch_lower = architecture.lower()
+    
+    if platform_name == "windows":
+        arch_map = {
+            "win64": "x64", "amd64": "x64", "x64": "x64",
+            "win32": "x86", "x86": "x86",
+            "arm64": "arm64"
+        }
+        if arch_lower in arch_map:
+            return arch_map[arch_lower]
+        else:
+            supported = list(set(arch_map.keys()))
+            raise ImportError(f"Unsupported architecture '{architecture}' for platform '{platform_name}'; expected one of {supported}")
+    
+    elif platform_name == "darwin":
+        # For macOS, return runtime architecture
+        return platform.machine().lower()
+    
+    elif platform_name == "linux":
+        arch_map = {
+            "x64": "x86_64", "amd64": "x86_64", "x86_64": "x86_64",
+            "arm64": "arm64", "aarch64": "arm64"
+        }
+        if arch_lower in arch_map:
+            return arch_map[arch_lower]
+        else:
+            supported = list(set(arch_map.keys()))
+            raise ImportError(f"Unsupported architecture '{architecture}' for platform '{platform_name}'; expected one of {supported}")
+    
+    else:
+        supported_platforms = ["windows", "darwin", "linux"]
+        raise OSError(f"Unsupported platform '{platform_name}'; expected one of {supported_platforms}")
+
 # Get current Python version and architecture
 python_version = f"cp{sys.version_info.major}{sys.version_info.minor}"
 
-platform_name = sys.platform.lower()
-architecture = platform.machine().lower()
+platform_name = platform.system().lower()
+raw_architecture = platform.machine().lower()
 
-# On macOS, prioritize universal2 binary regardless of the local architecture
+# Special handling for macOS universal2 binaries
 if platform_name == 'darwin':
     architecture = "universal2"
-elif platform_name == 'win32':
-    if architecture in ('amd64', 'x86_64', 'x64'):
-        architecture = "amd64" if platform_name == 'win32' else "x86_64"
-    elif architecture in ('arm64', 'aarch64'):
-        architecture = "arm64"
-    else:
-        raise ImportError(f"Unsupported architecture for mssql-python: {platform_name}-{architecture}")
 else:
-    raise ImportError(f"Unsupported architecture for mssql-python: {platform_name}-{architecture}")
+    architecture = normalize_architecture(platform_name, raw_architecture)
+    
+    # Handle Windows-specific naming for binary files
+    if platform_name == 'windows' and architecture == 'x64':
+        architecture = "amd64"
+
+# Validate supported platforms
+if platform_name not in ['windows', 'darwin', 'linux']:
+    supported_platforms = ['windows', 'darwin', 'linux']
+    raise ImportError(f"Unsupported platform '{platform_name}' for mssql-python; expected one of {supported_platforms}")
 
 # Determine extension based on platform
-if platform_name == 'win32':
+if platform_name == 'windows':
     extension = '.pyd'
 else:  # macOS or Linux
     extension = '.so'
