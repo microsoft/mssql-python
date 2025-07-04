@@ -437,7 +437,7 @@ jobs:
           -v $(Build.SourcesDirectory):/workspace \
           -w /workspace \
           --network bridge \
-          quay.io/pypa/manylinux2014_$(targetArch):latest \
+          quay.io/pypa/$(manylinuxTag):latest \
           tail -f /dev/null
       displayName: 'Create manylinux2014 $(targetArch) container'
 
