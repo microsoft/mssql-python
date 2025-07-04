@@ -112,7 +112,8 @@ def test_unique_constraint_error(cursor, db_connection):
 
 def test_foreign_key_constraint_error(cursor, db_connection):
     try:
-        # Using dbo & non-temp tables since in this test Azure SQL confuses schema with uid in EntraID mode
+        # Using regular tables (not temp tables) because SQL Server doesn't support foreign keys on temp tables.
+        # Using dbo schema to avoid issues with Azure SQL with Azure AD/Entra ID authentication. It can misinterpret email-format usernames (e.g., user@domain.com) as schema names.
         drop_table_if_exists(cursor, "dbo.pytest_child_table")
         drop_table_if_exists(cursor, "dbo.pytest_parent_table")
         cursor.execute("CREATE TABLE dbo.pytest_parent_table (id INT PRIMARY KEY)")
