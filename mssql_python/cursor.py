@@ -419,12 +419,12 @@ class Cursor:
         """
         print("[SEGDEBUGGING - PYTHON] Allocating statement handle")
         self.hstmt = self.connection._conn.alloc_statement_handle()
-        print("[SEGDEBUGGING - PYTHON] Statement handle allocated", self.hstmt)
+        print("[SEGDEBUGGING - PYTHON] Statement handle allocated", self.hstmt._handle)
 
     def _reset_cursor(self) -> None:
         """Reset the DDBC statement handle."""
         if self.hstmt:
-            print("[SEGDEBUGGING - PYTHON] Freeing statement handle in _reset_cursor", self.hstmt)
+            print("[SEGDEBUGGING - PYTHON] Freeing statement handle in _reset_cursor", self.hstmt._handle)
             try:
                 self.hstmt.free()
                 print("[SEGDEBUGGING - PYTHON] SQLFreeHandle succeeded in _reset_cursor")
