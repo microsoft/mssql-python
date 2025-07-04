@@ -13,7 +13,34 @@ pr:
       - main  
 
 jobs:
-- job: BuildLinuxWheels
+- job: SegFaultTestWin
+  pool:
+    vmImage: 'windows-latest'
+  steps:
+    # Use Python 3.12
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.12'
+        addToPath: true
+      displayName: 'Use Python 3.12'
+
+    # Install additional dependencies
+    - script: |
+        pip install -r requirements.txt
+      displayName: 'Install Python dependencies'
+
+    # Build native extension
+    - script: |
+        cd mssql_python\pybind
+        build.bat
+      displayName: 'Build pybind bindings (.so)'
+
+    # Run tests
+    - script: |
+        python main.py
+      displayName: 'Run main.py - not closing cursor'
+
+- job: SegFaultTestLinux
   # Use the latest Ubuntu image for building
   pool:
     vmImage: 'ubuntu-latest'

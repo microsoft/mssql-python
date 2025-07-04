@@ -770,11 +770,6 @@ SQLSMALLINT SqlHandle::type() const {
 }
 
 void SqlHandle::free() {
-    if (!_handle) {
-        std::cout << "[SEGDEBUGGNG] Handle already null, skipping free" << std::endl;
-        return;
-    }
-    
     if (_handle && SQLFreeHandle_ptr) {
         const char* type_str = nullptr;
         switch (_type) {
@@ -784,19 +779,8 @@ void SqlHandle::free() {
             case SQL_HANDLE_DESC: type_str = "DESC"; break;
             default:              type_str = "UNKNOWN"; break;
         }
-        std::cout << "[SEGDEBUGGNG] Freeing SQL Handle of type: " << type_str 
-                  << " at address: " << _handle << std::endl;
-        
-        SQLRETURN ret = SQLFreeHandle_ptr(_type, _handle);
-        
-        if (!SQL_SUCCEEDED(ret)) {
-            std::cout << "[SEGDEBUGGNG] SQLFreeHandle FAILED with return code: " << ret << std::endl;
-            // Common error codes
-            if (ret == SQL_INVALID_HANDLE) {
-                std::cout << "[SEGDEBUGGNG] SQL_INVALID_HANDLE - Handle is invalid or already freed!" << std::endl;
-            }
-        }
-        
+        std::cout << "[SEGDEBUGGNG] Freeing SQL Handle of type: " << type_str << std::endl;
+        SQLFreeHandle_ptr(_type, _handle);
         _handle = nullptr;
         std::stringstream ss;
         ss << "Freed SQL Handle of type: " << type_str;
