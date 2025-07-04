@@ -98,21 +98,21 @@ def test_data_truncation_error(cursor, db_connection):
 
 def test_unique_constraint_error(cursor, db_connection):
     try:
-        drop_table_if_exists(cursor, "dbo.#pytest_test_unique")
-        cursor.execute("CREATE TABLE dbo.#pytest_test_unique (id INT PRIMARY KEY, name NVARCHAR(50))")
-        cursor.execute("INSERT INTO dbo.#pytest_test_unique (id, name) VALUES (?, ?)", [1, 'Name1'])
+        drop_table_if_exists(cursor, "#pytest_test_unique")
+        cursor.execute("CREATE TABLE #pytest_test_unique (id INT PRIMARY KEY, name NVARCHAR(50))")
+        cursor.execute("INSERT INTO #pytest_test_unique (id, name) VALUES (?, ?)", [1, 'Name1'])
         with pytest.raises(IntegrityError) as excinfo:
-            cursor.execute("INSERT INTO dbo.#pytest_test_unique (id, name) VALUES (?, ?)", [1, 'Name2'])
+            cursor.execute("INSERT INTO #pytest_test_unique (id, name) VALUES (?, ?)", [1, 'Name2'])
         assert "Integrity constraint violation" in str(excinfo.value)
     except Exception as e:
         pytest.fail(f"Test failed: {e}")
     finally:
-        drop_table_if_exists(cursor, "dbo.#pytest_test_unique")
+        drop_table_if_exists(cursor, "#pytest_test_unique")
         db_connection.commit()
 
 def test_foreign_key_constraint_error(cursor, db_connection):
     try:
-        # Using dbo since sometimes Azure SQL confuses schema with uid in EntraID mode
+        # Using dbo & non-temp tables since in this test Azure SQL confuses schema with uid in EntraID mode
         drop_table_if_exists(cursor, "dbo.pytest_child_table")
         drop_table_if_exists(cursor, "dbo.pytest_parent_table")
         cursor.execute("CREATE TABLE dbo.pytest_parent_table (id INT PRIMARY KEY)")
