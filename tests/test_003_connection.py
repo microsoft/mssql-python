@@ -17,7 +17,7 @@ from mssql_python import Connection, connect, pooling
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
     try:
-        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
     except Exception as e:
         pytest.fail(f"Failed to drop table {table_name}: {e}")
 
@@ -384,7 +384,7 @@ def test_multiple_cursor_operations_cleanup(conn_str):
     cursor_select2 = conn.cursor()
     cursor_select2.execute("SELECT * FROM #test_cleanup WHERE id = 2")
     cursor_select2.fetchall()
-    
+
     # Close connection without closing cursors
     conn.close()
     
