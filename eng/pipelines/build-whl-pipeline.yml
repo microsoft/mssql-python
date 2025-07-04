@@ -676,6 +676,9 @@ jobs:
           dnf update -y
           dnf groupinstall -y 'Development Tools'
           
+          # Install build tools including cmake explicitly
+          dnf install -y cmake curl wget gnupg gcc gcc-c++ make bintools
+          
           # For RHEL, we need to handle Python versions more carefully
           # Install available Python version (RHEL 9 has 3.9, 3.11, 3.12 by default)
           if [ '$(pythonVersion)' = '3.10' ] || [ '$(pythonVersion)' = '3.13' ]; then
@@ -697,9 +700,6 @@ jobs:
               ln -sf /usr/bin/python3 /usr/local/bin/python
             fi
           fi
-          
-          # Install build tools
-          dnf install -y cmake curl wget gnupg gcc gcc-c++ make
           
           # Install pybind11 development headers
           dnf install -y python3-pybind11-devel || echo 'pybind11-devel not available, will install via pip'
