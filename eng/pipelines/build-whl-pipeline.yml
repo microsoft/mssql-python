@@ -473,23 +473,8 @@ jobs:
         distroName: 'RHEL'
         packageManager: 'dnf'
 
-      # Python 3.12 (x86_64 and ARM64)
-      py312_x86_64_ubuntu:
-        pythonVersion: '3.12'
-        shortPyVer: '312'
-        targetArch: 'x86_64'
-        dockerPlatform: 'linux/amd64'
-        dockerImage: 'ubuntu:22.04'
-        distroName: 'Ubuntu'
-        packageManager: 'apt'
-      py312_arm64_ubuntu:
-        pythonVersion: '3.12'
-        shortPyVer: '312'
-        targetArch: 'arm64'
-        dockerPlatform: 'linux/arm64'
-        dockerImage: 'ubuntu:22.04'
-        distroName: 'Ubuntu'
-        packageManager: 'apt'
+      # Python 3.12 (x86_64 and ARM64) - Note: Not available for Ubuntu 22.04 via deadsnakes PPA
+      # Only build for Debian and RHEL where Python 3.12 is available
       py312_x86_64_debian:
         pythonVersion: '3.12'
         shortPyVer: '312'
@@ -643,14 +628,29 @@ jobs:
           # Install basic tools first
           apt-get install -y software-properties-common curl wget gnupg build-essential cmake
           
-          # Add deadsnakes PPA for newer Python versions (Ubuntu/Debian)
+          # Add deadsnakes PPA for newer Python versions (Ubuntu only)
           if [ '$(distroName)' = 'Ubuntu' ]; then
             add-apt-repository -y ppa:deadsnakes/ppa
             apt-get update
           fi
           
           # Install Python and development packages
-          apt-get install -y python$(pythonVersion) python$(pythonVersion)-dev python$(pythonVersion)-venv python$(pythonVersion)-distutils
+          # Note: distutils is not available for newer Python versions (3.12+)
+          if [ '$(pythonVersion)' = '3.12' ] || [ '$(pythonVersion)' = '3.13' ]; then
+            # For Debian 12, Python 3.12 may be available in the default repos
+            if [ '$(distroName)' = 'Debian' ] && [ '$(pythonVersion)' = '3.12' ]; then
+              # Try to install from default repos first
+              if ! apt-get install -y python$(pythonVersion) python$(pythonVersion)-dev python$(pythonVersion)-venv; then
+                echo 'Python $(pythonVersion) not available in default repos, trying alternatives'
+                apt-get install -y python3 python3-dev python3-venv
+                ln -sf /usr/bin/python3 /usr/local/bin/python$(pythonVersion)
+              fi
+            else
+              apt-get install -y python$(pythonVersion) python$(pythonVersion)-dev python$(pythonVersion)-venv
+            fi
+          else
+            apt-get install -y python$(pythonVersion) python$(pythonVersion)-dev python$(pythonVersion)-venv python$(pythonVersion)-distutils
+          fi
           
           # Install pip for the specific Python version
           curl -sS https://bootstrap.pypa.io/get-pip.py | python$(pythonVersion)
@@ -679,17 +679,23 @@ jobs:
           # For RHEL, we need to handle Python versions more carefully
           # Install available Python version (RHEL 9 has 3.9, 3.11, 3.12 by default)
           if [ '$(pythonVersion)' = '3.10' ] || [ '$(pythonVersion)' = '3.13' ]; then
-            # For versions not available in RHEL repos, try to build from source or use alternative approach
-            echo 'Python $(pythonVersion) may not be available in RHEL 9 repos, trying alternative installation'
+            # For versions not available in RHEL repos, use available Python 3 and create symlink
+            echo 'Python $(pythonVersion) may not be available in RHEL 9 repos, using available Python 3'
             dnf install -y python3 python3-devel python3-pip
             # Use the available Python 3 and create symlink
-            ln -sf /usr/bin/python3 /usr/local/bin/python
             ln -sf /usr/bin/python3 /usr/local/bin/python$(pythonVersion)
+            ln -sf /usr/bin/python3 /usr/local/bin/python
           else
             # Install the specific Python version if available
-            dnf install -y python$(pythonVersion) python$(pythonVersion)-devel python$(pythonVersion)-pip || \
-            dnf install -y python3 python3-devel python3-pip
-            ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python || ln -sf /usr/bin/python3 /usr/local/bin/python
+            if dnf install -y python$(pythonVersion) python$(pythonVersion)-devel python$(pythonVersion)-pip; then
+              ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python
+            else
+              # Fallback to python3 if specific version not available
+              echo 'Python $(pythonVersion) not available, falling back to python3'
+              dnf install -y python3 python3-devel python3-pip
+              ln -sf /usr/bin/python3 /usr/local/bin/python$(pythonVersion)
+              ln -sf /usr/bin/python3 /usr/local/bin/python
+            fi
           fi
           
           # Install build tools
@@ -762,13 +768,32 @@ jobs:
           if command -v pip$(pythonVersion) >/dev/null 2>&1; then
             ln -sf /usr/bin/pip$(pythonVersion) /usr/local/bin/pip
           else
-            # Install pip if not available
-            curl -sS https://bootstrap.pypa.io/get-pip.py | python
+            # Install pip if not available - check which Python version we actually have
+            if command -v python$(pythonVersion) >/dev/null 2>&1; then
+              curl -sS https://bootstrap.pypa.io/get-pip.py | python$(pythonVersion)
+            elif command -v python3 >/dev/null 2>&1; then
+              curl -sS https://bootstrap.pypa.io/get-pip.py | python3
+              ln -sf /usr/bin/python3 /usr/local/bin/python$(pythonVersion)
+            else
+              echo 'No Python found, this should not happen'
+              exit 1
+            fi
           fi
         fi
         
-        # Create a virtual environment with the specific Python version
-        python -m venv /opt/venv
+        # Verify Python is available
+        if command -v python$(pythonVersion) >/dev/null 2>&1; then
+          PYTHON_CMD=python$(pythonVersion)
+        elif command -v python3 >/dev/null 2>&1; then
+          PYTHON_CMD=python3
+          echo 'Using python3 instead of python$(pythonVersion)'
+        else
+          echo 'No Python interpreter found'
+          exit 1
+        fi
+        
+        # Create a virtual environment with the available Python version
+        \$PYTHON_CMD -m venv /opt/venv
         source /opt/venv/bin/activate
         
         # Upgrade pip in virtual environment
