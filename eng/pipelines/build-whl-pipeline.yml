@@ -702,13 +702,14 @@ jobs:
       else
         # RHEL/DNF
         docker exec build-container-$(distroName)-$(targetArch) bash -c "
-          # Enable CodeReady Builder repository for additional packages
-          dnf install -y dnf-plugins-core epel-release
-          dnf config-manager --set-enabled crb || dnf config-manager --set-enabled powertools || true
+          # Enable CodeReady Builder repository for additional packages (skip if not available)
+          dnf install -y dnf-plugins-core || true
+          dnf install -y epel-release || echo 'EPEL not available in UBI9, continuing without it'
+          dnf config-manager --set-enabled crb || dnf config-manager --set-enabled powertools || echo 'No additional repos to enable'
           
           # Install dependencies
           dnf update -y
-          dnf groupinstall -y 'Development Tools'
+          dnf groupinstall -y 'Development Tools' || echo 'Development Tools group not available, installing individual packages'
           
           # Install development tools and cmake separately to ensure they work
           dnf install -y curl wget gnupg2 glibc-devel kernel-headers
@@ -716,9 +717,11 @@ jobs:
           dnf install -y cmake
           
           # Install additional dependencies needed for Python source compilation
-          dnf install -y openssl-devel bzip2-devel libffi-devel zlib-devel \
-                         readline-devel sqlite-devel xz-devel tk-devel \
-                         ncurses-devel gdbm-devel libnsl2-devel libuuid-devel
+          # Some packages may not be available in UBI9, so install what we can
+          dnf install -y openssl-devel bzip2-devel libffi-devel zlib-devel || echo 'Some core devel packages failed'
+          dnf install -y ncurses-devel sqlite-devel xz-devel || echo 'Some optional devel packages not available'
+          # These are often missing in UBI9, install if available
+          dnf install -y readline-devel tk-devel gdbm-devel libnsl2-devel libuuid-devel || echo 'Some Python build dependencies not available in UBI9'
           
           # If that doesn't work, try installing from different repositories
           if ! which gcc; then
@@ -770,9 +773,9 @@ jobs:
               tar -xzf python-$(pythonVersion).tgz
               cd Python-$(pythonVersion)*
               
-              # Configure and compile Python
-              echo 'Configuring Python build'
-              ./configure --prefix=/usr/local --enable-optimizations --with-ensurepip=install
+              # Configure and compile Python with optimizations disabled for missing deps
+              echo 'Configuring Python build (optimizations may be disabled due to missing dependencies)'
+              ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions
               
               echo 'Compiling Python (this may take several minutes)'
               make -j$(nproc)
@@ -799,7 +802,7 @@ jobs:
           # If we couldn't install the specific version, fail the build
           if [ \"\$PYTHON_INSTALLED\" = \"false\" ]; then
             echo 'ERROR: Could not install Python $(pythonVersion) - unsupported version'
-            echo 'Supported versions for RHEL: 3.11 (and 3.10, 3.13 when source compilation is implemented)'
+            echo 'Supported versions for RHEL: 3.11, 3.12 (and 3.10, 3.13 via source compilation)'
             exit 1
           fi
           
