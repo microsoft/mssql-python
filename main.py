@@ -7,7 +7,17 @@ setup_logging('stdout')
 
 conn_str = os.getenv("DB_CONNECTION_STRING")
 print(f"Connecting to database with connection string: {conn_str[:20]}")
-conn = connect(conn_str)
+
+try:
+    conn = connect(conn_str)
+except Exception as e:
+    if "Timeout error" in str(e):
+        print(f"Database connection failed due to Timeout: {e}. Retrying in 80 seconds.")
+        import time
+        time.sleep(80)
+        conn = connect(conn_str)
+    else:
+        raise
 
 # conn.autocommit = True
 
