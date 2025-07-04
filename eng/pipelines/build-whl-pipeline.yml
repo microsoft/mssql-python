@@ -636,12 +636,34 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           export TZ=UTC
           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
-          apt-get install -y python$(pythonVersion) python$(pythonVersion)-dev python$(pythonVersion)-venv python3-pip cmake curl wget gnupg software-properties-common build-essential pybind11-dev
+          
+          # Update package lists
+          apt-get update
+          
+          # Install basic tools first
+          apt-get install -y software-properties-common curl wget gnupg build-essential cmake
+          
+          # Add deadsnakes PPA for newer Python versions (Ubuntu/Debian)
+          if [ '$(distroName)' = 'Ubuntu' ]; then
+            add-apt-repository -y ppa:deadsnakes/ppa
+            apt-get update
+          fi
+          
+          # Install Python and development packages
+          apt-get install -y python$(pythonVersion) python$(pythonVersion)-dev python$(pythonVersion)-venv python$(pythonVersion)-distutils
+          
+          # Install pip for the specific Python version
+          curl -sS https://bootstrap.pypa.io/get-pip.py | python$(pythonVersion)
+          
+          # Install remaining packages
+          apt-get install -y pybind11-dev || echo 'pybind11-dev not available, will install via pip'
           
           # Create symlinks for easier access
           ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python
           ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python3
+          
+          # Verify Python installation
+          python --version
         "
       else
         # RHEL/DNF
@@ -653,14 +675,31 @@ jobs:
           # Install dependencies
           dnf update -y
           dnf groupinstall -y 'Development Tools'
-          dnf install -y python$(pythonVersion) python$(pythonVersion)-devel python$(pythonVersion)-pip cmake curl wget gnupg gcc gcc-c++ make
+          
+          # For RHEL, we need to handle Python versions more carefully
+          # Install available Python version (RHEL 9 has 3.9, 3.11, 3.12 by default)
+          if [ '$(pythonVersion)' = '3.10' ] || [ '$(pythonVersion)' = '3.13' ]; then
+            # For versions not available in RHEL repos, try to build from source or use alternative approach
+            echo 'Python $(pythonVersion) may not be available in RHEL 9 repos, trying alternative installation'
+            dnf install -y python3 python3-devel python3-pip
+            # Use the available Python 3 and create symlink
+            ln -sf /usr/bin/python3 /usr/local/bin/python
+            ln -sf /usr/bin/python3 /usr/local/bin/python$(pythonVersion)
+          else
+            # Install the specific Python version if available
+            dnf install -y python$(pythonVersion) python$(pythonVersion)-devel python$(pythonVersion)-pip || \
+            dnf install -y python3 python3-devel python3-pip
+            ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python || ln -sf /usr/bin/python3 /usr/local/bin/python
+          fi
+          
+          # Install build tools
+          dnf install -y cmake curl wget gnupg gcc gcc-c++ make
           
           # Install pybind11 development headers
-          dnf install -y python3-pybind11-devel || pip$(pythonVersion) install pybind11
+          dnf install -y python3-pybind11-devel || echo 'pybind11-devel not available, will install via pip'
           
-          # Create symlinks for easier access
-          ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python
-          ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python3
+          # Verify Python installation
+          python --version
         "
       fi
     displayName: 'Install basic dependencies in $(distroName) $(targetArch) container'
@@ -718,17 +757,36 @@ jobs:
   - script: |
       # Install Python dependencies in the container using virtual environment
       docker exec build-container-$(distroName)-$(targetArch) bash -c "
+        # Ensure we have pip available
+        if ! command -v pip >/dev/null 2>&1; then
+          if command -v pip$(pythonVersion) >/dev/null 2>&1; then
+            ln -sf /usr/bin/pip$(pythonVersion) /usr/local/bin/pip
+          else
+            # Install pip if not available
+            curl -sS https://bootstrap.pypa.io/get-pip.py | python
+          fi
+        fi
+        
         # Create a virtual environment with the specific Python version
         python -m venv /opt/venv
         source /opt/venv/bin/activate
         
-        # Install dependencies in the virtual environment
+        # Upgrade pip in virtual environment
         python -m pip install --upgrade pip
+        
+        # Install pybind11 if not available from system packages
+        python -m pip install pybind11
+        
+        # Install dependencies in the virtual environment
         python -m pip install -r requirements.txt
         python -m pip install wheel setuptools
         
         # Make the virtual environment globally available
         echo 'source /opt/venv/bin/activate' >> ~/.bashrc
+        
+        # Verify installation
+        echo 'Python version in venv:' \$(python --version)
+        echo 'Pip version in venv:' \$(pip --version)
       "
     displayName: 'Install Python dependencies in $(distroName) $(targetArch) container'
 
