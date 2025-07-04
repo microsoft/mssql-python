@@ -65,13 +65,8 @@ jobs:
     - script: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install cmake pybind11 wheel setuptools pyodbc
+        pip install cmake pybind11 wheel setuptools
       displayName: 'Install Python dependencies'
-
-    # Install ODBC Driver
-    - script: |
-        sudo apt-get install -y msodbcsql18
-      displayName: 'Install ODBC Driver'
 
     # Build native extension
     - script: |

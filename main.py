@@ -1,11 +1,11 @@
-from pyodbc import connect
-# from pyodbc import setup_logging
+from mssql_python import connect
+from mssql_python import setup_logging
 import os
 import decimal
 
 # setup_logging('stdout')
 
-conn_str = "Driver={ODBC Driver 18 for SQL Server};" + os.getenv("DB_CONNECTION_STRING")
+conn_str = os.getenv("DB_CONNECTION_STRING")
 
 try:
     print("[SEGDEBUGGING - PYTHON] Declaring the conn variable")
