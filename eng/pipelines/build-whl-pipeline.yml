@@ -761,15 +761,14 @@ jobs:
               
               # Download Python source
               cd /tmp
-              PYTHON_URL="https://www.python.org/ftp/python/$(pythonVersion).15/Python-$(pythonVersion).15.tgz"
               if [ '$(pythonVersion)' = '3.10' ]; then
-                PYTHON_URL="https://www.python.org/ftp/python/3.10.15/Python-3.10.15.tgz"
+                PYTHON_URL='https://www.python.org/ftp/python/3.10.15/Python-3.10.15.tgz'
               elif [ '$(pythonVersion)' = '3.13' ]; then
-                PYTHON_URL="https://www.python.org/ftp/python/3.13.1/Python-3.13.1.tgz"
+                PYTHON_URL='https://www.python.org/ftp/python/3.13.1/Python-3.13.1.tgz'
               fi
               
-              echo "Downloading Python from $PYTHON_URL"
-              wget $PYTHON_URL -O python-$(pythonVersion).tgz
+              echo \"Downloading Python from \$PYTHON_URL\"
+              wget \$PYTHON_URL -O python-$(pythonVersion).tgz
               tar -xzf python-$(pythonVersion).tgz
               cd Python-$(pythonVersion)*
               
@@ -778,7 +777,7 @@ jobs:
               ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions
               
               echo 'Compiling Python (this may take several minutes)'
-              make -j$(nproc)
+              make -j\$(nproc)
               
               echo 'Installing Python'
               make altinstall
