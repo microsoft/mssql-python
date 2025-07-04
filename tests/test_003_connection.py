@@ -10,6 +10,7 @@ Functions:
 Note: The cursor function is not yet implemented, so related tests are commented out.
 """
 
+from mssql_python.exceptions import InterfaceError
 import pytest
 import time
 from mssql_python import Connection, connect, pooling
@@ -17,7 +18,7 @@ from mssql_python import Connection, connect, pooling
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
     try:
-        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
     except Exception as e:
         pytest.fail(f"Failed to drop table {table_name}: {e}")
 
@@ -358,7 +359,7 @@ def test_cursor_after_connection_close(conn_str):
     conn.close()
     
     # Should raise exception when trying to create cursor on closed connection
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(InterfaceError) as excinfo:
         cursor = conn.cursor()
     
     assert "closed connection" in str(excinfo.value).lower(), "Should mention closed connection"
@@ -384,7 +385,7 @@ def test_multiple_cursor_operations_cleanup(conn_str):
     cursor_select2 = conn.cursor()
     cursor_select2.execute("SELECT * FROM #test_cleanup WHERE id = 2")
     cursor_select2.fetchall()
-    
+
     # Close connection without closing cursors
     conn.close()
     

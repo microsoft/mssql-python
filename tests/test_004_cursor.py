@@ -58,7 +58,7 @@ PARAM_TEST_DATA = [
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
     try:
-        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
     except Exception as e:
         pytest.fail(f"Failed to drop table {table_name}: {e}")
 
@@ -875,8 +875,8 @@ CREATE PROCEDURE dbo.GetEmployeeProjects
 AS
 BEGIN
     SELECT e.name, p.project_name
-    FROM dbo.#pytest_employees e
-    JOIN dbo.#pytest_projects p ON e.employee_id = p.employee_id
+    FROM #pytest_employees e
+    JOIN #pytest_projects p ON e.employee_id = p.employee_id
     WHERE e.employee_id = @EmployeeID
 END
 """

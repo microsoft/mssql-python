@@ -2,6 +2,11 @@
 Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 This module contains the Cursor class, which represents a database cursor.
+Resource Management:
+- Cursors are tracked by their parent connection.
+- Closing the connection will automatically close all open cursors.
+- Do not use a cursor after it is closed, or after its parent connection is closed.
+- Use close() to release resources held by the cursor as soon as it is no longer needed.
 """
 import ctypes
 import decimal
