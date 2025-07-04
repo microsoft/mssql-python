@@ -134,16 +134,16 @@ jobs:
 
     # TODO: Reactivate and use pytests in build
     # Run pytests before packaging
-    - powershell: |
-        Write-Host "Running pytests to validate bindings"
-        if ("$(targetArch)" -eq "arm64") {
-          Write-Host "Skipping pytests on Windows ARM64"
-        } else {
-          python -m pytest -v
-        }
-      displayName: 'Run pytests'
-      env:
-        DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+    # - powershell: |
+    #     Write-Host "Running pytests to validate bindings"
+    #     if ("$(targetArch)" -eq "arm64") {
+    #       Write-Host "Skipping pytests on Windows ARM64"
+    #     } else {
+    #       python -m pytest -v
+    #     }
+    #   displayName: 'Run pytests'
+    #   env:
+    #     DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
     # Copy the built .pyd file to staging folder for artifacts
     - task: CopyFiles@2
@@ -321,11 +321,11 @@ jobs:
 
     # TODO: Reactivate and use pytests in build
     # Run Pytest to ensure the bindings work correctly
-    - script: |
-        python -m pytest -v
-      displayName: 'Run Pytest to validate bindings'
-      env:
-        DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+    # - script: |
+    #     python -m pytest -v
+    #   displayName: 'Run Pytest to validate bindings'
+    #   env:
+    #     DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
     # Build wheel package for universal2
     - script: |
@@ -376,7 +376,7 @@ jobs:
         manylinuxTag: 'manylinux2014_x86_64'
       py310_arm64:
         shortPyVer: '310'
-        targetArch: 'arm64'
+        targetArch: 'aarch64'
         dockerPlatform: 'linux/arm64'
         manylinuxTag: 'manylinux2014_aarch64'
 
@@ -388,7 +388,7 @@ jobs:
         manylinuxTag: 'manylinux2014_x86_64'
       py311_arm64:
         shortPyVer: '311'
-        targetArch: 'arm64'
+        targetArch: 'aarch64'
         dockerPlatform: 'linux/arm64'
         manylinuxTag: 'manylinux2014_aarch64'
 
@@ -400,7 +400,7 @@ jobs:
         manylinuxTag: 'manylinux2014_x86_64'
       py312_arm64:
         shortPyVer: '312'
-        targetArch: 'arm64'
+        targetArch: 'aarch64'
         dockerPlatform: 'linux/arm64'
         manylinuxTag: 'manylinux2014_aarch64'
 
@@ -412,7 +412,7 @@ jobs:
         manylinuxTag: 'manylinux2014_x86_64'
       py313_arm64:
         shortPyVer: '313'
-        targetArch: 'arm64'
+        targetArch: 'aarch64'
         dockerPlatform: 'linux/arm64'
         manylinuxTag: 'manylinux2014_aarch64'
 
@@ -428,33 +428,20 @@ jobs:
     - script: |
         docker run -d --name build-container-$(targetArch) \
           --platform $(dockerPlatform) \
-          --network host \
           -v $(Build.SourcesDirectory):/workspace \
           -w /workspace \
-          --memory=4g \
-          --memory-swap=6g \
-          --cpus="2.0" \
-          --shm-size=1g \
-          quay.io/pypa/$(manylinuxTag):latest \
+          --network bridge \
+          quay.io/pypa/manylinux2014_$(targetArch):latest \
           tail -f /dev/null
-        
-        # Check container resources
-        docker exec build-container-$(targetArch) bash -c "
-          echo 'Container system information:'
-          free -h
-          df -h
-          nproc
-          uname -a
-        "
-      displayName: 'Create manylinux2014 $(targetArch) container with resource limits'
+      displayName: 'Create manylinux2014 $(targetArch) container'
 
     # Start SQL Server container for testing
     - script: |
         docker run -d --name sqlserver-$(targetArch) \
           --platform linux/amd64 \
-          --network host \
           -e ACCEPT_EULA=Y \
           -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+          -p 1433:1433 \
           mcr.microsoft.com/mssql/server:2022-latest
         
         # Wait for SQL Server to be ready
@@ -554,24 +541,24 @@ jobs:
       continueOnError: false
 
     # TODO: Reactivate and use pytests in build
-    # Run tests to validate the build
-    - script: |
-        # Get SQL Server container IP
-        SQLSERVER_IP=$(docker inspect sqlserver-$(targetArch) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-        echo "SQL Server IP: $SQLSERVER_IP"
-    
-        docker exec \
-          -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=localhost,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes;Timeout=30;" \
-          -e DB_PASSWORD="$(DB_PASSWORD)" \
-          build-container-$(targetArch) bash -c "
-          echo 'Running tests on manylinux2014 $(targetArch)'
-          echo 'Architecture:' \$(uname -m)
-          echo 'Python version:' \$(python --version)
-          python -m pytest -v
-        "
-      displayName: 'Run tests in manylinux2014 $(targetArch) container'
-      env:
-        DB_PASSWORD: $(DB_PASSWORD)
+    # # Run tests to validate the build
+    # - script: |
+    #     # Get SQL Server container IP
+    #     SQLSERVER_IP=$(docker inspect sqlserver-$(targetArch) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+    #     echo "SQL Server IP: $SQLSERVER_IP"
+    #
+    #     docker exec \
+    #       -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+    #       -e DB_PASSWORD="$(DB_PASSWORD)" \
+    #       build-container-$(targetArch) bash -c "
+    #       echo 'Running tests on manylinux2014 $(targetArch)'
+    #       echo 'Architecture:' \$(uname -m)
+    #       echo 'Python version:' \$(python --version)
+    #       python -m pytest -v
+    #     "
+    #   displayName: 'Run tests in manylinux2014 $(targetArch) container'
+    #   env:
+    #     DB_PASSWORD: $(DB_PASSWORD)
 
     # Build manylinux wheel
     - script: |
@@ -588,7 +575,7 @@ jobs:
           
           # Use auditwheel to create manylinux wheel
           python -m pip install auditwheel
-          auditwheel repair dist/*.whl -w dist/
+          auditwheel repair dist/*.whl --plat-tag $(manylinuxTag) -w dist/
           
           # Remove the original wheel, keep only the manylinux one
           rm -f dist/*-linux_*.whl

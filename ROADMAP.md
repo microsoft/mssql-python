@@ -25,15 +25,27 @@ In future releases, we plan to add several DBAPI enhancements, including:
 - `Output` and `InputOutput` Parameters: Handling of output and input-output parameters in stored procedures.
 - Optional DBAPIs: Additional optional DBAPI features to provide more flexibility and functionality for developers.
 
-**3. Cross-Platform Support: Additional Linux Distributions** 
+**3. Connection Pooling for MacOS and Linux Distributions**
 
-We are committed to providing cross-platform support for our Python driver. In the next few weeks, we will release support for additional Linux distributions viz Alpine, SUSE Linux & Oracle Linux.
+Connection pooling will be made available soon for MacOS and Linux distributions, allowing for efficient reuse of database connections. The feature is already available for Windows OS. This feature will significantly improve performance by reducing the overhead associated with establishing new connections for each database operation .
+- Reduce Connection creation overhead
+- Improve scalability via efficient reuse of connections
+- Enhance multi-threaded operation performance
 
-**4. Bulk Copy (BCP)**
+**4. Cross-Platform Support: Linux Distributions** 
+
+We are committed to providing cross-platform support for our Python driver. In the next few weeks, we will release versions compatible with various Linux distributions. This will enable developers to use the driver on their preferred operating systems without any compatibility issues. 
+Soon, you will be able to:
+- Use the driver across multiple environments and OS
+- Deploy application on cloud-native platforms
+- Avoid compatibility issues with system-dependent code
+- Flexibility in choosing development environments
+
+**5. Bulk Copy (BCP)**
 
 Bulk Copy API (BCP) support is coming soon to the Python Driver for SQL Server. It enables high-speed data ingestion and offers fine-grained control over batch operations, making it ideal for large-scale ETL workflows.
 
-**5. Asynchronous Query Execution**
+**6. Asynchronous Query Execution**
 
 We are also working on adding support for asynchronous query execution. This feature will allow developers to execute queries without blocking the main thread, enabling more responsive and efficient applications. Asynchronous query execution will be particularly beneficial for applications that require high concurrency and low latency.
 - No blocking of the main thread

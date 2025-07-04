@@ -20,18 +20,14 @@ pip install mssql-python
 brew install openssl
 pip install mssql-python
 ```
-**Linux:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
-```bash
-pip install mssql-python
-```
 
 ## Key Features
 ### Supported Platforms
  
-Windows, MacOS and Linux (manylinux2014 - Debian, Ubuntu & RHEL)
-
+Windows and MacOS
+ 
 > **Note:**
-> Support for additional Linux OSs (Alpine, SUSE Linux) will come soon
+> Support for Linux is coming soon
 >
  
 ### DBAPI v2.0 Compliance
@@ -49,24 +45,15 @@ By adhering to the DB API 2.0 specification, the mssql-python module ensures com
 ### Support for Microsoft Entra ID Authentication
  
 The Microsoft mssql-python driver enables Python applications to connect to Microsoft SQL Server, Azure SQL Database, or Azure SQL Managed Instance using Microsoft Entra ID identities. It supports various authentication methods, including username and password, Microsoft Entra managed identity, and Integrated Windows Authentication in a federated, domain-joined environment. Additionally, the driver supports Microsoft Entra interactive authentication and Microsoft Entra managed identity authentication for both system-assigned and user-assigned managed identities.
-
-EntraID authentication is now fully supported on MacOS and Linux but with certain limitations as mentioned in the table:
-
-| Authentication Method | Windows Support | macOS/Linux Support | Notes |
-|----------------------|----------------|---------------------|-------|
-| ActiveDirectoryPassword | ✅ Yes | ✅ Yes | Username/password-based authentication |
-| ActiveDirectoryInteractive | ✅ Yes | ❌ No | Only works on Windows |
-| ActiveDirectoryMSI (Managed Identity) | ✅ Yes | ✅ Yes | For Azure VMs/containers with managed identity |
-| ActiveDirectoryServicePrincipal | ✅ Yes | ✅ Yes | Use client ID and secret or certificate |
-| ActiveDirectoryIntegrated | ✅ Yes | ❌ No | Only works on Windows (requires Kerberos/SSPI) |
-
+ 
 ### Enhanced Pythonic Features
  
 The driver offers a suite of Pythonic enhancements that streamline database interactions, making it easier for developers to execute queries, manage connections, and handle data more efficiently.
  
 ### Connection Pooling
  
-The Microsoft mssql_python driver provides built-in support for connection pooling, which helps improve performance and scalability by reusing active database connections instead of creating a new connection for every request. This feature is enabled by default. For more information, refer [Connection Pooling Wiki](https://github.com/microsoft/mssql-python/wiki/Connection#connection-pooling).
+The Microsoft mssql_python driver provides built-in support for connection pooling, which helps improve performance and scalability by reusing active database connections instead of creating a new connection for every request.
+ 
  
 ## Getting Started Examples
 Connect to SQL Server and execute a simple query:
