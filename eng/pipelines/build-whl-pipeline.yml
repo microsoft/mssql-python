@@ -712,7 +712,9 @@ jobs:
           dnf groupinstall -y 'Development Tools' || echo 'Development Tools group not available, installing individual packages'
           
           # Install development tools and cmake separately to ensure they work
-          dnf install -y curl wget gnupg2 glibc-devel kernel-headers
+          # Note: Handle curl conflicts by replacing curl-minimal with curl
+          dnf install -y wget gnupg2 glibc-devel kernel-headers
+          dnf install -y --allowerasing curl || dnf install -y curl || echo 'curl installation failed, continuing'
           dnf install -y gcc gcc-c++ make binutils
           dnf install -y cmake
           
