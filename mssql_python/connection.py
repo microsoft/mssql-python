@@ -170,7 +170,10 @@ class Connection:
         """Return a new Cursor object using the connection."""
         if self._closed:
             # raise InterfaceError
-            raise InterfaceError("Cannot create cursor on closed connection")
+            raise InterfaceError(
+                driver_error="Cannot create cursor on closed connection",
+                ddbc_error="Cannot create cursor on closed connection",
+            )
 
         cursor = Cursor(self)
         self._cursors.add(cursor)  # Track the cursor

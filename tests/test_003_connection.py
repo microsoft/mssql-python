@@ -10,6 +10,7 @@ Functions:
 Note: The cursor function is not yet implemented, so related tests are commented out.
 """
 
+from mssql_python.exceptions import InterfaceError
 import pytest
 import time
 from mssql_python import Connection, connect, pooling
@@ -358,7 +359,7 @@ def test_cursor_after_connection_close(conn_str):
     conn.close()
     
     # Should raise exception when trying to create cursor on closed connection
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(InterfaceError) as excinfo:
         cursor = conn.cursor()
     
     assert "closed connection" in str(excinfo.value).lower(), "Should mention closed connection"
