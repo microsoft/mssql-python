@@ -226,6 +226,7 @@ class SqlHandle {
         SQLHANDLE get() const;
         SQLSMALLINT type() const;
         void free();
+    private:
         SQLSMALLINT _type;
         SQLHANDLE _handle;
     };
