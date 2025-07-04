@@ -6,11 +6,13 @@ The class provides methods to establish a connection, create cursors, commit tra
 roll back transactions, and close the connection.
 """
 import ctypes
+import weakref
 from mssql_python.cursor import Cursor
 from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import add_driver_to_connection_str, check_error
 from mssql_python import ddbc_bindings
+from mssql_python.mssql_python import DatabaseError
 from mssql_python.pooling import PoolingManager
 
 logger = get_logger()
@@ -54,11 +56,14 @@ class Connection:
         preparing it for further operations such as connecting to the 
         database, executing queries, etc.
         """
-        print("[SEGDEBUGGING - PYTHON] Connection.__init__ called")
+        print("[SEGDEBUGGING - PYTHON - PYTHON] Connection.__init__ called")
         self.connection_str = self._construct_connection_string(
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
+        self._closed = False
+        self._cursors = weakref.WeakSet()  # Add this to track cursors
+
         # Auto-enable pooling if user never called
         if not PoolingManager.is_initialized():
             PoolingManager.enable()
@@ -153,7 +158,14 @@ class Connection:
             DatabaseError: If there is an error while creating the cursor.
             InterfaceError: If there is an error related to the database interface.
         """
-        return Cursor(self)
+        """Return a new Cursor object using the connection."""
+        if self._closed:
+            raise DatabaseError("Cannot create cursor on closed connection")
+        
+        cursor = Cursor(self)
+        self._cursors.add(cursor)  # Track the cursor
+        print(f"[SEGDEBUGGING - PYTHON] Created cursor, total cursors: {len(self._cursors)}")
+        return cursor
 
     def commit(self) -> None:
         """
@@ -202,6 +214,26 @@ class Connection:
             DatabaseError: If there is an error while closing the connection.
         """
         # Close the connection
-        self._conn.close()
-        if ENABLE_LOGGING:
-            logger.info("Connection closed successfully.")
+        if self._closed:
+            return
+        
+        print("[SEGDEBUGGING - PYTHON] Connection.close() called")
+        
+        # CRITICAL: Close all cursors first
+        if hasattr(self, '_cursors'):
+            print("[SEGDEBUGGING - PYTHON] Closing all cursors.")
+            for cursor in list(self._cursors):
+                try:
+                    print(f"[SEGDEBUGGING - PYTHON] Closing cursor: {cursor}")
+                    if not cursor.closed:
+                        cursor.close()
+                except Exception as e:
+                    print(f"[SEGDEBUGGING - PYTHON] Error closing cursor: {e}")
+
+        # Then close connection
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+            print("[SEGDEBUGGING - PYTHON] Connection closed successfully")
+        
+        self._closed = True

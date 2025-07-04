@@ -23,7 +23,7 @@ except Exception as e:
 
 print("[SEGDEBUGGING - PYTHON] Declaring the cursor variable")
 cursor = conn.cursor()
-print("[SEGDEBUGGING - PYTHON] Cursor variable declared, executing cursor")
+print(f"[SEGDEBUGGING - PYTHON] Cursor object declared as {cursor}, executing cursor")
 cursor.execute("SELECT database_id, name from sys.databases;")
 print("[SEGDEBUGGING - PYTHON] Cursor executed, fetching all rows")
 rows = cursor.fetchall()
