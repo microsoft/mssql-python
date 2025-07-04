@@ -3,7 +3,7 @@ from mssql_python import setup_logging
 import os
 import decimal
 
-setup_logging('stdout')
+# setup_logging('stdout')
 
 conn_str = os.getenv("DB_CONNECTION_STRING")
 
