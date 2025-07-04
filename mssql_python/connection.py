@@ -4,6 +4,11 @@ Licensed under the MIT license.
 This module defines the Connection class, which is used to manage a connection to a database.
 The class provides methods to establish a connection, create cursors, commit transactions, 
 roll back transactions, and close the connection.
+Resource Management:
+- All cursors created from this connection are tracked internally.
+- When close() is called on the connection, all open cursors are automatically closed.
+- Do not use any cursor after the connection is closed; doing so will raise an exception.
+- Cursors are also cleaned up automatically when no longer referenced, to prevent memory leaks.
 """
 import weakref
 from mssql_python.cursor import Cursor
@@ -12,6 +17,7 @@ from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import add_driver_to_connection_str, check_error
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
+from mssql_python.exceptions import DatabaseError, InterfaceError
 
 logger = get_logger()
 
@@ -64,6 +70,7 @@ class Connection:
         # It is a set that holds weak references to its elements.
         # When an object is only weakly referenced, it can be garbage collected even if it's still in the set.
         # It prevents memory leaks by ensuring that cursors are cleaned up when no longer in use without requiring explicit deletion.
+        # TODO: Think and implement scenarios for multi-threaded access to cursors
         self._cursors = weakref.WeakSet()
 
         # Auto-enable pooling if user never called
@@ -162,8 +169,9 @@ class Connection:
         """
         """Return a new Cursor object using the connection."""
         if self._closed:
-            raise Exception("Cannot create cursor on closed connection")
-        
+            # raise InterfaceError
+            raise InterfaceError("Cannot create cursor on closed connection")
+
         cursor = Cursor(self)
         self._cursors.add(cursor)  # Track the cursor
         return cursor
