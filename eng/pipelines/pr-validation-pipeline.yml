@@ -51,3 +51,5 @@ jobs:
     - script: |
         python main.py
       displayName: 'Run main.py'
+      env:
+        DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
