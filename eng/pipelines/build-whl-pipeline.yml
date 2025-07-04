@@ -11,7 +11,15 @@ trigger:
 pr:
   branches:
     include:
-      - main  
+      - main
+
+# Schedule the pipeline to run on main branch daily at 07:00 AM IST
+schedules:
+  - cron: "30 1 * * *"
+    displayName: Daily run at 07:00 AM IST
+    branches:
+      include:
+        - main
 
 jobs:
 - job: BuildWindowsWheels
