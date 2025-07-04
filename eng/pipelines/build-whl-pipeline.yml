@@ -1,17 +1,19 @@
 # Pipeline name shown in ADO UI
 name: build-whl-pipeline
 
-# Trigger the pipeline on changes to the main branch & on pull requests
+# Trigger the pipeline on changes to the main branch
 trigger:
   branches:
     include:
       - main
 
-# Trigger on pull requests targeting the main branch
-pr:
-  branches:
-    include:
-      - main  
+# Schedule the pipeline to run on main branch daily at 07:00 AM IST
+schedules:
+  - cron: "30 1 * * *"
+    displayName: Daily run at 07:00 AM IST
+    branches:
+      include:
+        - main
 
 jobs:
 - job: BuildWindowsWheels
@@ -132,18 +134,17 @@ jobs:
       displayName: 'Build PYD for $(targetArch)'
       continueOnError: false
 
-    # TODO: Reactivate and use pytests in build
     # Run pytests before packaging
-    # - powershell: |
-    #     Write-Host "Running pytests to validate bindings"
-    #     if ("$(targetArch)" -eq "arm64") {
-    #       Write-Host "Skipping pytests on Windows ARM64"
-    #     } else {
-    #       python -m pytest -v
-    #     }
-    #   displayName: 'Run pytests'
-    #   env:
-    #     DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+    - powershell: |
+        Write-Host "Running pytests to validate bindings"
+        if ("$(targetArch)" -eq "arm64") {
+          Write-Host "Skipping pytests on Windows ARM64"
+        } else {
+          python -m pytest -v
+        }
+      displayName: 'Run pytests'
+      env:
+        DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
     # Copy the built .pyd file to staging folder for artifacts
     - task: CopyFiles@2
@@ -319,13 +320,12 @@ jobs:
       env:
         DB_PASSWORD: $(DB_PASSWORD)
 
-    # TODO: Reactivate and use pytests in build
     # Run Pytest to ensure the bindings work correctly
-    # - script: |
-    #     python -m pytest -v
-    #   displayName: 'Run Pytest to validate bindings'
-    #   env:
-    #     DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+    - script: |
+        python -m pytest -v
+      displayName: 'Run Pytest to validate bindings'
+      env:
+        DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
     # Build wheel package for universal2
     - script: |
@@ -361,276 +361,746 @@ jobs:
       displayName: 'Publish all wheels as artifacts'
 
 - job: BuildLinuxWheels
-  # Use the latest Ubuntu image for building
   pool:
     vmImage: 'ubuntu-latest'
   displayName: 'Build Linux -'
-  # Strategy matrix to build all combinations
+
   strategy:
     matrix:
       # Python 3.10 (x86_64 and ARM64)
-      py310_x86_64:
+      py310_x86_64_ubuntu:
+        pythonVersion: '3.10'
         shortPyVer: '310'
         targetArch: 'x86_64'
         dockerPlatform: 'linux/amd64'
-        manylinuxTag: 'manylinux2014_x86_64'
-      py310_arm64:
+        dockerImage: 'ubuntu:22.04'
+        distroName: 'Ubuntu'
+        packageManager: 'apt'
+      py310_arm64_ubuntu:
+        pythonVersion: '3.10'
         shortPyVer: '310'
-        targetArch: 'aarch64'
+        targetArch: 'arm64'
         dockerPlatform: 'linux/arm64'
-        manylinuxTag: 'manylinux2014_aarch64'
+        dockerImage: 'ubuntu:22.04'
+        distroName: 'Ubuntu'
+        packageManager: 'apt'
+      py310_x86_64_debian:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'debian:12'
+        distroName: 'Debian'
+        packageManager: 'apt'
+      py310_arm64_debian:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'debian:12'
+        distroName: 'Debian'
+        packageManager: 'apt'
+      py310_x86_64_rhel:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
+        buildFromSource: 'true'
+      py310_arm64_rhel:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
+        buildFromSource: 'true'
 
       # Python 3.11 (x86_64 and ARM64)
-      py311_x86_64:
+      py311_x86_64_ubuntu:
+        pythonVersion: '3.11'
         shortPyVer: '311'
         targetArch: 'x86_64'
         dockerPlatform: 'linux/amd64'
-        manylinuxTag: 'manylinux2014_x86_64'
-      py311_arm64:
+        dockerImage: 'ubuntu:22.04'
+        distroName: 'Ubuntu'
+        packageManager: 'apt'
+      py311_arm64_ubuntu:
+        pythonVersion: '3.11'
         shortPyVer: '311'
-        targetArch: 'aarch64'
+        targetArch: 'arm64'
         dockerPlatform: 'linux/arm64'
-        manylinuxTag: 'manylinux2014_aarch64'
+        dockerImage: 'ubuntu:22.04'
+        distroName: 'Ubuntu'
+        packageManager: 'apt'
+      py311_x86_64_debian:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'debian:12'
+        distroName: 'Debian'
+        packageManager: 'apt'
+      py311_arm64_debian:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'debian:12'
+        distroName: 'Debian'
+        packageManager: 'apt'
+      py311_x86_64_rhel:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
+      py311_arm64_rhel:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
 
-      # Python 3.12 (x86_64 and ARM64)
-      py312_x86_64:
+      # Python 3.12 (x86_64 and ARM64) - Note: Not available for Ubuntu 22.04 via deadsnakes PPA
+      # Only build for Debian and RHEL where Python 3.12 is available
+      py312_x86_64_debian:
+        pythonVersion: '3.12'
         shortPyVer: '312'
         targetArch: 'x86_64'
         dockerPlatform: 'linux/amd64'
-        manylinuxTag: 'manylinux2014_x86_64'
-      py312_arm64:
+        dockerImage: 'debian:12'
+        distroName: 'Debian'
+        packageManager: 'apt'
+      py312_arm64_debian:
+        pythonVersion: '3.12'
         shortPyVer: '312'
-        targetArch: 'aarch64'
+        targetArch: 'arm64'
         dockerPlatform: 'linux/arm64'
-        manylinuxTag: 'manylinux2014_aarch64'
+        dockerImage: 'debian:12'
+        distroName: 'Debian'
+        packageManager: 'apt'
+      py312_x86_64_rhel:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
+      py312_arm64_rhel:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
 
       # Python 3.13 (x86_64 and ARM64)
-      py313_x86_64:
+      py313_x86_64_ubuntu:
+        pythonVersion: '3.13'
         shortPyVer: '313'
         targetArch: 'x86_64'
         dockerPlatform: 'linux/amd64'
-        manylinuxTag: 'manylinux2014_x86_64'
-      py313_arm64:
+        dockerImage: 'ubuntu:22.04'
+        distroName: 'Ubuntu'
+        packageManager: 'apt'
+      py313_arm64_ubuntu:
+        pythonVersion: '3.13'
         shortPyVer: '313'
-        targetArch: 'aarch64'
+        targetArch: 'arm64'
         dockerPlatform: 'linux/arm64'
-        manylinuxTag: 'manylinux2014_aarch64'
+        dockerImage: 'ubuntu:22.04'
+        distroName: 'Ubuntu'
+        packageManager: 'apt'
+      py313_x86_64_debian:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'debian:12'
+        distroName: 'Debian'
+        packageManager: 'apt'
+      py313_arm64_debian:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'debian:12'
+        distroName: 'Debian'
+        packageManager: 'apt'
+      py313_x86_64_rhel:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
+        buildFromSource: 'true'
+      py313_arm64_rhel:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
+        buildFromSource: 'true'
 
   steps:
-    # Set up Docker buildx for multi-architecture support
-    - script: |
-        docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-        docker buildx create --name multiarch --driver docker-container --use || true
-        docker buildx inspect --bootstrap
-      displayName: 'Setup Docker buildx for multi-architecture support'
+  # Set up Docker buildx for multi-architecture support
+  - script: |
+      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      docker buildx create --name multiarch --driver docker-container --use || true
+      docker buildx inspect --bootstrap
+    displayName: 'Setup Docker buildx for multi-architecture support'
 
-    # Create manylinux2014 container for building
-    - script: |
-        docker run -d --name build-container-$(targetArch) \
-          --platform $(dockerPlatform) \
-          -v $(Build.SourcesDirectory):/workspace \
-          -w /workspace \
-          --network bridge \
-          quay.io/pypa/manylinux2014_$(targetArch):latest \
-          tail -f /dev/null
-      displayName: 'Create manylinux2014 $(targetArch) container'
+  - script: |
+      # Create a Docker container for building
+      docker run -d --name build-container-$(distroName)-$(targetArch) \
+        --platform $(dockerPlatform) \
+        -v $(Build.SourcesDirectory):/workspace \
+        -w /workspace \
+        --network bridge \
+        $(dockerImage) \
+        tail -f /dev/null
+    displayName: 'Create $(distroName) $(targetArch) container'
 
-    # Start SQL Server container for testing
-    - script: |
-        docker run -d --name sqlserver-$(targetArch) \
-          --platform linux/amd64 \
-          -e ACCEPT_EULA=Y \
-          -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-          -p 1433:1433 \
-          mcr.microsoft.com/mssql/server:2022-latest
-        
-        # Wait for SQL Server to be ready
-        echo "Waiting for SQL Server to start..."
-        for i in {1..60}; do
-          if docker exec sqlserver-$(targetArch) \
-            /opt/mssql-tools18/bin/sqlcmd \
-            -S localhost \
-            -U SA \
-            -P "$(DB_PASSWORD)" \
-            -C -Q "SELECT 1" >/dev/null 2>&1; then
-            echo "SQL Server is ready!"
-            break
-          fi
-          echo "Waiting... ($i/60)"
-          sleep 2
-        done
-        
-        # Create test database
-        docker exec sqlserver-$(targetArch) \
+  - script: |
+      # Start SQL Server container (always x86_64 since SQL Server doesn't support ARM64)
+      docker run -d --name sqlserver-$(distroName)-$(targetArch) \
+        --platform linux/amd64 \
+        -e ACCEPT_EULA=Y \
+        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -p 1433:1433 \
+        mcr.microsoft.com/mssql/server:2022-latest
+      
+      # Wait for SQL Server to be ready
+      echo "Waiting for SQL Server to start..."
+      for i in {1..60}; do
+        if docker exec sqlserver-$(distroName)-$(targetArch) \
           /opt/mssql-tools18/bin/sqlcmd \
           -S localhost \
           -U SA \
           -P "$(DB_PASSWORD)" \
-          -C -Q "CREATE DATABASE TestDB"
-      displayName: 'Start SQL Server container for $(targetArch)'
-      env:
-        DB_PASSWORD: $(DB_PASSWORD)
+          -C -Q "SELECT 1" >/dev/null 2>&1; then
+          echo "SQL Server is ready!"
+          break
+        fi
+        echo "Waiting... ($i/60)"
+        sleep 2
+      done
+      
+      # Create test database
+      docker exec sqlserver-$(distroName)-$(targetArch) \
+        /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost \
+        -U SA \
+        -P "$(DB_PASSWORD)" \
+        -C -Q "CREATE DATABASE TestDB"
+    displayName: 'Start SQL Server container for $(distroName) $(targetArch)'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
 
-    # Install dependencies and set up Python in manylinux container
-    - script: |
-        docker exec build-container-$(targetArch) bash -c "
-          # List available Python versions in manylinux container
-          echo 'Available Python versions in manylinux container:'
-          ls -la /opt/python/
+  - script: |
+      # Install dependencies in the container
+      if [ "$(packageManager)" = "apt" ]; then
+        # Ubuntu/Debian
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          export TZ=UTC
+          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
           
-          # Find the correct Python binary for cp$(shortPyVer)
-          PYTHON_TAG=cp$(shortPyVer)
-          PYTHON_BIN=''
+          # Update package lists
+          apt-get update
           
-          # Try different naming patterns
-          for pattern in \${PYTHON_TAG}-\${PYTHON_TAG} \${PYTHON_TAG}-\${PYTHON_TAG}m; do
-            if [ -x /opt/python/\${pattern}/bin/python ]; then
-              PYTHON_BIN=/opt/python/\${pattern}/bin/python
-              PIP_BIN=/opt/python/\${pattern}/bin/pip
-              break
+          # Install basic tools first
+          apt-get install -y software-properties-common curl wget gnupg build-essential cmake
+          
+          # Add deadsnakes PPA for newer Python versions (Ubuntu only)
+          if [ '$(distroName)' = 'Ubuntu' ]; then
+            add-apt-repository -y ppa:deadsnakes/ppa
+            apt-get update
+          fi
+          
+          # Install Python and development packages
+          # Handle different Python version availability per distribution
+          if [ '$(distroName)' = 'Debian' ]; then
+            # Debian 12 has Python 3.11 by default, some older/newer versions may not be available
+            case '$(pythonVersion)' in
+              '3.11')
+                # Python 3.11 is the default in Debian 12
+                apt-get install -y python$(pythonVersion) python$(pythonVersion)-dev python$(pythonVersion)-venv python$(pythonVersion)-distutils
+                PYTHON_CMD=python$(pythonVersion)
+                ;;
+              '3.10'|'3.12'|'3.13')
+                # These versions may not be available in Debian 12, use python3 and create symlinks
+                echo 'Python $(pythonVersion) may not be available in Debian 12, using available python3'
+                apt-get install -y python3 python3-dev python3-venv
+                # Note: distutils is not available for Python 3.12+
+                if [ '$(pythonVersion)' != '3.12' ] && [ '$(pythonVersion)' != '3.13' ]; then
+                  apt-get install -y python3-distutils || echo 'distutils not available for this Python version'
+                fi
+                # Create symlinks to make the desired version available
+                # Find the actual python3 version and create proper symlinks
+                ACTUAL_PYTHON=\$(python3 --version | grep -o '[0-9]\+\.[0-9]\+')
+                echo 'Detected Python version:' \$ACTUAL_PYTHON
+                ln -sf /usr/bin/python3 /usr/local/bin/python$(pythonVersion)
+                ln -sf /usr/bin/python3 /usr/local/bin/python
+                PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
+                ;;
+              *)
+                echo 'Unsupported Python version $(pythonVersion) for Debian, using python3'
+                apt-get install -y python3 python3-dev python3-venv
+                ln -sf /usr/bin/python3 /usr/local/bin/python$(pythonVersion)
+                ln -sf /usr/bin/python3 /usr/local/bin/python
+                PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
+                ;;
+            esac
+          else
+            # Ubuntu has deadsnakes PPA, so more versions are available
+            # Note: distutils is not available for newer Python versions (3.12+)
+            if [ '$(pythonVersion)' = '3.12' ] || [ '$(pythonVersion)' = '3.13' ]; then
+              apt-get install -y python$(pythonVersion) python$(pythonVersion)-dev python$(pythonVersion)-venv
+            else
+              apt-get install -y python$(pythonVersion) python$(pythonVersion)-dev python$(pythonVersion)-venv python$(pythonVersion)-distutils
             fi
-          done
+            # For Ubuntu, create symlinks for consistency 
+            ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python$(pythonVersion)
+            ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python
+            PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
+          fi
           
-          if [ -z \"\$PYTHON_BIN\" ]; then
-            echo 'Python $(shortPyVer) not found in manylinux container'
-            echo 'Available Python versions:'
-            ls -la /opt/python/
+          # Install pip for the specific Python version
+          curl -sS https://bootstrap.pypa.io/get-pip.py | \$PYTHON_CMD
+          
+          # Install remaining packages
+          apt-get install -y pybind11-dev || echo 'pybind11-dev not available, will install via pip'
+          
+          # Verify Python installation
+          echo 'Python installation verification:'
+          echo 'Using PYTHON_CMD:' \$PYTHON_CMD
+          \$PYTHON_CMD --version
+          if [ -f /usr/local/bin/python ]; then
+            /usr/local/bin/python --version
+          fi
+        "
+      else
+        # RHEL/DNF
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          # Enable CodeReady Builder repository for additional packages (skip if not available)
+          dnf install -y dnf-plugins-core || true
+          dnf install -y epel-release || echo 'EPEL not available in UBI9, continuing without it'
+          dnf config-manager --set-enabled crb || dnf config-manager --set-enabled powertools || echo 'No additional repos to enable'
+          
+          # Install dependencies
+          dnf update -y
+          dnf groupinstall -y 'Development Tools' || echo 'Development Tools group not available, installing individual packages'
+          
+          # Install development tools and cmake separately to ensure they work
+          # Note: Handle curl conflicts by replacing curl-minimal with curl
+          dnf install -y wget gnupg2 glibc-devel kernel-headers
+          dnf install -y --allowerasing curl || dnf install -y curl || echo 'curl installation failed, continuing'
+          dnf install -y gcc gcc-c++ make binutils
+          dnf install -y cmake
+          
+          # Install additional dependencies needed for Python source compilation
+          # Some packages may not be available in UBI9, so install what we can
+          dnf install -y openssl-devel bzip2-devel libffi-devel zlib-devel || echo 'Some core devel packages failed'
+          dnf install -y ncurses-devel sqlite-devel xz-devel || echo 'Some optional devel packages not available'
+          # These are often missing in UBI9, install if available
+          dnf install -y readline-devel tk-devel gdbm-devel libnsl2-devel libuuid-devel || echo 'Some Python build dependencies not available in UBI9'
+          
+          # If that doesn't work, try installing from different repositories
+          if ! which gcc; then
+            echo 'Trying alternative gcc installation...'
+            dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
+          fi
+          
+          # For RHEL, we need to handle Python versions more carefully
+          # RHEL 9 UBI has python3.9 by default, but we don't support 3.9
+          # We need to install specific versions or build from source
+          
+          # First, try to install the specific Python version
+          PYTHON_INSTALLED=false
+          echo 'Trying to install Python $(pythonVersion) from available repositories'
+          # Try from default repos first
+          if dnf install -y python$(pythonVersion) python$(pythonVersion)-devel python$(pythonVersion)-pip; then
+            echo 'Successfully installed Python $(pythonVersion) from default repos'
+            PYTHON_INSTALLED=true
+            # Create symlinks for the specific version
+            ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python$(pythonVersion)
+            ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python
+          else
+            echo 'Python $(pythonVersion) not available in default RHEL repos'
+            # For Python 3.11+ which might be available in newer RHEL versions
+            if [ '$(pythonVersion)' = '3.11' ] || [ '$(pythonVersion)' = '3.12' ]; then
+              echo 'Trying alternative installation for Python $(pythonVersion)'
+              # Try installing from additional repos
+              dnf install -y python$(pythonVersion) python$(pythonVersion)-devel python$(pythonVersion)-pip || true
+              if command -v python$(pythonVersion) >/dev/null 2>&1; then
+                echo 'Found Python $(pythonVersion) after alternative installation'
+                PYTHON_INSTALLED=true
+                ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python$(pythonVersion)
+                ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python
+              fi
+            elif [ '$(pythonVersion)' = '3.10' ] || [ '$(pythonVersion)' = '3.13' ]; then
+              echo 'Python $(pythonVersion) requires building from source'
+              
+              # Download Python source
+              cd /tmp
+              if [ '$(pythonVersion)' = '3.10' ]; then
+                PYTHON_URL='https://www.python.org/ftp/python/3.10.15/Python-3.10.15.tgz'
+              elif [ '$(pythonVersion)' = '3.13' ]; then
+                PYTHON_URL='https://www.python.org/ftp/python/3.13.1/Python-3.13.1.tgz'
+              fi
+              
+              echo \"Downloading Python from \$PYTHON_URL\"
+              wget \$PYTHON_URL -O python-$(pythonVersion).tgz
+              tar -xzf python-$(pythonVersion).tgz
+              cd Python-$(pythonVersion)*
+              
+              # Configure and compile Python with optimizations disabled for missing deps
+              echo 'Configuring Python build (optimizations may be disabled due to missing dependencies)'
+              ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions
+              
+              echo 'Compiling Python (this may take several minutes)'
+              make -j\$(nproc)
+              
+              echo 'Installing Python'
+              make altinstall
+              
+              # Create symlinks
+              ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python$(pythonVersion)
+              ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python
+              
+              # Verify installation
+              /usr/local/bin/python$(pythonVersion) --version
+              PYTHON_INSTALLED=true
+              
+              # Clean up
+              cd /
+              rm -rf /tmp/Python-$(pythonVersion)* /tmp/python-$(pythonVersion).tgz
+              
+              echo 'Successfully built and installed Python $(pythonVersion) from source'
+            fi
+          fi
+          
+          # If we couldn't install the specific version, fail the build
+          if [ \"\$PYTHON_INSTALLED\" = \"false\" ]; then
+            echo 'ERROR: Could not install Python $(pythonVersion) - unsupported version'
+            echo 'Supported versions for RHEL: 3.11, 3.12 (and 3.10, 3.13 via source compilation)'
             exit 1
           fi
           
-          echo \"Using Python binary: \$PYTHON_BIN\"
-          \$PYTHON_BIN --version
+          # Install pybind11 development headers
+          dnf install -y python3-pybind11-devel || echo 'pybind11-devel not available, will install via pip'
           
-          # Create symlinks for easier access
-          ln -sf \$PYTHON_BIN /usr/local/bin/python
-          ln -sf \$PIP_BIN /usr/local/bin/pip
-          
-          # Install build dependencies
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python -m pip install cmake pybind11 wheel setuptools
-          
-          # Verify installation
-          python --version
-          pip --version
-          uname -m
-          echo 'Python path:' \$(which python)
-          echo 'Pip path:' \$(which pip)
+          # Verify installations
+          echo 'Verifying installations:'
+          python3 --version
+          which gcc && which g++
+          gcc --version
+          g++ --version
+          cmake --version || echo 'cmake not found in PATH'
+          which cmake || echo 'cmake binary not found'
         "
-      displayName: 'Install dependencies in manylinux2014 $(targetArch) container'
+      fi
+    displayName: 'Install basic dependencies in $(distroName) $(targetArch) container'
 
-    # Install ODBC Driver to build
-    - script: |
-        docker exec build-container-$(targetArch) bash -c "
-          yum update -y
-          yum install -y unixODBC-devel
+  - script: |
+      # Install ODBC driver in the container
+      if [ "$(packageManager)" = "apt" ]; then
+        # Ubuntu/Debian
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          
+          # Download the package to configure the Microsoft repo
+          if [ '$(distroName)' = 'Ubuntu' ]; then
+            curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+          else
+            # Debian 12
+            curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
+          fi
+          
+          # Install the package
+          dpkg -i packages-microsoft-prod.deb || true
+          rm packages-microsoft-prod.deb
+          
+          # Update package list
+          apt-get update
+          
+          # Install the driver
+          ACCEPT_EULA=Y apt-get install -y msodbcsql18
+          # optional: for bcp and sqlcmd
+          ACCEPT_EULA=Y apt-get install -y mssql-tools18
+          # optional: for unixODBC development headers
+          apt-get install -y unixodbc-dev
         "
-      displayName: 'Install ODBC Driver in manylinux2014 $(targetArch) container'
-
-    # Build pybind bindings in manylinux container
-    - script: |
-        docker exec build-container-$(targetArch) bash -c "
-          cd mssql_python/pybind
-          chmod +x build.sh
-          ./build.sh
+      else
+        # RHEL/DNF
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          # Add Microsoft repository for RHEL 9
+          curl -sSL -O https://packages.microsoft.com/config/rhel/9/packages-microsoft-prod.rpm
+          rpm -Uvh packages-microsoft-prod.rpm
+          rm packages-microsoft-prod.rpm
           
-          # Verify .so file was built
-          ls -la ../ddbc_bindings.*.so
+          # Update package list
+          dnf update -y
+          
+          # Install the driver
+          ACCEPT_EULA=Y dnf install -y msodbcsql18
+          # optional: for bcp and sqlcmd
+          ACCEPT_EULA=Y dnf install -y mssql-tools18
+          # optional: for unixODBC development headers
+          dnf install -y unixODBC-devel
         "
-      displayName: 'Build pybind bindings (.so) in manylinux2014 $(targetArch) container'
-      continueOnError: false
+      fi
+    displayName: 'Install ODBC Driver in $(distroName) $(targetArch) container'
 
-    # TODO: Reactivate and use pytests in build
-    # # Run tests to validate the build
-    # - script: |
-    #     # Get SQL Server container IP
-    #     SQLSERVER_IP=$(docker inspect sqlserver-$(targetArch) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-    #     echo "SQL Server IP: $SQLSERVER_IP"
-    #
-    #     docker exec \
-    #       -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-    #       -e DB_PASSWORD="$(DB_PASSWORD)" \
-    #       build-container-$(targetArch) bash -c "
-    #       echo 'Running tests on manylinux2014 $(targetArch)'
-    #       echo 'Architecture:' \$(uname -m)
-    #       echo 'Python version:' \$(python --version)
-    #       python -m pytest -v
-    #     "
-    #   displayName: 'Run tests in manylinux2014 $(targetArch) container'
-    #   env:
-    #     DB_PASSWORD: $(DB_PASSWORD)
-
-    # Build manylinux wheel
-    - script: |
-        docker exec build-container-$(targetArch) bash -c "
-          echo 'Building manylinux2014 wheel for Python cp$(shortPyVer) on $(targetArch)'
-          echo 'Python version:' \$(python --version)
-          python -m pip install --upgrade pip wheel setuptools
-          
-          # Build the wheel
-          python setup.py bdist_wheel
-          
-          # Verify the wheel was created
-          ls -la dist/
-          
-          # Use auditwheel to create manylinux wheel
-          python -m pip install auditwheel
-          auditwheel repair dist/*.whl --plat-tag $(manylinuxTag) -w dist/
-          
-          # Remove the original wheel, keep only the manylinux one
-          rm -f dist/*-linux_*.whl
-          
-          # Verify final wheel
-          echo 'Final manylinux wheel:'
-          ls -la dist/
-        "
-      displayName: 'Build manylinux2014 wheel for Python cp$(shortPyVer) ($(targetArch))'
-
-    # Copy the wheel file to the artifacts
-    - script: |
-        # Debug: Check what's in the dist directory
-        docker exec build-container-$(targetArch) bash -c "
-          echo 'Contents of /workspace/dist after wheel build:'
-          ls -la /workspace/dist/ || echo 'dist directory does not exist'
-        "
+  - script: |
+      # Install Python dependencies in the container using virtual environment
+      docker exec build-container-$(distroName)-$(targetArch) bash -c "
+        # Debug: Check what Python versions are available
+        echo 'Available Python interpreters:'
+        ls -la /usr/bin/python* || echo 'No python in /usr/bin'
+        ls -la /usr/local/bin/python* || echo 'No python in /usr/local/bin'
         
-        mkdir -p $(Build.ArtifactStagingDirectory)/dist
-        docker cp build-container-$(targetArch):/workspace/dist/. $(Build.ArtifactStagingDirectory)/dist/ || echo "Failed to copy dist directory"
+        # Determine which Python command to use
+        if command -v /usr/local/bin/python$(pythonVersion) >/dev/null 2>&1; then
+          PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
+          echo 'Using specific versioned Python from /usr/local/bin'
+        elif command -v python$(pythonVersion) >/dev/null 2>&1; then
+          PYTHON_CMD=python$(pythonVersion)
+          echo 'Using python$(pythonVersion) from PATH'
+        elif command -v python3 >/dev/null 2>&1; then
+          PYTHON_CMD=python3
+          echo 'Falling back to python3 instead of python$(pythonVersion)'
+        else
+          echo 'No Python interpreter found'
+          exit 1
+        fi
         
-        # Verify what was copied
-        echo "Contents of staging dist directory:"
-        ls -la $(Build.ArtifactStagingDirectory)/dist/ || echo "Staging dist directory is empty"
-      displayName: 'Copy wheel from container to artifacts'
+        echo 'Selected Python command:' \$PYTHON_CMD
+        echo 'Python version:' \$(\$PYTHON_CMD --version)
+        echo 'Python executable path:' \$(which \$PYTHON_CMD)
+        
+        # Verify the symlink is pointing to the right version
+        if [ '\$PYTHON_CMD' = '/usr/local/bin/python$(pythonVersion)' ]; then
+          echo 'Symlink details:'
+          ls -la /usr/local/bin/python$(pythonVersion)
+          echo 'Target Python version:'
+          /usr/local/bin/python$(pythonVersion) --version
+        fi
+        
+        # Ensure we have pip available for this Python version
+        if ! \$PYTHON_CMD -m pip --version >/dev/null 2>&1; then
+          echo 'Installing pip for' \$PYTHON_CMD
+          curl -sS https://bootstrap.pypa.io/get-pip.py | \$PYTHON_CMD
+        fi
+        
+        # Create a virtual environment with the available Python version
+        \$PYTHON_CMD -m venv /opt/venv
+        source /opt/venv/bin/activate
+        
+        # Verify virtual environment Python version
+        echo 'Python version in venv after creation:' \$(python --version)
+        echo 'Python executable in venv:' \$(which python)
+        
+        # Upgrade pip in virtual environment
+        python -m pip install --upgrade pip
+        
+        # Install pybind11 if not available from system packages
+        python -m pip install pybind11
+        
+        # Install dependencies in the virtual environment
+        python -m pip install -r requirements.txt
+        python -m pip install wheel setuptools
+        
+        # Make the virtual environment globally available
+        echo 'source /opt/venv/bin/activate' >> ~/.bashrc
+        
+        # Final verification
+        echo 'Final verification:'
+        echo 'Python version in venv:' \$(python --version)
+        echo 'Pip version in venv:' \$(pip --version)
+        echo 'Python sys.executable:' \$(python -c 'import sys; print(sys.executable)')
+      "
+    displayName: 'Install Python dependencies in $(distroName) $(targetArch) container'
 
-    # Copy the built .so file to staging folder for artifacts
-    - script: |
-        mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux/$(targetArch)
-        docker cp build-container-$(targetArch):/workspace/mssql_python/ddbc_bindings.cp$(shortPyVer)-$(targetArch).so $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux/$(targetArch)/
-      displayName: 'Copy .so file to artifacts directory'
+  - script: |
+      # Build pybind bindings in the container
+      docker exec build-container-$(distroName)-$(targetArch) bash -c "
+        source /opt/venv/bin/activate
+        
+        # Verify build tools are available
+        echo 'Verifying build tools before starting build:'
+        echo 'Python version:' \$(python --version)
+        echo 'CMake status:'
+        if command -v cmake >/dev/null 2>&1; then
+          cmake --version
+        else
+          echo 'ERROR: cmake not found in PATH'
+          echo 'PATH:' \$PATH
+          echo 'Available binaries in /usr/bin/:'
+          ls -la /usr/bin/ | grep cmake || echo 'No cmake in /usr/bin'
+          echo 'Trying to find cmake:'
+          find /usr -name cmake 2>/dev/null || echo 'cmake not found anywhere'
+          
+          # Try to install cmake if missing (RHEL specific)
+          if [ '$(packageManager)' = 'dnf' ]; then
+            echo 'Attempting to reinstall cmake for RHEL...'
+            dnf install -y cmake
+            echo 'After reinstall:'
+            cmake --version || echo 'cmake still not available'
+          fi
+        fi
+        
+        echo 'GCC status:'
+        gcc --version || echo 'gcc not found'
+        echo 'Make status:'
+        make --version || echo 'make not found'
+        
+        cd mssql_python/pybind
+        chmod +x build.sh
+        ./build.sh
+      "
+    displayName: 'Build pybind bindings (.so) in $(distroName) $(targetArch) container'
 
-    # Clean up containers
-    - script: |
-        docker stop build-container-$(targetArch) || true
-        docker rm build-container-$(targetArch) || true
-        docker stop sqlserver-$(targetArch) || true
-        docker rm sqlserver-$(targetArch) || true
-      displayName: 'Clean up $(targetArch) containers'
-      condition: always()
+  - script: |
+      # Uninstall ODBC Driver before running tests
+      if [ "$(packageManager)" = "apt" ]; then
+        # Ubuntu/Debian
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
+          rm -f /usr/bin/sqlcmd
+          rm -f /usr/bin/bcp
+          rm -rf /opt/microsoft/msodbcsql
+          rm -f /lib/x86_64-linux-gnu/libodbcinst.so.2
+          rm -f /lib/aarch64-linux-gnu/libodbcinst.so.2
+          odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+          echo 'Uninstalled ODBC Driver and cleaned up libraries'
+          echo 'Verifying $(targetArch) debian_ubuntu driver library signatures:'
+          if [ '$(targetArch)' = 'x86_64' ]; then
+            ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.5.so.1.1
+          else
+            ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.5.so.1.1
+          fi
+        "
+      else
+        # RHEL/DNF
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
+          rm -f /usr/bin/sqlcmd
+          rm -f /usr/bin/bcp
+          rm -rf /opt/microsoft/msodbcsql
+          rm -f /lib64/libodbcinst.so.2
+          odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+          echo 'Uninstalled ODBC Driver and cleaned up libraries'
+          echo 'Verifying $(targetArch) rhel driver library signatures:'
+          if [ '$(targetArch)' = 'x86_64' ]; then
+            ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-18.5.so.1.1
+          else
+            ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-18.5.so.1.1
+          fi
+        "
+      fi
+    displayName: 'Uninstall ODBC Driver before running tests in $(distroName) $(targetArch) container'
 
-    # Publish the collected .so file(s) as build artifacts
-    - task: PublishBuildArtifacts@1
-      condition: succeededOrFailed()
-      inputs:
-        PathtoPublish: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
-        ArtifactName: 'mssql-python-ddbc-bindings'
-        publishLocation: 'Container'
-      displayName: 'Publish .so files as artifacts'
+  - script: |
+      # Run tests in the container
+      # Get SQL Server container IP
+      SQLSERVER_IP=$(docker inspect sqlserver-$(distroName)-$(targetArch) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+      echo "SQL Server IP: $SQLSERVER_IP"
+      
+      docker exec \
+        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        build-container-$(distroName)-$(targetArch) bash -c "
+        source /opt/venv/bin/activate
+        echo 'Build successful, running tests now on $(distroName) $(targetArch)'
+        echo 'Python version:' \$(python --version)
+        echo 'Architecture:' \$(uname -m)
+        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+        python -m pytest -v --junitxml=test-results-$(distroName)-$(targetArch).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(targetArch).xml --capture=tee-sys --cache-clear
+      "
+    displayName: 'Run pytest with coverage in $(distroName) $(targetArch) container'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
 
-    # Publish the collected wheel file(s) as build artifacts
-    - task: PublishBuildArtifacts@1
-      condition: succeededOrFailed()
-      inputs:
-        PathtoPublish: '$(Build.ArtifactStagingDirectory)/dist'
-        ArtifactName: 'mssql-python-wheels-dist'
-        publishLocation: 'Container'
-      displayName: 'Publish manylinux wheels as artifacts'
+  - script: |
+      # Build wheel package in the container
+      docker exec build-container-$(distroName)-$(targetArch) bash -c "
+        source /opt/venv/bin/activate
+        echo 'Building wheel for $(distroName) $(targetArch) Python $(pythonVersion)'
+        echo 'Python version:' \$(python --version)
+        echo 'Architecture:' \$(uname -m)
+        python -m pip install --upgrade pip wheel setuptools
+        python setup.py bdist_wheel
+        
+        # Verify the wheel was created
+        ls -la dist/
+      "
+    displayName: 'Build wheel package in $(distroName) $(targetArch) container'
+
+  - script: |
+      # Copy test results from container to host
+      docker cp build-container-$(distroName)-$(targetArch):/workspace/test-results-$(distroName)-$(targetArch).xml $(Build.SourcesDirectory)/
+      docker cp build-container-$(distroName)-$(targetArch):/workspace/coverage-$(distroName)-$(targetArch).xml $(Build.SourcesDirectory)/
+      
+      # Copy wheel files from container to host
+      mkdir -p $(Build.ArtifactStagingDirectory)/dist
+      docker cp build-container-$(distroName)-$(targetArch):/workspace/dist/. $(Build.ArtifactStagingDirectory)/dist/ || echo "Failed to copy dist directory"
+      
+      # Copy .so files from container to host
+      mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux/$(distroName)-$(targetArch)
+      docker cp build-container-$(distroName)-$(targetArch):/workspace/mssql_python/ddbc_bindings.cp$(shortPyVer)-$(targetArch).so $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux/$(distroName)-$(targetArch)/ || echo "Failed to copy .so files"
+    displayName: 'Copy results and artifacts from $(distroName) $(targetArch) container'
+    condition: always()
+
+  - script: |
+      # Clean up containers
+      docker stop build-container-$(distroName)-$(targetArch) || true
+      docker rm build-container-$(distroName)-$(targetArch) || true
+      docker stop sqlserver-$(distroName)-$(targetArch) || true
+      docker rm sqlserver-$(distroName)-$(targetArch) || true
+    displayName: 'Clean up $(distroName) $(targetArch) containers'
+    condition: always()
+
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFiles: '**/test-results-$(distroName)-$(targetArch).xml'
+      testRunTitle: 'Publish pytest results on $(distroName) $(targetArch)'
+
+  - task: PublishCodeCoverageResults@1
+    inputs:
+      codeCoverageTool: 'Cobertura'
+      summaryFileLocation: 'coverage-$(distroName)-$(targetArch).xml'
+    displayName: 'Publish code coverage results for $(distroName) $(targetArch)'
+
+  - task: PublishBuildArtifacts@1
+    condition: succeededOrFailed()
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
+      ArtifactName: 'mssql-python-ddbc-bindings'
+      publishLocation: 'Container'
+    displayName: 'Publish .so files as artifacts'
+
+  - task: PublishBuildArtifacts@1
+    condition: succeededOrFailed()
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)/dist'
+      ArtifactName: 'mssql-python-wheels-dist'
+      publishLocation: 'Container'
+    displayName: 'Publish wheels as artifacts'
