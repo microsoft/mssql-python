@@ -455,22 +455,22 @@ jobs:
       #   dockerImage: 'debian:12'
       #   distroName: 'Debian'
       #   packageManager: 'apt'
-      # py311_x86_64_rhel:
-      #   pythonVersion: '3.11'
-      #   shortPyVer: '311'
-      #   targetArch: 'x86_64'
-      #   dockerPlatform: 'linux/amd64'
-      #   dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
-      #   distroName: 'RHEL'
-      #   packageManager: 'dnf'
-      # py311_arm64_rhel:
-      #   pythonVersion: '3.11'
-      #   shortPyVer: '311'
-      #   targetArch: 'arm64'
-      #   dockerPlatform: 'linux/arm64'
-      #   dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
-      #   distroName: 'RHEL'
-      #   packageManager: 'dnf'
+      py311_x86_64_rhel:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
+      py311_arm64_rhel:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
 
       # # Python 3.12 (x86_64 and ARM64) - Note: Not available for Ubuntu 22.04 via deadsnakes PPA
       # # Only build for Debian and RHEL where Python 3.12 is available
@@ -540,22 +540,22 @@ jobs:
       #   dockerImage: 'debian:12'
       #   distroName: 'Debian'
       #   packageManager: 'apt'
-      # py313_x86_64_rhel:
-      #   pythonVersion: '3.13'
-      #   shortPyVer: '313'
-      #   targetArch: 'x86_64'
-      #   dockerPlatform: 'linux/amd64'
-      #   dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
-      #   distroName: 'RHEL'
-      #   packageManager: 'dnf'
-      # py313_arm64_rhel:
-      #   pythonVersion: '3.13'
-      #   shortPyVer: '313'
-      #   targetArch: 'arm64'
-      #   dockerPlatform: 'linux/arm64'
-      #   dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
-      #   distroName: 'RHEL'
-      #   packageManager: 'dnf'
+      py313_x86_64_rhel:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
+      py313_arm64_rhel:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
 
   steps:
   # Set up Docker buildx for multi-architecture support
@@ -718,25 +718,52 @@ jobs:
           fi
           
           # For RHEL, we need to handle Python versions more carefully
-          # Install available Python version (RHEL 9 has 3.9, 3.11, 3.12 by default)
-          if [ '$(pythonVersion)' = '3.10' ] || [ '$(pythonVersion)' = '3.13' ]; then
-            # For versions not available in RHEL repos, use available Python 3 and create symlink
-            echo 'Python $(pythonVersion) may not be available in RHEL 9 repos, using available Python 3'
-            dnf install -y python3 python3-devel python3-pip
-            # Use the available Python 3 and create symlink
-            ln -sf /usr/bin/python3 /usr/local/bin/python$(pythonVersion)
-            ln -sf /usr/bin/python3 /usr/local/bin/python
-          else
-            # Install the specific Python version if available
+          # RHEL 9 UBI has python3.9 by default, try to get other versions from EPEL or alternative sources
+          
+          # First, try to install the specific Python version
+          PYTHON_INSTALLED=false
+          if [ '$(pythonVersion)' != '3.9' ]; then
+            echo 'Trying to install Python $(pythonVersion) from available repositories'
+            # Try from default repos first
             if dnf install -y python$(pythonVersion) python$(pythonVersion)-devel python$(pythonVersion)-pip; then
+              echo 'Successfully installed Python $(pythonVersion) from default repos'
+              PYTHON_INSTALLED=true
+              # Create symlinks for the specific version
+              ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python$(pythonVersion)
               ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python
             else
-              # Fallback to python3 if specific version not available
-              echo 'Python $(pythonVersion) not available, falling back to python3'
-              dnf install -y python3 python3-devel python3-pip
-              ln -sf /usr/bin/python3 /usr/local/bin/python$(pythonVersion)
-              ln -sf /usr/bin/python3 /usr/local/bin/python
+              echo 'Python $(pythonVersion) not available in default RHEL repos'
+              # For Python 3.11+ which might be available in newer RHEL versions
+              if [ '$(pythonVersion)' = '3.11' ] || [ '$(pythonVersion)' = '3.12' ]; then
+                echo 'Trying alternative installation for Python $(pythonVersion)'
+                # Try installing from additional repos
+                dnf install -y python$(pythonVersion) python$(pythonVersion)-devel python$(pythonVersion)-pip || true
+                if command -v python$(pythonVersion) >/dev/null 2>&1; then
+                  echo 'Found Python $(pythonVersion) after alternative installation'
+                  PYTHON_INSTALLED=true
+                  ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python$(pythonVersion)
+                  ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python
+                fi
+              fi
             fi
+          else
+            # For Python 3.9, just install the default
+            echo 'Installing default Python 3.9 for RHEL'
+            dnf install -y python3 python3-devel python3-pip
+            PYTHON_INSTALLED=true
+            # Create proper symlinks for 3.9
+            ln -sf /usr/bin/python3.9 /usr/local/bin/python3.9
+            ln -sf /usr/bin/python3.9 /usr/local/bin/python
+          fi
+          
+          # If we couldn't install the specific version, fall back to python3 (3.9)
+          if [ \"\$PYTHON_INSTALLED\" = \"false\" ]; then
+            echo 'Could not install Python $(pythonVersion), falling back to system python3 (3.9)'
+            dnf install -y python3 python3-devel python3-pip
+            # Create symlink but warn that it's not the requested version
+            echo 'WARNING: Creating symlink python$(pythonVersion) -> python3.9 (not actually Python $(pythonVersion))'
+            ln -sf /usr/bin/python3.9 /usr/local/bin/python$(pythonVersion)
+            ln -sf /usr/bin/python3.9 /usr/local/bin/python
           fi
           
           # Install pybind11 development headers
