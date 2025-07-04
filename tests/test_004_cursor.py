@@ -870,13 +870,13 @@ def test_join_operations_with_parameters(cursor):
 
 # Setup stored procedure
 CREATE_STORED_PROCEDURE = """
-CREATE PROCEDURE GetEmployeeProjects
+CREATE PROCEDURE dbo.GetEmployeeProjects
     @EmployeeID INT
 AS
 BEGIN
     SELECT e.name, p.project_name
-    FROM #pytest_employees e
-    JOIN #pytest_projects p ON e.employee_id = p.employee_id
+    FROM dbo.#pytest_employees e
+    JOIN dbo.#pytest_projects p ON e.employee_id = p.employee_id
     WHERE e.employee_id = @EmployeeID
 END
 """
@@ -892,7 +892,7 @@ def test_create_stored_procedure(cursor, db_connection):
 def test_execute_stored_procedure_with_parameters(cursor):
     """Test executing stored procedure with parameters"""
     try:
-        cursor.execute("{CALL GetEmployeeProjects(?)}", [1])
+        cursor.execute("{CALL dbo.GetEmployeeProjects(?)}", [1])
         rows = cursor.fetchall()
         assert len(rows) == 1, "Stored procedure with parameters returned incorrect number of rows"
         assert rows[0] == ['Alice', 'Project A'], "Stored procedure with parameters returned incorrect data"
@@ -904,7 +904,7 @@ def test_execute_stored_procedure_without_parameters(cursor):
     try:
         cursor.execute("""
             DECLARE @EmployeeID INT = 2
-            EXEC GetEmployeeProjects @EmployeeID
+            EXEC dbo.GetEmployeeProjects @EmployeeID
         """)
         rows = cursor.fetchall()
         assert len(rows) == 1, "Stored procedure without parameters returned incorrect number of rows"
@@ -915,7 +915,7 @@ def test_execute_stored_procedure_without_parameters(cursor):
 def test_drop_stored_procedure(cursor, db_connection):
     """Drop stored procedure"""
     try:
-        cursor.execute("DROP PROCEDURE IF EXISTS GetEmployeeProjects")
+        cursor.execute("DROP PROCEDURE IF EXISTS dbo.GetEmployeeProjects")
         db_connection.commit()
     except Exception as e:
         pytest.fail(f"Failed to drop stored procedure: {e}")
@@ -1150,7 +1150,7 @@ def test_row_attribute_access(cursor, db_connection):
     try:
         # Create test table with multiple columns
         cursor.execute("""
-            CREATE TABLE pytest_row_attr_test (
+            CREATE TABLE #pytest_row_attr_test (
                 id INT PRIMARY KEY,
                 name VARCHAR(50),
                 email VARCHAR(100),
@@ -1161,13 +1161,13 @@ def test_row_attribute_access(cursor, db_connection):
         
         # Insert test data
         cursor.execute("""
-            INSERT INTO pytest_row_attr_test (id, name, email, age)
+            INSERT INTO #pytest_row_attr_test (id, name, email, age)
             VALUES (1, 'John Doe', 'john@example.com', 30)
         """)
         db_connection.commit()
         
         # Test attribute access
-        cursor.execute("SELECT * FROM pytest_row_attr_test")
+        cursor.execute("SELECT * FROM #pytest_row_attr_test")
         row = cursor.fetchone()
         
         # Access by attribute
@@ -1189,46 +1189,46 @@ def test_row_attribute_access(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Row attribute access test failed: {e}")
     finally:
-        cursor.execute("DROP TABLE pytest_row_attr_test")
+        cursor.execute("DROP TABLE #pytest_row_attr_test")
         db_connection.commit()
 
 def test_row_comparison_with_list(cursor, db_connection):
     """Test comparing Row objects with lists (__eq__ method)"""
     try:
         # Create test table
-        cursor.execute("CREATE TABLE pytest_row_comparison_test (col1 INT, col2 VARCHAR(20), col3 FLOAT)")
+        cursor.execute("CREATE TABLE #pytest_row_comparison_test (col1 INT, col2 VARCHAR(20), col3 FLOAT)")
         db_connection.commit()
         
         # Insert test data
-        cursor.execute("INSERT INTO pytest_row_comparison_test VALUES (10, 'test_string', 3.14)")
+        cursor.execute("INSERT INTO #pytest_row_comparison_test VALUES (10, 'test_string', 3.14)")
         db_connection.commit()
         
         # Test fetchone comparison with list
-        cursor.execute("SELECT * FROM pytest_row_comparison_test")
+        cursor.execute("SELECT * FROM #pytest_row_comparison_test")
         row = cursor.fetchone()
         assert row == [10, 'test_string', 3.14], "Row did not compare equal to matching list"
         assert row != [10, 'different', 3.14], "Row compared equal to non-matching list"
         
         # Test full row equality
-        cursor.execute("SELECT * FROM pytest_row_comparison_test")
+        cursor.execute("SELECT * FROM #pytest_row_comparison_test")
         row1 = cursor.fetchone()
-        cursor.execute("SELECT * FROM pytest_row_comparison_test")
+        cursor.execute("SELECT * FROM #pytest_row_comparison_test")
         row2 = cursor.fetchone()
         assert row1 == row2, "Identical rows should be equal"
         
         # Insert different data
-        cursor.execute("INSERT INTO pytest_row_comparison_test VALUES (20, 'other_string', 2.71)")
+        cursor.execute("INSERT INTO #pytest_row_comparison_test VALUES (20, 'other_string', 2.71)")
         db_connection.commit()
         
         # Test different rows are not equal
-        cursor.execute("SELECT * FROM pytest_row_comparison_test WHERE col1 = 10")
+        cursor.execute("SELECT * FROM #pytest_row_comparison_test WHERE col1 = 10")
         row1 = cursor.fetchone()
-        cursor.execute("SELECT * FROM pytest_row_comparison_test WHERE col1 = 20")
+        cursor.execute("SELECT * FROM #pytest_row_comparison_test WHERE col1 = 20")
         row2 = cursor.fetchone()
         assert row1 != row2, "Different rows should not be equal"
         
         # Test fetchmany row comparison with lists
-        cursor.execute("SELECT * FROM pytest_row_comparison_test ORDER BY col1")
+        cursor.execute("SELECT * FROM #pytest_row_comparison_test ORDER BY col1")
         rows = cursor.fetchmany(2)
         assert len(rows) == 2, "Should have fetched 2 rows"
         assert rows[0] == [10, 'test_string', 3.14], "First row didn't match expected list"
@@ -1237,7 +1237,7 @@ def test_row_comparison_with_list(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Row comparison test failed: {e}")
     finally:
-        cursor.execute("DROP TABLE pytest_row_comparison_test")
+        cursor.execute("DROP TABLE #pytest_row_comparison_test")
         db_connection.commit()
 
 def test_close(db_connection):

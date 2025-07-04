@@ -5,7 +5,7 @@ This module defines the Connection class, which is used to manage a connection t
 The class provides methods to establish a connection, create cursors, commit transactions, 
 roll back transactions, and close the connection.
 """
-import ctypes
+import weakref
 from mssql_python.cursor import Cursor
 from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
@@ -54,10 +54,19 @@ class Connection:
         preparing it for further operations such as connecting to the 
         database, executing queries, etc.
         """
+        print("[SEGDEBUGGING - PYTHON - PYTHON] Connection.__init__ called")
         self.connection_str = self._construct_connection_string(
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
+        self._closed = False
+        
+        # Using WeakSet which automatically removes cursors when they are no longer in use
+        # It is a set that holds weak references to its elements.
+        # When an object is only weakly referenced, it can be garbage collected even if it's still in the set.
+        # It prevents memory leaks by ensuring that cursors are cleaned up when no longer in use without requiring explicit deletion.
+        self._cursors = weakref.WeakSet()
+
         # Auto-enable pooling if user never called
         if not PoolingManager.is_initialized():
             PoolingManager.enable()
@@ -152,7 +161,13 @@ class Connection:
             DatabaseError: If there is an error while creating the cursor.
             InterfaceError: If there is an error related to the database interface.
         """
-        return Cursor(self)
+        """Return a new Cursor object using the connection."""
+        if self._closed:
+            raise Exception("Cannot create cursor on closed connection")
+        
+        cursor = Cursor(self)
+        self._cursors.add(cursor)  # Track the cursor
+        return cursor
 
     def commit(self) -> None:
         """
@@ -201,6 +216,18 @@ class Connection:
             DatabaseError: If there is an error while closing the connection.
         """
         # Close the connection
-        self._conn.close()
-        if ENABLE_LOGGING:
-            logger.info("Connection closed successfully.")
+        if self._closed:
+            return
+        
+        # Close all cursors first
+        if hasattr(self, '_cursors'):
+            for cursor in list(self._cursors):
+                if not cursor.closed:
+                    cursor.close()
+
+        # Then close connection
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+        self._closed = True

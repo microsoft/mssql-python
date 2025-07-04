@@ -223,4 +223,172 @@ def test_connection_pooling_basic(conn_str):
 
     conn1.close()
     conn2.close()
+
+# Add these tests at the end of the file
+
+def test_cursor_cleanup_on_connection_close(conn_str):
+    """Test that cursors are properly cleaned up when connection is closed"""
+    # Create a new connection for this test
+    conn = connect(conn_str)
     
+    # Create multiple cursors
+    cursor1 = conn.cursor()
+    cursor2 = conn.cursor()
+    cursor3 = conn.cursor()
+    
+    # Execute something on each cursor to ensure they have statement handles
+    # Option 1: Fetch results immediately to free the connection
+    cursor1.execute("SELECT 1")
+    cursor1.fetchall() 
+    
+    cursor2.execute("SELECT 2")
+    cursor2.fetchall()
+    
+    cursor3.execute("SELECT 3")
+    cursor3.fetchall()
+
+    # Close one cursor explicitly
+    cursor1.close()
+    assert cursor1.closed is True, "Cursor1 should be closed"
+    
+    # Close the connection (should clean up remaining cursors)
+    conn.close()
+    
+    # Verify all cursors are closed
+    assert cursor1.closed is True, "Cursor1 should remain closed"
+    assert cursor2.closed is True, "Cursor2 should be closed by connection.close()"
+    assert cursor3.closed is True, "Cursor3 should be closed by connection.close()"
+
+def test_cursor_weakref_cleanup(conn_str):
+    """Test that WeakSet properly removes garbage collected cursors"""
+    conn = connect(conn_str)
+    
+    # Create cursors
+    cursor1 = conn.cursor()
+    cursor2 = conn.cursor()
+    
+    # Check initial cursor count
+    assert len(conn._cursors) == 2, "Should have 2 cursors"
+    
+    # Delete reference to cursor1 (should be garbage collected)
+    cursor1_id = id(cursor1)
+    del cursor1
+    
+    # Force garbage collection
+    import gc
+    gc.collect()
+    
+    # Check cursor count after garbage collection
+    assert len(conn._cursors) == 1, "Should have 1 cursor after garbage collection"
+    
+    # Verify cursor2 is still there
+    assert cursor2 in conn._cursors, "Cursor2 should still be in the set"
+    
+    conn.close()
+
+def test_cursor_cleanup_order_no_segfault(conn_str):
+    """Test that proper cleanup order prevents segfaults"""
+    # This test ensures cursors are cleaned before connection
+    conn = connect(conn_str)
+    
+    # Create multiple cursors with active statements
+    cursors = []
+    for i in range(5):
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT {i}")
+        cursor.fetchall()
+        cursors.append(cursor)
+    
+    # Don't close any cursors explicitly
+    # Just close the connection - it should handle cleanup properly
+    conn.close()
+    
+    # Verify all cursors were closed
+    for cursor in cursors:
+        assert cursor.closed is True, "All cursors should be closed"
+
+def test_cursor_close_removes_from_connection(conn_str):
+    """Test that closing a cursor properly cleans up references"""
+    conn = connect(conn_str)
+    
+    # Create cursors
+    cursor1 = conn.cursor()
+    cursor2 = conn.cursor()
+    cursor3 = conn.cursor()
+    
+    assert len(conn._cursors) == 3, "Should have 3 cursors"
+    
+    # Close cursor2
+    cursor2.close()
+    
+    # cursor2 should still be in the WeakSet (until garbage collected)
+    # but it should be marked as closed
+    assert cursor2.closed is True, "Cursor2 should be closed"
+    
+    # Delete the reference and force garbage collection
+    del cursor2
+    import gc
+    gc.collect()
+    
+    # Now should have 2 cursors
+    assert len(conn._cursors) == 2, "Should have 2 cursors after closing and GC"
+    
+    conn.close()
+
+def test_connection_close_idempotent(conn_str):
+    """Test that calling close() multiple times is safe"""
+    conn = connect(conn_str)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1")
+    
+    # First close
+    conn.close()
+    assert conn._closed is True, "Connection should be closed"
+    
+    # Second close (should not raise exception)
+    conn.close()
+    assert conn._closed is True, "Connection should remain closed"
+    
+    # Cursor should also be closed
+    assert cursor.closed is True, "Cursor should be closed"
+
+def test_cursor_after_connection_close(conn_str):
+    """Test that creating cursor after connection close raises error"""
+    conn = connect(conn_str)
+    conn.close()
+    
+    # Should raise exception when trying to create cursor on closed connection
+    with pytest.raises(Exception) as excinfo:
+        cursor = conn.cursor()
+    
+    assert "closed connection" in str(excinfo.value).lower(), "Should mention closed connection"
+
+def test_multiple_cursor_operations_cleanup(conn_str):
+    """Test cleanup with multiple cursor operations"""
+    conn = connect(conn_str)
+    
+    # Create table for testing
+    cursor_setup = conn.cursor()
+    drop_table_if_exists(cursor_setup, "#test_cleanup")
+    cursor_setup.execute("CREATE TABLE #test_cleanup (id INT, value VARCHAR(50))")
+    cursor_setup.close()
+    
+    # Create multiple cursors doing different operations
+    cursor_insert = conn.cursor()
+    cursor_insert.execute("INSERT INTO #test_cleanup VALUES (1, 'test1'), (2, 'test2')")
+    
+    cursor_select1 = conn.cursor()
+    cursor_select1.execute("SELECT * FROM #test_cleanup WHERE id = 1")
+    cursor_select1.fetchall()
+    
+    cursor_select2 = conn.cursor()
+    cursor_select2.execute("SELECT * FROM #test_cleanup WHERE id = 2")
+    cursor_select2.fetchall()
+    
+    # Close connection without closing cursors
+    conn.close()
+    
+    # All cursors should be closed
+    assert cursor_insert.closed is True
+    assert cursor_select1.closed is True
+    assert cursor_select2.closed is True
