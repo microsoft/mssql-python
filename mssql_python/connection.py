@@ -12,7 +12,6 @@ from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import add_driver_to_connection_str, check_error
 from mssql_python import ddbc_bindings
-from mssql_python.mssql_python import DatabaseError
 from mssql_python.pooling import PoolingManager
 
 logger = get_logger()
@@ -160,7 +159,7 @@ class Connection:
         """
         """Return a new Cursor object using the connection."""
         if self._closed:
-            raise DatabaseError("Cannot create cursor on closed connection")
+            raise Exception("Cannot create cursor on closed connection")
         
         cursor = Cursor(self)
         self._cursors.add(cursor)  # Track the cursor
