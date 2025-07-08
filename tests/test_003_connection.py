@@ -14,7 +14,9 @@ from mssql_python.exceptions import InterfaceError
 import pytest
 import time
 from mssql_python import Connection, connect, pooling
-
+import subprocess
+import sys
+    
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
     try:
@@ -289,10 +291,61 @@ gc.collect()
     # and pytest does not handle segfaults gracefully.
     # Note: This is a simplified example; in practice, you might want to use a more robust method
     # to handle subprocesses and capture their output/errors.
-    import subprocess
-    import sys
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, f"Expected no segfault, but got: {result.stderr}"
+
+def test_multiple_connections_interleaved_cursors(conn_str):
+    code = """
+from mssql_python import connect
+conns = [connect(\"""" + conn_str + """\") for _ in range(3)]
+cursors = []
+for conn in conns:
+    # Create a cursor for each connection and execute a simple query
+    cursor = conn.cursor()
+    cursor.execute('SELECT 1')
+    cursor.fetchall()
+    cursors.append(cursor)
+del conns
+import gc; gc.collect()
+del cursors
+gc.collect()
+"""
+    # Run the code in a subprocess to avoid segfaults in the main process
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, f"Expected no segfault, but got: {result.stderr}"
+
+def test_cursor_outlives_connection(conn_str):
+    code = """
+from mssql_python import connect
+conn = connect(\"""" + conn_str + """\")
+cursor = conn.cursor()
+cursor.execute("SELECT 1")
+cursor.fetchall()
+del conn
+import gc; gc.collect()
+cursor.execute("SELECT 2")
+del cursor
+gc.collect()
+"""
+    # Run the code in a subprocess to avoid segfaults in the main process
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, f"Expected no segfault, but got: {result.stderr}"
+
+def test_connection_closed_early(conn_str):
+    import subprocess, sys
+    code = """
+from mssql_python import connect
+conn = connect(\"""" + conn_str + """\")
+cur1 = conn.cursor()
+cur1.execute("SELECT 1")
+cur1.fetchall()
+conn.close()
+cur2 = conn.cursor()  # Should raise, not segfault
+del cur1, cur2, conn
+import gc; gc.collect()
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, f"Process crashed: {result.stderr}"
 
 def test_cursor_weakref_cleanup(conn_str):
     """Test that WeakSet properly removes garbage collected cursors"""
