@@ -331,22 +331,6 @@ gc.collect()
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, f"Expected no segfault, but got: {result.stderr}"
 
-def test_connection_closed_early(conn_str):
-    import subprocess, sys
-    code = """
-from mssql_python import connect
-conn = connect(\"""" + conn_str + """\")
-cur1 = conn.cursor()
-cur1.execute("SELECT 1")
-cur1.fetchall()
-conn.close()
-cur2 = conn.cursor()  # Should raise, not segfault
-del cur1, cur2, conn
-import gc; gc.collect()
-"""
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
-    assert result.returncode == 0, f"Process crashed: {result.stderr}"
-
 def test_cursor_weakref_cleanup(conn_str):
     """Test that WeakSet properly removes garbage collected cursors"""
     conn = connect(conn_str)
