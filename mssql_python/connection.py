@@ -176,7 +176,6 @@ class Connection:
             )
 
         cursor = Cursor(self)
-        self._cursors.add(cursor)  # Track the cursor
         return cursor
 
     def commit(self) -> None:
@@ -234,7 +233,6 @@ class Connection:
             # Convert to list to avoid modification during iteration
             cursors_to_close = list(self._cursors)
             close_errors = []
-            
             for cursor in cursors_to_close:
                 try:
                     if not cursor.closed:
@@ -268,3 +266,11 @@ class Connection:
         
         if ENABLE_LOGGING:
             logger.info("Connection closed successfully.")
+
+    def __del__(self):
+        if not self._closed:
+            try:
+                self.close()
+            except Exception as e:
+                if ENABLE_LOGGING:
+                    logger.error(f"Error during connection cleanup in __del__: {e}")
