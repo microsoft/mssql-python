@@ -416,27 +416,36 @@ class Cursor:
         """
         Initialize the DDBC statement handle.
         """
+        # Allocate the DDBC statement handle
         self._allocate_statement_handle()
+        # Add the cursor to the connection's cursor set
+        self.connection._cursors.add(self)
 
     def _allocate_statement_handle(self):
         """
         Allocate the DDBC statement handle.
         """
         self.hstmt = self.connection._conn.alloc_statement_handle()
-        # add to _cursors list of a connection
-        self.connection._cursors.add(self)
-        print("!!!! Added cursor to the list", self.connection._cursors) 
+
+    def _free_cursor(self) -> None:
+        """
+        Free the DDBC statement handle and remove the cursor from the connection's cursor set.
+        """
+        if self.hstmt:
+            self.hstmt.free()
+            self.hstmt = None
+            if ENABLE_LOGGING:
+                logger.debug("SQLFreeHandle succeeded")
+        # We don't need to remove the cursor from the connection's cursor set here,
+        # as it is a weak reference and will be automatically removed
+        # when the cursor is garbage collected.
 
     def _reset_cursor(self) -> None:
         """
         Reset the DDBC statement handle.
         """
-        if self.hstmt:
-            print("freeing hstmt from python", self.hstmt)
-            self.hstmt.free()
-            self.hstmt = None
-            if ENABLE_LOGGING:
-                logger.debug("SQLFreeHandle succeeded")     
+        # Free the current cursor if it exists
+        self._free_cursor()
         # Reinitialize the statement handle
         self._initialize_cursor()
 
@@ -450,9 +459,7 @@ class Cursor:
         if self.closed:
             raise Exception("Cursor is already closed.")
 
-        print("freeing hstmt", self.hstmt)
         if self.hstmt:
-            print("freeing hstmt", self.hstmt)
             self.hstmt.free()
             self.hstmt = None
             if ENABLE_LOGGING:
@@ -562,8 +569,6 @@ class Cursor:
             use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
             reset_cursor: Whether to reset the cursor before execution.
         """
-        print("list of all cursors in connection before execution:", self.connection._cursors)
-        print("Executing operation:", operation)
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
             self._reset_cursor()
@@ -712,7 +717,6 @@ class Cursor:
         self._check_closed()  # Check if the cursor is closed
 
         # Fetch raw data
-        print("list of all cursors in connection before fetchall:", self.connection._cursors)
         rows_data = []
         ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
         # Convert raw data to Row objects

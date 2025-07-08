@@ -224,24 +224,18 @@ class Connection:
         Raises:
             DatabaseError: If there is an error while closing the connection.
         """
-        print("Cursors to be closed:", len(self._cursors))
         # Close the connection
         if self._closed:
             return
         
-        print("Closing connection & cursors...")
         # Close all cursors first, but don't let one failure stop the others
         if hasattr(self, '_cursors'):
-            print("Closing all cursors associated with the connection...")
             # Convert to list to avoid modification during iteration
             cursors_to_close = list(self._cursors)
             close_errors = []
-            print(f"Total cursors to close: {len(cursors_to_close)}")
             for cursor in cursors_to_close:
                 try:
-                    print(f"Closing cursor: {cursor}")
                     if not cursor.closed:
-                        print("Calling cursor.close()")
                         cursor.close()
                 except Exception as e:
                     # Collect errors but continue closing other cursors
