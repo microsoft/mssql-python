@@ -62,11 +62,10 @@ class Connection:
         """
         # Get connection string and potential attrs_before from construction
         connection_result = self._construct_connection_string(connection_str, **kwargs)
-        
         if isinstance(connection_result, tuple):
             self.connection_str, attrs_from_driver = connection_result
             # Merge with any existing attrs_before
-            self._attrs_before = attrs_before or {}
+            self._attrs_before = attrs_from_driver or {}
             self._attrs_before.update(attrs_from_driver)
         else:
             self.connection_str = connection_result
@@ -85,7 +84,10 @@ class Connection:
         if not PoolingManager.is_initialized():
             PoolingManager.enable()
         self._pooling = PoolingManager.is_enabled()
-        self._conn = ddbc_bindings.Connection(self.connection_str, self._pooling, self._attrs_before)
+        self._conn = ddbc_bindings.Connection(self.connection_str, self._pooling)
+        # if self.attrs_before then set them using setAttribute
+        if self._attrs_before:
+            self._conn.applyAttrsBefore(self._attrs_before)
         self.setautocommit(autocommit)
 
     def _construct_connection_string(self, connection_str: str = "", **kwargs) -> str:

@@ -111,15 +111,16 @@ def add_driver_name_to_app_parameter(connection_string):
         if not param:
             continue
             
-        if sys.platform.startswith("win"):
-            if param.lower().startswith("authentication="):
-                # Handle AAD Interactive authentication
-                key, auth_value = param.split("=", 1)
-                if auth_value.lower() == "activedirectoryinteractive":
-                    has_aad_interactive = True
-                    # Only keep the auth parameter on Windows
+        if param.lower().startswith("authentication="):
+            # Handle AAD Interactive authentication
+            key, auth_value = param.split("=", 1)
+            if auth_value.lower() == "activedirectoryinteractive":
+                has_aad_interactive = True
+                # Only keep the auth parameter on Windows
+                if sys.platform.startswith("win"):
                     modified_parameters.append(param)
                 continue
+        
         if param.lower().startswith("app="):
             app_found = True
             key, _ = param.split("=", 1)
@@ -142,9 +143,11 @@ def add_driver_name_to_app_parameter(connection_string):
         credential = InteractiveBrowserCredential()
         token_bytes = credential.get_token("https://database.windows.net/.default").token.encode("UTF-16-LE")
         token_struct = struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
-        return ";".join(modified_parameters) + ";", {1256: token_struct}
+        conn_str = ";".join(modified_parameters) + ";", {1256: token_struct}
+        return conn_str
 
-    return ";".join(modified_parameters) + ";"
+    conn_str = ";".join(modified_parameters) + ";"
+    return conn_str
 
 
 def detect_linux_distro():
