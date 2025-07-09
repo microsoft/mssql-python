@@ -96,7 +96,7 @@ def add_driver_name_to_app_parameter(connection_string):
         or a tuple of (connection string, token bytes) if AAD auth is needed
     """
     import sys
-
+    
     # Split the input string into key-value pairs
     parameters = connection_string.split(";")
 
@@ -112,14 +112,15 @@ def add_driver_name_to_app_parameter(connection_string):
             continue
             
         if sys.platform.startswith("win"):
-            _, auth_value = param.split("=", 1)
-            if auth_value.lower() == "activedirectoryinteractive":
-                has_aad_interactive = True
-                # Only keep the auth parameter on Windows
-                if platform.system().lower() == "windows":
+            if param.lower().startswith("authentication="):
+                # Handle AAD Interactive authentication
+                key, auth_value = param.split("=", 1)
+                if auth_value.lower() == "activedirectoryinteractive":
+                    has_aad_interactive = True
+                    # Only keep the auth parameter on Windows
                     modified_parameters.append(param)
                 continue
-        elif param.lower().startswith("app="):
+        if param.lower().startswith("app="):
             app_found = True
             key, _ = param.split("=", 1)
             modified_parameters.append(f"{key}=MSSQL-Python")
