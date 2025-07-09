@@ -132,7 +132,7 @@ class Connection:
         if ENABLE_LOGGING:
             logger.info("Final connection string: %s", conn_str)
 
-        if attrs_before:
+        if attrs_before is not None:
             return conn_str, attrs_before
         return conn_str
     

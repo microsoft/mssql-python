@@ -55,7 +55,7 @@ def add_driver_to_connection_str(connection_str):
         final_connection_attributes.insert(0, driver_name)
         connection_str = ";".join(final_connection_attributes)
 
-        if attrs_before:
+        if attrs_before is not None:
             return connection_str, attrs_before
         return connection_str
 
