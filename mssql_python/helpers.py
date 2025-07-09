@@ -22,16 +22,21 @@ def add_driver_to_connection_str(connection_str):
         connection_str (str): The original connection string.
 
     Returns:
-        str: The connection string with the DDBC driver added.
-
-    Raises:
-        Exception: If the connection string is invalid.
+        Union[str, Tuple[str, dict]]: Either the connection string with driver added,
+        or a tuple of (connection string, attrs_before dict)
     """
     driver_name = "Driver={ODBC Driver 18 for SQL Server}"
     try:
         # Strip any leading or trailing whitespace from the connection string
         connection_str = connection_str.strip()
-        connection_str = add_driver_name_to_app_parameter(connection_str)
+        result = add_driver_name_to_app_parameter(connection_str)
+        
+        # Handle both regular string and tuple return types
+        attrs_before = None
+        if isinstance(result, tuple):
+            connection_str, attrs_before = result
+        else:
+            connection_str = result
 
         # Split the connection string into individual attributes
         connection_attributes = connection_str.split(";")
@@ -50,14 +55,15 @@ def add_driver_to_connection_str(connection_str):
         final_connection_attributes.insert(0, driver_name)
         connection_str = ";".join(final_connection_attributes)
 
+        if attrs_before:
+            return connection_str, attrs_before
+        return connection_str
+
     except Exception as e:
         raise Exception(
             "Invalid connection string, Please follow the format: "
             "Server=server_name;Database=database_name;UID=user_name;PWD=password"
         ) from e
-
-    return connection_str
-
 
 def check_error(handle_type, handle, ret):
     """
@@ -80,37 +86,63 @@ def check_error(handle_type, handle, ret):
 
 def add_driver_name_to_app_parameter(connection_string):
     """
-    Modifies the input connection string by appending the APP name.
+    Modifies the input connection string by appending the APP name and handling AAD auth.
 
     Args:
         connection_string (str): The input connection string.
 
     Returns:
-        str: The modified connection string.
+        Union[str, Tuple[str, bytes]]: Either the modified connection string, 
+        or a tuple of (connection string, token bytes) if AAD auth is needed
     """
+    import sys
+
     # Split the input string into key-value pairs
     parameters = connection_string.split(";")
 
     # Initialize variables
     app_found = False
     modified_parameters = []
+    has_aad_interactive = False
 
     # Iterate through the key-value pairs
     for param in parameters:
-        if param.lower().startswith("app="):
-            # Overwrite the value with 'MSSQL-Python'
+        param = param.strip()
+        if not param:
+            continue
+            
+        if sys.platform.startswith("win"):
+            _, auth_value = param.split("=", 1)
+            if auth_value.lower() == "activedirectoryinteractive":
+                has_aad_interactive = True
+                # Only keep the auth parameter on Windows
+                if platform.system().lower() == "windows":
+                    modified_parameters.append(param)
+                continue
+        elif param.lower().startswith("app="):
             app_found = True
             key, _ = param.split("=", 1)
             modified_parameters.append(f"{key}=MSSQL-Python")
         else:
-            # Keep other parameters as is
             modified_parameters.append(param)
 
     # If APP key is not found, append it
     if not app_found:
         modified_parameters.append("APP=MSSQL-Python")
 
-    # Join the parameters back into a connection string
+    # Handle AAD Interactive auth for non-Windows platforms
+    if has_aad_interactive and platform.system().lower() != "windows":
+        try:
+            from azure.identity import InteractiveBrowserCredential
+            import struct
+        except ImportError:
+            raise ImportError("Please install azure-identity: pip install azure-identity")
+
+        credential = InteractiveBrowserCredential()
+        token_bytes = credential.get_token("https://database.windows.net/.default").token.encode("UTF-16-LE")
+        token_struct = struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
+        return ";".join(modified_parameters) + ";", {1256: token_struct}
+
     return ";".join(modified_parameters) + ";"
 
 

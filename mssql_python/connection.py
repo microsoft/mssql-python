@@ -60,10 +60,18 @@ class Connection:
         preparing it for further operations such as connecting to the 
         database, executing queries, etc.
         """
-        self.connection_str = self._construct_connection_string(
-            connection_str, **kwargs
-        )
-        self._attrs_before = attrs_before or {}
+        # Get connection string and potential attrs_before from construction
+        connection_result = self._construct_connection_string(connection_str, **kwargs)
+        
+        if isinstance(connection_result, tuple):
+            self.connection_str, attrs_from_driver = connection_result
+            # Merge with any existing attrs_before
+            self._attrs_before = attrs_before or {}
+            self._attrs_before.update(attrs_from_driver)
+        else:
+            self.connection_str = connection_result
+            self._attrs_before = attrs_before or {}
+        
         self._closed = False
         
         # Using WeakSet which automatically removes cursors when they are no longer in use
@@ -90,10 +98,18 @@ class Connection:
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:
-            str: The constructed connection string.
+            Union[str, Tuple[str, dict]]: Either the constructed connection string,
+            or a tuple of (connection string, attrs_before dict)
         """
         # Add the driver attribute to the connection string
-        conn_str = add_driver_to_connection_str(connection_str)
+        result = add_driver_to_connection_str(connection_str)
+        
+        # Handle both string and tuple return types
+        if isinstance(result, tuple):
+            conn_str, attrs_before = result
+        else:
+            conn_str = result
+            attrs_before = None
 
         # Add additional key-value pairs to the connection string
         for key, value in kwargs.items():
@@ -116,6 +132,8 @@ class Connection:
         if ENABLE_LOGGING:
             logger.info("Final connection string: %s", conn_str)
 
+        if attrs_before:
+            return conn_str, attrs_before
         return conn_str
     
     @property
