@@ -138,7 +138,7 @@ def add_driver_name_to_app_parameter(connection_string):
         # Remove Uid, Pwd, Connection Timeout, Encrypt, TrustServerCertificate
         modified_parameters = [
             param for param in modified_parameters
-            if not any(key in param.lower() for key in ["uid=", "pwd=", "connection timeout=", "encrypt=", "trustservercertificate="])
+            if not any(key in param.lower() for key in ["uid=", "pwd=", "connection timeout=", "encrypt=", "trustservercertificate=", "authentication="])
         ]
 
         try:

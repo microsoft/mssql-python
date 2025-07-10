@@ -84,10 +84,7 @@ class Connection:
         if not PoolingManager.is_initialized():
             PoolingManager.enable()
         self._pooling = PoolingManager.is_enabled()
-        self._conn = ddbc_bindings.Connection(self.connection_str, self._pooling)
-        # if self.attrs_before then set them using setAttribute
-        if self._attrs_before:
-            self._conn.applyAttrsBefore(self._attrs_before)
+        self._conn = ddbc_bindings.Connection(self.connection_str, self._pooling, self._attrs_before)
         self.setautocommit(autocommit)
 
     def _construct_connection_string(self, connection_str: str = "", **kwargs) -> str:
@@ -117,15 +114,15 @@ class Connection:
         for key, value in kwargs.items():
             if key.lower() == "host" or key.lower() == "server":
                 key = "Server"
-            elif key.lower() == "user" or key.lower() == "uid":
+            elif key.lower() == "user" or key.lower() == "uid" and attrs_before is not None:
                 key = "Uid"
-            elif key.lower() == "password" or key.lower() == "pwd":
+            elif key.lower() == "password" or key.lower() == "pwd" and attrs_before is not None:
                 key = "Pwd"
             elif key.lower() == "database":
                 key = "Database"
-            elif key.lower() == "encrypt":
+            elif key.lower() == "encrypt" and attrs_before is not None:
                 key = "Encrypt"
-            elif key.lower() == "trust_server_certificate":
+            elif key.lower() == "trust_server_certificate" and attrs_before is not None:
                 key = "TrustServerCertificate"
             else:
                 continue
