@@ -43,11 +43,11 @@ jobs:
                 python$(python_version) \
                 python$(python_version)-venv \
                 python$(python_version)-dev \
+                python$(python_version)-full \
                 curl \
                 ca-certificates
 
               ln -sf /usr/bin/python$(python_version) /usr/local/bin/python
-              curl -sS https://bootstrap.pypa.io/get-pip.py | python
             else
               dnf update -y && \
               dnf install -y dnf-plugins-core \
