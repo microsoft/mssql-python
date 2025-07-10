@@ -60,6 +60,8 @@ EntraID authentication is now fully supported on MacOS and Linux but with certai
 | ActiveDirectoryServicePrincipal | ✅ Yes | ✅ Yes | Use client ID and secret or certificate |
 | ActiveDirectoryIntegrated | ✅ Yes | ❌ No | Only works on Windows (requires Kerberos/SSPI) |
 
+> **NOTE**: For using Access Token, the connection string *must not* contain `UID`, `PWD`, `Authentication`, or `Trusted_Connection` keywords.
+
 ### Enhanced Pythonic Features
  
 The driver offers a suite of Pythonic enhancements that streamline database interactions, making it easier for developers to execute queries, manage connections, and handle data more efficiently.
