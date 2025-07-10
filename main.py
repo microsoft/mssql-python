@@ -1,11 +1,22 @@
-from mssql_python import connect
-from mssql_python import setup_logging
 import os
 import decimal
 
-setup_logging('stdout')
 
 conn_str = os.getenv("DB_CONNECTION_STRING")
+# print the connection string without pwd
+if conn_str:
+    secure_connection_str = ''
+    for i in conn_str.split(';'):
+        if i.lower().startswith('pwd='):
+            secure_connection_str += 'pwd=******;'
+        else:
+            secure_connection_str += i + ';'
+    print(f"Connecting to database with connection string: {secure_connection_str}")
+
+from mssql_python import connect
+from mssql_python import setup_logging
+setup_logging('stdout')
+
 conn = connect(conn_str)
 
 # conn.autocommit = True
