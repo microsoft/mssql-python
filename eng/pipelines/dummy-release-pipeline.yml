@@ -44,7 +44,7 @@ jobs:
     displayName: 'Copy symbols to staging folder'
 
   # Publish the symbols (only pdbs) as an artifact
-  - task: PublishBuildArtifact@1
+  - task: PublishBuildArtifacts@1
     displayName: 'Publish symbols as build artifact'
     inputs:
       PathtoPublish: '$(Build.ArtifactStagingDirectory)\mssql-python-symbols'
