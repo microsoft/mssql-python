@@ -1,0 +1,79 @@
+name: pypi-package-smoketest.yml
+
+trigger:
+  branches:
+    include:
+      - main
+
+jobs:
+- job: TestOnDockerImages
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  strategy:
+    matrix:
+      ubi9:
+        image: registry.access.redhat.com/ubi9/ubi:latest
+        pkg_manager: dnf
+        python_version: '3.12'
+      ubuntu:
+        image: ubuntu:22.04
+        pkg_manager: apt
+        python_version: '3'
+      debian:
+        image: debian:12
+        pkg_manager: apt
+        python_version: '3'
+
+  steps:
+    - script: |
+        echo "Testing on Docker image: $(image)"
+        echo "Package manager: $(pkg_manager)"
+        echo "Python version: $(python_version)"
+        echo "Database connection string: ${DB_CONNECTION_STRING}"
+        echo "Running tests..."
+        docker run --rm \
+          -e DB_CONNECTION_STRING="$(AZURE_CONNECTION_STRING)" \
+          -v "$(pwd):/workspace" \
+          -w /workspace \
+          $(image) \
+          bash -c "
+            set -e
+
+            echo 'Installing Python and pip...'
+
+            if [ '$(pkg_manager)' = 'apt' ]; then
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                libltdl7 \
+                python$(python_version) \
+                python$(python_version)-venv \
+                python$(python_version)-dev \
+                python$(python_version)-full \
+                curl \
+                ca-certificates
+
+              ln -sf /usr/bin/python$(python_version) /usr/local/bin/python
+            else
+              dnf update -y && \
+              dnf install -y dnf-plugins-core \
+                python$(python_version) \
+                python$(python_version)-pip \
+                python$(python_version)-devel && \
+              ln -sf /usr/bin/python$(python_version) /usr/local/bin/python && \
+              ln -sf /usr/bin/pip$(python_version) /usr/local/bin/pip
+            fi
+
+            python -m venv /tmp/venv
+            . /tmp/venv/bin/activate
+
+            python -m pip install --upgrade pip
+            python -m pip install mssql-python
+
+            cp /workspace/main.py /tmp/
+            cd /tmp
+            python main.py
+          "
+      env:
+        DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
+      displayName: "Test on $(image)"
