@@ -10,33 +10,6 @@ extends:
   parameters:
     featureFlags:
       WindowsHostVersion: 1ESWindows2022
-    # SDL should have been performed before release. Disabling SDL in release pipeline. Note that some static analysis can't be disabled by default.
-    # More info at https://eng.ms/docs/cloud-ai-platform/azure-edge-platform-aep/aep-engineering-systems/productivity-and-experiences/onebranch-platform-services/onebranch/securitycompliancegovernanceandpolicies/sdlforcontainerizedworkflows.
-    globalSdl:
-      baseline:
-        baselineFile: $(Build.SourcesDirectory)\.gdn\.gdnbaselines
-        suppressionSet: default
-      suppression:
-        suppressionFile: $(Build.SourcesDirectory)\.gdn\.gdnsuppress
-        suppressionSet: default
-      asyncSdl:
-        enabled: false
-        tsa:
-          enabled: false
-        credscan:
-          enabled: false
-        apiscan:
-          enabled: false
-        codeql:
-          compiled:
-            enabled: false
-        binskim:
-          enabled: false
-        policheck:
-          enabled: false
-        eslint:
-          enabled: false
-        tsaOptionsFile: .config/tsaoptions.json
 
     stages:
       - stage: PublishSymbols
