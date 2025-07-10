@@ -45,7 +45,7 @@ extends:
         - job: PublishSymbols
           # Use the latest Windows image for building
           pool:
-            vmImage: 'windows-latest'
+            type: 'windows'
           displayName: 'Publish Symbols - Windows'
           # Strategy matrix to build all combinations
 
