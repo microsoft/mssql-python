@@ -45,6 +45,7 @@ jobs:
             if [ '$(pkg_manager)' = 'apt' ]; then
               apt-get update
               DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                libltdl7
                 python$(python_version) \
                 python$(python_version)-venv \
                 python$(python_version)-dev \
@@ -56,6 +57,7 @@ jobs:
             else
               dnf update -y && \
               dnf install -y dnf-plugins-core \
+                libltdl \
                 python$(python_version) \
                 python$(python_version)-pip \
                 python$(python_version)-devel && \
