@@ -11,137 +11,140 @@ extends:
     featureFlags:
       WindowsHostVersion: 1ESWindows2022
 
-  jobs:
-    - job: PublishSymbols
-      # Use the latest Windows image for building
-      pool:
-        vmImage: 'windows-latest'
-      displayName: 'Publish Symbols - Windows'
-      # Strategy matrix to build all combinations
+  stages:
+    - stage: PublishSymbols
+      displayName: 'Publish Symbols'
+      jobs:
+      - job: PublishSymbols
+        # Use the latest Windows image for building
+        pool:
+          vmImage: 'windows-latest'
+        displayName: 'Publish Symbols - Windows'
+        # Strategy matrix to build all combinations
 
-      steps:
-      - task: UsePythonVersion@0
-        inputs:
-          versionSpec: '3.13'
-          architecture: 'x64'
-          addToPath: true
-        displayName: 'Use Python 3.13'
+        steps:
+        - task: UsePythonVersion@0
+          inputs:
+            versionSpec: '3.13'
+            architecture: 'x64'
+            addToPath: true
+          displayName: 'Use Python 3.13'
 
-      # Install required packages: pip, CMake, pybind11
-      - script: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install cmake pybind11
-        displayName: 'Install dependencies'
+        # Install required packages: pip, CMake, pybind11
+        - script: |
+            python -m pip install --upgrade pip
+            pip install -r requirements.txt
+            pip install cmake pybind11
+          displayName: 'Install dependencies'
 
-      # Generate the symbols for the mssql-python package using build.bat
-      - script: |
-          echo "Generating symbols for mssql-python package..."
-          cd mssql_python\pybind
-          build.bat
-          cd ..
-          dir /s /b
-        displayName: 'Generate symbols for mssql-python package'
+        # Generate the symbols for the mssql-python package using build.bat
+        - script: |
+            echo "Generating symbols for mssql-python package..."
+            cd mssql_python\pybind
+            build.bat
+            cd ..
+            dir /s /b
+          displayName: 'Generate symbols for mssql-python package'
 
-      # Copy the generated symbols to the staging folder for artifacts
-      - task: CopyFiles@2
-        inputs:
-          SourceFolder: '$(Build.SourcesDirectory)\mssql_python'
-          Contents: '**\*.pdb'
-          TargetFolder: '$(Build.ArtifactStagingDirectory)\mssql-python-symbols'
-        displayName: 'Copy symbols to staging folder'
+        # Copy the generated symbols to the staging folder for artifacts
+        - task: CopyFiles@2
+          inputs:
+            SourceFolder: '$(Build.SourcesDirectory)\mssql_python'
+            Contents: '**\*.pdb'
+            TargetFolder: '$(Build.ArtifactStagingDirectory)\mssql-python-symbols'
+          displayName: 'Copy symbols to staging folder'
 
-      # Publish the symbols (only pdbs) as an artifact
-      - task: PublishBuildArtifacts@1
-        displayName: 'Publish symbols as build artifact'
-        inputs:
-          PathtoPublish: '$(Build.ArtifactStagingDirectory)\mssql-python-symbols'
-          ArtifactName: 'mssql-python-symbols'
-          publishLocation: 'Container'
+        # Publish the symbols (only pdbs) as an artifact
+        - task: PublishBuildArtifacts@1
+          displayName: 'Publish symbols as build artifact'
+          inputs:
+            PathtoPublish: '$(Build.ArtifactStagingDirectory)\mssql-python-symbols'
+            ArtifactName: 'mssql-python-symbols'
+            publishLocation: 'Container'
 
-      - powershell: 'Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"'
-        displayName: 'Update Symbol.AccountName with SqlClientDrivers'
+        - powershell: 'Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"'
+          displayName: 'Update Symbol.AccountName with SqlClientDrivers'
 
-      - task: PublishSymbols@2
-        displayName: 'Upload symbols to SqlClientDrivers org'
-        inputs:
-          SymbolsFolder: '$(Build.ArtifactStagingDirectory)\mssql-python-symbols'
-          SearchPattern: '**/*.pdb'
-          IndexSources: false
-          SymbolServerType: TeamServices
-          SymbolsMaximumWaitTime: 60
-          SymbolExpirationInDays: 1825 # 5 years
-          SymbolsProduct: mssql-python
-          # Have kept the default version as the build ID, which is unique for each build
-          # This will be used to identify the symbols in the symbol server
-          SymbolsVersion: $(Build.BuildId)
-          # Ensuring the symbols are uniquely identified
-          # MDS uses symbolsArtifactName as mds_symbols_$(System.TeamProject)_$(Build.Repository.Name)_$(Build.SourceBranchName)_$(NuGetPackageVersion)_$(System.TimelineId)
-          SymbolsArtifactName: $(System.TeamProject)-$(Build.SourceBranchName)-$(Build.DefinitionName)-$(Build.BuildId)
-          Pat: $(System.AccessToken)
+        - task: PublishSymbols@2
+          displayName: 'Upload symbols to SqlClientDrivers org'
+          inputs:
+            SymbolsFolder: '$(Build.ArtifactStagingDirectory)\mssql-python-symbols'
+            SearchPattern: '**/*.pdb'
+            IndexSources: false
+            SymbolServerType: TeamServices
+            SymbolsMaximumWaitTime: 60
+            SymbolExpirationInDays: 1825 # 5 years
+            SymbolsProduct: mssql-python
+            # Have kept the default version as the build ID, which is unique for each build
+            # This will be used to identify the symbols in the symbol server
+            SymbolsVersion: $(Build.BuildId)
+            # Ensuring the symbols are uniquely identified
+            # MDS uses symbolsArtifactName as mds_symbols_$(System.TeamProject)_$(Build.Repository.Name)_$(Build.SourceBranchName)_$(NuGetPackageVersion)_$(System.TimelineId)
+            SymbolsArtifactName: $(System.TeamProject)-$(Build.SourceBranchName)-$(Build.DefinitionName)-$(Build.BuildId)
+            Pat: $(System.AccessToken)
 
-      - task: AzureCLI@2
-        displayName: 'Publish symbols'
-        env:
-          SymbolServer: '$(SymbolServer)'
-          SymbolTokenUri: '$(SymbolTokenUri)'
-          requestName: '$(System.TeamProject)-$(Build.SourceBranchName)-$(Build.DefinitionName)-$(Build.BuildId)'
-        inputs:
-          azureSubscription: 'SymbolsPublishing-msodbcsql-mssql-python'
-          scriptType: ps
-          scriptLocation: inlineScript
-          inlineScript: |
-            # Should be true by default for internal server
-            $publishToInternalServer = $true 
-            $publishToPublicServer = $false
+        - task: AzureCLI@2
+          displayName: 'Publish symbols'
+          env:
+            SymbolServer: '$(SymbolServer)'
+            SymbolTokenUri: '$(SymbolTokenUri)'
+            requestName: '$(System.TeamProject)-$(Build.SourceBranchName)-$(Build.DefinitionName)-$(Build.BuildId)'
+          inputs:
+            azureSubscription: 'SymbolsPublishing-msodbcsql-mssql-python'
+            scriptType: ps
+            scriptLocation: inlineScript
+            inlineScript: |
+              # Should be true by default for internal server
+              $publishToInternalServer = $true 
+              $publishToPublicServer = $false
 
-            echo "Publishing request name: $requestName"
-            echo "Publish to internal server: $publishToInternalServer"
-            echo "Publish to public server: $publishToPublicServer"      
+              echo "Publishing request name: $requestName"
+              echo "Publish to internal server: $publishToInternalServer"
+              echo "Publish to public server: $publishToPublicServer"      
 
-            $symbolServer = '$(SymbolServer)'
-            $tokenUri = '$(SymbolTokenUri)'
-            $projectName = "mssql-python"
+              $symbolServer = '$(SymbolServer)'
+              $tokenUri = '$(SymbolTokenUri)'
+              $projectName = "mssql-python"
 
-            # Get the access token for the symbol publishing service
-            $symbolPublishingToken = az account get-access-token --resource $tokenUri --query accessToken -o tsv
+              # Get the access token for the symbol publishing service
+              $symbolPublishingToken = az account get-access-token --resource $tokenUri --query accessToken -o tsv
 
-            echo ">  1.Symbol publishing token acquired."
+              echo ">  1.Symbol publishing token acquired."
 
-            echo "Registering the request name ..."
-            $requestName = '$(requestName)'
-            $requestNameRegistrationBody = "{'requestName': '$requestName'}"
-            Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $requestNameRegistrationBody
+              echo "Registering the request name ..."
+              $requestName = '$(requestName)'
+              $requestNameRegistrationBody = "{'requestName': '$requestName'}"
+              Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $requestNameRegistrationBody
 
-            echo ">  2.Registration of request name succeeded."
+              echo ">  2.Registration of request name succeeded."
 
-            echo "Publishing the symbols ..."
-            $publishSymbolsBody = "{'publishToInternalServer': $publishToInternalServer, 'publishToPublicServer': $publishToPublicServer}"
-            echo "Publishing symbols request body: $publishSymbolsBody"
-            Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests/$requestName" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $publishSymbolsBody
+              echo "Publishing the symbols ..."
+              $publishSymbolsBody = "{'publishToInternalServer': $publishToInternalServer, 'publishToPublicServer': $publishToPublicServer}"
+              echo "Publishing symbols request body: $publishSymbolsBody"
+              Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests/$requestName" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $publishSymbolsBody
 
-            echo ">  3.Request to publish symbols succeeded."
+              echo ">  3.Request to publish symbols succeeded."
 
-            # The following REST calls are used to check publishing status.
-            echo ">  4.Checking the status of the request ..."
+              # The following REST calls are used to check publishing status.
+              echo ">  4.Checking the status of the request ..."
 
-            Invoke-RestMethod -Method GET -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests/$requestName" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json"
-            
-            echo "Use below tables to interpret the values of xxxServerStatus and xxxServerResult fields from the response."
-            
-            echo "PublishingStatus"
-            echo "-----------------"
-            echo "0	NotRequested; The request has not been requested to publish."
-            echo "1	Submitted; The request is submitted to be published"
-            echo "2	Processing; The request is still being processed"
-            echo "3	Completed; The request has been completed processing. It can be failed or successful. Check PublishingResult to get more details"
-            
-            echo "PublishingResult"
-            echo "-----------------"
-            echo "0	Pending; The request has not completed or has not been requested."
-            echo "1	Succeeded; The request has published successfully"
-            echo "2	Failed; The request has failed to publish"
-            echo "3	Cancelled; The request was cancelled"  
+              Invoke-RestMethod -Method GET -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests/$requestName" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json"
+              
+              echo "Use below tables to interpret the values of xxxServerStatus and xxxServerResult fields from the response."
+              
+              echo "PublishingStatus"
+              echo "-----------------"
+              echo "0	NotRequested; The request has not been requested to publish."
+              echo "1	Submitted; The request is submitted to be published"
+              echo "2	Processing; The request is still being processed"
+              echo "3	Completed; The request has been completed processing. It can be failed or successful. Check PublishingResult to get more details"
+              
+              echo "PublishingResult"
+              echo "-----------------"
+              echo "0	Pending; The request has not completed or has not been requested."
+              echo "1	Succeeded; The request has published successfully"
+              echo "2	Failed; The request has failed to publish"
+              echo "3	Cancelled; The request was cancelled"  
 
 # - job: ReleaseESRPPackage
 #   displayName: 'Release ESRP Package'
