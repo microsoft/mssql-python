@@ -12,15 +12,44 @@ jobs:
   # Strategy matrix to build all combinations
 
   steps:
-  - task: DownloadPipelineArtifact@2
+  - task: UsePythonVersion@0
     inputs:
-      buildType: 'specific'
-      project: '$(System.TeamProject)'
-      definition: 2162
-      buildVersionToDownload: 'latest'
-      artifactName: 'mssql-python-symbols'
-      targetPath: '$(Build.ArtifactStagingDirectory)\all-pdbs'
-    displayName: 'Download PDB files artifact from latest successful run'
+      versionSpec: '3.13'
+      architecture: 'x64'
+      addToPath: true
+    displayName: 'Use Python 3.13'
+
+  # Install required packages: pip, CMake, pybind11
+  - script: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+      pip install cmake pybind11
+    displayName: 'Install dependencies'
+
+  # Generate the symbols for the mssql-python package using build.bat
+  - script: |
+      echo "Generating symbols for mssql-python package..."
+      cd mssql_python\pybind
+      build.bat
+      cd ..
+      dir /s /b
+    displayName: 'Generate symbols for mssql-python package'
+
+  # Copy the generated symbols to the staging folder for artifacts
+  - task: CopyFiles@2
+    inputs:
+      SourceFolder: '$(Build.SourcesDirectory)\mssql_python'
+      Contents: '**\*.pdb'
+      TargetFolder: '$(Build.ArtifactStagingDirectory)\mssql-python-symbols'
+    displayName: 'Copy symbols to staging folder'
+
+  # Publish the symbols (only pdbs) as an artifact
+  - task: PublishBuildArtifact@1
+    displayName: 'Publish symbols as build artifact'
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)\mssql-python-symbols'
+      ArtifactName: 'mssql-python-symbols'
+      publishLocation: 'Container'
 
   - powershell: 'Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"'
     displayName: 'Update Symbol.AccountName with SqlClientDrivers'
@@ -28,7 +57,7 @@ jobs:
   - task: PublishSymbols@2
     displayName: 'Upload symbols to SqlClientDrivers org'
     inputs:
-      SymbolsFolder: '$(Build.ArtifactStagingDirectory)\all-pdbs'
+      SymbolsFolder: '$(Build.ArtifactStagingDirectory)\mssql-python-symbols'
       SearchPattern: '**/*.pdb'
       IndexSources: false
       SymbolServerType: TeamServices
