@@ -17,7 +17,16 @@ from mssql_python import connect
 from mssql_python import setup_logging
 setup_logging('stdout')
 
-conn = connect(conn_str)
+try:
+    conn = connect(conn_str)
+except Exception as e:
+    if 'Timeout' in str(e):
+        print("retrying in 60 seconds...")
+        import time
+        time.sleep(60)
+        conn = connect(conn_str)
+    else:
+        raise e
 
 # conn.autocommit = True
 
