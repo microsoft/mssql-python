@@ -30,10 +30,10 @@ jobs:
         echo "Testing on Docker image: $(image)"
         echo "Package manager: $(pkg_manager)"
         echo "Python version: $(python_version)"
-        echo "Database connection string: $(DB_CONNECTION_STRING)"
+        echo "Database connection string: $${DB_CONNECTION_STRING}"
         echo "Running tests..."
         docker run --rm \
-          -e DB_CONNECTION_STRING=$(DB_CONNECTION_STRING) \
+          -e DB_CONNECTION_STRING="$${AZURE_CONNECTION_STRING}" \
           -v "$(pwd):/workspace" \
           -w /workspace \
           $(image) \
