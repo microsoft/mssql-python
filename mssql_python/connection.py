@@ -114,15 +114,15 @@ class Connection:
         for key, value in kwargs.items():
             if key.lower() == "host" or key.lower() == "server":
                 key = "Server"
-            elif key.lower() == "user" or key.lower() == "uid" and attrs_before is not None:
+            elif key.lower() == "user" or key.lower() == "uid":
                 key = "Uid"
-            elif key.lower() == "password" or key.lower() == "pwd" and attrs_before is not None:
+            elif key.lower() == "password" or key.lower() == "pwd":
                 key = "Pwd"
             elif key.lower() == "database":
                 key = "Database"
-            elif key.lower() == "encrypt" and attrs_before is not None:
+            elif key.lower() == "encrypt":
                 key = "Encrypt"
-            elif key.lower() == "trust_server_certificate" and attrs_before is not None:
+            elif key.lower() == "trust_server_certificate":
                 key = "TrustServerCertificate"
             else:
                 continue
