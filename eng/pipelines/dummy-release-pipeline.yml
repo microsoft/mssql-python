@@ -22,11 +22,11 @@ jobs:
       targetPath: '$(Build.ArtifactStagingDirectory)\all-pdbs'
     displayName: 'Download PDB files artifact from latest successful run'
 
-  - powershell: 'Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]mssql-python"'
-    displayName: 'Update Symbol.AccountName with mssql-python'
+  - powershell: 'Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"'
+    displayName: 'Update Symbol.AccountName with SqlClientDrivers'
 
   - task: PublishSymbols@2
-    displayName: 'Upload symbols to mssql-python org'
+    displayName: 'Upload symbols to SqlClientDrivers org'
     inputs:
       SymbolsFolder: '$(Build.ArtifactStagingDirectory)\all-pdbs'
       SearchPattern: '**/*.pdb'
@@ -50,7 +50,7 @@ jobs:
       SymbolTokenUri: '$(SymbolTokenUri)'
       requestName: '$(System.TeamProject)-$(Build.SourceBranchName)-$(Build.DefinitionName)-$(Build.BuildId)'
     inputs:
-      azureSubscription: 'mssql-python-service'
+      azureSubscription: 'SymbolsPublishing-msodbcsql-mssql-python'
       scriptType: ps
       scriptLocation: inlineScript
       inlineScript: |
