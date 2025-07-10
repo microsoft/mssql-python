@@ -7,7 +7,6 @@ trigger:
 
 jobs:
 - job: TestOnDockerImages
-  displayName: Smoke Test on UBI9(RHEL), Ubuntu, and Debian
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -20,11 +19,11 @@ jobs:
       ubuntu:
         image: ubuntu:22.04
         pkg_manager: apt
-        python_version: '3.12'
+        python_version: '3'
       debian:
         image: debian:12
         pkg_manager: apt
-        python_version: '3.12'
+        python_version: '3'
 
   steps:
     - script: |
