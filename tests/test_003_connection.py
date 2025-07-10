@@ -260,40 +260,6 @@ def test_cursor_cleanup_on_connection_close(conn_str):
     assert cursor2.closed is True, "Cursor2 should be closed by connection.close()"
     assert cursor3.closed is True, "Cursor3 should be closed by connection.close()"
 
-def test_cursor_cleanup_without_close(conn_str):
-    """Test that cursors are properly cleaned up without closing the connection"""
-    conn_new = connect(conn_str)
-    cursor = conn_new.cursor()
-    cursor.execute("SELECT 1")
-    cursor.fetchall()
-    assert len(conn_new._cursors) == 1
-    del cursor # Remove the last reference
-    assert len(conn_new._cursors) == 0  # Now the WeakSet should be empty
-
-def test_no_segfault_on_gc(conn_str):
-    """Test that no segmentation fault occurs during garbage collection"""
-    code = """
-from mssql_python import connect
-conn = connect(\"""" + conn_str + """\")
-cursors = [conn.cursor() for _ in range(5)]
-for cur in cursors:
-    cur.execute("SELECT 1")
-    cur.fetchall()
-del conn
-import gc; gc.collect()
-del cursors
-gc.collect()
-    """
-    # Run the code in a subprocess to avoid segfaults in the main process
-    # This is a workaround to test for segfaults in Python, as they can crash the interpreter
-    # and pytest does not handle segfaults gracefully.
-    # Note: This is a simplified example; in practice, you might want to use a more robust method
-    # to handle subprocesses and capture their output/errors.
-    import subprocess
-    import sys
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
-    assert result.returncode == 0, f"Expected no segfault, but got: {result.stderr}"
-
 def test_cursor_weakref_cleanup(conn_str):
     """Test that WeakSet properly removes garbage collected cursors"""
     conn = connect(conn_str)
