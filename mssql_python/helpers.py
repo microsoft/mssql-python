@@ -117,7 +117,7 @@ def add_driver_name_to_app_parameter(connection_string):
             if auth_value.lower() == "activedirectoryinteractive":
                 has_aad_interactive = True
                 # Only keep the auth parameter on Windows
-                if sys.platform.startswith("win"):
+                if platform.system().lower() != "windows":
                     modified_parameters.append(param)
                 continue
         
@@ -134,6 +134,13 @@ def add_driver_name_to_app_parameter(connection_string):
 
     # Handle AAD Interactive auth for non-Windows platforms
     if has_aad_interactive and platform.system().lower() != "windows":
+
+        # Remove Uid, Pwd, Connection Timeout, Encrypt, TrustServerCertificate
+        modified_parameters = [
+            param for param in modified_parameters
+            if not any(key in param.lower() for key in ["uid=", "pwd=", "connection timeout=", "encrypt=", "trustservercertificate="])
+        ]
+
         try:
             from azure.identity import InteractiveBrowserCredential
             import struct
