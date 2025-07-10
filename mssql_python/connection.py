@@ -4,14 +4,20 @@ Licensed under the MIT license.
 This module defines the Connection class, which is used to manage a connection to a database.
 The class provides methods to establish a connection, create cursors, commit transactions, 
 roll back transactions, and close the connection.
+Resource Management:
+- All cursors created from this connection are tracked internally.
+- When close() is called on the connection, all open cursors are automatically closed.
+- Do not use any cursor after the connection is closed; doing so will raise an exception.
+- Cursors are also cleaned up automatically when no longer referenced, to prevent memory leaks.
 """
-import ctypes
+import weakref
 from mssql_python.cursor import Cursor
 from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import add_driver_to_connection_str, check_error
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
+from mssql_python.exceptions import DatabaseError, InterfaceError
 
 logger = get_logger()
 
@@ -58,6 +64,18 @@ class Connection:
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
+        self._closed = False
+        
+        # Using WeakSet which automatically removes cursors when they are no longer in use
+        # It is a set that holds weak references to its elements.
+        # When an object is only weakly referenced, it can be garbage collected even if it's still in the set.
+        # It prevents memory leaks by ensuring that cursors are cleaned up when no longer in use without requiring explicit deletion.
+        # TODO: Think and implement scenarios for multi-threaded access to cursors
+        self._cursors = weakref.WeakSet()
+
+        # Auto-enable pooling if user never called
+        if not PoolingManager.is_initialized():
+            PoolingManager.enable()
         self._pooling = PoolingManager.is_enabled()
         self._conn = ddbc_bindings.Connection(self.connection_str, self._pooling, self._attrs_before)
         self.setautocommit(autocommit)
@@ -149,7 +167,17 @@ class Connection:
             DatabaseError: If there is an error while creating the cursor.
             InterfaceError: If there is an error related to the database interface.
         """
-        return Cursor(self)
+        """Return a new Cursor object using the connection."""
+        if self._closed:
+            # raise InterfaceError
+            raise InterfaceError(
+                driver_error="Cannot create cursor on closed connection",
+                ddbc_error="Cannot create cursor on closed connection",
+            )
+
+        cursor = Cursor(self)
+        self._cursors.add(cursor)  # Track the cursor
+        return cursor
 
     def commit(self) -> None:
         """
@@ -198,6 +226,45 @@ class Connection:
             DatabaseError: If there is an error while closing the connection.
         """
         # Close the connection
-        self._conn.close()
+        if self._closed:
+            return
+        
+        # Close all cursors first, but don't let one failure stop the others
+        if hasattr(self, '_cursors'):
+            # Convert to list to avoid modification during iteration
+            cursors_to_close = list(self._cursors)
+            close_errors = []
+            
+            for cursor in cursors_to_close:
+                try:
+                    if not cursor.closed:
+                        cursor.close()
+                except Exception as e:
+                    # Collect errors but continue closing other cursors
+                    close_errors.append(f"Error closing cursor: {e}")
+                    if ENABLE_LOGGING:
+                        logger.warning(f"Error closing cursor: {e}")
+            
+            # If there were errors closing cursors, log them but continue
+            if close_errors and ENABLE_LOGGING:
+                logger.warning(f"Encountered {len(close_errors)} errors while closing cursors")
+
+            # Clear the cursor set explicitly to release any internal references
+            self._cursors.clear()
+
+        # Close the connection even if cursor cleanup had issues
+        try:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
+        except Exception as e:
+            if ENABLE_LOGGING:
+                logger.error(f"Error closing database connection: {e}")
+            # Re-raise the connection close error as it's more critical
+            raise
+        finally:
+            # Always mark as closed, even if there were errors
+            self._closed = True
+        
         if ENABLE_LOGGING:
             logger.info("Connection closed successfully.")

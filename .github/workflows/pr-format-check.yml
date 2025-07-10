@@ -1,0 +1,104 @@
+name: PR Formatting Check
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title and description content
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const body = context.payload.pull_request.body;
+
+            const validTitlePrefixes = [
+              'FEAT:', 'CHORE:', 'FIX:', 'DOC:', 'STYLE:', 'REFACTOR:', 'RELEASE:'
+            ];
+
+            const hasValidPrefix = validTitlePrefixes.some(prefix => title.startsWith(prefix));
+
+            if (!hasValidPrefix) {
+              core.setFailed(`❌ PR title must start with one of the allowed prefixes:\n${validTitlePrefixes.join(', ')}`);
+            }
+
+            const azureWorkItemLinkPattern = /https:\/\/sqlclientdrivers\.visualstudio\.com\/[^\/]+\/_workitems\/edit\/\d+/i;
+            const hasWorkItemLink = azureWorkItemLinkPattern.test(body);
+
+            if (!hasWorkItemLink) {
+              core.setFailed(`❌ PR should contain a valid ADO Work Item ID.\nExpected a hyperlink in the format: https://sqlclientdrivers.visualstudio.com/.../_workitems/edit/<ID>\nPlease ensure the ADO task hyperlink is present in the PR description.`);
+            }
+            
+            // Check if PR description contains a meaningful summary section with actual content
+            const summaryPattern = /###\s*Summary\s*\r?\n([\s\S]*?)(\r?\n###|$)/;
+            const summaryMatch = body.match(summaryPattern);
+            
+            let hasValidSummary = false;
+            
+            if (summaryMatch && summaryMatch[1]) {
+              // Extract the summary content
+              const summaryContent = summaryMatch[1];
+              
+              // Remove all HTML comments including the template placeholder
+              const contentWithoutComments = summaryContent.replace(/<!--[\s\S]*?-->/g, '');
+              
+              // Remove whitespace and check if there's actual text content
+              const trimmedContent = contentWithoutComments.trim();
+              
+              // Check if there's at least 10 characters of meaningful content
+              hasValidSummary = trimmedContent.length >= 10;
+            }
+            
+            if (!hasValidSummary) {
+              core.setFailed(`❌ PR must contain a meaningful summary section with actual text content (minimum 10 characters). 
+              Please add a clear description under the '### Summary' heading in your PR description.`);
+            }
+      - name: Add size label based on PR diff
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const additions = pr.additions;
+            const deletions = pr.deletions;
+            const totalChanges = additions + deletions;
+
+            // Threshold constants
+            const SMALL_PR_THRESHOLD = 100;
+            const MEDIUM_PR_THRESHOLD = 500;
+
+            let labelToAdd = '';
+            if (totalChanges < SMALL_PR_THRESHOLD) {
+              labelToAdd = 'pr-size: small';
+            } else if (totalChanges < MEDIUM_PR_THRESHOLD) {
+              labelToAdd = 'pr-size: medium';
+            } else {
+              labelToAdd = 'pr-size: large';
+            }
+
+            // Remove existing size labels if any
+            const existingLabels = pr.labels.map(l => l.name);
+            const sizeLabels = ['pr-size: small', 'pr-size: medium', 'pr-size: large'];
+            for (const label of existingLabels) {
+              if (sizeLabels.includes(label)) {
+                await github.rest.issues.removeLabel({
+                  ...context.repo,
+                  issue_number: pr.number,
+                  name: label,
+                });
+              }
+            }
+
+            // Add new size label
+            await github.rest.issues.addLabels({
+              ...context.repo,
+              issue_number: pr.number,
+              labels: [labelToAdd],
+            });
+
+            console.log(`Added label: ${labelToAdd} (Total changes: ${totalChanges})`);

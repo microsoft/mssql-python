@@ -67,9 +67,20 @@ void Connection::connect(const py::dict& attrs_before) {
             setAutocommit(_autocommit);
         }
     }
+    SQLWCHAR* connStrPtr;
+#if defined(__APPLE__) || defined(__linux__) // macOS/Linux specific handling
+    LOG("Creating connection string buffer for macOS/Linux");
+    std::vector<SQLWCHAR> connStrBuffer = WStringToSQLWCHAR(_connStr);
+    // Ensure the buffer is null-terminated
+    LOG("Connection string buffer size - {}", connStrBuffer.size());
+    connStrPtr = connStrBuffer.data();
+    LOG("Connection string buffer created");
+#else
+    connStrPtr = const_cast<SQLWCHAR*>(_connStr.c_str());
+#endif
     SQLRETURN ret = SQLDriverConnect_ptr(
         _dbcHandle->get(), nullptr,
-        (SQLWCHAR*)_connStr.c_str(), SQL_NTS,
+        connStrPtr, SQL_NTS,
         nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
     checkError(ret);
     updateLastUsed();
@@ -236,12 +247,13 @@ std::chrono::steady_clock::time_point Connection::lastUsed() const {
     return _lastUsed;
 }
 
-ConnectionHandle::ConnectionHandle(const std::wstring& connStr, bool usePool, const py::dict& attrsBefore)
-    : _connStr(connStr), _usePool(usePool) {
+ConnectionHandle::ConnectionHandle(const std::string& connStr, bool usePool, const py::dict& attrsBefore)
+    : _usePool(usePool) {
+    _connStr = Utf8ToWString(connStr);
     if (_usePool) {
-        _conn = ConnectionPoolManager::getInstance().acquireConnection(connStr, attrsBefore);
+        _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore);
     } else {
-        _conn = std::make_shared<Connection>(connStr, false);
+        _conn = std::make_shared<Connection>(_connStr, false);
         _conn->connect(attrsBefore);
     }
 }

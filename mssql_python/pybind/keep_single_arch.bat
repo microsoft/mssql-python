@@ -16,7 +16,7 @@ echo Removing unnecessary architecture libraries for packaging...
 
 REM Get the directory where this script is located
 set SCRIPT_DIR=%~dp0
-set LIBS_BASE_DIR=%SCRIPT_DIR%..\libs
+set LIBS_BASE_DIR=%SCRIPT_DIR%..\libs\windows
 
 if "%ARCH%"=="x64" (
     echo Removing "%LIBS_BASE_DIR%\x86" and "%LIBS_BASE_DIR%\arm64" directories

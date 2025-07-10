@@ -11,10 +11,7 @@
 #include <iomanip>  // std::setw, std::setfill
 #include <iostream>
 #include <utility>  // std::forward
-
-// Replace std::filesystem usage with Windows-specific headers
-#include <shlwapi.h>
-#pragma comment(lib, "shlwapi.lib")
+#include <filesystem>
 
 //-------------------------------------------------------------------------------------------------
 // Macro definitions
@@ -188,14 +185,26 @@ ParamType* AllocateParamBuffer(std::vector<std::shared_ptr<void>>& paramBuffers,
     return static_cast<ParamType*>(paramBuffers.back().get());
 }
 
+std::string DescribeChar(unsigned char ch) {
+    if (ch >= 32 && ch <= 126) {
+        return std::string("'") + static_cast<char>(ch) + "'";
+    } else {
+        char buffer[16];
+        snprintf(buffer, sizeof(buffer), "U+%04X", ch);
+        return std::string(buffer);
+    }
+}
+
 // Given a list of parameters and their ParamInfo, calls SQLBindParameter on each of them with
 // appropriate arguments
 SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                          const std::vector<ParamInfo>& paramInfos,
                          std::vector<std::shared_ptr<void>>& paramBuffers) {
+    LOG("Starting parameter binding. Number of parameters: {}", params.size());
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
         const auto& param = params[paramIndex];
         const ParamInfo& paramInfo = paramInfos[paramIndex];
+        LOG("Binding parameter {} - C Type: {}, SQL Type: {}", paramIndex, paramInfo.paramCType, paramInfo.paramSQLType);
         void* dataPtr = nullptr;
         SQLLEN bufferLength = 0;
         SQLLEN* strLenOrIndPtr = nullptr;
@@ -233,8 +242,44 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                         "Streaming parameters is not yet supported. Parameter size"
                         " must be less than 8192 bytes");
                 }
+                
+                // Log detailed parameter information
+                LOG("SQL_C_WCHAR Parameter[{}]: Length={}, Content='{}'",
+                    paramIndex,
+                    strParam->size(),
+                    (strParam->size() <= 100
+                        ? WideToUTF8(std::wstring(strParam->begin(), strParam->end()))
+                        : WideToUTF8(std::wstring(strParam->begin(), strParam->begin() + 100)) + "..."));
+
+                // Log each character's code point for debugging
+                if (strParam->size() <= 20) {
+                    for (size_t i = 0; i < strParam->size(); i++) {
+                        unsigned char ch = static_cast<unsigned char>((*strParam)[i]);
+                        LOG("  char[{}] = {} ({})", i, static_cast<int>(ch), DescribeChar(ch));
+                    }
+                }
+#if defined(__APPLE__) || defined(__linux__)
+                // On macOS/Linux, we need special handling for wide characters
+                // Create a properly encoded SQLWCHAR buffer for the parameter
+                std::vector<SQLWCHAR>* sqlwcharBuffer =
+                    AllocateParamBuffer<std::vector<SQLWCHAR>>(paramBuffers);
+
+                // Reserve space and convert from wstring to SQLWCHAR array
+                sqlwcharBuffer->resize(strParam->size() + 1, 0); // +1 for null terminator
+
+                // Convert each wchar_t (4 bytes on macOS) to SQLWCHAR (2 bytes)
+                for (size_t i = 0; i < strParam->size(); i++) {
+                    (*sqlwcharBuffer)[i] = static_cast<SQLWCHAR>((*strParam)[i]);
+                }
+                // Use the SQLWCHAR buffer instead of the wstring directly
+                dataPtr = sqlwcharBuffer->data();
+                bufferLength = (strParam->size() + 1) * sizeof(SQLWCHAR);
+                LOG("macOS: Created SQLWCHAR buffer for parameter with size: {} bytes", bufferLength);
+#else
+                // On Windows, wchar_t and SQLWCHAR are the same size, so direct cast works
                 dataPtr = const_cast<void*>(static_cast<const void*>(strParam->c_str()));
                 bufferLength = (strParam->size() + 1 /* null terminator */) * sizeof(wchar_t);
+#endif
                 strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                 *strLenOrIndPtr = SQL_NTS;
                 break;
@@ -464,6 +509,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
             }
         }
     }
+    LOG("Finished parameter binding. Number of parameters: {}", params.size());
     return SQL_SUCCESS;
 }
 
@@ -495,146 +541,197 @@ void LOG(const std::string& formatString, Args&&... args) {
     logging.attr("debug")(message);
 }
 
-std::string WideToUTF8(const std::wstring& wstr) {
-    if (wstr.empty()) return {};
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
-    std::string result(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), (int)wstr.size(), result.data(), size_needed, nullptr, nullptr);
-    return result;
-}
-
 // TODO: Add more nuanced exception classes
 void ThrowStdException(const std::string& message) { throw std::runtime_error(message); }
+std::string GetLastErrorMessage();
 
+// TODO: Move this to Python
 std::string GetModuleDirectory() {
     py::object module = py::module::import("mssql_python");
     py::object module_path = module.attr("__file__");
     std::string module_file = module_path.cast<std::string>();
     
+#ifdef _WIN32
+    // Windows-specific path handling
     char path[MAX_PATH];
-    strncpy_s(path, MAX_PATH, module_file.c_str(), module_file.length());
+    errno_t err = strncpy_s(path, MAX_PATH, module_file.c_str(), module_file.length());
+    if (err != 0) {
+        LOG("strncpy_s failed with error code: {}", err);
+        return {};
+    }
     PathRemoveFileSpecA(path);
     return std::string(path);
+#else
+    // macOS/Unix path handling without using std::filesystem
+    std::string::size_type pos = module_file.find_last_of('/');
+    if (pos != std::string::npos) {
+        std::string dir = module_file.substr(0, pos);
+        return dir;
+    }
+    LOG("DEBUG: Could not extract directory from path: {}", module_file);
+    return module_file;
+#endif
 }
 
-// Helper to load the driver
-// TODO: We don't need to do explicit linking using LoadLibrary. We can just use implicit
-//       linking to load this DLL. It will simplify the code a lot.
-std::wstring LoadDriverOrThrowException() {
-    const std::wstring& modulePath = L"";
-    std::wstring ddbcModulePath = modulePath;
-    if (ddbcModulePath.empty()) {
-        // Get the module path if not provided
-        std::string path = GetModuleDirectory();
-        ddbcModulePath = std::wstring(path.begin(), path.end());
-    }
-
-    std::wstring dllDir = ddbcModulePath;
-    dllDir += L"\\libs\\";
+// Platform-agnostic function to load the driver dynamic library
+DriverHandle LoadDriverLibrary(const std::string& driverPath) {
+    LOG("Loading driver from path: {}", driverPath);
     
-    // Convert ARCHITECTURE macro to wstring
-    std::wstring archStr(ARCHITECTURE, ARCHITECTURE + strlen(ARCHITECTURE));
+#ifdef _WIN32
+    // Windows: Convert string to wide string for LoadLibraryW
+    std::wstring widePath(driverPath.begin(), driverPath.end());
+    HMODULE handle = LoadLibraryW(widePath.c_str());
+    if (!handle) {
+        LOG("Failed to load library: {}. Error: {}", driverPath, GetLastErrorMessage());
+        ThrowStdException("Failed to load library: " + driverPath);
+    }
+    return handle;
+#else
+    // macOS/Unix: Use dlopen
+    void* handle = dlopen(driverPath.c_str(), RTLD_LAZY);
+    if (!handle) {
+        LOG("dlopen failed.");
+    }
+    return handle;
+#endif
+}
+
+// Platform-agnostic function to get last error message
+std::string GetLastErrorMessage() {
+#ifdef _WIN32
+    // Windows: Use FormatMessageA
+    DWORD error = GetLastError();
+    char* messageBuffer = nullptr;
+    size_t size = FormatMessageA(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        NULL,
+        error,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        (LPSTR)&messageBuffer,
+        0,
+        NULL
+    );
+    std::string errorMessage = messageBuffer ? std::string(messageBuffer, size) : "Unknown error";
+    LocalFree(messageBuffer);
+    return "Error code: " + std::to_string(error) + " - " + errorMessage;
+#else
+    // macOS/Unix: Use dlerror
+    const char* error = dlerror();
+    return error ? std::string(error) : "Unknown error";
+#endif
+}
+
+// Function to call Python get_driver_path function
+std::string GetDriverPathFromPython(const std::string& moduleDir, const std::string& architecture) {
+    try {
+        py::module_ helpers = py::module_::import("mssql_python.helpers");
+        py::object get_driver_path = helpers.attr("get_driver_path");
+        py::str result = get_driver_path(moduleDir, architecture);
+        return std::string(result);
+    } catch (const py::error_already_set& e) {
+        LOG("Python error in get_driver_path: {}", e.what());
+        ThrowStdException("Failed to get driver path from Python: " + std::string(e.what()));
+    } catch (const std::exception& e) {
+        LOG("Error calling get_driver_path: {}", e.what());
+        ThrowStdException("Failed to get driver path: " + std::string(e.what()));
+    }
+}
+
+DriverHandle LoadDriverOrThrowException() {
+    namespace fs = std::filesystem;
+
+    std::string moduleDir = GetModuleDirectory();
+    LOG("Module directory: {}", moduleDir);
+
+    std::string archStr = ARCHITECTURE;
+    LOG("Architecture: {}", archStr);
+
+    // Use Python function to get the correct driver path for the platform
+    std::string driverPathStr = GetDriverPathFromPython(moduleDir, archStr);
+    fs::path driverPath(driverPathStr);
     
-    // Map architecture identifiers to correct subdirectory names
-    std::wstring archDir;
-    if (archStr == L"win64" || archStr == L"amd64" || archStr == L"x64") {
-        archDir = L"x64";
-    } else if (archStr == L"arm64") {
-        archDir = L"arm64";
-    } else {
-        archDir = L"x86";
-    }
-    dllDir += archDir;
-    std::wstring mssqlauthDllPath = dllDir + L"\\mssql-auth.dll";
-    dllDir += L"\\msodbcsql18.dll";
+    LOG("Driver path determined: {}", driverPath.string());
 
-    // Preload mssql-auth.dll from the same path if available
-    HMODULE hAuthModule = LoadLibraryW(mssqlauthDllPath.c_str());
-    if (hAuthModule) {
-        LOG("Authentication library loaded successfully from - {}", mssqlauthDllPath.c_str());
-    } else {
-        LOG("Note: Authentication library not found at - {}. This is OK if you're not using Entra ID Authentication.", mssqlauthDllPath.c_str());
-    }
+    #ifdef _WIN32
+        // On Windows, optionally load mssql-auth.dll if it exists
+        std::string archDir =
+            (archStr == "win64" || archStr == "amd64" || archStr == "x64") ? "x64" :
+            (archStr == "arm64") ? "arm64" :
+            "x86";
+        
+        fs::path dllDir = fs::path(moduleDir) / "libs" / archDir;
+        fs::path authDllPath = dllDir / "mssql-auth.dll";
+        if (fs::exists(authDllPath)) {
+            HMODULE hAuth = LoadLibraryW(std::wstring(authDllPath.native().begin(), authDllPath.native().end()).c_str());
+            if (hAuth) {
+                LOG("Authentication DLL loaded: {}", authDllPath.string());
+            } else {
+                LOG("Failed to load mssql-auth.dll: {}", GetLastErrorMessage());
+            }
+        } else {
+            LOG("Note: mssql-auth.dll not found. This is OK if Entra ID is not in use.");
+        }
+    #endif
 
-    // Convert wstring to string for logging
-    LOG("Attempting to load driver from - {}", WideToUTF8(dllDir));
-    
-    HMODULE hModule = LoadLibraryW(dllDir.c_str());
-    if (!hModule) {
-        // Failed to load the DLL, get the error message
-        DWORD error = GetLastError();
-        char* messageBuffer = nullptr;
-        size_t size = FormatMessageA(
-            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-            NULL,
-            error,
-            MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-            (LPSTR)&messageBuffer,
-            0,
-            NULL
-        );
-        std::string errorMessage = messageBuffer ? std::string(messageBuffer, size) : "Unknown error";
-        LocalFree(messageBuffer);
-
-        // Log the error message        
-        LOG("Failed to load the driver with error code: {} - {}", error, errorMessage);
-        ThrowStdException("Failed to load the ODBC driver. Please check that it is installed correctly.");
+    if (!fs::exists(driverPath)) {
+        ThrowStdException("ODBC driver not found at: " + driverPath.string());
     }
 
-    // If we got here, we've successfully loaded the DLL. Now get the function pointers.
-    // Environment and handle function loading
-    SQLAllocHandle_ptr = (SQLAllocHandleFunc)GetProcAddress(hModule, "SQLAllocHandle");
-    SQLSetEnvAttr_ptr = (SQLSetEnvAttrFunc)GetProcAddress(hModule, "SQLSetEnvAttr");
-    SQLSetConnectAttr_ptr = (SQLSetConnectAttrFunc)GetProcAddress(hModule, "SQLSetConnectAttrW");
-    SQLSetStmtAttr_ptr = (SQLSetStmtAttrFunc)GetProcAddress(hModule, "SQLSetStmtAttrW");
-    SQLGetConnectAttr_ptr = (SQLGetConnectAttrFunc)GetProcAddress(hModule, "SQLGetConnectAttrW");
+    DriverHandle handle = LoadDriverLibrary(driverPath.string());
+    if (!handle) {
+        LOG("Failed to load driver: {}", GetLastErrorMessage());
+        ThrowStdException("Failed to load ODBC driver. Please check installation.");
+    }
+    LOG("Driver library successfully loaded.");
 
-    // Connection and statement function loading
-    SQLDriverConnect_ptr = (SQLDriverConnectFunc)GetProcAddress(hModule, "SQLDriverConnectW");
-    SQLExecDirect_ptr = (SQLExecDirectFunc)GetProcAddress(hModule, "SQLExecDirectW");
-    SQLPrepare_ptr = (SQLPrepareFunc)GetProcAddress(hModule, "SQLPrepareW");
-    SQLBindParameter_ptr = (SQLBindParameterFunc)GetProcAddress(hModule, "SQLBindParameter");
-    SQLExecute_ptr = (SQLExecuteFunc)GetProcAddress(hModule, "SQLExecute");
-    SQLRowCount_ptr = (SQLRowCountFunc)GetProcAddress(hModule, "SQLRowCount");
-    SQLGetStmtAttr_ptr = (SQLGetStmtAttrFunc)GetProcAddress(hModule, "SQLGetStmtAttrW");
-    SQLSetDescField_ptr = (SQLSetDescFieldFunc)GetProcAddress(hModule, "SQLSetDescFieldW");
+    // Load function pointers using helper
+    SQLAllocHandle_ptr = GetFunctionPointer<SQLAllocHandleFunc>(handle, "SQLAllocHandle");
+    SQLSetEnvAttr_ptr = GetFunctionPointer<SQLSetEnvAttrFunc>(handle, "SQLSetEnvAttr");
+    SQLSetConnectAttr_ptr = GetFunctionPointer<SQLSetConnectAttrFunc>(handle, "SQLSetConnectAttrW");
+    SQLSetStmtAttr_ptr = GetFunctionPointer<SQLSetStmtAttrFunc>(handle, "SQLSetStmtAttrW");
+    SQLGetConnectAttr_ptr = GetFunctionPointer<SQLGetConnectAttrFunc>(handle, "SQLGetConnectAttrW");
 
-    // Fetch and data retrieval function loading
-    SQLFetch_ptr = (SQLFetchFunc)GetProcAddress(hModule, "SQLFetch");
-    SQLFetchScroll_ptr = (SQLFetchScrollFunc)GetProcAddress(hModule, "SQLFetchScroll");
-    SQLGetData_ptr = (SQLGetDataFunc)GetProcAddress(hModule, "SQLGetData");
-    SQLNumResultCols_ptr = (SQLNumResultColsFunc)GetProcAddress(hModule, "SQLNumResultCols");
-    SQLBindCol_ptr = (SQLBindColFunc)GetProcAddress(hModule, "SQLBindCol");
-    SQLDescribeCol_ptr = (SQLDescribeColFunc)GetProcAddress(hModule, "SQLDescribeColW");
-    SQLMoreResults_ptr = (SQLMoreResultsFunc)GetProcAddress(hModule, "SQLMoreResults");
-    SQLColAttribute_ptr = (SQLColAttributeFunc)GetProcAddress(hModule, "SQLColAttributeW");
+    SQLDriverConnect_ptr = GetFunctionPointer<SQLDriverConnectFunc>(handle, "SQLDriverConnectW");
+    SQLExecDirect_ptr = GetFunctionPointer<SQLExecDirectFunc>(handle, "SQLExecDirectW");
+    SQLPrepare_ptr = GetFunctionPointer<SQLPrepareFunc>(handle, "SQLPrepareW");
+    SQLBindParameter_ptr = GetFunctionPointer<SQLBindParameterFunc>(handle, "SQLBindParameter");
+    SQLExecute_ptr = GetFunctionPointer<SQLExecuteFunc>(handle, "SQLExecute");
+    SQLRowCount_ptr = GetFunctionPointer<SQLRowCountFunc>(handle, "SQLRowCount");
+    SQLGetStmtAttr_ptr = GetFunctionPointer<SQLGetStmtAttrFunc>(handle, "SQLGetStmtAttrW");
+    SQLSetDescField_ptr = GetFunctionPointer<SQLSetDescFieldFunc>(handle, "SQLSetDescFieldW");
 
-    // Transaction functions loading
-    SQLEndTran_ptr = (SQLEndTranFunc)GetProcAddress(hModule, "SQLEndTran");
+    SQLFetch_ptr = GetFunctionPointer<SQLFetchFunc>(handle, "SQLFetch");
+    SQLFetchScroll_ptr = GetFunctionPointer<SQLFetchScrollFunc>(handle, "SQLFetchScroll");
+    SQLGetData_ptr = GetFunctionPointer<SQLGetDataFunc>(handle, "SQLGetData");
+    SQLNumResultCols_ptr = GetFunctionPointer<SQLNumResultColsFunc>(handle, "SQLNumResultCols");
+    SQLBindCol_ptr = GetFunctionPointer<SQLBindColFunc>(handle, "SQLBindCol");
+    SQLDescribeCol_ptr = GetFunctionPointer<SQLDescribeColFunc>(handle, "SQLDescribeColW");
+    SQLMoreResults_ptr = GetFunctionPointer<SQLMoreResultsFunc>(handle, "SQLMoreResults");
+    SQLColAttribute_ptr = GetFunctionPointer<SQLColAttributeFunc>(handle, "SQLColAttributeW");
 
-    // Disconnect and free functions loading
-    SQLFreeHandle_ptr = (SQLFreeHandleFunc)GetProcAddress(hModule, "SQLFreeHandle");
-    SQLDisconnect_ptr = (SQLDisconnectFunc)GetProcAddress(hModule, "SQLDisconnect");
-    SQLFreeStmt_ptr = (SQLFreeStmtFunc)GetProcAddress(hModule, "SQLFreeStmt");
+    SQLEndTran_ptr = GetFunctionPointer<SQLEndTranFunc>(handle, "SQLEndTran");
+    SQLDisconnect_ptr = GetFunctionPointer<SQLDisconnectFunc>(handle, "SQLDisconnect");
+    SQLFreeHandle_ptr = GetFunctionPointer<SQLFreeHandleFunc>(handle, "SQLFreeHandle");
+    SQLFreeStmt_ptr = GetFunctionPointer<SQLFreeStmtFunc>(handle, "SQLFreeStmt");
 
-    // Diagnostic record function Loading
-    SQLGetDiagRec_ptr = (SQLGetDiagRecFunc)GetProcAddress(hModule, "SQLGetDiagRecW");
+    SQLGetDiagRec_ptr = GetFunctionPointer<SQLGetDiagRecFunc>(handle, "SQLGetDiagRecW");
 
-    bool success = SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
-                   SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
-                   SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr && SQLExecute_ptr &&
-                   SQLRowCount_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr && SQLFetch_ptr &&
-                   SQLFetchScroll_ptr && SQLGetData_ptr && SQLNumResultCols_ptr &&
-                   SQLBindCol_ptr && SQLDescribeCol_ptr && SQLMoreResults_ptr &&
-                   SQLColAttribute_ptr && SQLEndTran_ptr && SQLFreeHandle_ptr &&
-                   SQLDisconnect_ptr && SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
+    bool success =
+        SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
+        SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
+        SQLExecDirect_ptr && SQLPrepare_ptr && SQLBindParameter_ptr &&
+        SQLExecute_ptr && SQLRowCount_ptr && SQLGetStmtAttr_ptr &&
+        SQLSetDescField_ptr && SQLFetch_ptr && SQLFetchScroll_ptr &&
+        SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr &&
+        SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr &&
+        SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr &&
+        SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
 
     if (!success) {
-        ThrowStdException("Failed to load required function pointers from driver");
+        ThrowStdException("Failed to load required function pointers from driver.");
     }
-    LOG("Successfully loaded function pointers from driver");
-    
-    return dllDir;
+    LOG("All driver function pointers successfully loaded.");
+    return handle;
 }
 
 // DriverLoader definition 
@@ -714,8 +811,15 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
                               &nativeError, message, SQL_MAX_MESSAGE_LENGTH, &messageLen);
 
         if (SQL_SUCCEEDED(diagReturn)) {
+#if defined(_WIN32)
+            // On Windows, SQLWCHAR and wchar_t are compatible
             errorInfo.sqlState = std::wstring(sqlState);
             errorInfo.ddbcErrorMsg = std::wstring(message);
+#else
+            // On macOS/Linux, need to convert SQLWCHAR (usually unsigned short) to wchar_t
+            errorInfo.sqlState = SQLWCHARToWString(sqlState);
+            errorInfo.ddbcErrorMsg = SQLWCHARToWString(message, messageLen);
+#endif
         }
     }
     return errorInfo;
@@ -729,7 +833,14 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Q
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    SQLRETURN ret = SQLExecDirect_ptr(StatementHandle->get(), const_cast<SQLWCHAR*>(Query.c_str()), SQL_NTS);
+    SQLWCHAR* queryPtr;
+#if defined(__APPLE__) || defined(__linux__)
+    std::vector<SQLWCHAR> queryBuffer = WStringToSQLWCHAR(Query);
+    queryPtr = queryBuffer.data();
+#else
+    queryPtr = const_cast<SQLWCHAR*>(Query.c_str());
+#endif
+    SQLRETURN ret = SQLExecDirect_ptr(StatementHandle->get(), queryPtr, SQL_NTS);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to execute query directly");
     }
@@ -761,7 +872,13 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     if (!statementHandle || !statementHandle->get()) {
         LOG("Statement handle is null or empty");
     }
-    SQLWCHAR* queryPtr = const_cast<SQLWCHAR*>(query.c_str());
+    SQLWCHAR* queryPtr;
+#if defined(__APPLE__) || defined(__linux__)
+    std::vector<SQLWCHAR> queryBuffer = WStringToSQLWCHAR(query);
+    queryPtr = queryBuffer.data();
+#else
+    queryPtr = const_cast<SQLWCHAR*>(query.c_str());
+#endif
     if (params.size() == 0) {
         // Execute statement directly if the statement is not parametrized. This is the
         // fastest way to submit a SQL statement for one-time execution according to
@@ -861,7 +978,11 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
         if (SQL_SUCCEEDED(retcode)) {
             // Append a named py::dict to ColumnMetadata
             // TODO: Should we define a struct for this task instead of dict?
+#if defined(__APPLE__) || defined(__linux__)
+            ColumnMetadata.append(py::dict("ColumnName"_a = SQLWCHARToWString(ColumnName, SQL_NTS),
+#else
             ColumnMetadata.append(py::dict("ColumnName"_a = std::wstring(ColumnName),
+#endif
                                            "DataType"_a = DataType, "ColumnSize"_a = ColumnSize,
                                            "DecimalDigits"_a = DecimalDigits,
                                            "Nullable"_a = Nullable));
@@ -932,7 +1053,13 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         // NOTE: dataBuffer.size() includes null-terminator, dataLen doesn't. Hence use '<'.
 						if (numCharsInData < dataBuffer.size()) {
                             // SQLGetData will null-terminate the data
+#if defined(__APPLE__) || defined(__linux__)
+                            std::string fullStr(reinterpret_cast<char*>(dataBuffer.data()));
+                            row.append(fullStr);
+                            LOG("macOS/Linux: Appended CHAR string of length {} to result row", fullStr.length());
+#else
                             row.append(std::string(reinterpret_cast<char*>(dataBuffer.data())));
+#endif
 						} else {
                             // In this case, buffer size is smaller, and data to be retrieved is longer
                             // TODO: Revisit
@@ -975,7 +1102,11 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
 						if (numCharsInData < dataBuffer.size()) {
                             // SQLGetData will null-terminate the data
+#if defined(__APPLE__) || defined(__linux__)
+                            row.append(SQLWCHARToWString(dataBuffer.data(), SQL_NTS));
+#else
                             row.append(std::wstring(dataBuffer.data()));
+#endif
 						} else {
                             // In this case, buffer size is smaller, and data to be retrieved is longer
                             // TODO: Revisit
@@ -1484,9 +1615,17 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (numCharsInData < fetchBufferSize) {
                         // SQLFetch will nullterminate the data
+#if defined(__APPLE__) || defined(__linux__)
+                        // Use unix-specific conversion to handle the wchar_t/SQLWCHAR size difference
+                        SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
+                        std::wstring wstr = SQLWCHARToWString(wcharData, numCharsInData);
+                        row.append(wstr);
+#else
+                        // On Windows, wchar_t and SQLWCHAR are both 2 bytes, so direct cast works
                         row.append(std::wstring(
                             reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]),
                             numCharsInData));
+#endif
                     } else {
                         // In this case, buffer size is smaller, and data to be retrieved is longer
                         // TODO: Revisit
@@ -1933,6 +2072,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     
     // Expose the C++ functions to Python
     m.def("ThrowStdException", &ThrowStdException);
+    m.def("get_driver_path", &GetDriverPathFromPython, "Get platform-specific ODBC driver path");
 
     // Define parameter info class
     py::class_<ParamInfo>(m, "ParamInfo")
@@ -1961,7 +2101,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("free", &SqlHandle::free, "Free the handle");
   
     py::class_<ConnectionHandle>(m, "Connection")
-        .def(py::init<const std::wstring&, bool, const py::dict&>(), py::arg("conn_str"), py::arg("use_pool"), py::arg("attrs_before") = py::dict())
+        .def(py::init<const std::string&, bool, const py::dict&>(), py::arg("conn_str"), py::arg("use_pool"), py::arg("attrs_before") = py::dict())
         .def("close", &ConnectionHandle::close, "Close the connection")
         .def("commit", &ConnectionHandle::commit, "Commit the current transaction")
         .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")
@@ -1969,6 +2109,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("get_autocommit", &ConnectionHandle::getAutocommit)
         .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle);
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
+    m.def("close_pooling", []() {ConnectionPoolManager::getInstance().closePools();});
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");
     m.def("DDBCSQLRowCount", &SQLRowCount_wrap,
