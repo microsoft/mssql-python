@@ -103,82 +103,91 @@ def add_driver_name_to_app_parameter(connection_string):
     # Initialize variables
     app_found = False
     modified_parameters = []
-    has_aad_interactive = False
-    has_aad_device_code = False
+    # Track authentication types
+    auth_type = None
 
     # Iterate through the key-value pairs
     for param in parameters:
         param = param.strip()
         if not param:
             continue
-            
-        if param.lower().startswith("authentication="):
-            # Handle AAD Interactive authentication
-            key, auth_value = param.split("=", 1)
-            if auth_value.lower() == "activedirectoryinteractive":
-                has_aad_interactive = True
-                # Only keep the auth parameter on Windows
+
+        key_value = param.split("=", 1)
+        if len(key_value) != 2:
+            continue
+        key, value = key_value
+        key_lower = key.lower()
+        value_lower = value.lower()
+
+        if key_lower == "authentication":
+            if value_lower == "activedirectoryinteractive":
+                auth_type = "interactive"
                 if platform.system().lower() != "windows":
                     modified_parameters.append(param)
                 continue
-            if auth_value.lower() == "activedirectorydevicecode":
-                has_aad_device_code = True
-        
-        if param.lower().startswith("app="):
+            elif value_lower == "activedirectorydevicecode":
+                auth_type = "devicecode"
+                continue
+            elif value_lower == "activedirectorydefault":
+                auth_type = "default"
+                continue
+
+        if key_lower == "app":
             app_found = True
-            key, _ = param.split("=", 1)
-            modified_parameters.append(f"{key}=MSSQL-Python")
+            modified_parameters.append("APP=MSSQL-Python")
         else:
             modified_parameters.append(param)
 
     # If APP key is not found, append it
     if not app_found:
         modified_parameters.append("APP=MSSQL-Python")
-    
-    if has_aad_device_code:
 
-        # Remove Uid, Pwd, Connection Timeout, Encrypt, TrustServerCertificate
+    # Remove sensitive parameters for AAD auth
+    if auth_type in ("default", "devicecode", "interactive"):
+        exclude_keys = [
+            "uid=", "pwd=", "connection timeout=", "encrypt=", "trustservercertificate=", "authentication="
+        ]
         modified_parameters = [
             param for param in modified_parameters
-            if not any(key in param.lower() for key in ["uid=", "pwd=", "connection timeout=", "encrypt=", "trustservercertificate=", "authentication="])
+            if not any(param.lower().startswith(exclude) for exclude in exclude_keys)
         ]
-        modified_parameters.append("Connection Timeout=180")  # Add default connection timeout
-        # Handle AAD Device Code auth
+
+    # Handle each AAD authentication type
+    if auth_type == "default":
+        try:
+            from azure.identity import DefaultAzureCredential
+            import struct
+        except ImportError:
+            raise ImportError("Please install azure-identity: pip install azure-identity")
+        credential = DefaultAzureCredential()
+        token_bytes = credential.get_token("https://database.windows.net/.default").token.encode("UTF-16-LE")
+        token_struct = struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
+        return ";".join(modified_parameters) + ";", {1256: token_struct}
+
+    if auth_type == "devicecode":
+        modified_parameters.append("Connection Timeout=180")
         try:
             from azure.identity import DeviceCodeCredential
             import struct
         except ImportError:
             raise ImportError("Please install azure-identity: pip install azure-identity")
-
         credential = DeviceCodeCredential()
         token_bytes = credential.get_token("https://database.windows.net/.default").token.encode("UTF-16-LE")
         token_struct = struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
-        conn_str = ";".join(modified_parameters) + ";", {1256: token_struct}
-        return conn_str
+        return ";".join(modified_parameters) + ";", {1256: token_struct}
 
-    # Handle AAD Interactive auth for non-Windows platforms
-    if has_aad_interactive and platform.system().lower() != "windows":
-
-        # Remove Uid, Pwd, Connection Timeout, Encrypt, TrustServerCertificate
-        modified_parameters = [
-            param for param in modified_parameters
-            if not any(key in param.lower() for key in ["uid=", "pwd=", "connection timeout=", "encrypt=", "trustservercertificate=", "authentication="])
-        ]
-
+    if auth_type == "interactive" and platform.system().lower() != "windows":
         try:
             from azure.identity import InteractiveBrowserCredential
             import struct
         except ImportError:
             raise ImportError("Please install azure-identity: pip install azure-identity")
-
         credential = InteractiveBrowserCredential()
         token_bytes = credential.get_token("https://database.windows.net/.default").token.encode("UTF-16-LE")
         token_struct = struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
-        conn_str = ";".join(modified_parameters) + ";", {1256: token_struct}
-        return conn_str
+        return ";".join(modified_parameters) + ";", {1256: token_struct}
 
-    conn_str = ";".join(modified_parameters) + ";"
-    return conn_str
+    return ";".join(modified_parameters) + ";"
 
 
 def detect_linux_distro():
