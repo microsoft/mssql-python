@@ -55,12 +55,16 @@ EntraID authentication is now fully supported on MacOS and Linux but with certai
 | Authentication Method | Windows Support | macOS/Linux Support | Notes |
 |----------------------|----------------|---------------------|-------|
 | ActiveDirectoryPassword | ✅ Yes | ✅ Yes | Username/password-based authentication |
-| ActiveDirectoryInteractive | ✅ Yes | ❌ No | Only works on Windows |
+| ActiveDirectoryInteractive | ✅ Yes | ✅ Yes | Interactive login via browser; requires user interaction |
 | ActiveDirectoryMSI (Managed Identity) | ✅ Yes | ✅ Yes | For Azure VMs/containers with managed identity |
 | ActiveDirectoryServicePrincipal | ✅ Yes | ✅ Yes | Use client ID and secret or certificate |
 | ActiveDirectoryIntegrated | ✅ Yes | ❌ No | Only works on Windows (requires Kerberos/SSPI) |
+| ActiveDirectoryDeviceCode | ✅ Yes | ✅ Yes | Device code flow for authentication; suitable for environments without browser access |
+| ActiveDirectoryDefault | ✅ Yes | ✅ Yes | Uses default authentication method based on environment and configuration |
 
-> **NOTE**: For using Access Token, the connection string *must not* contain `UID`, `PWD`, `Authentication`, or `Trusted_Connection` keywords.
+
+> **NOTE**: For using Access Token, the connection string **must not** contain `UID`, `PWD`, `Authentication`, or `Trusted_Connection` keywords.
+> **NOTE**: For using ActiveDirectoryDeviceCode, make sure to specify a `Connect Timeout` that provides enough time to go through the device code flow authentication process.
 
 ### Enhanced Pythonic Features
  

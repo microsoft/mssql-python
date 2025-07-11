@@ -145,7 +145,7 @@ def add_driver_name_to_app_parameter(connection_string):
     # Remove sensitive parameters for AAD auth
     if auth_type in ("default", "devicecode", "interactive"):
         exclude_keys = [
-            "uid=", "pwd=", "connection timeout=", "encrypt=", "trustservercertificate=", "authentication="
+            "uid=", "pwd=", "encrypt=", "trustservercertificate=", "authentication="
         ]
         modified_parameters = [
             param for param in modified_parameters
@@ -165,7 +165,6 @@ def add_driver_name_to_app_parameter(connection_string):
         return ";".join(modified_parameters) + ";", {1256: token_struct}
 
     if auth_type == "devicecode":
-        modified_parameters.append("Connection Timeout=180")
         try:
             from azure.identity import DeviceCodeCredential
             import struct
