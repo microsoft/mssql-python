@@ -104,6 +104,7 @@ def add_driver_name_to_app_parameter(connection_string):
     app_found = False
     modified_parameters = []
     has_aad_interactive = False
+    has_aad_device_code = False
 
     # Iterate through the key-value pairs
     for param in parameters:
@@ -120,6 +121,8 @@ def add_driver_name_to_app_parameter(connection_string):
                 if platform.system().lower() != "windows":
                     modified_parameters.append(param)
                 continue
+            if auth_value.lower() == "activedirectorydevicecode":
+                has_aad_device_code = True
         
         if param.lower().startswith("app="):
             app_found = True
@@ -131,6 +134,27 @@ def add_driver_name_to_app_parameter(connection_string):
     # If APP key is not found, append it
     if not app_found:
         modified_parameters.append("APP=MSSQL-Python")
+    
+    if has_aad_device_code:
+
+        # Remove Uid, Pwd, Connection Timeout, Encrypt, TrustServerCertificate
+        modified_parameters = [
+            param for param in modified_parameters
+            if not any(key in param.lower() for key in ["uid=", "pwd=", "connection timeout=", "encrypt=", "trustservercertificate=", "authentication="])
+        ]
+        modified_parameters.append("Connection Timeout=180")  # Add default connection timeout
+        # Handle AAD Device Code auth
+        try:
+            from azure.identity import DeviceCodeCredential
+            import struct
+        except ImportError:
+            raise ImportError("Please install azure-identity: pip install azure-identity")
+
+        credential = DeviceCodeCredential()
+        token_bytes = credential.get_token("https://database.windows.net/.default").token.encode("UTF-16-LE")
+        token_struct = struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
+        conn_str = ";".join(modified_parameters) + ";", {1256: token_struct}
+        return conn_str
 
     # Handle AAD Interactive auth for non-Windows platforms
     if has_aad_interactive and platform.system().lower() != "windows":
