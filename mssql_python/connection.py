@@ -11,6 +11,7 @@ Resource Management:
 - Cursors are also cleaned up automatically when no longer referenced, to prevent memory leaks.
 """
 import weakref
+import re
 from mssql_python.cursor import Cursor
 from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
@@ -65,7 +66,7 @@ class Connection:
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
-        if "authentication" in self.connection_str.lower():
+        if re.search(r"authentication", self.connection_str, re.IGNORECASE):
             connection_result = process_connection_string(self.connection_str)
             self.connection_str = connection_result[0]
             if connection_result[1]:

@@ -55,7 +55,6 @@ EntraID authentication is now fully supported on MacOS and Linux but with certai
 | Authentication Method | Windows Support | macOS/Linux Support | Notes |
 |----------------------|----------------|---------------------|-------|
 | ActiveDirectoryPassword | ✅ Yes | ✅ Yes | Username/password-based authentication |
-| ActiveDirectoryInteractive | ✅ Yes | ❌ No | Only works on Windows |
 | ActiveDirectoryInteractive | ✅ Yes | ✅ Yes | Interactive login via browser; requires user interaction |
 | ActiveDirectoryMSI (Managed Identity) | ✅ Yes | ✅ Yes | For Azure VMs/containers with managed identity |
 | ActiveDirectoryServicePrincipal | ✅ Yes | ✅ Yes | Use client ID and secret or certificate |
