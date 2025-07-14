@@ -94,7 +94,21 @@ class LoggingManager:
         # By default we only want to log to a file, max size 500MB, and keep 5 backups
         file_handler = RotatingFileHandler(self._log_file, maxBytes=512*1024*1024, backupCount=5)
         file_handler.setLevel(log_level)
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(filename)s - %(message)s')
+        
+        # Create a custom formatter that adds [Python Layer log] prefix only to non-DDBC messages
+        class PythonLayerFormatter(logging.Formatter):
+            def format(self, record):
+                message = record.getMessage()
+                # Don't add [Python Layer log] prefix if the message already has [DDBC Bindings log] or [Python Layer log]
+                if "[DDBC Bindings log]" not in message and "[Python Layer log]" not in message:
+                    # Create a copy of the record to avoid modifying the original
+                    new_record = logging.makeLogRecord(record.__dict__)
+                    new_record.msg = f"[Python Layer log] {record.msg}"
+                    return super().format(new_record)
+                return super().format(record)
+        
+        # Use our custom formatter
+        formatter = PythonLayerFormatter('%(asctime)s - %(levelname)s - %(filename)s - %(message)s')
         file_handler.setFormatter(formatter)
         self._logger.addHandler(file_handler)
 
@@ -102,6 +116,7 @@ class LoggingManager:
             # If the mode is stdout, then we want to log to the console as well
             stdout_handler = logging.StreamHandler(sys.stdout)
             stdout_handler.setLevel(log_level)
+            # Use the same smart formatter
             stdout_handler.setFormatter(formatter)
             self._logger.addHandler(stdout_handler)
         elif mode != 'file':
