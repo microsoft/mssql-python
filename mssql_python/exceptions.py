@@ -4,7 +4,7 @@ Licensed under the MIT license.
 This module contains custom exception classes for the mssql_python package.
 These classes are used to raise exceptions when an error occurs while executing a query.
 """
-from mssql_python.logging_config import get_logger, ENABLE_LOGGING
+from mssql_python.logging_config import get_logger, LoggingManager
 
 logger = get_logger()
 
@@ -621,7 +621,7 @@ def truncate_error_message(error_message: str) -> str:
         string_third = string_second[string_second.index("]") + 1 :]
         return string_first + string_third
     except Exception as e:
-        if ENABLE_LOGGING:
+        if logger:
             logger.error("Error while truncating error message: %s",e)
         return error_message
 
@@ -641,7 +641,7 @@ def raise_exception(sqlstate: str, ddbc_error: str) -> None:
     """
     exception_class = sqlstate_to_exception(sqlstate, ddbc_error)
     if exception_class:
-        if ENABLE_LOGGING:
+        if logger:
             logger.error(exception_class)
         raise exception_class
     raise DatabaseError(

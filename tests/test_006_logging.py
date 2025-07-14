@@ -1,25 +1,38 @@
 import logging
 import os
 import pytest
-from mssql_python.logging_config import setup_logging, get_logger, ENABLE_LOGGING
+from mssql_python.logging_config import setup_logging, get_logger, LoggingManager
 
 def get_log_file_path():
-    repo_root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    pid = os.getpid()
-    log_file = os.path.join(repo_root_dir, "mssql_python", f"mssql_python_trace_{pid}.log")
-    return log_file
+    # Get the LoggingManager singleton instance
+    manager = LoggingManager()
+    # If logging is not enabled yet, return the default path pattern
+    if not manager.enabled:
+        repo_root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        pid = os.getpid()
+        log_dir = os.path.join(repo_root_dir, "mssql_python", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        return os.path.join(log_dir, f"mssql_python_trace_{pid}.log")
+    # Otherwise return the actual log file path
+    return manager.log_file
 
 @pytest.fixture
 def cleanup_logger():
     """Cleanup logger & log files before and after each test"""
     def cleanup():
+        # Get the LoggingManager singleton instance
+        manager = LoggingManager()
         logger = get_logger()
         if logger is not None:
             logger.handlers.clear()
         log_file_path = get_log_file_path()
         if os.path.exists(log_file_path):
             os.remove(log_file_path)
-        ENABLE_LOGGING = False
+        # Reset the LoggingManager instance
+        manager._enabled = False
+        manager._initialized = False
+        manager._logger = None
+        manager._log_file = None
     # Perform cleanup before the test
     cleanup()
     yield
@@ -29,9 +42,11 @@ def cleanup_logger():
 def test_no_logging(cleanup_logger):
     """Test that logging is off by default"""
     try:
+        # Get the LoggingManager singleton instance
+        manager = LoggingManager()
         logger = get_logger()
         assert logger is None
-        assert ENABLE_LOGGING == False
+        assert manager.enabled == False
     except Exception as e:
         pytest.fail(f"Logging not off by default. Error: {e}")
 
