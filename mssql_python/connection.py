@@ -18,6 +18,7 @@ from mssql_python.helpers import add_driver_to_connection_str, check_error
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
 from mssql_python.exceptions import DatabaseError, InterfaceError
+from mssql_python.auth import process_connection_string
 
 logger = get_logger()
 
@@ -64,6 +65,12 @@ class Connection:
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
+        if "authentication" in self.connection_str.lower():
+            connection_result = process_connection_string(self.connection_str)
+            self.connection_str = connection_result[0]
+            if connection_result[1]:
+                self._attrs_before.update(connection_result[1])
+        
         self._closed = False
         
         # Using WeakSet which automatically removes cursors when they are no longer in use
