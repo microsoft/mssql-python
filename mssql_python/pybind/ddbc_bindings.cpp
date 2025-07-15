@@ -948,15 +948,12 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                              size_t paramSetSize,
                              std::vector<std::shared_ptr<void>>& paramBuffers) {
     LOG("Starting column-wise parameter array binding. paramSetSize: {}, paramCount: {}", paramSetSize, columnwise_params.size());
-
     for (int paramIndex = 0; paramIndex < columnwise_params.size(); ++paramIndex) {
         const py::list& columnValues = columnwise_params[paramIndex].cast<py::list>();
         const ParamInfo& info = paramInfos[paramIndex];
-
         if (columnValues.size() != paramSetSize) {
             ThrowStdException("Column " + std::to_string(paramIndex) + " has mismatched size.");
         }
-
         void* dataPtr = nullptr;
         SQLLEN* strLenOrIndArray = nullptr;
         SQLLEN bufferLength = 0;
@@ -1003,7 +1000,6 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                         std::memset(wcharArray + i * (info.columnSize + 1), 0, (info.columnSize + 1) * sizeof(SQLWCHAR));
                         continue;
                     }
-
                     std::wstring wstr = columnValues[i].cast<std::wstring>();
                     if (wstr.length() > info.columnSize) {
                         std::string offending = WideToUTF8(wstr);
@@ -1023,15 +1019,19 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
             case SQL_C_UTINYINT: {
                 unsigned char* dataArray = AllocateParamBufferArray<unsigned char>(paramBuffers, paramSetSize);
                 for (size_t i = 0; i < paramSetSize; ++i) {
-                    const py::handle& value = columnValues[i];
-                    if (!py::isinstance<py::int_>(value)) {
-                        ThrowStdException(MakeParamMismatchErrorStr(info.paramCType, paramIndex));
+                    if (columnValues[i].is_none()) {
+                        if (!strLenOrIndArray)
+                            strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(paramBuffers, paramSetSize);
+                        dataArray[i] = 0;
+                        strLenOrIndArray[i] = SQL_NULL_DATA;
+                    } else {
+                        int intVal = columnValues[i].cast<int>();
+                        if (intVal < 0 || intVal > 255) {
+                            ThrowStdException("UTINYINT value out of range at rowIndex " + std::to_string(i));
+                        }
+                        dataArray[i] = static_cast<unsigned char>(intVal);
+                        if (strLenOrIndArray) strLenOrIndArray[i] = 0;
                     }
-                    int intVal = value.cast<int>();
-                    if (intVal < 0 || intVal > 255) {
-                        ThrowStdException("UTINYINT value out of range at rowIndex " + std::to_string(i));
-                    }
-                    dataArray[i] = static_cast<unsigned char>(intVal);
                 }
                 dataPtr = dataArray;
                 bufferLength = sizeof(unsigned char);
@@ -1040,22 +1040,25 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
             case SQL_C_SHORT: {
                 short* dataArray = AllocateParamBufferArray<short>(paramBuffers, paramSetSize);
                 for (size_t i = 0; i < paramSetSize; ++i) {
-                    const py::handle& value = columnValues[i];
-                    if (!py::isinstance<py::int_>(value)) {
-                        ThrowStdException(MakeParamMismatchErrorStr(info.paramCType, paramIndex));
+                    if (columnValues[i].is_none()) {
+                        if (!strLenOrIndArray)
+                            strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(paramBuffers, paramSetSize);
+                        dataArray[i] = 0;
+                        strLenOrIndArray[i] = SQL_NULL_DATA;
+                    } else {
+                        int intVal = columnValues[i].cast<int>();
+                        if (intVal < std::numeric_limits<short>::min() ||
+                            intVal > std::numeric_limits<short>::max()) {
+                            ThrowStdException("SHORT value out of range at rowIndex " + std::to_string(i));
+                        }
+                        dataArray[i] = static_cast<short>(intVal);
+                        if (strLenOrIndArray) strLenOrIndArray[i] = 0;
                     }
-                    int intVal = value.cast<int>();
-                    if (intVal < std::numeric_limits<short>::min() ||
-                        intVal > std::numeric_limits<short>::max()) {
-                        ThrowStdException("SHORT value out of range at rowIndex " + std::to_string(i));
-                    }
-                    dataArray[i] = static_cast<short>(intVal);
                 }
                 dataPtr = dataArray;
                 bufferLength = sizeof(short);
                 break;
             }
-
             default: {
                 ThrowStdException("BindParameterArray: Unsupported C type: " + std::to_string(info.paramCType));
             }

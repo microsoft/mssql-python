@@ -18,11 +18,8 @@ from mssql_python.helpers import check_error
 from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 from mssql_python import ddbc_bindings
 from .row import Row
-from typing import Sequence, Any
-
 
 logger = get_logger()
-
 
 class Cursor:
     """
@@ -541,7 +538,7 @@ class Cursor:
             # Add more mappings as needed
         }
         return sql_to_python_type.get(sql_type, str)
-    
+
     def execute(
         self,
         operation: str,
@@ -656,13 +653,10 @@ class Cursor:
         for col_index in range(param_count):
             column = [row[col_index] for row in seq_of_parameters]
             sample_value = column[0]
-
             if isinstance(sample_value, str):
                 sample_value = max(column, key=lambda s: len(str(s)) if s is not None else 0)
-
             elif isinstance(sample_value, decimal.Decimal):
                 sample_value = max(column, key=lambda d: len(d.as_tuple().digits) if d is not None else 0)
-
             param = sample_value
             dummy_row = list(seq_of_parameters[0])
             parameters_type.append(self._create_parameter_types_list(param, param_info, dummy_row, col_index))
@@ -679,7 +673,7 @@ class Cursor:
         )
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
-        self.rowcount = len(seq_of_parameters)
+        self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
         self.last_executed_stmt = operation
         self._initialize_description()
 
