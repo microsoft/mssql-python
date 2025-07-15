@@ -619,11 +619,51 @@ class Cursor:
 
         # Initialize description after execution
         self._initialize_description()
+    
+
+    # def executemany(self, operation: str, seq_of_parameters: list) -> None:
+    #     self._check_closed()
+    #     self._reset_cursor()
+
+    #     if not seq_of_parameters:
+    #         return
+
+    #     # Transpose to column-major format
+    #     columns = list(zip(*seq_of_parameters))  # Each column: tuple of values
+    #     sample_params = seq_of_parameters[0]
+    #     param_info = ddbc_bindings.ParamInfo
+
+    #     parameters_type = []
+    #     for i, sample_val in enumerate(sample_params):
+    #         paraminfo = self._create_parameter_types_list(sample_val, param_info, sample_params, i)
+
+    #         # Fix: Adjust string column sizes based on actual max length across all rows
+    #         if isinstance(sample_val, str):
+    #             max_len = max(
+    #                 (len(v) for v in columns[i] if isinstance(v, str)),
+    #                 default=1  # fallback if all values are None
+    #             )
+    #             paraminfo.columnSize = max_len
+
+    #         parameters_type.append(paraminfo)
+
+    #     # Now execute with adjusted parameter types
+    #     ret = ddbc_bindings.SQLExecuteMany(
+    #         self.hstmt, operation, columns, parameters_type, len(seq_of_parameters)
+    #     )
+    #     check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+
+    #     self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
+    #     self._initialize_description()
 
     def _transpose_rowwise_to_columnwise(self, seq_of_parameters: list) -> list:
         """
         Convert list of rows (row-wise) into list of columns (column-wise),
-        for array binding.
+        for array binding via ODBC.
+        
+        Example:
+            Input: [(1, "a"), (2, "b")]
+            Output: [[1, 2], ["a", "b"]]
         """
         if not seq_of_parameters:
             return []
@@ -648,23 +688,39 @@ class Cursor:
         if not seq_of_parameters:
             self.rowcount = 0
             return
+
+        # # Infer types from the first row
+        # first_row = list(seq_of_parameters[0])
+        # param_info = ddbc_bindings.ParamInfo
+        # parameters_type = [
+        #     self._create_parameter_types_list(param, param_info, first_row, i)
+        #     for i, param in enumerate(first_row)
+        # ]
         param_info = ddbc_bindings.ParamInfo
         param_count = len(seq_of_parameters[0])
         parameters_type = []
 
         for col_index in range(param_count):
+            # Use the longest string (or most precise value) in that column for inference
             column = [row[col_index] for row in seq_of_parameters]
             sample_value = column[0]
+
+            # For strings, pick the value with max len
             if isinstance(sample_value, str):
                 sample_value = max(column, key=lambda s: len(str(s)) if s is not None else 0)
+
+            # For decimals, use the one with highest precision
             elif isinstance(sample_value, decimal.Decimal):
                 sample_value = max(column, key=lambda d: len(d.as_tuple().digits) if d is not None else 0)
 
             param = sample_value
-            dummy_row = list(seq_of_parameters[0])
+            dummy_row = list(seq_of_parameters[0])  # to pass for `_get_numeric_data()` mutation
             parameters_type.append(self._create_parameter_types_list(param, param_info, dummy_row, col_index))
 
+
+        # Transpose to column-wise format for array binding
         columnwise_params = self._transpose_rowwise_to_columnwise(seq_of_parameters)
+
         # Execute batched statement
         ret = ddbc_bindings.SQLExecuteMany(
             self.hstmt,
@@ -673,7 +729,9 @@ class Cursor:
             parameters_type,
             len(seq_of_parameters)
         )
-        self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+
+        self.rowcount = len(seq_of_parameters)
         self.last_executed_stmt = operation
         self._initialize_description()
 
