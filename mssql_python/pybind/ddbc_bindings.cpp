@@ -1012,7 +1012,7 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                                           ", len: " + std::to_string(wstr.length()) +
                                           " > columnSize: " + std::to_string(info.columnSize));
                     }
-                    std::memcpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(), (wstr.length() + 1) * sizeof(SQLWCHAR));
+                    std::wcsncpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(), info.columnSize + 1);
                     strLenOrIndArray[i] = SQL_NTS;
                 }
                 dataPtr = wcharArray;
