@@ -8,14 +8,9 @@ import platform
 import struct
 from typing import Tuple, Dict, Optional, Union
 from mssql_python.logging_config import get_logger, ENABLE_LOGGING
+from mssql_python.constants import AuthType
 
 logger = get_logger()
-
-class AuthType:
-    """Constants for authentication types"""
-    INTERACTIVE = "activedirectoryinteractive"
-    DEVICE_CODE = "activedirectorydevicecode"
-    DEFAULT = "activedirectorydefault"
 
 class AADAuth:
     """Handles Azure Active Directory authentication"""
@@ -94,20 +89,19 @@ def process_auth_parameters(parameters: list) -> Tuple[list, Optional[str]]:
         value_lower = value.lower()
 
         if key_lower == "authentication":
-            if value_lower == AuthType.INTERACTIVE:
+            # Check for supported authentication types and set auth_type accordingly
+            if value_lower == AuthType.INTERACTIVE.value:
+                # Interactive authentication (browser-based); only append parameter for non-Windows
                 auth_type = "interactive"
-                if platform.system().lower() != "windows":
-                    modified_parameters.append(param)
-            elif value_lower == AuthType.DEVICE_CODE:
+                if platform.system().lower() == "windows":
+                    auth_type = None  # Skip if on Windows
+            elif value_lower == AuthType.DEVICE_CODE.value:
+                # Device code authentication (for devices without browser)
                 auth_type = "devicecode"
-            elif value_lower == AuthType.DEFAULT:
+            elif value_lower == AuthType.DEFAULT.value:
+                # Default authentication (uses DefaultAzureCredential)
                 auth_type = "default"
-            else:
-                raise ValueError(f"Invalid authentication type: {value}. "
-                               f"Supported types are: {AuthType.INTERACTIVE}, "
-                               f"{AuthType.DEVICE_CODE}, {AuthType.DEFAULT}")
-        else:
-            modified_parameters.append(param)
+        modified_parameters.append(param)
 
     return modified_parameters, auth_type
 

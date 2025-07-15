@@ -66,6 +66,11 @@ class Connection:
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
+
+        # Check if the connection string contains authentication parameters
+        # This is important for processing the connection string correctly.
+        # If authentication is specified, it will be processed to handle
+        # different authentication types like interactive, device code, etc.
         if re.search(r"authentication", self.connection_str, re.IGNORECASE):
             connection_result = process_connection_string(self.connection_str)
             self.connection_str = connection_result[0]
