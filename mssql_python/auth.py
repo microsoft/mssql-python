@@ -124,6 +124,8 @@ def get_auth_token(auth_type: str) -> Optional[bytes]:
         return AADAuth.get_default_token()
     elif auth_type == "devicecode":
         return AADAuth.get_device_code_token()
+    # If interactive authentication is requested, use InteractiveBrowserCredential
+    # but only if not on Windows, since in Windows: AADInteractive is supported.
     elif auth_type == "interactive" and platform.system().lower() != "windows":
         return AADAuth.get_interactive_token()
     return None
