@@ -744,6 +744,8 @@ class Cursor:
     def __del__(self):
         """
         Destructor to ensure the cursor is closed when it is no longer needed.
+        This is a safety net to ensure resources are cleaned up
+        even if close() was not called explicitly.
         """
         if not self.closed:
             try:

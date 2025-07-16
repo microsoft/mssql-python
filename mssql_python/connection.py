@@ -233,6 +233,7 @@ class Connection:
             # Convert to list to avoid modification during iteration
             cursors_to_close = list(self._cursors)
             close_errors = []
+
             for cursor in cursors_to_close:
                 try:
                     if not cursor.closed:
@@ -268,6 +269,11 @@ class Connection:
             logger.info("Connection closed successfully.")
 
     def __del__(self):
+        """
+        Destructor to ensure the connection is closed when the connection object is no longer needed.
+        This is a safety net to ensure resources are cleaned up
+        even if close() was not called explicitly.
+        """
         if not self._closed:
             try:
                 self.close()
