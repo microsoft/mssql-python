@@ -638,6 +638,12 @@ class Cursor:
         """
         Prepare a database operation and execute it against all parameter sequences.
         This version uses column-wise parameter binding and a single batched SQLExecute().
+        Args:
+            operation: SQL query or command.
+            seq_of_parameters: Sequence of sequences or mappings of parameters.
+
+        Raises:
+            Error: If the operation fails.
         """
         self._check_closed()
         self._reset_cursor()
