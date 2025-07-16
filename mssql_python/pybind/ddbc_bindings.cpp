@@ -530,29 +530,15 @@ void HandleZeroColumnSizeAtFetch(SQLULEN& columnSize) {
 // TODO: Revisit GIL considerations if we're using python's logger
 template <typename... Args>
 void LOG(const std::string& formatString, Args&&... args) {
-    // Get the logger each time to ensure we have the most up-to-date logger state
-    py::object logging = py::module_::import("mssql_python.logging_config").attr("get_logger")();
+    // TODO: Try to do this string concatenation at compile time
+    std::string ddbcFormatString = "[DDBC Bindings log] " + formatString;
+    static py::object logging = py::module_::import("mssql_python.logging_config")
+	                            .attr("get_logger")();
     if (py::isinstance<py::none>(logging)) {
         return;
     }
-    
-    try {
-        // Add prefix to all logs
-        std::string ddbcFormatString = "[DDBC Bindings log] " + formatString;
-        
-        // Handle both formatted and non-formatted cases
-        if constexpr (sizeof...(args) == 0) {
-            // No formatting needed, just use the string directly
-            logging.attr("debug")(py::str(ddbcFormatString));
-        } else {
-            // Apply formatting
-            py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
-            logging.attr("debug")(message);
-        }
-    } catch (const std::exception& e) {
-        // Fallback in case of Python error - don't let logging errors crash the application
-        std::cerr << "Logging error: " << e.what() << std::endl;
-    }
+    py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
+    logging.attr("debug")(message);
 }
 
 // TODO: Add more nuanced exception classes
@@ -673,7 +659,7 @@ DriverHandle LoadDriverOrThrowException() {
             (archStr == "arm64") ? "arm64" :
             "x86";
         
-        fs::path dllDir = fs::path(moduleDir) / "libs" / "windows" / archDir;
+        fs::path dllDir = fs::path(moduleDir) / "libs" / archDir;
         fs::path authDllPath = dllDir / "mssql-auth.dll";
         if (fs::exists(authDllPath)) {
             HMODULE hAuth = LoadLibraryW(std::wstring(authDllPath.native().begin(), authDllPath.native().end()).c_str());
@@ -793,8 +779,9 @@ void SqlHandle::free() {
         }
         SQLFreeHandle_ptr(_type, _handle);
         _handle = nullptr;
-        // Log the handle freeing directly with string concatenation instead of using stringstream
-        LOG("Freed SQL Handle of type: {}", type_str);
+        std::stringstream ss;
+        ss << "Freed SQL Handle of type: " << type_str;
+        LOG(ss.str());
     }
 }
 

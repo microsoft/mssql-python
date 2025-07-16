@@ -11,21 +11,17 @@ Resource Management:
 - Cursors are also cleaned up automatically when no longer referenced, to prevent memory leaks.
 """
 import weakref
-import logging
+import re
 from mssql_python.cursor import Cursor
-from mssql_python.logging_config import get_logger, LoggingManager, setup_logging
+from mssql_python.logging_config import get_logger
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
-from mssql_python.helpers import add_driver_to_connection_str, check_error, sanitize_connection_string
+from mssql_python.helpers import add_driver_to_connection_str, check_error
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
 from mssql_python.exceptions import DatabaseError, InterfaceError
+from mssql_python.auth import process_connection_string
 
-# Ensure we're getting the most up-to-date logger
 logger = get_logger()
-# If no logger is available yet, set up a default one
-if logger is None:
-    setup_logging(log_level=logging.INFO)
-    logger = get_logger()
 
 
 class Connection:
@@ -70,6 +66,17 @@ class Connection:
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
+
+        # Check if the connection string contains authentication parameters
+        # This is important for processing the connection string correctly.
+        # If authentication is specified, it will be processed to handle
+        # different authentication types like interactive, device code, etc.
+        if re.search(r"authentication", self.connection_str, re.IGNORECASE):
+            connection_result = process_connection_string(self.connection_str)
+            self.connection_str = connection_result[0]
+            if connection_result[1]:
+                self._attrs_before.update(connection_result[1])
+        
         self._closed = False
         
         # Using WeakSet which automatically removes cursors when they are no longer in use
@@ -120,7 +127,7 @@ class Connection:
             conn_str += f"{key}={value};"
 
         if logger:
-            logger.info("Final connection string: %s", sanitize_connection_string(conn_str))
+            logger.info("Final connection string: %s", conn_str)
 
         return conn_str
     
@@ -182,6 +189,7 @@ class Connection:
             )
 
         cursor = Cursor(self)
+        self._cursors.add(cursor)  # Track the cursor
         return cursor
 
     def commit(self) -> None:
@@ -239,7 +247,7 @@ class Connection:
             # Convert to list to avoid modification during iteration
             cursors_to_close = list(self._cursors)
             close_errors = []
-
+            
             for cursor in cursors_to_close:
                 try:
                     if not cursor.closed:
@@ -273,16 +281,3 @@ class Connection:
         
         if logger:
             logger.info("Connection closed successfully.")
-
-    def __del__(self):
-        """
-        Destructor to ensure the connection is closed when the connection object is no longer needed.
-        This is a safety net to ensure resources are cleaned up
-        even if close() was not called explicitly.
-        """
-        if not self._closed:
-            try:
-                self.close()
-            except Exception as e:
-                if ENABLE_LOGGING:
-                    logger.error(f"Error during connection cleanup in __del__: {e}")

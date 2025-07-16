@@ -4,7 +4,7 @@ Licensed under the MIT license.
 This module contains custom exception classes for the mssql_python package.
 These classes are used to raise exceptions when an error occurs while executing a query.
 """
-from mssql_python.logging_config import get_logger, LoggingManager
+from mssql_python.logging_config import get_logger
 
 logger = get_logger()
 
