@@ -1240,6 +1240,79 @@ def test_row_comparison_with_list(cursor, db_connection):
         cursor.execute("DROP TABLE #pytest_row_comparison_test")
         db_connection.commit()
 
+def test_row_string_representation(cursor, db_connection):
+    """Test Row string and repr representations"""
+    try:
+        cursor.execute("""
+        CREATE TABLE #pytest_row_test (
+            id INT PRIMARY KEY,
+            text_col NVARCHAR(50),
+            null_col INT
+        )
+        """)
+        db_connection.commit()
+
+        cursor.execute("""
+        INSERT INTO #pytest_row_test (id, text_col, null_col)
+        VALUES (?, ?, ?)
+        """, [1, "test", None])
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_test")
+        row = cursor.fetchone()
+        
+        # Test str()
+        str_representation = str(row)
+        assert str_representation == "(1, 'test', None)", "Row str() representation incorrect"
+        
+        # Test repr()
+        repr_representation = repr(row)
+        assert repr_representation == "(1, 'test', None)", "Row repr() representation incorrect"
+
+    except Exception as e:
+        pytest.fail(f"Row string representation test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE #pytest_row_test")
+        db_connection.commit()
+
+def test_row_column_mapping(cursor, db_connection):
+    """Test Row column name mapping"""
+    try:
+        cursor.execute("""
+        CREATE TABLE #pytest_row_test (
+            FirstColumn INT PRIMARY KEY,
+            Second_Column NVARCHAR(50),
+            [Complex Name!] INT
+        )
+        """)
+        db_connection.commit()
+
+        cursor.execute("""
+        INSERT INTO #pytest_row_test ([FirstColumn], [Second_Column], [Complex Name!])
+        VALUES (?, ?, ?)
+        """, [1, "test", 42])
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_row_test")
+        row = cursor.fetchone()
+        
+        # Test different column name styles
+        assert row.FirstColumn == 1, "CamelCase column access failed"
+        assert row.Second_Column == "test", "Snake_case column access failed"
+        assert getattr(row, "Complex Name!") == 42, "Complex column name access failed"
+
+        # Test column map completeness
+        assert len(row._column_map) == 3, "Column map size incorrect"
+        assert "FirstColumn" in row._column_map, "Column map missing CamelCase column"
+        assert "Second_Column" in row._column_map, "Column map missing snake_case column"
+        assert "Complex Name!" in row._column_map, "Column map missing complex name column"
+
+    except Exception as e:
+        pytest.fail(f"Row column mapping test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE #pytest_row_test")
+        db_connection.commit()
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
