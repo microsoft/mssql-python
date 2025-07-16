@@ -17,6 +17,7 @@ from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import check_error
 from mssql_python.logging_config import get_logger
 from mssql_python import ddbc_bindings
+from mssql_python.exceptions import InterfaceError
 from .row import Row
 
 logger = get_logger()
@@ -739,5 +740,7 @@ class Cursor:
             try:
                 self.close()
             except Exception as e:
-                if logger:
-                    logger.error(f"Error closing cursor: {e}")
+                raise InterfaceError(
+                    driver_error=str(e),
+                    ddbc_error="Error during python connection cleanup"
+                )

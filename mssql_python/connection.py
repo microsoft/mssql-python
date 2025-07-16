@@ -18,7 +18,7 @@ from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
-from mssql_python.exceptions import DatabaseError, InterfaceError
+from mssql_python.exceptions import InterfaceError
 
 logger = get_logger()
 
@@ -281,5 +281,7 @@ class Connection:
             try:
                 self.close()
             except Exception as e:
-                if logger:
-                    logger.error(f"Error during connection cleanup in __del__: {e}")
+                raise InterfaceError(
+                    driver_error=str(e),
+                    ddbc_error="Error during python connection cleanup"
+                )
