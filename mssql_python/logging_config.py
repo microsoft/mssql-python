@@ -161,10 +161,4 @@ def get_logger():
     Returns:
         logging.Logger: The logger instance.
     """
-    # Always return a logger instance, even if setup hasn't been called yet
-    # This ensures modules can get a logger reference that will work once setup is called
-    if _manager._logger is None:
-        # Return the logger that will be configured when setup() is called
-        # This logger won't output anything until handlers are added in setup()
-        return logging.getLogger("mssql_python")
-    return _manager._logger
+    return _manager.get_logger()
