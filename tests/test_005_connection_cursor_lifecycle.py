@@ -95,11 +95,9 @@ gc.collect()
     assert result.returncode == 0, f"Expected no segfault, but got: {result.stderr}"
 
 def test_multiple_connections_interleaved_cursors(conn_str):
-    # Properly escape the connection string for embedding in code
-    escaped_conn_str = conn_str.replace('\\', '\\\\').replace('"', '\\"')
-    code = f"""
+    code = """
 from mssql_python import connect
-conns = [connect("{escaped_conn_str}") for _ in range(3)]
+conns = [connect(\"""" + conn_str + """\") for _ in range(3)]
 cursors = []
 for conn in conns:
     # Create a cursor for each connection and execute a simple query
@@ -117,11 +115,9 @@ gc.collect()
     assert result.returncode == 0, f"Expected no segfault, but got: {result.stderr}"
 
 def test_cursor_outlives_connection(conn_str):
-    # Properly escape the connection string for embedding in code
-    escaped_conn_str = conn_str.replace('\\', '\\\\').replace('"', '\\"')
-    code = f"""
+    code = """
 from mssql_python import connect
-conn = connect("{escaped_conn_str}")
+conn = connect(\"""" + conn_str + """\")
 cursor = conn.cursor()
 cursor.execute("SELECT 1")
 cursor.fetchall()

@@ -678,12 +678,14 @@ DriverHandle LoadDriverOrThrowException() {
         if (fs::exists(authDllPath)) {
             HMODULE hAuth = LoadLibraryW(std::wstring(authDllPath.native().begin(), authDllPath.native().end()).c_str());
             if (hAuth) {
-                LOG("Authentication DLL loaded: {}", authDllPath.string());
+                LOG("mssql-auth.dll loaded: {}", authDllPath.string());
             } else {
                 LOG("Failed to load mssql-auth.dll: {}", GetLastErrorMessage());
+                ThrowStdException("Failed to load mssql-auth.dll. Please ensure it is present in the expected directory.");
             }
         } else {
             LOG("Note: mssql-auth.dll not found. This is OK if Entra ID is not in use.");
+            ThrowStdException("mssql-auth.dll not found. If you are using Entra ID, please ensure it is present.");
         }
     #endif
 
@@ -694,6 +696,10 @@ DriverHandle LoadDriverOrThrowException() {
     DriverHandle handle = LoadDriverLibrary(driverPath.string());
     if (!handle) {
         LOG("Failed to load driver: {}", GetLastErrorMessage());
+        // If this happens in linux, suggest installing libltdl7
+        #ifdef __linux__
+            ThrowStdException("Failed to load ODBC driver. If you are on Linux, please install libltdl7 package.");
+        #endif
         ThrowStdException("Failed to load ODBC driver. Please check installation.");
     }
     LOG("Driver library successfully loaded.");
