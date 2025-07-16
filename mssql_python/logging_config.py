@@ -9,7 +9,7 @@ from logging.handlers import RotatingFileHandler
 import os
 import sys
 
-ENABLE_LOGGING = False
+logger = False
 
 
 def setup_logging(mode="file", log_level=logging.DEBUG):
@@ -23,8 +23,8 @@ def setup_logging(mode="file", log_level=logging.DEBUG):
         mode (str): The logging mode ('file' or 'stdout').
         log_level (int): The logging level (default: logging.DEBUG).
     """
-    global ENABLE_LOGGING
-    ENABLE_LOGGING = True
+    global logger
+    logger = True
 
     # Create a logger for mssql_python module
     logger = logging.getLogger(__name__)
@@ -60,6 +60,6 @@ def get_logger():
     Returns:
         logging.Logger: The logger instance.
     """
-    if not ENABLE_LOGGING:
+    if not logger:
         return None
     return logging.getLogger(__name__)

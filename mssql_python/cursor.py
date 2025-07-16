@@ -15,7 +15,7 @@ import datetime
 from typing import List, Union
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import check_error
-from mssql_python.logging_config import get_logger, ENABLE_LOGGING
+from mssql_python.logging_config import get_logger
 from mssql_python import ddbc_bindings
 from .row import Row
 
@@ -431,7 +431,7 @@ class Cursor:
         if self.hstmt:
             self.hstmt.free()
             self.hstmt = None
-            if ENABLE_LOGGING:
+            if logger:
                 logger.debug("SQLFreeHandle succeeded")     
         # Reinitialize the statement handle
         self._initialize_cursor()
@@ -449,7 +449,7 @@ class Cursor:
         if self.hstmt:
             self.hstmt.free()
             self.hstmt = None
-            if ENABLE_LOGGING:
+            if logger:
                 logger.debug("SQLFreeHandle succeeded")
         self.closed = True
 
@@ -584,7 +584,7 @@ class Cursor:
 # Executing a new statement. Reset is_stmt_prepared to false
             self.is_stmt_prepared = [False]
 
-        if ENABLE_LOGGING:
+        if logger:
             logger.debug("Executing query: %s", operation)
             for i, param in enumerate(parameters):
                 logger.debug(
@@ -637,7 +637,7 @@ class Cursor:
         total_rowcount = 0
         for parameters in seq_of_parameters:
             parameters = list(parameters)
-            if ENABLE_LOGGING:
+            if logger:
                 logger.info("Executing query with parameters: %s", parameters)
             prepare_stmt = first_execution
             first_execution = False
