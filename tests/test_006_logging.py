@@ -31,7 +31,6 @@ def test_no_logging(cleanup_logger):
     try:
         logger = get_logger()
         assert logger is None
-        assert logger == False
     except Exception as e:
         pytest.fail(f"Logging not off by default. Error: {e}")
 
