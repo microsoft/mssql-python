@@ -15,7 +15,7 @@ import re
 from mssql_python.cursor import Cursor
 from mssql_python.logging_config import get_logger
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
-from mssql_python.helpers import add_driver_to_connection_str, check_error
+from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
 from mssql_python.exceptions import DatabaseError, InterfaceError
@@ -127,7 +127,7 @@ class Connection:
             conn_str += f"{key}={value};"
 
         if logger:
-            logger.info("Final connection string: %s", conn_str)
+            logger.info("Final connection string: %s", sanitize_connection_string(conn_str))
 
         return conn_str
     

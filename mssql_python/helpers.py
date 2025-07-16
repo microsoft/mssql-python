@@ -184,3 +184,17 @@ def get_driver_path(module_dir, architecture):
         raise RuntimeError(f"ODBC driver not found at: {driver_path_str}")
 
     return driver_path_str
+
+
+def sanitize_connection_string(conn_str: str) -> str:
+    """
+    Sanitize the connection string by removing sensitive information.
+    Args:
+        conn_str (str): The connection string to sanitize.
+    Returns:
+        str: The sanitized connection string.
+    """
+    # Remove sensitive information from the connection string, Pwd section
+    # Replace Pwd=...; or Pwd=... (end of string) with Pwd=***;
+    import re
+    return re.sub(r"(Pwd\s*=\s*)[^;]*", r"\1***", conn_str, flags=re.IGNORECASE)
