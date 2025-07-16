@@ -15,9 +15,9 @@ from mssql_python.auth import (
     process_connection_string
 )
 from mssql_python.constants import AuthType
+import secrets
 
-# Test data
-SAMPLE_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsIng1dCI6I"
+SAMPLE_TOKEN = secrets.token_hex(44)
 
 @pytest.fixture(autouse=True)
 def setup_azure_identity():
