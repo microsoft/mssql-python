@@ -728,3 +728,16 @@ class Cursor:
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             return False
         return True
+
+    def __del__(self):
+        """
+        Destructor to ensure the cursor is closed when it is no longer needed.
+        This is a safety net to ensure resources are cleaned up
+        even if close() was not called explicitly.
+        """
+        if not self.closed:
+            try:
+                self.close()
+            except Exception as e:
+                if logger:
+                    logger.error(f"Error closing cursor: {e}")

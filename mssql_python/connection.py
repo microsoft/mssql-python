@@ -271,3 +271,16 @@ class Connection:
         
         if logger:
             logger.info("Connection closed successfully.")
+
+    def __del__(self):
+        """
+        Destructor to ensure the connection is closed when the connection object is no longer needed.
+        This is a safety net to ensure resources are cleaned up
+        even if close() was not called explicitly.
+        """
+        if not self._closed:
+            try:
+                self.close()
+            except Exception as e:
+                if logger:
+                    logger.error(f"Error during connection cleanup in __del__: {e}")
