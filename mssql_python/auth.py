@@ -7,7 +7,7 @@ This module handles authentication for the mssql_python package.
 import platform
 import struct
 from typing import Tuple, Dict, Optional, Union
-from mssql_python.logging_config import get_logger
+from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 from mssql_python.constants import AuthType
 
 logger = get_logger()
@@ -22,42 +22,38 @@ class AADAuth:
         return struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
 
     @staticmethod
-    def get_default_token() -> bytes:
-        """Get token using DefaultAzureCredential"""
-        from azure.identity import DefaultAzureCredential
-
-        try:
-            # DefaultAzureCredential will automatically use the best available method
-            # based on the environment (e.g., managed identity, environment variables)
-            credential = DefaultAzureCredential()
-            token = credential.get_token("https://database.windows.net/.default").token
-            return AADAuth.get_token_struct(token)
-        except Exception as e:
-            raise RuntimeError(f"Failed to create DefaultAzureCredential: {e}")  
-
-    @staticmethod
-    def get_device_code_token() -> bytes:
-        """Get token using DeviceCodeCredential"""
-        from azure.identity import DeviceCodeCredential
-            
-        try:
-            credential = DeviceCodeCredential()
-            token = credential.get_token("https://database.windows.net/.default").token
-            return AADAuth.get_token_struct(token)
-        except Exception as e:
-            raise RuntimeError(f"Failed to create DeviceCodeCredential: {e}")
-
-    @staticmethod
-    def get_interactive_token() -> bytes:
-        """Get token using InteractiveBrowserCredential"""
-        from azure.identity import InteractiveBrowserCredential
+    def get_token(auth_type: str) -> bytes:
+        """Get token using the specified authentication type"""
+        from azure.identity import (
+            DefaultAzureCredential, 
+            DeviceCodeCredential, 
+            InteractiveBrowserCredential
+        )
+        from azure.core.exceptions import ClientAuthenticationError
+        
+        # Mapping of auth types to credential classes
+        credential_map = {
+            "default": DefaultAzureCredential,
+            "devicecode": DeviceCodeCredential,
+            "interactive": InteractiveBrowserCredential,
+        }
+        
+        credential_class = credential_map[auth_type]
         
         try:
-            credential = InteractiveBrowserCredential()
+            credential = credential_class()
             token = credential.get_token("https://database.windows.net/.default").token
             return AADAuth.get_token_struct(token)
+        except ClientAuthenticationError as e:
+            # Re-raise with more specific context about Azure AD authentication failure
+            raise RuntimeError(
+                f"Azure AD authentication failed for {credential_class.__name__}: {e}. "
+                f"This could be due to invalid credentials, missing environment variables, "
+                f"user cancellation, network issues, or unsupported configuration."
+            ) from e
         except Exception as e:
-            raise RuntimeError(f"Failed to create InteractiveBrowserCredential: {e}")
+            # Catch any other unexpected exceptions
+            raise RuntimeError(f"Failed to create {credential_class.__name__}: {e}") from e
 
 def process_auth_parameters(parameters: list) -> Tuple[list, Optional[str]]:
     """
@@ -120,15 +116,14 @@ def get_auth_token(auth_type: str) -> Optional[bytes]:
     if not auth_type:
         return None
         
-    if auth_type == "default":
-        return AADAuth.get_default_token()
-    elif auth_type == "devicecode":
-        return AADAuth.get_device_code_token()
-    # If interactive authentication is requested, use InteractiveBrowserCredential
-    # but only if not on Windows, since in Windows: AADInteractive is supported.
-    elif auth_type == "interactive" and platform.system().lower() != "windows":
-        return AADAuth.get_interactive_token()
-    return None
+    # Handle platform-specific logic for interactive auth
+    if auth_type == "interactive" and platform.system().lower() == "windows":
+        return None  # Let Windows handle AADInteractive natively
+        
+    try:
+        return AADAuth.get_token(auth_type)
+    except (ValueError, RuntimeError):
+        return None
 
 def process_connection_string(connection_string: str) -> Tuple[str, Optional[Dict]]:
     """

@@ -37,23 +37,34 @@ def setup_azure_identity():
         def get_token(self, scope):
             return MockToken()
 
+    # Mock ClientAuthenticationError
+    class MockClientAuthenticationError(Exception):
+        pass
+
     class MockIdentity:
         DefaultAzureCredential = MockDefaultAzureCredential
         DeviceCodeCredential = MockDeviceCodeCredential
         InteractiveBrowserCredential = MockInteractiveBrowserCredential
 
+    class MockCore:
+        class exceptions:
+            ClientAuthenticationError = MockClientAuthenticationError
+
     # Create mock azure module if it doesn't exist
     if 'azure' not in sys.modules:
         sys.modules['azure'] = type('MockAzure', (), {})()
     
-    # Add identity module to azure
+    # Add identity and core modules to azure
     sys.modules['azure.identity'] = MockIdentity()
+    sys.modules['azure.core'] = MockCore()
+    sys.modules['azure.core.exceptions'] = MockCore.exceptions()
     
     yield
     
     # Cleanup
-    if 'azure.identity' in sys.modules:
-        del sys.modules['azure.identity']
+    for module in ['azure.identity', 'azure.core', 'azure.core.exceptions']:
+        if module in sys.modules:
+            del sys.modules[module]
 
 class TestAuthType:
     def test_auth_type_constants(self):
@@ -67,17 +78,54 @@ class TestAADAuth:
         assert isinstance(token_struct, bytes)
         assert len(token_struct) > 4
 
-    def test_get_default_token(self):
-        token_struct = AADAuth.get_default_token()
+    def test_get_token_default(self):
+        token_struct = AADAuth.get_token("default")
         assert isinstance(token_struct, bytes)
 
-    def test_get_device_code_token(self):
-        token_struct = AADAuth.get_device_code_token()
+    def test_get_token_device_code(self):
+        token_struct = AADAuth.get_token("devicecode")
         assert isinstance(token_struct, bytes)
 
-    def test_get_interactive_token(self):
-        token_struct = AADAuth.get_interactive_token()
+    def test_get_token_interactive(self):
+        token_struct = AADAuth.get_token("interactive")
         assert isinstance(token_struct, bytes)
+
+    def test_get_token_credential_mapping(self):
+        # Test that all supported auth types work
+        supported_types = ["default", "devicecode", "interactive"]
+        for auth_type in supported_types:
+            token_struct = AADAuth.get_token(auth_type)
+            assert isinstance(token_struct, bytes)
+            assert len(token_struct) > 4
+
+    def test_get_token_client_authentication_error(self):
+        """Test that ClientAuthenticationError is properly handled"""
+        from azure.core.exceptions import ClientAuthenticationError
+        
+        # Create a mock credential that raises ClientAuthenticationError
+        class MockFailingCredential:
+            def get_token(self, scope):
+                raise ClientAuthenticationError("Mock authentication failed")
+        
+        # Use monkeypatch to mock the credential creation
+        def mock_get_token_failing(auth_type):
+            from azure.core.exceptions import ClientAuthenticationError
+            if auth_type == "default":
+                try:
+                    credential = MockFailingCredential()
+                    token = credential.get_token("https://database.windows.net/.default").token
+                    return AADAuth.get_token_struct(token)
+                except ClientAuthenticationError as e:
+                    raise RuntimeError(
+                        f"Azure AD authentication failed for MockFailingCredential: {e}. "
+                        f"This could be due to invalid credentials, missing environment variables, "
+                        f"user cancellation, network issues, or unsupported configuration."
+                    ) from e
+            else:
+                return AADAuth.get_token(auth_type)
+        
+        with pytest.raises(RuntimeError, match="Azure AD authentication failed"):
+            mock_get_token_failing("default")
 
 class TestProcessAuthParameters:
     def test_empty_parameters(self):
