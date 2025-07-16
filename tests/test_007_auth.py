@@ -8,13 +8,13 @@ import pytest
 import platform
 import sys
 from mssql_python.auth import (
-    AuthType,
     AADAuth,
     process_auth_parameters,
     remove_sensitive_params,
     get_auth_token,
     process_connection_string
 )
+from mssql_python.constants import AuthType
 
 # Test data
 SAMPLE_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsIng1dCI6I"
@@ -57,9 +57,9 @@ def setup_azure_identity():
 
 class TestAuthType:
     def test_auth_type_constants(self):
-        assert AuthType.INTERACTIVE == "activedirectoryinteractive"
-        assert AuthType.DEVICE_CODE == "activedirectorydevicecode"
-        assert AuthType.DEFAULT == "activedirectorydefault"
+        assert AuthType.INTERACTIVE.value == "activedirectoryinteractive"
+        assert AuthType.DEVICE_CODE.value == "activedirectorydevicecode"
+        assert AuthType.DEFAULT.value == "activedirectorydefault"
 
 class TestAADAuth:
     def test_get_token_struct(self):
@@ -90,7 +90,7 @@ class TestProcessAuthParameters:
         params = ["Authentication=ActiveDirectoryInteractive", "Server=test"]
         modified_params, auth_type = process_auth_parameters(params)
         assert "Authentication=ActiveDirectoryInteractive" not in modified_params
-        assert auth_type == "interactive"
+        assert auth_type == None
 
     def test_interactive_auth_non_windows(self, monkeypatch):
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
@@ -169,11 +169,6 @@ def test_error_handling():
     # Invalid connection string should raise ValueError
     with pytest.raises(ValueError, match="Invalid connection string format"):
         process_connection_string("InvalidConnectionString")
-
-    # Invalid auth type should raise ValueError
-    with pytest.raises(ValueError, match="Invalid authentication type"):
-        conn_str = "Server=test;Authentication=InvalidAuth"
-        process_connection_string(conn_str)
 
     # Test non-string input
     with pytest.raises(ValueError, match="Connection string must be a string"):

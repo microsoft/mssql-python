@@ -92,9 +92,9 @@ def process_auth_parameters(parameters: list) -> Tuple[list, Optional[str]]:
             # Check for supported authentication types and set auth_type accordingly
             if value_lower == AuthType.INTERACTIVE.value:
                 # Interactive authentication (browser-based); only append parameter for non-Windows
-                auth_type = "interactive"
                 if platform.system().lower() == "windows":
-                    auth_type = None  # Skip if on Windows
+                    continue  # Skip adding this parameter for Windows
+                auth_type = "interactive"
             elif value_lower == AuthType.DEVICE_CODE.value:
                 # Device code authentication (for devices without browser)
                 auth_type = "devicecode"
