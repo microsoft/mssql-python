@@ -19,7 +19,6 @@ from mssql_python.helpers import add_driver_to_connection_str, sanitize_connecti
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
 from mssql_python.exceptions import DatabaseError, InterfaceError
-from mssql_python.auth import process_connection_string
 
 logger = get_logger()
 

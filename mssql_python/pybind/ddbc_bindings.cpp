@@ -793,8 +793,9 @@ void SqlHandle::free() {
         }
         SQLFreeHandle_ptr(_type, _handle);
         _handle = nullptr;
-        // Log the handle freeing directly with string concatenation instead of using stringstream
-        LOG("Freed SQL Handle of type: {}", type_str);
+        std::stringstream ss;
+        ss << "Freed SQL Handle of type: " << type_str;
+        LOG(ss.str());
     }
 }
 
