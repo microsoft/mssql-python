@@ -126,7 +126,7 @@ class Connection:
                 continue
             conn_str += f"{key}={value};"
 
-        if ENABLE_LOGGING:
+        if ENABLE_LOGGING
             logger.info("Final connection string: %s", conn_str)
 
         return conn_str
@@ -150,7 +150,7 @@ class Connection:
             None
         """
         self.setautocommit(value)
-        if ENABLE_LOGGING:
+        if ENABLE_LOGGING
             logger.info("Autocommit mode set to %s.", value)
 
     def setautocommit(self, value: bool = True) -> None:
@@ -205,7 +205,7 @@ class Connection:
         """
         # Commit the current transaction
         self._conn.commit()
-        if ENABLE_LOGGING:
+        if ENABLE_LOGGING
             logger.info("Transaction committed successfully.")
 
     def rollback(self) -> None:
@@ -221,7 +221,7 @@ class Connection:
         """
         # Roll back the current transaction
         self._conn.rollback()
-        if ENABLE_LOGGING:
+        if ENABLE_LOGGING
             logger.info("Transaction rolled back successfully.")
 
     def close(self) -> None:
@@ -254,11 +254,11 @@ class Connection:
                 except Exception as e:
                     # Collect errors but continue closing other cursors
                     close_errors.append(f"Error closing cursor: {e}")
-                    if ENABLE_LOGGING:
+                    if ENABLE_LOGGING
                         logger.warning(f"Error closing cursor: {e}")
             
             # If there were errors closing cursors, log them but continue
-            if close_errors and ENABLE_LOGGING:
+            if close_errors and ENABLE_LOGGING
                 logger.warning(f"Encountered {len(close_errors)} errors while closing cursors")
 
             # Clear the cursor set explicitly to release any internal references
@@ -270,7 +270,7 @@ class Connection:
                 self._conn.close()
                 self._conn = None
         except Exception as e:
-            if ENABLE_LOGGING:
+            if ENABLE_LOGGING
                 logger.error(f"Error closing database connection: {e}")
             # Re-raise the connection close error as it's more critical
             raise
@@ -278,7 +278,7 @@ class Connection:
             # Always mark as closed, even if there were errors
             self._closed = True
         
-        if ENABLE_LOGGING:
+        if ENABLE_LOGGING
             logger.info("Connection closed successfully.")
 
     def __del__(self):
