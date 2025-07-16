@@ -736,11 +736,10 @@ class Cursor:
         This is a safety net to ensure resources are cleaned up
         even if close() was not called explicitly.
         """
-        if not self.closed:
+        if "_closed" not in self.__dict__ or not self._closed:
             try:
                 self.close()
             except Exception as e:
-                raise InterfaceError(
-                    driver_error=str(e),
-                    ddbc_error="Error during python connection cleanup"
-                )
+                pass
+                # if logger:
+                #     logger.error(f"Error during cursor cleanup in __del__: {e}")

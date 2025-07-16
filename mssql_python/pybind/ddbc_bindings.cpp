@@ -530,27 +530,20 @@ void HandleZeroColumnSizeAtFetch(SQLULEN& columnSize) {
 // TODO: Revisit GIL considerations if we're using python's logger
 template <typename... Args>
 void LOG(const std::string& formatString, Args&&... args) {
-    // Get the logger each time to ensure we have the most up-to-date logger state
-    py::object logging = py::module_::import("mssql_python.logging_config").attr("get_logger")();
-    if (py::isinstance<py::none>(logging)) {
-        return;
-    }
-    
+    py::gil_scoped_acquire gil;  // <---- this ensures safe Python API usage
+
+    py::object logger = py::module_::import("mssql_python.logging_config").attr("get_logger")();
+    if (py::isinstance<py::none>(logger)) return;
+
     try {
-        // Add prefix to all logs
         std::string ddbcFormatString = "[DDBC Bindings log] " + formatString;
-        
-        // Handle both formatted and non-formatted cases
         if constexpr (sizeof...(args) == 0) {
-            // No formatting needed, just use the string directly
-            logging.attr("debug")(py::str(ddbcFormatString));
+            logger.attr("debug")(py::str(ddbcFormatString));
         } else {
-            // Apply formatting
             py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
-            logging.attr("debug")(message);
+            logger.attr("debug")(message);
         }
     } catch (const std::exception& e) {
-        // Fallback in case of Python error - don't let logging errors crash the application
         std::cerr << "Logging error: " << e.what() << std::endl;
     }
 }
@@ -799,9 +792,7 @@ void SqlHandle::free() {
         }
         SQLFreeHandle_ptr(_type, _handle);
         _handle = nullptr;
-        std::stringstream ss;
-        ss << "Freed SQL Handle of type: " << type_str;
-        LOG(ss.str());
+        // Don't log during destruction - it can cause segfaults during Python shutdown
     }
 }
 
