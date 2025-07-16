@@ -1,7 +1,7 @@
 import logging
 import os
 import pytest
-from mssql_python.logging_config import setup_logging, get_logger, logger
+from mssql_python.logging_config import setup_logging, get_logger, ENABLE_LOGGING
 
 def get_log_file_path():
     repo_root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -19,7 +19,7 @@ def cleanup_logger():
         log_file_path = get_log_file_path()
         if os.path.exists(log_file_path):
             os.remove(log_file_path)
-        logger = False
+        ENABLE_LOGGING = False
     # Perform cleanup before the test
     cleanup()
     yield
@@ -31,6 +31,7 @@ def test_no_logging(cleanup_logger):
     try:
         logger = get_logger()
         assert logger is None
+        assert ENABLE_LOGGING == False
     except Exception as e:
         pytest.fail(f"Logging not off by default. Error: {e}")
 

@@ -116,9 +116,3 @@ class ConstantsDDBC(Enum):
     SQL_C_WCHAR = -8
     SQL_NULLABLE = 1
     SQL_MAX_NUMERIC_LEN = 16
-
-class AuthType(Enum):
-    """Constants for authentication types"""
-    INTERACTIVE = "activedirectoryinteractive"
-    DEVICE_CODE = "activedirectorydevicecode"
-    DEFAULT = "activedirectorydefault"

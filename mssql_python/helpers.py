@@ -6,7 +6,7 @@ This module provides helper functions for the mssql_python package.
 
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import raise_exception
-from mssql_python.logging_config import get_logger
+from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 import platform
 from pathlib import Path
 from mssql_python.ddbc_bindings import normalize_architecture
@@ -73,7 +73,7 @@ def check_error(handle_type, handle, ret):
     """
     if ret < 0:
         error_info = ddbc_bindings.DDBCSQLCheckError(handle_type, handle, ret)
-        if logger:
+        if ENABLE_LOGGING:
             logger.error("Error: %s", error_info.ddbcErrorMsg)
         raise_exception(error_info.sqlState, error_info.ddbcErrorMsg)
 
