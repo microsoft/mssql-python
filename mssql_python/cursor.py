@@ -617,10 +617,41 @@ class Cursor:
         # Initialize description after execution
         self._initialize_description()
 
+    @staticmethod
+    def _select_best_sample_value(column):
+        """
+        Selects the most representative non-null value from a column for type inference.
+
+        This is used during executemany() to infer SQL/C types based on actual data,
+        preferring a non-null value that is not the first row to avoid bias from placeholder defaults.
+
+        Args:
+            column: List of values in the column.
+        """
+        non_nulls = [v for v in column if v is not None]
+        if not non_nulls:
+            return None
+        if all(isinstance(v, int) for v in non_nulls):
+            # Pick the value with the widest range (min/max)
+            return max(non_nulls, key=lambda v: abs(v))
+        if all(isinstance(v, float) for v in non_nulls):
+            return 0.0
+        if all(isinstance(v, decimal.Decimal) for v in non_nulls):
+            return max(non_nulls, key=lambda d: len(d.as_tuple().digits))
+        if all(isinstance(v, str) for v in non_nulls):
+            return max(non_nulls, key=lambda s: len(str(s)))
+        if all(isinstance(v, datetime.datetime) for v in non_nulls):
+            return datetime.datetime.now()
+        if all(isinstance(v, datetime.date) for v in non_nulls):
+            return datetime.date.today()
+        return non_nulls[0]  # fallback
+
     def _transpose_rowwise_to_columnwise(self, seq_of_parameters: list) -> list:
         """
         Convert list of rows (row-wise) into list of columns (column-wise),
         for array binding via ODBC.
+        Args:
+            seq_of_parameters: Sequence of sequences or mappings of parameters.
         """
         if not seq_of_parameters:
             return []
@@ -658,16 +689,17 @@ class Cursor:
 
         for col_index in range(param_count):
             column = [row[col_index] for row in seq_of_parameters]
-            sample_value = column[0]
-            if isinstance(sample_value, str):
-                sample_value = max(column, key=lambda s: len(str(s)) if s is not None else 0)
-            elif isinstance(sample_value, decimal.Decimal):
-                sample_value = max(column, key=lambda d: len(d.as_tuple().digits) if d is not None else 0)
-            param = sample_value
+            sample_value = self._select_best_sample_value(column)
             dummy_row = list(seq_of_parameters[0])
-            parameters_type.append(self._create_parameter_types_list(param, param_info, dummy_row, col_index))
+            parameters_type.append(
+                self._create_parameter_types_list(sample_value, param_info, dummy_row, col_index)
+            )
 
         columnwise_params = self._transpose_rowwise_to_columnwise(seq_of_parameters)
+        if ENABLE_LOGGING:
+            logger.info("Executing batch query with %d parameter sets:\n%s",
+                len(seq_of_parameters),"\n".join(f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}" for i, p in enumerate(seq_of_parameters))
+            )
 
         # Execute batched statement
         ret = ddbc_bindings.SQLExecuteMany(
