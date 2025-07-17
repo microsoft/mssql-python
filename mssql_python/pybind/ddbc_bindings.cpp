@@ -185,6 +185,15 @@ ParamType* AllocateParamBuffer(std::vector<std::shared_ptr<void>>& paramBuffers,
     return static_cast<ParamType*>(paramBuffers.back().get());
 }
 
+template <typename ParamType>
+ParamType* AllocateParamBufferArray(std::vector<std::shared_ptr<void>>& paramBuffers,
+                                    size_t count) {
+    std::shared_ptr<ParamType> buffer(new ParamType[count], std::default_delete<ParamType[]>());
+    ParamType* raw = buffer.get();
+    paramBuffers.push_back(buffer);
+    return raw;
+}
+
 std::string DescribeChar(unsigned char ch) {
     if (ch >= 32 && ch <= 126) {
         return std::string("'") + static_cast<char>(ch) + "'";
@@ -931,6 +940,355 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
 
         return rc;
     }
+}
+
+SQLRETURN BindParameterArray(SQLHANDLE hStmt,
+                             const py::list& columnwise_params,
+                             const std::vector<ParamInfo>& paramInfos,
+                             size_t paramSetSize,
+                             std::vector<std::shared_ptr<void>>& paramBuffers) {
+    LOG("Starting column-wise parameter array binding. paramSetSize: {}, paramCount: {}", paramSetSize, columnwise_params.size());
+
+    std::vector<std::shared_ptr<void>> tempBuffers;
+
+    try {
+        for (int paramIndex = 0; paramIndex < columnwise_params.size(); ++paramIndex) {
+            const py::list& columnValues = columnwise_params[paramIndex].cast<py::list>();
+            const ParamInfo& info = paramInfos[paramIndex];
+            if (columnValues.size() != paramSetSize) {
+                ThrowStdException("Column " + std::to_string(paramIndex) + " has mismatched size.");
+            }
+            void* dataPtr = nullptr;
+            SQLLEN* strLenOrIndArray = nullptr;
+            SQLLEN bufferLength = 0;
+            switch (info.paramCType) {
+                case SQL_C_LONG: {
+                    int* dataArray = AllocateParamBufferArray<int>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (columnValues[i].is_none()) {
+                            if (!strLenOrIndArray)
+                                strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                            dataArray[i] = 0;
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                        } else {
+                            dataArray[i] = columnValues[i].cast<int>();
+                            if (strLenOrIndArray) strLenOrIndArray[i] = 0;
+                        }
+                    }
+                    dataPtr = dataArray;
+                    break;
+                }
+                case SQL_C_DOUBLE: {
+                    double* dataArray = AllocateParamBufferArray<double>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (columnValues[i].is_none()) {
+                            if (!strLenOrIndArray)
+                                strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                            dataArray[i] = 0;
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                        } else {
+                            dataArray[i] = columnValues[i].cast<double>();
+                            if (strLenOrIndArray) strLenOrIndArray[i] = 0;
+                        }
+                    }
+                    dataPtr = dataArray;
+                    break;
+                }
+                case SQL_C_WCHAR: {
+                    SQLWCHAR* wcharArray = AllocateParamBufferArray<SQLWCHAR>(tempBuffers, paramSetSize * (info.columnSize + 1));
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (columnValues[i].is_none()) {
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                            std::memset(wcharArray + i * (info.columnSize + 1), 0, (info.columnSize + 1) * sizeof(SQLWCHAR));
+                        } else {
+                            std::wstring wstr = columnValues[i].cast<std::wstring>();
+                            if (wstr.length() > info.columnSize) {
+                                std::string offending = WideToUTF8(wstr);
+                                ThrowStdException("Input string exceeds allowed column size at parameter index " + std::to_string(paramIndex));
+                            }
+                            std::memcpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(), (wstr.length() + 1) * sizeof(SQLWCHAR));
+                            strLenOrIndArray[i] = SQL_NTS;
+                        }
+                    }
+                    dataPtr = wcharArray;
+                    bufferLength = (info.columnSize + 1) * sizeof(SQLWCHAR);
+                    break;
+                }
+                case SQL_C_TINYINT:
+                case SQL_C_UTINYINT: {
+                    unsigned char* dataArray = AllocateParamBufferArray<unsigned char>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (columnValues[i].is_none()) {
+                            if (!strLenOrIndArray)
+                                strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                            dataArray[i] = 0;
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                        } else {
+                            int intVal = columnValues[i].cast<int>();
+                            if (intVal < 0 || intVal > 255) {
+                                ThrowStdException("UTINYINT value out of range at rowIndex " + std::to_string(i));
+                            }
+                            dataArray[i] = static_cast<unsigned char>(intVal);
+                            if (strLenOrIndArray) strLenOrIndArray[i] = 0;
+                        }
+                    }
+                    dataPtr = dataArray;
+                    bufferLength = sizeof(unsigned char);
+                    break;
+                }
+                case SQL_C_SHORT: {
+                    short* dataArray = AllocateParamBufferArray<short>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (columnValues[i].is_none()) {
+                            if (!strLenOrIndArray)
+                                strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                            dataArray[i] = 0;
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                        } else {
+                            int intVal = columnValues[i].cast<int>();
+                            if (intVal < std::numeric_limits<short>::min() ||
+                                intVal > std::numeric_limits<short>::max()) {
+                                ThrowStdException("SHORT value out of range at rowIndex " + std::to_string(i));
+                            }
+                            dataArray[i] = static_cast<short>(intVal);
+                            if (strLenOrIndArray) strLenOrIndArray[i] = 0;
+                        }
+                    }
+                    dataPtr = dataArray;
+                    bufferLength = sizeof(short);
+                    break;
+                }
+                case SQL_C_CHAR:
+                case SQL_C_BINARY: {
+                    char* charArray = AllocateParamBufferArray<char>(tempBuffers, paramSetSize * (info.columnSize + 1));
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (columnValues[i].is_none()) {
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                            std::memset(charArray + i * (info.columnSize + 1), 0, info.columnSize + 1);
+                        } else {
+                            std::string str = columnValues[i].cast<std::string>();
+                            if (str.size() > info.columnSize)
+                                ThrowStdException("Input exceeds column size at index " + std::to_string(i));
+                            std::memcpy(charArray + i * (info.columnSize + 1), str.c_str(), str.size());
+                            strLenOrIndArray[i] = static_cast<SQLLEN>(str.size());
+                        }
+                    }
+                    dataPtr = charArray;
+                    bufferLength = info.columnSize + 1;
+                    break;
+                }
+                case SQL_C_BIT: {
+                    char* boolArray = AllocateParamBufferArray<char>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (columnValues[i].is_none()) {
+                            boolArray[i] = 0;
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                        } else {
+                            boolArray[i] = columnValues[i].cast<bool>() ? 1 : 0;
+                            strLenOrIndArray[i] = 0;
+                        }
+                    }
+                    dataPtr = boolArray;
+                    bufferLength = sizeof(char);
+                    break;
+                }
+                case SQL_C_STINYINT:
+                case SQL_C_USHORT: {
+                    unsigned short* dataArray = AllocateParamBufferArray<unsigned short>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (columnValues[i].is_none()) {
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                            dataArray[i] = 0;
+                        } else {
+                            dataArray[i] = columnValues[i].cast<unsigned short>();
+                            strLenOrIndArray[i] = 0;
+                        }
+                    }
+                    dataPtr = dataArray;
+                    bufferLength = sizeof(unsigned short);
+                    break;
+                }
+                case SQL_C_SBIGINT:
+                case SQL_C_SLONG:
+                case SQL_C_UBIGINT:
+                case SQL_C_ULONG: {
+                    int64_t* dataArray = AllocateParamBufferArray<int64_t>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (columnValues[i].is_none()) {
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                            dataArray[i] = 0;
+                        } else {
+                            dataArray[i] = columnValues[i].cast<int64_t>();
+                            strLenOrIndArray[i] = 0;
+                        }
+                    }
+                    dataPtr = dataArray;
+                    bufferLength = sizeof(int64_t);
+                    break;
+                }
+                case SQL_C_FLOAT: {
+                    float* dataArray = AllocateParamBufferArray<float>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (columnValues[i].is_none()) {
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                            dataArray[i] = 0.0f;
+                        } else {
+                            dataArray[i] = columnValues[i].cast<float>();
+                            strLenOrIndArray[i] = 0;
+                        }
+                    }
+                    dataPtr = dataArray;
+                    bufferLength = sizeof(float);
+                    break;
+                }
+                case SQL_C_TYPE_DATE: {
+                    SQL_DATE_STRUCT* dateArray = AllocateParamBufferArray<SQL_DATE_STRUCT>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (columnValues[i].is_none()) {
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                            std::memset(&dateArray[i], 0, sizeof(SQL_DATE_STRUCT));
+                        } else {
+                            py::object dateObj = columnValues[i];
+                            dateArray[i].year = dateObj.attr("year").cast<SQLSMALLINT>();
+                            dateArray[i].month = dateObj.attr("month").cast<SQLUSMALLINT>();
+                            dateArray[i].day = dateObj.attr("day").cast<SQLUSMALLINT>();
+                            strLenOrIndArray[i] = 0;
+                        }
+                    }
+                    dataPtr = dateArray;
+                    bufferLength = sizeof(SQL_DATE_STRUCT);
+                    break;
+                }
+                case SQL_C_TYPE_TIME: {
+                    SQL_TIME_STRUCT* timeArray = AllocateParamBufferArray<SQL_TIME_STRUCT>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (columnValues[i].is_none()) {
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                            std::memset(&timeArray[i], 0, sizeof(SQL_TIME_STRUCT));
+                        } else {
+                            py::object timeObj = columnValues[i];
+                            timeArray[i].hour = timeObj.attr("hour").cast<SQLUSMALLINT>();
+                            timeArray[i].minute = timeObj.attr("minute").cast<SQLUSMALLINT>();
+                            timeArray[i].second = timeObj.attr("second").cast<SQLUSMALLINT>();
+                            strLenOrIndArray[i] = 0;
+                        }
+                    }
+                    dataPtr = timeArray;
+                    bufferLength = sizeof(SQL_TIME_STRUCT);
+                    break;
+                }
+                case SQL_C_TYPE_TIMESTAMP: {
+                    SQL_TIMESTAMP_STRUCT* tsArray = AllocateParamBufferArray<SQL_TIMESTAMP_STRUCT>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (columnValues[i].is_none()) {
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                            std::memset(&tsArray[i], 0, sizeof(SQL_TIMESTAMP_STRUCT));
+                        } else {
+                            py::object dtObj = columnValues[i];
+                            tsArray[i].year = dtObj.attr("year").cast<SQLSMALLINT>();
+                            tsArray[i].month = dtObj.attr("month").cast<SQLUSMALLINT>();
+                            tsArray[i].day = dtObj.attr("day").cast<SQLUSMALLINT>();
+                            tsArray[i].hour = dtObj.attr("hour").cast<SQLUSMALLINT>();
+                            tsArray[i].minute = dtObj.attr("minute").cast<SQLUSMALLINT>();
+                            tsArray[i].second = dtObj.attr("second").cast<SQLUSMALLINT>();
+                            tsArray[i].fraction = static_cast<SQLUINTEGER>(dtObj.attr("microsecond").cast<int>() * 1000);  // µs to ns
+                            strLenOrIndArray[i] = 0;
+                        }
+                    }
+                    dataPtr = tsArray;
+                    bufferLength = sizeof(SQL_TIMESTAMP_STRUCT);
+                    break;
+                }
+                case SQL_C_NUMERIC: {
+                    SQL_NUMERIC_STRUCT* numericArray = AllocateParamBufferArray<SQL_NUMERIC_STRUCT>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        const py::handle& element = columnValues[i];
+                        if (element.is_none()) {
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                            std::memset(&numericArray[i], 0, sizeof(SQL_NUMERIC_STRUCT));
+                            continue;
+                        }
+                        if (!py::isinstance<NumericData>(element)) {
+                            throw std::runtime_error(MakeParamMismatchErrorStr(info.paramCType, paramIndex));
+                        }
+                        NumericData decimalParam = element.cast<NumericData>();
+                        LOG("Received numeric parameter at [%zu]: precision=%d, scale=%d, sign=%d, val=%lld",
+                            i, decimalParam.precision, decimalParam.scale, decimalParam.sign, decimalParam.val);
+                        numericArray[i].precision = decimalParam.precision;
+                        numericArray[i].scale = decimalParam.scale;
+                        numericArray[i].sign = decimalParam.sign;
+                        std::memset(numericArray[i].val, 0, sizeof(numericArray[i].val));
+                        std::memcpy(numericArray[i].val,
+                                    reinterpret_cast<const char*>(&decimalParam.val),
+                                    std::min(sizeof(decimalParam.val), sizeof(numericArray[i].val)));
+                        strLenOrIndArray[i] = sizeof(SQL_NUMERIC_STRUCT);
+                    }
+                    dataPtr = numericArray;
+                    bufferLength = sizeof(SQL_NUMERIC_STRUCT);
+                    break;
+                }
+                default: {
+                    ThrowStdException("BindParameterArray: Unsupported C type: " + std::to_string(info.paramCType));
+                }
+            }
+            RETCODE rc = SQLBindParameter_ptr(
+                hStmt,
+                static_cast<SQLUSMALLINT>(paramIndex + 1),
+                static_cast<SQLUSMALLINT>(info.inputOutputType),
+                static_cast<SQLSMALLINT>(info.paramCType),
+                static_cast<SQLSMALLINT>(info.paramSQLType),
+                info.columnSize,
+                info.decimalDigits,
+                dataPtr,
+                bufferLength,
+                strLenOrIndArray
+            );
+            if (!SQL_SUCCEEDED(rc)) {
+                LOG("Failed to bind array param {}", paramIndex);
+                return rc;
+            }
+        }
+    } catch (...) {
+        LOG("Exception occurred during parameter array binding. Cleaning up.");
+        throw;
+    }
+    paramBuffers.insert(paramBuffers.end(), tempBuffers.begin(), tempBuffers.end());
+    LOG("Finished column-wise parameter array binding.");
+    return SQL_SUCCESS;
+}
+
+SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
+                              const std::wstring& query,
+                              const py::list& columnwise_params,
+                              const std::vector<ParamInfo>& paramInfos,
+                              size_t paramSetSize) {
+    SQLHANDLE hStmt = statementHandle->get();
+    SQLWCHAR* queryPtr;
+#if defined(__APPLE__) || defined(__linux__)
+    std::vector<SQLWCHAR> queryBuffer = WStringToSQLWCHAR(query);
+    queryPtr = queryBuffer.data();
+#else
+    queryPtr = const_cast<SQLWCHAR*>(query.c_str());
+#endif
+    RETCODE rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
+    if (!SQL_SUCCEEDED(rc)) return rc;
+    std::vector<std::shared_ptr<void>> paramBuffers;
+    rc = BindParameterArray(hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers);
+    if (!SQL_SUCCEEDED(rc)) return rc;
+    rc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)paramSetSize, 0);
+    if (!SQL_SUCCEEDED(rc)) return rc;
+    rc = SQLExecute_ptr(hStmt);
+    return rc;
 }
 
 // Wrap SQLNumResultCols
@@ -2112,6 +2470,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("close_pooling", []() {ConnectionPoolManager::getInstance().closePools();});
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");
+    m.def("SQLExecuteMany", &SQLExecuteMany_wrap, "Execute statement with multiple parameter sets");
     m.def("DDBCSQLRowCount", &SQLRowCount_wrap,
           "Get the number of rows affected by the last statement");
     m.def("DDBCSQLFetch", &SQLFetch_wrap, "Fetch the next row from the result set");
