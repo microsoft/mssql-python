@@ -7,10 +7,7 @@ This module handles authentication for the mssql_python package.
 import platform
 import struct
 from typing import Tuple, Dict, Optional, Union
-from mssql_python.logging_config import get_logger, ENABLE_LOGGING
 from mssql_python.constants import AuthType
-
-logger = get_logger()
 
 class AADAuth:
     """Handles Azure Active Directory authentication"""
