@@ -48,17 +48,23 @@ By adhering to the DB API 2.0 specification, the mssql-python module ensures com
  
 ### Support for Microsoft Entra ID Authentication
  
-The Microsoft mssql-python driver enables Python applications to connect to Microsoft SQL Server, Azure SQL Database, or Azure SQL Managed Instance using Microsoft Entra ID identities. It supports various authentication methods, including username and password, Microsoft Entra managed identity, and Integrated Windows Authentication in a federated, domain-joined environment. Additionally, the driver supports Microsoft Entra interactive authentication and Microsoft Entra managed identity authentication for both system-assigned and user-assigned managed identities.
+The Microsoft mssql-python driver enables Python applications to connect to Microsoft SQL Server, Azure SQL Database, or Azure SQL Managed Instance using Microsoft Entra ID identities. It supports a variety of authentication methods, including username and password, Microsoft Entra managed identity (system-assigned and user-assigned), Integrated Windows Authentication in a federated, domain-joined environment, interactive authentication via browser, device code flow for environments without browser access, and the default authentication method based on environment and configuration. This flexibility allows developers to choose the most suitable authentication approach for their deployment scenario.
 
 EntraID authentication is now fully supported on MacOS and Linux but with certain limitations as mentioned in the table:
 
 | Authentication Method | Windows Support | macOS/Linux Support | Notes |
 |----------------------|----------------|---------------------|-------|
 | ActiveDirectoryPassword | ✅ Yes | ✅ Yes | Username/password-based authentication |
-| ActiveDirectoryInteractive | ✅ Yes | ❌ No | Only works on Windows |
+| ActiveDirectoryInteractive | ✅ Yes | ✅ Yes | Interactive login via browser; requires user interaction |
 | ActiveDirectoryMSI (Managed Identity) | ✅ Yes | ✅ Yes | For Azure VMs/containers with managed identity |
 | ActiveDirectoryServicePrincipal | ✅ Yes | ✅ Yes | Use client ID and secret or certificate |
 | ActiveDirectoryIntegrated | ✅ Yes | ❌ No | Only works on Windows (requires Kerberos/SSPI) |
+| ActiveDirectoryDeviceCode | ✅ Yes | ✅ Yes | Device code flow for authentication; suitable for environments without browser access |
+| ActiveDirectoryDefault | ✅ Yes | ✅ Yes | Uses default authentication method based on environment and configuration |
+
+**NOTE**: For using Access Token, the connection string *must not* contain `UID`, `PWD`, `Authentication`, or `Trusted_Connection` keywords.
+
+**NOTE**: For using ActiveDirectoryDeviceCode, make sure to specify a `Connect Timeout` that provides enough time to go through the device code flow authentication process.
 
 ### Enhanced Pythonic Features
  
