@@ -1,5 +1,5 @@
 from mssql_python import connect
-from mssql_python import setup_logging, get_logger
+from mssql_python import setup_logging
 import os
 import decimal
 
