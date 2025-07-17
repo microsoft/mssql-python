@@ -198,3 +198,17 @@ def sanitize_connection_string(conn_str: str) -> str:
     # Replace Pwd=...; or Pwd=... (end of string) with Pwd=***;
     import re
     return re.sub(r"(Pwd\s*=\s*)[^;]*", r"\1***", conn_str, flags=re.IGNORECASE)
+
+
+def log(level: str, message: str, *args) -> None:
+    """
+    Universal logging helper that gets a fresh logger instance.
+    
+    Args:
+        level: Log level ('debug', 'info', 'warning', 'error')
+        message: Log message with optional format placeholders
+        *args: Arguments for message formatting
+    """
+    logger = get_logger()
+    if logger:
+        getattr(logger, level)(message, *args)

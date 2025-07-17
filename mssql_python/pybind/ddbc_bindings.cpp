@@ -780,6 +780,13 @@ SQLSMALLINT SqlHandle::type() const {
     return _type;
 }
 
+/*
+ * IMPORTANT: Never log in destructors - it causes segfaults.
+ * During program exit, C++ destructors may run AFTER Python shuts down.
+ * LOG() tries to acquire Python GIL and call Python functions, which crashes
+ * if Python is already gone. Keep destructors simple - just free resources.
+ * If you need destruction logs, use explicit close() methods instead.
+ */
 void SqlHandle::free() {
     if (_handle && SQLFreeHandle_ptr) {
         const char* type_str = nullptr;

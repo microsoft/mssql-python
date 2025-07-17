@@ -15,12 +15,10 @@ import re
 from mssql_python.cursor import Cursor
 from mssql_python.logging_config import get_logger
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
-from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string
+from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, log
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
 from mssql_python.exceptions import InterfaceError
-
-logger = get_logger()
 
 
 class Connection:
@@ -115,8 +113,7 @@ class Connection:
                 continue
             conn_str += f"{key}={value};"
 
-        if logger:
-            logger.info("Final connection string: %s", sanitize_connection_string(conn_str))
+        log('info', "Final connection string: %s", sanitize_connection_string(conn_str))
 
         return conn_str
     
@@ -139,8 +136,7 @@ class Connection:
             None
         """
         self.setautocommit(value)
-        if logger:
-            logger.info("Autocommit mode set to %s.", value)
+        log('info', "Autocommit mode set to %s.", value)
 
     def setautocommit(self, value: bool = True) -> None:
         """
@@ -195,8 +191,7 @@ class Connection:
         """
         # Commit the current transaction
         self._conn.commit()
-        if logger:
-            logger.info("Transaction committed successfully.")
+        log('info', "Transaction committed successfully.")
 
     def rollback(self) -> None:
         """
@@ -211,8 +206,7 @@ class Connection:
         """
         # Roll back the current transaction
         self._conn.rollback()
-        if logger:
-            logger.info("Transaction rolled back successfully.")
+        log('info', "Transaction rolled back successfully.")
 
     def close(self) -> None:
         """
@@ -244,12 +238,11 @@ class Connection:
                 except Exception as e:
                     # Collect errors but continue closing other cursors
                     close_errors.append(f"Error closing cursor: {e}")
-                    if logger:
-                        logger.warning(f"Error closing cursor: {e}")
+                    log('warning', f"Error closing cursor: {e}")
             
             # If there were errors closing cursors, log them but continue
-            if close_errors and logger:
-                logger.warning(f"Encountered {len(close_errors)} errors while closing cursors")
+            if close_errors:
+                log('warning', f"Encountered {len(close_errors)} errors while closing cursors")
 
             # Clear the cursor set explicitly to release any internal references
             self._cursors.clear()
@@ -260,16 +253,14 @@ class Connection:
                 self._conn.close()
                 self._conn = None
         except Exception as e:
-            if logger:
-                logger.error(f"Error closing database connection: {e}")
+            log('error', f"Error closing database connection: {e}")
             # Re-raise the connection close error as it's more critical
             raise
         finally:
             # Always mark as closed, even if there were errors
             self._closed = True
         
-        if logger:
-            logger.info("Connection closed successfully.")
+        log('info', "Connection closed successfully.")
 
     def __del__(self):
         """

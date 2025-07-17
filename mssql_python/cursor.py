@@ -14,13 +14,11 @@ import uuid
 import datetime
 from typing import List, Union
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
-from mssql_python.helpers import check_error
+from mssql_python.helpers import check_error, log
 from mssql_python.logging_config import get_logger
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import InterfaceError
 from .row import Row
-
-logger = get_logger()
 
 
 class Cursor:
@@ -432,8 +430,7 @@ class Cursor:
         if self.hstmt:
             self.hstmt.free()
             self.hstmt = None
-            if logger:
-                logger.debug("SQLFreeHandle succeeded")     
+            log('debug', "SQLFreeHandle succeeded")     
         # Reinitialize the statement handle
         self._initialize_cursor()
 
@@ -450,8 +447,7 @@ class Cursor:
         if self.hstmt:
             self.hstmt.free()
             self.hstmt = None
-            if logger:
-                logger.debug("SQLFreeHandle succeeded")
+            log('debug', "SQLFreeHandle succeeded")
         self.closed = True
 
     def _check_closed(self):
@@ -585,15 +581,14 @@ class Cursor:
 # Executing a new statement. Reset is_stmt_prepared to false
             self.is_stmt_prepared = [False]
 
-        if logger:
-            logger.debug("Executing query: %s", operation)
-            for i, param in enumerate(parameters):
-                logger.debug(
-                    """Parameter number: %s, Parameter: %s,
-                    Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
-                    i + 1,
-                    param,
-                    str(type(param)),
+        log('debug', "Executing query: %s", operation)
+        for i, param in enumerate(parameters):
+            log('debug',
+                """Parameter number: %s, Parameter: %s,
+                Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
+                i + 1,
+                param,
+                str(type(param)),
                     parameters_type[i].paramSQLType,
                     parameters_type[i].paramCType,
                     parameters_type[i].columnSize,
@@ -638,8 +633,7 @@ class Cursor:
         total_rowcount = 0
         for parameters in seq_of_parameters:
             parameters = list(parameters)
-            if logger:
-                logger.info("Executing query with parameters: %s", parameters)
+            log('info', "Executing query with parameters: %s", parameters)
             prepare_stmt = first_execution
             first_execution = False
             self.execute(
