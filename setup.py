@@ -100,6 +100,10 @@ setup(
     include_package_data=True,
     # Requires >= Python 3.10
     python_requires='>=3.10',
+    # Add dependencies
+    install_requires=[
+        'azure-identity>=1.12.0',  # Azure authentication library
+    ],
     classifiers=[
         'Operating System :: Microsoft :: Windows',
         'Operating System :: MacOS',
