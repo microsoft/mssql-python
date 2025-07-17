@@ -415,7 +415,10 @@ class Cursor:
         """
         Initialize the DDBC statement handle.
         """
+        # Allocate the DDBC statement handle
         self._allocate_statement_handle()
+        # Add the cursor to the connection's cursor set
+        self.connection._cursors.add(self)
 
     def _allocate_statement_handle(self):
         """
@@ -423,15 +426,25 @@ class Cursor:
         """
         self.hstmt = self.connection._conn.alloc_statement_handle()
 
-    def _reset_cursor(self) -> None:
+    def _free_cursor(self) -> None:
         """
-        Reset the DDBC statement handle.
+        Free the DDBC statement handle and remove the cursor from the connection's cursor set.
         """
         if self.hstmt:
             self.hstmt.free()
             self.hstmt = None
             if ENABLE_LOGGING:
-                logger.debug("SQLFreeHandle succeeded")     
+                logger.debug("SQLFreeHandle succeeded")
+        # We don't need to remove the cursor from the connection's cursor set here,
+        # as it is a weak reference and will be automatically removed
+        # when the cursor is garbage collected.
+
+    def _reset_cursor(self) -> None:
+        """
+        Reset the DDBC statement handle.
+        """
+        # Free the current cursor if it exists
+        self._free_cursor()
         # Reinitialize the statement handle
         self._initialize_cursor()
 
@@ -771,7 +784,6 @@ class Cursor:
         # Fetch raw data
         rows_data = []
         ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
-        
         # Convert raw data to Row objects
         return [Row(row_data, self.description) for row_data in rows_data]
 
@@ -793,3 +805,15 @@ class Cursor:
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             return False
         return True
+    
+    def __del__(self):
+        """
+        Destructor to ensure the cursor is closed when it is no longer needed.
+        This is a safety net to ensure resources are cleaned up
+        even if close() was not called explicitly.
+        """
+        if not self.closed:
+            try:
+                self.close()
+            except Exception as e:
+                logger.error(f"Error closing cursor: {e}")
