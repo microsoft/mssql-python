@@ -1,10 +1,10 @@
 # mssql-python
 
-A modern Python driver for Microsoft SQL Server – now in Public Preview!
+This is a new Python driver for Microsoft SQL Server currently in Alpha phase.
 
 ## Public Preview Release
 
-We’re excited to announce the Public Preview of mssql-python, marking a major milestone in our development journey. Building on the interest from our alpha release, this version delivers new features and improvements to support your applications with greater reliability and flexibility.
+We are making progress - The Public Preview of our driver is now available! This marks a significant milestone in our development journey. While we saw a few early adopters of our alpha release, we are introducing the following functionalities to support your applications in a more robust and reliable manner.
 
 ### What's Included:
 
@@ -14,12 +14,13 @@ We’re excited to announce the Public Preview of mssql-python, marking a major 
 - **Robust Logging System:** Overhauled logging with a singleton manager, sensitive data sanitization, and better exception handling.
 - **Improved Row Representation:** Enhanced output and debugging via updated `Row` object string and representation methods.
 
-For more details and documentation, visit the project on [GitHub](https://github.com/microsoft/mssql-python).
+For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
 
 ### What's Next:
 
-We’re committed to continuous improvement. Expect regular updates with new features, optimizations, and bug fixes. Your feedback, contributions, and issue reports are invaluable in shaping the final release.
+As we continue to develop and refine the driver, you can expect regular updates that will introduce new features, optimizations, and bug fixes. We encourage you to contribute, provide feedback and report any issues you encounter, as this will help us improve the driver for the final release.
 
 ### Stay Tuned:
 
-Thank you for your interest and support! Stay tuned for further enhancements as we work towards a robust, fully-featured Python driver for SQL Server.
+We appreciate your interest and support in this project. Stay tuned for more updates and enhancements as we work towards delivering a robust and fully-featured driver in coming months.
+Thank you for being a part of our journey!
