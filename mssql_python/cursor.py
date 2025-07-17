@@ -14,12 +14,11 @@ import uuid
 import datetime
 from typing import List, Union
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
-from mssql_python.helpers import check_error
-from mssql_python.logging_config import get_logger, ENABLE_LOGGING
+from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
+from mssql_python.exceptions import InterfaceError
 from .row import Row
 
-logger = get_logger()
 
 class Cursor:
     """
@@ -415,10 +414,7 @@ class Cursor:
         """
         Initialize the DDBC statement handle.
         """
-        # Allocate the DDBC statement handle
         self._allocate_statement_handle()
-        # Add the cursor to the connection's cursor set
-        self.connection._cursors.add(self)
 
     def _allocate_statement_handle(self):
         """
@@ -426,25 +422,14 @@ class Cursor:
         """
         self.hstmt = self.connection._conn.alloc_statement_handle()
 
-    def _free_cursor(self) -> None:
-        """
-        Free the DDBC statement handle and remove the cursor from the connection's cursor set.
-        """
-        if self.hstmt:
-            self.hstmt.free()
-            self.hstmt = None
-            if ENABLE_LOGGING:
-                logger.debug("SQLFreeHandle succeeded")
-        # We don't need to remove the cursor from the connection's cursor set here,
-        # as it is a weak reference and will be automatically removed
-        # when the cursor is garbage collected.
-
     def _reset_cursor(self) -> None:
         """
         Reset the DDBC statement handle.
         """
-        # Free the current cursor if it exists
-        self._free_cursor()
+        if self.hstmt:
+            self.hstmt.free()
+            self.hstmt = None
+            log('debug', "SQLFreeHandle succeeded")     
         # Reinitialize the statement handle
         self._initialize_cursor()
 
@@ -461,8 +446,7 @@ class Cursor:
         if self.hstmt:
             self.hstmt.free()
             self.hstmt = None
-            if ENABLE_LOGGING:
-                logger.debug("SQLFreeHandle succeeded")
+            log('debug', "SQLFreeHandle succeeded")
         self.closed = True
 
     def _check_closed(self):
@@ -596,15 +580,14 @@ class Cursor:
 # Executing a new statement. Reset is_stmt_prepared to false
             self.is_stmt_prepared = [False]
 
-        if ENABLE_LOGGING:
-            logger.debug("Executing query: %s", operation)
-            for i, param in enumerate(parameters):
-                logger.debug(
-                    """Parameter number: %s, Parameter: %s,
-                    Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
-                    i + 1,
-                    param,
-                    str(type(param)),
+        log('debug', "Executing query: %s", operation)
+        for i, param in enumerate(parameters):
+            log('debug',
+                """Parameter number: %s, Parameter: %s,
+                Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
+                i + 1,
+                param,
+                str(type(param)),
                     parameters_type[i].paramSQLType,
                     parameters_type[i].paramCType,
                     parameters_type[i].columnSize,
@@ -709,10 +692,9 @@ class Cursor:
             )
 
         columnwise_params = self._transpose_rowwise_to_columnwise(seq_of_parameters)
-        if ENABLE_LOGGING:
-            logger.info("Executing batch query with %d parameter sets:\n%s",
-                len(seq_of_parameters),"\n".join(f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}" for i, p in enumerate(seq_of_parameters))
-            )
+        log('info', "Executing batch query with %d parameter sets:\n%s",
+            len(seq_of_parameters), "\n".join(f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}" for i, p in enumerate(seq_of_parameters))
+        )
 
         # Execute batched statement
         ret = ddbc_bindings.SQLExecuteMany(
@@ -784,6 +766,7 @@ class Cursor:
         # Fetch raw data
         rows_data = []
         ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+        
         # Convert raw data to Row objects
         return [Row(row_data, self.description) for row_data in rows_data]
 
@@ -805,15 +788,16 @@ class Cursor:
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             return False
         return True
-    
+
     def __del__(self):
         """
         Destructor to ensure the cursor is closed when it is no longer needed.
         This is a safety net to ensure resources are cleaned up
         even if close() was not called explicitly.
         """
-        if not self.closed:
+        if "_closed" not in self.__dict__ or not self._closed:
             try:
                 self.close()
             except Exception as e:
-                logger.error(f"Error closing cursor: {e}")
+                # Don't raise an exception in __del__, just log it
+                log('error', "Error during cursor cleanup in __del__: %s", e)

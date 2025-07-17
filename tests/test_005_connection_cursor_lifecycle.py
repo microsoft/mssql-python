@@ -72,9 +72,11 @@ def test_cursor_cleanup_without_close(conn_str):
 
 def test_no_segfault_on_gc(conn_str):
     """Test that no segmentation fault occurs during garbage collection"""
-    code = """
+    # Properly escape the connection string for embedding in code
+    escaped_conn_str = conn_str.replace('\\', '\\\\').replace('"', '\\"')
+    code = f"""
 from mssql_python import connect
-conn = connect(\"""" + conn_str + """\")
+conn = connect("{escaped_conn_str}")
 cursors = [conn.cursor() for _ in range(5)]
 for cur in cursors:
     cur.execute("SELECT 1")

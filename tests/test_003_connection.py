@@ -10,10 +10,11 @@ Functions:
 Note: The cursor function is not yet implemented, so related tests are commented out.
 """
 
+from mssql_python.exceptions import InterfaceError
 import pytest
 import time
 from mssql_python import Connection, connect, pooling
-    
+
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
     try:

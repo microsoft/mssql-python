@@ -539,15 +539,22 @@ void HandleZeroColumnSizeAtFetch(SQLULEN& columnSize) {
 // TODO: Revisit GIL considerations if we're using python's logger
 template <typename... Args>
 void LOG(const std::string& formatString, Args&&... args) {
-    // TODO: Try to do this string concatenation at compile time
-    std::string ddbcFormatString = "[DDBC Bindings log] " + formatString;
-    static py::object logging = py::module_::import("mssql_python.logging_config")
-	                            .attr("get_logger")();
-    if (py::isinstance<py::none>(logging)) {
-        return;
+    py::gil_scoped_acquire gil;  // <---- this ensures safe Python API usage
+
+    py::object logger = py::module_::import("mssql_python.logging_config").attr("get_logger")();
+    if (py::isinstance<py::none>(logger)) return;
+
+    try {
+        std::string ddbcFormatString = "[DDBC Bindings log] " + formatString;
+        if constexpr (sizeof...(args) == 0) {
+            logger.attr("debug")(py::str(ddbcFormatString));
+        } else {
+            py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
+            logger.attr("debug")(message);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Logging error: " << e.what() << std::endl;
     }
-    py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
-    logging.attr("debug")(message);
 }
 
 // TODO: Add more nuanced exception classes
@@ -668,17 +675,19 @@ DriverHandle LoadDriverOrThrowException() {
             (archStr == "arm64") ? "arm64" :
             "x86";
         
-        fs::path dllDir = fs::path(moduleDir) / "libs" / archDir;
+        fs::path dllDir = fs::path(moduleDir) / "libs" / "windows" / archDir;
         fs::path authDllPath = dllDir / "mssql-auth.dll";
         if (fs::exists(authDllPath)) {
             HMODULE hAuth = LoadLibraryW(std::wstring(authDllPath.native().begin(), authDllPath.native().end()).c_str());
             if (hAuth) {
-                LOG("Authentication DLL loaded: {}", authDllPath.string());
+                LOG("mssql-auth.dll loaded: {}", authDllPath.string());
             } else {
                 LOG("Failed to load mssql-auth.dll: {}", GetLastErrorMessage());
+                ThrowStdException("Failed to load mssql-auth.dll. Please ensure it is present in the expected directory.");
             }
         } else {
             LOG("Note: mssql-auth.dll not found. This is OK if Entra ID is not in use.");
+            ThrowStdException("mssql-auth.dll not found. If you are using Entra ID, please ensure it is present.");
         }
     #endif
 
@@ -689,6 +698,10 @@ DriverHandle LoadDriverOrThrowException() {
     DriverHandle handle = LoadDriverLibrary(driverPath.string());
     if (!handle) {
         LOG("Failed to load driver: {}", GetLastErrorMessage());
+        // If this happens in linux, suggest installing libltdl7
+        #ifdef __linux__
+            ThrowStdException("Failed to load ODBC driver. If you are on Linux, please install libltdl7 package.");
+        #endif
         ThrowStdException("Failed to load ODBC driver. Please check installation.");
     }
     LOG("Driver library successfully loaded.");
@@ -776,6 +789,13 @@ SQLSMALLINT SqlHandle::type() const {
     return _type;
 }
 
+/*
+ * IMPORTANT: Never log in destructors - it causes segfaults.
+ * During program exit, C++ destructors may run AFTER Python shuts down.
+ * LOG() tries to acquire Python GIL and call Python functions, which crashes
+ * if Python is already gone. Keep destructors simple - just free resources.
+ * If you need destruction logs, use explicit close() methods instead.
+ */
 void SqlHandle::free() {
     if (_handle && SQLFreeHandle_ptr) {
         const char* type_str = nullptr;
@@ -788,9 +808,7 @@ void SqlHandle::free() {
         }
         SQLFreeHandle_ptr(_type, _handle);
         _handle = nullptr;
-        std::stringstream ss;
-        ss << "Freed SQL Handle of type: " << type_str;
-        LOG(ss.str());
+        // Don't log during destruction - it can cause segfaults during Python shutdown
     }
 }
 
