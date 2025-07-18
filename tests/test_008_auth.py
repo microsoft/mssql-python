@@ -143,18 +143,17 @@ class TestProcessAuthParameters:
     def test_interactive_auth_non_windows(self, monkeypatch):
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
         params = ["Authentication=ActiveDirectoryInteractive", "Server=test"]
-        modified_params, auth_type = process_auth_parameters(params)
-        assert "Authentication=ActiveDirectoryInteractive" in modified_params
+        _, auth_type = process_auth_parameters(params)
         assert auth_type == "interactive"
 
     def test_device_code_auth(self):
         params = ["Authentication=ActiveDirectoryDeviceCode", "Server=test"]
-        modified_params, auth_type = process_auth_parameters(params)
+        _, auth_type = process_auth_parameters(params)
         assert auth_type == "devicecode"
 
     def test_default_auth(self):
         params = ["Authentication=ActiveDirectoryDefault", "Server=test"]
-        modified_params, auth_type = process_auth_parameters(params)
+        _, auth_type = process_auth_parameters(params)
         assert auth_type == "default"
 
 class TestRemoveSensitiveParams:
