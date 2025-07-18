@@ -137,7 +137,7 @@ class TestProcessAuthParameters:
         monkeypatch.setattr(platform, "system", lambda: "Windows")
         params = ["Authentication=ActiveDirectoryInteractive", "Server=test"]
         modified_params, auth_type = process_auth_parameters(params)
-        assert "Authentication=ActiveDirectoryInteractive" not in modified_params
+        assert "Authentication=ActiveDirectoryInteractive" in modified_params
         assert auth_type == None
 
     def test_interactive_auth_non_windows(self, monkeypatch):
