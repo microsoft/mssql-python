@@ -1,4 +1,4 @@
-# Use Python 3.11 with Debian Bullseye as the base image
+# Use Python 3.10 with Debian Bullseye as the base image
 FROM mcr.microsoft.com/devcontainers/python:3.10-bullseye
 
 # Set environment variables
