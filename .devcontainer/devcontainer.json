@@ -1,0 +1,76 @@
+{
+  "name": "MSSQL Python Driver",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  // Configure tool-specific properties.
+  "customizations": {
+    // Configure properties specific to VS Code.
+    "vscode": {
+      // Set *default* container specific settings.json values on container create.
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.linting.enabled": true,
+        "python.linting.pylintEnabled": true,
+        "python.formatting.autopep8Path": "/usr/local/py-utils/bin/autopep8",
+        "python.formatting.blackPath": "/usr/local/py-utils/bin/black",
+        "python.formatting.yapfPath": "/usr/local/py-utils/bin/yapf",
+        "python.linting.banditPath": "/usr/local/py-utils/bin/bandit",
+        "python.linting.flake8Path": "/usr/local/py-utils/bin/flake8",
+        "python.linting.mypyPath": "/usr/local/py-utils/bin/mypy",
+        "python.linting.pycodestylePath": "/usr/local/py-utils/bin/pycodestyle",
+        "python.linting.pydocstylePath": "/usr/local/py-utils/bin/pydocstyle",
+        "python.linting.pylintPath": "/usr/local/py-utils/bin/pylint",
+        "cmake.configureOnOpen": false
+      },
+      // Add the IDs of extensions you want installed when the container is created.
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.pylint",
+        "ms-toolsai.jupyter",
+        "ms-vscode.cmake-tools",
+        "ms-vscode.cpptools",
+        "ms-vscode.cpptools-extension-pack",
+        "github.copilot",
+        "github.copilot-chat",
+        "ms-vscode.test-adapter-converter",
+        "littlefoxteam.vscode-python-test-adapter",
+        "ms-azuretools.vscode-docker",
+        "ms-mssql.mssql",
+      ]
+    }
+  },
+  // Features to add to the dev container. More info: https://containers.dev/features.
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "configureZshAsDefaultShell": true,
+      "installOhMyZsh": true,
+      "upgradePackages": true,
+      "username": "vscode",
+      "userUid": "automatic",
+      "userGid": "automatic"
+    }
+  },
+  // Use 'forwardPorts' to make a list of ports inside the container available locally.
+  "forwardPorts": [],
+  // Use 'postCreateCommand' to run commands after the container is created.
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  // Use 'postStartCommand' to run commands after the container starts.
+  "postStartCommand": "",
+  // Configure tool-specific properties.
+  "remoteUser": "vscode",
+  // Set container environment variables
+  "containerEnv": {
+    "PYTHONPATH": "/workspaces/mssql-python",
+    "CMAKE_BUILD_TYPE": "Debug"
+  },
+  // Mount the project directory
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/mssql-python,type=bind,consistency=cached",
+  "workspaceFolder": "/workspaces/mssql-python",
+}
