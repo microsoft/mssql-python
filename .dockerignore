@@ -52,8 +52,6 @@ pip-log.txt
 htmlcov/
 .coverage
 .coverage.*
-.coverage.*
-.cache
 nosetests.xml
 coverage.xml
 *.cover
