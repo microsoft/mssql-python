@@ -72,5 +72,5 @@
   },
   // Mount the project directory
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/mssql-python,type=bind,consistency=cached",
-  "workspaceFolder": "/workspaces/mssql-python",
+  "workspaceFolder": "/workspaces/mssql-python"
 }
