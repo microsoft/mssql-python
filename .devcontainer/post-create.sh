@@ -26,7 +26,7 @@ sudo apt-get install -y \
     pybind11-dev
 
 export TZ=UTC
-ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
+ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 # Install Microsoft ODBC Driver for SQL Server (required for mssql connectivity)
 echo "🗄️ Installing Microsoft ODBC Driver for SQL Server..."
@@ -47,14 +47,10 @@ echo "🐍 Creating Python virtual environment..."
 python3 -m venv /workspaces/mssql-python/opt/venv
 source /workspaces/mssql-python/opt/venv/bin/activate
 
-# Install dependencies in the virtual environment
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
 
 # Make the virtual environment globally available
 echo 'source /workspaces/mssql-python/opt/venv/bin/activate' >> ~/.bashrc
-
-source /workspaces/mssql-python/opt/venv/bin/activate
 
 # Install project dependencies
 echo "📚 Installing project dependencies..."
