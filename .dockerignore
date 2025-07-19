@@ -26,7 +26,6 @@ coverage.xml
 .hypothesis
 
 # Distribution / packaging
-.Python
 build/
 develop-eggs/
 dist/
