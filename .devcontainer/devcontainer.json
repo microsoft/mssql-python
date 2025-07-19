@@ -38,7 +38,7 @@
         "ms-vscode.test-adapter-converter",
         "littlefoxteam.vscode-python-test-adapter",
         "ms-azuretools.vscode-docker",
-        "ms-mssql.mssql",
+        "ms-mssql.mssql"
       ]
     }
   },
