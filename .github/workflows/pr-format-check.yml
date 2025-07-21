@@ -6,6 +6,7 @@ on:
 
 permissions:
   pull-requests: write
+  members: read
 
 jobs:
   check:
@@ -17,6 +18,7 @@ jobs:
           script: |
             const title = context.payload.pull_request.title;
             const body = context.payload.pull_request.body;
+            const author = context.payload.pull_request.user.login;
 
             const validTitlePrefixes = [
               'FEAT:', 'CHORE:', 'FIX:', 'DOC:', 'STYLE:', 'REFACTOR:', 'RELEASE:'
@@ -28,11 +30,39 @@ jobs:
               core.setFailed(`❌ PR title must start with one of the allowed prefixes:\n${validTitlePrefixes.join(', ')}`);
             }
 
-            const azureWorkItemLinkPattern = /https:\/\/sqlclientdrivers\.visualstudio\.com\/[^\/]+\/_workitems\/edit\/\d+/i;
-            const hasWorkItemLink = azureWorkItemLinkPattern.test(body);
+            // Check if the author is a Microsoft organization member
+            let isMicrosoftMember = false;
+            try {
+              const orgMembership = await github.rest.orgs.checkMembershipForUser({
+                org: 'microsoft',
+                username: author
+              });
+              isMicrosoftMember = orgMembership.status === 204;
+            } catch (error) {
+              // If we can't check membership (e.g., private membership), assume external contributor
+              console.log(`Could not check Microsoft org membership for ${author}: ${error.message}`);
+              isMicrosoftMember = false;
+            }
 
-            if (!hasWorkItemLink) {
-              core.setFailed(`❌ PR should contain a valid ADO Work Item ID.\nExpected a hyperlink in the format: https://sqlclientdrivers.visualstudio.com/.../_workitems/edit/<ID>\nPlease ensure the ADO task hyperlink is present in the PR description.`);
+            console.log(`Author ${author} is ${isMicrosoftMember ? 'a Microsoft org member' : 'an external contributor'}`);
+
+            // Validate work item/issue link based on contributor type
+            if (isMicrosoftMember) {
+              // For Microsoft org members, require ADO Work Item link
+              const azureWorkItemLinkPattern = /https:\/\/sqlclientdrivers\.visualstudio\.com\/[^\/]+\/_workitems\/edit\/\d+/i;
+              const hasWorkItemLink = azureWorkItemLinkPattern.test(body);
+
+              if (!hasWorkItemLink) {
+                core.setFailed(`❌ Internal contributors must include a valid ADO Work Item link.\nExpected format: https://sqlclientdrivers.visualstudio.com/.../_workitems/edit/<ID>\nPlease ensure the ADO task hyperlink is present in the PR description.`);
+              }
+            } else {
+              // For external contributors, require GitHub issue link
+              const githubIssueLinkPattern = /https:\/\/github\.com\/microsoft\/mssql-python\/issues\/\d+/i;
+              const hasIssueLink = githubIssueLinkPattern.test(body);
+
+              if (!hasIssueLink) {
+                core.setFailed(`❌ External contributors must include a valid GitHub issue link.\nExpected format: https://github.com/microsoft/mssql-python/issues/XXX\nPlease create an issue first if one doesn't exist, then link it in your PR description.`);
+              }
             }
             
             // Check if PR description contains a meaningful summary section with actual content
