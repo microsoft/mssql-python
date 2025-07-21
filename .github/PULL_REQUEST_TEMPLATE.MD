@@ -1,9 +1,18 @@
-### ADO Work Item Reference  
-<!-- Insert your ADO Work Item ID below (e.g. AB#37452) -->
+### Work Item / Issue Reference  
+<!-- 
+For Microsoft organization members: Insert your ADO Work Item ID below (e.g. AB#37452)
+For external contributors: Insert GitHub issue link below (e.g. https://github.com/microsoft/mssql-python/issues/123)
+-->
+
+<!-- Microsoft org members: ADO Work Item -->
 > AB#<WORK_ITEM_ID>
+
+<!-- External contributors: GitHub Issue -->
+> GitHub Issue: https://github.com/microsoft/mssql-python/issues/<ISSUE_NUMBER>
+
 -------------------------------------------------------------------
 ### Summary   
-<!-- Insert your Copilot Generated Summary below -->  
+<!-- Insert your summary of changes below. Minimum 10 characters required. -->  
 
 
 <!-- 
@@ -29,4 +38,16 @@ REFACTOR: (short-description)
 
 > For release related changes, without any feature changes
 RELEASE: #<RELEASE_VERSION> (short-description) 
+
+### Contribution Guidelines
+
+External contributors:
+- Create a GitHub issue first: https://github.com/microsoft/mssql-python/issues/new
+- Link the GitHub issue in the "GitHub Issue" section above
+- Follow the PR title format and provide a meaningful summary
+
+Microsoft organization members:
+- Create an ADO Work Item following internal processes
+- Link the ADO Work Item in the "ADO Work Item" section above  
+- Follow the PR title format and provide a meaningful summary
 -->
