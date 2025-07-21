@@ -56,13 +56,13 @@ jobs:
                 core.setFailed(`❌ PR should contain a valid ADO Work Item ID.\nExpected a hyperlink in the format: https://sqlclientdrivers.visualstudio.com/.../_workitems/edit/<ID>\nPlease ensure the ADO task hyperlink is present in the PR description.`);
               }
             } else {
-              // For external contributors, require GitHub issue link
+              // For external contributors, require GitHub issue link (full URL or hashtag format)
               const githubIssueLinkPattern = 
-                /https:\/\/github\.com\/microsoft\/mssql-python\/issues\/\d+/i;
+                /(https:\/\/github\.com\/microsoft\/mssql-python\/issues\/\d+|#\d+)/i;
               const hasGitHubIssueLink = githubIssueLinkPattern.test(body);
 
               if (!hasGitHubIssueLink) {
-                core.setFailed(`❌ PR should contain a valid GitHub issue link.\nExpected a hyperlink in the format: https://github.com/microsoft/mssql-python/issues/XXX\nPlease create a GitHub issue first and link it in the PR description.\nFor more information, see CONTRIBUTING.md.`);
+                core.setFailed(`❌ PR should contain a valid GitHub issue link.\nExpected a hyperlink in the format: https://github.com/microsoft/mssql-python/issues/XXX or #XXX\nPlease create a GitHub issue first and link it in the PR description.\nFor more information, see CONTRIBUTING.md.`);
               }
             }
 

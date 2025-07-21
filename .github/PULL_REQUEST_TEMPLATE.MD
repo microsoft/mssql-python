@@ -1,14 +1,14 @@
 ### Work Item / Issue Reference  
 <!-- 
-For Microsoft organization members: Insert your ADO Work Item ID below (e.g. AB#37452)
+For mssql-python maintainers: Insert your ADO Work Item ID below (e.g. AB#37452)
 For external contributors: Insert GitHub issue link below (e.g. https://github.com/microsoft/mssql-python/issues/123)
 -->
 
-<!-- Microsoft org members: ADO Work Item -->
+<!-- mssql-python maintainers: ADO Work Item -->
 > AB#<WORK_ITEM_ID>
 
 <!-- External contributors: GitHub Issue -->
-> GitHub Issue: https://github.com/microsoft/mssql-python/issues/<ISSUE_NUMBER>
+> GitHub Issue: #<ISSUE_NUMBER>
 
 -------------------------------------------------------------------
 ### Summary   
@@ -46,7 +46,7 @@ External contributors:
 - Link the GitHub issue in the "GitHub Issue" section above
 - Follow the PR title format and provide a meaningful summary
 
-Microsoft organization members:
+mssql-python maintainers:
 - Create an ADO Work Item following internal processes
 - Link the ADO Work Item in the "ADO Work Item" section above  
 - Follow the PR title format and provide a meaningful summary
