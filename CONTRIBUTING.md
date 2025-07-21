@@ -20,7 +20,7 @@ or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any addi
 If you are an external contributor (not a Microsoft organization member), please follow these steps:
 
 1. **Create a GitHub Issue First**: Before submitting a pull request, create a GitHub issue describing the bug, feature request, or improvement you want to contribute.
-2. **Link the Issue in Your PR**: When you submit your pull request, include a link to the GitHub issue in the PR description using the format: `https://github.com/microsoft/mssql-python/issues/XXX`
+2. **Link the Issue in Your PR**: When you submit your pull request, please use the PR template and include a link to the GitHub issue in the PR description using the format: `https://github.com/microsoft/mssql-python/issues/XXX`
 3. **Follow PR Guidelines**: Ensure your PR title follows the required prefix format (FEAT:, FIX:, DOC:, etc.) and includes a meaningful summary.
 
 ### For Microsoft Organization Members
@@ -37,6 +37,6 @@ All pull requests must include:
 
 - **Valid Title Prefix**: Your PR title must start with one of: `FEAT:`, `CHORE:`, `FIX:`, `DOC:`, `STYLE:`, `REFACTOR:`, or `RELEASE:`
 - **Meaningful Summary**: Include a clear description of your changes under the "### Summary" section in the PR description (minimum 10 characters)
-- **Issue/Work Item Link**: 
+- **Issue/Work Item Link** (only one required): 
   - External contributors: Link to a GitHub issue
   - Microsoft org members: Link to an ADO work item

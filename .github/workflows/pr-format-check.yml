@@ -32,38 +32,17 @@ jobs:
               core.setFailed(`❌ PR title must start with one of the allowed prefixes:\n${validTitlePrefixes.join(', ')}`);
             }
 
-            // Check if the PR author is a Microsoft organization member
-            let isMicrosoftMember = false;
-            try {
-              await github.rest.orgs.checkMembershipForUser({
-                org: 'microsoft',
-                username: prAuthor
-              });
-              isMicrosoftMember = true;
-            } catch (error) {
-              // User is not a public member of Microsoft org or doesn't exist
-              isMicrosoftMember = false;
-            }
+            // Validate that either GitHub issue link or ADO Work Item link is present
+            const azureWorkItemLinkPattern = 
+              /https:\/\/sqlclientdrivers\.visualstudio\.com\/[^\/]+\/_workitems\/edit\/\d+/i;
+            const githubIssueLinkPattern = 
+              /(https:\/\/github\.com\/microsoft\/mssql-python\/issues\/\d+|#\d+)/i;
+            
+            const hasWorkItemLink = azureWorkItemLinkPattern.test(body);
+            const hasGitHubIssueLink = githubIssueLinkPattern.test(body);
 
-            // Apply different validation rules based on contributor type
-            if (isMicrosoftMember) {
-              // For Microsoft org members, require ADO Work Item link
-              const azureWorkItemLinkPattern = 
-                /https:\/\/sqlclientdrivers\.visualstudio\.com\/[^\/]+\/_workitems\/edit\/\d+/i;
-              const hasWorkItemLink = azureWorkItemLinkPattern.test(body);
-
-              if (!hasWorkItemLink) {
-                core.setFailed(`❌ PR should contain a valid ADO Work Item ID.\nExpected a hyperlink in the format: https://sqlclientdrivers.visualstudio.com/.../_workitems/edit/<ID>\nPlease ensure the ADO task hyperlink is present in the PR description.`);
-              }
-            } else {
-              // For external contributors, require GitHub issue link (full URL or hashtag format)
-              const githubIssueLinkPattern = 
-                /(https:\/\/github\.com\/microsoft\/mssql-python\/issues\/\d+|#\d+)/i;
-              const hasGitHubIssueLink = githubIssueLinkPattern.test(body);
-
-              if (!hasGitHubIssueLink) {
-                core.setFailed(`❌ PR should contain a valid GitHub issue link.\nExpected a hyperlink in the format: https://github.com/microsoft/mssql-python/issues/XXX or #XXX\nPlease create a GitHub issue first and link it in the PR description.\nFor more information, see CONTRIBUTING.md.`);
-              }
+            if (!hasWorkItemLink && !hasGitHubIssueLink) {
+              core.setFailed(`❌ PR must contain either a valid GitHub issue link OR a valid ADO Work Item link.\nGitHub issue format: https://github.com/microsoft/mssql-python/issues/XXX or #XXX\nADO Work Item format: https://sqlclientdrivers.visualstudio.com/.../_workitems/edit/<ID>\nPlease include at least one reference in the PR description.\nFor more information, see CONTRIBUTING.md.`);
             }
 
             // Check if PR description contains a meaningful summary section 
