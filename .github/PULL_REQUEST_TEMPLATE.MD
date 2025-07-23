@@ -2,7 +2,7 @@
 <!-- 
 IMPORTANT: Please follow the PR template guidelines below.
 For mssql-python maintainers: Insert your ADO Work Item ID below (e.g. AB#37452)
-For external contributors: Insert GitHub issue link below (e.g. https://github.com/microsoft/mssql-python/issues/123)
+For external contributors: Insert Github Issue ID below (e.g. #149)
 Only one reference is required - either GitHub issue OR ADO Work Item.
 -->
 
