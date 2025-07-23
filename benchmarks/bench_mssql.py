@@ -162,26 +162,6 @@ def bench_complex_query_pyodbc():
     except Exception as e:
         print(f"Error during COMPLEX QUERY benchmark: {e}")
 
-def bench_multiple_connections_pyodbc():
-    print("Running MULTIPLE CONNECTIONS benchmark with pyodbc...")
-    try:
-        connections = []
-        for _ in range(10):
-            conn = pyodbc.connect(CONNECTION_STRING)
-            connections.append(conn)
-        
-        for conn in connections:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM perfbenchmark_table")
-            cursor.fetchall()
-            cursor.close()
-        
-        for conn in connections:
-            conn.close()
-        print("MULTIPLE CONNECTIONS benchmark with pyodbc completed.")
-    except Exception as e:
-        print(f"Error during MULTIPLE CONNECTIONS benchmark: {e}")
-
 def bench_100_inserts_pyodbc():
     print("Running 100 INSERTS benchmark with pyodbc...")
     try:
@@ -679,7 +659,7 @@ __benchmarks__ = [
     (bench_large_data_set_pyodbc, bench_large_data_set_mssql_python, "Large data set operation"),
     (bench_join_query_pyodbc, bench_join_query_mssql_python, "Join query operation"),
     (bench_executemany_pyodbc, bench_executemany_mssql_python, "Execute many operation"),
-    (bench_100_inserts_pyodbc, bench_100_inserts_mssql_python, "1000 inserts operation"),
+    (bench_100_inserts_pyodbc, bench_100_inserts_mssql_python, "100 inserts operation"),
     (bench_transaction_pyodbc, bench_transaction_mssql_python, "Transaction operation"),
     (bench_update_with_join_pyodbc, bench_update_with_join_mssql_python, "Update with join operation"),
     (bench_delete_with_join_pyodbc, bench_delete_with_join_mssql_python, "Delete with join operation"),
