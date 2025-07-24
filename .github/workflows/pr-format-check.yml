@@ -72,6 +72,7 @@ jobs:
               core.setFailed(`❌ PR must contain a meaningful summary section with actual text content (minimum 10 characters).\nPlease add a clear description under the '### Summary' heading in your PR description.`);
             }
       - name: Add size label based on PR diff
+        if: github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
         with:
           script: |
