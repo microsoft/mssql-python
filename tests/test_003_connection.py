@@ -10,13 +10,15 @@ Functions:
 Note: The cursor function is not yet implemented, so related tests are commented out.
 """
 
+from mssql_python.exceptions import InterfaceError
 import pytest
-from mssql_python import Connection
+import time
+from mssql_python import Connection, connect, pooling
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
     try:
-        cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
     except Exception as e:
         pytest.fail(f"Failed to drop table {table_name}: {e}")
 
@@ -33,7 +35,33 @@ def test_connection(db_connection):
 
 def test_construct_connection_string(db_connection):
     # Check if the connection string is constructed correctly with kwargs
-    conn_str = db_connection._construct_connection_string("",host="localhost", user="me", password="mypwd", database="mydb", encrypt="yes", trust_server_certificate="yes")
+    conn_str = db_connection._construct_connection_string(host="localhost", user="me", password="mypwd", database="mydb", encrypt="yes", trust_server_certificate="yes")
+    assert "Server=localhost;" in conn_str, "Connection string should contain 'Server=localhost;'"
+    assert "Uid=me;" in conn_str, "Connection string should contain 'Uid=me;'"
+    assert "Pwd=mypwd;" in conn_str, "Connection string should contain 'Pwd=mypwd;'"
+    assert "Database=mydb;" in conn_str, "Connection string should contain 'Database=mydb;'"
+    assert "Encrypt=yes;" in conn_str, "Connection string should contain 'Encrypt=yes;'"
+    assert "TrustServerCertificate=yes;" in conn_str, "Connection string should contain 'TrustServerCertificate=yes;'"
+    assert "APP=MSSQL-Python" in conn_str, "Connection string should contain 'APP=MSSQL-Python'"
+    assert "Driver={ODBC Driver 18 for SQL Server}" in conn_str, "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
+    assert "Driver={ODBC Driver 18 for SQL Server};;APP=MSSQL-Python;Server=localhost;Uid=me;Pwd=mypwd;Database=mydb;Encrypt=yes;TrustServerCertificate=yes;" == conn_str, "Connection string is incorrect"
+
+def test_connection_string_with_attrs_before(db_connection):
+    # Check if the connection string is constructed correctly with attrs_before
+    conn_str = db_connection._construct_connection_string(host="localhost", user="me", password="mypwd", database="mydb", encrypt="yes", trust_server_certificate="yes", attrs_before={1256: "token"})
+    assert "Server=localhost;" in conn_str, "Connection string should contain 'Server=localhost;'"
+    assert "Uid=me;" in conn_str, "Connection string should contain 'Uid=me;'"
+    assert "Pwd=mypwd;" in conn_str, "Connection string should contain 'Pwd=mypwd;'"
+    assert "Database=mydb;" in conn_str, "Connection string should contain 'Database=mydb;'"
+    assert "Encrypt=yes;" in conn_str, "Connection string should contain 'Encrypt=yes;'"
+    assert "TrustServerCertificate=yes;" in conn_str, "Connection string should contain 'TrustServerCertificate=yes;'"
+    assert "APP=MSSQL-Python" in conn_str, "Connection string should contain 'APP=MSSQL-Python'"
+    assert "Driver={ODBC Driver 18 for SQL Server}" in conn_str, "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
+    assert "{1256: token}" not in conn_str, "Connection string should not contain '{1256: token}'"
+
+def test_connection_string_with_odbc_param(db_connection):
+    # Check if the connection string is constructed correctly with ODBC parameters
+    conn_str = db_connection._construct_connection_string(server="localhost", uid="me", pwd="mypwd", database="mydb", encrypt="yes", trust_server_certificate="yes")
     assert "Server=localhost;" in conn_str, "Connection string should contain 'Server=localhost;'"
     assert "Uid=me;" in conn_str, "Connection string should contain 'Uid=me;'"
     assert "Pwd=mypwd;" in conn_str, "Connection string should contain 'Pwd=mypwd;'"
@@ -51,41 +79,41 @@ def test_autocommit_setter(db_connection):
     db_connection.autocommit = True
     cursor = db_connection.cursor()
     # Make a transaction and check if it is autocommited
-    drop_table_if_exists(cursor, "pytest_test_autocommit")
+    drop_table_if_exists(cursor, "#pytest_test_autocommit")
     try:
-        cursor.execute("CREATE TABLE pytest_test_autocommit (id INT PRIMARY KEY, value VARCHAR(50));")
-        cursor.execute("INSERT INTO pytest_test_autocommit (id, value) VALUES (1, 'test');")
-        cursor.execute("SELECT * FROM pytest_test_autocommit WHERE id = 1;")
+        cursor.execute("CREATE TABLE #pytest_test_autocommit (id INT PRIMARY KEY, value VARCHAR(50));")
+        cursor.execute("INSERT INTO #pytest_test_autocommit (id, value) VALUES (1, 'test');")
+        cursor.execute("SELECT * FROM #pytest_test_autocommit WHERE id = 1;")
         result = cursor.fetchone()
         assert result is not None, "Autocommit failed: No data found"
         assert result[1] == 'test', "Autocommit failed: Incorrect data"
     except Exception as e:
         pytest.fail(f"Autocommit failed: {e}")
     finally:
-        cursor.execute("DROP TABLE pytest_test_autocommit;")
+        cursor.execute("DROP TABLE #pytest_test_autocommit;")
         db_connection.commit()
     assert db_connection.autocommit is True, "Autocommit should be True"
     
     db_connection.autocommit = False
     cursor = db_connection.cursor()
     # Make a transaction and check if it is not autocommited
-    drop_table_if_exists(cursor, "pytest_test_autocommit")
+    drop_table_if_exists(cursor, "#pytest_test_autocommit")
     try:
-        cursor.execute("CREATE TABLE pytest_test_autocommit (id INT PRIMARY KEY, value VARCHAR(50));")
-        cursor.execute("INSERT INTO pytest_test_autocommit (id, value) VALUES (1, 'test');")
-        cursor.execute("SELECT * FROM pytest_test_autocommit WHERE id = 1;")
+        cursor.execute("CREATE TABLE #pytest_test_autocommit (id INT PRIMARY KEY, value VARCHAR(50));")
+        cursor.execute("INSERT INTO #pytest_test_autocommit (id, value) VALUES (1, 'test');")
+        cursor.execute("SELECT * FROM #pytest_test_autocommit WHERE id = 1;")
         result = cursor.fetchone()
         assert result is not None, "Autocommit failed: No data found"
         assert result[1] == 'test', "Autocommit failed: Incorrect data"
         db_connection.commit()
-        cursor.execute("SELECT * FROM pytest_test_autocommit WHERE id = 1;")
+        cursor.execute("SELECT * FROM #pytest_test_autocommit WHERE id = 1;")
         result = cursor.fetchone()
         assert result is not None, "Autocommit failed: No data found after commit"
         assert result[1] == 'test', "Autocommit failed: Incorrect data after commit"
     except Exception as e:
         pytest.fail(f"Autocommit failed: {e}")
     finally:
-        cursor.execute("DROP TABLE pytest_test_autocommit;")
+        cursor.execute("DROP TABLE #pytest_test_autocommit;")
         db_connection.commit()
     
 def test_set_autocommit(db_connection):
@@ -97,49 +125,49 @@ def test_set_autocommit(db_connection):
 def test_commit(db_connection):
     # Make a transaction and commit
     cursor = db_connection.cursor()
-    drop_table_if_exists(cursor, "pytest_test_commit")
+    drop_table_if_exists(cursor, "#pytest_test_commit")
     try:
-        cursor.execute("CREATE TABLE pytest_test_commit (id INT PRIMARY KEY, value VARCHAR(50));")
-        cursor.execute("INSERT INTO pytest_test_commit (id, value) VALUES (1, 'test');")
+        cursor.execute("CREATE TABLE #pytest_test_commit (id INT PRIMARY KEY, value VARCHAR(50));")
+        cursor.execute("INSERT INTO #pytest_test_commit (id, value) VALUES (1, 'test');")
         db_connection.commit()
-        cursor.execute("SELECT * FROM pytest_test_commit WHERE id = 1;")
+        cursor.execute("SELECT * FROM #pytest_test_commit WHERE id = 1;")
         result = cursor.fetchone()
         assert result is not None, "Commit failed: No data found"
         assert result[1] == 'test', "Commit failed: Incorrect data"
     except Exception as e:
         pytest.fail(f"Commit failed: {e}")
     finally:
-        cursor.execute("DROP TABLE pytest_test_commit;")
+        cursor.execute("DROP TABLE #pytest_test_commit;")
         db_connection.commit()
 
 def test_rollback(db_connection):
     # Make a transaction and rollback
     cursor = db_connection.cursor()
-    drop_table_if_exists(cursor, "pytest_test_rollback")
+    drop_table_if_exists(cursor, "#pytest_test_rollback")
     try:
         # Create a table and insert data
-        cursor.execute("CREATE TABLE pytest_test_rollback (id INT PRIMARY KEY, value VARCHAR(50));")
-        cursor.execute("INSERT INTO pytest_test_rollback (id, value) VALUES (1, 'test');")
+        cursor.execute("CREATE TABLE #pytest_test_rollback (id INT PRIMARY KEY, value VARCHAR(50));")
+        cursor.execute("INSERT INTO #pytest_test_rollback (id, value) VALUES (1, 'test');")
         db_connection.commit()
         
         # Check if the data is present before rollback
-        cursor.execute("SELECT * FROM pytest_test_rollback WHERE id = 1;")
+        cursor.execute("SELECT * FROM #pytest_test_rollback WHERE id = 1;")
         result = cursor.fetchone()
         assert result is not None, "Rollback failed: No data found before rollback"
         assert result[1] == 'test', "Rollback failed: Incorrect data"
 
         # Insert data and rollback
-        cursor.execute("INSERT INTO pytest_test_rollback (id, value) VALUES (2, 'test');")
+        cursor.execute("INSERT INTO #pytest_test_rollback (id, value) VALUES (2, 'test');")
         db_connection.rollback()
         
         # Check if the data is not present after rollback
-        cursor.execute("SELECT * FROM pytest_test_rollback WHERE id = 2;")
+        cursor.execute("SELECT * FROM #pytest_test_rollback WHERE id = 2;")
         result = cursor.fetchone()
         assert result is None, "Rollback failed: Data found after rollback"
     except Exception as e:
         pytest.fail(f"Rollback failed: {e}")
     finally:
-        cursor.execute("DROP TABLE pytest_test_rollback;")
+        cursor.execute("DROP TABLE #pytest_test_rollback;")
         db_connection.commit()
 
 def test_invalid_connection_string():
@@ -147,6 +175,52 @@ def test_invalid_connection_string():
     with pytest.raises(Exception):
         Connection("invalid_connection_string")
 
-def test_connection_close(db_connection):
-    # Check if the database connection is closed
-    db_connection.close()
+def test_connection_close(conn_str):
+    # Create a separate connection just for this test
+    temp_conn = connect(conn_str)
+    # Check if the database connection can be closed
+    temp_conn.close()    
+
+def test_connection_pooling_speed(conn_str):
+    # No pooling
+    start_no_pool = time.perf_counter()
+    conn1 = connect(conn_str)
+    conn1.close()
+    end_no_pool = time.perf_counter()
+    no_pool_duration = end_no_pool - start_no_pool
+
+    # Second connection
+    start2 = time.perf_counter()
+    conn2 = connect(conn_str)
+    conn2.close()
+    end2 = time.perf_counter()
+    duration2 = end2 - start2
+
+    # Pooling enabled
+    pooling(max_size=2, idle_timeout=10)
+    connect(conn_str).close()
+
+    # Pooled connection (should be reused, hence faster)
+    start_pool = time.perf_counter()
+    conn2 = connect(conn_str)
+    conn2.close()
+    end_pool = time.perf_counter()
+    pool_duration = end_pool - start_pool
+    assert pool_duration < no_pool_duration, "Expected faster connection with pooling"
+
+def test_connection_pooling_basic(conn_str):
+    # Enable pooling with small pool size
+    pooling(max_size=2, idle_timeout=5)
+    conn1 = connect(conn_str)
+    conn2 = connect(conn_str)
+    assert conn1 is not None
+    assert conn2 is not None
+    try:
+        conn3 = connect(conn_str)
+        assert conn3 is not None, "Third connection failed — pooling is not working or limit is too strict"
+        conn3.close()
+    except Exception as e:
+        print(f"Expected: Could not open third connection due to max_size=2: {e}")
+
+    conn1.close()
+    conn2.close()

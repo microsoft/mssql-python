@@ -1,11 +1,6 @@
 # Ignore all files in the pybind/build directory
 mssql_python/pybind/build/
 
-mssql_python/pybind/pymsbuild/build/
-
-# Ignore pyd file
-mssql_python/ddbc_bindings.pyd
-
 # Ignore pycache files and folders
 __pycache__/
 **/__pycache__/
@@ -29,3 +24,26 @@ test-*.xml
 # Ignore the build & mssql_python.egg-info directories
 build/
 mssql_python.egg-info/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# C extensions
+*.so
+*.pyd
+*.pdb
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+
+# .DS_Store files
+.DS_Store

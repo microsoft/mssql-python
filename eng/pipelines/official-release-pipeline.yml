@@ -1,0 +1,47 @@
+name: mssql-python-official-release-pipeline
+
+variables:
+  - group: 'ESRP Federated Creds (AME)'
+
+jobs:
+- job: ReleaseESRPPackage
+  displayName: 'Release ESRP Package'
+  pool:
+    vmImage: 'windows-latest'
+  
+  steps:
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      definition: 2162
+      buildVersionToDownload: 'latest'
+      branchName: '$(Build.SourceBranch)'
+      artifactName: 'mssql-python-wheels-dist'
+      targetPath: '$(Build.SourcesDirectory)\dist'
+    displayName: 'Download release wheel files artifact from latest successful run on main branch'
+
+  # Show content of the downloaded artifact
+  - script: |
+      echo "Contents of the dist directory:"
+      dir "$(Build.SourcesDirectory)\dist"
+    displayName: 'List contents of dist directory'
+
+  - task: EsrpRelease@9
+    displayName: 'ESRP Release'
+    inputs:
+      connectedservicename: '$(ESRPConnectedServiceName)'
+      usemanagedidentity: true
+      keyvaultname: '$(AuthAKVName)'
+      signcertname: '$(AuthSignCertName)'
+      clientid: '$(EsrpClientId)'
+      Intent: 'PackageDistribution'
+      ContentType: 'PyPI'
+      ContentSource: 'Folder'
+      FolderLocation: '$(Build.SourcesDirectory)/dist'
+      WaitForReleaseCompletion: true
+      Owners: '$(owner)'
+      Approvers: '$(approver)'
+      ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
+      MainPublisher: 'ESRPRELPACMAN'
+      DomainTenantId: '$(DomainTenantId)'
