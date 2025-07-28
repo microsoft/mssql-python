@@ -1,356 +1,196 @@
-# Build Guide
+# Build Guide for Contributors
 
-This guide provides comprehensive instructions for building and developing the Microsoft Python Driver for SQL Server (`mssql-python`) from source. It covers all supported platforms and explains how to build the native pybind bindings, create Python wheels, and run tests.
+Welcome to the development build guide for the **mssql-python** project!  
+This guide will help you set up your environment, build the native bindings, and package the project as a Python wheel.
+
+---
+
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Platform-Specific Setup](#platform-specific-setup)
+  - [Windows](#windows)
+  - [macOS](#macos)
+  - [Linux](#linux)
+- [Building Native Bindings](#building-native-bindings)
+- [Building the Python Wheel (.whl)](#building-the-python-wheel-whl)
+- [Running Tests](#running-tests)
+- [Directory Structure](#directory-structure)
+- [Troubleshooting](#troubleshooting)
+
+---
 
 ## Prerequisites
 
-### Python Requirements
-- **Python 3.10 or higher** is required
-- Use the standard `python` and `pip` commands (no Anaconda or pyenv dependencies)
+- **Python:** Minimum supported version is 3.10.  
+  Ensure `python` and `pip` commands refer to your Python 3.10+ installation.
+- **pybind11:** Used for C++/Python bindings.
+- **CMake:** For Unix and macOS builds.
+- **Microsoft ODBC Driver:** For packaging driver dependencies and header files such as `sql.h`, `sqlext.h` etc.
+- **setuptools, wheel, pytest:** For building and testing (`pip install setuptools wheel pytest`).
 
-### General Dependencies
-Install the required Python packages:
-```bash
-pip install -r requirements.txt
-```
+---
 
-This will install:
-- `pytest` - Testing framework
-- `pytest-cov` - Test coverage reporting
-- `pybind11` - Python/C++ binding library
-- `coverage` - Code coverage measurement
-- `unittest-xml-reporting` - XML test reporting
-- `setuptools` - Package building tools
-
-## Platform-Specific Prerequisites
+## Platform-Specific Setup
 
 ### Windows
 
-#### Required Software
-1. **Visual Studio Build Tools 2022** or **Visual Studio 2022** with C++ support
-   - Download from: https://visualstudio.microsoft.com/downloads/
-   - During installation, select the **"Desktop development with C++"** workload
-   - This automatically includes CMake
-
-2. **PyBind11**:
-   ```cmd
-   pip install pybind11
+1. **Install Python** (3.10+ from [python.org](https://www.python.org/downloads/)).
+2. **Install Visual Studio Build Tools**
+   - Include the “Desktop development with C++” workload.
+   - CMake is included by default.
+3. **Install Microsoft ODBC Driver for SQL Server:**  
+   [Download here](https://docs.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server).
+4. **Install required Python packages:**
+   ```bash
+   # Will install pybind11, setuptools etc.
+   pip install -r requirements.txt
    ```
-
-#### Architecture Support
-- x64 (64-bit Intel/AMD)
-- x86 (32-bit Intel/AMD) 
-- ARM64 (64-bit ARM)
 
 ### macOS
 
-#### Required Software
-1. **Xcode Command Line Tools**:
-   ```bash
-   xcode-select --install
-   ```
-
-2. **CMake and PyBind11**:
+1. **Install Python** (3.10+ from [python.org](https://www.python.org/downloads/)).
+2. **Install CMake:**
    ```bash
    brew install cmake
-   pip install pybind11
    ```
-
-3. **Microsoft ODBC Driver 18**:
+3. **Install Microsoft ODBC Driver for SQL Server:**
    ```bash
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)"
    brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
-   ACCEPT_EULA=Y brew install msodbcsql18
+   brew update
+   HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 mssql-tools18
    ```
-
-   > **Note**: This provides development headers (`sql.h`, `sqlext.h`) and the dynamic library (`libmsodbcsql.18.dylib`) required for building native bindings.
-
-#### Architecture Support
-- Universal2 binaries (ARM64 + x86_64 combined)
+4. **Install Python requirements:**
+   ```bash
+   # Will install pybind11, setuptools etc.
+   pip install -r requirements.txt
+   ```
 
 ### Linux
 
-#### Required Software
-1. **Build essentials**:
+1. **Install Python and development tools:**
    ```bash
-   # Ubuntu/Debian
    sudo apt-get update
-   sudo apt-get install build-essential cmake python3-dev
-
-   # RHEL/CentOS/Fedora
-   sudo yum groupinstall "Development Tools"
-   sudo yum install cmake python3-devel
+   sudo apt-get install python3.10 python3.10-dev python3-pip build-essential cmake
    ```
-
-2. **PyBind11**:
+   Ensure `python` and `pip` refer to Python 3.10.
+2. **Install Microsoft ODBC Driver for SQL Server:**  
+   Follow [official instructions](https://docs.microsoft.com/en-us/sql/connect/odbc/linux-mac/installing-the-microsoft-odbc-driver-for-sql-server).
+3. **Install Python packages:**
    ```bash
-   pip install pybind11
+   # Will install pybind11, setuptools etc.
+   pip install -r requirements.txt
    ```
 
-#### Architecture Support
-- x86_64 (64-bit Intel/AMD)
-- ARM64/aarch64 (64-bit ARM)
+---
 
-#### Distribution Support
-- Ubuntu/Debian (manylinux2014)
-- RHEL/CentOS/Fedora (manylinux2014)
+## Building Native Bindings
 
-## Building Native Pybind Bindings
-
-The native bindings are located in `mssql_python/pybind/` and are built using CMake and pybind11.
+The native bindings are in the `pybind` directory.
 
 ### Windows
 
-1. **Open Developer Command Prompt for VS 2022**
+Open a **Developer Command Prompt for VS** and run:
 
-2. **Navigate to the pybind directory**:
-   ```cmd
-   cd mssql_python\pybind
-   ```
+```bash
+cd pybind
+build.bat
+```
 
-3. **Run the build script**:
-   ```cmd
-   build.bat [ARCHITECTURE]
-   ```
-   
-   Where `[ARCHITECTURE]` can be:
-   - `x64` (default if not specified)
-   - `x86` 
-   - `arm64`
+This will:
+- Clean previous builds
+- Configure with CMake
+- Build the extension
+- Copy the generated `.pyd` file to the correct location
 
-   Examples:
-   ```cmd
-   build.bat          # Builds for x64
-   build.bat x64      # Builds for x64
-   build.bat arm64    # Builds for ARM64
-   ```
+### macOS & Linux
 
-### macOS
+```bash
+cd pybind
+./build.sh
+```
 
-1. **Navigate to the pybind directory**:
-   ```bash
-   cd mssql_python/pybind
-   ```
+This will:
+- Clean previous builds
+- Configure with CMake
+- Build the extension
+- Copy the generated `.so` file to the correct location
 
-2. **Run the build script**:
-   ```bash
-   ./build.sh
-   ```
+---
 
-   This automatically builds universal2 binaries (ARM64 + x86_64).
+## Building the Python Wheel (.whl)
 
-### Linux
+The wheel includes the native bindings.  
+**You must build the native bindings first** (see above).
 
-1. **Navigate to the pybind directory**:
-   ```bash
-   cd mssql_python/pybind
-   ```
+### Windows
 
-2. **Run the build script**:
-   ```bash
-   ./build.sh
-   ```
-
-   The script automatically detects your system architecture.
-
-### Build Output
-
-After successful compilation, you'll find the native binding file in the `mssql_python/` directory:
-
-- **Windows**: `ddbc_bindings.cp{python_version}-{architecture}.pyd`
-  - Example: `ddbc_bindings.cp312-amd64.pyd`
-- **macOS**: `ddbc_bindings.cp{python_version}-universal2.so`
-  - Example: `ddbc_bindings.cp312-universal2.so`
-- **Linux**: `ddbc_bindings.cp{python_version}-{architecture}.so`
-  - Example: `ddbc_bindings.cp312-x86_64.so`
-
-## Creating Python Wheels
-
-After building the native bindings, you can create a Python wheel for distribution.
-
-### Build Wheel
+From the project root:
 
 ```bash
 python setup.py bdist_wheel
 ```
 
-The wheel will be created in the `dist/` directory with platform-specific tags:
-- **Windows**: `mssql_python-{version}-py3-none-win_{architecture}.whl`
-- **macOS**: `mssql_python-{version}-py3-none-macosx_15_0_universal2.whl`
-- **Linux**: `mssql_python-{version}-py3-none-manylinux2014_{architecture}.whl`
+The wheel file will be created in the `dist/` directory.
 
-### Install from Wheel
+### macOS & Linux
 
-```bash
-pip install dist/mssql_python-{version}-py3-none-{platform}.whl
-```
-
-### Alternative: Development Installation
-
-For development purposes, you can install the package in editable mode:
+From the project root:
 
 ```bash
-pip install -e .
+# Build the bindings first!
+cd pybind
+./build.sh
+cd ..
+
+# Then build the wheel:
+python setup.py bdist_wheel
 ```
 
-This allows you to make changes to the Python code without reinstalling.
+The wheel file will be created in the `dist/` directory.
+
+---
 
 ## Running Tests
 
-The test suite uses pytest and requires a Microsoft SQL Server database connection.
+Tests require a database connection string.
+Set the `DB_CONNECTION_STRING` environment variable before running tests:
 
-### Environment Setup
-
-Set the database connection string environment variable:
-
-#### Windows
+### Windows (Command Prompt)
 ```cmd
-set DB_CONNECTION_STRING="SERVER=your_server;DATABASE=your_database;UID=your_username;PWD=your_password;Encrypt=yes;TrustServerCertificate=yes;"
-```
-
-#### macOS/Linux
-```bash
-export DB_CONNECTION_STRING="SERVER=your_server;DATABASE=your_database;UID=your_username;PWD=your_password;Encrypt=yes;TrustServerCertificate=yes;"
-```
-
-### Connection String Examples
-
-#### SQL Server Authentication
-```
-SERVER=localhost;DATABASE=master;UID=sa;PWD=YourPassword123;Encrypt=yes;TrustServerCertificate=yes;
-```
-
-#### Windows Authentication (Windows only)
-```
-SERVER=localhost;DATABASE=master;Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=yes;
-```
-
-#### Azure SQL Database
-```
-SERVER=your-server.database.windows.net;DATABASE=your-database;UID=your-username;PWD=your-password;Encrypt=yes;
-```
-
-### Running Tests
-
-After setting the environment variable, run the tests:
-
-```bash
-# Run all tests
-python -m pytest
-
-# Run specific test file
-python -m pytest tests/test_003_connection.py
-
-# Run tests with coverage
-python -m pytest --cov=mssql_python
-
-# Run tests with verbose output
+set DB_CONNECTION_STRING=your-connection-string-here
 python -m pytest -v
 ```
 
-### Test Structure
+### macOS & Linux (bash/zsh)
+```bash
+export DB_CONNECTION_STRING=your-connection-string-here
+python -m pytest -v
+```
 
-The test suite includes:
-- `test_000_dependencies.py` - Dependency validation
-- `test_001_globals.py` - Global functionality tests
-- `test_002_types.py` - Data type handling tests
-- `test_003_connection.py` - Connection management tests
-- `test_004_cursor.py` - Cursor functionality tests
-- `test_005_connection_cursor_lifecycle.py` - Lifecycle tests
-- `test_006_exceptions.py` - Error handling tests
-- `test_007_logging.py` - Logging functionality tests
-- `test_008_auth.py` - Authentication tests
+---
+
+## Directory Structure
+
+- `pybind/` — Native C++/pybind11 bindings and platform build scripts
+- `mssql_python/` — Python package source
+- `tests/` — Test suite
+- `dist/` — Built wheel packages
+
+---
 
 ## Troubleshooting
 
-### Common Build Issues
+- Ensure all prerequisites are installed and on your PATH.
+- If a build fails, clean up old artifacts and try again (`pybind/build.bat clean` or `./build.sh clean`).
+- For wheel issues, ensure the native binding (`.pyd` or `.so`) is present in the expected location before building the wheel.
+- For test failures, double-check your `DB_CONNECTION_STRING`.
 
-#### Windows
-- **Error**: "Visual Studio not found"
-  - **Solution**: Ensure Visual Studio Build Tools 2022 is installed with C++ workload
-  - **Alternative**: Use Developer Command Prompt for VS 2022
+---
 
-- **Error**: "CMake not found"
-  - **Solution**: CMake is included with Visual Studio Build Tools, or install separately
+For more details on the native bindings, see [`pybind/README.md`](pybind/README.md).
 
-#### macOS
-- **Error**: "No such file or directory: 'sql.h'"
-  - **Solution**: Install Microsoft ODBC Driver 18 using the brew command above
+---
 
-- **Error**: "xcrun: error: active developer path does not exist"
-  - **Solution**: Install Xcode Command Line Tools: `xcode-select --install`
-
-#### Linux
-- **Error**: "Python.h: No such file or directory"
-  - **Solution**: Install Python development headers: `sudo apt-get install python3-dev`
-
-- **Error**: "cmake: command not found"
-  - **Solution**: Install CMake: `sudo apt-get install cmake`
-
-### Test Issues
-
-- **Error**: "Connection string should not be None"
-  - **Solution**: Ensure `DB_CONNECTION_STRING` environment variable is set correctly
-
-- **Error**: "Database connection failed"
-  - **Solution**: Verify SQL Server is running and connection string is valid
-  - **Check**: Network connectivity and firewall settings
-  - **Verify**: Username/password or authentication method
-
-### Architecture Issues
-
-- **Windows**: Ensure you're building for the correct architecture matching your Python installation
-- **macOS**: Universal2 binaries should work on both Intel and Apple Silicon Macs
-- **Linux**: The build script auto-detects architecture, but you can verify with `uname -m`
-
-## Development Workflow
-
-### Recommended Development Process
-
-1. **Set up development environment**:
-   ```bash
-   git clone https://github.com/microsoft/mssql-python.git
-   cd mssql-python
-   pip install -r requirements.txt
-   ```
-
-2. **Build native bindings**:
-   ```bash
-   cd mssql_python/pybind
-   # Windows: build.bat
-   # macOS/Linux: ./build.sh
-   ```
-
-3. **Install in development mode**:
-   ```bash
-   cd ../..
-   pip install -e .
-   ```
-
-4. **Set up test database connection**:
-   ```bash
-   # Windows: set DB_CONNECTION_STRING="..."
-   # macOS/Linux: export DB_CONNECTION_STRING="..."
-   ```
-
-5. **Run tests**:
-   ```bash
-   python -m pytest
-   ```
-
-6. **Make changes and test iteratively**:
-   - For Python changes: No rebuild needed (using `-e` install)
-   - For C++ changes: Rebuild native bindings and reinstall
-
-### Code Quality
-
-The project uses standard Python development practices:
-- Follow PEP 8 style guidelines
-- Write comprehensive tests for new features
-- Ensure all tests pass before submitting changes
-- Use type hints where appropriate
-
-## Contributing
-
-This project welcomes contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines on how to contribute to this project.
-
-For questions or support, please create an issue on the [GitHub repository](https://github.com/microsoft/mssql-python/issues).
+Happy coding!
