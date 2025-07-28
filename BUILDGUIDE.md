@@ -114,6 +114,25 @@ This will:
 
 ---
 
+## Running Tests
+
+Tests require a database connection string.
+Set the `DB_CONNECTION_STRING` environment variable before running tests:
+
+### Windows (Command Prompt)
+```cmd
+set DB_CONNECTION_STRING=your-connection-string-here
+python -m pytest -v
+```
+
+### macOS & Linux (bash/zsh)
+```bash
+export DB_CONNECTION_STRING=your-connection-string-here
+python -m pytest -v
+```
+
+---
+
 ## Building the Python Wheel (.whl)
 
 The wheel includes the native bindings.  
@@ -144,25 +163,6 @@ python setup.py bdist_wheel
 ```
 
 The wheel file will be created in the `dist/` directory.
-
----
-
-## Running Tests
-
-Tests require a database connection string.
-Set the `DB_CONNECTION_STRING` environment variable before running tests:
-
-### Windows (Command Prompt)
-```cmd
-set DB_CONNECTION_STRING=your-connection-string-here
-python -m pytest -v
-```
-
-### macOS & Linux (bash/zsh)
-```bash
-export DB_CONNECTION_STRING=your-connection-string-here
-python -m pytest -v
-```
 
 ---
 
