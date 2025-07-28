@@ -55,13 +55,8 @@ This guide will help you set up your environment, build the native bindings, and
    brew install cmake
    ```
 3. **Install Microsoft ODBC Driver for SQL Server:**
-   ```bash
-   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install.sh)"
-   brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
-   brew update
-   HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 mssql-tools18
-   ```
-4. **Install Python requirements:**
+   - Follow [official instructions](https://learn.microsoft.com/en-us/sql/connect/odbc/linux-mac/install-microsoft-odbc-driver-sql-server-macos).
+5. **Install Python requirements:**
    ```bash
    # Will install pybind11, setuptools etc.
    pip install -r requirements.txt
@@ -72,11 +67,11 @@ This guide will help you set up your environment, build the native bindings, and
 1. **Install Python and development tools:**
    ```bash
    sudo apt-get update
-   sudo apt-get install python3.10 python3.10-dev python3-pip build-essential cmake
+   sudo apt-get install python3 python3-dev python3-pip build-essential cmake
    ```
-   Ensure `python` and `pip` refer to Python 3.10.
+   Ensure `python` and `pip` refer to Python 3.10+.
 2. **Install Microsoft ODBC Driver for SQL Server:**  
-   Follow [official instructions](https://docs.microsoft.com/en-us/sql/connect/odbc/linux-mac/installing-the-microsoft-odbc-driver-for-sql-server).
+   - Follow [official instructions](https://docs.microsoft.com/en-us/sql/connect/odbc/linux-mac/installing-the-microsoft-odbc-driver-for-sql-server).
 3. **Install Python packages:**
    ```bash
    # Will install pybind11, setuptools etc.
