@@ -240,8 +240,39 @@ sqlcmd config connection-strings
 ```
 Copy the ODBC connection string and remove the driver clause before storing it in your `DB_CONNECTION_STRING` environment variable.
 
-### macOS & Linux
-Similar commands are available for macOS and Linux. See the [go-sqlcmd documentation](https://learn.microsoft.com/en-us/sql/tools/sqlcmd/quickstart-sqlcmd-create-container?view=sql-server-ver17) for platform-specific instructions.
+### macOS
+```bash
+# Install Docker Desktop and sqlcmd
+brew install --cask docker
+brew install sqlcmd
+```
+Start Docker Desktop, then:
+```bash
+sqlcmd create mssql --name mssql-python --accept-eula tag 2025-latest --using https://github.com/Microsoft/sql-server-samples/releases/download/wide-world-importers-v1.0/WideWorldImporters-Full.bak
+sqlcmd config connection-strings
+```
+Copy the ODBC connection string and remove the driver clause before storing it in your `DB_CONNECTION_STRING` environment variable.
+
+### Linux
+```bash
+# Install Docker and sqlcmd (Ubuntu/Debian)
+sudo apt-get update
+sudo apt-get install docker.io
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Install sqlcmd
+curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+echo "deb [arch=amd64,arm64,armhf signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/repos/microsoft-ubuntu-$(lsb_release -rs)-prod $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/mssql-release.list
+sudo apt-get update
+sudo apt-get install sqlcmd
+```
+Then create the SQL Server container:
+```bash
+sudo sqlcmd create mssql --name mssql-python --accept-eula tag 2025-latest --using https://github.com/Microsoft/sql-server-samples/releases/download/wide-world-importers-v1.0/WideWorldImporters-Full.bak
+sqlcmd config connection-strings
+```
+Copy the ODBC connection string and remove the driver clause before storing it in your `DB_CONNECTION_STRING` environment variable.
 
 ---
 
