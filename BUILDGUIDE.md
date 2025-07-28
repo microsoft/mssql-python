@@ -24,7 +24,9 @@ This guide will help you set up your environment, build the native bindings, and
 
 ## Getting Started
 
-To contribute to this project, you'll need to fork and clone the repository:
+To contribute to this project, you'll need to fork and clone the repository. You can do this using either the command line or Visual Studio Code.
+
+### Option 1: Command Line
 
 1. **Fork the repository** on GitHub by clicking the "Fork" button on the [mssql-python repository page](https://github.com/microsoft/mssql-python).
 2. **Clone your fork** to your local machine:
@@ -36,6 +38,23 @@ To contribute to this project, you'll need to fork and clone the repository:
    ```bash
    git remote add upstream https://github.com/microsoft/mssql-python.git
    ```
+
+### Option 2: Visual Studio Code
+
+1. **Install the GitHub extension** in VS Code:
+   - Open VS Code
+   - Go to the Extensions view (Ctrl+Shift+X)
+   - Search for "GitHub Pull Requests and Issues" and install it
+2. **Fork and clone the repository**:
+   - Navigate to the [mssql-python repository page](https://github.com/microsoft/mssql-python)
+   - Click "Create new fork" to create a fork in your GitHub account
+   - Open VS Code
+   - Open the Command Palette (Ctrl+Shift+P)
+   - Type "Git: Clone" and select it
+   - Select "Clone from GitHub"
+   - Search for and select your forked repository
+   - Choose a local directory to clone to
+3. **The upstream remote will be set up automatically** when you fork through GitHub.
 
 ---
 
