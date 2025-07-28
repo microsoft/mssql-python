@@ -7,6 +7,7 @@ This guide will help you set up your environment, build the native bindings, and
 
 ## Table of Contents
 
+- [Getting Started](#getting-started)
 - [Prerequisites](#prerequisites)
 - [Platform-Specific Setup](#platform-specific-setup)
   - [Windows](#windows)
@@ -15,8 +16,26 @@ This guide will help you set up your environment, build the native bindings, and
 - [Building Native Bindings](#building-native-bindings)
 - [Building the Python Wheel (.whl)](#building-the-python-wheel-whl)
 - [Running Tests](#running-tests)
+- [Setting Up a Test Database (Optional)](#setting-up-a-test-database-optional)
 - [Directory Structure](#directory-structure)
 - [Troubleshooting](#troubleshooting)
+
+---
+
+## Getting Started
+
+To contribute to this project, you'll need to fork and clone the repository:
+
+1. **Fork the repository** on GitHub by clicking the "Fork" button on the [mssql-python repository page](https://github.com/microsoft/mssql-python).
+2. **Clone your fork** to your local machine:
+   ```bash
+   git clone https://github.com/YOUR-USERNAME/mssql-python.git
+   cd mssql-python
+   ```
+3. **Set up the upstream remote** to keep your fork in sync:
+   ```bash
+   git remote add upstream https://github.com/microsoft/mssql-python.git
+   ```
 
 ---
 
@@ -39,6 +58,7 @@ This guide will help you set up your environment, build the native bindings, and
 2. **Install Visual Studio Build Tools**
    - Include the “Desktop development with C++” workload.
    - CMake is included by default.
+   - **Alternative for VS Code users:** If you already have VS Code installed, you can configure it for C++ development by following [this guide](https://code.visualstudio.com/docs/cpp/config-msvc).
 3. **Install Microsoft ODBC Driver for SQL Server:**  
    [Download here](https://docs.microsoft.com/en-us/sql/connect/odbc/download-odbc-driver-for-sql-server).
 4. **Install required Python packages:**
@@ -82,14 +102,14 @@ This guide will help you set up your environment, build the native bindings, and
 
 ## Building Native Bindings
 
-The native bindings are in the `pybind` directory.
+The native bindings are in the `mssql_python/pybind` directory.
 
 ### Windows
 
 Open a **Developer Command Prompt for VS** and run:
 
 ```bash
-cd pybind
+cd mssql_python/pybind
 build.bat
 ```
 
@@ -102,7 +122,7 @@ This will:
 ### macOS & Linux
 
 ```bash
-cd pybind
+cd mssql_python/pybind
 ./build.sh
 ```
 
@@ -116,17 +136,23 @@ This will:
 
 ## Running Tests
 
-Tests require a database connection string.
+Tests require a database connection string and must be run from the project root directory.
 Set the `DB_CONNECTION_STRING` environment variable before running tests:
 
 ### Windows (Command Prompt)
 ```cmd
+# If you're in mssql_python/pybind/, navigate back to the project root:
+cd ../..
+
 set DB_CONNECTION_STRING=your-connection-string-here
 python -m pytest -v
 ```
 
 ### macOS & Linux (bash/zsh)
 ```bash
+# If you're in mssql_python/pybind/, navigate back to the project root:
+cd ../..
+
 export DB_CONNECTION_STRING=your-connection-string-here
 python -m pytest -v
 ```
@@ -154,9 +180,9 @@ From the project root:
 
 ```bash
 # Build the bindings first!
-cd pybind
+cd mssql_python/pybind
 ./build.sh
-cd ..
+cd ../..
 
 # Then build the wheel:
 python setup.py bdist_wheel
@@ -168,23 +194,48 @@ The wheel file will be created in the `dist/` directory.
 
 ## Directory Structure
 
-- `pybind/` — Native C++/pybind11 bindings and platform build scripts
+- `mssql_python/pybind/` — Native C++/pybind11 bindings and platform build scripts
 - `mssql_python/` — Python package source
 - `tests/` — Test suite
 - `dist/` — Built wheel packages
 
 ---
 
+## Setting Up a Test Database (Optional)
+
+If you don't have access to a SQL Server instance, you can quickly set up a containerized SQL Server using go-sqlcmd:
+
+### Windows
+```bash
+# Install Docker Desktop and sqlcmd
+winget install Docker.DockerDesktop
+```
+Configure Docker, accept EULA, etc., then open a new terminal window:
+```bash
+winget install sqlcmd
+```
+Open a new window to get new path variables:
+```bash
+sqlcmd create mssql --name mssql-python --accept-eula tag 2025-latest --using https://github.com/Microsoft/sql-server-samples/releases/download/wide-world-importers-v1.0/WideWorldImporters-Full.bak
+sqlcmd config connection-strings
+```
+Copy the ODBC connection string and remove the driver clause before storing it in your `DB_CONNECTION_STRING` environment variable.
+
+### macOS & Linux
+Similar commands are available for macOS and Linux. See the [go-sqlcmd documentation](https://learn.microsoft.com/en-us/sql/tools/sqlcmd/quickstart-sqlcmd-create-container?view=sql-server-ver17) for platform-specific instructions.
+
+---
+
 ## Troubleshooting
 
 - Ensure all prerequisites are installed and on your PATH.
-- If a build fails, clean up old artifacts and try again (`pybind/build.bat clean` or `./build.sh clean`).
+- If a build fails, clean up old artifacts and try again (`mssql_python/pybind/build.bat clean` or `./build.sh clean`).
 - For wheel issues, ensure the native binding (`.pyd` or `.so`) is present in the expected location before building the wheel.
 - For test failures, double-check your `DB_CONNECTION_STRING`.
 
 ---
 
-For more details on the native bindings, see [`pybind/README.md`](pybind/README.md).
+For more details on the native bindings, see [`mssql_python/pybind/README.md`](mssql_python/pybind/README.md).
 
 ---
 
