@@ -56,7 +56,7 @@ This guide will help you set up your environment, build the native bindings, and
    ```
 3. **Install Microsoft ODBC Driver for SQL Server:**
    - Follow [official instructions](https://learn.microsoft.com/en-us/sql/connect/odbc/linux-mac/install-microsoft-odbc-driver-sql-server-macos).
-5. **Install Python requirements:**
+4. **Install Python requirements:**
    ```bash
    # Will install pybind11, setuptools etc.
    pip install -r requirements.txt
