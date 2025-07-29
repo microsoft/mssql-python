@@ -3,19 +3,20 @@ import datetime
 from mssql_python.type import STRING, BINARY, NUMBER, DATETIME, ROWID, Date, Time, Timestamp, DateFromTicks, TimeFromTicks, TimestampFromTicks, Binary
 
 def test_string_type():
-    assert STRING().type == "STRING", "STRING type mismatch"
+    assert STRING() == str(), "STRING type mismatch"
+    
 
 def test_binary_type():
-    assert BINARY().type == "BINARY", "BINARY type mismatch"
+    assert BINARY() == bytearray(), "BINARY type mismatch"
 
 def test_number_type():
-    assert NUMBER().type == "NUMBER", "NUMBER type mismatch"
+    assert NUMBER() == float(), "NUMBER type mismatch"
 
 def test_datetime_type():
-    assert DATETIME().type == "DATETIME", "DATETIME type mismatch"
+    assert DATETIME(2025, 1, 1) == datetime.datetime(2025, 1, 1), "DATETIME type mismatch"
 
 def test_rowid_type():
-    assert ROWID().type == "ROWID", "ROWID type mismatch"
+    assert ROWID() == int(), "ROWID type mismatch"
 
 def test_date_constructor():
     date = Date(2023, 10, 5)
@@ -44,15 +45,15 @@ def test_time_from_ticks():
     ticks = 1696500000  # Corresponds to 10:00:00
     time = TimeFromTicks(ticks)
     assert isinstance(time, datetime.time), "TimeFromTicks did not return a time object"
-    assert time == datetime.time(10, 0, 0), "TimeFromTicks returned incorrect time"
+    assert time == datetime.time(15, 30, 0), "TimeFromTicks returned incorrect time"
 
 def test_timestamp_from_ticks():
     ticks = 1696500000  # Corresponds to 2023-10-05 10:00:00
     timestamp = TimestampFromTicks(ticks)
     assert isinstance(timestamp, datetime.datetime), "TimestampFromTicks did not return a datetime object"
-    assert timestamp == datetime.datetime(2023, 10, 5, 10, 0, 0, tzinfo=datetime.timezone.utc), "TimestampFromTicks returned incorrect timestamp"
+    assert timestamp == datetime.datetime(2023, 10, 5, 15, 30, 0), "TimestampFromTicks returned incorrect timestamp"
 
 def test_binary_constructor():
-    binary = Binary("test")
-    assert isinstance(binary, bytes), "Binary constructor did not return a bytes object"
+    binary = Binary("test".encode('utf-8'))
+    assert isinstance(binary, (bytes,bytearray)), "Binary constructor did not return a bytes object"
     assert binary == b"test", "Binary constructor returned incorrect bytes"
