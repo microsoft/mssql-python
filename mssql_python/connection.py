@@ -147,7 +147,7 @@ class Connection:
         self.setautocommit(value)
         log('info', "Autocommit mode set to %s.", value)
 
-    def setautocommit(self, value: bool = True) -> None:
+    def setautocommit(self, value: bool = False) -> None:
         """
         Set the autocommit mode of the connection.
         Args:

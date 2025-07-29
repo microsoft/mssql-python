@@ -14,6 +14,7 @@ from mssql_python.exceptions import InterfaceError
 import pytest
 import time
 from mssql_python import Connection, connect, pooling
+#from pyodbc import connect, Connection, pooling
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
@@ -73,7 +74,7 @@ def test_connection_string_with_odbc_param(db_connection):
     assert "Driver={ODBC Driver 18 for SQL Server};;APP=MSSQL-Python;Server=localhost;Uid=me;Pwd=mypwd;Database=mydb;Encrypt=yes;TrustServerCertificate=yes;" == conn_str, "Connection string is incorrect"
 
 def test_autocommit_default(db_connection):
-    assert db_connection.autocommit is True, "Autocommit should be True by default"
+    assert db_connection.autocommit is False, "Autocommit should be False by default"
 
 def test_autocommit_setter(db_connection):
     db_connection.autocommit = True
