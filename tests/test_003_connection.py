@@ -14,7 +14,6 @@ from mssql_python.exceptions import InterfaceError
 import pytest
 import time
 from mssql_python import Connection, connect, pooling
-#from pyodbc import connect, Connection, pooling
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
