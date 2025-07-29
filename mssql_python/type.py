@@ -100,14 +100,14 @@ def TimestampFromTicks(ticks: int) -> datetime.datetime:
     return datetime.datetime.fromtimestamp(ticks)
 
 
-def Binary(string) -> bytes:
+def Binary(value) -> bytes:
     """
     Converts a string or bytes to bytes using UTF-8 encoding.
     """
-    if isinstance(string, bytes):
-        return string
-    elif isinstance(string, str):
-        return bytes(string, "utf-8")
+    if isinstance(value, bytes):
+        return value
+    elif isinstance(value, str):
+        return bytes(value, "utf-8")
     else:
         # Handle other types by converting to string first
-        return bytes(str(string), "utf-8")
+        return bytes(str(value), "utf-8")

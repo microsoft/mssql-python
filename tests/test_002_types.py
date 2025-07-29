@@ -55,5 +55,5 @@ def test_timestamp_from_ticks():
 
 def test_binary_constructor():
     binary = Binary("test".encode('utf-8'))
-    assert isinstance(binary, (bytes,bytearray)), "Binary constructor did not return a bytes object"
+    assert isinstance(binary, (bytes, bytearray)), "Binary constructor did not return a bytes object"
     assert binary == b"test", "Binary constructor returned incorrect bytes"
