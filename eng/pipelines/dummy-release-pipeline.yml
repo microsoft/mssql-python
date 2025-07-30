@@ -4,9 +4,11 @@ name: mssql-python-dummy-release-pipeline
 
 variables:
   - group: 'ESRP Federated Creds (AME)'
-  # Add OneBranch required variables
-  ob_outputDirectory: '$(Build.ArtifactStagingDirectory)/out'
-  ob_artifactBaseName: 'mssql-python'
+  # Add OneBranch required variables as a separate item in the list
+  - name: ob_outputDirectory
+    value: '$(Build.ArtifactStagingDirectory)/out'
+  - name: ob_artifactBaseName
+    value: 'mssql-python'
 
 resources:
   repositories: 
