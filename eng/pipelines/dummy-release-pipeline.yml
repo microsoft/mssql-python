@@ -32,7 +32,11 @@ extends:
           pool:
             type: 'windows'
           displayName: 'Publish Symbols - Windows'
-          # Strategy matrix to build all combinations
+          
+          # OneBranch required variables must be at job level
+          variables:
+            ob_outputDirectory: '$(Build.SourcesDirectory)\out'
+            ob_artifactBaseName: 'mssql-python-symbols'
 
           steps:
           - task: UsePythonVersion@0
@@ -57,21 +61,16 @@ extends:
               dir /s /b
             displayName: 'Generate symbols for mssql-python package'
 
-          # Copy the generated symbols to the staging folder for artifacts
+          # Copy the generated symbols to OneBranch output directory
           - task: CopyFiles@2
             inputs:
               SourceFolder: '$(Build.SourcesDirectory)\mssql_python'
               Contents: '**\*.pdb'
-              TargetFolder: '$(Build.ArtifactStagingDirectory)\mssql-python-symbols'
-            displayName: 'Copy symbols to staging folder'
+              TargetFolder: '$(ob_outputDirectory)\symbols'
+            displayName: 'Copy symbols to OneBranch output directory'
 
-          # Publish the symbols (only pdbs) as an artifact
-          - task: PublishBuildArtifacts@1
-            displayName: 'Publish symbols as build artifact'
-            inputs:
-              PathtoPublish: '$(Build.ArtifactStagingDirectory)\mssql-python-symbols'
-              ArtifactName: 'mssql-python-symbols'
-              publishLocation: 'Container'
+          # OneBranch will automatically upload artifacts from ob_outputDirectory
+          # No need for PublishBuildArtifacts task
 
           - powershell: 'Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"'
             displayName: 'Update Symbol.AccountName with SqlClientDrivers'
