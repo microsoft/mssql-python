@@ -11,7 +11,6 @@ instructions provided by the bot. You will only need to do this once across all 
 
 This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
 For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/)
-<<<<<<< HEAD
 or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
 
 ## Before Contributing
@@ -41,6 +40,4 @@ All pull requests must include:
 - **Issue/Work Item Link** (only one required): 
   - External contributors: Link to a GitHub issue
   - Microsoft org members: Link to an ADO work item
-=======
 or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
->>>>>>> 06397346bcf475452f4047122b3367d63fbebecd

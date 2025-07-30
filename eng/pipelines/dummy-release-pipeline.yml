@@ -1,15 +1,10 @@
-<<<<<<< HEAD
 trigger: none
 
 name: mssql-python-dummy-release-pipeline
-=======
-name: mssql-python-official-release-pipeline
->>>>>>> 06397346bcf475452f4047122b3367d63fbebecd
 
 variables:
   - group: 'ESRP Federated Creds (AME)'
 
-<<<<<<< HEAD
 extends:
   template: v2/OneBranch.Official.CrossPlat.yml@templates
   parameters:
@@ -195,51 +190,3 @@ extends:
 #       ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
 #       MainPublisher: 'ESRPRELPACMAN'
 #       DomainTenantId: '$(DomainTenantId)'
-=======
-jobs:
-- job: ReleaseESRPPackage
-  displayName: 'Release ESRP Package'
-  pool:
-    vmImage: 'windows-latest'
-  
-  steps:
-  - task: DownloadPipelineArtifact@2
-    inputs:
-      buildType: 'specific'
-      project: '$(System.TeamProject)'
-      definition: 2162
-      buildVersionToDownload: 'latest'
-      branchName: '$(Build.SourceBranch)'
-      artifactName: 'mssql-python-wheels-dist'
-      targetPath: '$(Build.SourcesDirectory)\dist'
-    displayName: 'Download release wheel files artifact from latest successful run on main branch'
-
-  # Show content of the downloaded artifact
-  - script: |
-      echo "Contents of the dist directory:"
-      dir "$(Build.SourcesDirectory)\dist"
-    displayName: 'List contents of dist directory'
-
-  - task: EsrpRelease@9
-    displayName: 'ESRP Release'
-    inputs:
-      connectedservicename: '$(ESRPConnectedServiceName)'
-      usemanagedidentity: true
-      keyvaultname: '$(AuthAKVName)'
-      signcertname: '$(AuthSignCertName)'
-      clientid: '$(EsrpClientId)'
-      Intent: 'PackageDistribution'
-      # Changing content type to Maven release (NOT PyPI) since we want to do dummy release
-      # for ESRP testing purposes, not for actual PyPI distribution.
-      # This is a workaround to allow ESRP to process the release without actual PyPI content
-      # and to avoid ESRP validation errors.
-      ContentType: 'Maven'
-      ContentSource: 'Folder'
-      FolderLocation: '$(Build.SourcesDirectory)/dist'
-      WaitForReleaseCompletion: true
-      Owners: '$(owner)'
-      Approvers: '$(approver)'
-      ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
-      MainPublisher: 'ESRPRELPACMAN'
-      DomainTenantId: '$(DomainTenantId)'
->>>>>>> 06397346bcf475452f4047122b3367d63fbebecd
