@@ -11,15 +11,13 @@ Resource Management:
 - Cursors are also cleaned up automatically when no longer referenced, to prevent memory leaks.
 """
 import weakref
+import re
 from mssql_python.cursor import Cursor
-from mssql_python.logging_config import get_logger, ENABLE_LOGGING
-from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
-from mssql_python.helpers import add_driver_to_connection_str, check_error
+from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, log
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
-from mssql_python.exceptions import DatabaseError, InterfaceError
-
-logger = get_logger()
+from mssql_python.exceptions import InterfaceError
+from mssql_python.auth import process_connection_string
 
 
 class Connection:
@@ -64,6 +62,17 @@ class Connection:
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
+
+        # Check if the connection string contains authentication parameters
+        # This is important for processing the connection string correctly.
+        # If authentication is specified, it will be processed to handle
+        # different authentication types like interactive, device code, etc.
+        if re.search(r"authentication", self.connection_str, re.IGNORECASE):
+            connection_result = process_connection_string(self.connection_str)
+            self.connection_str = connection_result[0]
+            if connection_result[1]:
+                self._attrs_before.update(connection_result[1])
+        
         self._closed = False
         
         # Using WeakSet which automatically removes cursors when they are no longer in use
@@ -113,8 +122,7 @@ class Connection:
                 continue
             conn_str += f"{key}={value};"
 
-        if ENABLE_LOGGING:
-            logger.info("Final connection string: %s", conn_str)
+        log('info', "Final connection string: %s", sanitize_connection_string(conn_str))
 
         return conn_str
     
@@ -137,8 +145,7 @@ class Connection:
             None
         """
         self.setautocommit(value)
-        if ENABLE_LOGGING:
-            logger.info("Autocommit mode set to %s.", value)
+        log('info', "Autocommit mode set to %s.", value)
 
     def setautocommit(self, value: bool = True) -> None:
         """
@@ -193,8 +200,7 @@ class Connection:
         """
         # Commit the current transaction
         self._conn.commit()
-        if ENABLE_LOGGING:
-            logger.info("Transaction committed successfully.")
+        log('info', "Transaction committed successfully.")
 
     def rollback(self) -> None:
         """
@@ -209,8 +215,7 @@ class Connection:
         """
         # Roll back the current transaction
         self._conn.rollback()
-        if ENABLE_LOGGING:
-            logger.info("Transaction rolled back successfully.")
+        log('info', "Transaction rolled back successfully.")
 
     def close(self) -> None:
         """
@@ -242,12 +247,11 @@ class Connection:
                 except Exception as e:
                     # Collect errors but continue closing other cursors
                     close_errors.append(f"Error closing cursor: {e}")
-                    if ENABLE_LOGGING:
-                        logger.warning(f"Error closing cursor: {e}")
+                    log('warning', f"Error closing cursor: {e}")
             
             # If there were errors closing cursors, log them but continue
-            if close_errors and ENABLE_LOGGING:
-                logger.warning(f"Encountered {len(close_errors)} errors while closing cursors")
+            if close_errors:
+                log('warning', f"Encountered {len(close_errors)} errors while closing cursors")
 
             # Clear the cursor set explicitly to release any internal references
             self._cursors.clear()
@@ -258,13 +262,24 @@ class Connection:
                 self._conn.close()
                 self._conn = None
         except Exception as e:
-            if ENABLE_LOGGING:
-                logger.error(f"Error closing database connection: {e}")
+            log('error', f"Error closing database connection: {e}")
             # Re-raise the connection close error as it's more critical
             raise
         finally:
             # Always mark as closed, even if there were errors
             self._closed = True
         
-        if ENABLE_LOGGING:
-            logger.info("Connection closed successfully.")
+        log('info', "Connection closed successfully.")
+
+    def __del__(self):
+        """
+        Destructor to ensure the connection is closed when the connection object is no longer needed.
+        This is a safety net to ensure resources are cleaned up
+        even if close() was not called explicitly.
+        """
+        if "_closed" not in self.__dict__ or not self._closed:
+            try:
+                self.close()
+            except Exception as e:
+                # Dont raise exceptions from __del__ to avoid issues during garbage collection
+                log('error', f"Error during connection cleanup: {e}")

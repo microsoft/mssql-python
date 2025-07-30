@@ -9,7 +9,7 @@ Functions:
 
 import pytest
 import os
-from mssql_python import connect, ddbc_bindings
+from mssql_python import connect
 import time
 
 def pytest_configure(config):

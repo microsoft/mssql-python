@@ -60,6 +60,10 @@ class Row:
         """Allow iteration through values"""
         return iter(self._values)
     
+    def __str__(self):
+        """Return string representation of the row"""
+        return str(tuple(self._values))
+
     def __repr__(self):
-        """Return a string representation of the row"""
-        return f"Row{tuple(self._values)}"
+        """Return a detailed string representation for debugging"""
+        return repr(tuple(self._values))

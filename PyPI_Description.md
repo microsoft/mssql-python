@@ -9,9 +9,10 @@ We are making progress - The Public Preview of our driver is now available! This
 ### What's Included:
 
 - Everything from previous releases
-- **Linux Support**: The mssql-python driver now supports Linux OS (manylinux2014) - Ubuntu, Debian and RHEL, enabling seamless development on Linux based systems. Added Linux driver libraries and related logic for architecture-specific handling and ODBC driver path resolution. Support for other Linux based distros will come in subsequent releases.
-- **Connection Pooling Support for MacOS and Linux**: Implemented connection pooling features for MacOS and Linux, including tests and unified code support for pooling across platforms.
-Expanded Pipeline/Test Matrix: Added/expanded support for Python versions < 3.13 and enhanced database setup for testing, including LocalDB and Docker-based SQL Server.
+- **Azure Active Directory Authentication:** New authentication module supporting Azure AD login options (ActiveDirectoryInteractive, ActiveDirectoryDeviceCode, ActiveDirectoryDefault) for secure and flexible cloud integration.
+- **Batch Execution Performance:** Refactored `executemany` for efficient bulk operations and improved C++ bindings for performance.
+- **Robust Logging System:** Overhauled logging with a singleton manager, sensitive data sanitization, and better exception handling.
+- **Improved Row Representation:** Enhanced output and debugging via updated `Row` object string and representation methods.
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
 
