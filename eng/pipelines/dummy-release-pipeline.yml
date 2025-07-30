@@ -5,6 +5,13 @@ name: mssql-python-dummy-release-pipeline
 variables:
   - group: 'ESRP Federated Creds (AME)'
 
+resources:
+  repositories: 
+    - repository: templates
+      type: git
+      name: OneBranch.Pipelines/GovernedTemplates
+      ref: refs/heads/main
+
 extends:
   template: v2/OneBranch.Official.CrossPlat.yml@templates
   parameters:
