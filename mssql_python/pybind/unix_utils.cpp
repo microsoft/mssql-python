@@ -14,19 +14,22 @@ const size_t kUcsLength = 2;              // SQLWCHAR is 2 bytes on all platform
 // TODO: Make Logger a separate module and import it across the project
 template <typename... Args>
 void LOG(const std::string& formatString, Args&&... args) {
-    // Get the logger each time instead of caching it to ensure we get the latest state
-    py::object logging_module = py::module_::import("mssql_python.logging_config");
-    py::object logger = logging_module.attr("get_logger")();
-    
-    // If logger is None, don't try to log
-    if (py::isinstance<py::none>(logger)) {
-        return;
+    py::gil_scoped_acquire gil;  // <---- this ensures safe Python API usage
+
+    py::object logger = py::module_::import("mssql_python.logging_config").attr("get_logger")();
+    if (py::isinstance<py::none>(logger)) return;
+
+    try {
+        std::string ddbcFormatString = "[DDBC Bindings log] " + formatString;
+        if constexpr (sizeof...(args) == 0) {
+            logger.attr("debug")(py::str(ddbcFormatString));
+        } else {
+            py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
+            logger.attr("debug")(message);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Logging error: " << e.what() << std::endl;
     }
-    
-    // Format the message and log it
-    std::string ddbcFormatString = "[DDBC Bindings log] " + formatString;
-    py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
-    logger.attr("debug")(message);
 }
 
 // Function to convert SQLWCHAR strings to std::wstring on macOS

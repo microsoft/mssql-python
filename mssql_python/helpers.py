@@ -6,7 +6,7 @@ This module provides helper functions for the mssql_python package.
 
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import raise_exception
-from mssql_python.logging_config import get_logger, ENABLE_LOGGING
+from mssql_python.logging_config import get_logger
 import platform
 from pathlib import Path
 from mssql_python.ddbc_bindings import normalize_architecture
@@ -73,7 +73,7 @@ def check_error(handle_type, handle, ret):
     """
     if ret < 0:
         error_info = ddbc_bindings.DDBCSQLCheckError(handle_type, handle, ret)
-        if ENABLE_LOGGING:
+        if logger:
             logger.error("Error: %s", error_info.ddbcErrorMsg)
         raise_exception(error_info.sqlState, error_info.ddbcErrorMsg)
 
@@ -184,3 +184,31 @@ def get_driver_path(module_dir, architecture):
         raise RuntimeError(f"ODBC driver not found at: {driver_path_str}")
 
     return driver_path_str
+
+
+def sanitize_connection_string(conn_str: str) -> str:
+    """
+    Sanitize the connection string by removing sensitive information.
+    Args:
+        conn_str (str): The connection string to sanitize.
+    Returns:
+        str: The sanitized connection string.
+    """
+    # Remove sensitive information from the connection string, Pwd section
+    # Replace Pwd=...; or Pwd=... (end of string) with Pwd=***;
+    import re
+    return re.sub(r"(Pwd\s*=\s*)[^;]*", r"\1***", conn_str, flags=re.IGNORECASE)
+
+
+def log(level: str, message: str, *args) -> None:
+    """
+    Universal logging helper that gets a fresh logger instance.
+    
+    Args:
+        level: Log level ('debug', 'info', 'warning', 'error')
+        message: Log message with optional format placeholders
+        *args: Arguments for message formatting
+    """
+    logger = get_logger()
+    if logger:
+        getattr(logger, level)(message, *args)
