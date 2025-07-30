@@ -1,5 +1,6 @@
 import pytest
 import datetime
+import time
 from mssql_python.type import STRING, BINARY, NUMBER, DATETIME, ROWID, Date, Time, Timestamp, DateFromTicks, TimeFromTicks, TimestampFromTicks, Binary
 
 def test_string_type():
@@ -42,16 +43,16 @@ def test_date_from_ticks():
     assert date == datetime.date(2023, 10, 5), "DateFromTicks returned incorrect date"
 
 def test_time_from_ticks():
-    ticks = 1696500000  # Corresponds to 10:00:00
-    time = TimeFromTicks(ticks)
-    assert isinstance(time, datetime.time), "TimeFromTicks did not return a time object"
-    assert time == datetime.time(15, 30, 0), "TimeFromTicks returned incorrect time"
+    ticks = 1696500000  # Corresponds to local
+    time_var = TimeFromTicks(ticks)
+    assert isinstance(time_var, datetime.time), "TimeFromTicks did not return a time object"
+    assert time_var == datetime.time(*time.localtime(ticks)[3:6]), "TimeFromTicks returned incorrect time"
 
 def test_timestamp_from_ticks():
-    ticks = 1696500000  # Corresponds to 2023-10-05 10:00:00
+    ticks = 1696500000  # Corresponds to 2023-10-05 local time
     timestamp = TimestampFromTicks(ticks)
     assert isinstance(timestamp, datetime.datetime), "TimestampFromTicks did not return a datetime object"
-    assert timestamp == datetime.datetime(2023, 10, 5, 15, 30, 0), "TimestampFromTicks returned incorrect timestamp"
+    assert timestamp == datetime.datetime.fromtimestamp(ticks), "TimestampFromTicks returned incorrect timestamp"
 
 def test_binary_constructor():
     binary = Binary("test".encode('utf-8'))
