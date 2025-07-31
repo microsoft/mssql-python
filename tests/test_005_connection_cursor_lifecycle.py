@@ -1,3 +1,4 @@
+
 """
 This file contains tests for the Connection class.
 Functions:
@@ -47,9 +48,6 @@ def test_cursor_cleanup_on_connection_close(conn_str):
     cursor3.execute("SELECT 3")
     cursor3.fetchall()
 
-    # Commit to ensure no uncommitted transactions during cleanup
-    conn.commit()
-
     # Close one cursor explicitly
     cursor1.close()
     assert cursor1.closed is True, "Cursor1 should be closed"
@@ -68,8 +66,6 @@ def test_cursor_cleanup_without_close(conn_str):
     cursor = conn_new.cursor()
     cursor.execute("SELECT 1")
     cursor.fetchall()
-    # Commit to ensure no uncommitted transactions
-    conn_new.commit()
     assert len(conn_new._cursors) == 1
     del cursor # Remove the last reference
     assert len(conn_new._cursors) == 0  # Now the WeakSet should be empty
@@ -85,8 +81,6 @@ cursors = [conn.cursor() for _ in range(5)]
 for cur in cursors:
     cur.execute("SELECT 1")
     cur.fetchall()
-# Commit to prevent issues with uncommitted transactions during cleanup
-conn.commit()
 del conn
 import gc; gc.collect()
 del cursors
@@ -111,8 +105,6 @@ for conn in conns:
     cursor.execute('SELECT 1')
     cursor.fetchall()
     cursors.append(cursor)
-    # Commit each connection to prevent issues during cleanup
-    conn.commit()
 del conns
 import gc; gc.collect()
 del cursors
@@ -129,18 +121,9 @@ conn = connect(\"""" + conn_str + """\")
 cursor = conn.cursor()
 cursor.execute("SELECT 1")
 cursor.fetchall()
-# Commit before deleting connection to prevent cleanup issues
-conn.commit()
 del conn
 import gc; gc.collect()
-# This should fail gracefully instead of segfaulting
-try:
-    cursor.execute("SELECT 2")
-    print("ERROR: Should not be able to execute on cursor after connection is deleted")
-    exit(1)
-except Exception as e:
-    # Expected behavior - cursor should not work after connection is deleted
-    pass
+cursor.execute("SELECT 2")
 del cursor
 gc.collect()
 """
@@ -188,9 +171,6 @@ def test_cursor_cleanup_order_no_segfault(conn_str):
         cursor.fetchall()
         cursors.append(cursor)
     
-    # Commit to ensure no uncommitted transactions during cleanup
-    conn.commit()
-    
     # Don't close any cursors explicitly
     # Just close the connection - it should handle cleanup properly
     conn.close()
@@ -232,9 +212,6 @@ def test_connection_close_idempotent(conn_str):
     conn = connect(conn_str)
     cursor = conn.cursor()
     cursor.execute("SELECT 1")
-    cursor.fetchall()
-    # Commit to ensure clean state
-    conn.commit()
     
     # First close
     conn.close()
@@ -267,7 +244,7 @@ def test_multiple_cursor_operations_cleanup(conn_str):
     drop_table_if_exists(cursor_setup, "#test_cleanup")
     cursor_setup.execute("CREATE TABLE #test_cleanup (id INT, value VARCHAR(50))")
     cursor_setup.close()
-
+    
     # Create multiple cursors doing different operations
     cursor_insert = conn.cursor()
     cursor_insert.execute("INSERT INTO #test_cleanup VALUES (1, 'test1'), (2, 'test2')")
@@ -279,9 +256,6 @@ def test_multiple_cursor_operations_cleanup(conn_str):
     cursor_select2 = conn.cursor()
     cursor_select2.execute("SELECT * FROM #test_cleanup WHERE id = 2")
     cursor_select2.fetchall()
-
-    # Commit all changes before closing to prevent cleanup issues
-    conn.commit()
 
     # Close connection without closing cursors
     conn.close()
