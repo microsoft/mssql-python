@@ -182,31 +182,77 @@ def test_connection_close(conn_str):
     temp_conn.close()    
 
 def test_connection_pooling_speed(conn_str):
-    # No pooling
-    start_no_pool = time.perf_counter()
+    # Disable pooling first
+    pooling(enabled=False)
+    
+    # Warm up - establish initial connection to avoid first-connection overhead
+    warmup = connect(conn_str)
+    warmup.close()
+    
+    # Measure multiple non-pooled connections
+    non_pooled_times = []
+    for _ in range(5):
+        start = time.perf_counter()
+        conn = connect(conn_str)
+        conn.close()
+        end = time.perf_counter()
+        non_pooled_times.append(end - start)
+    
+    avg_no_pool = sum(non_pooled_times) / len(non_pooled_times)
+    
+    # Enable pooling
+    pooling(max_size=5, idle_timeout=30)
+    
+    # Prime the pool with a connection
+    primer = connect(conn_str)
+    primer.close()
+    
+    # Small delay to ensure connection is properly returned to pool
+    time.sleep(0.1)
+    
+    # Measure multiple pooled connections
+    pooled_times = []
+    for _ in range(5):
+        start = time.perf_counter()
+        conn = connect(conn_str)
+        conn.close()
+        end = time.perf_counter()
+        pooled_times.append(end - start)
+    
+    avg_pooled = sum(pooled_times) / len(pooled_times)
+    
+    # Pooled should be at least 20% faster
+    assert avg_pooled < avg_no_pool * 0.8, \
+        f"Pooled connections ({avg_pooled:.4f}s) not significantly faster than non-pooled ({avg_no_pool:.4f}s)"
+    
+    # Clean up - disable pooling for other tests
+    pooling(enabled=False)
+
+def test_connection_pooling_reuse_spid(conn_str):
+    """Test that connections are actually reused from the pool"""
+    # Enable pooling
+    pooling(max_size=1, idle_timeout=30)
+    
+    # Create and close a connection
     conn1 = connect(conn_str)
+    conn1_id = id(conn1._connection)  # Get internal connection object ID
+    cursor1 = conn1.cursor()
+    cursor1.execute("SELECT @@SPID")  # Get SQL Server process ID
+    spid1 = cursor1.fetchone()[0]
     conn1.close()
-    end_no_pool = time.perf_counter()
-    no_pool_duration = end_no_pool - start_no_pool
-
-    # Second connection
-    start2 = time.perf_counter()
+    
+    # Get another connection - should be the same one from pool
     conn2 = connect(conn_str)
+    cursor2 = conn2.cursor()
+    cursor2.execute("SELECT @@SPID")
+    spid2 = cursor2.fetchone()[0]
     conn2.close()
-    end2 = time.perf_counter()
-    duration2 = end2 - start2
-
-    # Pooling enabled
-    pooling(max_size=2, idle_timeout=10)
-    connect(conn_str).close()
-
-    # Pooled connection (should be reused, hence faster)
-    start_pool = time.perf_counter()
-    conn2 = connect(conn_str)
-    conn2.close()
-    end_pool = time.perf_counter()
-    pool_duration = end_pool - start_pool
-    assert pool_duration < no_pool_duration, "Expected faster connection with pooling"
+    
+    # The SPID should be the same, indicating connection reuse
+    assert spid1 == spid2, "Connections not reused - different SPIDs"
+    
+    # Clean up
+    pooling(enabled=False)
 
 def test_connection_pooling_basic(conn_str):
     # Enable pooling with small pool size
