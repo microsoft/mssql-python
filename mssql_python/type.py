@@ -102,12 +102,32 @@ def TimestampFromTicks(ticks: int) -> datetime.datetime:
 
 def Binary(value) -> bytes:
     """
-    Converts a string or bytes to bytes using UTF-8 encoding.
+    Converts a string or bytes to bytes for use with binary database columns.
+    
+    This function follows the DB-API 2.0 specification and pyodbc compatibility.
+    It accepts only str and bytes/bytearray types to ensure type safety.
+    
+    Args:
+        value: A string (str) or bytes-like object (bytes, bytearray)
+        
+    Returns:
+        bytes: The input converted to bytes
+        
+    Raises:
+        TypeError: If the input type is not supported
+        
+    Examples:
+        Binary("hello")           # Returns b"hello"
+        Binary(b"hello")          # Returns b"hello"  
+        Binary(bytearray(b"hi"))  # Returns b"hi"
     """
     if isinstance(value, bytes):
         return value
+    elif isinstance(value, bytearray):
+        return bytes(value)
     elif isinstance(value, str):
-        return bytes(value, "utf-8")
+        return value.encode("utf-8")
     else:
-        # Handle other types by converting to string first
-        return bytes(str(value), "utf-8")
+        # Raise TypeError for unsupported types to improve type safety
+        raise TypeError(f"Cannot convert type {type(value).__name__} to bytes. "
+                       f"Binary() only accepts str, bytes, or bytearray objects.")
