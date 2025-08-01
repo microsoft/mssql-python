@@ -264,6 +264,7 @@ class Connection:
                     # This is important to ensure no partial transactions remain
                     # For autocommit True, this is not necessary as each statement is committed immediately
                     self._conn.rollback()
+                # TODO: Check potential race conditions in case of multithreaded scenarios
                 # Close the connection
                 self._conn.close()
                 self._conn = None
