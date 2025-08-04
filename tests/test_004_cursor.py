@@ -1526,42 +1526,6 @@ def test_chaining_with_parameters(cursor, db_connection):
         except:
             pass
 
-def test_chaining_with_iteration(cursor, db_connection):
-    """Test method chaining with iteration (for loop)"""
-    try:
-        # Create test table
-        cursor.execute("CREATE TABLE #test_iteration (id INT, name NVARCHAR(50))")
-        db_connection.commit()
-        
-        # Insert test data
-        names = ["Alice", "Bob", "Charlie", "Diana"]
-        for i, name in enumerate(names, 1):
-            cursor.execute("INSERT INTO #test_iteration VALUES (?, ?)", i, name)
-        db_connection.commit()
-        
-        # Test iteration over execute() result (should work because cursor implements __iter__)
-        results = []
-        for row in cursor.execute("SELECT id, name FROM #test_iteration ORDER BY id"):
-            results.append((row[0], row[1]))
-        
-        expected = [(1, "Alice"), (2, "Bob"), (3, "Charlie"), (4, "Diana")]
-        assert results == expected, f"Iteration results should match expected: {results} != {expected}"
-        
-        # Test iteration with WHERE clause
-        results = []
-        for row in cursor.execute("SELECT name FROM #test_iteration WHERE id > ?", 2):
-            results.append(row[0])
-        
-        expected_names = ["Charlie", "Diana"]
-        assert results == expected_names, f"Filtered iteration should return: {expected_names}, got: {results}"
-        
-    finally:
-        try:
-            cursor.execute("DROP TABLE #test_iteration")
-            db_connection.commit()
-        except:
-            pass
-
 def test_chaining_error_handling(cursor):
     """Test that chaining works properly even when errors occur"""
     # Test that cursor is still chainable after an error
@@ -1609,66 +1573,6 @@ def test_chaining_performance_statement_reuse(cursor, db_connection):
     finally:
         try:
             cursor.execute("DROP TABLE #test_reuse")
-            db_connection.commit()
-        except:
-            pass
-
-def test_execute_chaining_compatibility_examples(cursor, db_connection):
-    """Test real-world pyodbc-style chaining examples"""
-    try:
-        # Create users table
-        cursor.execute("""
-            CREATE TABLE #users (
-                user_id INT IDENTITY(1,1) PRIMARY KEY,
-                user_name NVARCHAR(50),
-                last_logon DATETIME,
-                status NVARCHAR(20)
-            )
-        """)
-        db_connection.commit()
-        
-        # Insert test users
-        cursor.execute("INSERT INTO #users (user_name, status) VALUES ('john_doe', 'active')")
-        cursor.execute("INSERT INTO #users (user_name, status) VALUES ('jane_smith', 'inactive')")
-        db_connection.commit()
-        
-        # Example 1: Iterate over results directly (pyodbc style)
-        user_names = []
-        for row in cursor.execute("SELECT user_id, user_name FROM #users WHERE status = ?", "active"):
-            user_names.append(f"{row.user_id}: {row.user_name}")
-        assert len(user_names) == 1, "Should find 1 active user"
-        assert "john_doe" in user_names[0], "Should contain john_doe"
-        
-        # Example 2: Single row fetch chaining
-        user = cursor.execute("SELECT user_name FROM #users WHERE user_id = ?", 1).fetchone()
-        assert user[0] == "john_doe", "Should return john_doe"
-        
-        # Example 3: All rows fetch chaining
-        all_users = cursor.execute("SELECT user_name FROM #users ORDER BY user_id").fetchall()
-        assert len(all_users) == 2, "Should return 2 users"
-        assert all_users[0] == ["john_doe"], "First user should be john_doe"
-        assert all_users[1] == ["jane_smith"], "Second user should be jane_smith"
-        
-        # Example 4: Update with rowcount chaining
-        from datetime import datetime
-        now = datetime.now()
-        updated_count = cursor.execute(
-            "UPDATE #users SET last_logon = ? WHERE user_name = ?", 
-            now, "john_doe"
-        ).rowcount
-        assert updated_count == 1, "Should update 1 user"
-        
-        # Example 5: Delete with rowcount chaining
-        deleted_count = cursor.execute("DELETE FROM #users WHERE status = ?", "inactive").rowcount
-        assert deleted_count == 1, "Should delete 1 inactive user"
-        
-        # Verify final state
-        remaining_users = cursor.execute("SELECT COUNT(*) FROM #users").fetchone()[0]
-        assert remaining_users == 1, "Should have 1 user remaining"
-        
-    finally:
-        try:
-            cursor.execute("DROP TABLE #users")
             db_connection.commit()
         except:
             pass

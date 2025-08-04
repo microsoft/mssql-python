@@ -536,34 +536,6 @@ class Cursor:
         }
         return sql_to_python_type.get(sql_type, str)
 
-    def __iter__(self):
-        """
-        Return the cursor itself as an iterator.
-        
-        This allows direct iteration over the cursor after execute():
-        
-        for row in cursor.execute("SELECT * FROM table"):
-            print(row)
-        """
-        self._check_closed()
-        return self
-    
-    def __next__(self):
-        """
-        Fetch the next row when iterating over the cursor.
-        
-        Returns:
-            The next Row object.
-            
-        Raises:
-            StopIteration: When no more rows are available.
-        """
-        self._check_closed()
-        row = self.fetchone()
-        if row is None:
-            raise StopIteration
-        return row
-
     def execute(
         self,
         operation: str,
