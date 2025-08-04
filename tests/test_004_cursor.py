@@ -1313,21 +1313,21 @@ def test_row_column_mapping(cursor, db_connection):
         cursor.execute("DROP TABLE #pytest_row_test")
         db_connection.commit()
 
-test_inputs = [
-    "Hello 😄",
-    "Flags 🇮🇳🇺🇸",
-    "Family 👨‍👩‍👧‍👦",
-    "Skin tone 👍🏽",
-    "Brain 🧠",
-    "Ice 🧊",
-    "Melting face 🫠",
-    "Accented éüñç",
-    "Chinese: 中文",
-    "Japanese: 日本語",
-]
-
 def test_emoji_round_trip(cursor, db_connection):
     """Test round-trip of emoji and special characters"""
+    test_inputs = [
+        "Hello 😄",
+        "Flags 🇮🇳🇺🇸",
+        "Family 👨‍👩‍👧‍👦",
+        "Skin tone 👍🏽",
+        "Brain 🧠",
+        "Ice 🧊",
+        "Melting face 🫠",
+        "Accented éüñç",
+        "Chinese: 中文",
+        "Japanese: 日本語",
+    ]
+
     cursor.execute("""
         IF OBJECT_ID('emoji_test', 'U') IS NOT NULL
             DROP TABLE emoji_test;
