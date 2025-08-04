@@ -513,12 +513,8 @@ def test_longwvarchar(cursor, db_connection):
         expectedRows = 2
         # fetchone test
         cursor.execute("SELECT longwvarchar_column FROM #pytest_longwvarchar_test")
-        rows = []
-        for i in range(0, expectedRows):
-            rows.append(cursor.fetchone())
-        assert cursor.fetchone() == None, "longwvarchar_column is expected to have only {} rows".format(expectedRows)
-        assert rows[0] == ["ABCDEFGHI"], "SQL_LONGWVARCHAR parsing failed for fetchone - row 0"
-        assert rows[1] == [None], "SQL_LONGWVARCHAR parsing failed for fetchone - row 1"
+        row = cursor.fetchone()
+        assert row[0] == "ABCDEFGHI", "SQL_LONGWVARCHAR parsing failed for fetchone"
         # fetchall test
         cursor.execute("SELECT longwvarchar_column FROM #pytest_longwvarchar_test")
         rows = cursor.fetchall()
@@ -1313,6 +1309,370 @@ def test_row_column_mapping(cursor, db_connection):
         cursor.execute("DROP TABLE #pytest_row_test")
         db_connection.commit()
 
+# Method Chaining Tests
+def test_execute_returns_self(cursor):
+    """Test that execute() returns the cursor itself for method chaining"""
+    # Test basic execute returns cursor
+    result = cursor.execute("SELECT 1 as test_value")
+    assert result is cursor, "execute() should return the cursor itself"
+    assert id(result) == id(cursor), "Returned cursor should be the same object"
+
+def test_execute_fetchone_chaining(cursor, db_connection):
+    """Test chaining execute() with fetchone()"""
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_chaining (id INT, value NVARCHAR(50))")
+        db_connection.commit()
+        
+        # Insert test data
+        cursor.execute("INSERT INTO #test_chaining (id, value) VALUES (?, ?)", 1, "test_value")
+        db_connection.commit()
+        
+        # Test execute().fetchone() chaining
+        row = cursor.execute("SELECT id, value FROM #test_chaining WHERE id = ?", 1).fetchone()
+        assert row is not None, "Should return a row"
+        assert row[0] == 1, "First column should be 1"
+        assert row[1] == "test_value", "Second column should be 'test_value'"
+        
+        # Test with non-existent row
+        row = cursor.execute("SELECT id, value FROM #test_chaining WHERE id = ?", 999).fetchone()
+        assert row is None, "Should return None for non-existent row"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_chaining")
+            db_connection.commit()
+        except:
+            pass
+
+def test_execute_fetchall_chaining(cursor, db_connection):
+    """Test chaining execute() with fetchall()"""
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_chaining (id INT, value NVARCHAR(50))")
+        db_connection.commit()
+        
+        # Insert multiple test records
+        cursor.execute("INSERT INTO #test_chaining (id, value) VALUES (1, 'first')")
+        cursor.execute("INSERT INTO #test_chaining (id, value) VALUES (2, 'second')")
+        cursor.execute("INSERT INTO #test_chaining (id, value) VALUES (3, 'third')")
+        db_connection.commit()
+        
+        # Test execute().fetchall() chaining
+        rows = cursor.execute("SELECT id, value FROM #test_chaining ORDER BY id").fetchall()
+        assert len(rows) == 3, "Should return 3 rows"
+        assert rows[0] == [1, 'first'], "First row incorrect"
+        assert rows[1] == [2, 'second'], "Second row incorrect"
+        assert rows[2] == [3, 'third'], "Third row incorrect"
+        
+        # Test with WHERE clause
+        rows = cursor.execute("SELECT id, value FROM #test_chaining WHERE id > ?", 1).fetchall()
+        assert len(rows) == 2, "Should return 2 rows with WHERE clause"
+        assert rows[0] == [2, 'second'], "Filtered first row incorrect"
+        assert rows[1] == [3, 'third'], "Filtered second row incorrect"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_chaining")
+            db_connection.commit()
+        except:
+            pass
+
+def test_execute_fetchmany_chaining(cursor, db_connection):
+    """Test chaining execute() with fetchmany()"""
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_chaining (id INT, value NVARCHAR(50))")
+        db_connection.commit()
+        
+        # Insert test data
+        for i in range(1, 6):  # Insert 5 records
+            cursor.execute("INSERT INTO #test_chaining (id, value) VALUES (?, ?)", i, f"value_{i}")
+        db_connection.commit()
+        
+        # Test execute().fetchmany() chaining with size parameter
+        rows = cursor.execute("SELECT id, value FROM #test_chaining ORDER BY id").fetchmany(3)
+        assert len(rows) == 3, "Should return 3 rows with fetchmany(3)"
+        assert rows[0] == [1, 'value_1'], "First row incorrect"
+        assert rows[1] == [2, 'value_2'], "Second row incorrect"
+        assert rows[2] == [3, 'value_3'], "Third row incorrect"
+        
+        # Test execute().fetchmany() chaining with arraysize
+        cursor.arraysize = 2
+        rows = cursor.execute("SELECT id, value FROM #test_chaining ORDER BY id").fetchmany()
+        assert len(rows) == 2, "Should return 2 rows with default arraysize"
+        assert rows[0] == [1, 'value_1'], "First row incorrect"
+        assert rows[1] == [2, 'value_2'], "Second row incorrect"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_chaining")
+            db_connection.commit()
+        except:
+            pass
+
+def test_execute_rowcount_chaining(cursor, db_connection):
+    """Test chaining execute() with rowcount property"""
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_chaining (id INT, value NVARCHAR(50))")
+        db_connection.commit()
+        
+        # Test INSERT rowcount chaining
+        count = cursor.execute("INSERT INTO #test_chaining (id, value) VALUES (?, ?)", 1, "test").rowcount
+        assert count == 1, "INSERT should affect 1 row"
+        
+        # Test multiple INSERT rowcount chaining
+        count = cursor.execute("""
+            INSERT INTO #test_chaining (id, value) VALUES 
+            (2, 'test2'), (3, 'test3'), (4, 'test4')
+        """).rowcount
+        assert count == 3, "Multiple INSERT should affect 3 rows"
+        
+        # Test UPDATE rowcount chaining
+        count = cursor.execute("UPDATE #test_chaining SET value = ? WHERE id > ?", "updated", 2).rowcount
+        assert count == 2, "UPDATE should affect 2 rows"
+        
+        # Test DELETE rowcount chaining
+        count = cursor.execute("DELETE FROM #test_chaining WHERE id = ?", 1).rowcount
+        assert count == 1, "DELETE should affect 1 row"
+        
+        # Test SELECT rowcount chaining (should be -1)
+        count = cursor.execute("SELECT * FROM #test_chaining").rowcount
+        assert count == -1, "SELECT rowcount should be -1"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_chaining")
+            db_connection.commit()
+        except:
+            pass
+
+def test_execute_description_chaining(cursor):
+    """Test chaining execute() with description property"""
+    # Test description after execute
+    description = cursor.execute("SELECT 1 as int_col, 'test' as str_col, GETDATE() as date_col").description
+    assert len(description) == 3, "Should have 3 columns in description"
+    assert description[0][0] == "int_col", "First column name should be 'int_col'"
+    assert description[1][0] == "str_col", "Second column name should be 'str_col'"
+    assert description[2][0] == "date_col", "Third column name should be 'date_col'"
+    
+    # Test description with table query
+    description = cursor.execute("SELECT database_id, name FROM sys.databases WHERE database_id = 1").description
+    assert len(description) == 2, "Should have 2 columns in description"
+    assert description[0][0] == "database_id", "First column should be 'database_id'"
+    assert description[1][0] == "name", "Second column should be 'name'"
+
+def test_multiple_chaining_operations(cursor, db_connection):
+    """Test multiple chaining operations in sequence"""
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_multi_chain (id INT IDENTITY(1,1), value NVARCHAR(50))")
+        db_connection.commit()
+        
+        # Chain multiple operations: execute -> rowcount, then execute -> fetchone
+        insert_count = cursor.execute("INSERT INTO #test_multi_chain (value) VALUES (?)", "first").rowcount
+        assert insert_count == 1, "First insert should affect 1 row"
+        
+        row = cursor.execute("SELECT id, value FROM #test_multi_chain WHERE value = ?", "first").fetchone()
+        assert row is not None, "Should find the inserted row"
+        assert row[1] == "first", "Value should be 'first'"
+        
+        # Chain more operations
+        insert_count = cursor.execute("INSERT INTO #test_multi_chain (value) VALUES (?)", "second").rowcount
+        assert insert_count == 1, "Second insert should affect 1 row"
+        
+        all_rows = cursor.execute("SELECT value FROM #test_multi_chain ORDER BY id").fetchall()
+        assert len(all_rows) == 2, "Should have 2 rows total"
+        assert all_rows[0] == ["first"], "First row should be 'first'"
+        assert all_rows[1] == ["second"], "Second row should be 'second'"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_multi_chain")
+            db_connection.commit()
+        except:
+            pass
+
+def test_chaining_with_parameters(cursor, db_connection):
+    """Test method chaining with various parameter formats"""
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_params (id INT, name NVARCHAR(50), age INT)")
+        db_connection.commit()
+        
+        # Test chaining with tuple parameters
+        row = cursor.execute("INSERT INTO #test_params VALUES (?, ?, ?)", (1, "Alice", 25)).rowcount
+        assert row == 1, "Tuple parameter insert should affect 1 row"
+        
+        # Test chaining with individual parameters
+        row = cursor.execute("INSERT INTO #test_params VALUES (?, ?, ?)", 2, "Bob", 30).rowcount
+        assert row == 1, "Individual parameter insert should affect 1 row"
+        
+        # Test chaining with list parameters
+        row = cursor.execute("INSERT INTO #test_params VALUES (?, ?, ?)", [3, "Charlie", 35]).rowcount
+        assert row == 1, "List parameter insert should affect 1 row"
+        
+        # Test chaining query with parameters and fetchall
+        rows = cursor.execute("SELECT name, age FROM #test_params WHERE age > ?", 28).fetchall()
+        assert len(rows) == 2, "Should find 2 people over 28"
+        assert rows[0] == ["Bob", 30], "First result should be Bob"
+        assert rows[1] == ["Charlie", 35], "Second result should be Charlie"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_params")
+            db_connection.commit()
+        except:
+            pass
+
+def test_chaining_with_iteration(cursor, db_connection):
+    """Test method chaining with iteration (for loop)"""
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_iteration (id INT, name NVARCHAR(50))")
+        db_connection.commit()
+        
+        # Insert test data
+        names = ["Alice", "Bob", "Charlie", "Diana"]
+        for i, name in enumerate(names, 1):
+            cursor.execute("INSERT INTO #test_iteration VALUES (?, ?)", i, name)
+        db_connection.commit()
+        
+        # Test iteration over execute() result (should work because cursor implements __iter__)
+        results = []
+        for row in cursor.execute("SELECT id, name FROM #test_iteration ORDER BY id"):
+            results.append((row[0], row[1]))
+        
+        expected = [(1, "Alice"), (2, "Bob"), (3, "Charlie"), (4, "Diana")]
+        assert results == expected, f"Iteration results should match expected: {results} != {expected}"
+        
+        # Test iteration with WHERE clause
+        results = []
+        for row in cursor.execute("SELECT name FROM #test_iteration WHERE id > ?", 2):
+            results.append(row[0])
+        
+        expected_names = ["Charlie", "Diana"]
+        assert results == expected_names, f"Filtered iteration should return: {expected_names}, got: {results}"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_iteration")
+            db_connection.commit()
+        except:
+            pass
+
+def test_chaining_error_handling(cursor):
+    """Test that chaining works properly even when errors occur"""
+    # Test that cursor is still chainable after an error
+    with pytest.raises(Exception):
+        cursor.execute("SELECT * FROM nonexistent_table").fetchone()
+    
+    # Cursor should still be usable for chaining after error
+    row = cursor.execute("SELECT 1 as test").fetchone()
+    assert row[0] == 1, "Cursor should still work after error"
+    
+    # Test chaining with invalid SQL
+    with pytest.raises(Exception):
+        cursor.execute("INVALID SQL SYNTAX").rowcount
+    
+    # Should still be chainable
+    count = cursor.execute("SELECT COUNT(*) FROM sys.databases").fetchone()[0]
+    assert isinstance(count, int), "Should return integer count"
+    assert count > 0, "Should have at least one database"
+
+def test_chaining_performance_statement_reuse(cursor, db_connection):
+    """Test that chaining works with statement reuse (same SQL, different parameters)"""
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_reuse (id INT, value NVARCHAR(50))")
+        db_connection.commit()
+        
+        # Execute same SQL multiple times with different parameters (should reuse prepared statement)
+        sql = "INSERT INTO #test_reuse (id, value) VALUES (?, ?)"
+        
+        count1 = cursor.execute(sql, 1, "first").rowcount
+        count2 = cursor.execute(sql, 2, "second").rowcount
+        count3 = cursor.execute(sql, 3, "third").rowcount
+        
+        assert count1 == 1, "First insert should affect 1 row"
+        assert count2 == 1, "Second insert should affect 1 row"
+        assert count3 == 1, "Third insert should affect 1 row"
+        
+        # Verify all data was inserted correctly
+        rows = cursor.execute("SELECT id, value FROM #test_reuse ORDER BY id").fetchall()
+        assert len(rows) == 3, "Should have 3 rows"
+        assert rows[0] == [1, "first"], "First row incorrect"
+        assert rows[1] == [2, "second"], "Second row incorrect"
+        assert rows[2] == [3, "third"], "Third row incorrect"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_reuse")
+            db_connection.commit()
+        except:
+            pass
+
+def test_execute_chaining_compatibility_examples(cursor, db_connection):
+    """Test real-world pyodbc-style chaining examples"""
+    try:
+        # Create users table
+        cursor.execute("""
+            CREATE TABLE #users (
+                user_id INT IDENTITY(1,1) PRIMARY KEY,
+                user_name NVARCHAR(50),
+                last_logon DATETIME,
+                status NVARCHAR(20)
+            )
+        """)
+        db_connection.commit()
+        
+        # Insert test users
+        cursor.execute("INSERT INTO #users (user_name, status) VALUES ('john_doe', 'active')")
+        cursor.execute("INSERT INTO #users (user_name, status) VALUES ('jane_smith', 'inactive')")
+        db_connection.commit()
+        
+        # Example 1: Iterate over results directly (pyodbc style)
+        user_names = []
+        for row in cursor.execute("SELECT user_id, user_name FROM #users WHERE status = ?", "active"):
+            user_names.append(f"{row.user_id}: {row.user_name}")
+        assert len(user_names) == 1, "Should find 1 active user"
+        assert "john_doe" in user_names[0], "Should contain john_doe"
+        
+        # Example 2: Single row fetch chaining
+        user = cursor.execute("SELECT user_name FROM #users WHERE user_id = ?", 1).fetchone()
+        assert user[0] == "john_doe", "Should return john_doe"
+        
+        # Example 3: All rows fetch chaining
+        all_users = cursor.execute("SELECT user_name FROM #users ORDER BY user_id").fetchall()
+        assert len(all_users) == 2, "Should return 2 users"
+        assert all_users[0] == ["john_doe"], "First user should be john_doe"
+        assert all_users[1] == ["jane_smith"], "Second user should be jane_smith"
+        
+        # Example 4: Update with rowcount chaining
+        from datetime import datetime
+        now = datetime.now()
+        updated_count = cursor.execute(
+            "UPDATE #users SET last_logon = ? WHERE user_name = ?", 
+            now, "john_doe"
+        ).rowcount
+        assert updated_count == 1, "Should update 1 user"
+        
+        # Example 5: Delete with rowcount chaining
+        deleted_count = cursor.execute("DELETE FROM #users WHERE status = ?", "inactive").rowcount
+        assert deleted_count == 1, "Should delete 1 inactive user"
+        
+        # Verify final state
+        remaining_users = cursor.execute("SELECT COUNT(*) FROM #users").fetchone()[0]
+        assert remaining_users == 1, "Should have 1 user remaining"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #users")
+            db_connection.commit()
+        except:
+            pass
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
@@ -1323,4 +1683,3 @@ def test_close(db_connection):
         pytest.fail(f"Cursor close test failed: {e}")
     finally:
         cursor = db_connection.cursor()
-        

@@ -35,7 +35,7 @@ class Cursor:
         callproc(procname, parameters=None) -> 
             Modified copy of the input sequence with output parameters.
         close() -> None.
-        execute(operation, parameters=None) -> None.
+        execute(operation, parameters=None) -> Cursor.
         executemany(operation, seq_of_parameters) -> None.
         fetchone() -> Single sequence or None if no more data is available.
         fetchmany(size=None) -> Sequence of sequences (e.g. list of tuples).
@@ -536,13 +536,41 @@ class Cursor:
         }
         return sql_to_python_type.get(sql_type, str)
 
+    def __iter__(self):
+        """
+        Return the cursor itself as an iterator.
+        
+        This allows direct iteration over the cursor after execute():
+        
+        for row in cursor.execute("SELECT * FROM table"):
+            print(row)
+        """
+        self._check_closed()
+        return self
+    
+    def __next__(self):
+        """
+        Fetch the next row when iterating over the cursor.
+        
+        Returns:
+            The next Row object.
+            
+        Raises:
+            StopIteration: When no more rows are available.
+        """
+        self._check_closed()
+        row = self.fetchone()
+        if row is None:
+            raise StopIteration
+        return row
+
     def execute(
         self,
         operation: str,
         *parameters,
         use_prepare: bool = True,
         reset_cursor: bool = True
-    ) -> None:
+    ) -> 'Cursor':
         """
         Prepare and execute a database operation (query or command).
 
@@ -612,6 +640,9 @@ class Cursor:
 
         # Initialize description after execution
         self._initialize_description()
+
+        # Return self for method chaining
+        return self
 
     @staticmethod
     def _select_best_sample_value(column):
