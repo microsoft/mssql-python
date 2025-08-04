@@ -40,4 +40,3 @@ All pull requests must include:
 - **Issue/Work Item Link** (only one required): 
   - External contributors: Link to a GitHub issue
   - Microsoft org members: Link to an ADO work item
-or contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
