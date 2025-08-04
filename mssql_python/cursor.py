@@ -332,10 +332,11 @@ class Cursor:
             # TODO: revisit
             if len(param) > 4000:  # Long strings
                 if is_unicode:
+                    utf16_len = len(param.encode("utf-16-le")) // 2
                     return (
                         ddbc_sql_const.SQL_WLONGVARCHAR.value,
                         ddbc_sql_const.SQL_C_WCHAR.value,
-                        len(param),
+                        utf16_len,
                         0,
                     )
                 return (
@@ -345,10 +346,11 @@ class Cursor:
                     0,
                 )
             if is_unicode:  # Short Unicode strings
+                utf16_len = len(param.encode("utf-16-le")) // 2
                 return (
                     ddbc_sql_const.SQL_WVARCHAR.value,
                     ddbc_sql_const.SQL_C_WCHAR.value,
-                    len(param),
+                    utf16_len,
                     0,
                 )
             return (
