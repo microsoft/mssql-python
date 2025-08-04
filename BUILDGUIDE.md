@@ -158,6 +158,9 @@ This will:
 Tests require a database connection string and must be run from the project root directory.
 Set the `DB_CONNECTION_STRING` environment variable before running tests:
 
+> [!TIP]
+> If you are using VS Code you may have to close all open windows for the new environment variable to be visible.
+
 ### Windows (Command Prompt)
 ```cmd
 # If you're in mssql_python/pybind/, navigate back to the project root:
