@@ -159,7 +159,7 @@ Tests require a database connection string and must be run from the project root
 Set the `DB_CONNECTION_STRING` environment variable before running tests:
 
 > [!TIP]
-> If you are using VS Code you may have to close all open windows for the new environment variable to be visible.
+> If you are using VS Code you may have to close all open instances of the IDE for the new environment variable to be visible. If you are still getting errors about invalid connection strings, you may need to reboot your system.
 
 ### Windows (Command Prompt)
 ```cmd
