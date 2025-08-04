@@ -29,6 +29,18 @@ class Connection:
     to be used in a context where database operations are required, such as executing queries
     and fetching results.
 
+    The Connection class supports the Python context manager protocol (with statement).
+    When used as a context manager, it will automatically commit the transaction when
+    exiting the context (if autocommit is False), but will NOT close the connection.
+    This behavior matches pyodbc for compatibility.
+
+    Example usage:
+        with connect(connection_string) as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO table VALUES (?)", [value])
+            # Transaction is automatically committed when exiting the with block
+        # Connection remains open after exiting the with block
+
     Methods:
         __init__(database: str) -> None:
         connect_to_db() -> None:
@@ -36,6 +48,8 @@ class Connection:
         commit() -> None:
         rollback() -> None:
         close() -> None:
+        __enter__() -> Connection:
+        __exit__(exc_type, exc_val, exc_tb) -> None:
     """
 
     def __init__(self, connection_str: str = "", autocommit: bool = False, attrs_before: dict = None, **kwargs) -> None:
@@ -263,6 +277,7 @@ class Connection:
                     # If autocommit is disabled, rollback any uncommitted changes
                     # This is important to ensure no partial transactions remain
                     # For autocommit True, this is not necessary as each statement is committed immediately
+                    log('info', "Rolling back uncommitted changes before closing connection.")
                     self._conn.rollback()
                 # TODO: Check potential race conditions in case of multithreaded scenarios
                 # Close the connection
@@ -277,6 +292,66 @@ class Connection:
             self._closed = True
         
         log('info', "Connection closed successfully.")
+
+    def __enter__(self) -> 'Connection':
+        """
+        Enter the context manager.
+        
+        This method enables the Connection to be used with the 'with' statement.
+        When entering the context, it simply returns the connection object itself.
+        
+        Returns:
+            Connection: The connection object itself.
+            
+        Example:
+            with connect(connection_string) as conn:
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO table VALUES (?)", [value])
+                # Transaction will be committed automatically when exiting
+        """
+        log('info', "Entering connection context manager.")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """
+        Exit the context manager.
+        
+        This method is called when exiting the 'with' statement. It follows pyodbc
+        behavior where:
+        - If autocommit is False, it commits the current transaction
+        - If an exception occurred, it rolls back instead of committing
+        - The connection is NOT closed (matches pyodbc behavior)
+        
+        Args:
+            exc_type: The exception type if an exception occurred, None otherwise
+            exc_val: The exception value if an exception occurred, None otherwise  
+            exc_tb: The exception traceback if an exception occurred, None otherwise
+            
+        Note:
+            This method does not return True, so exceptions are not suppressed
+            and will propagate normally.
+        """
+        try:
+            if exc_type is not None:
+                # An exception occurred in the with block
+                if not self.autocommit:
+                    log('info', "Exception occurred in context manager, rolling back transaction.")
+                    self._conn.rollback()
+                else:
+                    log('info', "Exception occurred in context manager, but autocommit is enabled.")
+            else:
+                # No exception occurred
+                if not self.autocommit:
+                    log('info', "Exiting connection context manager, committing transaction.")
+                    self._conn.commit()
+                else:
+                    log('info', "Exiting connection context manager, autocommit is enabled (no commit needed).")
+        except Exception as e:
+            log('error', f"Error during context manager exit: {e}")
+            # Let the exception propagate - don't suppress it
+            raise
+        finally:
+            log('info', "Exited connection context manager (connection remains open).")
 
     def __del__(self):
         """

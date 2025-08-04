@@ -16,12 +16,19 @@ Functions:
 - test_connection_string_with_attrs_before: Check if the connection string is constructed correctly with attrs_before.
 - test_connection_string_with_odbc_param: Check if the connection string is constructed correctly with ODBC parameters.
 - test_rollback_on_close: Test that rollback occurs on connection close if autocommit is False.
+- test_context_manager_commit: Test that context manager commits transaction on normal exit.
+- test_context_manager_rollback_on_exception: Test that context manager rolls back on exception.
+- test_context_manager_autocommit_mode: Test context manager behavior with autocommit enabled.
+- test_context_manager_connection_remains_open: Test that context manager doesn't close the connection.
+- test_context_manager_nested_transactions: Test nested context manager usage.
+- test_context_manager_manual_commit_rollback: Test manual commit/rollback within context manager.
 """
 
 from mssql_python.exceptions import InterfaceError
 import pytest
 import time
 from mssql_python import Connection, connect, pooling
+from contextlib import closing
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
@@ -267,3 +274,274 @@ def test_connection_pooling_basic(conn_str):
 
     conn1.close()
     conn2.close()
+
+def test_context_manager_commit(conn_str):
+    """Test that context manager commits transaction on normal exit when autocommit is False"""
+    # Create a permanent table for testing across connections
+    setup_conn = connect(conn_str)
+    setup_cursor = setup_conn.cursor()
+    drop_table_if_exists(setup_cursor, "pytest_context_manager_test")
+    
+    try:
+        setup_cursor.execute("CREATE TABLE pytest_context_manager_test (id INT PRIMARY KEY, value VARCHAR(50));")
+        setup_conn.commit()
+        setup_conn.close()
+        
+        # Test context manager with autocommit=False (default)
+        with connect(conn_str) as conn:
+            assert conn.autocommit is False, "Autocommit should be False by default"
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO pytest_context_manager_test (id, value) VALUES (1, 'context_test');")
+            # Don't manually commit - let context manager handle it
+        
+        # Verify transaction was committed by context manager
+        verify_conn = connect(conn_str)
+        verify_cursor = verify_conn.cursor()
+        verify_cursor.execute("SELECT * FROM pytest_context_manager_test WHERE id = 1;")
+        result = verify_cursor.fetchone()
+        assert result is not None, "Context manager failed to commit: No data found"
+        assert result[1] == 'context_test', "Context manager failed to commit: Incorrect data"
+        verify_conn.close()
+        
+    except Exception as e:
+        pytest.fail(f"Context manager commit test failed: {e}")
+    finally:
+        # Cleanup
+        cleanup_conn = connect(conn_str)
+        cleanup_cursor = cleanup_conn.cursor()
+        drop_table_if_exists(cleanup_cursor, "pytest_context_manager_test")
+        cleanup_conn.commit()
+        cleanup_conn.close()
+
+def test_context_manager_rollback_on_exception(conn_str):
+    """Test that context manager rolls back transaction when exception occurs"""
+    # Create a permanent table for testing
+    setup_conn = connect(conn_str)
+    setup_cursor = setup_conn.cursor()
+    drop_table_if_exists(setup_cursor, "pytest_context_exception_test")
+    
+    try:
+        setup_cursor.execute("CREATE TABLE pytest_context_exception_test (id INT PRIMARY KEY, value VARCHAR(50));")
+        setup_conn.commit()
+        setup_conn.close()
+        
+        # Test context manager with exception
+        with pytest.raises(ValueError):
+            with connect(conn_str) as conn:
+                assert conn.autocommit is False, "Autocommit should be False by default"
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO pytest_context_exception_test (id, value) VALUES (1, 'should_rollback');")
+                # Raise an exception to trigger rollback
+                raise ValueError("Test exception for rollback")
+        
+        # Verify transaction was rolled back
+        verify_conn = connect(conn_str)
+        verify_cursor = verify_conn.cursor()
+        verify_cursor.execute("SELECT * FROM pytest_context_exception_test WHERE id = 1;")
+        result = verify_cursor.fetchone()
+        assert result is None, "Context manager failed to rollback: Data found after exception"
+        verify_conn.close()
+        
+    except AssertionError:
+        # Re-raise assertion errors from our test
+        raise
+    except Exception as e:
+        pytest.fail(f"Context manager rollback test failed: {e}")
+    finally:
+        # Cleanup
+        cleanup_conn = connect(conn_str)
+        cleanup_cursor = cleanup_conn.cursor()
+        drop_table_if_exists(cleanup_cursor, "pytest_context_exception_test")
+        cleanup_conn.commit()
+        cleanup_conn.close()
+
+def test_context_manager_autocommit_mode(conn_str):
+    """Test context manager behavior with autocommit enabled"""
+    # Create a permanent table for testing
+    setup_conn = connect(conn_str)
+    setup_cursor = setup_conn.cursor()
+    drop_table_if_exists(setup_cursor, "pytest_context_autocommit_test")
+    
+    try:
+        setup_cursor.execute("CREATE TABLE pytest_context_autocommit_test (id INT PRIMARY KEY, value VARCHAR(50));")
+        setup_conn.commit()
+        setup_conn.close()
+        
+        # Test context manager with autocommit=True
+        with connect(conn_str, autocommit=True) as conn:
+            assert conn.autocommit is True, "Autocommit should be True"
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO pytest_context_autocommit_test (id, value) VALUES (1, 'autocommit_test');")
+            # With autocommit=True, transaction is already committed
+        
+        # Verify data was committed (even though context manager doesn't need to commit)
+        verify_conn = connect(conn_str)
+        verify_cursor = verify_conn.cursor()
+        verify_cursor.execute("SELECT * FROM pytest_context_autocommit_test WHERE id = 1;")
+        result = verify_cursor.fetchone()
+        assert result is not None, "Autocommit mode failed: No data found"
+        assert result[1] == 'autocommit_test', "Autocommit mode failed: Incorrect data"
+        verify_conn.close()
+        
+    except Exception as e:
+        pytest.fail(f"Context manager autocommit test failed: {e}")
+    finally:
+        # Cleanup
+        cleanup_conn = connect(conn_str)
+        cleanup_cursor = cleanup_conn.cursor()
+        drop_table_if_exists(cleanup_cursor, "pytest_context_autocommit_test")
+        cleanup_conn.commit()
+        cleanup_conn.close()
+
+def test_context_manager_connection_remains_open(conn_str):
+    """Test that context manager doesn't close the connection (matches pyodbc behavior)"""
+    conn = None
+    try:
+        with connect(conn_str) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            result = cursor.fetchone()
+            assert result[0] == 1, "Connection should work inside context manager"
+        
+        # Connection should remain open after exiting context manager
+        assert not conn._closed, "Connection should not be closed after exiting context manager"
+        
+        # Should still be able to use the connection
+        cursor = conn.cursor()
+        cursor.execute("SELECT 2")
+        result = cursor.fetchone()
+        assert result[0] == 2, "Connection should still work after exiting context manager"
+        
+    except Exception as e:
+        pytest.fail(f"Context manager connection persistence test failed: {e}")
+    finally:
+        # Manually close the connection
+        if conn and not conn._closed:
+            conn.close()
+
+def test_context_manager_nested_transactions(conn_str):
+    """Test nested context manager usage"""
+    # Create a permanent table for testing
+    setup_conn = connect(conn_str)
+    setup_cursor = setup_conn.cursor()
+    drop_table_if_exists(setup_cursor, "pytest_context_nested_test")
+    
+    try:
+        setup_cursor.execute("CREATE TABLE pytest_context_nested_test (id INT PRIMARY KEY, value VARCHAR(50));")
+        setup_conn.commit()
+        setup_conn.close()
+        
+        # Test nested context managers
+        with connect(conn_str) as outer_conn:
+            outer_cursor = outer_conn.cursor()
+            outer_cursor.execute("INSERT INTO pytest_context_nested_test (id, value) VALUES (1, 'outer');")
+            
+            with connect(conn_str) as inner_conn:
+                inner_cursor = inner_conn.cursor()
+                inner_cursor.execute("INSERT INTO pytest_context_nested_test (id, value) VALUES (2, 'inner');")
+                # Inner context will commit its transaction
+            
+            # Outer context will commit its transaction
+        
+        # Verify both transactions were committed
+        verify_conn = connect(conn_str)
+        verify_cursor = verify_conn.cursor()
+        verify_cursor.execute("SELECT COUNT(*) FROM pytest_context_nested_test;")
+        count = verify_cursor.fetchone()[0]
+        assert count == 2, f"Expected 2 records, found {count}"
+        verify_conn.close()
+        
+    except Exception as e:
+        pytest.fail(f"Context manager nested test failed: {e}")
+    finally:
+        # Cleanup
+        cleanup_conn = connect(conn_str)
+        cleanup_cursor = cleanup_conn.cursor()
+        drop_table_if_exists(cleanup_cursor, "pytest_context_nested_test")
+        cleanup_conn.commit()
+        cleanup_conn.close()
+
+def test_context_manager_manual_commit_rollback(conn_str):
+    """Test manual commit/rollback within context manager"""
+    # Create a permanent table for testing
+    setup_conn = connect(conn_str)
+    setup_cursor = setup_conn.cursor()
+    drop_table_if_exists(setup_cursor, "pytest_context_manual_test")
+    
+    try:
+        setup_cursor.execute("CREATE TABLE pytest_context_manual_test (id INT PRIMARY KEY, value VARCHAR(50));")
+        setup_conn.commit()
+        setup_conn.close()
+        
+        # Test manual commit within context manager
+        with connect(conn_str) as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO pytest_context_manual_test (id, value) VALUES (1, 'manual_commit');")
+            conn.commit()  # Manual commit
+            cursor.execute("INSERT INTO pytest_context_manual_test (id, value) VALUES (2, 'auto_commit');")
+            # Second insert will be committed by context manager
+        
+        # Verify both records exist
+        verify_conn = connect(conn_str)
+        verify_cursor = verify_conn.cursor()
+        verify_cursor.execute("SELECT COUNT(*) FROM pytest_context_manual_test;")
+        count = verify_cursor.fetchone()[0]
+        assert count == 2, f"Expected 2 records, found {count}"
+        
+        # Test manual rollback within context manager
+        with connect(conn_str) as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO pytest_context_manual_test (id, value) VALUES (3, 'will_rollback');")
+            conn.rollback()  # Manual rollback
+            cursor.execute("INSERT INTO pytest_context_manual_test (id, value) VALUES (4, 'will_commit');")
+            # This insert will be committed by context manager
+        
+        # Verify only the last record was committed
+        verify_cursor.execute("SELECT COUNT(*) FROM pytest_context_manual_test;")
+        count = verify_cursor.fetchone()[0]
+        assert count == 3, f"Expected 3 records after rollback test, found {count}"
+        
+        verify_cursor.execute("SELECT * FROM pytest_context_manual_test WHERE id = 3;")
+        result = verify_cursor.fetchone()
+        assert result is None, "Record should have been rolled back"
+        
+        verify_cursor.execute("SELECT * FROM pytest_context_manual_test WHERE id = 4;")
+        result = verify_cursor.fetchone()
+        assert result is not None, "Record should have been committed by context manager"
+        
+        verify_conn.close()
+        
+    except Exception as e:
+        pytest.fail(f"Context manager manual commit/rollback test failed: {e}")
+    finally:
+        # Cleanup
+        cleanup_conn = connect(conn_str)
+        cleanup_cursor = cleanup_conn.cursor()
+        drop_table_if_exists(cleanup_cursor, "pytest_context_manual_test")
+        cleanup_conn.commit()
+        cleanup_conn.close()
+
+def test_context_manager_with_contextlib_closing(conn_str):
+    """Test using contextlib.closing to close connection after context exit"""
+    connection_was_closed = False
+    
+    try:
+        with closing(connect(conn_str)) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            result = cursor.fetchone()
+            assert result[0] == 1, "Connection should work inside contextlib.closing"
+            assert not conn._closed, "Connection should not be closed inside context"
+        
+        # Connection should be closed after exiting contextlib.closing
+        assert conn._closed, "Connection should be closed after exiting contextlib.closing"
+        connection_was_closed = True
+        
+        # Should not be able to use the connection after closing
+        with pytest.raises(InterfaceError):
+            conn.cursor()
+            
+    except Exception as e:
+        pytest.fail(f"Contextlib.closing test failed: {e}")
+    
+    assert connection_was_closed, "Connection was not properly closed by contextlib.closing"

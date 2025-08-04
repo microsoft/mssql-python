@@ -789,6 +789,46 @@ class Cursor:
             return False
         return True
 
+    def __enter__(self):
+        """
+        Enter the runtime context for the cursor.
+        
+        Returns:
+            The cursor instance itself.
+        """
+        self._check_closed()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        Exit the runtime context for the cursor.
+        
+        Following pyodbc behavior:
+        - If autocommit is False, commit the transaction
+        - The cursor is NOT closed (unlike connection context manager)
+        - Returns None to propagate any exceptions
+        
+        Args:
+            exc_type: Exception type (if any)
+            exc_val: Exception value (if any) 
+            exc_tb: Exception traceback (if any)
+        """
+        try:
+            # Only commit if autocommit is False, following pyodbc behavior
+            if not self.connection.autocommit:
+                self.connection.commit()
+                log('debug', "Transaction committed in cursor context manager exit")
+        except Exception as e:
+            log('error', "Error committing transaction in cursor context manager: %s", e)
+            # Re-raise the exception to maintain proper error handling
+            raise
+        
+        # Note: Unlike connection context manager, cursor is NOT closed here
+        # This matches pyodbc behavior exactly
+        
+        # Return None to propagate any exception that occurred in the with block
+        return None
+
     def __del__(self):
         """
         Destructor to ensure the cursor is closed when it is no longer needed.

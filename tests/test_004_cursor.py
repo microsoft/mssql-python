@@ -11,6 +11,7 @@ Note: The cursor function is not yet implemented, so related tests are commented
 import pytest
 from datetime import datetime, date, time
 import decimal
+from contextlib import closing
 from mssql_python import Connection
 
 # Setup test table
@@ -1312,6 +1313,236 @@ def test_row_column_mapping(cursor, db_connection):
     finally:
         cursor.execute("DROP TABLE #pytest_row_test")
         db_connection.commit()
+
+def test_cursor_context_manager_basic(db_connection):
+    """Test basic cursor context manager functionality"""
+    # Test that cursor context manager works
+    with db_connection.cursor() as cursor:
+        assert cursor is not None
+        assert not cursor.closed
+        cursor.execute("SELECT 1 as test_value")
+        row = cursor.fetchone()
+        assert row[0] == 1
+    
+    # After context exit, cursor should NOT be closed (pyodbc behavior)
+    assert not cursor.closed
+
+def test_cursor_context_manager_autocommit_true(db_connection):
+    """Test cursor context manager with autocommit=True"""
+    original_autocommit = db_connection.autocommit
+    try:
+        db_connection.autocommit = True
+        
+        # Create test table
+        with db_connection.cursor() as cursor:
+            cursor.execute("CREATE TABLE #test_autocommit_true (id INT, value NVARCHAR(50))")
+            cursor.execute("INSERT INTO #test_autocommit_true (id, value) VALUES (1, 'test')")
+        
+        # Verify data was committed automatically
+        with db_connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM #test_autocommit_true")
+            count = cursor.fetchone()[0]
+            assert count == 1
+            
+            # Cleanup
+            cursor.execute("DROP TABLE #test_autocommit_true")
+            
+    finally:
+        db_connection.autocommit = original_autocommit
+
+def test_cursor_context_manager_autocommit_false(db_connection):
+    """Test cursor context manager with autocommit=False - should commit on exit"""
+    original_autocommit = db_connection.autocommit
+    try:
+        db_connection.autocommit = False
+        
+        # Create test table
+        with db_connection.cursor() as cursor:
+            cursor.execute("CREATE TABLE #test_autocommit_false (id INT, value NVARCHAR(50))")
+            cursor.execute("INSERT INTO #test_autocommit_false (id, value) VALUES (1, 'test')")
+            # Note: No explicit commit() call here
+        
+        # After context exit, transaction should be committed automatically
+        with db_connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM #test_autocommit_false")
+            count = cursor.fetchone()[0]
+            assert count == 1
+            
+            # Cleanup
+            cursor.execute("DROP TABLE #test_autocommit_false")
+        db_connection.commit()  # Commit cleanup
+            
+    finally:
+        db_connection.autocommit = original_autocommit
+
+def test_cursor_context_manager_exception_handling(db_connection):
+    """Test cursor context manager with exception - should still commit if autocommit=False"""
+    original_autocommit = db_connection.autocommit
+    try:
+        db_connection.autocommit = False
+        
+        # Create test table first
+        cursor = db_connection.cursor()
+        cursor.execute("CREATE TABLE #test_exception (id INT, value NVARCHAR(50))")
+        cursor.execute("INSERT INTO #test_exception (id, value) VALUES (1, 'before_exception')")
+        db_connection.commit()
+        cursor.close()
+        
+        # Test exception handling in context manager
+        with pytest.raises(Exception):
+            with db_connection.cursor() as cursor:
+                cursor.execute("INSERT INTO #test_exception (id, value) VALUES (2, 'in_context')")
+                # This should cause an exception
+                raise ValueError("Test exception")
+        
+        # Despite the exception, the insert should be committed (pyodbc behavior)
+        with db_connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM #test_exception")
+            count = cursor.fetchone()[0]
+            assert count == 2  # Both inserts should be committed
+            
+            # Cleanup
+            cursor.execute("DROP TABLE #test_exception")
+        db_connection.commit()
+            
+    finally:
+        db_connection.autocommit = original_autocommit
+
+def test_cursor_context_manager_nested(db_connection):
+    """Test nested cursor context managers"""
+    original_autocommit = db_connection.autocommit
+    try:
+        db_connection.autocommit = False
+        
+        with db_connection.cursor() as outer_cursor:
+            outer_cursor.execute("CREATE TABLE #test_nested (id INT, value NVARCHAR(50))")
+            outer_cursor.execute("INSERT INTO #test_nested (id, value) VALUES (1, 'outer')")
+            
+            with db_connection.cursor() as inner_cursor:
+                inner_cursor.execute("INSERT INTO #test_nested (id, value) VALUES (2, 'inner')")
+                # Inner context exit should commit
+            
+            # Both cursors should still be open
+            assert not outer_cursor.closed
+            assert not inner_cursor.closed
+            
+            # Verify both inserts were committed
+            outer_cursor.execute("SELECT COUNT(*) FROM #test_nested")
+            count = outer_cursor.fetchone()[0]
+            assert count == 2
+            
+            # Cleanup
+            outer_cursor.execute("DROP TABLE #test_nested")
+        
+        db_connection.commit()  # Final cleanup commit
+            
+    finally:
+        db_connection.autocommit = original_autocommit
+
+def test_cursor_context_manager_multiple_operations(db_connection):
+    """Test multiple operations within cursor context manager"""
+    original_autocommit = db_connection.autocommit
+    try:
+        db_connection.autocommit = False
+        
+        with db_connection.cursor() as cursor:
+            # Create table
+            cursor.execute("CREATE TABLE #test_multiple (id INT, value NVARCHAR(50))")
+            
+            # Multiple inserts
+            cursor.execute("INSERT INTO #test_multiple (id, value) VALUES (1, 'first')")
+            cursor.execute("INSERT INTO #test_multiple (id, value) VALUES (2, 'second')")
+            cursor.execute("INSERT INTO #test_multiple (id, value) VALUES (3, 'third')")
+            
+            # Query within same context
+            cursor.execute("SELECT COUNT(*) FROM #test_multiple")
+            count = cursor.fetchone()[0]
+            assert count == 3
+        
+        # After context exit, verify all operations were committed
+        with db_connection.cursor() as cursor:
+            cursor.execute("SELECT value FROM #test_multiple ORDER BY id")
+            rows = cursor.fetchall()
+            values = [row[0] for row in rows]
+            assert values == ['first', 'second', 'third']
+            
+            # Cleanup
+            cursor.execute("DROP TABLE #test_multiple")
+        db_connection.commit()
+            
+    finally:
+        db_connection.autocommit = original_autocommit
+
+def test_cursor_context_manager_closed_cursor(db_connection):
+    """Test context manager with closed cursor should raise exception"""
+    cursor = db_connection.cursor()
+    cursor.close()
+    
+    # Should raise exception when trying to use closed cursor in context manager
+    with pytest.raises(Exception, match=".*closed.*"):
+        with cursor:
+            pass
+
+def test_cursor_context_manager_vs_manual_commit(db_connection):
+    """Test that context manager commit behavior matches manual commit"""
+    original_autocommit = db_connection.autocommit
+    try:
+        db_connection.autocommit = False
+        
+        # Test with context manager
+        with db_connection.cursor() as cursor:
+            cursor.execute("CREATE TABLE #test_comparison1 (id INT)")
+            cursor.execute("INSERT INTO #test_comparison1 (id) VALUES (1)")
+        
+        # Test with manual commit
+        cursor2 = db_connection.cursor()
+        cursor2.execute("CREATE TABLE #test_comparison2 (id INT)")
+        cursor2.execute("INSERT INTO #test_comparison2 (id) VALUES (1)")
+        db_connection.commit()
+        
+        # Both should have same result
+        with db_connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM #test_comparison1")
+            count1 = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM #test_comparison2")
+            count2 = cursor.fetchone()[0]
+            assert count1 == count2 == 1
+            
+            # Cleanup
+            cursor.execute("DROP TABLE #test_comparison1")
+            cursor.execute("DROP TABLE #test_comparison2")
+        
+        db_connection.commit()
+        cursor2.close()
+            
+    finally:
+        db_connection.autocommit = original_autocommit
+
+def test_cursor_with_contextlib_closing(db_connection):
+    """Test using contextlib.closing with cursor for explicit closing behavior"""
+    from contextlib import closing
+    
+    cursor_ref = None
+    with closing(db_connection.cursor()) as cursor:
+        cursor_ref = cursor
+        assert not cursor.closed
+        cursor.execute("SELECT 1 as test_value")
+        row = cursor.fetchone()
+        assert row[0] == 1
+    
+    # After contextlib.closing, cursor should be closed
+    assert cursor_ref.closed
+
+def test_cursor_context_manager_enter_returns_self(db_connection):
+    """Test that __enter__ returns the cursor itself"""
+    cursor = db_connection.cursor()
+    
+    # Test that __enter__ returns the same cursor instance
+    with cursor as ctx_cursor:
+        assert ctx_cursor is cursor
+        assert id(ctx_cursor) == id(cursor)
+    
+    cursor.close()
 
 def test_close(db_connection):
     """Test closing the cursor"""
