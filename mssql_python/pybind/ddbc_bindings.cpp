@@ -690,7 +690,7 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
         } else if (fs::exists("/etc/redhat-release") || fs::exists("/etc/centos-release")) {
             platform = "rhel";
         } else {
-            platform = "ubuntu";
+            platform = "debian_ubuntu";
         }
 
         fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.5.so.1.1";
@@ -705,7 +705,7 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
         platform = "windows";
         // Normalize x86_64 to x64 for Windows naming
         if (arch == "x86_64") arch = "x64";
-        fs::path driverPath = basePath / "libs" / platform / arch / "lib" / "msodbcsql18.dll";
+        fs::path driverPath = basePath / "libs" / platform / arch / "msodbcsql18.dll";
         return driverPath.string();
 
     #else
