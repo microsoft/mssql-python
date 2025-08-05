@@ -54,7 +54,7 @@ class Cursor:
         Args:
             connection: Database connection object.
         """
-        self.connection = connection
+        self._connection = connection  # Store as private attribute
         # self.connection.autocommit = False
         self.hstmt = None
         self._initialize_cursor()
@@ -426,7 +426,7 @@ class Cursor:
         """
         Allocate the DDBC statement handle.
         """
-        self.hstmt = self.connection._conn.alloc_statement_handle()
+        self.hstmt = self._connection._conn.alloc_statement_handle()
 
     def _reset_cursor(self) -> None:
         """
@@ -563,6 +563,24 @@ class Cursor:
             return None
         
         return self._rownumber
+    
+    @property
+    def connection(self):
+        """
+        DB-API 2.0 attribute: Connection object that created this cursor.
+        
+        This is a read-only reference to the Connection object that was used to create
+        this cursor. This attribute is useful for polymorphic code that needs access
+        to connection-level functionality.
+        
+        Returns:
+            Connection: The connection object that created this cursor.
+            
+        Note:
+            This attribute is read-only as specified by DB-API 2.0. Attempting to
+            assign to this attribute will raise an AttributeError.
+        """
+        return self._connection
     
     def _reset_rownumber(self):
         """Reset the rownumber tracking when starting a new result set."""
