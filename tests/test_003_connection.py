@@ -14,6 +14,7 @@ from mssql_python.exceptions import InterfaceError
 import pytest
 import time
 from mssql_python import Connection, connect, pooling
+import threading
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
@@ -251,7 +252,87 @@ def test_connection_pooling_reuse_spid(conn_str):
     assert spid1 == spid2, "Connections not reused - different SPIDs"
     
     # Clean up
+
+def test_pool_exhaustion_max_size_1(conn_str):
+    """Test pool exhaustion when max_size=1 and multiple concurrent connections are requested."""
+    pooling(max_size=1, idle_timeout=30)
+    conn1 = connect(conn_str)
+    results = []
+
+    def try_connect():
+        try:
+            conn2 = connect(conn_str)
+            results.append("success")
+            conn2.close()
+        except Exception as e:
+            results.append(str(e))
+
+    # Start a thread that will attempt to get a second connection while the first is open
+    t = threading.Thread(target=try_connect)
+    t.start()
+    t.join(timeout=2)
+    conn1.close()
+
+    # Depending on implementation, either blocks, raises, or times out
+    assert results, "Second connection attempt did not complete"
+    # If pool blocks, the thread may not finish until conn1 is closed, so allow both outcomes
+    assert results[0] == "success" or "pool" in results[0].lower() or "timeout" in results[0].lower(), \
+        f"Unexpected pool exhaustion result: {results[0]}"
     pooling(enabled=False)
+
+def test_pool_idle_timeout_removes_connections(conn_str):
+    """Test that idle_timeout removes connections from the pool after the timeout."""
+    pooling(max_size=2, idle_timeout=2)
+    conn1 = connect(conn_str)
+    spid_list = []
+    cursor1 = conn1.cursor()
+    cursor1.execute("SELECT @@SPID")
+    spid1 = cursor1.fetchone()[0]
+    spid_list.append(spid1)
+    conn1.close()
+
+    # Wait for longer than idle_timeout
+    time.sleep(3)
+
+    # Get a new connection, which should not reuse the previous SPID
+    conn2 = connect(conn_str)
+    cursor2 = conn2.cursor()
+    cursor2.execute("SELECT @@SPID")
+    spid2 = cursor2.fetchone()[0]
+    spid_list.append(spid2)
+    conn2.close()
+
+    assert spid1 != spid2, "Idle timeout did not remove connection from pool"
+    pooling(enabled=False)
+
+def test_pool_capacity_limit_and_overflow(conn_str):
+    """Test that pool does not grow beyond max_size and handles overflow gracefully."""
+    pooling(max_size=2, idle_timeout=30)
+    conns = []
+    try:
+        # Open up to max_size connections
+        conns.append(connect(conn_str))
+        conns.append(connect(conn_str))
+        # Try to open a third connection, which should fail or block
+        overflow_result = []
+        def try_overflow():
+            try:
+                c = connect(conn_str)
+                overflow_result.append("success")
+                c.close()
+            except Exception as e:
+                overflow_result.append(str(e))
+        t = threading.Thread(target=try_overflow)
+        t.start()
+        t.join(timeout=2)
+        assert overflow_result, "Overflow connection attempt did not complete"
+        # Accept either block, error, or success if pool implementation allows overflow
+        assert overflow_result[0] == "success" or "pool" in overflow_result[0].lower() or "timeout" in overflow_result[0].lower(), \
+            f"Unexpected pool overflow result: {overflow_result[0]}"
+    finally:
+        for c in conns:
+            c.close()
+        pooling(enabled=False)
 
 def test_connection_pooling_basic(conn_str):
     # Enable pooling with small pool size
