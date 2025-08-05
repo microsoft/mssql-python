@@ -564,7 +564,7 @@ jobs:
         targetArch: 'x86_64'
         dockerPlatform: 'linux/amd64'
         dockerImage: 'alpine:latest'
-        distroName: 'Alpine'
+        distroName: 'alpine'
         packageManager: 'apk'
       py310_arm64_alpine:
         pythonVersion: '3.10'
@@ -572,7 +572,7 @@ jobs:
         targetArch: 'arm64'
         dockerPlatform: 'linux/arm64'
         dockerImage: 'alpine:latest'
-        distroName: 'Alpine'
+        distroName: 'alpine'
         packageManager: 'apk'
       py311_x86_64_alpine:
         pythonVersion: '3.11'
@@ -580,7 +580,7 @@ jobs:
         targetArch: 'x86_64'
         dockerPlatform: 'linux/amd64'
         dockerImage: 'alpine:latest'
-        distroName: 'Alpine'
+        distroName: 'alpine'
         packageManager: 'apk'
       py311_arm64_alpine:
         pythonVersion: '3.11'
@@ -588,7 +588,7 @@ jobs:
         targetArch: 'arm64'
         dockerPlatform: 'linux/arm64'
         dockerImage: 'alpine:latest'
-        distroName: 'Alpine'
+        distroName: 'alpine'
         packageManager: 'apk'
       py312_x86_64_alpine:
         pythonVersion: '3.12'
@@ -596,7 +596,7 @@ jobs:
         targetArch: 'x86_64'
         dockerPlatform: 'linux/amd64'
         dockerImage: 'alpine:latest'
-        distroName: 'Alpine'
+        distroName: 'alpine'
         packageManager: 'apk'
       py312_arm64_alpine:
         pythonVersion: '3.12'
@@ -604,7 +604,7 @@ jobs:
         targetArch: 'arm64'
         dockerPlatform: 'linux/arm64'
         dockerImage: 'alpine:latest'
-        distroName: 'Alpine'
+        distroName: 'alpine'
         packageManager: 'apk'
       py313_x86_64_alpine:
         pythonVersion: '3.13'
@@ -612,7 +612,7 @@ jobs:
         targetArch: 'x86_64'
         dockerPlatform: 'linux/amd64'
         dockerImage: 'alpine:latest'
-        distroName: 'Alpine'
+        distroName: 'alpine'
         packageManager: 'apk'
       py313_arm64_alpine:
         pythonVersion: '3.13'
@@ -620,7 +620,7 @@ jobs:
         targetArch: 'arm64'
         dockerPlatform: 'linux/arm64'
         dockerImage: 'alpine:latest'
-        distroName: 'Alpine'
+        distroName: 'alpine'
         packageManager: 'apk'
 
   steps:
@@ -1177,6 +1177,24 @@ jobs:
             ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.5.so.1.1
           else
             ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.5.so.1.1
+          fi
+        "
+      elif [ "$(packageManager)" = "apk" ]; then
+        # Alpine Linux
+        docker exec build-container-$(distroName)-$(targetArch) sh -c "
+          # Uninstall ODBC packages
+          apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'Some packages were not installed'
+          rm -f /usr/bin/sqlcmd
+          rm -f /usr/bin/bcp
+          rm -rf /opt/microsoft/msodbcsql
+          rm -f /usr/lib/libodbcinst.so.2
+          odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+          echo 'Uninstalled ODBC Driver and cleaned up libraries'
+          echo 'Verifying $(targetArch) alpine driver library signatures:'
+          if [ '$(targetArch)' = 'x86_64' ]; then
+            ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-18.5.so.1.1
+          else
+            ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-18.5.so.1.1
           fi
         "
       else
