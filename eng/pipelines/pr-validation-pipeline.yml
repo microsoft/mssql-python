@@ -1124,17 +1124,30 @@ jobs:
     displayName: 'Install ODBC Driver in Alpine ARM64 container'
 
   - script: |
-      # Install Python dependencies in the Alpine ARM64 container
+      # Install Python dependencies in the Alpine ARM64 container using virtual environment
       docker exec test-container-alpine-arm64 bash -c "
+        # Create virtual environment
+        python -m venv /workspace/venv
+        
+        # Activate virtual environment and install dependencies
+        source /workspace/venv/bin/activate
+        
         # Upgrade pip and install dependencies
         python -m pip install --upgrade pip
         python -m pip install -r requirements.txt
+        
+        # Verify virtual environment is active
+        which python
+        which pip
       "
     displayName: 'Install Python dependencies in Alpine ARM64 container'
 
   - script: |
       # Build pybind bindings in the Alpine ARM64 container
       docker exec test-container-alpine-arm64 bash -c "
+        # Activate virtual environment
+        source /workspace/venv/bin/activate
+        
         cd mssql_python/pybind
         chmod +x build.sh
         ./build.sh
@@ -1172,6 +1185,9 @@ jobs:
         echo 'Alpine version:' \$(cat /etc/alpine-release)
         echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
         
+        # Activate virtual environment
+        source /workspace/venv/bin/activate
+
         # Test basic Python import first
         python -c 'import mssql_python; print(\"mssql_python imported successfully\")'
         
