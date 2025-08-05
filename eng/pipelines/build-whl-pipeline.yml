@@ -14,6 +14,7 @@ schedules:
     branches:
       include:
         - main
+    always: true  # Always run even if there are no changes
 
 jobs:
 - job: BuildWindowsWheels
@@ -556,6 +557,72 @@ jobs:
         packageManager: 'dnf'
         buildFromSource: 'true'
 
+      # Alpine Linux (x86_64 and ARM64)
+      py310_x86_64_alpine:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'alpine:latest'
+        distroName: 'Alpine'
+        packageManager: 'apk'
+      py310_arm64_alpine:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'alpine:latest'
+        distroName: 'Alpine'
+        packageManager: 'apk'
+      py311_x86_64_alpine:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'alpine:latest'
+        distroName: 'Alpine'
+        packageManager: 'apk'
+      py311_arm64_alpine:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'alpine:latest'
+        distroName: 'Alpine'
+        packageManager: 'apk'
+      py312_x86_64_alpine:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'alpine:latest'
+        distroName: 'Alpine'
+        packageManager: 'apk'
+      py312_arm64_alpine:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'alpine:latest'
+        distroName: 'Alpine'
+        packageManager: 'apk'
+      py313_x86_64_alpine:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'alpine:latest'
+        distroName: 'Alpine'
+        packageManager: 'apk'
+      py313_arm64_alpine:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        targetArch: 'arm64'
+        dockerPlatform: 'linux/arm64'
+        dockerImage: 'alpine:latest'
+        distroName: 'Alpine'
+        packageManager: 'apk'
+
   steps:
   # Set up Docker buildx for multi-architecture support
   - script: |
@@ -693,6 +760,41 @@ jobs:
           if [ -f /usr/local/bin/python ]; then
             /usr/local/bin/python --version
           fi
+        "
+      elif [ "$(packageManager)" = "apk" ]; then
+        # Alpine Linux
+        docker exec build-container-$(distroName)-$(targetArch) sh -c "
+          # Update package index
+          apk update
+          
+          # Install build tools and system dependencies
+          apk add --no-cache \
+            build-base \
+            cmake \
+            clang \
+            git \
+            bash \
+            wget \
+            curl \
+            gnupg \
+            unixodbc \
+            unixodbc-dev \
+            libffi-dev \
+            openssl-dev \
+            zlib-dev \
+            py3-pip \
+            python3-dev \
+            patchelf
+          
+          # Create symlinks for Python compatibility
+          ln -sf python3 /usr/bin/python || true
+          ln -sf pip3 /usr/bin/pip || true
+          
+          # Verify installation and architecture
+          echo 'Architecture:' \$(uname -m)
+          echo 'Alpine version:' \$(cat /etc/alpine-release)
+          python --version
+          which cmake
         "
       else
         # RHEL/DNF
@@ -846,6 +948,47 @@ jobs:
           # optional: for unixODBC development headers
           apt-get install -y unixodbc-dev
         "
+      elif [ "$(packageManager)" = "apk" ]; then
+        # Alpine Linux
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          # Detect architecture for ODBC driver download
+          case \$(uname -m) in
+            x86_64) architecture='amd64' ;;
+            arm64|aarch64) architecture='arm64' ;;
+            *) architecture='unsupported' ;;
+          esac
+          
+          if [[ 'unsupported' == '\$architecture' ]]; then
+            echo 'Alpine architecture \$(uname -m) is not currently supported.'
+            exit 1
+          fi
+          
+          echo 'Detected architecture: '\$architecture
+          
+          # Download the packages
+          curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.apk
+          curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
+          
+          # Download signatures for verification
+          curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.sig
+          curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
+          
+          # Import Microsoft GPG key and verify packages
+          curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
+          gpg --verify msodbcsql18_18.5.1.1-1_\$architecture.sig msodbcsql18_18.5.1.1-1_\$architecture.apk
+          gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
+          
+          # Install the packages
+          apk add --allow-untrusted msodbcsql18_18.5.1.1-1_\$architecture.apk
+          apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
+          
+          # Cleanup
+          rm -f msodbcsql18_18.5.1.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
+          
+          # Add mssql-tools to PATH
+          export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
+          echo 'export PATH=\"\$PATH:/opt/mssql-tools18/bin\"' >> ~/.bashrc
+        "
       else
         # RHEL/DNF
         docker exec build-container-$(distroName)-$(targetArch) bash -c "
@@ -869,111 +1012,150 @@ jobs:
 
   - script: |
       # Install Python dependencies in the container using virtual environment
-      docker exec build-container-$(distroName)-$(targetArch) bash -c "
-        # Debug: Check what Python versions are available
-        echo 'Available Python interpreters:'
-        ls -la /usr/bin/python* || echo 'No python in /usr/bin'
-        ls -la /usr/local/bin/python* || echo 'No python in /usr/local/bin'
-        
-        # Determine which Python command to use
-        if command -v /usr/local/bin/python$(pythonVersion) >/dev/null 2>&1; then
-          PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
-          echo 'Using specific versioned Python from /usr/local/bin'
-        elif command -v python$(pythonVersion) >/dev/null 2>&1; then
-          PYTHON_CMD=python$(pythonVersion)
-          echo 'Using python$(pythonVersion) from PATH'
-        elif command -v python3 >/dev/null 2>&1; then
-          PYTHON_CMD=python3
-          echo 'Falling back to python3 instead of python$(pythonVersion)'
-        else
-          echo 'No Python interpreter found'
-          exit 1
-        fi
-        
-        echo 'Selected Python command:' \$PYTHON_CMD
-        echo 'Python version:' \$(\$PYTHON_CMD --version)
-        echo 'Python executable path:' \$(which \$PYTHON_CMD)
-        
-        # Verify the symlink is pointing to the right version
-        if [ '\$PYTHON_CMD' = '/usr/local/bin/python$(pythonVersion)' ]; then
-          echo 'Symlink details:'
-          ls -la /usr/local/bin/python$(pythonVersion)
-          echo 'Target Python version:'
-          /usr/local/bin/python$(pythonVersion) --version
-        fi
-        
-        # Ensure we have pip available for this Python version
-        if ! \$PYTHON_CMD -m pip --version >/dev/null 2>&1; then
-          echo 'Installing pip for' \$PYTHON_CMD
-          curl -sS https://bootstrap.pypa.io/get-pip.py | \$PYTHON_CMD
-        fi
-        
-        # Create a virtual environment with the available Python version
-        \$PYTHON_CMD -m venv /opt/venv
-        source /opt/venv/bin/activate
-        
-        # Verify virtual environment Python version
-        echo 'Python version in venv after creation:' \$(python --version)
-        echo 'Python executable in venv:' \$(which python)
-        
-        # Upgrade pip in virtual environment
-        python -m pip install --upgrade pip
-        
-        # Install pybind11 if not available from system packages
-        python -m pip install pybind11
-        
-        # Install dependencies in the virtual environment
-        python -m pip install -r requirements.txt
-        python -m pip install wheel setuptools
-        
-        # Make the virtual environment globally available
-        echo 'source /opt/venv/bin/activate' >> ~/.bashrc
-        
-        # Final verification
-        echo 'Final verification:'
-        echo 'Python version in venv:' \$(python --version)
-        echo 'Pip version in venv:' \$(pip --version)
-        echo 'Python sys.executable:' \$(python -c 'import sys; print(sys.executable)')
-      "
+      if [ "$(packageManager)" = "apk" ]; then
+        # Alpine Linux
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          # Create virtual environment
+          python -m venv /workspace/venv
+          
+          # Activate virtual environment and install dependencies
+          source /workspace/venv/bin/activate
+          
+          # Upgrade pip and install dependencies
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install wheel setuptools
+          
+          # Verify virtual environment is active
+          echo 'Python version in venv:' \$(python --version)
+          echo 'Python executable:' \$(which python)
+          echo 'Pip version:' \$(pip --version)
+        "
+      else
+        # Ubuntu/Debian/RHEL
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          # Debug: Check what Python versions are available
+          echo 'Available Python interpreters:'
+          ls -la /usr/bin/python* || echo 'No python in /usr/bin'
+          ls -la /usr/local/bin/python* || echo 'No python in /usr/local/bin'
+          
+          # Determine which Python command to use
+          if command -v /usr/local/bin/python$(pythonVersion) >/dev/null 2>&1; then
+            PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
+            echo 'Using specific versioned Python from /usr/local/bin'
+          elif command -v python$(pythonVersion) >/dev/null 2>&1; then
+            PYTHON_CMD=python$(pythonVersion)
+            echo 'Using python$(pythonVersion) from PATH'
+          elif command -v python3 >/dev/null 2>&1; then
+            PYTHON_CMD=python3
+            echo 'Falling back to python3 instead of python$(pythonVersion)'
+          else
+            echo 'No Python interpreter found'
+            exit 1
+          fi
+          
+          echo 'Selected Python command:' \$PYTHON_CMD
+          echo 'Python version:' \$(\$PYTHON_CMD --version)
+          echo 'Python executable path:' \$(which \$PYTHON_CMD)
+          
+          # Verify the symlink is pointing to the right version
+          if [ '\$PYTHON_CMD' = '/usr/local/bin/python$(pythonVersion)' ]; then
+            echo 'Symlink details:'
+            ls -la /usr/local/bin/python$(pythonVersion)
+            echo 'Target Python version:'
+            /usr/local/bin/python$(pythonVersion) --version
+          fi
+          
+          # Ensure we have pip available for this Python version
+          if ! \$PYTHON_CMD -m pip --version >/dev/null 2>&1; then
+            echo 'Installing pip for' \$PYTHON_CMD
+            curl -sS https://bootstrap.pypa.io/get-pip.py | \$PYTHON_CMD
+          fi
+          
+          # Create a virtual environment with the available Python version
+          \$PYTHON_CMD -m venv /opt/venv
+          source /opt/venv/bin/activate
+          
+          # Verify virtual environment Python version
+          echo 'Python version in venv after creation:' \$(python --version)
+          echo 'Python executable in venv:' \$(which python)
+          
+          # Upgrade pip in virtual environment
+          python -m pip install --upgrade pip
+          
+          # Install pybind11 if not available from system packages
+          python -m pip install pybind11
+          
+          # Install dependencies in the virtual environment
+          python -m pip install -r requirements.txt
+          python -m pip install wheel setuptools
+          
+          # Make the virtual environment globally available
+          echo 'source /opt/venv/bin/activate' >> ~/.bashrc
+          
+          # Final verification
+          echo 'Final verification:'
+          echo 'Python version in venv:' \$(python --version)
+          echo 'Pip version in venv:' \$(pip --version)
+          echo 'Python sys.executable:' \$(python -c 'import sys; print(sys.executable)')
+        "
+      fi
     displayName: 'Install Python dependencies in $(distroName) $(targetArch) container'
 
   - script: |
       # Build pybind bindings in the container
-      docker exec build-container-$(distroName)-$(targetArch) bash -c "
-        source /opt/venv/bin/activate
-        
-        # Verify build tools are available
-        echo 'Verifying build tools before starting build:'
-        echo 'Python version:' \$(python --version)
-        echo 'CMake status:'
-        if command -v cmake >/dev/null 2>&1; then
-          cmake --version
-        else
-          echo 'ERROR: cmake not found in PATH'
-          echo 'PATH:' \$PATH
-          echo 'Available binaries in /usr/bin/:'
-          ls -la /usr/bin/ | grep cmake || echo 'No cmake in /usr/bin'
-          echo 'Trying to find cmake:'
-          find /usr -name cmake 2>/dev/null || echo 'cmake not found anywhere'
+      if [ "$(packageManager)" = "apk" ]; then
+        # Alpine Linux
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          # Activate virtual environment
+          source /workspace/venv/bin/activate
           
-          # Try to install cmake if missing (RHEL specific)
-          if [ '$(packageManager)' = 'dnf' ]; then
-            echo 'Attempting to reinstall cmake for RHEL...'
-            dnf install -y cmake
-            echo 'After reinstall:'
-            cmake --version || echo 'cmake still not available'
+          echo 'Building pybind bindings for $(distroName) $(targetArch)'
+          echo 'Python version:' \$(python --version)
+          echo 'Architecture:' \$(uname -m)
+          
+          cd mssql_python/pybind
+          chmod +x build.sh
+          ./build.sh
+        "
+      else
+        # Ubuntu/Debian/RHEL
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          source /opt/venv/bin/activate
+          
+          # Verify build tools are available
+          echo 'Verifying build tools before starting build:'
+          echo 'Python version:' \$(python --version)
+          echo 'CMake status:'
+          if command -v cmake >/dev/null 2>&1; then
+            cmake --version
+          else
+            echo 'ERROR: cmake not found in PATH'
+            echo 'PATH:' \$PATH
+            echo 'Available binaries in /usr/bin/:'
+            ls -la /usr/bin/ | grep cmake || echo 'No cmake in /usr/bin'
+            echo 'Trying to find cmake:'
+            find /usr -name cmake 2>/dev/null || echo 'cmake not found anywhere'
+            
+            # Try to install cmake if missing (RHEL specific)
+            if [ '$(packageManager)' = 'dnf' ]; then
+              echo 'Attempting to reinstall cmake for RHEL...'
+              dnf install -y cmake
+              echo 'After reinstall:'
+              cmake --version || echo 'cmake still not available'
+            fi
           fi
-        fi
-        
-        echo 'GCC status:'
-        gcc --version || echo 'gcc not found'
-        echo 'Make status:'
-        make --version || echo 'make not found'
-        
-        cd mssql_python/pybind
-        chmod +x build.sh
-        ./build.sh
-      "
+          
+          echo 'GCC status:'
+          gcc --version || echo 'gcc not found'
+          echo 'Make status:'
+          make --version || echo 'make not found'
+          
+          cd mssql_python/pybind
+          chmod +x build.sh
+          ./build.sh
+        "
+      fi
     displayName: 'Build pybind bindings (.so) in $(distroName) $(targetArch) container'
 
   - script: |
@@ -1082,12 +1264,6 @@ jobs:
     inputs:
       testResultsFiles: '**/test-results-$(distroName)-$(targetArch).xml'
       testRunTitle: 'Publish pytest results on $(distroName) $(targetArch)'
-
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage-$(distroName)-$(targetArch).xml'
-    displayName: 'Publish code coverage results for $(distroName) $(targetArch)'
 
   - task: PublishBuildArtifacts@1
     condition: succeededOrFailed()
