@@ -638,7 +638,7 @@ class Cursor:
         # Check if this was a single INSERT operation that affected exactly one row
         if (self.rowcount == 1 and 
             operation.strip().upper().startswith('INSERT') and
-            not any(keyword in operation.upper() for keyword in ['SELECT', '),('])):
+            'SELECT' not in operation.upper()):
             try:
                 # Use @@IDENTITY which persists across statement boundaries
                 identity_query = "SELECT @@IDENTITY"
