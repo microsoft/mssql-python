@@ -146,45 +146,6 @@ def detect_linux_distro():
 
     return distro_name
 
-def get_driver_path(module_dir, architecture):
-    """
-    Get the platform-specific ODBC driver path.
-
-    Args:
-        module_dir (str): Base module directory
-        architecture (str): Target architecture (x64, arm64, x86, etc.)
-
-    Returns:
-        str: Full path to the ODBC driver file
-
-    Raises:
-        RuntimeError: If driver not found or unsupported platform
-    """
-
-    platform_name = platform.system().lower()
-    normalized_arch = normalize_architecture(platform_name, architecture)
-
-    if platform_name == "windows":
-        driver_path = Path(module_dir) / "libs" / "windows" / normalized_arch / "msodbcsql18.dll"
-
-    elif platform_name == "darwin":
-        driver_path = Path(module_dir) / "libs" / "macos" / normalized_arch / "lib" / "libmsodbcsql.18.dylib"
-
-    elif platform_name == "linux":
-        distro_name = detect_linux_distro()
-        driver_path = Path(module_dir) / "libs" / "linux" / distro_name / normalized_arch / "lib" / "libmsodbcsql-18.5.so.1.1"
-
-    else:
-        raise RuntimeError(f"Unsupported platform: {platform_name}")
-
-    driver_path_str = str(driver_path)
-
-    # Check if file exists
-    if not driver_path.exists():
-        raise RuntimeError(f"ODBC driver not found at: {driver_path_str}")
-
-    return driver_path_str
-
 
 def sanitize_connection_string(conn_str: str) -> str:
     """
