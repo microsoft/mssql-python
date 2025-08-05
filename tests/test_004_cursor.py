@@ -1887,6 +1887,154 @@ def test_execute_chaining_compatibility_examples(cursor, db_connection):
         except:
             pass
 
+def test_rownumber_basic_functionality(cursor, db_connection):
+    """Test basic rownumber functionality"""
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_rownumber (id INT, value VARCHAR(50))")
+        db_connection.commit()
+        
+        # Insert test data
+        for i in range(5):
+            cursor.execute("INSERT INTO #test_rownumber VALUES (?, ?)", i, f"value_{i}")
+        db_connection.commit()
+        
+        # Execute query and check initial rownumber
+        cursor.execute("SELECT * FROM #test_rownumber ORDER BY id")
+        
+        # Note: Since we're now using log('warning', ...) instead of warnings.warn(),
+        # we can't easily capture the log messages in tests without additional setup.
+        # The warning will be logged to the configured logger instead.
+        initial_rownumber = cursor.rownumber
+        
+        # Initial rownumber should be 0 (before any fetch)
+        assert initial_rownumber == 0, f"Initial rownumber should be 0, got {initial_rownumber}"
+        
+        # Fetch first row and check rownumber
+        row1 = cursor.fetchone()
+        assert cursor.rownumber == 1, f"After fetching 1 row, rownumber should be 1, got {cursor.rownumber}"
+        assert row1[0] == 0, "First row should have id 0"
+        
+        # Fetch second row and check rownumber
+        row2 = cursor.fetchone()
+        assert cursor.rownumber == 2, f"After fetching 2 rows, rownumber should be 2, got {cursor.rownumber}"
+        assert row2[0] == 1, "Second row should have id 1"
+        
+        # Fetch remaining rows and check rownumber progression
+        row3 = cursor.fetchone()
+        assert cursor.rownumber == 3, f"After fetching 3 rows, rownumber should be 3, got {cursor.rownumber}"
+        
+        row4 = cursor.fetchone()
+        assert cursor.rownumber == 4, f"After fetching 4 rows, rownumber should be 4, got {cursor.rownumber}"
+        
+        row5 = cursor.fetchone()
+        assert cursor.rownumber == 5, f"After fetching 5 rows, rownumber should be 5, got {cursor.rownumber}"
+        
+        # Try to fetch beyond result set
+        no_more_rows = cursor.fetchone()
+        assert no_more_rows is None, "Should return None when no more rows"
+        assert cursor.rownumber == 5, f"Rownumber should remain 5 after exhausting result set, got {cursor.rownumber}"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_rownumber")
+            db_connection.commit()
+        except:
+            pass
+
+def test_rownumber_warning_logged(cursor, db_connection):
+    """Test that accessing rownumber logs a warning message"""
+    import logging
+    from mssql_python.helpers import get_logger
+    
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_rownumber_log (id INT)")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #test_rownumber_log VALUES (1)")
+        db_connection.commit()
+        
+        # Execute query
+        cursor.execute("SELECT * FROM #test_rownumber_log")
+        
+        # Set up logging capture
+        logger = get_logger()
+        if logger:
+            # Create a test handler to capture log messages
+            import io
+            log_stream = io.StringIO()
+            test_handler = logging.StreamHandler(log_stream)
+            test_handler.setLevel(logging.WARNING)
+            
+            # Add our test handler
+            logger.addHandler(test_handler)
+            
+            try:
+                # Access rownumber (should trigger warning log)
+                rownumber = cursor.rownumber
+                
+                # Check if warning was logged
+                log_contents = log_stream.getvalue()
+                assert "DB-API extension cursor.rownumber used" in log_contents, \
+                    f"Expected warning message not found in logs: {log_contents}"
+                
+                # Verify rownumber functionality still works
+                assert rownumber == 0, f"Expected rownumber 0, got {rownumber}"
+                
+            finally:
+                # Clean up: remove our test handler
+                logger.removeHandler(test_handler)
+        else:
+            # If no logger configured, just test that rownumber works
+            rownumber = cursor.rownumber
+            assert rownumber == 0, f"Expected rownumber 0, got {rownumber}"
+            
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_rownumber_log")
+            db_connection.commit()
+        except:
+            pass
+
+def test_rownumber_closed_cursor(cursor, db_connection):
+    """Test rownumber behavior with closed cursor"""
+    # Create a separate cursor for this test
+    test_cursor = db_connection.cursor()
+    
+    try:
+        # Create test table
+        test_cursor.execute("CREATE TABLE #test_rownumber_closed (id INT)")
+        db_connection.commit()
+        
+        # Insert data and execute query
+        test_cursor.execute("INSERT INTO #test_rownumber_closed VALUES (1)")
+        test_cursor.execute("SELECT * FROM #test_rownumber_closed")
+        
+        # Verify rownumber works before closing
+        assert test_cursor.rownumber == 0, "Rownumber should work before closing"
+        
+        # Close the cursor
+        test_cursor.close()
+        
+        # Test that rownumber returns None for closed cursor
+        # Note: This will still log a warning, but that's expected behavior
+        rownumber = test_cursor.rownumber
+        assert rownumber is None, "Rownumber should be None for closed cursor"
+        
+    finally:
+        # Clean up
+        try:
+            if not test_cursor.closed:
+                test_cursor.execute("DROP TABLE #test_rownumber_closed")
+                db_connection.commit()
+                test_cursor.close()
+            else:
+                # Use the main cursor to clean up
+                cursor.execute("DROP TABLE IF EXISTS #test_rownumber_closed")
+                db_connection.commit()
+        except:
+            pass
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:

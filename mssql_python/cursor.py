@@ -29,6 +29,7 @@ class Cursor:
         description: Sequence of 7-item sequences describing one result column.
         rowcount: Number of rows produced or affected by the last execute operation.
         arraysize: Number of rows to fetch at a time with fetchmany().
+        rownumber: Current 0-based index of the cursor in the result set.
 
     Methods:
         __init__(connection_str) -> None.
@@ -74,6 +75,10 @@ class Cursor:
         # Is a list instead of a bool coz bools in Python are immutable.
         # Hence, we can't pass around bools by reference & modify them.
         # Therefore, it must be a list with exactly one bool element.
+        
+        # rownumber attribute
+        self._rownumber = None  # 0-based index of cursor position in result set
+        self._has_result_set = False  # Track if we have an active result set
 
     def _is_unicode_string(self, param):
         """
@@ -536,6 +541,70 @@ class Cursor:
             # Add more mappings as needed
         }
         return sql_to_python_type.get(sql_type, str)
+    
+    @property
+    def rownumber(self):
+        """
+        DB-API extension: Current 0-based index of the cursor in the result set.
+        
+        Returns:
+            int or None: The current 0-based index of the cursor in the result set,
+                        or None if the index cannot be determined.
+        
+        Warning:
+            This is a DB-API extension and may not be portable across different
+            database modules.
+        """
+        # Use mssql_python logging system instead of standard warnings
+        log('warning', "DB-API extension cursor.rownumber used")
+
+        # Return None if cursor is closed or no result set is available
+        if self.closed or not self._has_result_set:
+            return None
+        
+        return self._rownumber
+    
+    def _reset_rownumber(self):
+        """Reset the rownumber tracking when starting a new result set."""
+        self._rownumber = 0
+        self._has_result_set = True
+
+    def _increment_rownumber(self):
+        """
+        Increment the rownumber by 1.
+        
+        This should be called after each fetch operation to keep track of the current row index.
+        """
+        if self._has_result_set:
+            if self._rownumber is None:
+                self._rownumber = 0
+            else:
+                self._rownumber += 1
+        else:
+            raise InterfaceError("Cannot increment rownumber: no active result set.")
+        
+    # Will be used when we add support for scrollable cursors
+    def _decrement_rownumber(self):
+        """
+        Decrement the rownumber by 1.
+        
+        This could be used for error recovery or cursor positioning operations.
+        """
+        if self._has_result_set and self._rownumber is not None:
+            if self._rownumber > 0:
+                self._rownumber -= 1
+            # If already at 0, don't go negative
+        else:
+            raise InterfaceError("Cannot decrement rownumber: no active result set.")
+        
+    def _clear_rownumber(self):
+        """
+        Clear the rownumber tracking.
+        
+        This should be called when the result set is cleared or when the cursor is reset.
+        """
+        self._rownumber = None
+        self._has_result_set = False
 
     def __iter__(self):
         """
@@ -655,6 +724,12 @@ class Cursor:
 
         # Initialize description after execution
         self._initialize_description()
+        
+        # Reset rownumber for new result set (only for SELECT statements)
+        if self.description:  # If we have column descriptions, it's likely a SELECT
+            self._reset_rownumber()
+        else:
+            self._clear_rownumber()
 
         # Return self for method chaining
         return self
@@ -772,6 +847,9 @@ class Cursor:
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             return None
         
+        # Increment rownumber for successful fetch
+        self._increment_rownumber()
+        
         # Create and return a Row object
         return Row(row_data, self.description)
 
@@ -797,6 +875,11 @@ class Cursor:
         rows_data = []
         ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
         
+        # Update rownumber for the number of rows fetched
+        if rows_data and self._has_result_set:
+            for _ in rows_data:
+                self._increment_rownumber()
+        
         # Convert raw data to Row objects
         return [Row(row_data, self.description) for row_data in rows_data]
 
@@ -812,6 +895,11 @@ class Cursor:
         # Fetch raw data
         rows_data = []
         ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+        
+        # Update rownumber for the number of rows fetched
+        if rows_data and self._has_result_set:
+            for _ in rows_data:
+                self._increment_rownumber()
         
         # Convert raw data to Row objects
         return [Row(row_data, self.description) for row_data in rows_data]
