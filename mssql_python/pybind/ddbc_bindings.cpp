@@ -690,7 +690,7 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
         } else if (fs::exists("/etc/redhat-release") || fs::exists("/etc/centos-release")) {
             platform = "rhel";
         } else {
-            platform = "ubuntu";
+            platform = "debian_ubuntu";
         }
 
         fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.5.so.1.1";
