@@ -156,13 +156,7 @@ jobs:
       testResultsFiles: '**/test-results.xml'
       testRunTitle: 'Publish pytest results on macOS'
 
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage.xml'
-    displayName: 'Publish code coverage results'
-
-- job: PytestOnLinux
+- job: PytestOnLinux_Ubuntu
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -355,13 +349,7 @@ jobs:
       testResultsFiles: '**/test-results-$(distroName).xml'
       testRunTitle: 'Publish pytest results on $(distroName)'
 
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage-$(distroName).xml'
-    displayName: 'Publish code coverage results for $(distroName)'
-
-- job: PytestOnLinux_ARM64
+- job: PytestOnLinux_Ubuntu_ARM64
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -573,12 +561,6 @@ jobs:
       testResultsFiles: '**/test-results-$(distroName)-$(archName).xml'
       testRunTitle: 'Publish pytest results on $(distroName) ARM64'
 
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage-$(distroName)-$(archName).xml'
-    displayName: 'Publish code coverage results for $(distroName) ARM64'
-
 - job: PytestOnLinux_RHEL9
   pool:
     vmImage: 'ubuntu-latest'
@@ -784,12 +766,6 @@ jobs:
     inputs:
       testResultsFiles: '**/test-results-rhel9.xml'
       testRunTitle: 'Publish pytest results on RHEL 9'
-
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage-rhel9.xml'
-    displayName: 'Publish code coverage results for RHEL 9'
 
 - job: PytestOnLinux_RHEL9_ARM64
   pool:
@@ -1009,8 +985,227 @@ jobs:
       testResultsFiles: '**/test-results-rhel9-arm64.xml'
       testRunTitle: 'Publish pytest results on RHEL 9 ARM64'
 
-  - task: PublishCodeCoverageResults@1
+- job: PytestOnLinux_Alpine_ARM64
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  steps:
+  - script: |
+      # Set up Docker buildx for multi-architecture support
+      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+      docker buildx create --name multiarch --driver docker-container --use
+      docker buildx inspect --bootstrap
+    displayName: 'Setup Docker buildx for ARM64 emulation'
+
+  - script: |
+      # Create a Docker container for testing on ARM64
+      docker run -d --name test-container-alpine-arm64 \
+        --platform linux/arm64 \
+        -v $(Build.SourcesDirectory):/workspace \
+        -w /workspace \
+        --network bridge \
+        alpine:latest \
+        tail -f /dev/null
+    displayName: 'Create Alpine ARM64 container'
+
+  - script: |
+      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
+      docker run -d --name sqlserver-alpine-arm64 \
+        --platform linux/amd64 \
+        -e ACCEPT_EULA=Y \
+        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -p 1433:1433 \
+        mcr.microsoft.com/mssql/server:2022-latest
+      
+      # Wait for SQL Server to be ready
+      echo "Waiting for SQL Server to start..."
+      for i in {1..60}; do
+        if docker exec sqlserver-alpine-arm64 \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -P "$(DB_PASSWORD)" \
+          -C -Q "SELECT 1" >/dev/null 2>&1; then
+          echo "SQL Server is ready!"
+          break
+        fi
+        echo "Waiting... ($i/60)"
+        sleep 2
+      done
+      
+      # Create test database
+      docker exec sqlserver-alpine-arm64 \
+        /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost \
+        -U SA \
+        -P "$(DB_PASSWORD)" \
+        -C -Q "CREATE DATABASE TestDB"
+    displayName: 'Start SQL Server container for Alpine ARM64'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Install dependencies in the Alpine ARM64 container
+      docker exec test-container-alpine-arm64 sh -c "
+        # Update package index
+        apk update
+        
+        # Install build tools and system dependencies
+        apk add --no-cache \
+          build-base \
+          cmake \
+          clang \
+          git \
+          bash \
+          wget \
+          curl \
+          gnupg \
+          unixodbc \
+          unixodbc-dev \
+          libffi-dev \
+          openssl-dev \
+          zlib-dev \
+          py3-pip \
+          python3-dev \
+          patchelf
+        
+        # Create symlinks for Python compatibility
+        ln -sf python3 /usr/bin/python || true
+        ln -sf pip3 /usr/bin/pip || true
+        
+        # Verify installation and architecture
+        uname -m
+        python --version
+        which cmake
+      "
+    displayName: 'Install basic dependencies in Alpine ARM64 container'
+
+  - script: |
+      # Install ODBC driver in the Alpine ARM64 container
+      docker exec test-container-alpine-arm64 bash -c "
+        # Detect architecture for ODBC driver download
+        case \$(uname -m) in
+          x86_64) architecture='amd64' ;;
+          arm64|aarch64) architecture='arm64' ;;
+          *) architecture='unsupported' ;;
+        esac
+        
+        if [[ 'unsupported' == '\$architecture' ]]; then
+          echo 'Alpine architecture \$(uname -m) is not currently supported.'
+          exit 1
+        fi
+        
+        echo 'Detected architecture: '\$architecture
+        
+        # Download the packages
+        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.apk
+        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
+        
+        # Download signatures for verification
+        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.sig
+        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
+        
+        # Import Microsoft GPG key and verify packages
+        curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
+        gpg --verify msodbcsql18_18.5.1.1-1_\$architecture.sig msodbcsql18_18.5.1.1-1_\$architecture.apk
+        gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
+        
+        # Install the packages
+        apk add --allow-untrusted msodbcsql18_18.5.1.1-1_\$architecture.apk
+        apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
+        
+        # Cleanup
+        rm -f msodbcsql18_18.5.1.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
+        
+        # Add mssql-tools to PATH
+        export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
+        echo 'export PATH=\"\$PATH:/opt/mssql-tools18/bin\"' >> ~/.bashrc
+      "
+    displayName: 'Install ODBC Driver in Alpine ARM64 container'
+
+  - script: |
+      # Install Python dependencies in the Alpine ARM64 container
+      docker exec test-container-alpine-arm64 bash -c "
+        # Upgrade pip and install dependencies
+        python -m pip install --upgrade pip
+        python -m pip install -r requirements.txt
+      "
+    displayName: 'Install Python dependencies in Alpine ARM64 container'
+
+  - script: |
+      # Build pybind bindings in the Alpine ARM64 container
+      docker exec test-container-alpine-arm64 bash -c "
+        cd mssql_python/pybind
+        chmod +x build.sh
+        ./build.sh
+      "
+    displayName: 'Build pybind bindings (.so) in Alpine ARM64 container'
+
+  - script: |
+      # Uninstall ODBC Driver before running tests to use bundled libraries
+      docker exec test-container-alpine-arm64 bash -c "
+        # Remove system ODBC installation
+        apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'ODBC packages not installed via apk'
+        rm -f /usr/bin/sqlcmd
+        rm -f /usr/bin/bcp
+        rm -rf /opt/microsoft/msodbcsql18
+        rm -f /usr/lib/libodbcinst.so.2
+        odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+        echo 'Uninstalled system ODBC Driver and cleaned up libraries'
+        echo 'Verifying arm64 alpine driver library signatures:'
+        ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-18.5.so.1.1 || echo 'Driver library not found'
+      "
+    displayName: 'Uninstall system ODBC Driver before running tests in Alpine ARM64 container'
+
+  - script: |
+      # Run tests in the Alpine ARM64 container
+      # Get SQL Server container IP
+      SQLSERVER_IP=$(docker inspect sqlserver-alpine-arm64 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+      echo "SQL Server IP: $SQLSERVER_IP"
+      
+      docker exec \
+        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        test-container-alpine-arm64 bash -c "
+        echo 'Build successful, running tests now on Alpine ARM64'
+        echo 'Architecture:' \$(uname -m)
+        echo 'Alpine version:' \$(cat /etc/alpine-release)
+        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+        
+        # Test basic Python import first
+        python -c 'import mssql_python; print(\"mssql_python imported successfully\")'
+        
+        # Run main.py if it exists
+        if [ -f main.py ]; then
+          echo 'Running main.py...'
+          python main.py
+        fi
+        
+        # Run pytest
+        python -m pytest -v --junitxml=test-results-alpine-arm64.xml --cov=. --cov-report=xml:coverage-alpine-arm64.xml --capture=tee-sys --cache-clear
+      "
+    displayName: 'Run pytest with coverage in Alpine ARM64 container'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Copy test results from container to host
+      docker cp test-container-alpine-arm64:/workspace/test-results-alpine-arm64.xml $(Build.SourcesDirectory)/ || echo 'Failed to copy test results'
+      docker cp test-container-alpine-arm64:/workspace/coverage-alpine-arm64.xml $(Build.SourcesDirectory)/ || echo 'Failed to copy coverage results'
+    displayName: 'Copy test results from Alpine ARM64 container'
+    condition: always()
+
+  - script: |
+      # Clean up containers
+      docker stop test-container-alpine-arm64 || true
+      docker rm test-container-alpine-arm64 || true
+      docker stop sqlserver-alpine-arm64 || true
+      docker rm sqlserver-alpine-arm64 || true
+    displayName: 'Clean up Alpine ARM64 containers'
+    condition: always()
+
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
     inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage-rhel9-arm64.xml'
-    displayName: 'Publish code coverage results for RHEL 9 ARM64'
+      testResultsFiles: '**/test-results-alpine-arm64.xml'
+      testRunTitle: 'Publish pytest results on Alpine ARM64'
