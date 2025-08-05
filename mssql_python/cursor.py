@@ -73,6 +73,25 @@ class Cursor:
         # Is a list instead of a bool coz bools in Python are immutable.
         # Hence, we can't pass around bools by reference & modify them.
         # Therefore, it must be a list with exactly one bool element.
+        self._lastrowid = None  # Track last inserted row ID
+
+    @property
+    def lastrowid(self):
+        """
+        Read-only attribute that provides the rowid of the last modified row.
+        
+        This attribute provides the rowid of the last modified row (most databases 
+        return a rowid only when a single INSERT operation is performed). If the 
+        operation does not set a rowid or if the database does not support rowids, 
+        this attribute should be set to None.
+        
+        The semantics of lastrowid are undefined in case the last executed statement 
+        modified more than one row, e.g. when using INSERT with executemany().
+        
+        Returns:
+            int or None: The last inserted row ID, or None if not applicable
+        """
+        return self._lastrowid
 
     def _is_unicode_string(self, param):
         """
@@ -613,6 +632,42 @@ class Cursor:
         # Initialize description after execution
         self._initialize_description()
 
+        # Reset lastrowid at the start of each execute
+        self._lastrowid = None
+
+        # Check if this was a single INSERT operation that affected exactly one row
+        if (self.rowcount == 1 and 
+            operation.strip().upper().startswith('INSERT') and
+            not any(keyword in operation.upper() for keyword in ['SELECT', '),('])):
+            try:
+                # Use @@IDENTITY which persists across statement boundaries
+                identity_query = "SELECT @@IDENTITY"
+                
+                ret = ddbc_bindings.DDBCSQLExecute(
+                    self.hstmt,
+                    identity_query,
+                    [],
+                    [],
+                    [False],  # Don't prepare this simple query
+                    False,    # Use SQLExecDirectW
+                )
+                
+                # Check if the execution was successful
+                if ret == ddbc_sql_const.SQL_SUCCESS.value or ret == ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value:
+                    # Fetch the result
+                    row_data = []
+                    fetch_ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
+                    
+                    if (fetch_ret == ddbc_sql_const.SQL_SUCCESS.value and 
+                        row_data and row_data[0] is not None):
+                        self._lastrowid = int(row_data[0])
+                
+            except Exception:
+                # If we can't get the identity, leave lastrowid as None
+                self._lastrowid = None
+        
+        return self
+
     @staticmethod
     def _select_best_sample_value(column):
         """
@@ -682,6 +737,9 @@ class Cursor:
         param_info = ddbc_bindings.ParamInfo
         param_count = len(seq_of_parameters[0])
         parameters_type = []
+
+        # Reset lastrowid - executemany semantics are undefined for lastrowid
+        self._lastrowid = None
 
         for col_index in range(param_count):
             column = [row[col_index] for row in seq_of_parameters]
