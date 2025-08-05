@@ -639,34 +639,20 @@ std::string GetLastErrorMessage() {
 
 
 /*
- * DRIVER PATH RESOLUTION: C++ Only Implementation
- * 
- * This function handles all ODBC driver path resolution in C++ rather than calling 
- * Python helpers to avoid circular import issues on Alpine Linux.
- * 
- * BACKGROUND:
- * Originally, driver path resolution was handled by a Python function in helpers.py
- * (get_driver_path) that was called from C++ during module initialization. This worked
- * fine on most platforms but caused a critical circular import issue specifically on
- * Alpine Linux.
- * 
- * THE ALPINE PROBLEM:
- * 1. Alpine Linux uses musl libc instead of glibc (used by Ubuntu/RHEL/macOS)
- * 2. musl's dynamic loader has stricter rules about circular dependencies during 
- *    module initialization
- * 3. The circular import chain was:
- *    - ddbc_bindings.cpp starts loading
- *    - LoadDriverOrThrowException() calls GetDriverPathFromPython()
- *    - This tries to import mssql_python.helpers
- *    - helpers.py tries to import ddbc_bindings (not fully loaded yet)
- *    - Alpine/musl fails with circular import error
- *    - Ubuntu/macOS/glibc systems handle this gracefully
- * 
- * THE SOLUTION:
- * By implementing driver path resolution entirely in C++, we:
- * 1. Eliminate all Python dependencies during critical driver initialization
- * 2. Avoid the circular import issue completely on all platforms
-*/
+ * Resolve ODBC driver path in C++ to avoid circular import issues on Alpine.
+ *
+ * Background:
+ * On Alpine Linux, calling into Python during module initialization (via pybind11)
+ * causes a circular import due to musl's stricter dynamic loader behavior.
+ *
+ * Specifically, importing Python helpers from C++ triggered a re-import of the 
+ * partially-initialized native module, which works on glibc (Ubuntu/macOS) but 
+ * fails on musl-based systems like Alpine.
+ *
+ * By moving driver path resolution entirely into C++, we avoid any Python-layer 
+ * dependencies during critical initialization, ensuring compatibility across 
+ * all supported platforms.
+ */
 std::string GetDriverPathCpp(const std::string& moduleDir) {
     namespace fs = std::filesystem;
     fs::path basePath(moduleDir);
