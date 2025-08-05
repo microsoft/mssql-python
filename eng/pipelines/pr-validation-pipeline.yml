@@ -8,6 +8,7 @@ trigger:
 
 jobs:
 - job: PytestOnWindows
+  displayName: 'Windows x64'
   pool:
     vmImage: 'windows-latest'
   
@@ -78,6 +79,7 @@ jobs:
     displayName: 'Publish code coverage results'
 
 - job: PytestOnMacOS
+  displayName: 'macOS x86_64'
   pool:
     vmImage: 'macos-latest'
 
@@ -157,7 +159,7 @@ jobs:
       testRunTitle: 'Publish pytest results on macOS'
 
 - job: PytestOnLinux
-  displayName: 'Test on Linux'
+  displayName: 'Linux x86_64'
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -351,7 +353,7 @@ jobs:
       testRunTitle: 'Publish pytest results on $(distroName)'
 
 - job: PytestOnLinux_ARM64
-  displayName: 'Test on Linux ARM64'
+  displayName: 'Linux ARM64'
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -564,7 +566,7 @@ jobs:
       testRunTitle: 'Publish pytest results on $(distroName) ARM64'
 
 - job: PytestOnLinux_RHEL9
-  displayName: 'Test on Linux RHEL 9 x86_64'
+  displayName: 'Linux RedHat x86_64'
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -771,7 +773,7 @@ jobs:
       testRunTitle: 'Publish pytest results on RHEL 9'
 
 - job: PytestOnLinux_RHEL9_ARM64
-  displayName: 'Test on Linux RHEL 9 ARM64'
+  displayName: 'Linux RedHat ARM64'
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -990,7 +992,7 @@ jobs:
       testRunTitle: 'Publish pytest results on RHEL 9 ARM64'
 
 - job: PytestOnLinux_Alpine
-  displayName: 'Test on Linux Alpine x86_64'
+  displayName: 'Linux Alpine x86_64'
   pool:
     vmImage: 'ubuntu-latest'
 
@@ -1232,7 +1234,7 @@ jobs:
       testRunTitle: 'Publish pytest results on Alpine x86_64'
 
 - job: PytestOnLinux_Alpine_ARM64
-  displayName: 'Test on Linux Alpine ARM64'
+  displayName: 'Linux Alpine ARM64'
   pool:
     vmImage: 'ubuntu-latest'
 
