@@ -303,6 +303,95 @@ def test_pool_idle_timeout_removes_connections(conn_str):
     conn2.close()
 
     assert spid1 != spid2, "Idle timeout did not remove connection from pool"
+
+def test_connection_timeout_invalid_password(conn_str):
+    """Test that connecting with an invalid password raises an exception quickly (timeout)."""
+    # Modify the connection string to use an invalid password
+    if "Pwd=" in conn_str:
+        bad_conn_str = conn_str.replace("Pwd=", "Pwd=wrongpassword")
+    elif "Password=" in conn_str:
+        bad_conn_str = conn_str.replace("Password=", "Password=wrongpassword")
+    else:
+        pytest.skip("No password found in connection string to modify")
+    start = time.perf_counter()
+    with pytest.raises(Exception):
+        connect(bad_conn_str)
+    elapsed = time.perf_counter() - start
+    # Should fail quickly (within 10 seconds)
+    assert elapsed < 10, f"Connection with invalid password took too long: {elapsed:.2f}s"
+
+def test_connection_timeout_invalid_host(conn_str):
+    """Test that connecting to an invalid host fails with a timeout."""
+    # Replace server/host with an invalid one
+    if "Server=" in conn_str:
+        bad_conn_str = conn_str.replace("Server=", "Server=invalidhost12345;")
+    elif "host=" in conn_str:
+        bad_conn_str = conn_str.replace("host=", "host=invalidhost12345;")
+    else:
+        pytest.skip("No server/host found in connection string to modify")
+    start = time.perf_counter()
+    with pytest.raises(Exception):
+        connect(bad_conn_str)
+    elapsed = time.perf_counter() - start
+    # Should fail within a reasonable time (30s)
+    # Note: This may vary based on network conditions, so adjust as needed
+    # but generally, a connection to an invalid host should not take too long
+    # to fail.
+    # If it takes too long, it may indicate a misconfiguration or network issue.
+    assert elapsed < 30, f"Connection to invalid host took too long: {elapsed:.2f}s"
+
+def test_pool_removes_invalid_connections(conn_str):
+    """Test that the pool removes connections that become invalid (simulate by closing underlying connection)."""
+    pooling(max_size=1, idle_timeout=30)
+    conn = connect(conn_str)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1")
+    # Simulate invalidation by forcibly closing the connection at the driver level
+    try:
+        # Try to access a private attribute or method to forcibly close the underlying connection
+        # This is implementation-specific; if not possible, skip
+        if hasattr(conn, "_conn") and hasattr(conn._conn, "close"):
+            conn._conn.close()
+        else:
+            pytest.skip("Cannot forcibly close underlying connection for this driver")
+    except Exception:
+        pass
+    # Safely close the connection, ignoring errors due to forced invalidation
+    try:
+        conn.close()
+    except RuntimeError as e:
+        if "not initialized" not in str(e):
+            raise
+    # Now, get a new connection from the pool and ensure it works
+    new_conn = connect(conn_str)
+    new_cursor = new_conn.cursor()
+    try:
+        new_cursor.execute("SELECT 1")
+        result = new_cursor.fetchone()
+        assert result is not None and result[0] == 1, "Pool did not remove invalid connection"
+    finally:
+        new_conn.close()
+        pooling(enabled=False)
+
+def test_pool_recovery_after_failed_connection(conn_str):
+    """Test that the pool recovers after a failed connection attempt."""
+    pooling(max_size=1, idle_timeout=30)
+    # First, try to connect with a bad password (should fail)
+    if "Pwd=" in conn_str:
+        bad_conn_str = conn_str.replace("Pwd=", "Pwd=wrongpassword")
+    elif "Password=" in conn_str:
+        bad_conn_str = conn_str.replace("Password=", "Password=wrongpassword")
+    else:
+        pytest.skip("No password found in connection string to modify")
+    with pytest.raises(Exception):
+        connect(bad_conn_str)
+    # Now, connect with the correct string and ensure it works
+    conn = connect(conn_str)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1")
+    result = cursor.fetchone()
+    assert result is not None and result[0] == 1, "Pool did not recover after failed connection"
+    conn.close()
     pooling(enabled=False)
 
 def test_pool_capacity_limit_and_overflow(conn_str):
