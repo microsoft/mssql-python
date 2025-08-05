@@ -114,39 +114,6 @@ def add_driver_name_to_app_parameter(connection_string):
     return ";".join(modified_parameters) + ";"
 
 
-def detect_linux_distro():
-    """
-    Detect Linux distribution for driver path selection.
-
-    Returns:
-        str: Distribution name ('debian_ubuntu', 'rhel', 'alpine', etc.)
-    """
-    import os
-
-    distro_name = "debian_ubuntu"  # default
-
-    try:
-        if os.path.exists("/etc/os-release"):
-            with open("/etc/os-release", "r") as f:
-                content = f.read()
-            for line in content.split("\n"):
-                if line.startswith("ID="):
-                    distro_id = line.split("=", 1)[1].strip('"\'')
-                    if distro_id in ["ubuntu", "debian"]:
-                        distro_name = "debian_ubuntu"
-                    elif distro_id in ["rhel", "centos", "fedora"]:
-                        distro_name = "rhel"
-                    elif distro_id == "alpine":
-                        distro_name = "alpine"
-                    else:
-                        distro_name = distro_id  # use as-is
-                    break
-    except Exception:
-        pass  # use default
-
-    return distro_name
-
-
 def sanitize_connection_string(conn_str: str) -> str:
     """
     Sanitize the connection string by removing sensitive information.

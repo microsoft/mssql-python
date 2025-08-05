@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 from mssql_python.ddbc_bindings import normalize_architecture
-from mssql_python.helpers import detect_linux_distro
 
 
 class DependencyTester:
@@ -60,23 +59,26 @@ class DependencyTester:
     def _detect_linux_distro(self):
         """Detect Linux distribution for driver path selection."""
         distro_name = "debian_ubuntu"  # default
-        
+        '''
+        #ifdef __linux__
+        if (fs::exists("/etc/alpine-release")) {
+            platform = "alpine";
+        } else if (fs::exists("/etc/redhat-release") || fs::exists("/etc/centos-release")) {
+            platform = "rhel";
+        } else {
+            platform = "ubuntu";
+        }
+
+        fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.5.so.1.1";
+        return driverPath.string();
+        '''
         try:
-            if os.path.exists("/etc/os-release"):
-                with open("/etc/os-release", "r") as f:
-                    content = f.read()
-                for line in content.split("\n"):
-                    if line.startswith("ID="):
-                        distro_id = line.split("=", 1)[1].strip('"\'')
-                        if distro_id in ["ubuntu", "debian"]:
-                            distro_name = "debian_ubuntu"
-                        elif distro_id in ["rhel", "centos", "fedora"]:
-                            distro_name = "rhel"
-                        elif distro_id == "alpine":
-                            distro_name = "alpine"
-                        else:
-                            distro_name = distro_id
-                        break
+            if (Path("/etc/alpine-release").exists()):
+                distro_name = "alpine"
+            elif (Path("/etc/redhat-release").exists() or Path("/etc/centos-release").exists()):
+                distro_name = "rhel"
+            else:
+                distro_name = "debian_ubuntu"
         except Exception:
             pass  # use default
         
@@ -178,7 +180,7 @@ class DependencyTester:
             driver_path = Path(self.module_dir) / "libs" / "macos" / normalized_arch / "lib" / "libmsodbcsql.18.dylib"
 
         elif platform_name == "linux":
-            distro_name = detect_linux_distro()
+            distro_name = self._detect_linux_distro()
             driver_path = Path(self.module_dir) / "libs" / "linux" / distro_name / normalized_arch / "lib" / "libmsodbcsql-18.5.so.1.1"
 
         else:
@@ -192,6 +194,7 @@ class DependencyTester:
 
         return driver_path_str
 
+# Create global instance for use in tests
 dependency_tester = DependencyTester()
 
 
