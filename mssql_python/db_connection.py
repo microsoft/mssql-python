@@ -5,7 +5,7 @@ This module provides a way to create a new connection object to interact with th
 """
 from mssql_python.connection import Connection
 
-def connect(connection_str: str = "", autocommit: bool = True, attrs_before: dict = None, **kwargs) -> Connection:
+def connect(connection_str: str = "", autocommit: bool = False, attrs_before: dict = None, **kwargs) -> Connection:
     """
     Constructor for creating a connection to the database.
 
