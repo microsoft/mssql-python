@@ -264,8 +264,11 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 // Log each character's code point for debugging
                 if (strParam->size() <= 20) {
                     for (size_t i = 0; i < strParam->size(); i++) {
-                        unsigned char ch = static_cast<unsigned char>((*strParam)[i]);
-                        LOG("  char[{}] = {} ({})", i, static_cast<int>(ch), DescribeChar(ch));
+                        // unsigned char ch = static_cast<unsigned char>((*strParam)[i]);
+                        // LOG("  char[{}] = {} ({})", i, static_cast<int>(ch), DescribeChar(ch));
+                        wchar_t ch = (*strParam)[i];
+                        LOG("  wchar[{}] = U+{:04X} ({})", i, static_cast<unsigned int>(ch), DescribeChar(ch));
+
                     }
                 }
 #if defined(__APPLE__) || defined(__linux__)
@@ -278,12 +281,16 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 sqlwcharBuffer->resize(strParam->size() + 1, 0); // +1 for null terminator
 
                 // Convert each wchar_t (4 bytes on macOS) to SQLWCHAR (2 bytes)
-                for (size_t i = 0; i < strParam->size(); i++) {
-                    (*sqlwcharBuffer)[i] = static_cast<SQLWCHAR>((*strParam)[i]);
-                }
+                // for (size_t i = 0; i < strParam->size(); i++) {
+                //     (*sqlwcharBuffer)[i] = static_cast<SQLWCHAR>((*strParam)[i]);
+                // }
+                std::vector<SQLWCHAR> utf16 = WStringToSQLWCHAR(*strParam);
+                sqlwcharBuffer->assign(utf16.begin(), utf16.end());
+
                 // Use the SQLWCHAR buffer instead of the wstring directly
                 dataPtr = sqlwcharBuffer->data();
-                bufferLength = (strParam->size() + 1) * sizeof(SQLWCHAR);
+                // bufferLength = (strParam->size() + 1) * sizeof(SQLWCHAR);
+                bufferLength = sqlwcharBuffer->size() * sizeof(SQLWCHAR);
                 LOG("macOS: Created SQLWCHAR buffer for parameter with size: {} bytes", bufferLength);
 #else
                 // On Windows, wchar_t and SQLWCHAR are the same size, so direct cast works

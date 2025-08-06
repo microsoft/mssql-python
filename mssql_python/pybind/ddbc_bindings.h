@@ -54,32 +54,31 @@ using namespace pybind11::literals;
     }
 
     inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
-        std::vector<SQLWCHAR> result;
+    std::vector<SQLWCHAR> result;
 
-        for (wchar_t wc : str) {
-            uint32_t codePoint = static_cast<uint32_t>(wc);
+    for (wchar_t wc : str) {
+        uint32_t codePoint = static_cast<uint32_t>(wc);
 
-            // On Linux/macOS wchar_t is UTF-32, so we can get full Unicode code points.
-            if (codePoint <= 0xFFFF) {
-                // Basic Multilingual Plane
-                result.push_back(static_cast<SQLWCHAR>(codePoint));
-            } else if (codePoint <= 0x10FFFF) {
-                // Convert to UTF-16 surrogate pair
-                codePoint -= 0x10000;
-                SQLWCHAR highSurrogate = static_cast<SQLWCHAR>((codePoint >> 10) + 0xD800);
-                SQLWCHAR lowSurrogate  = static_cast<SQLWCHAR>((codePoint & 0x3FF) + 0xDC00);
-                result.push_back(highSurrogate);
-                result.push_back(lowSurrogate);
-            } else {
-                // Invalid code point, skip it
-                continue;
-            }
+        if (codePoint >= 0xD800 && codePoint <= 0xDFFF) {
+            // Skip invalid lone surrogates (shouldn't occur in well-formed wchar_t strings)
+            continue;
+        } else if (codePoint <= 0xFFFF) {
+            result.push_back(static_cast<SQLWCHAR>(codePoint));
+        } else if (codePoint <= 0x10FFFF) {
+            // Encode as surrogate pair
+            codePoint -= 0x10000;
+            SQLWCHAR highSurrogate = static_cast<SQLWCHAR>((codePoint >> 10) + 0xD800);
+            SQLWCHAR lowSurrogate  = static_cast<SQLWCHAR>((codePoint & 0x3FF) + 0xDC00);
+            result.push_back(highSurrogate);
+            result.push_back(lowSurrogate);
         }
-
-        // Null terminator
-        result.push_back(0);
-        return result;
+        // Ignore invalid code points > 0x10FFFF
     }
+
+    result.push_back(0); // Null terminator
+    return result;
+}
+
 
 #endif
 
