@@ -1733,8 +1733,7 @@ def test_future_iterator_protocol_compatibility(cursor, db_connection):
         # Execute query
         cursor.execute("SELECT value FROM #test_future_iter ORDER BY value")
         
-        # Demonstrate how it will work with iterator protocol:
-        # This is what will be possible once __iter__ and __next__ are implemented:
+        # Demonstrate how it will work once __iter__ and __next__ are implemented:
         
         # Method 1: Using next() function (future implementation)
         # row1 = next(cursor)  # Will work with __next__
@@ -1904,9 +1903,9 @@ def test_rownumber_basic_functionality(cursor, db_connection):
         # Execute query and check initial rownumber
         cursor.execute("SELECT * FROM #test_rownumber ORDER BY id")
         
-        # Initial rownumber should be None (before any fetch)
+        # Initial rownumber should be -1 (before any fetch)
         initial_rownumber = cursor.rownumber
-        assert initial_rownumber is None, f"Initial rownumber should be None, got {initial_rownumber}"
+        assert initial_rownumber == -1, f"Initial rownumber should be -1, got {initial_rownumber}"
         
         # Fetch first row and check rownumber (0-based indexing)
         row1 = cursor.fetchone()
@@ -1982,22 +1981,22 @@ def test_cursor_rownumber_empty_results(cursor, db_connection):
     try:
         # Query that returns no rows
         cursor.execute("SELECT 1 WHERE 1=0")
-        assert cursor.rownumber is None, "Rownumber should be None for empty result set"
+        assert cursor.rownumber == -1, "Rownumber should be -1 for empty result set"
         
         # Try to fetch from empty result
         row = cursor.fetchone()
         assert row is None, "Should return None for empty result"
-        assert cursor.rownumber is None, "Rownumber should remain None after fetchone() on empty result"
+        assert cursor.rownumber == -1, "Rownumber should remain -1 after fetchone() on empty result"
         
         # Try fetchmany on empty result
         rows = cursor.fetchmany(5)
         assert rows == [], "Should return empty list for fetchmany() on empty result"
-        assert cursor.rownumber is None, "Rownumber should remain None after fetchmany() on empty result"
+        assert cursor.rownumber == -1, "Rownumber should remain -1 after fetchmany() on empty result"
         
         # Try fetchall on empty result
         all_rows = cursor.fetchall()
         assert all_rows == [], "Should return empty list for fetchall() on empty result"
-        assert cursor.rownumber is None, "Rownumber should remain None after fetchall() on empty result"
+        assert cursor.rownumber == -1, "Rownumber should remain -1 after fetchall() on empty result"
         
     except Exception as e:
         pytest.fail(f"Empty results rownumber test failed: {e}")
@@ -2053,8 +2052,8 @@ def test_rownumber_warning_logged(cursor, db_connection):
         else:
             # If no logger configured, just test that rownumber works
             rownumber = cursor.rownumber
-            assert rownumber is None, f"Expected rownumber None before fetch, got {rownumber}"
-            
+            assert rownumber == -1, f"Expected rownumber -1 before fetch, got {rownumber}"
+
             # Now fetch a row and check rownumber
             row = cursor.fetchone()
             assert row is not None, "Should fetch a row"
@@ -2081,9 +2080,9 @@ def test_rownumber_closed_cursor(cursor, db_connection):
         test_cursor.execute("INSERT INTO #test_rownumber_closed VALUES (1)")
         test_cursor.execute("SELECT * FROM #test_rownumber_closed")
         
-        # Verify rownumber is None before fetch
-        assert test_cursor.rownumber is None, "Rownumber should be None before fetch"
-        
+        # Verify rownumber is -1 before fetch
+        assert test_cursor.rownumber == -1, "Rownumber should be -1 before fetch"
+
         # Fetch a row to set rownumber
         row = test_cursor.fetchone()
         assert row is not None, "Should fetch a row"
@@ -2092,11 +2091,11 @@ def test_rownumber_closed_cursor(cursor, db_connection):
         # Close the cursor
         test_cursor.close()
         
-        # Test that rownumber returns None for closed cursor
+        # Test that rownumber returns -1 for closed cursor
         # Note: This will still log a warning, but that's expected behavior
         rownumber = test_cursor.rownumber
-        assert rownumber is None, "Rownumber should be None for closed cursor"
-        
+        assert rownumber == -1, "Rownumber should be -1 for closed cursor"
+
     finally:
         # Clean up
         try:
@@ -2126,8 +2125,8 @@ def test_cursor_rownumber_fetchall(cursor, db_connection):
         
         # Test fetchall() rownumber tracking
         cursor.execute("SELECT * FROM #pytest_rownumber_all_test ORDER BY id")
-        assert cursor.rownumber is None, "Initial rownumber should be None"
-        
+        assert cursor.rownumber == -1, "Initial rownumber should be -1"
+
         rows = cursor.fetchall()
         assert len(rows) == 5, "Should fetch all 5 rows"
         assert cursor.rownumber == 4, "After fetchall() of 5 rows, rownumber should be 4 (last row index)"
@@ -2137,8 +2136,8 @@ def test_cursor_rownumber_fetchall(cursor, db_connection):
         cursor.execute("SELECT * FROM #pytest_rownumber_all_test WHERE id > 100")
         empty_rows = cursor.fetchall()
         assert len(empty_rows) == 0, "Should return empty list"
-        assert cursor.rownumber is None, "Rownumber should remain None for empty result"
-        
+        assert cursor.rownumber == -1, "Rownumber should remain -1 for empty result"
+
     except Exception as e:
         pytest.fail(f"Fetchall rownumber test failed: {e}")
     finally:
@@ -2167,14 +2166,14 @@ def test_nextset_with_different_result_sizes_safe(cursor, db_connection):
         # Test individual queries first (safer approach)
         # First result set: 2 rows
         cursor.execute("SELECT id FROM #test_nextset_sizes WHERE category = 'A' ORDER BY id")
-        assert cursor.rownumber is None, "Initial rownumber should be None"
+        assert cursor.rownumber == -1, "Initial rownumber should be -1"
         first_set = cursor.fetchall()
         assert len(first_set) == 2, "First set should have 2 rows"
         assert cursor.rownumber == 1, "After fetchall() of 2 rows, rownumber should be 1"
         
         # Second result set: 3 rows
         cursor.execute("SELECT id FROM #test_nextset_sizes WHERE category = 'B' ORDER BY id")
-        assert cursor.rownumber is None, "rownumber should reset for new query"
+        assert cursor.rownumber == -1, "rownumber should reset for new query"
         
         # Fetch one by one from second set
         row1 = cursor.fetchone()
@@ -2186,7 +2185,7 @@ def test_nextset_with_different_result_sizes_safe(cursor, db_connection):
         
         # Third result set: 1 row
         cursor.execute("SELECT id FROM #test_nextset_sizes WHERE category = 'C' ORDER BY id")
-        assert cursor.rownumber is None, "rownumber should reset for new query"
+        assert cursor.rownumber == -1, "rownumber should reset for new query"
         
         third_set = cursor.fetchmany(5)  # Request more than available
         assert len(third_set) == 1, "Third set should have 1 row"
@@ -2194,7 +2193,7 @@ def test_nextset_with_different_result_sizes_safe(cursor, db_connection):
         
         # Fourth result set: count query
         cursor.execute("SELECT COUNT(*) FROM #test_nextset_sizes")
-        assert cursor.rownumber is None, "rownumber should reset for new query"
+        assert cursor.rownumber == -1, "rownumber should reset for new query"
         
         count_row = cursor.fetchone()
         assert cursor.rownumber == 0, "After fetching count, rownumber should be 0"
@@ -2204,16 +2203,16 @@ def test_nextset_with_different_result_sizes_safe(cursor, db_connection):
         try:
             cursor.execute("SELECT COUNT(*) FROM #test_nextset_sizes WHERE category = 'A'; SELECT COUNT(*) FROM #test_nextset_sizes WHERE category = 'B';")
             
-            # First result set
+            # First result
             count_a = cursor.fetchone()[0]
             assert count_a == 2, "Should have 2 A category rows"
             assert cursor.rownumber == 0, "After fetching first count, rownumber should be 0"
             
-            # Try nextset - but be careful about memory issues
+            # Try nextset with minimal complexity
             try:
                 has_next = cursor.nextset()
                 if has_next:
-                    assert cursor.rownumber is None, "rownumber should reset after nextset()"
+                    assert cursor.rownumber == -1, "rownumber should reset after nextset()"
                     count_b = cursor.fetchone()[0]
                     assert count_b == 3, "Should have 3 B category rows"
                     assert cursor.rownumber == 0, "After fetching second count, rownumber should be 0"
@@ -2252,7 +2251,7 @@ def test_nextset_basic_functionality_only(cursor, db_connection):
         
         # Test single result set (no nextset available)
         cursor.execute("SELECT id FROM #test_basic_nextset")
-        assert cursor.rownumber is None, "Initial rownumber should be None"
+        assert cursor.rownumber == -1, "Initial rownumber should be -1"
         
         row = cursor.fetchone()
         assert row[0] == 1, "Should fetch the inserted row"
@@ -2260,7 +2259,7 @@ def test_nextset_basic_functionality_only(cursor, db_connection):
         # Test nextset() when no next set is available
         has_next = cursor.nextset()
         assert has_next is False, "nextset() should return False when no next set"
-        assert cursor.rownumber is None, "nextset() should clear rownumber when no next set"
+        assert cursor.rownumber == -1, "nextset() should clear rownumber when no next set"
         
         # Test simple two-statement query if supported
         try:
@@ -2281,7 +2280,7 @@ def test_nextset_basic_functionality_only(cursor, db_connection):
                 # No more sets
                 has_next = cursor.nextset()
                 assert has_next is False, "nextset() should return False after last set"
-                assert cursor.rownumber is None, "Final rownumber should be None"
+                assert cursor.rownumber == -1, "Final rownumber should be -1"
         
         except Exception as e:
             # Multi-statement queries might not be supported
@@ -2321,7 +2320,7 @@ def test_nextset_memory_safety_check(cursor, db_connection):
             # Test nextset on single result set
             has_next = cursor.nextset()
             assert has_next is False, f"Iteration {iteration}: Should have no next set"
-            assert cursor.rownumber is None, f"Iteration {iteration}: rownumber should be None after nextset"
+            assert cursor.rownumber == -1, f"Iteration {iteration}: rownumber should be -1 after nextset"
         
         # Test with slightly more complex but safe query
         try:
@@ -2332,7 +2331,7 @@ def test_nextset_memory_safety_check(cursor, db_connection):
             
             has_next = cursor.nextset()
             assert has_next is False, "Should have no next set for single query"
-            assert cursor.rownumber is None, "rownumber should be None after nextset"
+            assert cursor.rownumber == -1, "rownumber should be -1 after nextset"
             
         except Exception as e:
             pytest.fail(f"Memory safety check failed: {e}")
@@ -2354,7 +2353,7 @@ def test_nextset_error_conditions_safe(cursor, db_connection):
         try:
             has_next = fresh_cursor.nextset()
             # This should either return False or raise an exception
-            assert cursor.rownumber is None, "rownumber should be None for fresh cursor"
+            assert cursor.rownumber == -1, "rownumber should be -1 for fresh cursor"
         except Exception:
             # Exception is acceptable for nextset() without prior execute()
             pass
@@ -2370,7 +2369,7 @@ def test_nextset_error_conditions_safe(cursor, db_connection):
         # nextset() should work and return False
         has_next = cursor.nextset()
         assert has_next is False, "nextset() should return False when no next set"
-        assert cursor.rownumber is None, "nextset() should clear rownumber when no next set"
+        assert cursor.rownumber == -1, "nextset() should clear rownumber when no next set"
         
         # Test nextset() after failed query
         try:
@@ -2379,17 +2378,17 @@ def test_nextset_error_conditions_safe(cursor, db_connection):
         except Exception:
             pass
         
-        # rownumber should be None after failed execute
-        assert cursor.rownumber is None, "rownumber should be None after failed execute"
+        # rownumber should be -1 after failed execute
+        assert cursor.rownumber == -1, "rownumber should be -1 after failed execute"
         
         # Test that nextset() handles the error state gracefully
         try:
             has_next = cursor.nextset()
             # Should either work (return False) or raise appropriate exception
-            assert cursor.rownumber is None, "rownumber should remain None"
+            assert cursor.rownumber == -1, "rownumber should remain -1"
         except Exception:
             # Exception is acceptable for nextset() after failed execute()
-            assert cursor.rownumber is None, "rownumber should remain None even if nextset() raises exception"
+            assert cursor.rownumber == -1, "rownumber should remain -1 even if nextset() raises exception"
         
         # Test recovery - cursor should still be usable
         cursor.execute("SELECT 42 as recovery_test")

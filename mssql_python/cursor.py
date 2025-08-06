@@ -29,7 +29,7 @@ class Cursor:
         description: Sequence of 7-item sequences describing one result column.
         rowcount: Number of rows produced or affected by the last execute operation.
         arraysize: Number of rows to fetch at a time with fetchmany().
-        rownumber: Track the current row index in the result set
+        rownumber: Track the current row index in the result set.
 
     Methods:
         __init__(connection_str) -> None.
@@ -77,7 +77,7 @@ class Cursor:
         # Therefore, it must be a list with exactly one bool element.
         
         # rownumber attribute
-        self._rownumber = None  # Track the current row index in the result set
+        self._rownumber = -1  # Track the current row index in the result set
         self._has_result_set = False  # Track if we have an active result set
 
     def _is_unicode_string(self, param):
@@ -556,9 +556,9 @@ class Cursor:
                         or None if no row has been fetched yet or the index cannot be determined.
         
         Note:
-            - Returns None before the first successful fetch
+            - Returns -1 before the first successful fetch
             - Returns 0 after fetching the first row
-            - Returns None for empty result sets (since no rows can be fetched)
+            - Returns -1 for empty result sets (since no rows can be fetched)
         
         Warning:
             This is a DB-API extension and may not be portable across different
@@ -569,7 +569,7 @@ class Cursor:
 
         # Return None if cursor is closed or no result set is available
         if self.closed or not self._has_result_set:
-            return None
+            return -1
         
         return self._rownumber  # Will be None until first fetch, then 0, 1, 2, etc.
 
@@ -593,7 +593,7 @@ class Cursor:
     
     def _reset_rownumber(self):
         """Reset the rownumber tracking when starting a new result set."""
-        self._rownumber = None
+        self._rownumber = -1
         self._has_result_set = True
 
     def _increment_rownumber(self):
@@ -603,10 +603,7 @@ class Cursor:
         This should be called after each fetch operation to keep track of the current row index.
         """
         if self._has_result_set:
-            if self._rownumber is None:
-                self._rownumber = 0
-            else:
-                self._rownumber += 1
+            self._rownumber += 1
         else:
             raise InterfaceError("Cannot increment rownumber: no active result set.")
         
@@ -617,10 +614,11 @@ class Cursor:
         
         This could be used for error recovery or cursor positioning operations.
         """
-        if self._has_result_set and self._rownumber is not None:
+        if self._has_result_set and self._rownumber >= 0:
             if self._rownumber > 0:
                 self._rownumber -= 1
-            # If already at 0, don't go negative
+            else:
+                self._rownumber = -1
         else:
             raise InterfaceError("Cannot decrement rownumber: no active result set.")
         
@@ -630,7 +628,7 @@ class Cursor:
         
         This should be called when the result set is cleared or when the cursor is reset.
         """
-        self._rownumber = None
+        self._rownumber = -1
         self._has_result_set = False
 
     def __iter__(self):
