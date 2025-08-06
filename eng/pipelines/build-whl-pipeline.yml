@@ -1012,210 +1012,87 @@ jobs:
 
   - script: |
       # Install Python dependencies in the container using virtual environment
-      if [ "$(packageManager)" = "apk" ]; then
-        # Alpine Linux
-        docker exec build-container-$(distroName)-$(targetArch) bash -c "
-          # Create virtual environment
-          python -m venv /workspace/venv
-          
-          # Activate virtual environment and install dependencies
-          source /workspace/venv/bin/activate
-          
-          # Upgrade pip and install dependencies
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
-          python -m pip install wheel setuptools
-          
-          # Verify virtual environment is active
-          echo 'Python version in venv:' \$(python --version)
-          echo 'Python executable:' \$(which python)
-          echo 'Pip version:' \$(pip --version)
-        "
-      else
-        # Ubuntu/Debian/RHEL
-        docker exec build-container-$(distroName)-$(targetArch) bash -c "
-          # Debug: Check what Python versions are available
-          echo 'Available Python interpreters:'
-          ls -la /usr/bin/python* || echo 'No python in /usr/bin'
-          ls -la /usr/local/bin/python* || echo 'No python in /usr/local/bin'
-          
-          # Determine which Python command to use
+      docker exec build-container-$(distroName)-$(targetArch) bash -c "
+        # Determine which Python command to use
+        if [ '$(packageManager)' = 'apk' ]; then
+          # Alpine Linux - use python directly
+          PYTHON_CMD=python
+        else
+          # Ubuntu/Debian/RHEL - determine the best Python command
           if command -v /usr/local/bin/python$(pythonVersion) >/dev/null 2>&1; then
             PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
-            echo 'Using specific versioned Python from /usr/local/bin'
           elif command -v python$(pythonVersion) >/dev/null 2>&1; then
             PYTHON_CMD=python$(pythonVersion)
-            echo 'Using python$(pythonVersion) from PATH'
           elif command -v python3 >/dev/null 2>&1; then
             PYTHON_CMD=python3
-            echo 'Falling back to python3 instead of python$(pythonVersion)'
           else
             echo 'No Python interpreter found'
             exit 1
           fi
-          
-          echo 'Selected Python command:' \$PYTHON_CMD
-          echo 'Python version:' \$(\$PYTHON_CMD --version)
-          echo 'Python executable path:' \$(which \$PYTHON_CMD)
-          
-          # Verify the symlink is pointing to the right version
-          if [ '\$PYTHON_CMD' = '/usr/local/bin/python$(pythonVersion)' ]; then
-            echo 'Symlink details:'
-            ls -la /usr/local/bin/python$(pythonVersion)
-            echo 'Target Python version:'
-            /usr/local/bin/python$(pythonVersion) --version
-          fi
-          
-          # Ensure we have pip available for this Python version
-          if ! \$PYTHON_CMD -m pip --version >/dev/null 2>&1; then
-            echo 'Installing pip for' \$PYTHON_CMD
-            curl -sS https://bootstrap.pypa.io/get-pip.py | \$PYTHON_CMD
-          fi
-          
-          # Create a virtual environment with the available Python version
-          \$PYTHON_CMD -m venv /opt/venv
-          source /opt/venv/bin/activate
-          
-          # Verify virtual environment Python version
-          echo 'Python version in venv after creation:' \$(python --version)
-          echo 'Python executable in venv:' \$(which python)
-          
-          # Upgrade pip in virtual environment
-          python -m pip install --upgrade pip
-          
-          # Install pybind11 if not available from system packages
-          python -m pip install pybind11
-          
-          # Install dependencies in the virtual environment
-          python -m pip install -r requirements.txt
-          python -m pip install wheel setuptools
-          
-          # Make the virtual environment globally available
-          echo 'source /opt/venv/bin/activate' >> ~/.bashrc
-          
-          # Final verification
-          echo 'Final verification:'
-          echo 'Python version in venv:' \$(python --version)
-          echo 'Pip version in venv:' \$(pip --version)
-          echo 'Python sys.executable:' \$(python -c 'import sys; print(sys.executable)')
-        "
-      fi
+        fi
+        
+        echo 'Selected Python command:' \$PYTHON_CMD
+        echo 'Python version:' \$(\$PYTHON_CMD --version)
+        
+        # Create virtual environment at consistent path
+        \$PYTHON_CMD -m venv /workspace/venv
+        source /workspace/venv/bin/activate
+        
+        # Upgrade pip and install dependencies
+        python -m pip install --upgrade pip
+        python -m pip install pybind11
+        python -m pip install -r requirements.txt
+        python -m pip install wheel setuptools
+        
+        # Verify installation
+        echo 'Python version in venv:' \$(python --version)
+        echo 'Python executable:' \$(which python)
+        echo 'Pip version:' \$(pip --version)
+      "
     displayName: 'Install Python dependencies in $(distroName) $(targetArch) container'
 
   - script: |
       # Build pybind bindings in the container
-      if [ "$(packageManager)" = "apk" ]; then
-        # Alpine Linux
-        docker exec build-container-$(distroName)-$(targetArch) bash -c "
-          # Activate virtual environment
-          source /workspace/venv/bin/activate
-          
-          echo 'Building pybind bindings for $(distroName) $(targetArch)'
-          echo 'Python version:' \$(python --version)
-          echo 'Architecture:' \$(uname -m)
-          
-          cd mssql_python/pybind
-          chmod +x build.sh
-          ./build.sh
-        "
-      else
-        # Ubuntu/Debian/RHEL
-        docker exec build-container-$(distroName)-$(targetArch) bash -c "
-          source /opt/venv/bin/activate
-          
-          # Verify build tools are available
-          echo 'Verifying build tools before starting build:'
-          echo 'Python version:' \$(python --version)
+      docker exec build-container-$(distroName)-$(targetArch) bash -c "
+        # Activate virtual environment
+        source /workspace/venv/bin/activate
+        
+        echo 'Building pybind bindings for $(distroName) $(targetArch)'
+        echo 'Python version:' \$(python --version)
+        echo 'Architecture:' \$(uname -m)
+        
+        # Verify build tools (for RHEL debugging)
+        if [ '$(packageManager)' = 'dnf' ]; then
           echo 'CMake status:'
-          if command -v cmake >/dev/null 2>&1; then
-            cmake --version
-          else
-            echo 'ERROR: cmake not found in PATH'
-            echo 'PATH:' \$PATH
-            echo 'Available binaries in /usr/bin/:'
-            ls -la /usr/bin/ | grep cmake || echo 'No cmake in /usr/bin'
-            echo 'Trying to find cmake:'
-            find /usr -name cmake 2>/dev/null || echo 'cmake not found anywhere'
-            
-            # Try to install cmake if missing (RHEL specific)
-            if [ '$(packageManager)' = 'dnf' ]; then
-              echo 'Attempting to reinstall cmake for RHEL...'
-              dnf install -y cmake
-              echo 'After reinstall:'
-              cmake --version || echo 'cmake still not available'
-            fi
-          fi
-          
-          echo 'GCC status:'
-          gcc --version || echo 'gcc not found'
-          echo 'Make status:'
-          make --version || echo 'make not found'
-          
-          cd mssql_python/pybind
-          chmod +x build.sh
-          ./build.sh
-        "
-      fi
+          cmake --version || echo 'cmake not available'
+        fi
+        
+        cd mssql_python/pybind
+        chmod +x build.sh
+        ./build.sh
+      "
     displayName: 'Build pybind bindings (.so) in $(distroName) $(targetArch) container'
 
   - script: |
-      # Uninstall ODBC Driver before running tests
-      if [ "$(packageManager)" = "apt" ]; then
-        # Ubuntu/Debian
-        docker exec build-container-$(distroName)-$(targetArch) bash -c "
-          export DEBIAN_FRONTEND=noninteractive
-          apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
-          rm -f /usr/bin/sqlcmd
-          rm -f /usr/bin/bcp
-          rm -rf /opt/microsoft/msodbcsql
-          rm -f /lib/x86_64-linux-gnu/libodbcinst.so.2
-          rm -f /lib/aarch64-linux-gnu/libodbcinst.so.2
-          odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
-          echo 'Uninstalled ODBC Driver and cleaned up libraries'
-          echo 'Verifying $(targetArch) debian_ubuntu driver library signatures:'
-          if [ '$(targetArch)' = 'x86_64' ]; then
-            ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.5.so.1.1
-          else
-            ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.5.so.1.1
-          fi
-        "
-      elif [ "$(packageManager)" = "apk" ]; then
-        # Alpine Linux
-        docker exec build-container-$(distroName)-$(targetArch) sh -c "
-          # Uninstall ODBC packages
-          apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'Some packages were not installed'
-          rm -f /usr/bin/sqlcmd
-          rm -f /usr/bin/bcp
-          rm -rf /opt/microsoft/msodbcsql
-          rm -f /usr/lib/libodbcinst.so.2
-          odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
-          echo 'Uninstalled ODBC Driver and cleaned up libraries'
-          echo 'Verifying $(targetArch) alpine driver library signatures:'
-          if [ '$(targetArch)' = 'x86_64' ]; then
-            ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-18.5.so.1.1
-          else
-            ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-18.5.so.1.1
-          fi
-        "
-      else
-        # RHEL/DNF
-        docker exec build-container-$(distroName)-$(targetArch) bash -c "
-          dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
-          rm -f /usr/bin/sqlcmd
-          rm -f /usr/bin/bcp
-          rm -rf /opt/microsoft/msodbcsql
-          rm -f /lib64/libodbcinst.so.2
-          odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
-          echo 'Uninstalled ODBC Driver and cleaned up libraries'
-          echo 'Verifying $(targetArch) rhel driver library signatures:'
-          if [ '$(targetArch)' = 'x86_64' ]; then
-            ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-18.5.so.1.1
-          else
-            ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-18.5.so.1.1
-          fi
-        "
-      fi
-    displayName: 'Uninstall ODBC Driver before running tests in $(distroName) $(targetArch) container'
+      # Run tests in the container
+      # Get SQL Server container IP
+      SQLSERVER_IP=$(docker inspect sqlserver-$(distroName)-$(targetArch) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+      echo "SQL Server IP: $SQLSERVER_IP"
+      
+      docker exec \
+        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+        -e DB_PASSWORD="$(DB_PASSWORD)" \
+        build-container-$(distroName)-$(targetArch) bash -c "
+        source /workspace/venv/bin/activate
+        echo 'Build successful, running tests now on $(distroName) $(targetArch)'
+        echo 'Python version:' \$(python --version)
+        echo 'Architecture:' \$(uname -m)
+        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+        python -m pytest -v --junitxml=test-results-$(distroName)-$(targetArch).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(targetArch).xml --capture=tee-sys --cache-clear
+      "
+    displayName: 'Run pytest with coverage in $(distroName) $(targetArch) container'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
       # Run tests in the container
