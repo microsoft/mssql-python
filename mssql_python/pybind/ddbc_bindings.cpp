@@ -278,16 +278,16 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 sqlwcharBuffer->resize(strParam->size() + 1, 0); // +1 for null terminator
 
                 // Convert each wchar_t (4 bytes on macOS) to SQLWCHAR (2 bytes)
-                // for (size_t i = 0; i < strParam->size(); i++) {
-                //     (*sqlwcharBuffer)[i] = static_cast<SQLWCHAR>((*strParam)[i]);
-                // }
-                std::vector<SQLWCHAR> utf16 = WStringToSQLWCHAR(*strParam);
-                sqlwcharBuffer->assign(utf16.begin(), utf16.end());
+                for (size_t i = 0; i < strParam->size(); i++) {
+                    (*sqlwcharBuffer)[i] = static_cast<SQLWCHAR>((*strParam)[i]);
+                }
+                // std::vector<SQLWCHAR> utf16 = WStringToSQLWCHAR(*strParam);
+                // sqlwcharBuffer->assign(utf16.begin(), utf16.end());
 
                 // Use the SQLWCHAR buffer instead of the wstring directly
                 dataPtr = sqlwcharBuffer->data();
-                // bufferLength = (strParam->size() + 1) * sizeof(SQLWCHAR);
-                bufferLength = sqlwcharBuffer->size() * sizeof(SQLWCHAR);
+                bufferLength = (strParam->size() + 1) * sizeof(SQLWCHAR);
+                // bufferLength = sqlwcharBuffer->size() * sizeof(SQLWCHAR);
                 LOG("macOS: Created SQLWCHAR buffer for parameter with size: {} bytes", bufferLength);
 #else
                 // On Windows, wchar_t and SQLWCHAR are the same size, so direct cast works
@@ -1709,11 +1709,10 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 						if (numCharsInData < dataBuffer.size()) {
                             // SQLGetData will null-terminate the data
 #if defined(__APPLE__) || defined(__linux__)
-                            // row.append(SQLWCHARToWString(dataBuffer.data(), SQL_NTS));
                             auto raw_bytes = reinterpret_cast<const char*>(dataBuffer.data());
-            py::bytes py_bytes(raw_bytes, dataLen);
-            py::str decoded = py_bytes.attr("decode")("utf-16-le");
-            row.append(decoded);
+                            py::bytes py_bytes(raw_bytes, dataLen);
+                            py::str decoded = py_bytes.attr("decode")("utf-16-le");
+                            row.append(decoded);
 #else
                             row.append(std::wstring(dataBuffer.data()));
 #endif
