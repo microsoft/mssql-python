@@ -307,6 +307,7 @@ jobs:
         docker version
         docker ps
       displayName: 'Install and start Colima-based Docker'
+      timeoutInMinutes: 15
 
     - script: |
         # Pull and run SQL Server container
