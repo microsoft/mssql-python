@@ -86,7 +86,6 @@ def test_connection_string_with_odbc_param(db_connection):
 
 def test_autocommit_default(db_connection):
     assert db_connection.autocommit is False, "Autocommit should be False by default"
-    assert db_connection.autocommit is False, "Autocommit should be False by default"
 
 def test_autocommit_setter(db_connection):
     db_connection.autocommit = True

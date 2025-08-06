@@ -1571,7 +1571,6 @@ def test_cursor_context_manager_multiple_operations(db_connection):
 
 def test_cursor_with_contextlib_closing(db_connection):
     """Test using contextlib.closing with cursor for explicit closing behavior"""
-    from contextlib import closing
     
     cursor_ref = None
     with closing(db_connection.cursor()) as cursor:
