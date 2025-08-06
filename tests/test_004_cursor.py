@@ -2454,3 +2454,14 @@ def test_nextset_diagnostics(cursor, db_connection):
     except Exception as e:
         print(f"DIAGNOSTIC INFO: {e}")
         # Don't fail the test - this is just for diagnostics
+
+def test_close(db_connection):
+    """Test closing the cursor"""
+    try:
+        cursor = db_connection.cursor()
+        cursor.close()
+        assert cursor.closed, "Cursor should be closed after calling close()"
+    except Exception as e:
+        pytest.fail(f"Cursor close test failed: {e}")
+    finally:
+        cursor = db_connection.cursor()
