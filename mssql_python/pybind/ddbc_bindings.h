@@ -54,12 +54,28 @@ using namespace pybind11::literals;
     }
 
     inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
-        std::vector<SQLWCHAR> result(str.size() + 1, 0);  // +1 for null terminator
-        for (size_t i = 0; i < str.size(); ++i) {
-            result[i] = static_cast<SQLWCHAR>(str[i]);
+    std::vector<SQLWCHAR> result;
+
+    for (wchar_t wc : str) {
+        uint32_t codePoint = static_cast<uint32_t>(wc);
+        if (codePoint >= 0xD800 && codePoint <= 0xDFFF) {
+            // Skip invalid lone surrogates (shouldn't occur in well-formed wchar_t strings)
+            continue;
+        } else if (codePoint <= 0xFFFF) {
+            result.push_back(static_cast<SQLWCHAR>(codePoint));
+        } else if (codePoint <= 0x10FFFF) {
+            // Encode as surrogate pair
+            codePoint -= 0x10000;
+            SQLWCHAR highSurrogate = static_cast<SQLWCHAR>((codePoint >> 10) + 0xD800);
+            SQLWCHAR lowSurrogate  = static_cast<SQLWCHAR>((codePoint & 0x3FF) + 0xDC00);
+            result.push_back(highSurrogate);
+            result.push_back(lowSurrogate);
         }
-        return result;
     }
+    result.push_back(0); // Null terminator
+    return result;
+}
+
 #endif
 
 #if defined(__APPLE__) || defined(__linux__)
