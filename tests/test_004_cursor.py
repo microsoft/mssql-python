@@ -514,8 +514,12 @@ def test_longwvarchar(cursor, db_connection):
         expectedRows = 2
         # fetchone test
         cursor.execute("SELECT longwvarchar_column FROM #pytest_longwvarchar_test")
-        row = cursor.fetchone()
-        assert row[0] == "ABCDEFGHI", "SQL_LONGWVARCHAR parsing failed for fetchone"
+        rows = []
+        for i in range(0, expectedRows):
+            rows.append(cursor.fetchone())
+        assert cursor.fetchone() == None, "longwvarchar_column is expected to have only {} rows".format(expectedRows)
+        assert rows[0] == ["ABCDEFGHI"], "SQL_LONGWVARCHAR parsing failed for fetchone - row 0"
+        assert rows[1] == [None], "SQL_LONGWVARCHAR parsing failed for fetchone - row 1"
         # fetchall test
         cursor.execute("SELECT longwvarchar_column FROM #pytest_longwvarchar_test")
         rows = cursor.fetchall()
