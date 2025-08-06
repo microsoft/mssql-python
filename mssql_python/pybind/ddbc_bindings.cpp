@@ -276,18 +276,12 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
 
                 // Reserve space and convert from wstring to SQLWCHAR array
                 sqlwcharBuffer->resize(strParam->size() + 1, 0); // +1 for null terminator
-
-                // Convert each wchar_t (4 bytes on macOS) to SQLWCHAR (2 bytes)
-                for (size_t i = 0; i < strParam->size(); i++) {
-                    (*sqlwcharBuffer)[i] = static_cast<SQLWCHAR>((*strParam)[i]);
-                }
-                // std::vector<SQLWCHAR> utf16 = WStringToSQLWCHAR(*strParam);
-                // sqlwcharBuffer->assign(utf16.begin(), utf16.end());
+                std::vector<SQLWCHAR> utf16 = WStringToSQLWCHAR(*strParam);
+                sqlwcharBuffer->assign(utf16.begin(), utf16.end());
 
                 // Use the SQLWCHAR buffer instead of the wstring directly
                 dataPtr = sqlwcharBuffer->data();
-                bufferLength = (strParam->size() + 1) * sizeof(SQLWCHAR);
-                // bufferLength = sqlwcharBuffer->size() * sizeof(SQLWCHAR);
+                bufferLength = sqlwcharBuffer->size() * sizeof(SQLWCHAR);
                 LOG("macOS: Created SQLWCHAR buffer for parameter with size: {} bytes", bufferLength);
 #else
                 // On Windows, wchar_t and SQLWCHAR are the same size, so direct cast works
