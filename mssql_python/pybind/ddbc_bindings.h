@@ -58,7 +58,6 @@ using namespace pybind11::literals;
 
     for (wchar_t wc : str) {
         uint32_t codePoint = static_cast<uint32_t>(wc);
-
         if (codePoint >= 0xD800 && codePoint <= 0xDFFF) {
             // Skip invalid lone surrogates (shouldn't occur in well-formed wchar_t strings)
             continue;
@@ -72,13 +71,10 @@ using namespace pybind11::literals;
             result.push_back(highSurrogate);
             result.push_back(lowSurrogate);
         }
-        // Ignore invalid code points > 0x10FFFF
     }
-
     result.push_back(0); // Null terminator
     return result;
 }
-
 
 #endif
 
