@@ -147,7 +147,7 @@ class Connection:
         self.setautocommit(value)
         log('info', "Autocommit mode set to %s.", value)
 
-    def setautocommit(self, value: bool = True) -> None:
+    def setautocommit(self, value: bool = False) -> None:
         """
         Set the autocommit mode of the connection.
         Args:
@@ -259,6 +259,13 @@ class Connection:
         # Close the connection even if cursor cleanup had issues
         try:
             if self._conn:
+                if not self.autocommit:
+                    # If autocommit is disabled, rollback any uncommitted changes
+                    # This is important to ensure no partial transactions remain
+                    # For autocommit True, this is not necessary as each statement is committed immediately
+                    self._conn.rollback()
+                # TODO: Check potential race conditions in case of multithreaded scenarios
+                # Close the connection
                 self._conn.close()
                 self._conn = None
         except Exception as e:
