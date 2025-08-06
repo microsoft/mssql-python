@@ -132,9 +132,14 @@ void Connection::setAutocommit(bool enable) {
         ThrowStdException("Connection handle not allocated");
     }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
-    LOG("Set SQL Connection Attribute");
+    LOG("Setting SQL Connection Attribute");
     SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
     checkError(ret);
+    if(value == SQL_AUTOCOMMIT_ON) {
+        LOG("SQL Autocommit set to True");
+    } else {
+        LOG("SQL Autocommit set to False");
+    }
     _autocommit = enable;
 }
 
