@@ -1155,7 +1155,7 @@ jobs:
   - script: |
       # Build wheel package in the container
       docker exec build-container-$(distroName)-$(targetArch) bash -c "
-        source /opt/venv/bin/activate
+        source /workspace/venv/bin/activate
         echo 'Building wheel for $(distroName) $(targetArch) Python $(pythonVersion)'
         echo 'Python version:' \$(python --version)
         echo 'Architecture:' \$(uname -m)
