@@ -89,6 +89,7 @@ def test_connection_string_with_odbc_param(db_connection):
 
 def test_autocommit_default(db_connection):
     assert db_connection.autocommit is False, "Autocommit should be False by default"
+    assert db_connection.autocommit is False, "Autocommit should be False by default"
 
 def test_autocommit_setter(db_connection):
     db_connection.autocommit = True
@@ -153,6 +154,41 @@ def test_commit(db_connection):
         pytest.fail(f"Commit failed: {e}")
     finally:
         cursor.execute("DROP TABLE #pytest_test_commit;")
+        db_connection.commit()
+
+def test_rollback_on_close(conn_str, db_connection):
+    # Test that rollback occurs on connection close if autocommit is False
+    # Using a permanent table to ensure rollback is tested correctly
+    cursor = db_connection.cursor()
+    drop_table_if_exists(cursor, "pytest_test_rollback_on_close")
+    try:
+        # Create a permanent table for testing
+        cursor.execute("CREATE TABLE pytest_test_rollback_on_close (id INT PRIMARY KEY, value VARCHAR(50));")
+        db_connection.commit()
+
+        # This simulates a scenario where the connection is closed without committing
+        # and checks if the rollback occurs
+        temp_conn = connect(conn_str)
+        temp_cursor = temp_conn.cursor()
+        temp_cursor.execute("INSERT INTO pytest_test_rollback_on_close (id, value) VALUES (1, 'test');")
+
+        # Verify data is visible within the same transaction
+        temp_cursor.execute("SELECT * FROM pytest_test_rollback_on_close WHERE id = 1;")
+        result = temp_cursor.fetchone()
+        assert result is not None, "Rollback on close failed: No data found before close"
+        assert result[1] == 'test', "Rollback on close failed: Incorrect data before close"
+        
+        # Close the temporary connection without committing
+        temp_conn.close()
+        
+        # Now check if the data is rolled back
+        cursor.execute("SELECT * FROM pytest_test_rollback_on_close WHERE id = 1;")
+        result = cursor.fetchone()
+        assert result is None, "Rollback on close failed: Data found after rollback"
+    except Exception as e:
+        pytest.fail(f"Rollback on close failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "pytest_test_rollback_on_close")
         db_connection.commit()
 
 def test_rollback_on_close(conn_str, db_connection):
