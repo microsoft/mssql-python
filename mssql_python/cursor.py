@@ -436,6 +436,9 @@ class Cursor:
             self.hstmt.free()
             self.hstmt = None
             log('debug', "SQLFreeHandle succeeded")     
+        
+        self._clear_rownumber()
+        
         # Reinitialize the statement handle
         self._initialize_cursor()
 
@@ -453,6 +456,7 @@ class Cursor:
             self.hstmt.free()
             self.hstmt = None
             log('debug', "SQLFreeHandle succeeded")
+        self._clear_rownumber()
         self.closed = True
 
     def _check_closed(self):
@@ -549,7 +553,12 @@ class Cursor:
         
         Returns:
             int or None: The current 0-based index of the cursor in the result set,
-                        or None if the index cannot be determined.
+                        or None if no row has been fetched yet or the index cannot be determined.
+        
+        Note:
+            - Returns None before the first successful fetch
+            - Returns 0 after fetching the first row
+            - Returns None for empty result sets (since no rows can be fetched)
         
         Warning:
             This is a DB-API extension and may not be portable across different
@@ -562,8 +571,8 @@ class Cursor:
         if self.closed or not self._has_result_set:
             return None
         
-        return self._rownumber
-    
+        return self._rownumber  # Will be None until first fetch, then 0, 1, 2, etc.
+
     @property
     def connection(self):
         """
@@ -584,7 +593,7 @@ class Cursor:
     
     def _reset_rownumber(self):
         """Reset the rownumber tracking when starting a new result set."""
-        self._rownumber = 0
+        self._rownumber = None
         self._has_result_set = True
 
     def _increment_rownumber(self):
@@ -848,6 +857,11 @@ class Cursor:
         self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
         self.last_executed_stmt = operation
         self._initialize_description()
+        
+        if self.description:
+            self._reset_rownumber()
+        else:
+            self._clear_rownumber()
 
     def fetchone(self) -> Union[None, Row]:
         """
@@ -860,16 +874,20 @@ class Cursor:
 
         # Fetch raw data
         row_data = []
-        ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
-        
-        if ret == ddbc_sql_const.SQL_NO_DATA.value:
-            return None
-        
-        # Increment rownumber for successful fetch
-        self._increment_rownumber()
-        
-        # Create and return a Row object
-        return Row(row_data, self.description)
+        try:
+            ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
+            
+            if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                return None
+            
+            # Only increment rownumber for successful fetch with data
+            self._increment_rownumber()
+            
+            # Create and return a Row object
+            return Row(row_data, self.description)
+        except Exception as e:
+            # On error, don't increment rownumber - rethrow the error
+            raise e
 
     def fetchmany(self, size: int = None) -> List[Row]:
         """
@@ -891,15 +909,19 @@ class Cursor:
         
         # Fetch raw data
         rows_data = []
-        ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
-        
-        # Update rownumber for the number of rows fetched
-        if rows_data and self._has_result_set:
-            for _ in rows_data:
-                self._increment_rownumber()
-        
-        # Convert raw data to Row objects
-        return [Row(row_data, self.description) for row_data in rows_data]
+        try:
+            ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
+            
+            # Update rownumber for the number of rows actually fetched
+            if rows_data and self._has_result_set:
+                for _ in rows_data:
+                    self._increment_rownumber()
+            
+            # Convert raw data to Row objects
+            return [Row(row_data, self.description) for row_data in rows_data]
+        except Exception as e:
+            # On error, don't increment rownumber - rethrow the error
+            raise e
 
     def fetchall(self) -> List[Row]:
         """
@@ -912,15 +934,19 @@ class Cursor:
 
         # Fetch raw data
         rows_data = []
-        ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
-        
-        # Update rownumber for the number of rows fetched
-        if rows_data and self._has_result_set:
-            for _ in rows_data:
-                self._increment_rownumber()
-        
-        # Convert raw data to Row objects
-        return [Row(row_data, self.description) for row_data in rows_data]
+        try:
+            ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+            
+            # Update rownumber for the number of rows actually fetched
+            if rows_data and self._has_result_set:
+                for _ in rows_data:
+                    self._increment_rownumber()
+            
+            # Convert raw data to Row objects
+            return [Row(row_data, self.description) for row_data in rows_data]
+        except Exception as e:
+            # On error, don't increment rownumber - rethrow the error
+            raise e
 
     def nextset(self) -> Union[bool, None]:
         """
@@ -937,8 +963,13 @@ class Cursor:
         # Skip to the next result set
         ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+        
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
+            self._clear_rownumber()
             return False
+
+        self._reset_rownumber()
+
         return True
 
     def __del__(self):
