@@ -29,7 +29,7 @@ class Cursor:
         description: Sequence of 7-item sequences describing one result column.
         rowcount: Number of rows produced or affected by the last execute operation.
         arraysize: Number of rows to fetch at a time with fetchmany().
-        rownumber: Current 0-based index of the cursor in the result set.
+        rownumber: Track the current row index in the result set
 
     Methods:
         __init__(connection_str) -> None.
@@ -77,7 +77,7 @@ class Cursor:
         # Therefore, it must be a list with exactly one bool element.
         
         # rownumber attribute
-        self._rownumber = None  # 0-based index of cursor position in result set
+        self._rownumber = None  # Track the current row index in the result set
         self._has_result_set = False  # Track if we have an active result set
 
     def _is_unicode_string(self, param):
