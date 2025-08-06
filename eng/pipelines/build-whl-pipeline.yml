@@ -767,8 +767,7 @@ jobs:
                 echo 'Installing Python'
                 make altinstall
                 
-                # Create symlinks
-                ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python$(pythonVersion)
+                # Create symlinks - altinstall creates python3.13, we create python symlink
                 ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python
                 
                 # Verify installation and SSL support
@@ -939,8 +938,7 @@ jobs:
               echo 'Installing Python'
               make altinstall
               
-              # Create symlinks
-              ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python$(pythonVersion)
+              # Create symlinks - altinstall creates python3.13, we create python symlink  
               ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python
               
               # Verify installation and SSL support
@@ -1097,6 +1095,11 @@ jobs:
         # Create virtual environment at consistent path
         \$PYTHON_CMD -m venv /workspace/venv
         source /workspace/venv/bin/activate
+        
+        # Verify virtual environment is working
+        echo 'Virtual environment activated:'
+        echo 'Python executable:' \$(which python)
+        echo 'Python version in venv:' \$(python --version)
         
         # Upgrade pip and install dependencies
         python -m pip install --upgrade pip
