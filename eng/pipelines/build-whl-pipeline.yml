@@ -738,11 +738,16 @@ jobs:
                 echo 'Python $(pythonVersion) requires building from source'
                 
                 # Install dependencies needed for Python source compilation
-                apt-get install -y build-essential libssl-dev zlib1g-dev libbz2-dev \
+                apt-get install -y build-essential libssl-dev zlib1g-dev libbz2-dev
                 apt-get install -y libreadline-dev libsqlite3-dev wget curl llvm
                 apt-get install -y libncurses5-dev libncursesw5-dev xz-utils tk-dev
                 apt-get install -y libffi-dev liblzma-dev python3-openssl
                 apt-get install -y libgdbm-dev libnss3-dev libedit-dev || echo 'Some optional dependencies not available'
+                
+                # Verify SSL development libraries are installed
+                echo 'Verifying SSL development libraries:'
+                dpkg -l | grep libssl-dev || echo 'libssl-dev not found'
+                pkg-config --exists openssl && echo 'OpenSSL pkg-config found' || echo 'OpenSSL pkg-config missing'
                 
                 # Download Python source
                 cd /tmp
@@ -752,9 +757,9 @@ jobs:
                 tar -xzf python-$(pythonVersion).tgz
                 cd Python-$(pythonVersion)*
                 
-                # Configure and compile Python with optimizations
-                echo 'Configuring Python build'
-                ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions --enable-optimizations
+                # Configure and compile Python with SSL support explicitly enabled
+                echo 'Configuring Python build with SSL support'
+                ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions --enable-optimizations --with-openssl=/usr
                 
                 echo 'Compiling Python (this may take several minutes)'
                 make -j\$(nproc)
@@ -766,8 +771,10 @@ jobs:
                 ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python$(pythonVersion)
                 ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python
                 
-                # Verify installation
+                # Verify installation and SSL support
                 /usr/local/bin/python$(pythonVersion) --version
+                echo 'Testing SSL support in Python:'
+                /usr/local/bin/python$(pythonVersion) -c 'import ssl; print(\"SSL support:\", ssl.OPENSSL_VERSION)' || echo 'WARNING: SSL module not available'
                 
                 # Clean up
                 cd /
@@ -924,7 +931,7 @@ jobs:
               
               # Configure and compile Python with optimizations disabled for missing deps
               echo 'Configuring Python build (optimizations may be disabled due to missing dependencies)'
-              ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions
+              ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions --with-openssl=/usr
               
               echo 'Compiling Python (this may take several minutes)'
               make -j\$(nproc)
@@ -936,8 +943,10 @@ jobs:
               ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python$(pythonVersion)
               ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python
               
-              # Verify installation
+              # Verify installation and SSL support
               /usr/local/bin/python$(pythonVersion) --version
+              echo 'Testing SSL support in Python:'
+              /usr/local/bin/python$(pythonVersion) -c 'import ssl; print(\"SSL support:\", ssl.OPENSSL_VERSION)' || echo 'WARNING: SSL module not available'
               PYTHON_INSTALLED=true
               
               # Clean up
