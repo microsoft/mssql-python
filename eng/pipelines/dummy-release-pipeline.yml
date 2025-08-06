@@ -1,51 +1,203 @@
-name: mssql-python-official-release-pipeline
+trigger: none
+
+name: mssql-python-dummy-release-pipeline
 
 variables:
   - group: 'ESRP Federated Creds (AME)'
+  # Add OneBranch required variables as a separate item in the list
+  - name: ob_outputDirectory
+    value: '$(Build.ArtifactStagingDirectory)/out'
+  - name: ob_artifactBaseName
+    value: 'mssql-python'
 
-jobs:
-- job: ReleaseESRPPackage
-  displayName: 'Release ESRP Package'
-  pool:
-    vmImage: 'windows-latest'
+resources:
+  repositories: 
+    - repository: templates
+      type: git
+      name: OneBranch.Pipelines/GovernedTemplates
+      ref: refs/heads/main
+
+extends:
+  template: v2/OneBranch.Official.CrossPlat.yml@templates
+  parameters:
+    featureFlags:
+      WindowsHostVersion: 1ESWindows2022
+
+    stages:
+      - stage: PublishSymbols
+        displayName: 'Publish Symbols'
+        jobs:
+        - job: PublishSymbols
+          # Use the latest Windows image for building
+          pool:
+            type: 'windows'
+          displayName: 'Publish Symbols - Windows'
+          
+          # OneBranch required variables must be at job level
+          variables:
+            ob_outputDirectory: '$(Build.SourcesDirectory)\out'
+            ob_artifactBaseName: 'mssql-python-symbols'
+
+          steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.13'
+              architecture: 'x64'
+              addToPath: true
+            displayName: 'Use Python 3.13'
+
+          # Install required packages: pip, CMake, pybind11
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+            displayName: 'Install dependencies'
+
+          # Generate the symbols for the mssql-python package using build.bat
+          - script: |
+              echo "Generating symbols for mssql-python package..."
+              cd mssql_python\pybind
+              build.bat
+              cd ..
+              dir /s /b
+            displayName: 'Generate symbols for mssql-python package'
+
+          # Copy the generated symbols to OneBranch output directory
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)\mssql_python'
+              Contents: '**\*.pdb'
+              TargetFolder: '$(ob_outputDirectory)\symbols'
+            displayName: 'Copy symbols to OneBranch output directory'
+
+          # OneBranch will automatically upload artifacts from ob_outputDirectory
+          # No need for PublishBuildArtifacts task
+
+          - powershell: 'Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"'
+            displayName: 'Update Symbol.AccountName with SqlClientDrivers'
+
+          - task: PublishSymbols@2
+            displayName: 'Upload symbols to SqlClientDrivers org'
+            inputs:
+              SymbolsFolder: '$(Build.ArtifactStagingDirectory)\mssql-python-symbols'
+              SearchPattern: '**/*.pdb'
+              IndexSources: false
+              SymbolServerType: TeamServices
+              SymbolsMaximumWaitTime: 60
+              SymbolExpirationInDays: 1825 # 5 years
+              SymbolsProduct: mssql-python
+              # Have kept the default version as the build ID, which is unique for each build
+              # This will be used to identify the symbols in the symbol server
+              SymbolsVersion: $(Build.BuildId)
+              # Ensuring the symbols are uniquely identified
+              # MDS uses symbolsArtifactName as mds_symbols_$(System.TeamProject)_$(Build.Repository.Name)_$(Build.SourceBranchName)_$(NuGetPackageVersion)_$(System.TimelineId)
+              SymbolsArtifactName: $(System.TeamProject)-$(Build.SourceBranchName)-$(Build.DefinitionName)-$(Build.BuildId)
+              Pat: $(System.AccessToken)
+
+          - task: AzureCLI@2
+            displayName: 'Publish symbols'
+            env:
+              SymbolServer: '$(SymbolServer)'
+              SymbolTokenUri: '$(SymbolTokenUri)'
+              requestName: '$(System.TeamProject)-$(Build.SourceBranchName)-$(Build.DefinitionName)-$(Build.BuildId)'
+            inputs:
+              azureSubscription: 'SymbolsPublishing-msodbcsql-mssql-python'
+              scriptType: ps
+              scriptLocation: inlineScript
+              inlineScript: |
+                # Should be true by default for internal server
+                $publishToInternalServer = $true 
+                $publishToPublicServer = $false
+
+                echo "Publishing request name: $requestName"
+                echo "Publish to internal server: $publishToInternalServer"
+                echo "Publish to public server: $publishToPublicServer"      
+
+                $symbolServer = '$(SymbolServer)'
+                $tokenUri = '$(SymbolTokenUri)'
+                $projectName = "mssql-python"
+
+                # Get the access token for the symbol publishing service
+                $symbolPublishingToken = az account get-access-token --resource $tokenUri --query accessToken -o tsv
+
+                echo ">  1.Symbol publishing token acquired."
+
+                echo "Registering the request name ..."
+                $requestName = '$(requestName)'
+                $requestNameRegistrationBody = "{'requestName': '$requestName'}"
+                Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $requestNameRegistrationBody
+
+                echo ">  2.Registration of request name succeeded."
+
+                echo "Publishing the symbols ..."
+                $publishSymbolsBody = "{'publishToInternalServer': $publishToInternalServer, 'publishToPublicServer': $publishToPublicServer}"
+                echo "Publishing symbols request body: $publishSymbolsBody"
+                Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests/$requestName" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $publishSymbolsBody
+
+                echo ">  3.Request to publish symbols succeeded."
+
+                # The following REST calls are used to check publishing status.
+                echo ">  4.Checking the status of the request ..."
+
+                Invoke-RestMethod -Method GET -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests/$requestName" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json"
+                
+                echo "Use below tables to interpret the values of xxxServerStatus and xxxServerResult fields from the response."
+                
+                echo "PublishingStatus"
+                echo "-----------------"
+                echo "0	NotRequested; The request has not been requested to publish."
+                echo "1	Submitted; The request is submitted to be published"
+                echo "2	Processing; The request is still being processed"
+                echo "3	Completed; The request has been completed processing. It can be failed or successful. Check PublishingResult to get more details"
+                
+                echo "PublishingResult"
+                echo "-----------------"
+                echo "0	Pending; The request has not completed or has not been requested."
+                echo "1	Succeeded; The request has published successfully"
+                echo "2	Failed; The request has failed to publish"
+                echo "3	Cancelled; The request was cancelled"  
+
+# - job: ReleaseESRPPackage
+#   displayName: 'Release ESRP Package'
+#   pool:
+#     vmImage: 'windows-latest'
   
-  steps:
-  - task: DownloadPipelineArtifact@2
-    inputs:
-      buildType: 'specific'
-      project: '$(System.TeamProject)'
-      definition: 2162
-      buildVersionToDownload: 'latest'
-      branchName: '$(Build.SourceBranch)'
-      artifactName: 'mssql-python-wheels-dist'
-      targetPath: '$(Build.SourcesDirectory)\dist'
-    displayName: 'Download release wheel files artifact from latest successful run on main branch'
+#   steps:
+#   - task: DownloadPipelineArtifact@2
+#     inputs:
+#       buildType: 'specific'
+#       project: '$(System.TeamProject)'
+#       definition: 2162
+#       buildVersionToDownload: 'latest'
+#       branchName: '$(Build.SourceBranch)'
+#       artifactName: 'mssql-python-wheels-dist'
+#       targetPath: '$(Build.SourcesDirectory)\dist'
+#     displayName: 'Download release wheel files artifact from latest successful run on main branch'
 
-  # Show content of the downloaded artifact
-  - script: |
-      echo "Contents of the dist directory:"
-      dir "$(Build.SourcesDirectory)\dist"
-    displayName: 'List contents of dist directory'
+#   # Show content of the downloaded artifact
+#   - script: |
+#       echo "Contents of the dist directory:"
+#       dir "$(Build.SourcesDirectory)\dist"
+#     displayName: 'List contents of dist directory'
 
-  - task: EsrpRelease@9
-    displayName: 'ESRP Release'
-    inputs:
-      connectedservicename: '$(ESRPConnectedServiceName)'
-      usemanagedidentity: true
-      keyvaultname: '$(AuthAKVName)'
-      signcertname: '$(AuthSignCertName)'
-      clientid: '$(EsrpClientId)'
-      Intent: 'PackageDistribution'
-      # Changing content type to Maven release (NOT PyPI) since we want to do dummy release
-      # for ESRP testing purposes, not for actual PyPI distribution.
-      # This is a workaround to allow ESRP to process the release without actual PyPI content
-      # and to avoid ESRP validation errors.
-      ContentType: 'Maven'
-      ContentSource: 'Folder'
-      FolderLocation: '$(Build.SourcesDirectory)/dist'
-      WaitForReleaseCompletion: true
-      Owners: '$(owner)'
-      Approvers: '$(approver)'
-      ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
-      MainPublisher: 'ESRPRELPACMAN'
-      DomainTenantId: '$(DomainTenantId)'
+#   - task: EsrpRelease@9
+#     displayName: 'ESRP Release'
+#     inputs:
+#       connectedservicename: '$(ESRPConnectedServiceName)'
+#       usemanagedidentity: true
+#       keyvaultname: '$(AuthAKVName)'
+#       signcertname: '$(AuthSignCertName)'
+#       clientid: '$(EsrpClientId)'
+#       Intent: 'PackageDistribution'
+#       # Changing content type to Maven release (NOT PyPI) since we want to do dummy release
+#       # for ESRP testing purposes, not for actual PyPI distribution.
+#       # This is a workaround to allow ESRP to process the release without actual PyPI content
+#       # and to avoid ESRP validation errors.
+#       ContentType: 'Maven'
+#       ContentSource: 'Folder'
+#       FolderLocation: '$(Build.SourcesDirectory)/dist'
+#       WaitForReleaseCompletion: true
+#       Owners: '$(owner)'
+#       Approvers: '$(approver)'
+#       ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
+#       MainPublisher: 'ESRPRELPACMAN'
+#       DomainTenantId: '$(DomainTenantId)'
