@@ -286,8 +286,13 @@ jobs:
         brew update
         brew install docker colima
 
-        # Start Colima with extra resources
-        colima start --cpu 4 --memory 8 --disk 50
+        # Try VZ first, fallback to QEMU if it fails
+        # Use more conservative resource allocation for Azure DevOps runners
+        colima start --cpu 3 --memory 10 --disk 30 --vm-type=vz || \
+        colima start --cpu 3 --memory 10 --disk 30 --vm-type=qemu
+
+        # Set a timeout to ensure Colima starts properly
+        sleep 30
 
         # Optional: set Docker context (usually automatic)
         docker context use colima >/dev/null || true
