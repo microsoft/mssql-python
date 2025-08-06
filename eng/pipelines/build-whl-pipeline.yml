@@ -22,6 +22,9 @@ jobs:
   pool:
     vmImage: 'windows-latest'
   displayName: 'Build Windows -'
+  # On failure of any task in this job, retry the job up to 2 times
+  # This will not retry on success and retry just the failed tasks
+  retryCountOnTaskFailure: 2
   # Strategy matrix to build all combinations
   strategy:
     matrix:
@@ -215,6 +218,9 @@ jobs:
     vmImage: 'macos-latest'
   # Display name for the job in Azure DevOps UI
   displayName: 'Build macOS - '
+  # On failure of any task in this job, retry the job up to 2 times
+  # This will not retry on success and retry just the failed tasks
+  retryCountOnTaskFailure: 2
   strategy:
     matrix:
       # Python 3.13 (universal2 for both arm64 and x86_64)
@@ -371,6 +377,9 @@ jobs:
     vmImage: 'ubuntu-latest'
   displayName: 'Build Linux -'
 
+  # On failure of any task in this job, retry the job up to 2 times
+  # This will not retry on success and retry just the failed tasks
+  retryCountOnTaskFailure: 2
   strategy:
     matrix:
       # Python 3.10 (x86_64 and ARM64)
