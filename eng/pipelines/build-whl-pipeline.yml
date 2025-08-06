@@ -1072,6 +1072,64 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in $(distroName) $(targetArch) container'
+  
+  - script: |
+      # Uninstall ODBC Driver before running tests
+      if [ "$(packageManager)" = "apt" ]; then
+        # Ubuntu/Debian
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
+          rm -f /usr/bin/sqlcmd
+          rm -f /usr/bin/bcp
+          rm -rf /opt/microsoft/msodbcsql
+          rm -f /lib/x86_64-linux-gnu/libodbcinst.so.2
+          rm -f /lib/aarch64-linux-gnu/libodbcinst.so.2
+          odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+          echo 'Uninstalled ODBC Driver and cleaned up libraries'
+          echo 'Verifying $(targetArch) debian_ubuntu driver library signatures:'
+          if [ '$(targetArch)' = 'x86_64' ]; then
+            ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.5.so.1.1
+          else
+            ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.5.so.1.1
+          fi
+        "
+      elif [ "$(packageManager)" = "apk" ]; then
+        # Alpine Linux
+        docker exec build-container-$(distroName)-$(targetArch) sh -c "
+          apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'Some packages were not installed'
+          rm -f /usr/bin/sqlcmd
+          rm -f /usr/bin/bcp
+          rm -rf /opt/microsoft/msodbcsql
+          rm -f /usr/lib/libodbcinst.so.2
+          odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+          echo 'Uninstalled ODBC Driver and cleaned up libraries'
+          echo 'Verifying $(targetArch) alpine driver library signatures:'
+          if [ '$(targetArch)' = 'x86_64' ]; then
+            ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-18.5.so.1.1
+          else
+            ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-18.5.so.1.1
+          fi
+        "
+      else
+        # RHEL/DNF
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
+          rm -f /usr/bin/sqlcmd
+          rm -f /usr/bin/bcp
+          rm -rf /opt/microsoft/msodbcsql
+          rm -f /lib64/libodbcinst.so.2
+          odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+          echo 'Uninstalled ODBC Driver and cleaned up libraries'
+          echo 'Verifying $(targetArch) rhel driver library signatures:'
+          if [ '$(targetArch)' = 'x86_64' ]; then
+            ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-18.5.so.1.1
+          else
+            ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-18.5.so.1.1
+          fi
+        "
+      fi
+    displayName: 'Uninstall ODBC Driver before running tests in $(distroName) $(targetArch) container'
 
   - script: |
       # Run tests in the container
@@ -1084,27 +1142,6 @@ jobs:
         -e DB_PASSWORD="$(DB_PASSWORD)" \
         build-container-$(distroName)-$(targetArch) bash -c "
         source /workspace/venv/bin/activate
-        echo 'Build successful, running tests now on $(distroName) $(targetArch)'
-        echo 'Python version:' \$(python --version)
-        echo 'Architecture:' \$(uname -m)
-        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-        python -m pytest -v --junitxml=test-results-$(distroName)-$(targetArch).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(targetArch).xml --capture=tee-sys --cache-clear
-      "
-    displayName: 'Run pytest with coverage in $(distroName) $(targetArch) container'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: |
-      # Run tests in the container
-      # Get SQL Server container IP
-      SQLSERVER_IP=$(docker inspect sqlserver-$(distroName)-$(targetArch) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-      echo "SQL Server IP: $SQLSERVER_IP"
-      
-      docker exec \
-        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
-        build-container-$(distroName)-$(targetArch) bash -c "
-        source /opt/venv/bin/activate
         echo 'Build successful, running tests now on $(distroName) $(targetArch)'
         echo 'Python version:' \$(python --version)
         echo 'Architecture:' \$(uname -m)
