@@ -1353,6 +1353,10 @@ def test_emoji_round_trip(cursor, db_connection):
 
         except Exception as e:
             pytest.fail(f"Error for input {repr(text)}: {e}")
+            
+        finally:
+            cursor.execute("DROP TABLE emoji_test")
+            db_connection.commit()
 
 def test_close(db_connection):
     """Test closing the cursor"""
