@@ -1709,11 +1709,11 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 						if (numCharsInData < dataBuffer.size()) {
                             // SQLGetData will null-terminate the data
 #if defined(__APPLE__) || defined(__linux__)
-                            row.append(SQLWCHARToWString(dataBuffer.data(), SQL_NTS));
-            //                 auto raw_bytes = reinterpret_cast<const char*>(dataBuffer.data());
-            // py::bytes py_bytes(raw_bytes, dataLen);
-            // py::str decoded = py_bytes.attr("decode")("utf-16-le");
-            // row.append(decoded);
+                            // row.append(SQLWCHARToWString(dataBuffer.data(), SQL_NTS));
+                            auto raw_bytes = reinterpret_cast<const char*>(dataBuffer.data());
+            py::bytes py_bytes(raw_bytes, dataLen);
+            py::str decoded = py_bytes.attr("decode")("utf-16-le");
+            row.append(decoded);
 #else
                             row.append(std::wstring(dataBuffer.data()));
 #endif
