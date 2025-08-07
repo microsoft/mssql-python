@@ -872,8 +872,19 @@ jobs:
             tar xzf Python-$(pythonVersion).1.tgz
             cd Python-$(pythonVersion).1
             
-            # Configure and build Python - disable IPv6 for Alpine/musl compatibility
-            ./configure --disable-ipv6 --enable-optimizations --with-ensurepip=install --enable-shared LDFLAGS='-Wl,-rpath /usr/local/lib'
+            # Configure and build Python - Alpine/musl specific configuration
+            # Set cache variables to help configure detect musl libc types correctly
+            export ac_cv_file__dev_ptmx=yes
+            export ac_cv_file__dev_ptc=no
+            export ac_cv_have_long_long_format=yes
+            
+            ./configure --disable-ipv6 --enable-optimizations --with-ensurepip=install --enable-shared \
+              --build=aarch64-alpine-linux-musl \
+              --host=aarch64-alpine-linux-musl \
+              --target=aarch64-alpine-linux-musl \
+              LDFLAGS='-Wl,-rpath /usr/local/lib' \
+              CPPFLAGS='-I/usr/include' \
+              LDFLAGS='-L/usr/lib -Wl,-rpath /usr/local/lib'
             
             # Disable PGO for ARM64 to speed up builds
             if [ '$(targetArch)' = 'aarch64' ]; then
