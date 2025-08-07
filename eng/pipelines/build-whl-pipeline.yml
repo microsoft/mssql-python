@@ -841,7 +841,7 @@ jobs:
         "
       elif [ "$(packageManager)" = "apk" ]; then
         # Alpine Linux
-        docker exec build-container-$(distroName)-$(targetArch) sh -c "
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
           # Update package index
           apk update
           
@@ -1373,7 +1373,7 @@ jobs:
         "
       elif [ "$(packageManager)" = "apk" ]; then
         # Alpine Linux
-        docker exec build-container-$(distroName)-$(targetArch) sh -c "
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
           apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'Some packages were not installed'
           rm -f /usr/bin/sqlcmd
           rm -f /usr/bin/bcp
