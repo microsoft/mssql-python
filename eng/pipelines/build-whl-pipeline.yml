@@ -371,7 +371,7 @@ jobs:
   pool:
     vmImage: 'ubuntu-latest'
   displayName: 'Build Linux -'
-  timeoutInMinutes: 90
+  timeoutInMinutes: 120
 
   strategy:
     matrix:
