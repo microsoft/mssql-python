@@ -882,6 +882,8 @@ jobs:
             export ac_cv_sizeof_size_t=8
             export ac_cv_sizeof_pid_t=4
             export ac_cv_sizeof_void_p=8
+            # Fix float word ordering detection for ARM64
+            export ax_cv_c_float_words_bigendian=no
             
             ./configure \
               --prefix=/usr/local \
