@@ -877,6 +877,11 @@ jobs:
             export ac_cv_file__dev_ptmx=yes
             export ac_cv_file__dev_ptc=no
             export ac_cv_have_long_long_format=yes
+            # Fix LONG_BIT detection for musl libc on ARM64
+            export ac_cv_sizeof_long=8
+            export ac_cv_sizeof_size_t=8
+            export ac_cv_sizeof_pid_t=4
+            export ac_cv_sizeof_void_p=8
             
             ./configure \
               --prefix=/usr/local \
@@ -886,8 +891,9 @@ jobs:
               --build=aarch64-alpine-linux-musl \
               --host=aarch64-alpine-linux-musl \
               --target=aarch64-alpine-linux-musl \
-              CPPFLAGS='-I/usr/include' \
-              LDFLAGS='-L/usr/lib -Wl,-rpath,/usr/local/lib'
+              CPPFLAGS='-I/usr/include -DLONG_BIT=64' \
+              LDFLAGS='-L/usr/lib -Wl,-rpath,/usr/local/lib' \
+              CFLAGS='-DLONG_BIT=64'
             
             # Build Python without optimizations to avoid gcc segfault on ARM64
             echo 'Building Python $(pythonVersion) without PGO optimizations to avoid compilation issues'
