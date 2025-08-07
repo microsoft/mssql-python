@@ -864,7 +864,7 @@ jobs:
           else
             # Build Python from source for other versions (3.10, 3.11, 3.13)
             echo 'Building Python $(pythonVersion) from source for Alpine Linux'
-            apk add --no-cache tar xz ncurses-dev sqlite-dev readline-dev tk-dev gdbm-dev db-dev bzip2-dev xz-dev
+            apk add --no-cache tar xz ncurses-dev sqlite-dev readline-dev tk-dev gdbm-dev db-dev bzip2-dev xz-dev linux-headers
             
             # Download and compile Python from source
             cd /tmp
@@ -872,8 +872,8 @@ jobs:
             tar xzf Python-$(pythonVersion).1.tgz
             cd Python-$(pythonVersion).1
             
-            # Configure and build Python with optimizations disabled for faster builds
-            ./configure --enable-optimizations --with-ensurepip=install --enable-shared LDFLAGS='-Wl,-rpath /usr/local/lib'
+            # Configure and build Python - disable IPv6 for Alpine/musl compatibility
+            ./configure --disable-ipv6 --enable-optimizations --with-ensurepip=install --enable-shared LDFLAGS='-Wl,-rpath /usr/local/lib'
             
             # Disable PGO for ARM64 to speed up builds
             if [ '$(targetArch)' = 'aarch64' ]; then
