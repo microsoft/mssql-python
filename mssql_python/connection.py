@@ -12,12 +12,14 @@ Resource Management:
 """
 import weakref
 import re
+import codecs
 from mssql_python.cursor import Cursor
 from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, log
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
-from mssql_python.exceptions import InterfaceError
+from mssql_python.exceptions import InterfaceError, ProgrammingError
 from mssql_python.auth import process_connection_string
+from mssql_python.constants import ConstantsDDBC
 
 
 class Connection:
@@ -36,6 +38,7 @@ class Connection:
         commit() -> None:
         rollback() -> None:
         close() -> None:
+        setencoding(encoding=None, ctype=None) -> None:
     """
 
     def __init__(self, connection_str: str = "", autocommit: bool = False, attrs_before: dict = None, **kwargs) -> None:
@@ -62,6 +65,13 @@ class Connection:
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
+
+        # Initialize encoding settings with defaults for Python 3
+        # Python 3 only has str (which is Unicode), so we use utf-16le by default
+        self._encoding_settings = {
+            'encoding': 'utf-16le',
+            'ctype': ConstantsDDBC.SQL_WCHAR.value
+        }
 
         # Check if the connection string contains authentication parameters
         # This is important for processing the connection string correctly.
@@ -158,6 +168,90 @@ class Connection:
             DatabaseError: If there is an error while setting the autocommit mode.
         """
         self._conn.set_autocommit(value)
+
+    def setencoding(self, encoding=None, ctype=None):
+        """
+        Sets the text encoding for SQL statements and text parameters.
+        
+        Since Python 3 only has str (which is Unicode), this method configures
+        how text is encoded when sending to the database.
+        
+        Args:
+            encoding (str, optional): The encoding to use. This must be a valid Python 
+                encoding that converts text to bytes. If None, defaults to 'utf-16le'.
+            ctype (int, optional): The C data type to use when passing data: 
+                SQL_CHAR or SQL_WCHAR. If not provided, SQL_WCHAR is used for 
+                "utf-16", "utf-16le", and "utf-16be". SQL_CHAR is used for all other encodings.
+        
+        Returns:
+            None
+            
+        Raises:
+            ProgrammingError: If the encoding is not valid or not supported.
+            InterfaceError: If the connection is closed.
+            
+        Example:
+            # For databases that only communicate with UTF-8
+            cnxn.setencoding(encoding='utf-8')
+            
+            # For explicitly using SQL_CHAR
+            cnxn.setencoding(encoding='utf-8', ctype=mssql_python.SQL_CHAR)
+        """
+        if self._closed:
+            raise InterfaceError(
+                driver_error="Cannot set encoding on closed connection",
+                ddbc_error="Cannot set encoding on closed connection",
+            )
+        
+        # Set default encoding if not provided
+        if encoding is None:
+            encoding = 'utf-16le'
+            
+        # Validate encoding
+        try:
+            codecs.lookup(encoding)
+        except LookupError:
+            raise ProgrammingError(
+                driver_error=f"Unknown encoding: {encoding}",
+                ddbc_error=f"The encoding '{encoding}' is not supported by Python",
+            )
+        
+        # Set default ctype based on encoding if not provided
+        if ctype is None:
+            if encoding.lower() in ('utf-16', 'utf-16le', 'utf-16be'):
+                ctype = ConstantsDDBC.SQL_WCHAR.value
+            else:
+                ctype = ConstantsDDBC.SQL_CHAR.value
+        
+        # Validate ctype
+        valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
+        if ctype not in valid_ctypes:
+            raise ProgrammingError(
+                driver_error=f"Invalid ctype: {ctype}",
+                ddbc_error=f"ctype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) or SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value})",
+            )
+        
+        # Store the encoding settings
+        self._encoding_settings = {
+            'encoding': encoding,
+            'ctype': ctype
+        }
+        
+        log('info', "Text encoding set to %s with ctype %s", encoding, ctype)
+
+    def getencoding(self):
+        """
+        Gets the current text encoding settings.
+        
+        Returns:
+            dict: A dictionary containing 'encoding' and 'ctype' keys.
+            
+        Example:
+            settings = cnxn.getencoding()
+            print(f"Current encoding: {settings['encoding']}")
+            print(f"Current ctype: {settings['ctype']}")
+        """
+        return self._encoding_settings.copy()
 
     def cursor(self) -> Cursor:
         """
