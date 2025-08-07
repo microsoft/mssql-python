@@ -780,7 +780,7 @@ jobs:
                   echo 'Using single-threaded build for ARM64 stability'
                   make
                 else
-                  make -j\$(nproc)
+                  make -j\$\$(nproc)
                 fi
                 
                 echo 'Installing Python'
@@ -1086,7 +1086,7 @@ jobs:
               ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions --with-openssl=/usr
               
               echo 'Compiling Python (this may take several minutes)'
-              make -j\$(nproc)
+              make -j\$\$(nproc)
               
               echo 'Installing Python'
               make altinstall
