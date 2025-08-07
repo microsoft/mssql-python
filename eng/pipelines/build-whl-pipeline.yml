@@ -882,7 +882,7 @@ jobs:
             tar xzf Python-$(pythonVersion).1.tgz
             cd Python-$(pythonVersion).1
             
-            # Configure and build Python - Alpine/musl specific configuration
+            # Configure and build Python - Alpine/musl specific configuration with ARM64 stability
             # Set cache variables to help configure detect musl libc types correctly
             export ac_cv_file__dev_ptmx=yes
             export ac_cv_file__dev_ptc=no
@@ -895,6 +895,13 @@ jobs:
             # Fix float word ordering detection for ARM64
             export ax_cv_c_float_words_bigendian=no
             
+            # Set ultra-conservative compiler flags for Alpine ARM64 to prevent GCC segfaults
+            echo 'Setting ultra-conservative compiler flags for Alpine ARM64 GCC stability'
+            export CFLAGS='-DLONG_BIT=64 -O0 -g -fno-strict-aliasing -fwrapv -fno-aggressive-loop-optimizations -fno-builtin -fno-inline'
+            export CXXFLAGS='-O0 -g -fno-strict-aliasing -fwrapv -fno-aggressive-loop-optimizations'
+            export OPT='-DNDEBUG -g -O0'
+            export EXTRA_CFLAGS='-fno-strict-overflow -fno-delete-null-pointer-checks'
+            
             ./configure \
               --prefix=/usr/local \
               --enable-shared \
@@ -904,22 +911,45 @@ jobs:
               --host=aarch64-alpine-linux-musl \
               --target=aarch64-alpine-linux-musl \
               CPPFLAGS='-I/usr/include -DLONG_BIT=64' \
-              LDFLAGS='-L/usr/lib -Wl,-rpath,/usr/local/lib' \
-              CFLAGS='-DLONG_BIT=64'
+              LDFLAGS='-L/usr/lib -Wl,-rpath,/usr/local/lib'
             
-            # Build Python without optimizations to avoid gcc segfault on ARM64
-            echo 'Building Python $(pythonVersion) without PGO optimizations to avoid compilation issues'
-            make -j\$(nproc) 2>&1 | tee /tmp/make.log || {
-              echo "Build completed with some module failures, proceeding with installation..."
-              grep -E "(error|failed|Error)" /tmp/make.log | tail -10 || echo "No critical errors found"
-            }
+            # Build Python with extreme stability measures for Alpine ARM64
+            echo 'Building Python $(pythonVersion) with ARM64 stability measures for Alpine/musl'
             
+            # Use single-threaded make to reduce memory pressure and avoid GCC crashes
+            echo 'Using single-threaded build to prevent GCC segmentation faults on ARM64'
+            make 2>&1 | tee /tmp/make.log
+            
+            # Check for critical compilation failures (GCC segfaults, etc.)
+            if grep -q "internal compiler error\|Segmentation fault\|collect2.*Error" /tmp/make.log; then
+              echo "CRITICAL: GCC segmentation fault or internal compiler error detected!"
+              echo "Build cannot continue with corrupted compilation. Exiting."
+              grep -A2 -B2 "internal compiler error\|Segmentation fault\|collect2.*Error" /tmp/make.log
+              exit 1
+            fi
+            
+            # Check if Python binary was successfully built
+            if [ ! -f "./python" ]; then
+              echo "CRITICAL: Python binary was not built successfully"
+              exit 1
+            fi
+            
+            echo 'Installing Python...'
             make altinstall 2>&1 | tee /tmp/install.log
             
-            # Check if essential files were installed
+            # Check if essential files were installed - CRITICAL validation
             echo "Checking Python installation files:"
             ls -la /usr/local/bin/python$(pythonVersion) || { echo "ERROR: Python binary not installed"; exit 1; }
-            ls -la /usr/local/lib/python$(pythonVersion)/encodings/ || echo "WARNING: encodings directory not found"
+            
+            # Critical check: encodings directory MUST exist for Python to work
+            if [ ! -d "/usr/local/lib/python$(pythonVersion)/encodings" ]; then
+              echo "CRITICAL ERROR: encodings directory not found!"
+              echo "Python installation is incomplete and unusable."
+              echo "Available lib contents:"
+              ls -la /usr/local/lib/python$(pythonVersion)/ 2>/dev/null || echo "Python lib directory doesn't exist"
+              exit 1
+            fi
+            echo "✓ Encodings directory found"
             
             # Set up environment for proper Python operation with correct paths
             export PYTHONHOME=/usr/local
@@ -940,18 +970,30 @@ jobs:
             export PYTHONPATH="/usr/local/lib/python$(pythonVersion):/usr/local/lib/python$(pythonVersion)/lib-dynload:/usr/local/lib/python$(pythonVersion)/site-packages"
             export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH
             
-            # Verify Python installation and modules
-            echo 'Verifying Python $(pythonVersion) installation:'
-            ls -la /usr/local/bin/python$(pythonVersion)
-            /usr/local/bin/python$(pythonVersion) --version
+            # CRITICAL: Validate Python actually works before proceeding
+            echo 'Performing critical Python functionality tests:'
             
-            echo 'Testing basic Python functionality:'
-            echo 'import sys; print("Python path:", sys.path[:3])' | PYTHONHOME=/usr/local PYTHONPATH="/usr/local/lib/python$(pythonVersion):/usr/local/lib/python$(pythonVersion)/lib-dynload" /usr/local/bin/python$(pythonVersion) || echo "Basic import test failed"
+            # Test 1: Basic version check
+            /usr/local/bin/python$(pythonVersion) --version || {
+              echo "CRITICAL: Python version check failed"
+              exit 1
+            }
+            echo "✓ Python version check passed"
             
-            echo 'Testing encodings module:'
-            echo 'import encodings; print("Encodings module: OK")' | PYTHONHOME=/usr/local PYTHONPATH="/usr/local/lib/python$(pythonVersion):/usr/local/lib/python$(pythonVersion)/lib-dynload" /usr/local/bin/python$(pythonVersion) || echo "Encodings test failed"
+            # Test 2: Encodings module (this was failing in the log)
+            /usr/local/bin/python$(pythonVersion) -c "import encodings; print('Encodings module: OK')" || {
+              echo "CRITICAL: Encodings module test failed"
+              echo "Python installation is incomplete and cannot be used"
+              exit 1
+            }
+            echo "✓ Encodings module test passed"
             
-            echo 'Python installation successful'
+            # Test 3: SSL module (important for pip)
+            /usr/local/bin/python$(pythonVersion) -c "import ssl; print('SSL module: OK')" || {
+              echo "WARNING: SSL module not available - pip may not work"
+            }
+            
+            echo '✓ All critical Python tests passed - installation successful'
             
             # Clean up build files
             cd /
@@ -1222,11 +1264,39 @@ jobs:
         fi
         
         echo 'Selected Python command:' \$PYTHON_CMD
-        echo 'Python version:' \$(\$PYTHON_CMD --version)
+        
+        # CRITICAL: Validate Python command works before proceeding
+        echo 'Validating Python command before creating virtual environment:'
+        \$PYTHON_CMD --version || {
+          echo "CRITICAL: Selected Python command \$PYTHON_CMD failed"
+          echo "Available Python executables:"
+          find /usr -name "python*" -type f 2>/dev/null | head -10
+          exit 1
+        }
+        
+        # Test encodings module before creating venv (this was failing)
+        \$PYTHON_CMD -c "import encodings" || {
+          echo "CRITICAL: Python encodings module not available"
+          echo "Cannot create virtual environment with broken Python installation"
+          exit 1
+        }
+        echo "✓ Python validation passed"
         
         # Create virtual environment at consistent path
-        \$PYTHON_CMD -m venv /workspace/venv
-        source /workspace/venv/bin/activate
+        echo 'Creating virtual environment...'
+        \$PYTHON_CMD -m venv /workspace/venv || {
+          echo "CRITICAL: Failed to create virtual environment"
+          echo "Python command: \$PYTHON_CMD"
+          \$PYTHON_CMD -c "import venv" || echo "venv module not available"
+          exit 1
+        }
+        
+        source /workspace/venv/bin/activate || {
+          echo "CRITICAL: Failed to activate virtual environment"
+          echo "Virtual environment files:"
+          ls -la /workspace/venv/ 2>/dev/null || echo "Virtual environment directory doesn't exist"
+          exit 1
+        }
         
         # Verify virtual environment is working
         echo 'Virtual environment activated:'
@@ -1249,8 +1319,20 @@ jobs:
   - script: |
       # Build pybind bindings in the container
       docker exec build-container-$(distroName)-$(targetArch) bash -c "
+        # Validate virtual environment exists before attempting to activate
+        if [ ! -f '/workspace/venv/bin/activate' ]; then
+          echo 'CRITICAL: Virtual environment not found!'
+          echo 'This indicates the Python dependencies installation step failed.'
+          echo 'Available files in /workspace:'
+          ls -la /workspace/ 2>/dev/null || echo 'Workspace directory not accessible'
+          exit 1
+        fi
+        
         # Activate virtual environment
-        source /workspace/venv/bin/activate
+        source /workspace/venv/bin/activate || {
+          echo 'CRITICAL: Failed to activate virtual environment'
+          exit 1
+        }
         
         echo 'Building pybind bindings for $(distroName) $(targetArch)'
         echo 'Python version:' \$(python --version)
