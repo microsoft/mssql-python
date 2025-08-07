@@ -13,13 +13,48 @@ Resource Management:
 import weakref
 import re
 import codecs
+from functools import lru_cache
 from mssql_python.cursor import Cursor
-from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, log
+from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, sanitize_user_input, log
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
 from mssql_python.exceptions import InterfaceError, ProgrammingError
 from mssql_python.auth import process_connection_string
 from mssql_python.constants import ConstantsDDBC
+
+# UTF-16 encoding variants that should use SQL_WCHAR by default
+UTF16_ENCODINGS = frozenset([
+    'utf-16',
+    'utf-16le', 
+    'utf-16be'
+])
+
+# Cache for encoding validation to improve performance
+# Using a simple dict instead of lru_cache for module-level caching
+_ENCODING_VALIDATION_CACHE = {}
+_CACHE_MAX_SIZE = 100  # Limit cache size to prevent memory bloat
+
+
+@lru_cache(maxsize=128)
+def _validate_encoding(encoding: str) -> bool:
+    """
+    Cached encoding validation using codecs.lookup().
+    
+    Args:
+        encoding (str): The encoding name to validate.
+        
+    Returns:
+        bool: True if encoding is valid, False otherwise.
+        
+    Note:
+        Uses LRU cache to avoid repeated expensive codecs.lookup() calls.
+        Cache size is limited to 128 entries which should cover most use cases.
+    """
+    try:
+        codecs.lookup(encoding)
+        return True
+    except LookupError:
+        return False
 
 
 class Connection:
@@ -181,7 +216,7 @@ class Connection:
                 encoding that converts text to bytes. If None, defaults to 'utf-16le'.
             ctype (int, optional): The C data type to use when passing data: 
                 SQL_CHAR or SQL_WCHAR. If not provided, SQL_WCHAR is used for 
-                "utf-16", "utf-16le", and "utf-16be". SQL_CHAR is used for all other encodings.
+                UTF-16 variants (see UTF16_ENCODINGS constant). SQL_CHAR is used for all other encodings.
         
         Returns:
             None
@@ -199,26 +234,29 @@ class Connection:
         """
         if self._closed:
             raise InterfaceError(
-                driver_error="Cannot set encoding on closed connection",
-                ddbc_error="Cannot set encoding on closed connection",
+                driver_error="Connection is closed",
+                ddbc_error="Connection is closed",
             )
         
         # Set default encoding if not provided
         if encoding is None:
             encoding = 'utf-16le'
             
-        # Validate encoding
-        try:
-            codecs.lookup(encoding)
-        except LookupError:
+        # Validate encoding using cached validation for better performance
+        if not _validate_encoding(encoding):
+            # Log the sanitized encoding for security
+            log('warning', "Invalid encoding attempted: %s", sanitize_user_input(str(encoding)))
             raise ProgrammingError(
-                driver_error=f"Unknown encoding: {encoding}",
+                driver_error=f"Unsupported encoding: {encoding}",
                 ddbc_error=f"The encoding '{encoding}' is not supported by Python",
             )
         
+        # Normalize encoding to lowercase for consistency
+        encoding = encoding.lower()
+        
         # Set default ctype based on encoding if not provided
         if ctype is None:
-            if encoding.lower() in ('utf-16', 'utf-16le', 'utf-16be'):
+            if encoding in UTF16_ENCODINGS:
                 ctype = ConstantsDDBC.SQL_WCHAR.value
             else:
                 ctype = ConstantsDDBC.SQL_CHAR.value
@@ -226,6 +264,8 @@ class Connection:
         # Validate ctype
         valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
         if ctype not in valid_ctypes:
+            # Log the sanitized ctype for security  
+            log('warning', "Invalid ctype attempted: %s", sanitize_user_input(str(ctype)))
             raise ProgrammingError(
                 driver_error=f"Invalid ctype: {ctype}",
                 ddbc_error=f"ctype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) or SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value})",
@@ -237,7 +277,9 @@ class Connection:
             'ctype': ctype
         }
         
-        log('info', "Text encoding set to %s with ctype %s", encoding, ctype)
+        # Log with sanitized values for security
+        log('info', "Text encoding set to %s with ctype %s", 
+            sanitize_user_input(encoding), sanitize_user_input(str(ctype)))
 
     def getencoding(self):
         """
@@ -246,11 +288,20 @@ class Connection:
         Returns:
             dict: A dictionary containing 'encoding' and 'ctype' keys.
             
+        Raises:
+            InterfaceError: If the connection is closed.
+            
         Example:
             settings = cnxn.getencoding()
             print(f"Current encoding: {settings['encoding']}")
             print(f"Current ctype: {settings['ctype']}")
         """
+        if self._closed:
+            raise InterfaceError(
+                driver_error="Connection is closed",
+                ddbc_error="Connection is closed",
+            )
+        
         return self._encoding_settings.copy()
 
     def cursor(self) -> Cursor:
