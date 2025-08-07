@@ -531,14 +531,14 @@ jobs:
       #   packageManager: 'apt'
 
       # Python 3.13 (x86_64 and ARM64) - Built from source for Debian and RHEL (not available via package managers)
-      py313_x86_64_debian:
-        pythonVersion: '3.13'
-        shortPyVer: '313'
-        targetArch: 'x86_64'
-        dockerPlatform: 'linux/amd64'
-        dockerImage: 'debian:12'
-        distroName: 'Debian'
-        packageManager: 'apt'
+      # py313_x86_64_debian:
+      #   pythonVersion: '3.13'
+      #   shortPyVer: '313'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'debian:12'
+      #   distroName: 'Debian'
+      #   packageManager: 'apt'
       py313_arm64_debian:
         pythonVersion: '3.13'
         shortPyVer: '313'
@@ -547,15 +547,15 @@ jobs:
         dockerImage: 'debian:12'
         distroName: 'Debian'
         packageManager: 'apt'
-      py313_x86_64_rhel:
-        pythonVersion: '3.13'
-        shortPyVer: '313'
-        targetArch: 'x86_64'
-        dockerPlatform: 'linux/amd64'
-        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
-        distroName: 'RHEL'
-        packageManager: 'dnf'
-        buildFromSource: 'true'
+      # py313_x86_64_rhel:
+      #   pythonVersion: '3.13'
+      #   shortPyVer: '313'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+      #   distroName: 'RHEL'
+      #   packageManager: 'dnf'
+      #   buildFromSource: 'true'
       py313_arm64_rhel:
         pythonVersion: '3.13'
         shortPyVer: '313'
@@ -567,14 +567,14 @@ jobs:
         buildFromSource: 'true'
 
       # Alpine Linux (x86_64 and ARM64)
-      py310_x86_64_alpine:
-        pythonVersion: '3.10'
-        shortPyVer: '310'
-        targetArch: 'x86_64'
-        dockerPlatform: 'linux/amd64'
-        dockerImage: 'alpine:latest'
-        distroName: 'alpine'
-        packageManager: 'apk'
+      # py310_x86_64_alpine:
+      #   pythonVersion: '3.10'
+      #   shortPyVer: '310'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'alpine:latest'
+      #   distroName: 'alpine'
+      #   packageManager: 'apk'
       py310_arm64_alpine:
         pythonVersion: '3.10'
         shortPyVer: '310'
@@ -583,14 +583,14 @@ jobs:
         dockerImage: 'alpine:latest'
         distroName: 'alpine'
         packageManager: 'apk'
-      py311_x86_64_alpine:
-        pythonVersion: '3.11'
-        shortPyVer: '311'
-        targetArch: 'x86_64'
-        dockerPlatform: 'linux/amd64'
-        dockerImage: 'alpine:latest'
-        distroName: 'alpine'
-        packageManager: 'apk'
+      # py311_x86_64_alpine:
+      #   pythonVersion: '3.11'
+      #   shortPyVer: '311'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'alpine:latest'
+      #   distroName: 'alpine'
+      #   packageManager: 'apk'
       py311_arm64_alpine:
         pythonVersion: '3.11'
         shortPyVer: '311'
@@ -599,14 +599,14 @@ jobs:
         dockerImage: 'alpine:latest'
         distroName: 'alpine'
         packageManager: 'apk'
-      py312_x86_64_alpine:
-        pythonVersion: '3.12'
-        shortPyVer: '312'
-        targetArch: 'x86_64'
-        dockerPlatform: 'linux/amd64'
-        dockerImage: 'alpine:latest'
-        distroName: 'alpine'
-        packageManager: 'apk'
+      # py312_x86_64_alpine:
+      #   pythonVersion: '3.12'
+      #   shortPyVer: '312'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'alpine:latest'
+      #   distroName: 'alpine'
+      #   packageManager: 'apk'
       py312_arm64_alpine:
         pythonVersion: '3.12'
         shortPyVer: '312'
@@ -615,14 +615,14 @@ jobs:
         dockerImage: 'alpine:latest'
         distroName: 'alpine'
         packageManager: 'apk'
-      py313_x86_64_alpine:
-        pythonVersion: '3.13'
-        shortPyVer: '313'
-        targetArch: 'x86_64'
-        dockerPlatform: 'linux/amd64'
-        dockerImage: 'alpine:latest'
-        distroName: 'alpine'
-        packageManager: 'apk'
+      # py313_x86_64_alpine:
+      #   pythonVersion: '3.13'
+      #   shortPyVer: '313'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'alpine:latest'
+      #   distroName: 'alpine'
+      #   packageManager: 'apk'
       py313_arm64_alpine:
         pythonVersion: '3.13'
         shortPyVer: '313'
