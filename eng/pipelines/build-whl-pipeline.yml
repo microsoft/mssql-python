@@ -1,17 +1,20 @@
+# Pipeline name shown in ADO UI
 name: build-whl-pipeline
 
+# Trigger the pipeline on changes to the main branch
 trigger:
   branches:
     include:
       - main
 
+# Schedule the pipeline to run on main branch daily at 07:00 AM IST
 schedules:
   - cron: "30 1 * * *"
     displayName: Daily run at 07:00 AM IST
     branches:
       include:
         - main
-    always: true
+    always: true  # Always run even if there are no changes
 
 jobs:
 # - job: BuildWindowsWheels
@@ -372,6 +375,170 @@ jobs:
 
   strategy:
     matrix:
+      # Python 3.10 (x86_64 and ARM64)
+      # py310_x86_64_ubuntu:
+      #   pythonVersion: '3.10'
+      #   shortPyVer: '310'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'ubuntu:22.04'
+      #   distroName: 'Ubuntu'
+      #   packageManager: 'apt'
+      # py310_arm64_ubuntu:
+      #   pythonVersion: '3.10'
+      #   shortPyVer: '310'
+      #   targetArch: 'arm64'
+      #   dockerPlatform: 'linux/arm64'
+      #   dockerImage: 'ubuntu:22.04'
+      #   distroName: 'Ubuntu'
+      #   packageManager: 'apt'
+      # py310_x86_64_debian:
+      #   pythonVersion: '3.10'
+      #   shortPyVer: '310'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'debian:12'
+      #   distroName: 'Debian'
+      #   packageManager: 'apt'
+      # py310_arm64_debian:
+      #   pythonVersion: '3.10'
+      #   shortPyVer: '310'
+      #   targetArch: 'arm64'
+      #   dockerPlatform: 'linux/arm64'
+      #   dockerImage: 'debian:12'
+      #   distroName: 'Debian'
+      #   packageManager: 'apt'
+      # py310_x86_64_rhel:
+      #   pythonVersion: '3.10'
+      #   shortPyVer: '310'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+      #   distroName: 'RHEL'
+      #   packageManager: 'dnf'
+      #   buildFromSource: 'true'
+      # py310_arm64_rhel:
+      #   pythonVersion: '3.10'
+      #   shortPyVer: '310'
+      #   targetArch: 'arm64'
+      #   dockerPlatform: 'linux/arm64'
+      #   dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+      #   distroName: 'RHEL'
+      #   packageManager: 'dnf'
+      #   buildFromSource: 'true'
+
+      # # Python 3.11 (x86_64 and ARM64)
+      # py311_x86_64_ubuntu:
+      #   pythonVersion: '3.11'
+      #   shortPyVer: '311'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'ubuntu:22.04'
+      #   distroName: 'Ubuntu'
+      #   packageManager: 'apt'
+      # py311_arm64_ubuntu:
+      #   pythonVersion: '3.11'
+      #   shortPyVer: '311'
+      #   targetArch: 'arm64'
+      #   dockerPlatform: 'linux/arm64'
+      #   dockerImage: 'ubuntu:22.04'
+      #   distroName: 'Ubuntu'
+      #   packageManager: 'apt'
+      # py311_x86_64_debian:
+      #   pythonVersion: '3.11'
+      #   shortPyVer: '311'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'debian:12'
+      #   distroName: 'Debian'
+      #   packageManager: 'apt'
+      # py311_arm64_debian:
+      #   pythonVersion: '3.11'
+      #   shortPyVer: '311'
+      #   targetArch: 'arm64'
+      #   dockerPlatform: 'linux/arm64'
+      #   dockerImage: 'debian:12'
+      #   distroName: 'Debian'
+      #   packageManager: 'apt'
+      # py311_x86_64_rhel:
+      #   pythonVersion: '3.11'
+      #   shortPyVer: '311'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+      #   distroName: 'RHEL'
+      #   packageManager: 'dnf'
+      # py311_arm64_rhel:
+      #   pythonVersion: '3.11'
+      #   shortPyVer: '311'
+      #   targetArch: 'arm64'
+      #   dockerPlatform: 'linux/arm64'
+      #   dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+      #   distroName: 'RHEL'
+      #   packageManager: 'dnf'
+
+      # # Python 3.12 (x86_64 and ARM64) - Note: Not available for Ubuntu 22.04 via deadsnakes PPA
+      # # Only build for Debian and RHEL where Python 3.12 is available
+      # py312_x86_64_debian:
+      #   pythonVersion: '3.12'
+      #   shortPyVer: '312'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'debian:12'
+      #   distroName: 'Debian'
+      #   packageManager: 'apt'
+      # py312_arm64_debian:
+      #   pythonVersion: '3.12'
+      #   shortPyVer: '312'
+      #   targetArch: 'arm64'
+      #   dockerPlatform: 'linux/arm64'
+      #   dockerImage: 'debian:12'
+      #   distroName: 'Debian'
+      #   packageManager: 'apt'
+      # py312_x86_64_rhel:
+      #   pythonVersion: '3.12'
+      #   shortPyVer: '312'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+      #   distroName: 'RHEL'
+      #   packageManager: 'dnf'
+      # py312_arm64_rhel:
+      #   pythonVersion: '3.12'
+      #   shortPyVer: '312'
+      #   targetArch: 'arm64'
+      #   dockerPlatform: 'linux/arm64'
+      #   dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+      #   distroName: 'RHEL'
+      #   packageManager: 'dnf'
+
+      # # Python 3.13 (x86_64 and ARM64)
+      # py313_x86_64_ubuntu:
+      #   pythonVersion: '3.13'
+      #   shortPyVer: '313'
+      #   targetArch: 'x86_64'
+      #   dockerPlatform: 'linux/amd64'
+      #   dockerImage: 'ubuntu:22.04'
+      #   distroName: 'Ubuntu'
+      #   packageManager: 'apt'
+      # py313_arm64_ubuntu:
+      #   pythonVersion: '3.13'
+      #   shortPyVer: '313'
+      #   targetArch: 'arm64'
+      #   dockerPlatform: 'linux/arm64'
+      #   dockerImage: 'ubuntu:22.04'
+      #   distroName: 'Ubuntu'
+      #   packageManager: 'apt'
+
+      # Python 3.13 (x86_64 and ARM64) - Built from source for Debian and RHEL (not available via package managers)
+      py313_x86_64_debian:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'debian:12'
+        distroName: 'Debian'
+        packageManager: 'apt'
       py313_arm64_debian:
         pythonVersion: '3.13'
         shortPyVer: '313'
@@ -380,6 +547,15 @@ jobs:
         dockerImage: 'debian:12'
         distroName: 'Debian'
         packageManager: 'apt'
+      py313_x86_64_rhel:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
+        distroName: 'RHEL'
+        packageManager: 'dnf'
+        buildFromSource: 'true'
       py313_arm64_rhel:
         pythonVersion: '3.13'
         shortPyVer: '313'
@@ -388,11 +564,30 @@ jobs:
         dockerImage: 'registry.access.redhat.com/ubi9/ubi:latest'
         distroName: 'RHEL'
         packageManager: 'dnf'
+        buildFromSource: 'true'
+
+      # Alpine Linux (x86_64 and ARM64)
+      py310_x86_64_alpine:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'alpine:latest'
+        distroName: 'alpine'
+        packageManager: 'apk'
       py310_arm64_alpine:
         pythonVersion: '3.10'
         shortPyVer: '310'
         targetArch: 'arm64'
         dockerPlatform: 'linux/arm64'
+        dockerImage: 'alpine:latest'
+        distroName: 'alpine'
+        packageManager: 'apk'
+      py311_x86_64_alpine:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
         dockerImage: 'alpine:latest'
         distroName: 'alpine'
         packageManager: 'apk'
@@ -404,11 +599,27 @@ jobs:
         dockerImage: 'alpine:latest'
         distroName: 'alpine'
         packageManager: 'apk'
+      py312_x86_64_alpine:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
+        dockerImage: 'alpine:latest'
+        distroName: 'alpine'
+        packageManager: 'apk'
       py312_arm64_alpine:
         pythonVersion: '3.12'
         shortPyVer: '312'
         targetArch: 'arm64'
         dockerPlatform: 'linux/arm64'
+        dockerImage: 'alpine:latest'
+        distroName: 'alpine'
+        packageManager: 'apk'
+      py313_x86_64_alpine:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        targetArch: 'x86_64'
+        dockerPlatform: 'linux/amd64'
         dockerImage: 'alpine:latest'
         distroName: 'alpine'
         packageManager: 'apk'
@@ -422,13 +633,15 @@ jobs:
         packageManager: 'apk'
 
   steps:
+  # Set up Docker buildx for multi-architecture support
   - script: |
       docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
       docker buildx create --name multiarch --driver docker-container --use || true
       docker buildx inspect --bootstrap
-    displayName: 'Setup Docker buildx'
+    displayName: 'Setup Docker buildx for multi-architecture support'
 
   - script: |
+      # Create a Docker container for building
       docker run -d --name build-container-$(distroName)-$(targetArch) \
         --platform $(dockerPlatform) \
         -v $(Build.SourcesDirectory):/workspace \
@@ -439,6 +652,7 @@ jobs:
     displayName: 'Create $(distroName) $(targetArch) container'
 
   - script: |
+      # Start SQL Server container (always x86_64 since SQL Server doesn't support ARM64)
       docker run -d --name sqlserver-$(distroName)-$(targetArch) \
         --platform linux/amd64 \
         -e ACCEPT_EULA=Y \
@@ -446,6 +660,7 @@ jobs:
         -p 1433:1433 \
         mcr.microsoft.com/mssql/server:2022-latest
       
+      # Wait for SQL Server to be ready
       echo "Waiting for SQL Server to start..."
       for i in {1..60}; do
         if docker exec sqlserver-$(distroName)-$(targetArch) \
@@ -461,324 +676,710 @@ jobs:
         sleep 2
       done
       
+      # Create test database
       docker exec sqlserver-$(distroName)-$(targetArch) \
         /opt/mssql-tools18/bin/sqlcmd \
         -S localhost \
         -U SA \
         -P "$(DB_PASSWORD)" \
         -C -Q "CREATE DATABASE TestDB"
-    displayName: 'Start SQL Server container'
+    displayName: 'Start SQL Server container for $(distroName) $(targetArch)'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
-  # Create setup scripts as files to avoid complex escaping
   - script: |
-      # Create installation script for Debian
-      cat > install_debian.sh << 'EOF'
-      #!/bin/bash
-      set -e
-      export DEBIAN_FRONTEND=noninteractive
-      export TZ=UTC
-      ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-      
-      apt-get update
-      apt-get install -y software-properties-common curl wget gnupg build-essential cmake
-      
-      # Install Python 3.13 from source
-      apt-get install -y build-essential libssl-dev zlib1g-dev libbz2-dev \
-        libreadline-dev libsqlite3-dev wget curl llvm libncurses5-dev \
-        libncursesw5-dev xz-utils tk-dev libffi-dev liblzma-dev \
-        libgdbm-dev libnss3-dev libedit-dev
-      
-      cd /tmp
-      wget https://www.python.org/ftp/python/3.13.1/Python-3.13.1.tgz
-      tar -xzf Python-3.13.1.tgz
-      cd Python-3.13.1
-      
-      if [ "$(uname -m)" = "aarch64" ]; then
-        export CFLAGS="-O1 -g"
-        export CXXFLAGS="-O1 -g"
-        ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions
+      # Install dependencies in the container
+      if [ "$(packageManager)" = "apt" ]; then
+        # Ubuntu/Debian
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          export TZ=UTC
+          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
+          
+          # Update package lists
+          apt-get update
+          
+          # Install basic tools first
+          apt-get install -y software-properties-common curl wget gnupg build-essential cmake
+          
+          # Add deadsnakes PPA for newer Python versions (Ubuntu only)
+          if [ '$(distroName)' = 'Ubuntu' ]; then
+            add-apt-repository -y ppa:deadsnakes/ppa
+            apt-get update
+          fi
+          
+          # Install Python and development packages
+          # Handle different Python version availability per distribution
+          if [ '$(distroName)' = 'Debian' ]; then
+            # Debian 12 has Python 3.11 by default, some older/newer versions may not be available
+            case '$(pythonVersion)' in
+              '3.11')
+                # Python 3.11 is the default in Debian 12
+                apt-get install -y python$(pythonVersion) python$(pythonVersion)-dev python$(pythonVersion)-venv python$(pythonVersion)-distutils
+                PYTHON_CMD=python$(pythonVersion)
+                ;;
+              '3.10'|'3.12')
+                # These versions may not be available in Debian 12, use python3 and create symlinks
+                echo 'Python $(pythonVersion) may not be available in Debian 12, using available python3'
+                apt-get install -y python3 python3-dev python3-venv
+                # Note: distutils is not available for Python 3.12+
+                if [ '$(pythonVersion)' != '3.12' ]; then
+                  apt-get install -y python3-distutils || echo 'distutils not available for this Python version'
+                fi
+                # Create symlinks to make the desired version available
+                # Find the actual python3 version and create proper symlinks
+                ACTUAL_PYTHON=\$(python3 --version | grep -o '[0-9]\+\.[0-9]\+')
+                echo 'Detected Python version:' \$ACTUAL_PYTHON
+                ln -sf /usr/bin/python3 /usr/local/bin/python$(pythonVersion)
+                ln -sf /usr/bin/python3 /usr/local/bin/python
+                PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
+                ;;
+              '3.13')
+                # Python 3.13 requires building from source
+                echo 'Python $(pythonVersion) requires building from source'
+                echo 'DEBUG: pythonVersion = $(pythonVersion)'
+                
+                # Install dependencies needed for Python source compilation
+                apt-get install -y build-essential libssl-dev zlib1g-dev libbz2-dev
+                apt-get install -y libreadline-dev libsqlite3-dev wget curl llvm
+                apt-get install -y libncurses5-dev libncursesw5-dev xz-utils tk-dev
+                apt-get install -y libffi-dev liblzma-dev python3-openssl
+                apt-get install -y libgdbm-dev libnss3-dev libedit-dev || echo 'Some optional dependencies not available'
+                
+                # Verify SSL development libraries are installed
+                echo 'Verifying SSL development libraries:'
+                dpkg -l | grep libssl-dev || echo 'libssl-dev not found'
+                pkg-config --exists openssl && echo 'OpenSSL pkg-config found' || echo 'OpenSSL pkg-config missing'
+                
+                # Download Python source - fix version mismatch
+                cd /tmp
+                PYTHON_FULL_VERSION='3.13.1'
+                PYTHON_URL=\"https://www.python.org/ftp/python/\$PYTHON_FULL_VERSION/Python-\$PYTHON_FULL_VERSION.tgz\"
+                echo \"Downloading Python from \$PYTHON_URL\"
+                wget \$PYTHON_URL -O python-\$PYTHON_FULL_VERSION.tgz
+                tar -xzf python-\$PYTHON_FULL_VERSION.tgz
+                cd Python-\$PYTHON_FULL_VERSION
+                
+                # Configure and compile Python with SSL support explicitly enabled
+                echo 'Configuring Python build with SSL support'
+                # Disable optimizations for ARM64 builds to speed up compilation in emulated environment
+                if [ '$(targetArch)' = 'arm64' ]; then
+                  echo 'ARM64 build detected - disabling optimizations for faster compilation'
+                  # Disable compiler optimizations to prevent GCC ICE in emulated ARM64
+                  export CFLAGS="-O0 -fno-strict-overflow"
+                  export CXXFLAGS="-O0"
+                  export CPPFLAGS=""
+
+                  ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions --with-openssl=/usr
+
+                else
+                  ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions --enable-optimizations --with-openssl=/usr
+                fi
+                
+                make -j1
+                make altinstall
+                
+                # Create symlinks - altinstall creates python3.13, we create python symlink
+                ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python
+                
+                # Verify installation and SSL support
+                echo 'Verifying Python 3.13 installation:'
+                ls -l /usr/local/bin/python$(pythonVersion) || echo 'ERROR: Python $(pythonVersion) not found'
+                /usr/local/bin/python$(pythonVersion) --version
+                echo 'Testing SSL support in Python:'
+                /usr/local/bin/python$(pythonVersion) -c 'import ssl; print(\"SSL support:\", ssl.OPENSSL_VERSION)' || echo 'WARNING: SSL module not available'
+                
+                # Clean up
+                cd /
+                rm -rf /tmp/Python-\$PYTHON_FULL_VERSION /tmp/python-\$PYTHON_FULL_VERSION.tgz
+                
+                echo 'Successfully built and installed Python $(pythonVersion) from source'
+                PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
+                ;;
+              *)
+                echo 'Unsupported Python version $(pythonVersion) for Debian, using python3'
+                apt-get install -y python3 python3-dev python3-venv
+                ln -sf /usr/bin/python3 /usr/local/bin/python$(pythonVersion)
+                ln -sf /usr/bin/python3 /usr/local/bin/python
+                PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
+                ;;
+            esac
+          else
+            # Ubuntu has deadsnakes PPA, so more versions are available
+            # Note: distutils is not available for newer Python versions (3.12+)
+            if [ '$(pythonVersion)' = '3.12' ] || [ '$(pythonVersion)' = '3.13' ]; then
+              apt-get install -y python$(pythonVersion) python$(pythonVersion)-dev python$(pythonVersion)-venv
+            else
+              apt-get install -y python$(pythonVersion) python$(pythonVersion)-dev python$(pythonVersion)-venv python$(pythonVersion)-distutils
+            fi
+            # For Ubuntu, create symlinks for consistency 
+            ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python$(pythonVersion)
+            ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python
+            PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
+          fi
+          
+          # Install pip for the specific Python version
+          curl -sS https://bootstrap.pypa.io/get-pip.py | \$PYTHON_CMD
+          
+          # Install remaining packages
+          apt-get install -y pybind11-dev || echo 'pybind11-dev not available, will install via pip'
+          
+          # Verify Python installation
+          echo 'Python installation verification:'
+          echo 'Using PYTHON_CMD:' \$PYTHON_CMD
+          \$PYTHON_CMD --version
+          if [ -f /usr/local/bin/python ]; then
+            /usr/local/bin/python --version
+          fi
+        "
+      elif [ "$(packageManager)" = "apk" ]; then
+        # Alpine Linux
+        docker exec build-container-$(distroName)-$(targetArch) sh -c "
+          # Update package index
+          apk update
+          
+          # Install base build tools and system dependencies
+          apk add --no-cache \
+            build-base \
+            cmake \
+            clang \
+            git \
+            bash \
+            wget \
+            curl \
+            gnupg \
+            unixodbc \
+            unixodbc-dev \
+            libffi-dev \
+            openssl-dev \
+            zlib-dev \
+            patchelf
+          
+          # Python installation - hybrid approach
+          if [ '$(pythonVersion)' = '3.12' ]; then
+            # Use pre-available Python 3.12 from Alpine packages
+            echo 'Using pre-available Python 3.12 from Alpine packages'
+            apk add --no-cache py3-pip python3-dev
+            
+            # Create symlinks for Python compatibility
+            ln -sf python3 /usr/bin/python || true
+            ln -sf pip3 /usr/bin/pip || true
+          else
+            # Build Python from source for other versions (3.10, 3.11, 3.13)
+            echo 'Building Python $(pythonVersion) from source for Alpine Linux'
+            apk add --no-cache tar xz ncurses-dev sqlite-dev readline-dev tk-dev gdbm-dev db-dev bzip2-dev xz-dev linux-headers
+            
+            # Download and compile Python from source
+            cd /tmp
+            wget https://www.python.org/ftp/python/$(pythonVersion).1/Python-$(pythonVersion).1.tgz
+            tar xzf Python-$(pythonVersion).1.tgz
+            cd Python-$(pythonVersion).1
+            
+            # Configure and build Python - Alpine/musl specific configuration
+            # Set cache variables to help configure detect musl libc types correctly
+            export ac_cv_file__dev_ptmx=yes
+            export ac_cv_file__dev_ptc=no
+            export ac_cv_have_long_long_format=yes
+            # Fix LONG_BIT detection for musl libc on ARM64
+            export ac_cv_sizeof_long=8
+            export ac_cv_sizeof_size_t=8
+            export ac_cv_sizeof_pid_t=4
+            export ac_cv_sizeof_void_p=8
+            # Fix float word ordering detection for ARM64
+            export ax_cv_c_float_words_bigendian=no
+            
+            ./configure \
+              --prefix=/usr/local \
+              --enable-shared \
+              --with-ensurepip=install \
+              --disable-ipv6 \
+              --build=aarch64-alpine-linux-musl \
+              --host=aarch64-alpine-linux-musl \
+              --target=aarch64-alpine-linux-musl \
+              CPPFLAGS='-I/usr/include -DLONG_BIT=64' \
+              LDFLAGS='-L/usr/lib -Wl,-rpath,/usr/local/lib' \
+              CFLAGS='-DLONG_BIT=64'
+            
+            # Build Python without optimizations to avoid gcc segfault on ARM64
+            echo 'Building Python $(pythonVersion) without PGO optimizations to avoid compilation issues'
+            make -j\$(nproc)
+            
+            make altinstall
+            
+            # Set up environment for proper Python operation
+            export PYTHONHOME=/usr/local
+            export PYTHONPATH=/usr/local/lib/python$(pythonVersion)
+            export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH
+            
+            # Create symlinks for easier access
+            ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python
+            ln -sf /usr/local/bin/pip$(pythonVersion) /usr/local/bin/pip
+            
+            # Set up persistent environment variables for source-compiled Python
+            echo 'export PYTHONHOME=/usr/local' >> /etc/profile
+            echo 'export PYTHONPATH=/usr/local/lib/python$(pythonVersion)' >> /etc/profile
+            echo 'export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH' >> /etc/profile
+            
+            # Verify Python installation and modules
+            echo 'Verifying Python $(pythonVersion) installation:'
+            ls -la /usr/local/bin/python$(pythonVersion)
+            /usr/local/bin/python$(pythonVersion) --version
+            echo 'Testing SSL and encodings support:'
+            /usr/local/bin/python$(pythonVersion) -c 'import ssl; print(\"SSL support: OK\")'
+            echo 'Python installation successful'
+            
+            # Clean up build files
+            cd /
+            rm -rf /tmp/Python-$(pythonVersion).1*
+          fi
+          
+          # Verify installation and architecture
+          echo 'Architecture:' \$(uname -m)
+          echo 'Alpine version:' \$(cat /etc/alpine-release)
+          python --version
+          which cmake
+        "
       else
-        ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions --enable-optimizations
+        # RHEL/DNF
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          # Enable CodeReady Builder repository for additional packages (skip if not available)
+          dnf install -y dnf-plugins-core || true
+          dnf install -y epel-release || echo 'EPEL not available in UBI9, continuing without it'
+          dnf config-manager --set-enabled crb || dnf config-manager --set-enabled powertools || echo 'No additional repos to enable'
+          
+          # Install dependencies
+          dnf update -y
+          dnf groupinstall -y 'Development Tools' || echo 'Development Tools group not available, installing individual packages'
+          
+          # Install development tools and cmake separately to ensure they work
+          # Note: Handle curl conflicts by replacing curl-minimal with curl
+          dnf install -y wget gnupg2 glibc-devel kernel-headers
+          dnf install -y --allowerasing curl || dnf install -y curl || echo 'curl installation failed, continuing'
+          dnf install -y gcc gcc-c++ make binutils
+          dnf install -y cmake
+          
+          # Install additional dependencies needed for Python source compilation
+          # Some packages may not be available in UBI9, so install what we can
+          dnf install -y openssl-devel bzip2-devel libffi-devel zlib-devel || echo 'Some core devel packages failed'
+          dnf install -y ncurses-devel sqlite-devel xz-devel || echo 'Some optional devel packages not available'
+          # These are often missing in UBI9, install if available
+          dnf install -y readline-devel tk-devel gdbm-devel libnsl2-devel libuuid-devel || echo 'Some Python build dependencies not available in UBI9'
+          
+          # If that doesn't work, try installing from different repositories
+          if ! which gcc; then
+            echo 'Trying alternative gcc installation...'
+            dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
+          fi
+          
+          # For RHEL, we need to handle Python versions more carefully
+          # RHEL 9 UBI has python3.9 by default, but we don't support 3.9
+          # We need to install specific versions or build from source
+          
+          # First, try to install the specific Python version
+          PYTHON_INSTALLED=false
+          echo 'Trying to install Python $(pythonVersion) from available repositories'
+          # Try from default repos first
+          if dnf install -y python$(pythonVersion) python$(pythonVersion)-devel python$(pythonVersion)-pip; then
+            echo 'Successfully installed Python $(pythonVersion) from default repos'
+            PYTHON_INSTALLED=true
+            # Create symlinks for the specific version
+            ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python$(pythonVersion)
+            ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python
+          else
+            echo 'Python $(pythonVersion) not available in default RHEL repos'
+            # For Python 3.11+ which might be available in newer RHEL versions
+            if [ '$(pythonVersion)' = '3.11' ] || [ '$(pythonVersion)' = '3.12' ]; then
+              echo 'Trying alternative installation for Python $(pythonVersion)'
+              # Try installing from additional repos
+              dnf install -y python$(pythonVersion) python$(pythonVersion)-devel python$(pythonVersion)-pip || true
+              if command -v python$(pythonVersion) >/dev/null 2>&1; then
+                echo 'Found Python $(pythonVersion) after alternative installation'
+                PYTHON_INSTALLED=true
+                ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python$(pythonVersion)
+                ln -sf /usr/bin/python$(pythonVersion) /usr/local/bin/python
+              fi
+            elif [ '$(pythonVersion)' = '3.10' ] || [ '$(pythonVersion)' = '3.13' ]; then
+              echo 'Python $(pythonVersion) requires building from source'
+              
+              # Download Python source
+              cd /tmp
+              if [ '$(pythonVersion)' = '3.10' ]; then
+                PYTHON_URL='https://www.python.org/ftp/python/3.10.15/Python-3.10.15.tgz'
+              elif [ '$(pythonVersion)' = '3.13' ]; then
+                PYTHON_URL='https://www.python.org/ftp/python/3.13.1/Python-3.13.1.tgz'
+              fi
+              
+              echo \"Downloading Python from \$PYTHON_URL\"
+              wget \$PYTHON_URL -O python-$(pythonVersion).tgz
+              tar -xzf python-$(pythonVersion).tgz
+              cd Python-$(pythonVersion)*
+              
+              # Disable compiler optimizations to prevent GCC ICE in emulated ARM64
+              export CFLAGS="-O0 -fno-strict-overflow"
+              export CXXFLAGS="-O0"
+              export CPPFLAGS=""
+
+              ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions --with-openssl=/usr
+
+              # Use single-threaded build to reduce memory pressure under QEMU
+              make -j1
+              make altinstall
+              # Create symlinks - altinstall creates python3.13, we create python symlink  
+              ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python
+              
+              # Verify installation and SSL support
+              /usr/local/bin/python$(pythonVersion) --version
+              echo 'Testing SSL support in Python:'
+              /usr/local/bin/python$(pythonVersion) -c 'import ssl; print(\"SSL support:\", ssl.OPENSSL_VERSION)' || echo 'WARNING: SSL module not available'
+              PYTHON_INSTALLED=true
+              
+              # Clean up
+              cd /
+              rm -rf /tmp/Python-$(pythonVersion)* /tmp/python-$(pythonVersion).tgz
+              
+              echo 'Successfully built and installed Python $(pythonVersion) from source'
+            fi
+          fi
+          
+          # If we couldn't install the specific version, fail the build
+          if [ \"\$PYTHON_INSTALLED\" = \"false\" ]; then
+            echo 'ERROR: Could not install Python $(pythonVersion) - unsupported version'
+            echo 'Supported versions for RHEL: 3.11, 3.12 (and 3.10, 3.13 via source compilation)'
+            exit 1
+          fi
+          
+          # Install pybind11 development headers
+          dnf install -y python3-pybind11-devel || echo 'pybind11-devel not available, will install via pip'
+          
+          # Verify installations
+          echo 'Verifying installations:'
+          python3 --version
+          which gcc && which g++
+          gcc --version
+          g++ --version
+          cmake --version || echo 'cmake not found in PATH'
+          which cmake || echo 'cmake binary not found'
+        "
       fi
-      
-      make -j$(nproc)
-      make altinstall
-      ln -sf /usr/local/bin/python3.13 /usr/local/bin/python
-      
-      # Install pip
-      curl -sS https://bootstrap.pypa.io/get-pip.py | /usr/local/bin/python3.13
-      
-      # Verify installation
-      /usr/local/bin/python3.13 --version
-      EOF
-      chmod +x install_debian.sh
-    displayName: 'Create Debian installation script'
-    condition: eq(variables['distroName'], 'Debian')
+    displayName: 'Install basic dependencies in $(distroName) $(targetArch) container'
 
   - script: |
-      # Create installation script for RHEL
-      cat > install_rhel.sh << 'EOF'
-      #!/bin/bash
-      set -e
-      
-      dnf update -y
-      dnf groupinstall -y 'Development Tools'
-      dnf install -y wget gnupg2 glibc-devel kernel-headers gcc gcc-c++ make binutils cmake
-      dnf install -y openssl-devel bzip2-devel libffi-devel zlib-devel
-      
-      # Build Python 3.13 from source
-      cd /tmp
-      wget https://www.python.org/ftp/python/3.13.1/Python-3.13.1.tgz
-      tar -xzf Python-3.13.1.tgz
-      cd Python-3.13.1
-      
-      ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions
-      make -j$(nproc)
-      make altinstall
-      ln -sf /usr/local/bin/python3.13 /usr/local/bin/python
-      
-      # Verify installation
-      /usr/local/bin/python3.13 --version
-      EOF
-      chmod +x install_rhel.sh
-    displayName: 'Create RHEL installation script'
-    condition: eq(variables['distroName'], 'RHEL')
-
-  - script: |
-      # Create installation script for Alpine
-      cat > install_alpine.sh << 'EOF'
-      #!/bin/sh
-      set -e
-      
-      apk update
-      apk add --no-cache build-base cmake clang git bash wget curl gnupg \
-        unixodbc unixodbc-dev libffi-dev openssl-dev zlib-dev patchelf
-      
-      # Handle Python installation
-      PYTHON_VERSION=$1
-      
-      if [ "$PYTHON_VERSION" = "3.12" ]; then
-        # Use pre-installed Python 3.12
-        apk add --no-cache py3-pip python3-dev
-        ln -sf python3 /usr/bin/python || true
-        ln -sf pip3 /usr/bin/pip || true
+      # Install ODBC driver in the container
+      if [ "$(packageManager)" = "apt" ]; then
+        # Ubuntu/Debian
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          
+          # Download the package to configure the Microsoft repo
+          if [ '$(distroName)' = 'Ubuntu' ]; then
+            curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+          else
+            # Debian 12
+            curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
+          fi
+          
+          # Install the package
+          dpkg -i packages-microsoft-prod.deb || true
+          rm packages-microsoft-prod.deb
+          
+          # Update package list
+          apt-get update
+          
+          # Install the driver
+          ACCEPT_EULA=Y apt-get install -y msodbcsql18
+          # optional: for bcp and sqlcmd
+          ACCEPT_EULA=Y apt-get install -y mssql-tools18
+          # optional: for unixODBC development headers
+          apt-get install -y unixodbc-dev
+        "
+      elif [ "$(packageManager)" = "apk" ]; then
+        # Alpine Linux
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          # Detect architecture for ODBC driver download
+          case \$(uname -m) in
+            x86_64) architecture='amd64' ;;
+            arm64|aarch64) architecture='arm64' ;;
+            *) architecture='unsupported' ;;
+          esac
+          
+          if [[ 'unsupported' == '\$architecture' ]]; then
+            echo 'Alpine architecture \$(uname -m) is not currently supported.'
+            exit 1
+          fi
+          
+          echo 'Detected architecture: '\$architecture
+          
+          # Download the packages
+          curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.apk
+          curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
+          
+          # Download signatures for verification
+          curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.sig
+          curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
+          
+          # Import Microsoft GPG key and verify packages
+          curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
+          gpg --verify msodbcsql18_18.5.1.1-1_\$architecture.sig msodbcsql18_18.5.1.1-1_\$architecture.apk
+          gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
+          
+          # Install the packages
+          apk add --allow-untrusted msodbcsql18_18.5.1.1-1_\$architecture.apk
+          apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
+          
+          # Cleanup
+          rm -f msodbcsql18_18.5.1.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
+          
+          # Add mssql-tools to PATH
+          export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
+          echo 'export PATH=\"\$PATH:/opt/mssql-tools18/bin\"' >> ~/.bashrc
+        "
       else
-        # Build from source
-        apk add --no-cache tar xz ncurses-dev sqlite-dev readline-dev tk-dev \
-          gdbm-dev db-dev bzip2-dev xz-dev linux-headers
-        
-        cd /tmp
-        wget https://www.python.org/ftp/python/${PYTHON_VERSION}.1/Python-${PYTHON_VERSION}.1.tgz
-        tar xzf Python-${PYTHON_VERSION}.1.tgz
-        cd Python-${PYTHON_VERSION}.1
-        
-        # Configure for Alpine/musl
-        export CFLAGS="-O0 -g"
-        export CXXFLAGS="-O0 -g"
-        
-        ./configure --prefix=/usr/local --enable-shared --with-ensurepip=install \
-          --disable-ipv6 --build=aarch64-alpine-linux-musl
-        
-        # Single-threaded build for stability
-        make
-        make altinstall
-        
-        ln -sf /usr/local/bin/python${PYTHON_VERSION} /usr/local/bin/python
-        
-        # Set up environment
-        export PYTHONHOME=/usr/local
-        export PYTHONPATH="/usr/local/lib/python${PYTHON_VERSION}"
-        export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+        # RHEL/DNF
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          # Add Microsoft repository for RHEL 9
+          curl -sSL -O https://packages.microsoft.com/config/rhel/9/packages-microsoft-prod.rpm
+          rpm -Uvh packages-microsoft-prod.rpm
+          rm packages-microsoft-prod.rpm
+          
+          # Update package list
+          dnf update -y
+          
+          # Install the driver
+          ACCEPT_EULA=Y dnf install -y msodbcsql18
+          # optional: for bcp and sqlcmd
+          ACCEPT_EULA=Y dnf install -y mssql-tools18
+          # optional: for unixODBC development headers
+          dnf install -y unixODBC-devel
+        "
       fi
-      
-      python --version
-      EOF
-      chmod +x install_alpine.sh
-    displayName: 'Create Alpine installation script'
-    condition: eq(variables['distroName'], 'alpine')
+    displayName: 'Install ODBC Driver in $(distroName) $(targetArch) container'
 
-  # Copy and execute the appropriate installation script
   - script: |
-      if [ "$(distroName)" = "Debian" ]; then
-        docker cp install_debian.sh build-container-$(distroName)-$(targetArch):/tmp/
-        docker exec build-container-$(distroName)-$(targetArch) bash /tmp/install_debian.sh
-      elif [ "$(distroName)" = "RHEL" ]; then
-        docker cp install_rhel.sh build-container-$(distroName)-$(targetArch):/tmp/
-        docker exec build-container-$(distroName)-$(targetArch) bash /tmp/install_rhel.sh
-      elif [ "$(distroName)" = "alpine" ]; then
-        docker cp install_alpine.sh build-container-$(distroName)-$(targetArch):/tmp/
-        docker exec build-container-$(distroName)-$(targetArch) sh /tmp/install_alpine.sh $(pythonVersion)
-      fi
-    displayName: 'Install dependencies in $(distroName) $(targetArch) container'
-
-  # Install ODBC driver
-  - script: |
-      cat > install_odbc.sh << 'EOF'
-      #!/bin/bash
-      set -e
-      
-      PACKAGE_MANAGER=$1
-      DISTRO_NAME=$2
-      
-      if [ "$PACKAGE_MANAGER" = "apt" ]; then
-        export DEBIAN_FRONTEND=noninteractive
-        if [ "$DISTRO_NAME" = "Ubuntu" ]; then
-          curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
-        else
-          curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
+      # Install Python dependencies in the container using virtual environment
+      docker exec build-container-$(distroName)-$(targetArch) bash -c "
+        # Determine which Python command to use
+        # Set up Python environment before determining command
+        if [ '$(packageManager)' = 'apk' ] && [ '$(pythonVersion)' != '3.12' ]; then
+          # For source-compiled Python on Alpine, set environment variables
+          export PYTHONHOME=/usr/local
+          export PYTHONPATH=/usr/local/lib/python$(pythonVersion)
+          export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH
         fi
-        dpkg -i packages-microsoft-prod.deb || true
-        rm packages-microsoft-prod.deb
-        apt-get update
-        ACCEPT_EULA=Y apt-get install -y msodbcsql18 mssql-tools18 unixodbc-dev
-      elif [ "$PACKAGE_MANAGER" = "apk" ]; then
-        case $(uname -m) in
-          x86_64) architecture='amd64' ;;
-          arm64|aarch64) architecture='arm64' ;;
-          *) echo "Unsupported architecture"; exit 1 ;;
-        esac
-        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_${architecture}.apk
-        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_${architecture}.apk
-        apk add --allow-untrusted msodbcsql18_18.5.1.1-1_${architecture}.apk
-        apk add --allow-untrusted mssql-tools18_18.4.1.1-1_${architecture}.apk
-        rm -f *.apk
-      else
-        # RHEL
-        curl -sSL -O https://packages.microsoft.com/config/rhel/9/packages-microsoft-prod.rpm
-        rpm -Uvh packages-microsoft-prod.rpm
-        rm packages-microsoft-prod.rpm
-        dnf update -y
-        ACCEPT_EULA=Y dnf install -y msodbcsql18 mssql-tools18 unixODBC-devel
-      fi
-      EOF
-      chmod +x install_odbc.sh
-      docker cp install_odbc.sh build-container-$(distroName)-$(targetArch):/tmp/
-      docker exec build-container-$(distroName)-$(targetArch) bash /tmp/install_odbc.sh $(packageManager) $(distroName)
-    displayName: 'Install ODBC Driver'
+        
+        if [ '$(packageManager)' = 'apk' ]; then
+          # Alpine Linux - check if we built from source or used pre-installed
+          if [ '$(pythonVersion)' = '3.12' ]; then
+            # Using pre-installed Python 3.12
+            PYTHON_CMD=python3
+          else
+            # Using source-compiled Python
+            if command -v /usr/local/bin/python$(pythonVersion) >/dev/null 2>&1; then
+              PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
+            elif command -v python$(pythonVersion) >/dev/null 2>&1; then
+              PYTHON_CMD=python$(pythonVersion)
+            else
+              echo 'No Python $(pythonVersion) interpreter found after source compilation'
+              exit 1
+            fi
+          fi
+        else
+          # Ubuntu/Debian/RHEL - determine the best Python command
+          if command -v /usr/local/bin/python$(pythonVersion) >/dev/null 2>&1; then
+            PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
+          elif command -v python$(pythonVersion) >/dev/null 2>&1; then
+            PYTHON_CMD=python$(pythonVersion)
+          elif command -v python3 >/dev/null 2>&1; then
+            PYTHON_CMD=python3
+          else
+            echo 'No Python interpreter found'
+            exit 1
+          fi
+        fi
+        
+        echo 'Selected Python command:' \$PYTHON_CMD
+        echo 'Python version:' \$(\$PYTHON_CMD --version)
+        
+        # Create virtual environment at consistent path
+        \$PYTHON_CMD -m venv /workspace/venv
+        source /workspace/venv/bin/activate
+        
+        # Verify virtual environment is working
+        echo 'Virtual environment activated:'
+        echo 'Python executable:' \$(which python)
+        echo 'Python version in venv:' \$(python --version)
+        
+        # Upgrade pip and install dependencies
+        python -m pip install --upgrade pip
+        python -m pip install pybind11
+        python -m pip install -r requirements.txt
+        python -m pip install wheel setuptools
+        
+        # Verify installation
+        echo 'Python version in venv:' \$(python --version)
+        echo 'Python executable:' \$(which python)
+        echo 'Pip version:' \$(pip --version)
+      "
+    displayName: 'Install Python dependencies in $(distroName) $(targetArch) container'
 
-  # Install Python dependencies and build
   - script: |
-      cat > build_package.sh << 'EOF'
-      #!/bin/bash
-      set -e
-      
-      # Set up environment for Alpine if needed
-      if [ -f /etc/alpine-release ] && [ "$1" != "3.12" ]; then
-        export PYTHONHOME=/usr/local
-        export PYTHONPATH="/usr/local/lib/python$1"
-        export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
-      fi
-      
-      # Find Python command
-      if command -v /usr/local/bin/python3.13 >/dev/null 2>&1; then
-        PYTHON_CMD=/usr/local/bin/python3.13
-      elif command -v /usr/local/bin/python$1 >/dev/null 2>&1; then
-        PYTHON_CMD=/usr/local/bin/python$1
-      elif command -v python3 >/dev/null 2>&1; then
-        PYTHON_CMD=python3
+      # Build pybind bindings in the container
+      docker exec build-container-$(distroName)-$(targetArch) bash -c "
+        # Activate virtual environment
+        source /workspace/venv/bin/activate
+        
+        echo 'Building pybind bindings for $(distroName) $(targetArch)'
+        echo 'Python version:' \$(python --version)
+        echo 'Architecture:' \$(uname -m)
+        
+        # Verify build tools (for RHEL debugging)
+        if [ '$(packageManager)' = 'dnf' ]; then
+          echo 'CMake status:'
+          cmake --version || echo 'cmake not available'
+        fi
+        
+        cd mssql_python/pybind
+        chmod +x build.sh
+        ./build.sh
+      "
+    displayName: 'Build pybind bindings (.so) in $(distroName) $(targetArch) container'
+  
+  - script: |
+      # Uninstall ODBC Driver before running tests
+      if [ "$(packageManager)" = "apt" ]; then
+        # Ubuntu/Debian
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
+          rm -f /usr/bin/sqlcmd
+          rm -f /usr/bin/bcp
+          rm -rf /opt/microsoft/msodbcsql
+          rm -f /lib/x86_64-linux-gnu/libodbcinst.so.2
+          rm -f /lib/aarch64-linux-gnu/libodbcinst.so.2
+          odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+          echo 'Uninstalled ODBC Driver and cleaned up libraries'
+          echo 'Verifying $(targetArch) debian_ubuntu driver library signatures:'
+          if [ '$(targetArch)' = 'x86_64' ]; then
+            ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.5.so.1.1
+          else
+            ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.5.so.1.1
+          fi
+        "
+      elif [ "$(packageManager)" = "apk" ]; then
+        # Alpine Linux
+        docker exec build-container-$(distroName)-$(targetArch) sh -c "
+          apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'Some packages were not installed'
+          rm -f /usr/bin/sqlcmd
+          rm -f /usr/bin/bcp
+          rm -rf /opt/microsoft/msodbcsql
+          rm -f /usr/lib/libodbcinst.so.2
+          odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+          echo 'Uninstalled ODBC Driver and cleaned up libraries'
+          echo 'Verifying $(targetArch) alpine driver library signatures:'
+          if [ '$(targetArch)' = 'x86_64' ]; then
+            ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-18.5.so.1.1
+          else
+            ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-18.5.so.1.1
+          fi
+        "
       else
-        echo "No Python interpreter found"
-        exit 1
+        # RHEL/DNF
+        docker exec build-container-$(distroName)-$(targetArch) bash -c "
+          dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
+          rm -f /usr/bin/sqlcmd
+          rm -f /usr/bin/bcp
+          rm -rf /opt/microsoft/msodbcsql
+          rm -f /lib64/libodbcinst.so.2
+          odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+          echo 'Uninstalled ODBC Driver and cleaned up libraries'
+          echo 'Verifying $(targetArch) rhel driver library signatures:'
+          if [ '$(targetArch)' = 'x86_64' ]; then
+            ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-18.5.so.1.1
+          else
+            ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-18.5.so.1.1
+          fi
+        "
       fi
-      
-      echo "Using Python: $PYTHON_CMD"
-      $PYTHON_CMD --version
-      
-      # Create virtual environment
-      $PYTHON_CMD -m venv /workspace/venv
-      source /workspace/venv/bin/activate
-      
-      # Install dependencies
-      python -m pip install --upgrade pip
-      python -m pip install pybind11 wheel setuptools
-      python -m pip install -r requirements.txt
-      
-      # Build the bindings
-      cd mssql_python/pybind
-      chmod +x build.sh
-      ./build.sh
-      
-      # Build the wheel
-      cd /workspace
-      python setup.py bdist_wheel
-      ls -la dist/
-      EOF
-      chmod +x build_package.sh
-      docker cp build_package.sh build-container-$(distroName)-$(targetArch):/tmp/
-      docker exec build-container-$(distroName)-$(targetArch) bash /tmp/build_package.sh $(pythonVersion)
-    displayName: 'Build package'
+    displayName: 'Uninstall ODBC Driver before running tests in $(distroName) $(targetArch) container'
 
-  # Run tests
   - script: |
+      # Run tests in the container
+      # Get SQL Server container IP
       SQLSERVER_IP=$(docker inspect sqlserver-$(distroName)-$(targetArch) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
       echo "SQL Server IP: $SQLSERVER_IP"
-      
-      cat > run_tests.sh << 'EOF'
-      #!/bin/bash
-      set -e
-      
-      # Set up environment for Alpine if needed
-      if [ -f /etc/alpine-release ] && [ "$1" != "3.12" ]; then
-        export PYTHONHOME=/usr/local
-        export PYTHONPATH="/usr/local/lib/python$1"
-        export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
-      fi
-      
-      source /workspace/venv/bin/activate
-      
-      # Remove system ODBC driver to test with bundled one
-      if command -v apt-get >/dev/null 2>&1; then
-        apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev || true
-      elif command -v apk >/dev/null 2>&1; then
-        apk del msodbcsql18 mssql-tools18 unixodbc-dev || true
-      else
-        dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel || true
-      fi
-      
-      echo "Running tests..."
-      python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml:coverage.xml
-      EOF
-      chmod +x run_tests.sh
-      docker cp run_tests.sh build-container-$(distroName)-$(targetArch):/tmp/
       
       docker exec \
         -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
         -e DB_PASSWORD="$(DB_PASSWORD)" \
-        build-container-$(distroName)-$(targetArch) bash /tmp/run_tests.sh $(pythonVersion)
-    displayName: 'Run tests'
+        build-container-$(distroName)-$(targetArch) bash -c "
+        # Set environment for source-compiled Python on Alpine
+        if [ '$(packageManager)' = 'apk' ] && [ '$(pythonVersion)' != '3.12' ]; then
+          export PYTHONHOME=/usr/local
+          export PYTHONPATH=/usr/local/lib/python$(pythonVersion)
+          export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH
+        fi
+        
+        source /workspace/venv/bin/activate
+        echo 'Build successful, running tests now on $(distroName) $(targetArch)'
+        echo 'Python version:' \$(python --version)
+        echo 'Architecture:' \$(uname -m)
+        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+        python -m pytest -v --junitxml=test-results-$(distroName)-$(targetArch).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(targetArch).xml --capture=tee-sys --cache-clear
+      "
+    displayName: 'Run pytest with coverage in $(distroName) $(targetArch) container'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
-  # Copy artifacts
   - script: |
-      docker cp build-container-$(distroName)-$(targetArch):/workspace/test-results.xml $(Build.SourcesDirectory)/test-results-$(distroName)-$(targetArch).xml || true
-      docker cp build-container-$(distroName)-$(targetArch):/workspace/coverage.xml $(Build.SourcesDirectory)/coverage-$(distroName)-$(targetArch).xml || true
+      # Build wheel package in the container
+      docker exec build-container-$(distroName)-$(targetArch) bash -c "
+        # Set environment for source-compiled Python on Alpine
+        if [ '$(packageManager)' = 'apk' ] && [ '$(pythonVersion)' != '3.12' ]; then
+          export PYTHONHOME=/usr/local
+          export PYTHONPATH=/usr/local/lib/python$(pythonVersion)
+          export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH
+        fi
+        
+        source /workspace/venv/bin/activate
+        echo 'Building wheel for $(distroName) $(targetArch) Python $(pythonVersion)'
+        echo 'Python version:' \$(python --version)
+        echo 'Architecture:' \$(uname -m)
+        python -m pip install --upgrade pip wheel setuptools
+        python setup.py bdist_wheel
+        
+        # Verify the wheel was created
+        ls -la dist/
+      "
+    displayName: 'Build wheel package in $(distroName) $(targetArch) container'
+
+  - script: |
+      # Copy test results from container to host
+      docker cp build-container-$(distroName)-$(targetArch):/workspace/test-results-$(distroName)-$(targetArch).xml $(Build.SourcesDirectory)/
+      docker cp build-container-$(distroName)-$(targetArch):/workspace/coverage-$(distroName)-$(targetArch).xml $(Build.SourcesDirectory)/
       
+      # Copy wheel files from container to host
       mkdir -p $(Build.ArtifactStagingDirectory)/dist
-      docker cp build-container-$(distroName)-$(targetArch):/workspace/dist/. $(Build.ArtifactStagingDirectory)/dist/ || true
+      docker cp build-container-$(distroName)-$(targetArch):/workspace/dist/. $(Build.ArtifactStagingDirectory)/dist/ || echo "Failed to copy dist directory"
       
+      # Copy .so files from container to host
       mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux/$(distroName)-$(targetArch)
-      docker cp build-container-$(distroName)-$(targetArch):/workspace/mssql_python/ddbc_bindings.cp$(shortPyVer)-$(targetArch).so $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux/$(distroName)-$(targetArch)/ || true
-    displayName: 'Copy artifacts'
+      docker cp build-container-$(distroName)-$(targetArch):/workspace/mssql_python/ddbc_bindings.cp$(shortPyVer)-$(targetArch).so $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux/$(distroName)-$(targetArch)/ || echo "Failed to copy .so files"
+    displayName: 'Copy results and artifacts from $(distroName) $(targetArch) container'
     condition: always()
 
-  # Cleanup
   - script: |
+      # Clean up containers
       docker stop build-container-$(distroName)-$(targetArch) || true
       docker rm build-container-$(distroName)-$(targetArch) || true
       docker stop sqlserver-$(distroName)-$(targetArch) || true
       docker rm sqlserver-$(distroName)-$(targetArch) || true
-    displayName: 'Cleanup'
+    displayName: 'Clean up $(distroName) $(targetArch) containers'
     condition: always()
 
-  # Publish results
   - task: PublishTestResults@2
     condition: succeededOrFailed()
     inputs:
       testResultsFiles: '**/test-results-$(distroName)-$(targetArch).xml'
-      testRunTitle: 'Test results for $(distroName) $(targetArch)'
+      testRunTitle: 'Publish pytest results on $(distroName) $(targetArch)'
 
   - task: PublishBuildArtifacts@1
     condition: succeededOrFailed()
@@ -786,6 +1387,7 @@ jobs:
       PathtoPublish: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
       ArtifactName: 'mssql-python-ddbc-bindings'
       publishLocation: 'Container'
+    displayName: 'Publish .so files as artifacts'
 
   - task: PublishBuildArtifacts@1
     condition: succeededOrFailed()
@@ -793,3 +1395,4 @@ jobs:
       PathtoPublish: '$(Build.ArtifactStagingDirectory)/dist'
       ArtifactName: 'mssql-python-wheels-dist'
       publishLocation: 'Container'
+    displayName: 'Publish wheels as artifacts'
