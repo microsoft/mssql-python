@@ -16,12 +16,16 @@ Functions:
 - test_connection_string_with_attrs_before: Check if the connection string is constructed correctly with attrs_before.
 - test_connection_string_with_odbc_param: Check if the connection string is constructed correctly with ODBC parameters.
 - test_rollback_on_close: Test that rollback occurs on connection close if autocommit is False.
+- test_context_manager_commit: Test that context manager commits transaction on normal exit.
+- test_context_manager_autocommit_mode: Test context manager behavior with autocommit enabled.
+- test_context_manager_connection_closes: Test that context manager closes the connection.
 """
 
 from mssql_python.exceptions import InterfaceError
 import pytest
 import time
 from mssql_python import Connection, connect, pooling
+from contextlib import closing
 import threading
 
 def drop_table_if_exists(cursor, table_name):
@@ -482,3 +486,62 @@ def test_connection_pooling_basic(conn_str):
 
     conn1.close()
     conn2.close()
+
+def test_context_manager_commit(conn_str):
+    """Test that context manager closes connection on normal exit"""
+    # Create a permanent table for testing across connections
+    setup_conn = connect(conn_str)
+    setup_cursor = setup_conn.cursor()
+    drop_table_if_exists(setup_cursor, "pytest_context_manager_test")
+    
+    try:
+        setup_cursor.execute("CREATE TABLE pytest_context_manager_test (id INT PRIMARY KEY, value VARCHAR(50));")
+        setup_conn.commit()
+        setup_conn.close()
+        
+        # Test context manager closes connection
+        with connect(conn_str) as conn:
+            assert conn.autocommit is False, "Autocommit should be False by default"
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO pytest_context_manager_test (id, value) VALUES (1, 'context_test');")
+            conn.commit()  # Manual commit now required
+        # Connection should be closed here
+        
+        # Verify data was committed manually
+        verify_conn = connect(conn_str)
+        verify_cursor = verify_conn.cursor()
+        verify_cursor.execute("SELECT * FROM pytest_context_manager_test WHERE id = 1;")
+        result = verify_cursor.fetchone()
+        assert result is not None, "Manual commit failed: No data found"
+        assert result[1] == 'context_test', "Manual commit failed: Incorrect data"
+        verify_conn.close()
+        
+    except Exception as e:
+        pytest.fail(f"Context manager test failed: {e}")
+    finally:
+        # Cleanup
+        cleanup_conn = connect(conn_str)
+        cleanup_cursor = cleanup_conn.cursor()
+        drop_table_if_exists(cleanup_cursor, "pytest_context_manager_test")
+        cleanup_conn.commit()
+        cleanup_conn.close()
+
+def test_context_manager_connection_closes(conn_str):
+    """Test that context manager closes the connection"""
+    conn = None
+    try:
+        with connect(conn_str) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            result = cursor.fetchone()
+            assert result[0] == 1, "Connection should work inside context manager"
+        
+        # Connection should be closed after exiting context manager
+        assert conn._closed, "Connection should be closed after exiting context manager"
+        
+        # Should not be able to use the connection after closing
+        with pytest.raises(InterfaceError):
+            conn.cursor()
+            
+    except Exception as e:
+        pytest.fail(f"Context manager connection close test failed: {e}")

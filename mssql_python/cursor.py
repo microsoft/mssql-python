@@ -789,6 +789,22 @@ class Cursor:
             return False
         return True
 
+    def __enter__(self):
+        """
+        Enter the runtime context for the cursor.
+        
+        Returns:
+            The cursor instance itself.
+        """
+        self._check_closed()
+        return self
+    
+    def __exit__(self, *args):
+        """Closes the cursor when exiting the context, ensuring proper resource cleanup."""
+        if not self.closed:
+            self.close()
+        return None
+
     def __del__(self):
         """
         Destructor to ensure the cursor is closed when it is no longer needed.
