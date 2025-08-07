@@ -762,9 +762,15 @@ jobs:
                 
                 # Configure and compile Python with SSL support explicitly enabled
                 echo 'Configuring Python build with SSL support'
-                ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions --enable-optimizations --with-openssl=/usr
+                # Disable optimizations for ARM64 builds to speed up compilation in emulated environment
+                if [ '$(targetArch)' = 'arm64' ]; then
+                  echo 'ARM64 build detected - disabling optimizations for faster compilation'
+                  ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions --with-openssl=/usr
+                else
+                  ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions --enable-optimizations --with-openssl=/usr
+                fi
                 
-                echo 'Compiling Python (this may take several minutes)'
+                echo 'Compiling Python (this may take several minutes - ARM64 builds are slower due to emulation)'
                 make -j\$(nproc)
                 
                 echo 'Installing Python'
