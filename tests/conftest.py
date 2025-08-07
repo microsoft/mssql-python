@@ -18,7 +18,7 @@ def pytest_configure(config):
 
 @pytest.fixture(scope='session')
 def conn_str():
-    conn_str = os.getenv('DB_CONNECTION_STRING')
+    conn_str = "Server=tcp:DESKTOP-1A982SC,1433;Database=master;TrustServerCertificate=yes;Trusted_Connection=yes;"
     return conn_str
 
 @pytest.fixture(scope="module")
