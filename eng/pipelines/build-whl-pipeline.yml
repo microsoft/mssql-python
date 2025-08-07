@@ -878,27 +878,44 @@ jobs:
             export ac_cv_file__dev_ptc=no
             export ac_cv_have_long_long_format=yes
             
-            ./configure --disable-ipv6 --enable-optimizations --with-ensurepip=install --enable-shared \
+            ./configure \
+              --prefix=/usr/local \
+              --enable-shared \
+              --with-ensurepip=install \
+              --disable-ipv6 \
               --build=aarch64-alpine-linux-musl \
               --host=aarch64-alpine-linux-musl \
               --target=aarch64-alpine-linux-musl \
-              LDFLAGS='-Wl,-rpath /usr/local/lib' \
               CPPFLAGS='-I/usr/include' \
-              LDFLAGS='-L/usr/lib -Wl,-rpath /usr/local/lib'
+              LDFLAGS='-L/usr/lib -Wl,-rpath,/usr/local/lib'
             
-            # Disable PGO for ARM64 to speed up builds
-            if [ '$(targetArch)' = 'aarch64' ]; then
-              echo 'Disabling Profile-Guided Optimization for ARM64 to speed up build'
-              make -j\$(nproc) PROFILE_TASK=true
-            else
-              make -j\$(nproc)
-            fi
+            # Build Python without optimizations to avoid gcc segfault on ARM64
+            echo 'Building Python $(pythonVersion) without PGO optimizations to avoid compilation issues'
+            make -j\$(nproc)
             
             make altinstall
+            
+            # Set up environment for proper Python operation
+            export PYTHONHOME=/usr/local
+            export PYTHONPATH=/usr/local/lib/python$(pythonVersion)
+            export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH
             
             # Create symlinks for easier access
             ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python
             ln -sf /usr/local/bin/pip$(pythonVersion) /usr/local/bin/pip
+            
+            # Set up persistent environment variables for source-compiled Python
+            echo 'export PYTHONHOME=/usr/local' >> /etc/profile
+            echo 'export PYTHONPATH=/usr/local/lib/python$(pythonVersion)' >> /etc/profile
+            echo 'export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH' >> /etc/profile
+            
+            # Verify Python installation and modules
+            echo 'Verifying Python $(pythonVersion) installation:'
+            ls -la /usr/local/bin/python$(pythonVersion)
+            /usr/local/bin/python$(pythonVersion) --version
+            echo 'Testing SSL and encodings support:'
+            /usr/local/bin/python$(pythonVersion) -c 'import ssl; print(\"SSL support: OK\")'
+            echo 'Python installation successful'
             
             # Clean up build files
             cd /
@@ -1130,6 +1147,14 @@ jobs:
       # Install Python dependencies in the container using virtual environment
       docker exec build-container-$(distroName)-$(targetArch) bash -c "
         # Determine which Python command to use
+        # Set up Python environment before determining command
+        if [ '$(packageManager)' = 'apk' ] && [ '$(pythonVersion)' != '3.12' ]; then
+          # For source-compiled Python on Alpine, set environment variables
+          export PYTHONHOME=/usr/local
+          export PYTHONPATH=/usr/local/lib/python$(pythonVersion)
+          export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH
+        fi
+        
         if [ '$(packageManager)' = 'apk' ]; then
           # Alpine Linux - check if we built from source or used pre-installed
           if [ '$(pythonVersion)' = '3.12' ]; then
@@ -1275,6 +1300,13 @@ jobs:
         -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
         -e DB_PASSWORD="$(DB_PASSWORD)" \
         build-container-$(distroName)-$(targetArch) bash -c "
+        # Set environment for source-compiled Python on Alpine
+        if [ '$(packageManager)' = 'apk' ] && [ '$(pythonVersion)' != '3.12' ]; then
+          export PYTHONHOME=/usr/local
+          export PYTHONPATH=/usr/local/lib/python$(pythonVersion)
+          export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH
+        fi
+        
         source /workspace/venv/bin/activate
         echo 'Build successful, running tests now on $(distroName) $(targetArch)'
         echo 'Python version:' \$(python --version)
@@ -1289,6 +1321,13 @@ jobs:
   - script: |
       # Build wheel package in the container
       docker exec build-container-$(distroName)-$(targetArch) bash -c "
+        # Set environment for source-compiled Python on Alpine
+        if [ '$(packageManager)' = 'apk' ] && [ '$(pythonVersion)' != '3.12' ]; then
+          export PYTHONHOME=/usr/local
+          export PYTHONPATH=/usr/local/lib/python$(pythonVersion)
+          export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH
+        fi
+        
         source /workspace/venv/bin/activate
         echo 'Building wheel for $(distroName) $(targetArch) Python $(pythonVersion)'
         echo 'Python version:' \$(python --version)
