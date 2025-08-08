@@ -775,7 +775,7 @@ jobs:
                   export CXX=$(command -v g++-13 || echo g++)
 
                   # Apply safer compiler flags to avoid register pressure and tree optimizations
-                  export CFLAGS="-O2 -fno-var-tracking -fno-tree-vectorize"
+                  export CFLAGS=\"-O2 -fno-var-tracking -fno-tree-vectorize\"
                   export CPPFLAGS="-I/usr/include"
                   export LDFLAGS="-L/usr/lib"
 
