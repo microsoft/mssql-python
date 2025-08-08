@@ -735,58 +735,54 @@ jobs:
                 PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
                 ;;
               '3.13')
-                # Python 3.13 requires building from source
                 echo 'Python $(pythonVersion) requires building from source'
                 echo 'DEBUG: pythonVersion = $(pythonVersion)'
-                
+
                 # Install dependencies needed for Python source compilation
                 apt-get install -y build-essential libssl-dev zlib1g-dev libbz2-dev
                 apt-get install -y libreadline-dev libsqlite3-dev wget curl llvm
                 apt-get install -y libncurses5-dev libncursesw5-dev xz-utils tk-dev
                 apt-get install -y libffi-dev liblzma-dev python3-openssl
                 apt-get install -y libgdbm-dev libnss3-dev libedit-dev || echo 'Some optional dependencies not available'
-                
-                # Verify SSL development libraries are installed
-                echo 'Verifying SSL development libraries:'
-                dpkg -l | grep libssl-dev || echo 'libssl-dev not found'
-                pkg-config --exists openssl && echo 'OpenSSL pkg-config found' || echo 'OpenSSL pkg-config missing'
-                
-                # Download Python source - fix version mismatch
+
+                # Verify compiler setup
+                echo 'Testing if gcc can compile...'
+                echo 'int main() { return 0; }' > /tmp/test.c
+                gcc /tmp/test.c -o /tmp/test.out || (echo 'ERROR: gcc cannot create executables' && exit 1)
+                rm /tmp/test.c /tmp/test.out
+
+                # Download Python source
                 cd /tmp
                 PYTHON_FULL_VERSION='3.13.1'
-                PYTHON_URL=\"https://www.python.org/ftp/python/\$PYTHON_FULL_VERSION/Python-\$PYTHON_FULL_VERSION.tgz\"
-                echo \"Downloading Python from \$PYTHON_URL\"
-                wget \$PYTHON_URL -O python-\$PYTHON_FULL_VERSION.tgz
-                tar -xzf python-\$PYTHON_FULL_VERSION.tgz
-                cd Python-\$PYTHON_FULL_VERSION
-                
-                # Configure and compile Python with SSL support explicitly enabled
+                PYTHON_URL="https://www.python.org/ftp/python/$PYTHON_FULL_VERSION/Python-$PYTHON_FULL_VERSION.tgz"
+                echo "Downloading Python from $PYTHON_URL"
+                wget $PYTHON_URL -O python-$PYTHON_FULL_VERSION.tgz
+                tar -xzf python-$PYTHON_FULL_VERSION.tgz
+                cd Python-$PYTHON_FULL_VERSION
+
                 echo 'Configuring Python build with SSL support'
-                # Disable optimizations for ARM64 builds to speed up compilation in emulated environment
-                # Inside Debian block when compiling Python
+
                 if [ '$(targetArch)' = 'arm64' ]; then
-                  echo 'ARM64 build detected - using safer build flags to avoid GCC segfaults'
+                  echo 'ARM64 build detected - using safer flags to avoid GCC segfaults'
 
-                  # Install gcc-13 and g++-13 if available
-                  apt-get install -y gcc-13 g++-13 || echo 'GCC 13 not available, continuing with default gcc'
+                  # Try GCC 13 if available
+                  apt-get install -y gcc-13 g++-13 || echo 'GCC 13 not available, using default gcc'
 
-                  # Use GCC 13 if installed
                   export CC=$(command -v gcc-13 || echo gcc)
                   export CXX=$(command -v g++-13 || echo g++)
 
-                  # Apply safer compiler flags to avoid register pressure and tree optimizations
-                  export CFLAGS=\"-O2 -fno-var-tracking -fno-tree-vectorize\"
-                  export CPPFLAGS="-I/usr/include"
-                  export LDFLAGS="-L/usr/lib"
+                  # Safer flags to avoid register/memory pressure
+                  export CFLAGS='-O2 -fno-lto -fno-tree-vectorize -fno-var-tracking-assignments'
+                  export CPPFLAGS='-I/usr/include'
+                  export LDFLAGS='-L/usr/lib -Wl,-rpath,/usr/local/lib'
 
-                  # Configure without PGO or LTO
                   ./configure \
                     --prefix=/usr/local \
                     --with-ensurepip=install \
                     --enable-loadable-sqlite-extensions \
                     --with-openssl=/usr
-
-                  echo 'Compiling Python with reduced parallel jobs to avoid memory issues'
+                  
+                  echo 'Compiling Python with make -j2 for stability'
                   make -j2
                 else
                   ./configure \
@@ -801,29 +797,24 @@ jobs:
 
                 echo 'Installing Python'
                 make altinstall
-                
-                # Create symlinks - altinstall creates python3.13, we create python symlink
+
+                # Symlinks for consistency
                 ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python
-                
-                # Verify installation and SSL support
+                ln -sf /usr/local/bin/pip$(pythonVersion) /usr/local/bin/pip || true
+
                 echo 'Verifying Python 3.13 installation:'
                 ls -l /usr/local/bin/python$(pythonVersion) || echo 'ERROR: Python $(pythonVersion) not found'
-                /usr/local/bin/python$(pythonVersion) --version
-                echo 'Testing SSL support in Python:'
-                /usr/local/bin/python$(pythonVersion) -c 'import ssl; print(\"SSL support:\", ssl.OPENSSL_VERSION)' || echo 'WARNING: SSL module not available'
-                
+                /usr/local/bin/python$(pythonVersion) --version || echo 'Python did not install correctly'
+
+                echo 'Testing SSL and encodings support:'
+                /usr/local/bin/python$(pythonVersion) -c 'import ssl; print("SSL support:", ssl.OPENSSL_VERSION)' || echo 'WARNING: SSL not available'
+                /usr/local/bin/python$(pythonVersion) -c 'import encodings; print("Encodings OK")' || echo 'WARNING: Encodings module not found'
+
                 # Clean up
                 cd /
-                rm -rf /tmp/Python-\$PYTHON_FULL_VERSION /tmp/python-\$PYTHON_FULL_VERSION.tgz
-                
+                rm -rf /tmp/Python-$PYTHON_FULL_VERSION /tmp/python-$PYTHON_FULL_VERSION.tgz
+
                 echo 'Successfully built and installed Python $(pythonVersion) from source'
-                PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
-                ;;
-              *)
-                echo 'Unsupported Python version $(pythonVersion) for Debian, using python3'
-                apt-get install -y python3 python3-dev python3-venv
-                ln -sf /usr/bin/python3 /usr/local/bin/python$(pythonVersion)
-                ln -sf /usr/bin/python3 /usr/local/bin/python
                 PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
                 ;;
             esac
