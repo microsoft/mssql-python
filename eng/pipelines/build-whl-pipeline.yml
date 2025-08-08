@@ -812,7 +812,7 @@ jobs:
 
                 # Clean up
                 cd /
-                rm -rf /tmp/Python-$PYTHON_FULL_VERSION /tmp/python-$PYTHON_FULL_VERSION.tgz
+                rm -rf /tmp/Python-\$PYTHON_FULL_VERSION /tmp/python-\$PYTHON_FULL_VERSION.tgz
 
                 echo 'Successfully built and installed Python $(pythonVersion) from source'
                 PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
