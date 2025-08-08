@@ -898,6 +898,7 @@ jobs:
             export ac_cv_sizeof_size_t=8
             export ac_cv_sizeof_pid_t=4
             export ac_cv_sizeof_void_p=8
+            export ac_cv_sizeof_long_double=16
             export ax_cv_c_float_words_bigendian=no
 
             # 🛠️ Apply GCC stability fixes for ARM64: safer build flags
