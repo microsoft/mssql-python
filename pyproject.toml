@@ -1,0 +1,22 @@
+# pyproject.toml — minimal, keeps your setup.py in charge
+
+[build-system]
+requires = [
+  "setuptools>=64",
+  "wheel",
+  "pybind11>=2.12",   # if your setup.py/build.sh expects pybind11 headers from pip
+]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Make sure non-.py assets get into the wheel (your .so and any bundled libs)
+include-package-data = true
+
+[tool.setuptools.package-data]
+# adjust if your .so lands elsewhere; this ensures the extension and any helper libs are included
+"mssql_python" = ["*.so", "libs/**/*"]
+
+[tool.setuptools.packages.find]
+# typical layout; tweak if your package root differs
+where = ["."]
+exclude = ["tests*", "docs*", "examples*"]
