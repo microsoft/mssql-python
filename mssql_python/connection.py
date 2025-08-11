@@ -32,13 +32,9 @@ UTF16_ENCODINGS = frozenset([
     'utf-16be'
 ])
 
-# Cache for encoding validation to improve performance
-# Using a simple dict instead of lru_cache for module-level caching
-_ENCODING_VALIDATION_CACHE = {}
-_CACHE_MAX_SIZE = 100  # Limit cache size to prevent memory bloat
+_CACHE_MAX_SIZE = 128  # Limit cache size to avoid excessive memory usage
 
-
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=_CACHE_MAX_SIZE)
 def _validate_encoding(encoding: str) -> bool:
     """
     Cached encoding validation using codecs.lookup().

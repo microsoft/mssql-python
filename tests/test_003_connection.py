@@ -550,7 +550,6 @@ def test_setencoding_none_parameters(db_connection):
 
 def test_setencoding_invalid_encoding(db_connection):
     """Test setencoding with invalid encoding."""
-    from mssql_python.exceptions import ProgrammingError
     
     with pytest.raises(ProgrammingError) as exc_info:
         db_connection.setencoding(encoding='invalid-encoding-name')
@@ -560,7 +559,6 @@ def test_setencoding_invalid_encoding(db_connection):
 
 def test_setencoding_invalid_ctype(db_connection):
     """Test setencoding with invalid ctype."""
-    from mssql_python.exceptions import ProgrammingError
     
     with pytest.raises(ProgrammingError) as exc_info:
         db_connection.setencoding(encoding='utf-8', ctype=999)
@@ -570,7 +568,6 @@ def test_setencoding_invalid_ctype(db_connection):
 
 def test_setencoding_closed_connection(conn_str):
     """Test setencoding on closed connection."""
-    from mssql_python.exceptions import InterfaceError
     
     temp_conn = connect(conn_str)
     temp_conn.close()
@@ -827,20 +824,8 @@ def test_setencoding_with_explicit_ctype_sql_wchar(conn_str):
     finally:
         conn.close()
 
-def test_setencoding_invalid_encoding(conn_str):
-    """Test setencoding with invalid encoding raises ProgrammingError"""
-    from mssql_python.exceptions import ProgrammingError
-    
-    conn = connect(conn_str)
-    try:
-        with pytest.raises(ProgrammingError, match="Unsupported encoding"):
-            conn.setencoding('invalid-encoding-name')
-    finally:
-        conn.close()
-
-def test_setencoding_invalid_ctype(conn_str):
+def test_setencoding_invalid_ctype_error(conn_str):
     """Test setencoding with invalid ctype raises ProgrammingError"""
-    from mssql_python.exceptions import ProgrammingError
     
     conn = connect(conn_str)
     try:
@@ -848,14 +833,6 @@ def test_setencoding_invalid_ctype(conn_str):
             conn.setencoding('utf-8', 999)
     finally:
         conn.close()
-
-def test_setencoding_closed_connection(conn_str):
-    """Test setencoding on closed connection raises InterfaceError"""
-    conn = connect(conn_str)
-    conn.close()
-    
-    with pytest.raises(InterfaceError, match="Connection is closed"):
-        conn.setencoding('utf-8')
 
 def test_setencoding_case_insensitive_encoding(conn_str):
     """Test setencoding with case variations"""
