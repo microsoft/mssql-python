@@ -368,86 +368,112 @@ jobs:
 #       displayName: 'Publish all wheels as artifacts'
 
 - job: BuildLinuxWheels
-  displayName: 'Build Linux wheels (manylinux + musllinux)'
+  displayName: 'Build Linux wheels (manylinux + musllinux) [matrix]'
   pool: { vmImage: 'ubuntu-latest' }
   timeoutInMinutes: 120
+
+  strategy:
+    matrix:
+      manylinux_x86_64:
+        LINUX_TAG: 'manylinux'
+        ARCHS: 'x86_64'
+        IMAGE_MANYLINUX: 'manylinux_2_28'
+      manylinux_aarch64:
+        LINUX_TAG: 'manylinux'
+        ARCHS: 'aarch64'
+        IMAGE_MANYLINUX: 'manylinux_2_28'
+      musllinux_x86_64:
+        LINUX_TAG: 'musllinux'
+        ARCHS: 'x86_64'
+        IMAGE_MUSLLINUX: 'musllinux_1_2'
+      musllinux_aarch64:
+        LINUX_TAG: 'musllinux'
+        ARCHS: 'aarch64'
+        IMAGE_MUSLLINUX: 'musllinux_1_2'
 
   steps:
     - checkout: self
       fetchDepth: 0
 
+    # Allow aarch64 builds on x86_64 agents
     - script: |
         sudo docker run --rm --privileged tonistiigi/binfmt --install all
-      displayName: 'Enable QEMU (aarch64)'
+      displayName: 'Enable QEMU (for aarch64)'
 
+    # Install cibuildwheel via pipx
     - script: |
         python3 -m pip install -U pip pipx
         pipx ensurepath
         pipx install cibuildwheel
       displayName: 'Install cibuildwheel'
 
+    # Prep output dirs
     - script: |
-        rm -rf wheelhouse $(Build.ArtifactStagingDirectory)/dist $(Build.ArtifactStagingDirectory)/ddbc-bindings
+        rm -rf wheelhouse \
+               $(Build.ArtifactStagingDirectory)/dist \
+               $(Build.ArtifactStagingDirectory)/ddbc-bindings
         mkdir -p $(Build.ArtifactStagingDirectory)/dist
         mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings
       displayName: 'Prep output directories'
 
-    # ---------- manylinux ----------
+    # Build for current matrix lane
     - script: |
+        echo "Building for $(LINUX_TAG) / $(ARCHS)"
         cibuildwheel --platform linux
+        # Collect wheels
         cp -v wheelhouse/*.whl $(Build.ArtifactStagingDirectory)/dist/ || true
-        # Copy .so files
-        find mssql_python -name "*.so" -exec cp -v {} $(Build.ArtifactStagingDirectory)/ddbc-bindings/ \;
-        rm -rf wheelhouse
-      displayName: 'Build manylinux wheels (x86_64 + aarch64, cp310–cp313)'
+        # Collect compiled .so from your package dir
+        find mssql_python -maxdepth 2 -name "*.so" -exec cp -v {} $(Build.ArtifactStagingDirectory)/ddbc-bindings/ \; || true
+      displayName: 'cibuildwheel ($(LINUX_TAG) / $(ARCHS))'
       env:
-        CIBW_BUILD: "cp310-manylinux* cp311-manylinux* cp312-manylinux* cp313-manylinux*"
-        CIBW_ARCHS_LINUX: "x86_64 aarch64"
-        CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_28"
-        CIBW_MANYLINUX_AARCH64_IMAGE: "manylinux_2_28"
-        CIBW_BEFORE_ALL_LINUX: >
-          bash -lc 'if command -v yum >/dev/null 2>&1; then
-            yum -y update || true;
-            yum -y install unixODBC-devel cmake make gcc gcc-c++ || true;
-          elif command -v dnf >/dev/null 2>&1; then
-            dnf -y update || true;
-            dnf -y install unixODBC-devel cmake make gcc gcc-c++ || true;
-          fi'
-        CIBW_BEFORE_BUILD: >
-          bash -lc 'PY=$(command -v python);
-          PIP=$(command -v pip || echo "");
-          ln -sf "$PY" /usr/local/bin/python;
-          if [ -n "$PIP" ]; then ln -sf "$PIP" /usr/local/bin/pip; fi;
-          bash build.sh'
-        CIBW_TEST_COMMAND: "python -c \"import mssql_python, mssql_python.ddbc_bindings; print('import ok')\""
-        CIBW_ENVIRONMENT_LINUX: "CMAKE_BUILD_TYPE=Release"
+        # Build Python 3.10–3.13 for this linux tag
+        CIBW_BUILD: "cp310-$(LINUX_TAG)* cp311-$(LINUX_TAG)* cp312-$(LINUX_TAG)* cp313-$(LINUX_TAG)*"
+        # Current architecture
+        CIBW_ARCHS_LINUX: "$(ARCHS)"
 
-    # ---------- musllinux ----------
-    - script: |
-        cibuildwheel --platform linux
-        cp -v wheelhouse/*.whl $(Build.ArtifactStagingDirectory)/dist/ || true
-        # Copy generated .so file from mssql_python dir to ddbc-bindings/linux (create if not exists)
-        mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux
-        cp -v mssql_python/*.so $(Build.ArtifactStagingDirectory)/ddbc-bindings/linux || true
-        
-      displayName: 'Build musllinux wheels (x86_64 + aarch64, cp310–cp313)'
-      env:
-        CIBW_BUILD: "cp310-musllinux* cp311-musllinux* cp312-musllinux* cp313-musllinux*"
-        CIBW_ARCHS_LINUX: "x86_64 aarch64"
-        CIBW_MUSLLINUX_X86_64_IMAGE: "musllinux_1_2"
-        CIBW_MUSLLINUX_AARCH64_IMAGE: "musllinux_1_2"
+        # Pin images (only the relevant one is used per lane)
+        CIBW_MANYLINUX_X86_64_IMAGE: "$(IMAGE_MANYLINUX)"
+        CIBW_MANYLINUX_AARCH64_IMAGE: "$(IMAGE_MANYLINUX)"
+        CIBW_MUSLLINUX_X86_64_IMAGE: "$(IMAGE_MUSLLINUX)"
+        CIBW_MUSLLINUX_AARCH64_IMAGE: "$(IMAGE_MUSLLINUX)"
+
+        # Install system headers/tools inside the container prior to any build
         CIBW_BEFORE_ALL_LINUX: >
-          bash -lc 'if command -v apk >/dev/null 2>&1; then
-            apk update || true;
-            apk add --no-cache build-base cmake unixodbc-dev || true;
-          fi'
+          bash -lc '
+            if command -v yum >/dev/null 2>&1; then
+              yum -y update || true;
+              yum -y install unixODBC-devel cmake make gcc gcc-c++ ccache || true;
+            elif command -v dnf >/dev/null 2>&1; then
+              dnf -y update || true;
+              dnf -y install unixODBC-devel cmake make gcc gcc-c++ ccache || true;
+            elif command -v apk >/dev/null 2>&1; then
+              apk update || true;
+              apk add --no-cache bash build-base cmake unixodbc-dev ccache || true;
+            else
+              echo "No known pkg manager found";
+            fi
+          '
+
+        # Make `python` point at the active interpreter; enable parallel compile; run your script
         CIBW_BEFORE_BUILD: >
-          bash -lc 'PY=$(command -v python);
-          PIP=$(command -v pip || echo "");
-          ln -sf "$PY" /usr/local/bin/python;
-          if [ -n "$PIP" ]; then ln -sf "$PIP" /usr/local/bin/pip; fi;
-          bash build.sh'
+          bash -lc '
+            set -e;
+            echo "CWD=$(pwd)"; ls -la;
+            PY=$(command -v python); PIP=$(command -v pip || echo "");
+            ln -sf "$PY" /usr/local/bin/python;
+            if [ -n "$PIP" ]; then ln -sf "$PIP" /usr/local/bin/pip; fi;
+            chmod +x mssql_python/pybind/build.sh || true;
+            N=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4);
+            export MAKEFLAGS=-j$N CMAKE_BUILD_PARALLEL_LEVEL=$N;
+            echo "Parallel jobs: $N";
+            test -f mssql_python/pybind/build.sh || { echo "build.sh not found"; exit 127; }
+            bash mssql_python/pybind/build.sh
+          '
+
+        # Optional: quick import smoke (not full tests)
         CIBW_TEST_COMMAND: "python -c \"import mssql_python, mssql_python.ddbc_bindings; print('import ok')\""
+
+        # Extra env your native build can read
         CIBW_ENVIRONMENT_LINUX: "CMAKE_BUILD_TYPE=Release"
 
     # Publish wheels
