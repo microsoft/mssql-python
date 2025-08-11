@@ -368,7 +368,7 @@ jobs:
 #       displayName: 'Publish all wheels as artifacts'
 
 - job: BuildLinuxWheels
-  displayName: 'Build Linux wheels (manylinux + musllinux) [matrix]'
+  displayName: 'Build Linux wheels (manylinux + musllinux) [matrix, debug]'
   pool: { vmImage: 'ubuntu-latest' }
   timeoutInMinutes: 120
 
@@ -428,18 +428,18 @@ jobs:
       env:
         # Build Python 3.10–3.13 for this linux tag
         CIBW_BUILD: "cp310-$(LINUX_TAG)* cp311-$(LINUX_TAG)* cp312-$(LINUX_TAG)* cp313-$(LINUX_TAG)*"
-        # Current architecture
         CIBW_ARCHS_LINUX: "$(ARCHS)"
 
-        # Pin images (only the relevant one is used per lane)
+        # Pin images
         CIBW_MANYLINUX_X86_64_IMAGE: "$(IMAGE_MANYLINUX)"
         CIBW_MANYLINUX_AARCH64_IMAGE: "$(IMAGE_MANYLINUX)"
         CIBW_MUSLLINUX_X86_64_IMAGE: "$(IMAGE_MUSLLINUX)"
         CIBW_MUSLLINUX_AARCH64_IMAGE: "$(IMAGE_MUSLLINUX)"
 
-        # Install system headers/tools inside the container prior to any build
+        # OS-side build deps inside the container
         CIBW_BEFORE_ALL_LINUX: >
           bash -lc '
+            set -euxo pipefail;
             if command -v yum >/dev/null 2>&1; then
               yum -y update || true;
               yum -y install unixODBC-devel cmake make gcc gcc-c++ ccache || true;
@@ -451,26 +451,47 @@ jobs:
               apk add --no-cache bash build-base cmake unixodbc-dev ccache || true;
             else
               echo "No known pkg manager found";
-            fi
+            fi;
+            echo "==== System tool versions ====";
+            uname -a || true;
+            gcc --version || true;
+            cmake --version || true;
           '
 
-        # Make `python` point at the active interpreter; enable parallel compile; run your script
+        # Python-side deps + path fix + parallel compile + run your script (with DEBUG)
         CIBW_BEFORE_BUILD: >
           bash -lc '
-            set -e;
-            echo "CWD=$(pwd)"; ls -la;
-            PY=$(command -v python); PIP=$(command -v pip || echo "");
+            set -euxo pipefail;
+            echo "==== Context ====";
+            echo "CWD=$(pwd)";
+            ls -la;
+            echo "==== Active /opt/python entries ====";
+            ls -1 /opt/python || true;
+            echo "==== Bind python/pip ====";
+            PY=$(command -v python);
+            PIP=$(command -v pip || echo "");
+            echo "PY=$PY"; echo "PIP=$PIP";
             ln -sf "$PY" /usr/local/bin/python;
             if [ -n "$PIP" ]; then ln -sf "$PIP" /usr/local/bin/pip; fi;
+            echo "==== Python environment ====";
+            python -V;
+            python -c "import sys,sysconfig; print(sys.executable); print(sys.version); print(sysconfig.get_paths())";
+            echo "==== Installing Python build deps ====";
+            python -m pip install -U pip setuptools wheel pybind11;
+            echo "==== Repo layout ====";
+            ls -la mssql_python || true;
+            ls -la mssql_python/pybind || true;
             chmod +x mssql_python/pybind/build.sh || true;
+            echo "==== Parallelism ====";
             N=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4);
             export MAKEFLAGS=-j$N CMAKE_BUILD_PARALLEL_LEVEL=$N;
             echo "Parallel jobs: $N";
+            echo "==== Run build.sh ====";
             test -f mssql_python/pybind/build.sh || { echo "build.sh not found"; exit 127; }
             bash mssql_python/pybind/build.sh
           '
 
-        # Optional: quick import smoke (not full tests)
+        # (Optional) quick import check; remove if you want zero tests
         CIBW_TEST_COMMAND: "python -c \"import mssql_python, mssql_python.ddbc_bindings; print('import ok')\""
 
         # Extra env your native build can read
