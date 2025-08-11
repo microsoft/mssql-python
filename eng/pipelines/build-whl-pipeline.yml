@@ -735,23 +735,23 @@ jobs:
                 PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
                 ;;
               '3.13')
+                # Python 3.13 requires building from source
                 echo 'Python $(pythonVersion) requires building from source'
                 echo 'DEBUG: pythonVersion = $(pythonVersion)'
-
+                
                 # Install dependencies needed for Python source compilation
                 apt-get install -y build-essential libssl-dev zlib1g-dev libbz2-dev
                 apt-get install -y libreadline-dev libsqlite3-dev wget curl llvm
                 apt-get install -y libncurses5-dev libncursesw5-dev xz-utils tk-dev
                 apt-get install -y libffi-dev liblzma-dev python3-openssl
                 apt-get install -y libgdbm-dev libnss3-dev libedit-dev || echo 'Some optional dependencies not available'
-
-                # Verify compiler setup
-                echo 'Testing if gcc can compile...'
-                echo 'int main() { return 0; }' > /tmp/test.c
-                gcc /tmp/test.c -o /tmp/test.out || (echo 'ERROR: gcc cannot create executables' && exit 1)
-                rm /tmp/test.c /tmp/test.out
-
-                # Download Python source
+                
+                # Verify SSL development libraries are installed
+                echo 'Verifying SSL development libraries:'
+                dpkg -l | grep libssl-dev || echo 'libssl-dev not found'
+                pkg-config --exists openssl && echo 'OpenSSL pkg-config found' || echo 'OpenSSL pkg-config missing'
+                
+                # Download Python source - fix version mismatch
                 cd /tmp
                 PYTHON_FULL_VERSION='3.13.1'
                 PYTHON_URL=\"https://www.python.org/ftp/python/\$PYTHON_FULL_VERSION/Python-\$PYTHON_FULL_VERSION.tgz\"
@@ -759,62 +759,45 @@ jobs:
                 wget \$PYTHON_URL -O python-\$PYTHON_FULL_VERSION.tgz
                 tar -xzf python-\$PYTHON_FULL_VERSION.tgz
                 cd Python-\$PYTHON_FULL_VERSION
-
+                
+                # Configure and compile Python with SSL support explicitly enabled
                 echo 'Configuring Python build with SSL support'
-
+                # Disable optimizations for ARM64 builds to speed up compilation in emulated environment
                 if [ '$(targetArch)' = 'arm64' ]; then
-                  echo 'ARM64 build detected - using safer flags to avoid GCC segfaults'
-
-                  # Try GCC 13 if available
-                  apt-get install -y gcc-13 g++-13 || echo 'GCC 13 not available, using default gcc'
-
-                  export CC=$(command -v gcc-13 || echo gcc)
-                  export CXX=$(command -v g++-13 || echo g++)
-
-                  # Safer flags to avoid register/memory pressure
-                  export CFLAGS='-O2 -fno-lto -fno-tree-vectorize -fno-var-tracking-assignments'
-                  export CPPFLAGS='-I/usr/include'
-                  export LDFLAGS='-L/usr/lib -Wl,-rpath,/usr/local/lib'
-
-                  ./configure \
-                    --prefix=/usr/local \
-                    --with-ensurepip=install \
-                    --enable-loadable-sqlite-extensions \
-                    --with-openssl=/usr
-                  
-                  echo 'Compiling Python with make -j2 for stability'
-                  make -j2
+                  echo 'ARM64 build detected - disabling optimizations for faster compilation'
+                  ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions --with-openssl=/usr
                 else
-                  ./configure \
-                    --prefix=/usr/local \
-                    --with-ensurepip=install \
-                    --enable-loadable-sqlite-extensions \
-                    --enable-optimizations \
-                    --with-openssl=/usr
-
-                  make -j$(nproc)
+                  ./configure --prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions --enable-optimizations --with-openssl=/usr
                 fi
-
+                
+                echo 'Compiling Python (this may take several minutes - ARM64 builds are slower due to emulation)'
+                make -j\$(nproc)
+                
                 echo 'Installing Python'
                 make altinstall
-
-                # Symlinks for consistency
+                
+                # Create symlinks - altinstall creates python3.13, we create python symlink
                 ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python
-                ln -sf /usr/local/bin/pip$(pythonVersion) /usr/local/bin/pip || true
-
+                
+                # Verify installation and SSL support
                 echo 'Verifying Python 3.13 installation:'
                 ls -l /usr/local/bin/python$(pythonVersion) || echo 'ERROR: Python $(pythonVersion) not found'
-                /usr/local/bin/python$(pythonVersion) --version || echo 'Python did not install correctly'
-
-                echo 'Testing SSL and encodings support:'
-                /usr/local/bin/python$(pythonVersion) -c 'import ssl; print("SSL support:", ssl.OPENSSL_VERSION)' || echo 'WARNING: SSL not available'
-                /usr/local/bin/python$(pythonVersion) -c 'import encodings; print("Encodings OK")' || echo 'WARNING: Encodings module not found'
-
+                /usr/local/bin/python$(pythonVersion) --version
+                echo 'Testing SSL support in Python:'
+                /usr/local/bin/python$(pythonVersion) -c 'import ssl; print(\"SSL support:\", ssl.OPENSSL_VERSION)' || echo 'WARNING: SSL module not available'
+                
                 # Clean up
                 cd /
                 rm -rf /tmp/Python-\$PYTHON_FULL_VERSION /tmp/python-\$PYTHON_FULL_VERSION.tgz
-
+                
                 echo 'Successfully built and installed Python $(pythonVersion) from source'
+                PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
+                ;;
+              *)
+                echo 'Unsupported Python version $(pythonVersion) for Debian, using python3'
+                apt-get install -y python3 python3-dev python3-venv
+                ln -sf /usr/bin/python3 /usr/local/bin/python$(pythonVersion)
+                ln -sf /usr/bin/python3 /usr/local/bin/python
                 PYTHON_CMD=/usr/local/bin/python$(pythonVersion)
                 ;;
             esac
@@ -851,7 +834,7 @@ jobs:
         docker exec build-container-$(distroName)-$(targetArch) sh -c "
           # Update package index
           apk update
-
+          
           # Install base build tools and system dependencies
           apk add --no-cache \
             build-base \
@@ -868,13 +851,13 @@ jobs:
             openssl-dev \
             zlib-dev \
             patchelf
-
+          
           # Python installation - hybrid approach
           if [ '$(pythonVersion)' = '3.12' ]; then
             # Use pre-available Python 3.12 from Alpine packages
             echo 'Using pre-available Python 3.12 from Alpine packages'
             apk add --no-cache py3-pip python3-dev
-
+            
             # Create symlinks for Python compatibility
             ln -sf python3 /usr/bin/python || true
             ln -sf pip3 /usr/bin/pip || true
@@ -882,37 +865,26 @@ jobs:
             # Build Python from source for other versions (3.10, 3.11, 3.13)
             echo 'Building Python $(pythonVersion) from source for Alpine Linux'
             apk add --no-cache tar xz ncurses-dev sqlite-dev readline-dev tk-dev gdbm-dev db-dev bzip2-dev xz-dev linux-headers
-
+            
             # Download and compile Python from source
             cd /tmp
             wget https://www.python.org/ftp/python/$(pythonVersion).1/Python-$(pythonVersion).1.tgz
             tar xzf Python-$(pythonVersion).1.tgz
             cd Python-$(pythonVersion).1
-
+            
             # Configure and build Python - Alpine/musl specific configuration
             # Set cache variables to help configure detect musl libc types correctly
             export ac_cv_file__dev_ptmx=yes
             export ac_cv_file__dev_ptc=no
             export ac_cv_have_long_long_format=yes
+            # Fix LONG_BIT detection for musl libc on ARM64
             export ac_cv_sizeof_long=8
             export ac_cv_sizeof_size_t=8
             export ac_cv_sizeof_pid_t=4
             export ac_cv_sizeof_void_p=8
-            export ac_cv_sizeof_long_double=16
+            # Fix float word ordering detection for ARM64
             export ax_cv_c_float_words_bigendian=no
-
-            # 🛠️ Apply GCC stability fixes for ARM64: safer build flags
-            export CFLAGS=\"-O2 -fno-lto -fno-tree-vectorize -fno-var-tracking-assignments -DLONG_BIT=64\"
-            export LDFLAGS=\"-L/usr/lib -Wl,-rpath,/usr/local/lib\"
-            export CPPFLAGS=\"-I/usr/include\"
-
-            # ❌ Skip problematic crypto module (_hacl/libHacl_Hash_SHA2.a)
-            export CONFIG_SITE=config.site
-            echo 'ac_cv_module__hacl_hash_sha2=no' > config.site
-
-            # Clean up broken installs if any
-            rm -rf /usr/local/lib/python$(pythonVersion) /usr/local/bin/python$(pythonVersion) /usr/local/include/python$(pythonVersion)*
-
+            
             ./configure \
               --prefix=/usr/local \
               --enable-shared \
@@ -920,43 +892,44 @@ jobs:
               --disable-ipv6 \
               --build=aarch64-alpine-linux-musl \
               --host=aarch64-alpine-linux-musl \
-              --target=aarch64-alpine-linux-musl
-
-            # Build Python with reduced parallelism to prevent QEMU segfaults
-            echo 'Building Python $(pythonVersion) with safer flags and -j2 for stability'
-            make -j2
+              --target=aarch64-alpine-linux-musl \
+              CPPFLAGS='-I/usr/include -DLONG_BIT=64' \
+              LDFLAGS='-L/usr/lib -Wl,-rpath,/usr/local/lib' \
+              CFLAGS='-DLONG_BIT=64'
+            
+            # Build Python without optimizations to avoid gcc segfault on ARM64
+            echo 'Building Python $(pythonVersion) without PGO optimizations to avoid compilation issues'
+            make -j\$(nproc)
+            
             make altinstall
-
+            
             # Set up environment for proper Python operation
             export PYTHONHOME=/usr/local
             export PYTHONPATH=/usr/local/lib/python$(pythonVersion)
             export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH
-
+            
             # Create symlinks for easier access
             ln -sf /usr/local/bin/python$(pythonVersion) /usr/local/bin/python
             ln -sf /usr/local/bin/pip$(pythonVersion) /usr/local/bin/pip
-
+            
             # Set up persistent environment variables for source-compiled Python
             echo 'export PYTHONHOME=/usr/local' >> /etc/profile
             echo 'export PYTHONPATH=/usr/local/lib/python$(pythonVersion)' >> /etc/profile
             echo 'export LD_LIBRARY_PATH=/usr/local/lib:\$LD_LIBRARY_PATH' >> /etc/profile
-
-            # ✅ Verify Python installation and core modules
+            
+            # Verify Python installation and modules
             echo 'Verifying Python $(pythonVersion) installation:'
             ls -la /usr/local/bin/python$(pythonVersion)
             /usr/local/bin/python$(pythonVersion) --version
-
             echo 'Testing SSL and encodings support:'
             /usr/local/bin/python$(pythonVersion) -c 'import ssl; print(\"SSL support: OK\")'
-            /usr/local/bin/python$(pythonVersion) -c 'import encodings; print(\"Encodings support: OK\")'
-
             echo 'Python installation successful'
-
+            
             # Clean up build files
             cd /
             rm -rf /tmp/Python-$(pythonVersion).1*
           fi
-
+          
           # Verify installation and architecture
           echo 'Architecture:' \$(uname -m)
           echo 'Alpine version:' \$(cat /etc/alpine-release)
