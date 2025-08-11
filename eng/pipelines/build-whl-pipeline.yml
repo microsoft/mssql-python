@@ -754,11 +754,11 @@ jobs:
                 # Download Python source
                 cd /tmp
                 PYTHON_FULL_VERSION='3.13.1'
-                PYTHON_URL="https://www.python.org/ftp/python/$PYTHON_FULL_VERSION/Python-$PYTHON_FULL_VERSION.tgz"
-                echo "Downloading Python from $PYTHON_URL"
-                wget $PYTHON_URL -O python-$PYTHON_FULL_VERSION.tgz
-                tar -xzf python-$PYTHON_FULL_VERSION.tgz
-                cd Python-$PYTHON_FULL_VERSION
+                PYTHON_URL=\"https://www.python.org/ftp/python/\$PYTHON_FULL_VERSION/Python-\$PYTHON_FULL_VERSION.tgz\"
+                echo \"Downloading Python from \$PYTHON_URL\"
+                wget \$PYTHON_URL -O python-\$PYTHON_FULL_VERSION.tgz
+                tar -xzf python-\$PYTHON_FULL_VERSION.tgz
+                cd Python-\$PYTHON_FULL_VERSION
 
                 echo 'Configuring Python build with SSL support'
 
