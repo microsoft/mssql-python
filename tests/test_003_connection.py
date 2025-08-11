@@ -554,7 +554,7 @@ def test_setencoding_invalid_encoding(db_connection):
     with pytest.raises(ProgrammingError) as exc_info:
         db_connection.setencoding(encoding='invalid-encoding-name')
     
-    assert "Unknown encoding" in str(exc_info.value), "Should raise ProgrammingError for invalid encoding"
+    assert "Unsupported encoding" in str(exc_info.value), "Should raise ProgrammingError for invalid encoding"
     assert "invalid-encoding-name" in str(exc_info.value), "Error message should include the invalid encoding name"
 
 def test_setencoding_invalid_ctype(db_connection):
@@ -575,7 +575,7 @@ def test_setencoding_closed_connection(conn_str):
     with pytest.raises(InterfaceError) as exc_info:
         temp_conn.setencoding(encoding='utf-8')
     
-    assert "closed connection" in str(exc_info.value).lower(), "Should raise InterfaceError for closed connection"
+    assert "Connection is closed" in str(exc_info.value), "Should raise InterfaceError for closed connection"
 
 def test_setencoding_constants_access():
     """Test that SQL_CHAR and SQL_WCHAR constants are accessible."""
