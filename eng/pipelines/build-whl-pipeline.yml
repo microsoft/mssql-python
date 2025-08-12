@@ -115,8 +115,21 @@ jobs:
         buildVersionToDownload: 'specific'
         buildId: '122430'
         artifactName: 'mssql-python-arm64-libs'
-        downloadPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
-      displayName: 'Download ARM64 Python libs from latest successful run on branches'
+        downloadPath: '$(Build.SourcesDirectory)\temp-arm64'  # Download to temp location
+      displayName: 'Download ARM64 Python libs'
+
+    - script: |
+        echo "Setting up ARM64 Python library structure..."
+        mkdir "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64" 2>nul || echo "Directory exists"
+        copy "$(Build.SourcesDirectory)\temp-arm64\mssql-python-arm64-libs\*" "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64\"
+        
+        echo "ARM64 Python libraries setup complete:"
+        dir "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64"
+        
+        echo "Cleaning up temp directory..."
+        rmdir /s /q "$(Build.SourcesDirectory)\temp-arm64"
+      displayName: 'Setup ARM64 Python library structure'
+      condition: eq(variables['targetArch'], 'arm64')
 
     # Build the PYD file by calling build.bat
     - script: |
