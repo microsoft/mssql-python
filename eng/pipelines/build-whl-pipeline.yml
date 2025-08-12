@@ -368,7 +368,7 @@ jobs:
 #       displayName: 'Publish all wheels as artifacts'
 
 - job: BuildLinuxWheels
-  displayName: 'Build Linux wheels (manylinux + musllinux) [matrix]'
+  displayName: 'Build Linux wheels (manylinux/musllinux, x86_64/aarch64) — explicit Docker'
   pool: { vmImage: 'ubuntu-latest' }
   timeoutInMinutes: 120
 
@@ -376,143 +376,144 @@ jobs:
     matrix:
       manylinux_x86_64:
         LINUX_TAG: 'manylinux'
-        ARCHS: 'x86_64'
-        IMAGE_MANYLINUX: 'manylinux_2_28'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+        IMAGE: 'quay.io/pypa/manylinux_2_28_x86_64'
       manylinux_aarch64:
         LINUX_TAG: 'manylinux'
-        ARCHS: 'aarch64'
-        IMAGE_MANYLINUX: 'manylinux_2_28'
+        ARCH: 'aarch64'
+        DOCKER_PLATFORM: 'linux/arm64'
+        IMAGE: 'quay.io/pypa/manylinux_2_28_aarch64'
       musllinux_x86_64:
         LINUX_TAG: 'musllinux'
-        ARCHS: 'x86_64'
-        IMAGE_MUSLLINUX: 'musllinux_1_2'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+        IMAGE: 'quay.io/pypa/musllinux_1_2_x86_64'
       musllinux_aarch64:
         LINUX_TAG: 'musllinux'
-        ARCHS: 'aarch64'
-        IMAGE_MUSLLINUX: 'musllinux_1_2'
+        ARCH: 'aarch64'
+        DOCKER_PLATFORM: 'linux/arm64'
+        IMAGE: 'quay.io/pypa/musllinux_1_2_aarch64'
 
   steps:
     - checkout: self
       fetchDepth: 0
 
-    # Allow aarch64 builds on x86_64 agents
+    # Enable QEMU so we can run aarch64 containers on the x86_64 agent
     - script: |
         sudo docker run --rm --privileged tonistiigi/binfmt --install all
       displayName: 'Enable QEMU (for aarch64)'
 
-    # Install cibuildwheel via pipx
+    # Prep artifact dirs
     - script: |
-        python3 -m pip install -U pip pipx
-        pipx ensurepath
-        pipx install cibuildwheel
-      displayName: 'Install cibuildwheel'
-
-    # Prep output dirs
-    - script: |
-        rm -rf wheelhouse \
-               $(Build.ArtifactStagingDirectory)/dist \
-               $(Build.ArtifactStagingDirectory)/ddbc-bindings
+        rm -rf $(Build.ArtifactStagingDirectory)/dist $(Build.ArtifactStagingDirectory)/ddbc-bindings
         mkdir -p $(Build.ArtifactStagingDirectory)/dist
-        mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings
-      displayName: 'Prep output directories'
+        mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)
+      displayName: 'Prepare artifact directories'
 
-    # Build for current matrix lane
+    # Start a long-lived container for this lane
+    - script: |
+        docker run -d --name build-$(LINUX_TAG)-$(ARCH) \
+          --platform $(DOCKER_PLATFORM) \
+          -v $(Build.SourcesDirectory):/workspace \
+          -w /workspace \
+          $(IMAGE) \
+          tail -f /dev/null
+      displayName: 'Start $(LINUX_TAG) $(ARCH) container'
+
+    # Install OS build deps inside the container
     - script: |
         set -euxo pipefail
-        echo "Building for $(LINUX_TAG) / $(ARCHS)"
-        cibuildwheel --platform linux
-        # Collect wheels
-        cp -v wheelhouse/*.whl $(Build.ArtifactStagingDirectory)/dist/ || true
-        # Collect compiled .so from your package dir
-        find mssql_python -maxdepth 2 -name "*.so" -exec cp -v {} $(Build.ArtifactStagingDirectory)/ddbc-bindings/ \; || true
-      displayName: 'cibuildwheel ($(LINUX_TAG) / $(ARCHS))'
-      env:
-        # Build Python 3.10–3.13 for this linux tag
-        CIBW_BUILD: "cp310-$(LINUX_TAG)* cp311-$(LINUX_TAG)* cp312-$(LINUX_TAG)* cp313-$(LINUX_TAG)*"
-        CIBW_ARCHS_LINUX: "$(ARCHS)"
-
-        # Pin images
-        CIBW_MANYLINUX_X86_64_IMAGE: "$(IMAGE_MANYLINUX)"
-        CIBW_MANYLINUX_AARCH64_IMAGE: "$(IMAGE_MANYLINUX)"
-        CIBW_MUSLLINUX_X86_64_IMAGE: "$(IMAGE_MUSLLINUX)"
-        CIBW_MUSLLINUX_AARCH64_IMAGE: "$(IMAGE_MUSLLINUX)"
-
-        # More verbose cibuildwheel logs
-        CIBW_BUILD_VERBOSITY: "3"
-
-        # OS-side build deps inside the container
-        CIBW_BEFORE_ALL_LINUX: >
-          bash -lc '
+        if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
+          docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc '
             set -euxo pipefail;
             if command -v yum >/dev/null 2>&1; then
               yum -y update || true;
-              yum -y install unixODBC-devel cmake make gcc gcc-c++ ccache || true;
+              yum -y install unixODBC-devel cmake make gcc gcc-c++ || true;
             elif command -v dnf >/dev/null 2>&1; then
               dnf -y update || true;
-              dnf -y install unixODBC-devel cmake make gcc gcc-c++ ccache || true;
-            elif command -v apk >/dev/null 2>&1; then
-              apk update || true;
-              apk add --no-cache bash build-base cmake unixodbc-dev ccache || true;
-            else
-              echo "No known pkg manager found";
+              dnf -y install unixODBC-devel cmake make gcc gcc-c++ || true;
             fi;
-            echo "==== System tool versions ====";
-            uname -a || true;
-            gcc --version || true;
-            cmake --version || true;
+            gcc --version || true; cmake --version || true;
           '
-
-        # Python deps + robust path + fail-fast + run your script (all logs to console)
-        CIBW_BEFORE_BUILD: >
-          bash -lc '
+        else
+          docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc '
             set -euxo pipefail;
-
-            echo "==== Context ====";
-            echo "CWD=$(pwd)";
-            ls -la;
-
-            echo "==== Active /opt/python entries ====";
-            ls -1 /opt/python || true;
-
-            echo "==== Bind python/pip ====";
-            PY=$(command -v python);
-            PIP=$(command -v pip || echo "");
-            echo "PY=$PY"; echo "PIP=$PIP";
-            ln -sf "$PY" /usr/local/bin/python;
-            if [ -n "$PIP" ]; then ln -sf "$PIP" /usr/local/bin/pip; fi;
-
-            echo "==== Python environment ====";
-            python -V;
-            python -c "import sys,sysconfig; print(sys.executable); print(sys.version); print(sysconfig.get_platform()); print(sysconfig.get_paths())";
-
-            echo "==== Installing Python build deps ====";
-            python -m pip install -U pip setuptools wheel pybind11;
-
-            echo "==== Repo layout ====";
-            ls -la {project} || true;
-            ls -la {project}/mssql_python || true;
-            ls -la {project}/mssql_python/pybind || true;
-
-            chmod +x {project}/mssql_python/pybind/build.sh || true;
-
-            N=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4);
-            export MAKEFLAGS=-j$N CMAKE_BUILD_PARALLEL_LEVEL=$N;
-            echo "Parallel jobs: $N";
-
-            echo "==== Run build.sh ====";
-            test -f {project}/mssql_python/pybind/build.sh || { echo "build.sh not found"; exit 127; }
-
-            cd {project}
-            bash -c "set -euxo pipefail; bash mssql_python/pybind/build.sh"
+            apk update || true;
+            apk add --no-cache bash build-base cmake unixodbc-dev || true;
+            gcc --version || true; cmake --version || true;
           '
+        fi
+      displayName: 'Install system build dependencies'
 
-        # Optional: keep quick import smoke (remove if you want zero checks)
-        CIBW_TEST_COMMAND: "python -c \"import mssql_python, mssql_python.ddbc_bindings; print('import ok')\""
+    # Build wheels for cp310..cp313 using the prebuilt /opt/python interpreters
+    - script: |
+        set -euxo pipefail
+        if [[ "$(LINUX_TAG)" == "manylinux" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
 
-        # Extra env your native build can read
-        CIBW_ENVIRONMENT_LINUX: "CMAKE_BUILD_TYPE=Release"
+        # Ensure dist exists inside the container
+        docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
 
-    # Publish wheels
+        # Loop through CPython versions present in the image
+        for PYBIN in cp310 cp311 cp312 cp313; do
+          echo "=== Building for $PYBIN on $(LINUX_TAG)/$(ARCH) ==="
+          if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
+            docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc "
+              set -euxo pipefail;
+              PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
+              test -x \$PY || { echo 'Python \$PY missing'; exit 0; }  # skip if not present
+              ln -sf \$PY /usr/local/bin/python;
+              python -m pip install -U pip setuptools wheel pybind11;
+              echo 'python:' \$(python -V); which python;
+              # run your existing script from repo root
+              cd /workspace;
+              bash mssql_python/pybind/build.sh;
+              # build wheel
+              cd /workspace;
+              python setup.py bdist_wheel;
+              # repair/tag wheel for manylinux
+              for W in /workspace/dist/*.whl; do auditwheel repair -w /workspace/dist \"\$W\" || true; done
+            "
+          else
+            docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc "
+              set -euxo pipefail;
+              PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
+              test -x \$PY || { echo 'Python \$PY missing'; exit 0; }  # skip if not present
+              ln -sf \$PY /usr/local/bin/python;
+              python -m pip install -U pip setuptools wheel pybind11;
+              echo 'python:' \$(python -V); which python;
+              cd /workspace;
+              bash mssql_python/pybind/build.sh;
+              cd /workspace;
+              python setup.py bdist_wheel;
+              # repair/tag wheel for musllinux
+              for W in /workspace/dist/*.whl; do auditwheel repair -w /workspace/dist \"\$W\" || true; done
+            "
+          fi
+        done
+      displayName: 'Run build.sh and build wheels for cp310–cp313'
+
+    # Copy artifacts back to host
+    - script: |
+        set -euxo pipefail
+        # Wheels
+        docker cp build-$(LINUX_TAG)-$(ARCH):/workspace/dist/. $(Build.ArtifactStagingDirectory)/dist/ || echo "No wheels to copy"
+        # .so files (from your package directory)
+        docker exec build-$(LINUX_TAG)-$(ARCH) $([[ "$(LINUX_TAG)" == "manylinux" ]] && echo bash -lc || echo sh -lc) 'ls -la /workspace/mssql_python || true; ls -la /workspace/mssql_python/pybind || true'
+        mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)
+        docker cp build-$(LINUX_TAG)-$(ARCH):/workspace/mssql_python/. $(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)/ || echo "No package dir to copy"
+        # Keep only .so files in that folder (prune others)
+        find "$(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)" -type f ! -name "*.so" -delete || true
+      displayName: 'Copy wheels and .so back to host'
+
+    # Cleanup container
+    - script: |
+        docker stop build-$(LINUX_TAG)-$(ARCH) || true
+        docker rm   build-$(LINUX_TAG)-$(ARCH) || true
+      displayName: 'Clean up container'
+      condition: always()
+
+    # Publish wheels (exact name you wanted)
     - task: PublishBuildArtifacts@1
       condition: succeededOrFailed()
       inputs:
@@ -521,7 +522,7 @@ jobs:
         publishLocation: 'Container'
       displayName: 'Publish wheels as artifacts'
 
-    # Publish .so files
+    # Publish compiled .so files (exact name you wanted)
     - task: PublishBuildArtifacts@1
       condition: succeededOrFailed()
       inputs:
