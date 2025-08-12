@@ -434,10 +434,10 @@ jobs:
             set -euxo pipefail;
             if command -v yum >/dev/null 2>&1; then
               yum -y update || true;
-              yum -y install unixODBC-devel cmake make gcc gcc-c++ || true;
+              yum -y install unixODBC-devel cmake make gcc gcc-c++ krb5-libs || true;
             elif command -v dnf >/dev/null 2>&1; then
               dnf -y update || true;
-              dnf -y install unixODBC-devel cmake make gcc gcc-c++ || true;
+              dnf -y install unixODBC-devel cmake make gcc gcc-c++ krb5-libs || true;
             fi;
             gcc --version || true; cmake --version || true;
           '
@@ -445,7 +445,7 @@ jobs:
           docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc '
             set -euxo pipefail;
             apk update || true;
-            apk add --no-cache bash build-base cmake unixodbc-dev || true;
+            apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs || true;
             gcc --version || true; cmake --version || true;
           '
         fi
