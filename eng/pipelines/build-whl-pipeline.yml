@@ -721,7 +721,7 @@ jobs:
         if [[ "$(BASE_IMAGE)" == alpine* ]]; then
           echo "Setting up Alpine Linux..."
           docker exec test-$(ARCH) sh -c "
-            apk update && apk add --no-cache python3 py3-pip python3-dev unixodbc-dev curl libltdl
+            apk update && apk add --no-cache python3 py3-pip python3-dev unixodbc-dev curl libtool libltdl
             python3 -m venv /venv
             /venv/bin/pip install pytest
           "
