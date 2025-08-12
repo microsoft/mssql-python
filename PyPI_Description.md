@@ -9,7 +9,7 @@ We are making progress - The Public Preview of our driver is now available! This
 ### What's Included:
 
 - Everything from previous releases
-- **Alpine Linux Support:** Added full support for Alpine Linux distribution with specialized driver handling and fixes for musl libc compatibility.
+- **Alpine Linux Support:** Added full support for Alpine Linux distribution (musllinux) with specialized driver handling and fixes for musl libc compatibility.
 - **Connection Management Improvements:** Fixed autocommit to be False by default and added automatic rollback on connection close for better transaction control.
 - **PyODBC Compatibility:** Enhanced type objects and constructor compatibility with pyodbc for seamless migration and interoperability.
 
