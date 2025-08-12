@@ -111,10 +111,10 @@ jobs:
         buildType: 'specific'
         project: '$(System.TeamProject)'
         definition: 2162
-        buildVersionToDownload: '122430'  # Use specific build version for ARM64 libs
+        buildVersionToDownload: 'latest'
         artifactName: 'mssql-python-arm64-libs'
         targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
-      displayName: 'Download ARM64 Python libs from specific successful run on branches'
+      displayName: 'Download ARM64 Python libs from latest successful run on branches'
 
     # Build the PYD file by calling build.bat
     - script: |
@@ -373,7 +373,7 @@ jobs:
       displayName: 'Publish all wheels as artifacts'
 
 - job: BuildLinuxWheels
-  displayName: 'Build Linux wheels (manylinux/musllinux, x86_64/aarch64) — explicit Docker'
+  displayName: 'Build Linux -'
   pool: { vmImage: 'ubuntu-latest' }
   timeoutInMinutes: 120
 
@@ -589,7 +589,7 @@ jobs:
 
 # Job to test the built wheels on different Linux distributions with SQL Server
 - job: TestWheelsOnLinux
-  displayName: 'Test Wheels with SQL Server'
+  displayName: 'Pytests on Linux -'
   dependsOn: BuildLinuxWheels
   condition: succeeded('BuildLinuxWheels')  # Only run if BuildLinuxWheels succeeded
   pool: { vmImage: 'ubuntu-latest' }
@@ -716,7 +716,7 @@ jobs:
         if [[ "$(BASE_IMAGE)" == alpine* ]]; then
           echo "Setting up Alpine Linux..."
           docker exec test-$(ARCH) sh -c "
-            apk update && apk add --no-cache python3 py3-pip python3-dev unixodbc-dev curl libtool libltdl krb5-libs krb5-dev
+            apk update && apk add --no-cache python3 py3-pip python3-dev unixodbc-dev curl libtool libltdl krb5-libs
             python3 -m venv /venv
             /venv/bin/pip install pytest
           "
