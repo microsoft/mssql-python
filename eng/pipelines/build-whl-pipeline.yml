@@ -505,8 +505,9 @@ jobs:
               cd /workspace;
               python setup.py bdist_wheel;
 
-              # repair/tag wheel
-              for W in /workspace/dist/*.whl; do auditwheel repair -w /workspace/dist \"\$W\" || true; done
+              # TODO: repair/tag wheel, removing this since auditwheel is trying to find/link libraries which we're not packaging, e.g. libk5crypto, libkeyutils etc. - since it uses ldd for cross-verification
+              # We're assuming that this will be provided by OS and not bundled in the wheel
+              # for W in /workspace/dist/*.whl; do auditwheel repair -w /workspace/dist \"\$W\" || true; done
             "
           else
             docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc "
@@ -591,3 +592,163 @@ jobs:
         ArtifactName: 'mssql-python-ddbc-bindings'
         publishLocation: 'Container'
       displayName: 'Publish .so files as artifacts'
+
+# Job to test the built wheels on different Linux distributions with SQL Server
+- job: TestWheelsOnLinux
+  displayName: 'Test Wheels with SQL Server'
+  dependsOn: BuildLinuxWheels
+  condition: succeeded('BuildLinuxWheels')  # Only run if BuildLinuxWheels succeeded
+  pool: { vmImage: 'ubuntu-latest' }
+  timeoutInMinutes: 60
+
+  strategy:
+    matrix:
+      # x86_64
+      debian12:
+        BASE_IMAGE: 'debian:12-slim'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+      rhel_ubi9:
+        BASE_IMAGE: 'registry.access.redhat.com/ubi9/ubi:latest'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+      alpine320:
+        BASE_IMAGE: 'alpine:3.20'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+      # arm64
+      debian12_arm64:
+        BASE_IMAGE: 'debian:12-slim'
+        ARCH: 'arm64'
+        DOCKER_PLATFORM: 'linux/arm64'
+      rhel_ubi9_arm64:
+        BASE_IMAGE: 'registry.access.redhat.com/ubi9/ubi:latest'
+        ARCH: 'arm64'
+        DOCKER_PLATFORM: 'linux/arm64'
+      alpine320_arm64:
+        BASE_IMAGE: 'alpine:3.20'
+        ARCH: 'arm64'
+        DOCKER_PLATFORM: 'linux/arm64'
+
+  steps:
+    - checkout: none  # We only need artifacts, not source
+
+    - task: DownloadBuildArtifacts@0
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        artifactName: 'mssql-python-wheels-dist'
+        downloadPath: '$(System.ArtifactsDirectory)'
+      displayName: 'Download wheel artifacts'
+
+    # Verify we actually have wheels before proceeding
+    - script: |
+        set -euxo pipefail
+        WHEEL_DIR="$(System.ArtifactsDirectory)/mssql-python-wheels-dist"
+        if [ ! -d "$WHEEL_DIR" ] || [ -z "$(ls -A $WHEEL_DIR/*.whl 2>/dev/null)" ]; then
+          echo "ERROR: No wheel files found in $WHEEL_DIR"
+          echo "Contents of artifacts directory:"
+          find "$(System.ArtifactsDirectory)" -type f -name "*.whl" || echo "No .whl files found anywhere"
+          exit 1
+        fi
+        echo "Found wheel files:"
+        ls -la "$WHEEL_DIR"/*.whl
+      displayName: 'Verify wheel artifacts exist'
+
+    # Start SQL Server container for testing
+    - script: |
+        set -euxo pipefail
+        docker run -d --name sqlserver \
+          --network bridge \
+          -e ACCEPT_EULA=Y \
+          -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+          -p 1433:1433 \
+          mcr.microsoft.com/mssql/server:2022-latest
+
+        # Wait for SQL Server to be ready
+        echo "Waiting for SQL Server to start..."
+        for i in {1..30}; do
+          if docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "SELECT 1" >/dev/null 2>&1; then
+            echo "SQL Server is ready!"
+            break
+          fi
+          echo "Attempt $i/30: SQL Server not ready yet..."
+          sleep 3
+        done
+
+        # Create test database
+        docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost -U SA -P "$(DB_PASSWORD)" -C \
+          -Q "CREATE DATABASE TestDB"
+      displayName: 'Start SQL Server and create test database'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
+
+    # Test wheels on target OS
+    - script: |
+        set -euxo pipefail
+        
+        # Start test container
+        docker run -d --name test-$(ARCH) \
+          --platform $(DOCKER_PLATFORM) \
+          --network bridge \
+          -v $(System.ArtifactsDirectory):/artifacts:ro \
+          $(BASE_IMAGE) \
+          tail -f /dev/null
+
+        # Install Python and dependencies based on OS
+        if [[ "$(BASE_IMAGE)" == alpine* ]]; then
+          echo "Setting up Alpine Linux..."
+          docker exec test-$(ARCH) sh -c "
+            apk update && apk add --no-cache python3 py3-pip unixodbc-dev curl
+            python3 -m pip install --break-system-packages pytest
+          "
+        else
+          echo "Setting up Debian/Ubuntu..."
+          docker exec test-$(ARCH) bash -c "
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y python3 python3-pip unixodbc-dev curl
+            python3 -m pip install pytest
+          "
+        fi
+
+        # Install the wheel (find the appropriate one for this architecture)
+        if [[ "$(BASE_IMAGE)" == alpine* ]]; then
+          SHELL_CMD="sh -c"
+          WHEEL_PATTERN="*musllinux*$(ARCH)*.whl"
+        else
+          SHELL_CMD="bash -c"
+          WHEEL_PATTERN="*manylinux*$(ARCH)*.whl"
+        fi
+
+        docker exec test-$(ARCH) $SHELL_CMD "
+          cd /artifacts/mssql-python-wheels-dist
+          ls -la *.whl
+          WHEEL=\$(ls $WHEEL_PATTERN | head -1)
+          if [ -z \"\$WHEEL\" ]; then
+            echo 'No suitable wheel found for $(BASE_IMAGE) $(ARCH)'
+            exit 1
+          fi
+          echo \"Installing wheel: \$WHEEL\"
+          python3 -m pip install \"\$WHEEL\"
+        "
+
+        # Run pytest (copy test files if needed)
+        docker exec test-$(ARCH) $SHELL_CMD "
+          python3 -c 'import mssql_python; print(\"Package imported successfully\")'
+          # If you have specific tests to run, add them here
+          # python3 -m pytest /path/to/tests
+        "
+
+      displayName: 'Test wheel installation and basic functionality on $(BASE_IMAGE)'
+      env:
+        DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+    # Cleanup
+    - script: |
+        docker stop test-$(ARCH) sqlserver || true
+        docker rm test-$(ARCH) sqlserver || true
+      displayName: 'Cleanup containers'
+      condition: always()
