@@ -729,47 +729,39 @@ jobs:
         elif [[ "$(BASE_IMAGE)" == *ubi* ]] || [[ "$(BASE_IMAGE)" == *rocky* ]] || [[ "$(BASE_IMAGE)" == *alma* ]]; then
           echo "Setting up RHEL-based system..."
           docker exec test-$(ARCH) bash -c "
-            echo 'Installing latest Python on UBI/RHEL...'
+            set -euo pipefail
+            echo 'Installing Python on UBI/RHEL...'
             if command -v dnf >/dev/null; then
-              # Enable correct UBI repos (names differ from Rocky/Alma)
-              dnf config-manager --enable ubi-9-baseos || true
-              dnf config-manager --enable ubi-9-appstream || true
-              dnf config-manager --enable ubi-9-codeready-builder || true
-
-              # Clean & refresh metadata
+              # Refresh metadata (UBI repos are already configured in the image)
               dnf clean all
               rm -rf /var/cache/dnf
               dnf -y makecache
 
-              # (Optional) prove Python versions are visible
+              # (Optional) show availability
               dnf list --showduplicates python3.11 python3.12 || true
-              # Check what Python versions are available
-              echo 'Available Python packages after EPEL:'
-              dnf list available | grep -E '^python3' | head -10 || true
-              
-              # Try to install Python 3.11 or 3.12, fallback to 3.10
-              if dnf install -y python3.12 python3.12-pip python3.12-venv unixODBC-devel curl; then
-                python3.12 -m venv /venv
-                echo 'Successfully installed Python 3.12'
-              elif dnf install -y python3.11 python3.11-pip python3.11-venv unixODBC-devel curl; then
-                python3.11 -m venv /venv
-                echo 'Successfully installed Python 3.11'
-              elif dnf install -y python3.10 python3.10-pip python3.10-venv unixODBC-devel curl; then
-                python3.10 -m venv /venv
-                echo 'Successfully installed Python 3.10'
+
+              # Try 3.12 → 3.11 → default 3.9; venv module is built-in, no -venv RPM needed
+              if dnf -y install python3.12 python3.12-pip unixODBC-devel curl; then
+                PY=python3.12
+                echo 'Installed Python 3.12'
+              elif dnf -y install python3.11 python3.11-pip unixODBC-devel curl; then
+                PY=python3.11
+                echo 'Installed Python 3.11'
               else
+                dnf -y install python3 python3-pip unixODBC-devel curl
+                PY=python3
                 echo 'Falling back to default Python'
-                dnf install -y python3 python3-pip python3-venv unixODBC-devel curl
-                python3 -m venv /venv
               fi
+
+              # Create venv and prep tooling
+              \$PY -m venv /venv
+              /venv/bin/python -m pip install -U 'pip>=25' pytest
+              /venv/bin/python --version
+              /venv/bin/pip --version
             else
               echo 'ERROR: dnf not found'
               exit 1
             fi
-            
-            # Verify Python version
-            /venv/bin/python --version
-            /venv/bin/pip install pytest
           "
           PY_CMD="/venv/bin/python"
         else
