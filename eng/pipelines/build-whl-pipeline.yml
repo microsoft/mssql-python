@@ -695,17 +695,33 @@ jobs:
         if [[ "$(BASE_IMAGE)" == alpine* ]]; then
           echo "Setting up Alpine Linux..."
           docker exec test-$(ARCH) sh -c "
-            apk update && apk add --no-cache python3 py3-pip unixodbc-dev curl
-            python3 -m pip install --break-system-packages pytest
+            apk update && apk add --no-cache python3 py3-pip py3-venv unixodbc-dev curl
+            python3 -m venv /venv
+            /venv/bin/pip install pytest
           "
+          PY_CMD="/venv/bin/python"
+        elif [[ "$(BASE_IMAGE)" == *ubi* ]] || [[ "$(BASE_IMAGE)" == *rocky* ]] || [[ "$(BASE_IMAGE)" == *alma* ]]; then
+          echo "Setting up RHEL-based system..."
+          docker exec test-$(ARCH) bash -c "
+            if command -v dnf >/dev/null; then
+              dnf install -y python3 python3-pip unixodbc-devel curl
+            elif command -v yum >/dev/null; then
+              yum install -y python3 python3-pip unixODBC-devel curl
+            fi
+            python3 -m venv /venv
+            /venv/bin/pip install pytest
+          "
+          PY_CMD="/venv/bin/python"
         else
           echo "Setting up Debian/Ubuntu..."
           docker exec test-$(ARCH) bash -c "
             export DEBIAN_FRONTEND=noninteractive
             apt-get update
-            apt-get install -y python3 python3-pip unixodbc-dev curl
-            python3 -m pip install pytest
+            apt-get install -y python3 python3-pip python3-venv python3-full unixodbc-dev curl
+            python3 -m venv /venv
+            /venv/bin/pip install pytest
           "
+          PY_CMD="/venv/bin/python"
         fi
 
         # Install the wheel (find the appropriate one for this architecture)
@@ -719,21 +735,23 @@ jobs:
 
         docker exec test-$(ARCH) $SHELL_CMD "
           cd /artifacts/mssql-python-wheels-dist
-          ls -la *.whl
-          WHEEL=\$(ls $WHEEL_PATTERN | head -1)
+          echo 'Available wheels:'
+          ls -la *.whl || { echo 'No wheels found!'; exit 1; }
+          WHEEL=\$(ls $WHEEL_PATTERN 2>/dev/null | head -1)
           if [ -z \"\$WHEEL\" ]; then
             echo 'No suitable wheel found for $(BASE_IMAGE) $(ARCH)'
+            echo 'Looking for pattern: $WHEEL_PATTERN'
             exit 1
           fi
           echo \"Installing wheel: \$WHEEL\"
-          python3 -m pip install \"\$WHEEL\"
+          $PY_CMD -m pip install \"\$WHEEL\"
         "
 
-        # Run pytest (copy test files if needed)
+        # Run pytest
         docker exec test-$(ARCH) $SHELL_CMD "
-          python3 -c 'import mssql_python; print(\"Package imported successfully\")'
+          $PY_CMD -c 'import mssql_python; print(\"Package imported successfully\")'
           # If you have specific tests to run, add them here
-          # python3 -m pytest /path/to/tests
+          # $PY_CMD -m pytest /path/to/tests
         "
 
       displayName: 'Test wheel installation and basic functionality on $(BASE_IMAGE)'
