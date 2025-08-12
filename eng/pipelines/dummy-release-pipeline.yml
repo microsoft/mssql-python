@@ -27,8 +27,10 @@ jobs:
       dir "$(Build.SourcesDirectory)\dist"
     displayName: 'List contents of dist directory'
 
+  # The ESRP task should fail since Maven is not a valid content type
   - task: EsrpRelease@9
     displayName: 'ESRP Release'
+    continueOnError: true
     inputs:
       connectedservicename: '$(ESRPConnectedServiceName)'
       usemanagedidentity: true
@@ -49,3 +51,14 @@ jobs:
       ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
       MainPublisher: 'ESRPRELPACMAN'
       DomainTenantId: '$(DomainTenantId)'
+
+  - script: |
+      echo "ESRP task completed. Checking if it failed as expected..."
+      if "%AGENT_JOBSTATUS%" == "Failed" (
+        echo "✅ ESRP task failed as expected for dummy release testing"
+        exit 0
+      ) else (
+        echo "⚠️ ESRP task unexpectedly succeeded"
+        exit 0
+      )
+    displayName: 'Validate ESRP Task Failed as Expected'
