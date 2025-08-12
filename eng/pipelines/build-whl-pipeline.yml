@@ -113,10 +113,10 @@ jobs:
         definition: 2162
         specificBuildWithTriggering: true
         buildVersionToDownload: 'specific'
-        buildId: '122430'
+        buildId: '122714'
         artifactName: 'mssql-python-arm64-libs'
-        targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
-      displayName: 'Download ARM64 Python libs from specific successful run on branches'
+        downloadPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
+      displayName: 'Download ARM64 Python libs from latest successful run on branches'
 
     # Build the PYD file by calling build.bat
     - script: |
