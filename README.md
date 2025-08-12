@@ -17,21 +17,31 @@ pip install mssql-python
 ```
 **MacOS:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
 ```bash
+# For Mac, OpenSSL is a pre-requisite - skip if already present
 brew install openssl
 pip install mssql-python
 ```
 **Linux:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
 ```bash
+# For Alpine
+apk add libtool krb5-libs
+
+# For Debian/Ubuntu
+apt-get install -y libltdl7
+
+# For RHEL
+dnf install -y libtool-ltdl
+
 pip install mssql-python
 ```
 
 ## Key Features
 ### Supported Platforms
  
-Windows, MacOS and Linux (manylinux2014 - Debian, Ubuntu & RHEL)
+Windows, MacOS and Linux (manylinux2014 - Debian, Ubuntu, RHEL & Alpine)
 
 > **Note:**
-> Support for additional Linux OSs (Alpine, SUSE Linux) will come soon
+> Support for additional Linux OSs (SUSE Linux) will come soon
 >
  
 ### DBAPI v2.0 Compliance

@@ -9,10 +9,9 @@ We are making progress - The Public Preview of our driver is now available! This
 ### What's Included:
 
 - Everything from previous releases
-- **Azure Active Directory Authentication:** New authentication module supporting Azure AD login options (ActiveDirectoryInteractive, ActiveDirectoryDeviceCode, ActiveDirectoryDefault) for secure and flexible cloud integration.
-- **Batch Execution Performance:** Refactored `executemany` for efficient bulk operations and improved C++ bindings for performance.
-- **Robust Logging System:** Overhauled logging with a singleton manager, sensitive data sanitization, and better exception handling.
-- **Improved Row Representation:** Enhanced output and debugging via updated `Row` object string and representation methods.
+- **Alpine Linux Support:** Added full support for Alpine Linux distribution with specialized driver handling and fixes for musl libc compatibility.
+- **Connection Management Improvements:** Fixed autocommit to be False by default and added automatic rollback on connection close for better transaction control.
+- **PyODBC Compatibility:** Enhanced type objects and constructor compatibility with pyodbc for seamless migration and interoperability.
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
 
