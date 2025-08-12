@@ -507,14 +507,37 @@ jobs:
     # Copy artifacts back to host
     - script: |
         set -euxo pipefail
-        # Wheels
-        docker cp build-$(LINUX_TAG)-$(ARCH):/workspace/dist/. $(Build.ArtifactStagingDirectory)/dist/ || echo "No wheels to copy"
-        # .so files (from your package directory)
-        docker exec build-$(LINUX_TAG)-$(ARCH) $([[ "$(LINUX_TAG)" == "manylinux" ]] && echo bash -lc || echo sh -lc) 'ls -la /workspace/mssql_python || true; ls -la /workspace/mssql_python/pybind || true'
-        mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)
-        docker cp build-$(LINUX_TAG)-$(ARCH):/workspace/mssql_python/. $(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)/ || echo "No package dir to copy"
-        # Keep only .so files in that folder (prune others)
-        find "$(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)" -type f ! -name "*.so" -delete || true
+        # ---- Wheels ----
+        docker cp build-$(LINUX_TAG)-$(ARCH):/workspace/dist/. "$(Build.ArtifactStagingDirectory)/dist/" || echo "No wheels to copy"
+
+        # ---- .so files: only top-level under mssql_python (exclude subdirs like pybind) ----
+        # Prepare host dest
+        mkdir -p "$(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)"
+
+        # Prepare a temp out dir inside the container
+        docker exec build-$(LINUX_TAG)-$(ARCH) $([[ "$(LINUX_TAG)" == "manylinux" ]] && echo bash -lc || echo sh -lc) '
+          set -euxo pipefail;
+          echo "Listing package dirs for sanity:";
+          ls -la /workspace/mssql_python || true;
+          ls -la /workspace/mssql_python/pybind || true;
+
+          OUT="/tmp/ddbc-out-$(LINUX_TAG)-$(ARCH)";
+          rm -rf "$OUT"; mkdir -p "$OUT";
+
+          # Copy ONLY top-level .so files from mssql_python (no recursion)
+          find /workspace/mssql_python -maxdepth 1 -type f -name "*.so" -exec cp -v {} "$OUT"/ \; || true
+
+          echo "Top-level .so collected in $OUT:";
+          ls -la "$OUT" || true
+        '
+
+        # Copy those .so files from container to host
+        docker cp "build-$(LINUX_TAG)-$(ARCH):/tmp/ddbc-out-$(LINUX_TAG)-$(ARCH)/." \
+          "$(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)/" \
+          || echo "No top-level .so files to copy"
+
+        # (Optional) prune non-.so just in case
+        find "$(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)" -maxdepth 1 -type f ! -name "*.so" -delete || true
       displayName: 'Copy wheels and .so back to host'
 
     # Cleanup container
