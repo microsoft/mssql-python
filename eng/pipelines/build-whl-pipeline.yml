@@ -732,28 +732,25 @@ jobs:
             set -euo pipefail
             echo 'Installing Python on UBI/RHEL...'
             if command -v dnf >/dev/null; then
-              # Refresh metadata (UBI repos are already configured in the image)
               dnf clean all
               rm -rf /var/cache/dnf
               dnf -y makecache
 
-              # (Optional) show availability
               dnf list --showduplicates python3.11 python3.12 || true
 
-              # Try 3.12 → 3.11 → default 3.9; venv module is built-in, no -venv RPM needed
-              if dnf -y install python3.12 python3.12-pip unixODBC-devel curl; then
+              # NOTE: do NOT install 'curl' to avoid curl-minimal conflict
+              if dnf -y install python3.12 python3.12-pip unixODBC-devel; then
                 PY=python3.12
                 echo 'Installed Python 3.12'
-              elif dnf -y install python3.11 python3.11-pip unixODBC-devel curl; then
+              elif dnf -y install python3.11 python3.11-pip unixODBC-devel; then
                 PY=python3.11
                 echo 'Installed Python 3.11'
               else
-                dnf -y install python3 python3-pip unixODBC-devel curl
+                dnf -y install python3 python3-pip unixODBC-devel
                 PY=python3
                 echo 'Falling back to default Python'
               fi
 
-              # Create venv and prep tooling
               \$PY -m venv /venv
               /venv/bin/python -m pip install -U 'pip>=25' pytest
               /venv/bin/python --version
