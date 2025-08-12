@@ -453,10 +453,6 @@ jobs:
             echo "---- tool versions ----"
             gcc --version || true
             cmake --version || true
-
-            # (Optional) sanity peek for Kerberos libs; auditwheel may vendor these later
-            echo "---- kerberos libs present? ----"
-            ls -l /lib64/libgssapi_krb5.so* /usr/lib64/libgssapi_krb5.so* 2>/dev/null || true
           '
         else
           # ===== musllinux (Alpine/musl) containers =====
@@ -470,10 +466,6 @@ jobs:
             echo "---- tool versions ----"
             gcc --version || true
             cmake --version || true
-
-            # (Optional) sanity peek for Kerberos libs; auditwheel may vendor these later
-            echo "---- kerberos libs present? ----"
-            ls -l /lib/libgssapi_krb5.so* /usr/lib/libgssapi_krb5.so* 2>/dev/null || true
           '
         fi
       displayName: 'Install system build dependencies'
@@ -526,7 +518,9 @@ jobs:
               python setup.py bdist_wheel;
 
               # repair/tag wheel
-              for W in /workspace/dist/*.whl; do auditwheel repair -w /workspace/dist \"\$W\" || true; done
+              # TODO: repair/tag wheel, removing this since auditwheel is trying to find/link libraries which we're not packaging, e.g. libk5crypto, libkeyutils etc. - since it uses ldd for cross-verification
+              # We're assuming that this will be provided by OS and not bundled in the wheel
+              # for W in /workspace/dist/*.whl; do auditwheel repair -w /workspace/dist \"\$W\" || true; done
             "
           fi
         done
