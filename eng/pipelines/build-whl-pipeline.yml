@@ -430,23 +430,35 @@ jobs:
     - script: |
         set -euxo pipefail
         if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
+          # manylinux (glibc; Alma/Rocky-based images usually have dnf; yum may be a compat shim)
           docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc '
-            set -euxo pipefail;
-            if command -v yum >/dev/null 2>&1; then
-              yum -y update || true;
-              yum -y install unixODBC-devel cmake make gcc gcc-c++ krb5-libs || true;
-            elif command -v dnf >/dev/null 2>&1; then
-              dnf -y update || true;
-              dnf -y install unixODBC-devel cmake make gcc gcc-c++ krb5-libs || true;
-            fi;
-            gcc --version || true; cmake --version || true;
+            set -euxo pipefail
+            if command -v dnf >/dev/null 2>&1; then
+              dnf -y update || true
+              dnf -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs ccache || true
+            elif command -v yum >/dev/null 2>&1; then
+              yum -y update || true
+              yum -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs ccache || true
+            else
+              echo "No dnf/yum found in manylinux image" >&2
+            fi
+            echo "---- tool versions ----"
+            gcc --version || true
+            cmake --version || true
+            echo "---- kerberos libs present? ----"
+            ls -l /lib64/libgssapi_krb5.so* /usr/lib64/libgssapi_krb5.so* 2>/dev/null || true
           '
         else
+          # musllinux (Alpine/musl)
           docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc '
-            set -euxo pipefail;
-            apk update || true;
-            apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs || true;
-            gcc --version || true; cmake --version || true;
+            set -euxo pipefail
+            apk update || true
+            apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs ccache || true
+            echo "---- tool versions ----"
+            gcc --version || true
+            cmake --version || true
+            echo "---- kerberos libs present? ----"
+            ls -l /lib/libgssapi_krb5.so* /usr/lib/libgssapi_krb5.so* 2>/dev/null || true
           '
         fi
       displayName: 'Install system build dependencies'
