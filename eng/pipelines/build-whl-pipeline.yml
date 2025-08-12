@@ -470,13 +470,15 @@ jobs:
               ln -sf \$PY /usr/local/bin/python;
               python -m pip install -U pip setuptools wheel pybind11;
               echo 'python:' \$(python -V); which python;
-              # run your existing script from repo root
-              cd /workspace;
-              bash mssql_python/pybind/build.sh;
-              # build wheel
+              # 👉 run from the directory that has CMakeLists.txt
+              cd /workspace/mssql_python/pybind;
+              bash build.sh;
+
+              # back to repo root to build the wheel
               cd /workspace;
               python setup.py bdist_wheel;
-              # repair/tag wheel for manylinux
+
+              # repair/tag wheel
               for W in /workspace/dist/*.whl; do auditwheel repair -w /workspace/dist \"\$W\" || true; done
             "
           else
@@ -487,11 +489,15 @@ jobs:
               ln -sf \$PY /usr/local/bin/python;
               python -m pip install -U pip setuptools wheel pybind11;
               echo 'python:' \$(python -V); which python;
-              cd /workspace;
-              bash mssql_python/pybind/build.sh;
+              # 👉 run from the directory that has CMakeLists.txt
+              cd /workspace/mssql_python/pybind;
+              bash build.sh;
+
+              # back to repo root to build the wheel
               cd /workspace;
               python setup.py bdist_wheel;
-              # repair/tag wheel for musllinux
+
+              # repair/tag wheel
               for W in /workspace/dist/*.whl; do auditwheel repair -w /workspace/dist \"\$W\" || true; done
             "
           fi
