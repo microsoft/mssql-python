@@ -801,28 +801,6 @@ jobs:
           $PY_CMD -c 'import mssql_python; print(\"Package imported successfully\")'
         "
 
-        # Run pytest from source root to test installed wheel
-        docker exec test-$(ARCH) $SHELL_CMD "
-          # Copy source code for pytest
-          mkdir -p /workspace
-          cd /workspace
-          
-          echo 'Running pytest with installed wheel...'
-          echo 'Python version:'
-          $PY_CMD --version
-          
-          # Verify we're importing the installed package, not local source
-          echo 'Package import verification:'
-          $PY_CMD -c 'import mssql_python; print(\"Testing installed package from:\", mssql_python.__file__)'
-          
-          # Install test dependencies
-          $PY_CMD -m pip install pytest || echo 'pytest installation failed'
-          
-          echo 'Starting pytest...'
-          # $PY_CMD -m pytest /workspace/tests/ -v --tb=short || echo 'Some tests failed - expected in containerized environment'
-          echo 'Pytest setup complete - tests can be run here'
-        "
-
       displayName: 'Test wheel installation and basic functionality on $(BASE_IMAGE)'
       env:
         DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -835,11 +813,13 @@ jobs:
         echo "Copying source code to container for pytest..."
         docker cp $(Build.SourcesDirectory)/. test-$(ARCH):/workspace/
         
-        # Set shell command based on OS
+        # Set shell command based on OS and define Python command
         if [[ "$(BASE_IMAGE)" == alpine* ]]; then
           SHELL_CMD="sh -c"
+          PY_CMD="/venv/bin/python"
         else
           SHELL_CMD="bash -c"
+          PY_CMD="/venv/bin/python"
         fi
         
         docker exec test-$(ARCH) $SHELL_CMD "
