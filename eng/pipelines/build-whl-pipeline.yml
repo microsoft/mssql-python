@@ -729,19 +729,32 @@ jobs:
         elif [[ "$(BASE_IMAGE)" == *ubi* ]] || [[ "$(BASE_IMAGE)" == *rocky* ]] || [[ "$(BASE_IMAGE)" == *alma* ]]; then
           echo "Setting up RHEL-based system..."
           docker exec test-$(ARCH) bash -c "
-            echo 'Installing Python 3.12 on UBI/RHEL...'
+            echo 'Installing latest Python on UBI/RHEL...'
             if command -v dnf >/dev/null; then
-              # Install Python 3.12 specifically
-              dnf install -y python3.12 python3.12-pip python3.12-venv unixodbc-devel curl
-              python3.12 -m venv /venv
-              echo 'Successfully installed Python 3.12'
-            elif command -v yum >/dev/null; then
-              # Fallback to yum
-              yum install -y python3.12 python3.12-pip python3.12-venv unixODBC-devel curl
-              python3.12 -m venv /venv
-              echo 'Successfully installed Python 3.12'
+              # Enable EPEL repository for newer Python versions
+              dnf install -y epel-release
+              
+              # Check what Python versions are available
+              echo 'Available Python packages after EPEL:'
+              dnf list available | grep -E '^python3' | head -10 || true
+              
+              # Try to install Python 3.11 or 3.12, fallback to 3.10
+              if dnf install -y python3.12 python3.12-pip python3.12-venv unixODBC-devel curl; then
+                python3.12 -m venv /venv
+                echo 'Successfully installed Python 3.12'
+              elif dnf install -y python3.11 python3.11-pip python3.11-venv unixODBC-devel curl; then
+                python3.11 -m venv /venv
+                echo 'Successfully installed Python 3.11'
+              elif dnf install -y python3.10 python3.10-pip python3.10-venv unixODBC-devel curl; then
+                python3.10 -m venv /venv
+                echo 'Successfully installed Python 3.10'
+              else
+                echo 'Falling back to default Python'
+                dnf install -y python3 python3-pip python3-venv unixODBC-devel curl
+                python3 -m venv /venv
+              fi
             else
-              echo 'ERROR: No package manager found'
+              echo 'ERROR: dnf not found'
               exit 1
             fi
             
