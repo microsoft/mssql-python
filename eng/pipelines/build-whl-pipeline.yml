@@ -368,7 +368,7 @@ jobs:
 #       displayName: 'Publish all wheels as artifacts'
 
 - job: BuildLinuxWheels
-  displayName: 'Build Linux wheels (manylinux + musllinux) [matrix, debug]'
+  displayName: 'Build Linux wheels (manylinux + musllinux) [matrix]'
   pool: { vmImage: 'ubuntu-latest' }
   timeoutInMinutes: 120
 
@@ -418,6 +418,7 @@ jobs:
 
     # Build for current matrix lane
     - script: |
+        set -euxo pipefail
         echo "Building for $(LINUX_TAG) / $(ARCHS)"
         cibuildwheel --platform linux
         # Collect wheels
@@ -435,6 +436,9 @@ jobs:
         CIBW_MANYLINUX_AARCH64_IMAGE: "$(IMAGE_MANYLINUX)"
         CIBW_MUSLLINUX_X86_64_IMAGE: "$(IMAGE_MUSLLINUX)"
         CIBW_MUSLLINUX_AARCH64_IMAGE: "$(IMAGE_MUSLLINUX)"
+
+        # More verbose cibuildwheel logs
+        CIBW_BUILD_VERBOSITY: "3"
 
         # OS-side build deps inside the container
         CIBW_BEFORE_ALL_LINUX: >
@@ -458,40 +462,51 @@ jobs:
             cmake --version || true;
           '
 
-        # Python-side deps + path fix + parallel compile + run your script (with DEBUG)
+        # Python deps + robust path + fail-fast + run your script (all logs to console)
         CIBW_BEFORE_BUILD: >
           bash -lc '
             set -euxo pipefail;
+
             echo "==== Context ====";
             echo "CWD=$(pwd)";
             ls -la;
+
             echo "==== Active /opt/python entries ====";
             ls -1 /opt/python || true;
+
             echo "==== Bind python/pip ====";
             PY=$(command -v python);
             PIP=$(command -v pip || echo "");
             echo "PY=$PY"; echo "PIP=$PIP";
             ln -sf "$PY" /usr/local/bin/python;
             if [ -n "$PIP" ]; then ln -sf "$PIP" /usr/local/bin/pip; fi;
+
             echo "==== Python environment ====";
             python -V;
-            python -c "import sys,sysconfig; print(sys.executable); print(sys.version); print(sysconfig.get_paths())";
+            python -c "import sys,sysconfig; print(sys.executable); print(sys.version); print(sysconfig.get_platform()); print(sysconfig.get_paths())";
+
             echo "==== Installing Python build deps ====";
             python -m pip install -U pip setuptools wheel pybind11;
+
             echo "==== Repo layout ====";
-            ls -la mssql_python || true;
-            ls -la mssql_python/pybind || true;
-            chmod +x mssql_python/pybind/build.sh || true;
-            echo "==== Parallelism ====";
+            ls -la {project} || true;
+            ls -la {project}/mssql_python || true;
+            ls -la {project}/mssql_python/pybind || true;
+
+            chmod +x {project}/mssql_python/pybind/build.sh || true;
+
             N=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4);
             export MAKEFLAGS=-j$N CMAKE_BUILD_PARALLEL_LEVEL=$N;
             echo "Parallel jobs: $N";
+
             echo "==== Run build.sh ====";
-            test -f mssql_python/pybind/build.sh || { echo "build.sh not found"; exit 127; }
-            bash mssql_python/pybind/build.sh
+            test -f {project}/mssql_python/pybind/build.sh || { echo "build.sh not found"; exit 127; }
+
+            cd {project}
+            bash -c "set -euxo pipefail; bash mssql_python/pybind/build.sh"
           '
 
-        # (Optional) quick import check; remove if you want zero tests
+        # Optional: keep quick import smoke (remove if you want zero checks)
         CIBW_TEST_COMMAND: "python -c \"import mssql_python, mssql_python.ddbc_bindings; print('import ok')\""
 
         # Extra env your native build can read
