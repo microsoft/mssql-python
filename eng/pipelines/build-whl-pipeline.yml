@@ -765,7 +765,7 @@ jobs:
           echo 'Available wheels:'
           ls -la *.whl
           echo 'Installing package (letting pip auto-select):'
-          $PY_CMD -m pip install mssql-python --find-links . --no-index --no-deps
+          $PY_CMD -m pip install mssql_python --find-links . --no-index --no-deps
         "
 
         # Run pytest
