@@ -113,7 +113,7 @@ jobs:
         definition: 2162
         specificBuildWithTriggering: true
         buildVersionToDownload: 'specific'
-        buildId: '122714'
+        buildId: '122430'
         artifactName: 'mssql-python-arm64-libs'
         targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
       displayName: 'Download ARM64 Python libs from specific successful run on branches'
