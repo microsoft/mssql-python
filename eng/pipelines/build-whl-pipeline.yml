@@ -680,22 +680,44 @@ jobs:
         DB_PASSWORD: $(DB_PASSWORD)
 
     # Test wheels on target OS
+    # Test wheels on target OS
     - script: |
         set -euxo pipefail
         
-        # Start test container
-        docker run -d --name test-$(ARCH) \
-          --platform $(DOCKER_PLATFORM) \
-          --network bridge \
-          -v $(System.ArtifactsDirectory):/artifacts:ro \
-          $(BASE_IMAGE) \
-          tail -f /dev/null
+        # Enable QEMU for ARM64 architectures
+        if [[ "$(ARCH)" == "arm64" ]] || [[ "$(ARCH)" == "aarch64" ]]; then
+          sudo docker run --rm --privileged tonistiigi/binfmt --install all
+        fi
+        
+        # Start test container with retry logic
+        for i in {1..3}; do
+          if docker run -d --name test-$(ARCH) \
+            --platform $(DOCKER_PLATFORM) \
+            --network bridge \
+            -v $(System.ArtifactsDirectory):/artifacts:ro \
+            $(BASE_IMAGE) \
+            tail -f /dev/null; then
+            echo "Container started successfully on attempt $i"
+            break
+          else
+            echo "Failed to start container on attempt $i, retrying..."
+            docker rm test-$(ARCH) 2>/dev/null || true
+            sleep 5
+          fi
+        done
+
+        # Verify container is running
+        if ! docker ps | grep -q test-$(ARCH); then
+          echo "ERROR: Container test-$(ARCH) is not running"
+          docker logs test-$(ARCH) || true
+          exit 1
+        fi
 
         # Install Python and dependencies based on OS
         if [[ "$(BASE_IMAGE)" == alpine* ]]; then
           echo "Setting up Alpine Linux..."
           docker exec test-$(ARCH) sh -c "
-            apk update && apk add --no-cache python3 py3-pip py3-venv unixodbc-dev curl
+            apk update && apk add --no-cache python3 py3-pip python3-dev unixodbc-dev curl
             python3 -m venv /venv
             /venv/bin/pip install pytest
           "
@@ -704,9 +726,9 @@ jobs:
           echo "Setting up RHEL-based system..."
           docker exec test-$(ARCH) bash -c "
             if command -v dnf >/dev/null; then
-              dnf install -y python3 python3-pip unixodbc-devel curl
+              dnf install -y python3 python3-pip python3-venv unixodbc-devel curl
             elif command -v yum >/dev/null; then
-              yum install -y python3 python3-pip unixODBC-devel curl
+              yum install -y python3 python3-pip python3-venv unixODBC-devel curl
             fi
             python3 -m venv /venv
             /venv/bin/pip install pytest
