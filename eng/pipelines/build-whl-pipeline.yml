@@ -731,9 +731,18 @@ jobs:
           docker exec test-$(ARCH) bash -c "
             echo 'Installing latest Python on UBI/RHEL...'
             if command -v dnf >/dev/null; then
-              # Enable EPEL repository for newer Python versions
-              dnf install -y epel-release
-              
+              # Enable correct UBI repos (names differ from Rocky/Alma)
+              dnf config-manager --enable ubi-9-baseos || true
+              dnf config-manager --enable ubi-9-appstream || true
+              dnf config-manager --enable ubi-9-codeready-builder || true
+
+              # Clean & refresh metadata
+              dnf clean all
+              rm -rf /var/cache/dnf
+              dnf -y makecache
+
+              # (Optional) prove Python versions are visible
+              dnf list --showduplicates python3.11 python3.12 || true
               # Check what Python versions are available
               echo 'Available Python packages after EPEL:'
               dnf list available | grep -E '^python3' | head -10 || true
