@@ -1,4 +1,4 @@
-name: mssql-python-official-release-pipeline
+name: mssql-python-dummy-release-pipeline
 
 variables:
   - group: 'ESRP Federated Creds (AME)'
