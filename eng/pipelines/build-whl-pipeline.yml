@@ -426,37 +426,52 @@ jobs:
           tail -f /dev/null
       displayName: 'Start $(LINUX_TAG) $(ARCH) container'
 
-    # Install OS build deps inside the container
+    # Install system build dependencies
+    # - Installs compiler toolchain, CMake, unixODBC headers, and Kerberos/keyutils runtimes
+    # - manylinux (glibc) uses dnf/yum; musllinux (Alpine/musl) uses apk
+    # - Kerberos/keyutils are needed because msodbcsql pulls in libgssapi_krb5.so.* and libkeyutils*.so.*
+    # - ccache is optional but speeds rebuilds inside the container
     - script: |
         set -euxo pipefail
         if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
-          # manylinux (glibc; Alma/Rocky-based images usually have dnf; yum may be a compat shim)
+          # ===== manylinux (glibc) containers =====
           docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc '
             set -euxo pipefail
+            # Prefer dnf (Alma/Rocky base), fall back to yum if present
             if command -v dnf >/dev/null 2>&1; then
               dnf -y update || true
-              dnf -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs ccache || true
+              # Toolchain + CMake + unixODBC headers + Kerberos + keyutils + ccache
+              dnf -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache || true
             elif command -v yum >/dev/null 2>&1; then
               yum -y update || true
-              yum -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs ccache || true
+              yum -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache || true
             else
               echo "No dnf/yum found in manylinux image" >&2
             fi
+
+            # Quick visibility for logs
             echo "---- tool versions ----"
             gcc --version || true
             cmake --version || true
+
+            # (Optional) sanity peek for Kerberos libs; auditwheel may vendor these later
             echo "---- kerberos libs present? ----"
             ls -l /lib64/libgssapi_krb5.so* /usr/lib64/libgssapi_krb5.so* 2>/dev/null || true
           '
         else
-          # musllinux (Alpine/musl)
+          # ===== musllinux (Alpine/musl) containers =====
           docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc '
             set -euxo pipefail
             apk update || true
-            apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs ccache || true
+            # Toolchain + CMake + unixODBC headers + Kerberos + keyutils + ccache
+            apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs keyutils-libs ccache || true
+
+            # Quick visibility for logs
             echo "---- tool versions ----"
             gcc --version || true
             cmake --version || true
+
+            # (Optional) sanity peek for Kerberos libs; auditwheel may vendor these later
             echo "---- kerberos libs present? ----"
             ls -l /lib/libgssapi_krb5.so* /usr/lib/libgssapi_krb5.so* 2>/dev/null || true
           '
