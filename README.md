@@ -38,7 +38,7 @@ pip install mssql-python
 ## Key Features
 ### Supported Platforms
  
-Windows, MacOS and Linux (manylinux2014 - Debian, Ubuntu, RHEL & Alpine)
+Windows, MacOS and Linux (manylinux - Debian, Ubuntu, RHEL & musllinux - Alpine)
 
 > **Note:**
 > Support for additional Linux OSs (SUSE Linux) will come soon
