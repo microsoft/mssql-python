@@ -111,10 +111,10 @@ jobs:
         buildType: 'specific'
         project: '$(System.TeamProject)'
         definition: 2162
-        buildVersionToDownload: 'latest'
+        buildVersionToDownload: '122430'  # Use specific build version for ARM64 libs
         artifactName: 'mssql-python-arm64-libs'
         targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
-      displayName: 'Download ARM64 Python libs from latest successful run on branches'
+      displayName: 'Download ARM64 Python libs from specific successful run on branches'
 
     # Build the PYD file by calling build.bat
     - script: |
