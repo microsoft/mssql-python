@@ -1010,6 +1010,58 @@ class Cursor:
         # Return the first column value (could be None if the column value is NULL)
         return row[0]
 
+    def commit(self):
+        """
+        Commit all SQL statements executed on the connection that created this cursor.
+        
+        This is a convenience method that calls commit() on the underlying connection.
+        It affects all cursors created by the same connection since the last commit/rollback.
+        
+        The benefit is that many uses can now just use the cursor and not have to track
+        the connection object.
+        
+        Raises:
+            Exception: If the cursor is closed or if the commit operation fails.
+            
+        Example:
+            >>> cursor.execute("INSERT INTO users (name) VALUES (?)", "John")
+            >>> cursor.commit()  # Commits the INSERT
+            
+        Note:
+            This is equivalent to calling connection.commit() but provides convenience
+            for code that only has access to the cursor object.
+        """
+        self._check_closed()  # Check if the cursor is closed
+        
+        # Delegate to the connection's commit method
+        self._connection.commit()
+
+    def rollback(self):
+        """
+        Roll back all SQL statements executed on the connection that created this cursor.
+        
+        This is a convenience method that calls rollback() on the underlying connection.
+        It affects all cursors created by the same connection since the last commit/rollback.
+        
+        The benefit is that many uses can now just use the cursor and not have to track
+        the connection object.
+        
+        Raises:
+            Exception: If the cursor is closed or if the rollback operation fails.
+            
+        Example:
+            >>> cursor.execute("INSERT INTO users (name) VALUES (?)", "John")
+            >>> cursor.rollback()  # Rolls back the INSERT
+            
+        Note:
+            This is equivalent to calling connection.rollback() but provides convenience
+            for code that only has access to the cursor object.
+        """
+        self._check_closed()  # Check if the cursor is closed
+        
+        # Delegate to the connection's rollback method
+        self._connection.rollback()
+
     def __del__(self):
         """
         Destructor to ensure the cursor is closed when it is no longer needed.
