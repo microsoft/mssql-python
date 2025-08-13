@@ -233,10 +233,11 @@ class Cursor:
                 ddbc_sql_const.SQL_C_DEFAULT.value,
                 1,
                 0,
+                False,
             )
 
         if isinstance(param, bool):
-            return ddbc_sql_const.SQL_BIT.value, ddbc_sql_const.SQL_C_BIT.value, 1, 0
+            return ddbc_sql_const.SQL_BIT.value, ddbc_sql_const.SQL_C_BIT.value, 1, 0, False
 
         if isinstance(param, int):
             if 0 <= param <= 255:
@@ -245,6 +246,7 @@ class Cursor:
                     ddbc_sql_const.SQL_C_TINYINT.value,
                     3,
                     0,
+                    False,
                 )
             if -32768 <= param <= 32767:
                 return (
@@ -252,6 +254,7 @@ class Cursor:
                     ddbc_sql_const.SQL_C_SHORT.value,
                     5,
                     0,
+                    False,
                 )
             if -2147483648 <= param <= 2147483647:
                 return (
@@ -259,12 +262,14 @@ class Cursor:
                     ddbc_sql_const.SQL_C_LONG.value,
                     10,
                     0,
+                    False,
                 )
             return (
                 ddbc_sql_const.SQL_BIGINT.value,
                 ddbc_sql_const.SQL_C_SBIGINT.value,
                 19,
                 0,
+                False,
             )
 
         if isinstance(param, float):
@@ -273,6 +278,7 @@ class Cursor:
                 ddbc_sql_const.SQL_C_DOUBLE.value,
                 15,
                 0,
+                False,
             )
 
         if isinstance(param, decimal.Decimal):
@@ -284,6 +290,7 @@ class Cursor:
                 ddbc_sql_const.SQL_C_NUMERIC.value,
                 parameters_list[i].precision,
                 parameters_list[i].scale,
+                False,
             )
 
         if isinstance(param, str):
@@ -297,6 +304,7 @@ class Cursor:
                     ddbc_sql_const.SQL_C_WCHAR.value,
                     len(param),
                     0,
+                    False,
                 )
 
             # Attempt to parse as date, datetime, datetime2, timestamp, smalldatetime or time
@@ -309,6 +317,7 @@ class Cursor:
                     ddbc_sql_const.SQL_C_TYPE_DATE.value,
                     10,
                     0,
+                    False,
                 )
             if self._parse_datetime(param):
                 parameters_list[i] = self._parse_datetime(param)
@@ -317,6 +326,7 @@ class Cursor:
                     ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
                     26,
                     6,
+                    False,
                 )
             if self._parse_time(param):
                 parameters_list[i] = self._parse_time(param)
@@ -325,6 +335,7 @@ class Cursor:
                     ddbc_sql_const.SQL_C_TYPE_TIME.value,
                     8,
                     0,
+                    False,
                 )
 
             # String mapping logic here
@@ -338,12 +349,14 @@ class Cursor:
                         ddbc_sql_const.SQL_C_WCHAR.value,
                         utf16_len,
                         0,
+                        True,
                     )
                 return (
                     ddbc_sql_const.SQL_LONGVARCHAR.value,
                     ddbc_sql_const.SQL_C_CHAR.value,
                     len(param),
                     0,
+                    True,
                 )
             if is_unicode:  # Short Unicode strings
                 utf16_len = len(param.encode("utf-16-le")) // 2
@@ -352,12 +365,14 @@ class Cursor:
                     ddbc_sql_const.SQL_C_WCHAR.value,
                     utf16_len,
                     0,
+                    False,
                 )
             return (
                 ddbc_sql_const.SQL_VARCHAR.value,
                 ddbc_sql_const.SQL_C_CHAR.value,
                 len(param),
                 0,
+                False,
             )
 
         if isinstance(param, bytes):
@@ -367,12 +382,14 @@ class Cursor:
                     ddbc_sql_const.SQL_C_BINARY.value,
                     len(param),
                     0,
+                    True,
                 )
             return (
                 ddbc_sql_const.SQL_BINARY.value,
                 ddbc_sql_const.SQL_C_BINARY.value,
                 len(param),
                 0,
+                False,
             )
 
         if isinstance(param, bytearray):
@@ -382,13 +399,25 @@ class Cursor:
                     ddbc_sql_const.SQL_C_BINARY.value,
                     len(param),
                     0,
+                    True,
                 )
             return (
                 ddbc_sql_const.SQL_BINARY.value,
                 ddbc_sql_const.SQL_C_BINARY.value,
                 len(param),
                 0,
+                False,
             )
+        
+        # if isinstance(param, (bytes, bytearray)):
+        #     is_large = len(param) > 8000
+        #     return (
+        #         ddbc_sql_const.SQL_VARBINARY.value if is_large else ddbc_sql_const.SQL_BINARY.value,
+        #         ddbc_sql_const.SQL_C_BINARY.value,
+        #         len(param),
+        #         0,
+        #         is_large,
+        #     )
 
         if isinstance(param, datetime.datetime):
             return (
@@ -396,6 +425,7 @@ class Cursor:
                 ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
                 26,
                 6,
+                False,
             )
 
         if isinstance(param, datetime.date):
@@ -404,6 +434,7 @@ class Cursor:
                 ddbc_sql_const.SQL_C_TYPE_DATE.value,
                 10,
                 0,
+                False,
             )
 
         if isinstance(param, datetime.time):
@@ -412,6 +443,7 @@ class Cursor:
                 ddbc_sql_const.SQL_C_TYPE_TIME.value,
                 8,
                 0,
+                False,
             )
 
         return (
@@ -419,6 +451,7 @@ class Cursor:
             ddbc_sql_const.SQL_C_CHAR.value,
             len(str(param)),
             0,
+            False,
         )
 
     def _initialize_cursor(self) -> None:
@@ -495,7 +528,7 @@ class Cursor:
             paraminfo.
         """
         paraminfo = param_info()
-        sql_type, c_type, column_size, decimal_digits = self._map_sql_type(
+        sql_type, c_type, column_size, decimal_digits, is_dae = self._map_sql_type(
             parameter, parameters_list, i
         )
         paraminfo.paramCType = c_type
@@ -503,6 +536,12 @@ class Cursor:
         paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value
         paraminfo.columnSize = column_size
         paraminfo.decimalDigits = decimal_digits
+        paraminfo.isDAE = is_dae
+
+        if is_dae:
+            paraminfo.strLenOrInd = -1  # Tells ODBC this is streamed data
+            paraminfo.dataPtr = parameter  # Will be converted to py::object* in C++
+
         return paraminfo
 
     def _initialize_description(self):
