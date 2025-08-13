@@ -21,7 +21,7 @@ Functions:
 from mssql_python.exceptions import InterfaceError
 import pytest
 import time
-from mssql_python import Connection, connect, pooling
+from mssql_python import connect, Connection, pooling, SQL_CHAR, SQL_WCHAR
 import threading
 
 def drop_table_if_exists(cursor, table_name):
@@ -485,3 +485,442 @@ def test_connection_pooling_basic(conn_str):
 
     conn1.close()
     conn2.close()
+
+def test_setencoding_default_settings(db_connection):
+    """Test that default encoding settings are correct."""
+    settings = db_connection.getencoding()
+    assert settings['encoding'] == 'utf-16le', "Default encoding should be utf-16le"
+    assert settings['ctype'] == -8, "Default ctype should be SQL_WCHAR (-8)"
+
+def test_setencoding_basic_functionality(db_connection):
+    """Test basic setencoding functionality."""
+    # Test setting UTF-8 encoding
+    db_connection.setencoding(encoding='utf-8')
+    settings = db_connection.getencoding()
+    assert settings['encoding'] == 'utf-8', "Encoding should be set to utf-8"
+    assert settings['ctype'] == 1, "ctype should default to SQL_CHAR (1) for utf-8"
+    
+    # Test setting UTF-16LE with explicit ctype
+    db_connection.setencoding(encoding='utf-16le', ctype=-8)
+    settings = db_connection.getencoding()
+    assert settings['encoding'] == 'utf-16le', "Encoding should be set to utf-16le"
+    assert settings['ctype'] == -8, "ctype should be SQL_WCHAR (-8)"
+
+def test_setencoding_automatic_ctype_detection(db_connection):
+    """Test automatic ctype detection based on encoding."""
+    # UTF-16 variants should default to SQL_WCHAR
+    utf16_encodings = ['utf-16', 'utf-16le', 'utf-16be']
+    for encoding in utf16_encodings:
+        db_connection.setencoding(encoding=encoding)
+        settings = db_connection.getencoding()
+        assert settings['ctype'] == -8, f"{encoding} should default to SQL_WCHAR (-8)"
+    
+    # Other encodings should default to SQL_CHAR
+    other_encodings = ['utf-8', 'latin-1', 'ascii']
+    for encoding in other_encodings:
+        db_connection.setencoding(encoding=encoding)
+        settings = db_connection.getencoding()
+        assert settings['ctype'] == 1, f"{encoding} should default to SQL_CHAR (1)"
+
+def test_setencoding_explicit_ctype_override(db_connection):
+    """Test that explicit ctype parameter overrides automatic detection."""
+    # Set UTF-8 with SQL_WCHAR (override default)
+    db_connection.setencoding(encoding='utf-8', ctype=-8)
+    settings = db_connection.getencoding()
+    assert settings['encoding'] == 'utf-8', "Encoding should be utf-8"
+    assert settings['ctype'] == -8, "ctype should be SQL_WCHAR (-8) when explicitly set"
+    
+    # Set UTF-16LE with SQL_CHAR (override default)
+    db_connection.setencoding(encoding='utf-16le', ctype=1)
+    settings = db_connection.getencoding()
+    assert settings['encoding'] == 'utf-16le', "Encoding should be utf-16le"
+    assert settings['ctype'] == 1, "ctype should be SQL_CHAR (1) when explicitly set"
+
+def test_setencoding_none_parameters(db_connection):
+    """Test setencoding with None parameters."""
+    # Test with encoding=None (should use default)
+    db_connection.setencoding(encoding=None)
+    settings = db_connection.getencoding()
+    assert settings['encoding'] == 'utf-16le', "encoding=None should use default utf-16le"
+    assert settings['ctype'] == -8, "ctype should be SQL_WCHAR for utf-16le"
+    
+    # Test with both None (should use defaults)
+    db_connection.setencoding(encoding=None, ctype=None)
+    settings = db_connection.getencoding()
+    assert settings['encoding'] == 'utf-16le', "encoding=None should use default utf-16le"
+    assert settings['ctype'] == -8, "ctype=None should use default SQL_WCHAR"
+
+def test_setencoding_invalid_encoding(db_connection):
+    """Test setencoding with invalid encoding."""
+    from mssql_python.exceptions import ProgrammingError
+    
+    with pytest.raises(ProgrammingError) as exc_info:
+        db_connection.setencoding(encoding='invalid-encoding-name')
+    
+    assert "Unknown encoding" in str(exc_info.value), "Should raise ProgrammingError for invalid encoding"
+    assert "invalid-encoding-name" in str(exc_info.value), "Error message should include the invalid encoding name"
+
+def test_setencoding_invalid_ctype(db_connection):
+    """Test setencoding with invalid ctype."""
+    from mssql_python.exceptions import ProgrammingError
+    
+    with pytest.raises(ProgrammingError) as exc_info:
+        db_connection.setencoding(encoding='utf-8', ctype=999)
+    
+    assert "Invalid ctype" in str(exc_info.value), "Should raise ProgrammingError for invalid ctype"
+    assert "999" in str(exc_info.value), "Error message should include the invalid ctype value"
+
+def test_setencoding_closed_connection(conn_str):
+    """Test setencoding on closed connection."""
+    from mssql_python.exceptions import InterfaceError
+    
+    temp_conn = connect(conn_str)
+    temp_conn.close()
+    
+    with pytest.raises(InterfaceError) as exc_info:
+        temp_conn.setencoding(encoding='utf-8')
+    
+    assert "closed connection" in str(exc_info.value).lower(), "Should raise InterfaceError for closed connection"
+
+def test_setencoding_constants_access():
+    """Test that SQL_CHAR and SQL_WCHAR constants are accessible."""
+    import mssql_python
+    
+    # Test constants exist and have correct values
+    assert hasattr(mssql_python, 'SQL_CHAR'), "SQL_CHAR constant should be available"
+    assert hasattr(mssql_python, 'SQL_WCHAR'), "SQL_WCHAR constant should be available"
+    assert mssql_python.SQL_CHAR == 1, "SQL_CHAR should have value 1"
+    assert mssql_python.SQL_WCHAR == -8, "SQL_WCHAR should have value -8"
+
+def test_setencoding_with_constants(db_connection):
+    """Test setencoding using module constants."""
+    import mssql_python
+    
+    # Test with SQL_CHAR constant
+    db_connection.setencoding(encoding='utf-8', ctype=mssql_python.SQL_CHAR)
+    settings = db_connection.getencoding()
+    assert settings['ctype'] == mssql_python.SQL_CHAR, "Should accept SQL_CHAR constant"
+    
+    # Test with SQL_WCHAR constant
+    db_connection.setencoding(encoding='utf-16le', ctype=mssql_python.SQL_WCHAR)
+    settings = db_connection.getencoding()
+    assert settings['ctype'] == mssql_python.SQL_WCHAR, "Should accept SQL_WCHAR constant"
+
+def test_setencoding_common_encodings(db_connection):
+    """Test setencoding with various common encodings."""
+    common_encodings = [
+        'utf-8',
+        'utf-16le', 
+        'utf-16be',
+        'utf-16',
+        'latin-1',
+        'ascii',
+        'cp1252'
+    ]
+    
+    for encoding in common_encodings:
+        try:
+            db_connection.setencoding(encoding=encoding)
+            settings = db_connection.getencoding()
+            assert settings['encoding'] == encoding, f"Failed to set encoding {encoding}"
+        except Exception as e:
+            pytest.fail(f"Failed to set valid encoding {encoding}: {e}")
+
+def test_setencoding_persistence_across_cursors(db_connection):
+    """Test that encoding settings persist across cursor operations."""
+    # Set custom encoding
+    db_connection.setencoding(encoding='utf-8', ctype=1)
+    
+    # Create cursors and verify encoding persists
+    cursor1 = db_connection.cursor()
+    settings1 = db_connection.getencoding()
+    
+    cursor2 = db_connection.cursor()
+    settings2 = db_connection.getencoding()
+    
+    assert settings1 == settings2, "Encoding settings should persist across cursor creation"
+    assert settings1['encoding'] == 'utf-8', "Encoding should remain utf-8"
+    assert settings1['ctype'] == 1, "ctype should remain SQL_CHAR"
+    
+    cursor1.close()
+    cursor2.close()
+
+@pytest.mark.skip("Skipping Unicode data tests till we have support for Unicode")
+def test_setencoding_with_unicode_data(db_connection):
+    """Test setencoding with actual Unicode data operations."""
+    # Test UTF-8 encoding with Unicode data
+    db_connection.setencoding(encoding='utf-8')
+    cursor = db_connection.cursor()
+    
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_encoding_unicode (text_col NVARCHAR(100))")
+        
+        # Test various Unicode strings
+        test_strings = [
+            "Hello, World!",
+            "Hello, 世界!",  # Chinese
+            "Привет, мир!",   # Russian
+            "مرحبا بالعالم",   # Arabic
+            "🌍🌎🌏",        # Emoji
+        ]
+        
+        for test_string in test_strings:
+            # Insert data
+            cursor.execute("INSERT INTO #test_encoding_unicode (text_col) VALUES (?)", test_string)
+            
+            # Retrieve and verify
+            cursor.execute("SELECT text_col FROM #test_encoding_unicode WHERE text_col = ?", test_string)
+            result = cursor.fetchone()
+            
+            assert result is not None, f"Failed to retrieve Unicode string: {test_string}"
+            assert result[0] == test_string, f"Unicode string mismatch: expected {test_string}, got {result[0]}"
+            
+            # Clear for next test
+            cursor.execute("DELETE FROM #test_encoding_unicode")
+    
+    except Exception as e:
+        pytest.fail(f"Unicode data test failed with UTF-8 encoding: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_encoding_unicode")
+        except:
+            pass
+        cursor.close()
+
+def test_setencoding_before_and_after_operations(db_connection):
+    """Test that setencoding works both before and after database operations."""
+    cursor = db_connection.cursor()
+    
+    try:
+        # Initial encoding setting
+        db_connection.setencoding(encoding='utf-16le')
+        
+        # Perform database operation
+        cursor.execute("SELECT 'Initial test' as message")
+        result1 = cursor.fetchone()
+        assert result1[0] == 'Initial test', "Initial operation failed"
+        
+        # Change encoding after operation
+        db_connection.setencoding(encoding='utf-8')
+        settings = db_connection.getencoding()
+        assert settings['encoding'] == 'utf-8', "Failed to change encoding after operation"
+        
+        # Perform another operation with new encoding
+        cursor.execute("SELECT 'Changed encoding test' as message")
+        result2 = cursor.fetchone()
+        assert result2[0] == 'Changed encoding test', "Operation after encoding change failed"
+        
+    except Exception as e:
+        pytest.fail(f"Encoding change test failed: {e}")
+    finally:
+        cursor.close()
+
+def test_getencoding_default(conn_str):
+    """Test getencoding returns default settings"""
+    conn = connect(conn_str)
+    try:
+        encoding_info = conn.getencoding()
+        assert isinstance(encoding_info, dict)
+        assert 'encoding' in encoding_info
+        assert 'ctype' in encoding_info
+        # Default should be utf-16le with SQL_WCHAR
+        assert encoding_info['encoding'] == 'utf-16le'
+        assert encoding_info['ctype'] == SQL_WCHAR
+    finally:
+        conn.close()
+
+def test_getencoding_returns_copy(conn_str):
+    """Test getencoding returns a copy (not reference)"""
+    conn = connect(conn_str)
+    try:
+        encoding_info1 = conn.getencoding()
+        encoding_info2 = conn.getencoding()
+        
+        # Should be equal but not the same object
+        assert encoding_info1 == encoding_info2
+        assert encoding_info1 is not encoding_info2
+        
+        # Modifying one shouldn't affect the other
+        encoding_info1['encoding'] = 'modified'
+        assert encoding_info2['encoding'] != 'modified'
+    finally:
+        conn.close()
+
+def test_getencoding_closed_connection(conn_str):
+    """Test getencoding on closed connection raises InterfaceError"""
+    conn = connect(conn_str)
+    conn.close()
+    
+    with pytest.raises(InterfaceError, match="Connection is closed"):
+        conn.getencoding()
+
+def test_setencoding_getencoding_consistency(conn_str):
+    """Test that setencoding and getencoding work consistently together"""
+    conn = connect(conn_str)
+    try:
+        test_cases = [
+            ('utf-8', SQL_CHAR),
+            ('utf-16le', SQL_WCHAR),
+            ('latin-1', SQL_CHAR),
+            ('ascii', SQL_CHAR),
+        ]
+        
+        for encoding, expected_ctype in test_cases:
+            conn.setencoding(encoding)
+            encoding_info = conn.getencoding()
+            assert encoding_info['encoding'] == encoding.lower()
+            assert encoding_info['ctype'] == expected_ctype
+    finally:
+        conn.close()
+
+def test_setencoding_default_encoding(conn_str):
+    """Test setencoding with default UTF-16LE encoding"""
+    conn = connect(conn_str)
+    try:
+        conn.setencoding()
+        encoding_info = conn.getencoding()
+        assert encoding_info['encoding'] == 'utf-16le'
+        assert encoding_info['ctype'] == SQL_WCHAR
+    finally:
+        conn.close()
+
+def test_setencoding_utf8(conn_str):
+    """Test setencoding with UTF-8 encoding"""
+    conn = connect(conn_str)
+    try:
+        conn.setencoding('utf-8')
+        encoding_info = conn.getencoding()
+        assert encoding_info['encoding'] == 'utf-8'
+        assert encoding_info['ctype'] == SQL_CHAR
+    finally:
+        conn.close()
+
+def test_setencoding_latin1(conn_str):
+    """Test setencoding with latin-1 encoding"""
+    conn = connect(conn_str)
+    try:
+        conn.setencoding('latin-1')
+        encoding_info = conn.getencoding()
+        assert encoding_info['encoding'] == 'latin-1'
+        assert encoding_info['ctype'] == SQL_CHAR
+    finally:
+        conn.close()
+
+def test_setencoding_with_explicit_ctype_sql_char(conn_str):
+    """Test setencoding with explicit SQL_CHAR ctype"""
+    conn = connect(conn_str)
+    try:
+        conn.setencoding('utf-8', SQL_CHAR)
+        encoding_info = conn.getencoding()
+        assert encoding_info['encoding'] == 'utf-8'
+        assert encoding_info['ctype'] == SQL_CHAR
+    finally:
+        conn.close()
+
+def test_setencoding_with_explicit_ctype_sql_wchar(conn_str):
+    """Test setencoding with explicit SQL_WCHAR ctype"""
+    conn = connect(conn_str)
+    try:
+        conn.setencoding('utf-16le', SQL_WCHAR)
+        encoding_info = conn.getencoding()
+        assert encoding_info['encoding'] == 'utf-16le'
+        assert encoding_info['ctype'] == SQL_WCHAR
+    finally:
+        conn.close()
+
+def test_setencoding_invalid_encoding(conn_str):
+    """Test setencoding with invalid encoding raises ProgrammingError"""
+    from mssql_python.exceptions import ProgrammingError
+    
+    conn = connect(conn_str)
+    try:
+        with pytest.raises(ProgrammingError, match="Unsupported encoding"):
+            conn.setencoding('invalid-encoding-name')
+    finally:
+        conn.close()
+
+def test_setencoding_invalid_ctype(conn_str):
+    """Test setencoding with invalid ctype raises ProgrammingError"""
+    from mssql_python.exceptions import ProgrammingError
+    
+    conn = connect(conn_str)
+    try:
+        with pytest.raises(ProgrammingError, match="Invalid ctype"):
+            conn.setencoding('utf-8', 999)
+    finally:
+        conn.close()
+
+def test_setencoding_closed_connection(conn_str):
+    """Test setencoding on closed connection raises InterfaceError"""
+    conn = connect(conn_str)
+    conn.close()
+    
+    with pytest.raises(InterfaceError, match="Connection is closed"):
+        conn.setencoding('utf-8')
+
+def test_setencoding_case_insensitive_encoding(conn_str):
+    """Test setencoding with case variations"""
+    conn = connect(conn_str)
+    try:
+        # Test various case formats
+        conn.setencoding('UTF-8')
+        encoding_info = conn.getencoding()
+        assert encoding_info['encoding'] == 'utf-8'  # Should be normalized
+        
+        conn.setencoding('Utf-16LE')
+        encoding_info = conn.getencoding()
+        assert encoding_info['encoding'] == 'utf-16le'  # Should be normalized
+    finally:
+        conn.close()
+
+def test_setencoding_none_encoding_default(conn_str):
+    """Test setencoding with None encoding uses default"""
+    conn = connect(conn_str)
+    try:
+        conn.setencoding(None)
+        encoding_info = conn.getencoding()
+        assert encoding_info['encoding'] == 'utf-16le'
+        assert encoding_info['ctype'] == SQL_WCHAR
+    finally:
+        conn.close()
+
+def test_setencoding_override_previous(conn_str):
+    """Test setencoding overrides previous settings"""
+    conn = connect(conn_str)
+    try:
+        # Set initial encoding
+        conn.setencoding('utf-8')
+        encoding_info = conn.getencoding()
+        assert encoding_info['encoding'] == 'utf-8'
+        assert encoding_info['ctype'] == SQL_CHAR
+        
+        # Override with different encoding
+        conn.setencoding('utf-16le')
+        encoding_info = conn.getencoding()
+        assert encoding_info['encoding'] == 'utf-16le'
+        assert encoding_info['ctype'] == SQL_WCHAR
+    finally:
+        conn.close()
+
+def test_setencoding_ascii(conn_str):
+    """Test setencoding with ASCII encoding"""
+    conn = connect(conn_str)
+    try:
+        conn.setencoding('ascii')
+        encoding_info = conn.getencoding()
+        assert encoding_info['encoding'] == 'ascii'
+        assert encoding_info['ctype'] == SQL_CHAR
+    finally:
+        conn.close()
+
+def test_setencoding_cp1252(conn_str):
+    """Test setencoding with Windows-1252 encoding"""
+    conn = connect(conn_str)
+    try:
+        conn.setencoding('cp1252')
+        encoding_info = conn.getencoding()
+        assert encoding_info['encoding'] == 'cp1252'
+        assert encoding_info['ctype'] == SQL_CHAR
+    finally:
+        conn.close()

@@ -47,6 +47,10 @@ from .logging_config import setup_logging, get_logger
 # Constants
 from .constants import ConstantsDDBC
 
+# Export specific constants for setencoding()
+SQL_CHAR = ConstantsDDBC.SQL_CHAR.value
+SQL_WCHAR = ConstantsDDBC.SQL_WCHAR.value
+
 # GLOBALS
 # Read-Only
 apilevel = "2.0"
@@ -71,4 +75,3 @@ def pooling(max_size=100, idle_timeout=600, enabled=True):
         PoolingManager.disable()
     else:
         PoolingManager.enable(max_size, idle_timeout)
-      
