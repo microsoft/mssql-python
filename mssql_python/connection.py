@@ -75,6 +75,7 @@ class Connection:
         setencoding(encoding=None, ctype=None) -> None:
         setdecoding(sqltype, encoding=None, ctype=None) -> None:
         getdecoding(sqltype) -> dict:
+        set_attr(attribute, value) -> None:  # Add this line
     """
 
     def __init__(self, connection_str: str = "", autocommit: bool = False, attrs_before: dict = None, **kwargs) -> None:
@@ -519,6 +520,78 @@ class Connection:
         # Roll back the current transaction
         self._conn.rollback()
         log('info', "Transaction rolled back successfully.")
+
+    def set_attr(self, attribute, value):
+        """
+        Set a connection attribute.
+
+        This method sets a connection attribute using SQLSetConnectAttr.
+        It provides pyodbc-compatible functionality for configuring connection
+        behavior such as autocommit mode, transaction isolation level, and
+        connection timeouts.
+
+        Args:
+            attribute (int): The connection attribute to set. Should be one of the
+                           SQL_ATTR_* constants (e.g., SQL_ATTR_AUTOCOMMIT,
+                           SQL_ATTR_TXN_ISOLATION).
+            value: The value to set for the attribute. Can be an integer or bytes/bytearray
+                  depending on the attribute type.
+
+        Raises:
+            InterfaceError: If the connection is closed or attribute is invalid.
+            ProgrammingError: If the value type or range is invalid.
+
+        Example:
+            >>> conn.set_attr(SQL_ATTR_AUTOCOMMIT, SQL_AUTOCOMMIT_OFF)
+            >>> conn.set_attr(SQL_ATTR_TXN_ISOLATION, SQL_TXN_READ_COMMITTED)
+
+        Note:
+            This method is compatible with pyodbc's set_attr functionality.
+            Attribute values must be within valid SQLUINTEGER range (0 to 4294967295).
+        """
+        if self._closed:
+            raise InterfaceError("Cannot set attribute on closed connection", "Connection is closed")
+
+        # Validate attribute type and range for SQLUINTEGER compatibility
+        if not isinstance(attribute, int) or attribute < 0:
+            raise ProgrammingError("Connection attribute must be a non-negative integer", f"Invalid attribute: {attribute}")
+
+        # Validate attribute is within SQLUINTEGER range
+        if attribute > 4294967295:  # 2^32 - 1
+            raise ProgrammingError("Connection attribute must be within SQLUINTEGER range (0-4294967295)", f"Attribute out of range: {attribute}")
+
+        # Validate value type - must be integer, bytes, or bytearray
+        if not isinstance(value, (int, bytes, bytearray)):
+            raise ProgrammingError("Attribute value must be an integer, bytes, or bytearray", f"Invalid value type: {type(value)}")
+
+        # For integer values, validate SQLUINTEGER range
+        if isinstance(value, int):
+            if value < 0 or value > 4294967295:  # 2^32 - 1
+                raise ProgrammingError("Attribute value out of range for SQLUINTEGER (0-4294967295)", f"Value out of range: {value}")
+
+        # Sanitize user input for security
+        try:
+            sanitized_input = sanitize_user_input(str(attribute))
+            log('debug', f"Setting connection attribute: {sanitized_input}")
+        except Exception:
+            # If sanitization fails, log without user input
+            log('debug', "Setting connection attribute")
+
+        try:
+            # Call the underlying C++ method
+            self._conn.set_attr(attribute, value)
+            log('info', f"Connection attribute {attribute} set successfully")
+
+        except Exception as e:
+            error_msg = f"Failed to set connection attribute {attribute}: {str(e)}"
+            log('error', error_msg)
+
+            # Determine appropriate exception type based on error content
+            error_str = str(e).lower()
+            if 'invalid' in error_str or 'unsupported' in error_str or 'cast' in error_str:
+                raise InterfaceError(error_msg, str(e)) from e
+            else:
+                raise ProgrammingError(error_msg, str(e)) from e
 
     def close(self) -> None:
         """

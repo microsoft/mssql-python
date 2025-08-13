@@ -174,8 +174,18 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     SQLINTEGER length = 0;
 
     if (py::isinstance<py::int_>(value)) {
-        int intValue = value.cast<int>();
-        ptr = reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(intValue));
+        // Handle large integer values up to SQLUINTEGER range
+        long long longValue = value.cast<long long>();
+        
+        // Validate range for SQLUINTEGER (0 to 4294967295)
+        if (longValue < 0 || longValue > 4294967295LL) {
+            LOG("Integer value out of SQLUINTEGER range: {}", longValue);
+            return SQL_ERROR;
+        }
+        
+        // Cast to SQLUINTEGER for proper handling
+        SQLUINTEGER uintValue = static_cast<SQLUINTEGER>(longValue);
+        ptr = reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(uintValue));
         length = SQL_IS_INTEGER;
     } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
         static std::vector<std::string> buffers;
@@ -314,4 +324,34 @@ SqlHandlePtr ConnectionHandle::allocStatementHandle() {
         ThrowStdException("Connection object is not initialized");
     }
     return _conn->allocStatementHandle();
+}
+
+void ConnectionHandle::setAttr(int attribute, py::object value) {
+    if (!_conn) {
+        ThrowStdException("Connection not established");
+    }
+    
+    // Use existing setAttribute with better error handling
+    SQLRETURN ret = _conn->setAttribute(static_cast<SQLINTEGER>(attribute), value);
+    if (!SQL_SUCCEEDED(ret)) {
+        // Get detailed error information from ODBC
+        try {
+            ErrorInfo errorInfo = SQLCheckError_Wrap(SQL_HANDLE_DBC, _conn->getDbcHandle(), ret);
+            
+            std::string errorMsg = "Failed to set connection attribute " + std::to_string(attribute);
+            if (!errorInfo.ddbcErrorMsg.empty()) {
+                // Convert wstring to string for concatenation
+                std::string ddbcErrorStr = WideToUTF8(errorInfo.ddbcErrorMsg);
+                errorMsg += ": " + ddbcErrorStr;
+            }
+            
+            LOG("Connection setAttribute failed: {}", errorMsg);
+            ThrowStdException(errorMsg);
+        } catch (...) {
+            // Fallback to generic error if detailed error retrieval fails
+            std::string errorMsg = "Failed to set connection attribute " + std::to_string(attribute);
+            LOG("Connection setAttribute failed: {}", errorMsg);
+            ThrowStdException(errorMsg);
+        }
+    }
 }
