@@ -344,10 +344,11 @@ class Cursor:
             is_unicode = self._is_unicode_string(param)
             if len(param) > MAX_INLINE_CHAR:  # Long strings
                 if is_unicode:
+                    utf16_len = len(param.encode("utf-16-le")) // 2
                     return (
                         ddbc_sql_const.SQL_WLONGVARCHAR.value,
                         ddbc_sql_const.SQL_C_WCHAR.value,
-                        len(param),
+                        utf16_len,
                         0,
                         True,
                     )
@@ -382,7 +383,7 @@ class Cursor:
                     ddbc_sql_const.SQL_C_BINARY.value,
                     len(param),
                     0,
-                    False,
+                    True,
                 )
             return (
                 ddbc_sql_const.SQL_BINARY.value,
