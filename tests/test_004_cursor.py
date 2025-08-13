@@ -1313,6 +1313,145 @@ def test_row_column_mapping(cursor, db_connection):
         cursor.execute("DROP TABLE #pytest_row_test")
         db_connection.commit()
 
+def test_lastrowid_single_insert(cursor, db_connection):
+    """Test lastrowid with single INSERT operation"""
+    try:
+        # Create table with identity column
+        cursor.execute("CREATE TABLE #test_lastrowid (id INT IDENTITY(1,1) PRIMARY KEY, name VARCHAR(50))")
+        db_connection.commit()
+        
+        # Test initial state
+        assert cursor.lastrowid is None, "lastrowid should initially be None"
+        
+        # Single INSERT should set lastrowid
+        cursor.execute("INSERT INTO #test_lastrowid (name) VALUES (?)", ["test1"])
+        db_connection.commit()
+        
+        assert cursor.lastrowid is not None, "lastrowid should not be None after INSERT"
+        assert isinstance(cursor.lastrowid, int), "lastrowid should be an integer"
+        assert cursor.lastrowid > 0, "lastrowid should be positive"
+        
+        # Store the first ID
+        first_id = cursor.lastrowid
+        
+        # Another single INSERT should update lastrowid
+        cursor.execute("INSERT INTO #test_lastrowid (name) VALUES (?)", ["test2"])
+        db_connection.commit()
+        
+        assert cursor.lastrowid == first_id + 1, "lastrowid should increment for subsequent INSERTs"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_lastrowid")
+            db_connection.commit()
+        except:
+            pass
+
+
+def test_lastrowid_multiple_insert(cursor, db_connection):
+    """Test lastrowid with multiple INSERT operations"""
+    try:
+        # Create table with identity column
+        cursor.execute("CREATE TABLE #test_lastrowid (id INT IDENTITY(1,1) PRIMARY KEY, name VARCHAR(50))")
+        db_connection.commit()
+        
+        # Multiple INSERT should set lastrowid to None (undefined semantics)
+        cursor.execute("INSERT INTO #test_lastrowid (name) VALUES ('test1'), ('test2'), ('test3')")
+        db_connection.commit()
+        
+        # lastrowid semantics are undefined for multiple inserts, but we set it to None
+        assert cursor.lastrowid is None, "lastrowid should be None for multiple INSERTs"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_lastrowid")
+            db_connection.commit()
+        except:
+            pass
+
+
+def test_lastrowid_executemany(cursor, db_connection):
+    """Test lastrowid with executemany"""
+    try:
+        # Create table with identity column
+        cursor.execute("CREATE TABLE #test_lastrowid (id INT IDENTITY(1,1) PRIMARY KEY, name VARCHAR(50))")
+        db_connection.commit()
+        
+        # executemany should set lastrowid to None (undefined semantics)
+        data = [("test1",), ("test2",), ("test3",)]
+        cursor.executemany("INSERT INTO #test_lastrowid (name) VALUES (?)", data)
+        db_connection.commit()
+        
+        assert cursor.lastrowid is None, "lastrowid should be None after executemany"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_lastrowid")
+            db_connection.commit()
+        except:
+            pass
+
+
+def test_lastrowid_non_insert_operations(cursor, db_connection):
+    """Test lastrowid with non-INSERT operations"""
+    try:
+        # Create table with identity column and some data
+        cursor.execute("CREATE TABLE #test_lastrowid (id INT IDENTITY(1,1) PRIMARY KEY, name VARCHAR(50))")
+        cursor.execute("INSERT INTO #test_lastrowid (name) VALUES ('initial')")
+        db_connection.commit()
+        
+        # SELECT should not affect lastrowid but should reset it
+        cursor.execute("SELECT * FROM #test_lastrowid")
+        assert cursor.lastrowid is None, "lastrowid should be None after SELECT"
+        
+        # UPDATE should not set lastrowid
+        cursor.execute("UPDATE #test_lastrowid SET name = 'updated' WHERE id = 1")
+        db_connection.commit()
+        assert cursor.lastrowid is None, "lastrowid should be None after UPDATE"
+        
+        # DELETE should not set lastrowid
+        cursor.execute("DELETE FROM #test_lastrowid WHERE id = 1")
+        db_connection.commit()
+        assert cursor.lastrowid is None, "lastrowid should be None after DELETE"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_lastrowid")
+            db_connection.commit()
+        except:
+            pass
+
+
+def test_lastrowid_table_without_identity(cursor, db_connection):
+    """Test lastrowid with table that has no identity column"""
+    try:
+        # Create table without identity column
+        cursor.execute("CREATE TABLE #test_no_identity (id INT PRIMARY KEY, name VARCHAR(50))")
+        db_connection.commit()
+        
+        # INSERT into table without identity should not set lastrowid
+        cursor.execute("INSERT INTO #test_no_identity (id, name) VALUES (1, 'test')")
+        db_connection.commit()
+        
+        assert cursor.lastrowid is None, "lastrowid should be None for table without identity"
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_no_identity")
+            db_connection.commit()
+        except:
+            pass
+
+
+def test_lastrowid_readonly(cursor):
+    """Test that lastrowid is read-only"""
+    # lastrowid should be read-only, attempting to set it should raise AttributeError
+    try:
+        cursor.lastrowid = 123
+        assert False, "Setting lastrowid should raise AttributeError"
+    except AttributeError:
+        pass  # Expected behavior
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
