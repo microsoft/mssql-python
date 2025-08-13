@@ -637,20 +637,66 @@ std::string GetLastErrorMessage() {
 #endif
 }
 
-// Function to call Python get_driver_path function
-std::string GetDriverPathFromPython(const std::string& moduleDir, const std::string& architecture) {
-    try {
-        py::module_ helpers = py::module_::import("mssql_python.helpers");
-        py::object get_driver_path = helpers.attr("get_driver_path");
-        py::str result = get_driver_path(moduleDir, architecture);
-        return std::string(result);
-    } catch (const py::error_already_set& e) {
-        LOG("Python error in get_driver_path: {}", e.what());
-        ThrowStdException("Failed to get driver path from Python: " + std::string(e.what()));
-    } catch (const std::exception& e) {
-        LOG("Error calling get_driver_path: {}", e.what());
-        ThrowStdException("Failed to get driver path: " + std::string(e.what()));
-    }
+
+/*
+ * Resolve ODBC driver path in C++ to avoid circular import issues on Alpine.
+ *
+ * Background:
+ * On Alpine Linux, calling into Python during module initialization (via pybind11)
+ * causes a circular import due to musl's stricter dynamic loader behavior.
+ *
+ * Specifically, importing Python helpers from C++ triggered a re-import of the 
+ * partially-initialized native module, which works on glibc (Ubuntu/macOS) but 
+ * fails on musl-based systems like Alpine.
+ *
+ * By moving driver path resolution entirely into C++, we avoid any Python-layer 
+ * dependencies during critical initialization, ensuring compatibility across 
+ * all supported platforms.
+ */
+std::string GetDriverPathCpp(const std::string& moduleDir) {
+    namespace fs = std::filesystem;
+    fs::path basePath(moduleDir);
+
+    std::string platform;
+    std::string arch;
+
+    // Detect architecture
+    #if defined(__aarch64__) || defined(_M_ARM64)
+        arch = "arm64";
+    #elif defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64)
+        arch = "x86_64";  // maps to "x64" on Windows
+    #else
+        throw std::runtime_error("Unsupported architecture");
+    #endif
+
+    // Detect platform and set path
+    #ifdef __linux__
+        if (fs::exists("/etc/alpine-release")) {
+            platform = "alpine";
+        } else if (fs::exists("/etc/redhat-release") || fs::exists("/etc/centos-release")) {
+            platform = "rhel";
+        } else {
+            platform = "debian_ubuntu";
+        }
+
+        fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.5.so.1.1";
+        return driverPath.string();
+
+    #elif defined(__APPLE__)
+        platform = "macos";
+        fs::path driverPath = basePath / "libs" / platform / arch / "lib" / "libmsodbcsql.18.dylib";
+        return driverPath.string();
+
+    #elif defined(_WIN32)
+        platform = "windows";
+        // Normalize x86_64 to x64 for Windows naming
+        if (arch == "x86_64") arch = "x64";
+        fs::path driverPath = basePath / "libs" / platform / arch / "msodbcsql18.dll";
+        return driverPath.string();
+
+    #else
+        throw std::runtime_error("Unsupported platform");
+    #endif
 }
 
 DriverHandle LoadDriverOrThrowException() {
@@ -662,8 +708,11 @@ DriverHandle LoadDriverOrThrowException() {
     std::string archStr = ARCHITECTURE;
     LOG("Architecture: {}", archStr);
 
-    // Use Python function to get the correct driver path for the platform
-    std::string driverPathStr = GetDriverPathFromPython(moduleDir, archStr);
+    // Use only C++ function for driver path resolution
+    // Not using Python function since it causes circular import issues on Alpine Linux
+    // and other platforms with strict module loading rules.
+    std::string driverPathStr = GetDriverPathCpp(moduleDir);
+    
     fs::path driverPath(driverPathStr);
     
     LOG("Driver path determined: {}", driverPath.string());
@@ -2448,7 +2497,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     
     // Expose the C++ functions to Python
     m.def("ThrowStdException", &ThrowStdException);
-    m.def("get_driver_path", &GetDriverPathFromPython, "Get platform-specific ODBC driver path");
+    m.def("GetDriverPathCpp", &GetDriverPathCpp, "Get the path to the ODBC driver");
 
     // Define parameter info class
     py::class_<ParamInfo>(m, "ParamInfo")
