@@ -227,51 +227,54 @@ def test_connection_close(conn_str):
     temp_conn.close()    
 
 def test_connection_pooling_speed(conn_str):
+    """Test that connection pooling provides performance benefits over multiple iterations."""
+    import statistics
+    
+    # Warm up to eliminate cold start effects
+    for _ in range(3):
+        conn = connect(conn_str)
+        conn.close()
+    
     # Disable pooling first
     pooling(enabled=False)
     
-    # Warm up - establish initial connection to avoid first-connection overhead
-    warmup = connect(conn_str)
-    warmup.close()
-    
-    # Measure multiple non-pooled connections
-    non_pooled_times = []
-    for _ in range(5):
+    # Test without pooling (multiple times)
+    no_pool_times = []
+    for _ in range(10):
         start = time.perf_counter()
         conn = connect(conn_str)
         conn.close()
         end = time.perf_counter()
-        non_pooled_times.append(end - start)
-    
-    avg_no_pool = sum(non_pooled_times) / len(non_pooled_times)
+        no_pool_times.append(end - start)
     
     # Enable pooling
     pooling(max_size=5, idle_timeout=30)
     
-    # Prime the pool with a connection
-    primer = connect(conn_str)
-    primer.close()
-    
-    # Small delay to ensure connection is properly returned to pool
-    time.sleep(0.1)
-    
-    # Measure multiple pooled connections
-    pooled_times = []
-    for _ in range(5):
+    # Test with pooling (multiple times)
+    pool_times = []
+    for _ in range(10):
         start = time.perf_counter()
         conn = connect(conn_str)
         conn.close()
         end = time.perf_counter()
-        pooled_times.append(end - start)
+        pool_times.append(end - start)
     
-    avg_pooled = sum(pooled_times) / len(pooled_times)
+    # Use median times to reduce impact of outliers
+    median_no_pool = statistics.median(no_pool_times)
+    median_pool = statistics.median(pool_times)
     
-    # Pooled should be significantly faster than non-pooled
-    assert avg_pooled < avg_no_pool, \
-        f"Pooled connections ({avg_pooled:.6f}s) not significantly faster than non-pooled ({avg_no_pool:.6f}s)"
+    # Allow for some variance - pooling should be at least 30% faster on average
+    improvement_threshold = 0.7  # Pool should be <= 70% of no-pool time
+    
+    print(f"No pool median: {median_no_pool:.6f}s")
+    print(f"Pool median: {median_pool:.6f}s")
+    print(f"Improvement ratio: {median_pool/median_no_pool:.2f}")
     
     # Clean up - disable pooling for other tests
     pooling(enabled=False)
+    
+    assert median_pool <= median_no_pool * improvement_threshold, \
+        f"Expected pooling to be at least 30% faster. No-pool: {median_no_pool:.6f}s, Pool: {median_pool:.6f}s"
 
 def test_connection_pooling_reuse_spid(conn_str):
     """Test that connections are actually reused from the pool"""
