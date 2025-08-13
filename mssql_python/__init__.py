@@ -50,6 +50,7 @@ from .constants import ConstantsDDBC
 # Export specific constants for setencoding()
 SQL_CHAR = ConstantsDDBC.SQL_CHAR.value
 SQL_WCHAR = ConstantsDDBC.SQL_WCHAR.value
+SQL_WMETADATA = -99
 
 # GLOBALS
 # Read-Only
