@@ -2454,6 +2454,372 @@ def test_nextset_diagnostics(cursor, db_connection):
         print(f"DIAGNOSTIC INFO: {e}")
         # Don't fail the test - this is just for diagnostics
 
+def test_fetchval_basic_functionality(cursor, db_connection):
+    """Test basic fetchval functionality with simple queries"""
+    try:
+        # Test with COUNT query
+        cursor.execute("SELECT COUNT(*) FROM sys.databases")
+        count = cursor.fetchval()
+        assert isinstance(count, int), "fetchval should return integer for COUNT(*)"
+        assert count > 0, "COUNT(*) should return positive number"
+        
+        # Test with literal value
+        cursor.execute("SELECT 42")
+        value = cursor.fetchval()
+        assert value == 42, "fetchval should return the literal value"
+        
+        # Test with string literal
+        cursor.execute("SELECT 'Hello World'")
+        text = cursor.fetchval()
+        assert text == 'Hello World', "fetchval should return string literal"
+        
+    except Exception as e:
+        pytest.fail(f"Basic fetchval functionality test failed: {e}")
+
+def test_fetchval_different_data_types(cursor, db_connection):
+    """Test fetchval with different SQL data types"""
+    try:
+        # Create test table with different data types
+        drop_table_if_exists(cursor, "#pytest_fetchval_types")
+        cursor.execute("""
+            CREATE TABLE #pytest_fetchval_types (
+                int_col INTEGER,
+                float_col FLOAT,
+                decimal_col DECIMAL(10,2),
+                varchar_col VARCHAR(50),
+                nvarchar_col NVARCHAR(50),
+                bit_col BIT,
+                datetime_col DATETIME,
+                date_col DATE,
+                time_col TIME
+            )
+        """)
+        
+        # Insert test data
+        cursor.execute("""
+            INSERT INTO #pytest_fetchval_types VALUES 
+            (123, 45.67, 89.12, 'ASCII text', N'Unicode text', 1, 
+             '2024-05-20 12:34:56', '2024-05-20', '12:34:56')
+        """)
+        db_connection.commit()
+        
+        # Test different data types
+        test_cases = [
+            ("SELECT int_col FROM #pytest_fetchval_types", 123, int),
+            ("SELECT float_col FROM #pytest_fetchval_types", 45.67, float),
+            ("SELECT decimal_col FROM #pytest_fetchval_types", decimal.Decimal('89.12'), decimal.Decimal),
+            ("SELECT varchar_col FROM #pytest_fetchval_types", 'ASCII text', str),
+            ("SELECT nvarchar_col FROM #pytest_fetchval_types", 'Unicode text', str),
+            ("SELECT bit_col FROM #pytest_fetchval_types", 1, int),
+            ("SELECT datetime_col FROM #pytest_fetchval_types", datetime(2024, 5, 20, 12, 34, 56), datetime),
+            ("SELECT date_col FROM #pytest_fetchval_types", date(2024, 5, 20), date),
+            ("SELECT time_col FROM #pytest_fetchval_types", time(12, 34, 56), time),
+        ]
+        
+        for query, expected_value, expected_type in test_cases:
+            cursor.execute(query)
+            result = cursor.fetchval()
+            assert isinstance(result, expected_type), f"fetchval should return {expected_type.__name__} for {query}"
+            if isinstance(expected_value, float):
+                assert abs(result - expected_value) < 0.01, f"Float values should be approximately equal for {query}"
+            else:
+                assert result == expected_value, f"fetchval should return {expected_value} for {query}"
+                
+    except Exception as e:
+        pytest.fail(f"fetchval data types test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE #pytest_fetchval_types")
+            db_connection.commit()
+        except:
+            pass
+
+def test_fetchval_null_values(cursor, db_connection):
+    """Test fetchval with NULL values"""
+    try:
+        # Test explicit NULL
+        cursor.execute("SELECT NULL")
+        result = cursor.fetchval()
+        assert result is None, "fetchval should return None for NULL value"
+        
+        # Test NULL from table
+        drop_table_if_exists(cursor, "#pytest_fetchval_null")
+        cursor.execute("CREATE TABLE #pytest_fetchval_null (col VARCHAR(50))")
+        cursor.execute("INSERT INTO #pytest_fetchval_null VALUES (NULL)")
+        db_connection.commit()
+        
+        cursor.execute("SELECT col FROM #pytest_fetchval_null")
+        result = cursor.fetchval()
+        assert result is None, "fetchval should return None for NULL column value"
+        
+    except Exception as e:
+        pytest.fail(f"fetchval NULL values test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE #pytest_fetchval_null")
+            db_connection.commit()
+        except:
+            pass
+
+def test_fetchval_no_results(cursor, db_connection):
+    """Test fetchval when query returns no rows"""
+    try:
+        # Create empty table
+        drop_table_if_exists(cursor, "#pytest_fetchval_empty")
+        cursor.execute("CREATE TABLE #pytest_fetchval_empty (col INTEGER)")
+        db_connection.commit()
+        
+        # Query empty table
+        cursor.execute("SELECT col FROM #pytest_fetchval_empty")
+        result = cursor.fetchval()
+        assert result is None, "fetchval should return None when no rows are returned"
+        
+        # Query with WHERE clause that matches nothing
+        cursor.execute("SELECT col FROM #pytest_fetchval_empty WHERE col = 999")
+        result = cursor.fetchval()
+        assert result is None, "fetchval should return None when WHERE clause matches no rows"
+        
+    except Exception as e:
+        pytest.fail(f"fetchval no results test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE #pytest_fetchval_empty")
+            db_connection.commit()
+        except:
+            pass
+
+def test_fetchval_multiple_columns(cursor, db_connection):
+    """Test fetchval with queries that return multiple columns (should return first column)"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_fetchval_multi")
+        cursor.execute("CREATE TABLE #pytest_fetchval_multi (col1 INTEGER, col2 VARCHAR(50), col3 FLOAT)")
+        cursor.execute("INSERT INTO #pytest_fetchval_multi VALUES (100, 'second column', 3.14)")
+        db_connection.commit()
+        
+        # Query multiple columns - should return first column
+        cursor.execute("SELECT col1, col2, col3 FROM #pytest_fetchval_multi")
+        result = cursor.fetchval()
+        assert result == 100, "fetchval should return first column value when multiple columns are selected"
+        
+        # Test with different order
+        cursor.execute("SELECT col2, col1, col3 FROM #pytest_fetchval_multi")
+        result = cursor.fetchval()
+        assert result == 'second column', "fetchval should return first column value regardless of column order"
+        
+    except Exception as e:
+        pytest.fail(f"fetchval multiple columns test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE #pytest_fetchval_multi")
+            db_connection.commit()
+        except:
+            pass
+
+def test_fetchval_multiple_rows(cursor, db_connection):
+    """Test fetchval with queries that return multiple rows (should return first row, first column)"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_fetchval_rows")
+        cursor.execute("CREATE TABLE #pytest_fetchval_rows (col INTEGER)")
+        cursor.execute("INSERT INTO #pytest_fetchval_rows VALUES (10)")
+        cursor.execute("INSERT INTO #pytest_fetchval_rows VALUES (20)")
+        cursor.execute("INSERT INTO #pytest_fetchval_rows VALUES (30)")
+        db_connection.commit()
+        
+        # Query multiple rows - should return first row's first column
+        cursor.execute("SELECT col FROM #pytest_fetchval_rows ORDER BY col")
+        result = cursor.fetchval()
+        assert result == 10, "fetchval should return first row's first column value"
+        
+        # Verify cursor position advanced by one row
+        next_row = cursor.fetchone()
+        assert next_row[0] == 20, "Cursor should advance by one row after fetchval"
+        
+    except Exception as e:
+        pytest.fail(f"fetchval multiple rows test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE #pytest_fetchval_rows")
+            db_connection.commit()
+        except:
+            pass
+
+def test_fetchval_method_chaining(cursor, db_connection):
+    """Test fetchval with method chaining from execute"""
+    try:
+        # Test method chaining - execute returns cursor, so we can chain fetchval
+        result = cursor.execute("SELECT 42").fetchval()
+        assert result == 42, "fetchval should work with method chaining from execute"
+        
+        # Test with parameterized query
+        result = cursor.execute("SELECT ?", 123).fetchval()
+        assert result == 123, "fetchval should work with method chaining on parameterized queries"
+        
+    except Exception as e:
+        pytest.fail(f"fetchval method chaining test failed: {e}")
+
+def test_fetchval_closed_cursor(db_connection):
+    """Test fetchval on closed cursor should raise exception"""
+    try:
+        cursor = db_connection.cursor()
+        cursor.close()
+        
+        with pytest.raises(Exception) as exc_info:
+            cursor.fetchval()
+        
+        assert "closed" in str(exc_info.value).lower(), "fetchval on closed cursor should raise exception mentioning cursor is closed"
+        
+    except Exception as e:
+        if "closed" not in str(e).lower():
+            pytest.fail(f"fetchval closed cursor test failed: {e}")
+
+def test_fetchval_rownumber_tracking(cursor, db_connection):
+    """Test that fetchval properly updates rownumber tracking"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_fetchval_rownumber")
+        cursor.execute("CREATE TABLE #pytest_fetchval_rownumber (col INTEGER)")
+        cursor.execute("INSERT INTO #pytest_fetchval_rownumber VALUES (1)")
+        cursor.execute("INSERT INTO #pytest_fetchval_rownumber VALUES (2)")
+        db_connection.commit()
+        
+        # Execute query to set up result set
+        cursor.execute("SELECT col FROM #pytest_fetchval_rownumber ORDER BY col")
+        
+        # Check initial rownumber
+        initial_rownumber = cursor.rownumber
+        
+        # Use fetchval
+        result = cursor.fetchval()
+        assert result == 1, "fetchval should return first row value"
+        
+        # Check that rownumber was incremented
+        assert cursor.rownumber == initial_rownumber + 1, "fetchval should increment rownumber"
+        
+        # Verify next fetch gets the second row
+        next_row = cursor.fetchone()
+        assert next_row[0] == 2, "Next fetchone should return second row after fetchval"
+        
+    except Exception as e:
+        pytest.fail(f"fetchval rownumber tracking test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE #pytest_fetchval_rownumber")
+            db_connection.commit()
+        except:
+            pass
+
+def test_fetchval_aggregate_functions(cursor, db_connection):
+    """Test fetchval with common aggregate functions"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_fetchval_agg")
+        cursor.execute("CREATE TABLE #pytest_fetchval_agg (value INTEGER)")
+        cursor.execute("INSERT INTO #pytest_fetchval_agg VALUES (10), (20), (30), (40), (50)")
+        db_connection.commit()
+        
+        # Test various aggregate functions
+        test_cases = [
+            ("SELECT COUNT(*) FROM #pytest_fetchval_agg", 5),
+            ("SELECT SUM(value) FROM #pytest_fetchval_agg", 150),
+            ("SELECT AVG(value) FROM #pytest_fetchval_agg", 30),
+            ("SELECT MIN(value) FROM #pytest_fetchval_agg", 10),
+            ("SELECT MAX(value) FROM #pytest_fetchval_agg", 50),
+        ]
+        
+        for query, expected in test_cases:
+            cursor.execute(query)
+            result = cursor.fetchval()
+            if isinstance(expected, float):
+                assert abs(result - expected) < 0.01, f"Aggregate function result should match for {query}"
+            else:
+                assert result == expected, f"Aggregate function result should be {expected} for {query}"
+                
+    except Exception as e:
+        pytest.fail(f"fetchval aggregate functions test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE #pytest_fetchval_agg")
+            db_connection.commit()
+        except:
+            pass
+
+def test_fetchval_empty_result_set_edge_cases(cursor, db_connection):
+    """Test fetchval edge cases with empty result sets"""
+    try:
+        # Test with conditional that never matches
+        cursor.execute("SELECT 1 WHERE 1 = 0")
+        result = cursor.fetchval()
+        assert result is None, "fetchval should return None for impossible condition"
+        
+        # Test with CASE statement that could return NULL
+        cursor.execute("SELECT CASE WHEN 1 = 0 THEN 'never' ELSE NULL END")
+        result = cursor.fetchval()
+        assert result is None, "fetchval should return None for CASE returning NULL"
+        
+        # Test with subquery returning no rows
+        cursor.execute("SELECT (SELECT COUNT(*) FROM sys.databases WHERE name = 'nonexistent_db_name_12345')")
+        result = cursor.fetchval()
+        assert result == 0, "fetchval should return 0 for COUNT with no matches"
+        
+    except Exception as e:
+        pytest.fail(f"fetchval empty result set edge cases test failed: {e}")
+
+def test_fetchval_error_scenarios(cursor, db_connection):
+    """Test fetchval error scenarios and recovery"""
+    try:
+        # Test fetchval after successful execute
+        cursor.execute("SELECT 'test'")
+        result = cursor.fetchval()
+        assert result == 'test', "fetchval should work after successful execute"
+        
+        # Test fetchval on cursor without prior execute should raise exception
+        cursor2 = db_connection.cursor()
+        try:
+            result = cursor2.fetchval()
+            # If this doesn't raise an exception, that's also acceptable behavior
+            # depending on the implementation
+        except Exception:
+            # Expected - cursor might not have a result set
+            pass
+        finally:
+            cursor2.close()
+            
+    except Exception as e:
+        pytest.fail(f"fetchval error scenarios test failed: {e}")
+
+def test_fetchval_performance_common_patterns(cursor, db_connection):
+    """Test fetchval with common performance-related patterns"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_fetchval_perf")
+        cursor.execute("CREATE TABLE #pytest_fetchval_perf (id INTEGER IDENTITY(1,1), data VARCHAR(100))")
+        
+        # Insert some test data
+        for i in range(10):
+            cursor.execute("INSERT INTO #pytest_fetchval_perf (data) VALUES (?)", f"data_{i}")
+        db_connection.commit()
+        
+        # Test EXISTS pattern
+        cursor.execute("SELECT CASE WHEN EXISTS(SELECT 1 FROM #pytest_fetchval_perf WHERE data = 'data_5') THEN 1 ELSE 0 END")
+        exists_result = cursor.fetchval()
+        assert exists_result == 1, "EXISTS pattern should return 1 when record exists"
+        
+        # Test TOP 1 pattern
+        cursor.execute("SELECT TOP 1 id FROM #pytest_fetchval_perf ORDER BY id")
+        top_result = cursor.fetchval()
+        assert top_result == 1, "TOP 1 pattern should return first record"
+        
+        # Test scalar subquery pattern
+        cursor.execute("SELECT (SELECT COUNT(*) FROM #pytest_fetchval_perf)")
+        count_result = cursor.fetchval()
+        assert count_result == 10, "Scalar subquery should return correct count"
+        
+    except Exception as e:
+        pytest.fail(f"fetchval performance patterns test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE #pytest_fetchval_perf")
+            db_connection.commit()
+        except:
+            pass
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:

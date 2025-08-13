@@ -970,6 +970,46 @@ class Cursor:
 
         return True
 
+    def fetchval(self):
+        """
+        Fetch the first column of the first row if there are results.
+        
+        This is a convenience method for queries that return a single value,
+        such as SELECT COUNT(*) FROM table, SELECT MAX(id) FROM table, etc.
+        
+        Returns:
+            The value of the first column of the first row, or None if no rows
+            are available or the first column value is NULL.
+            
+        Raises:
+            Exception: If the cursor is closed.
+            
+        Example:
+            >>> count = cursor.execute('SELECT COUNT(*) FROM users').fetchval()
+            >>> max_id = cursor.execute('SELECT MAX(id) FROM products').fetchval()
+            >>> name = cursor.execute('SELECT name FROM users WHERE id = ?', user_id).fetchval()
+            
+        Note:
+            This is a convenience extension beyond the DB-API 2.0 specification.
+            After calling fetchval(), the cursor position advances by one row,
+            just like fetchone().
+        """
+        self._check_closed()  # Check if the cursor is closed
+        
+        # Fetch the first row
+        row = self.fetchone()
+        
+        # If no row is available, return None
+        if row is None:
+            return None
+            
+        # If the row has no columns, return None (shouldn't happen in normal cases)
+        if len(row) == 0:
+            return None
+            
+        # Return the first column value (could be None if the column value is NULL)
+        return row[0]
+
     def __del__(self):
         """
         Destructor to ensure the cursor is closed when it is no longer needed.
