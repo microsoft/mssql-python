@@ -30,7 +30,7 @@
 #ifndef ARCHITECTURE
 #define ARCHITECTURE "win64"  // Default to win64 if not defined during compilation
 #endif
-
+#define DAE_CHUNK_SIZE 8192
 //-------------------------------------------------------------------------------------------------
 // Class definitions
 //-------------------------------------------------------------------------------------------------
@@ -43,11 +43,8 @@ struct ParamInfo {
     SQLSMALLINT paramSQLType;
     SQLULEN columnSize;
     SQLSMALLINT decimalDigits;
-    // TODO: Reuse python buffer for large data using Python buffer protocol
-    // Stores pointer to the python object that holds parameter value
-    
     SQLLEN strLenOrInd = 0;  // Required for DAE
-    bool isDAE = false;      // Indicates if we need to stream via SQLPutData
+    bool isDAE = false;      // Indicates if we need to stream
     py::object dataPtr; 
 };
 
@@ -252,14 +249,13 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     !py::isinstance<py::bytes>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
-
                 if (paramInfo.isDAE) {
                     // deferred execution
                     LOG("Parameter[{}] is marked for DAE streaming", paramIndex);
                     dataPtr = const_cast<void*>(reinterpret_cast<const void*>(&paramInfos[paramIndex]));
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                     *strLenOrIndPtr = SQL_LEN_DATA_AT_EXEC(0);
-                    bufferLength = 0;  // Not used
+                    bufferLength = 0;
                 } else {
                     // Normal small-string case
                     std::wstring* strParam =
@@ -1175,7 +1171,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
             LOG("Beginning SQLParamData/SQLPutData loop for DAE.");
             SQLPOINTER paramToken = nullptr;            
             while ((rc = SQLParamData_ptr(hStmt, &paramToken)) == SQL_NEED_DATA) {
-                // Find the paramInfo that matches the returned token
+                // Finding the paramInfo that matches the returned token
                 const ParamInfo* matchedInfo = nullptr;
                 for (auto& info : paramInfos) {
                     if (reinterpret_cast<SQLPOINTER>(const_cast<ParamInfo*>(&info)) == paramToken) {
@@ -1186,18 +1182,21 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                 if (!matchedInfo) {
                     ThrowStdException("Unrecognized paramToken returned by SQLParamData");
                 }
-
                 const py::object& pyObj = matchedInfo->dataPtr;
                 if (pyObj.is_none()) {
                     SQLPutData_ptr(hStmt, nullptr, 0);
                     continue;
                 }
                 if (py::isinstance<py::str>(pyObj)) {
-                    std::string utf16_str = pyObj.attr("encode")("utf-16-le").cast<py::bytes>();
+                    std::string utf16_str;
+                    try {
+                        utf16_str = pyObj.attr("encode")("utf-16-le").cast<py::bytes>();
+                    } catch (const std::exception& e) {
+                        ThrowStdException("Error encoding string to UTF-16: " + std::string(e.what()));
+                    }
                     const char* dataPtr = utf16_str.data();
                     SQLLEN totalBytes = static_cast<SQLLEN>(utf16_str.size());
-
-                    const size_t chunkSize = 8192;
+                    const size_t chunkSize = DAE_CHUNK_SIZE;
                     for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
                         size_t len = std::min(chunkSize, totalBytes - offset);
                         rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(len));
@@ -1210,14 +1209,12 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                     ThrowStdException("DAE only supported for str or bytes");
                 }
             }
-
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("SQLParamData final rc: {}", rc);
                 return rc;
             }
             LOG("DAE complete, SQLExecute resumed internally.");
         }
-
         if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
             LOG("DDBCSQLExecute: Error during execution of the statement");
             return rc;
