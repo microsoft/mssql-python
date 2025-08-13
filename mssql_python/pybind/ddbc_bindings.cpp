@@ -45,7 +45,10 @@ struct ParamInfo {
     SQLSMALLINT decimalDigits;
     // TODO: Reuse python buffer for large data using Python buffer protocol
     // Stores pointer to the python object that holds parameter value
-    // py::object* dataPtr;
+    
+    SQLLEN strLenOrInd = 0;  // Required for DAE
+    bool isDAE = false;      // Indicates if we need to stream via SQLPutData
+    py::object dataPtr; 
 };
 
 // Mirrors the SQL_NUMERIC_STRUCT. But redefined to replace val char array
@@ -134,6 +137,10 @@ SQLFreeStmtFunc SQLFreeStmt_ptr = nullptr;
 
 // Diagnostic APIs
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
+
+// DAE APIs
+SQLParamDataFunc SQLParamData_ptr = nullptr;
+SQLPutDataFunc SQLPutData_ptr = nullptr;
 
 namespace {
 
@@ -244,53 +251,41 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     !py::isinstance<py::bytes>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
-                std::wstring* strParam =
-                    AllocateParamBuffer<std::wstring>(paramBuffers, param.cast<std::wstring>());
-                if (strParam->size() > 4096 /* TODO: Fix max length */) {
-                    ThrowStdException(
-                        "Streaming parameters is not yet supported. Parameter size"
-                        " must be less than 8192 bytes");
-                }
-                
-                // Log detailed parameter information
-                LOG("SQL_C_WCHAR Parameter[{}]: Length={}, Content='{}'",
-                    paramIndex,
-                    strParam->size(),
-                    (strParam->size() <= 100
-                        ? WideToUTF8(std::wstring(strParam->begin(), strParam->end()))
-                        : WideToUTF8(std::wstring(strParam->begin(), strParam->begin() + 100)) + "..."));
 
-                // Log each character's code point for debugging
-                if (strParam->size() <= 20) {
+                if (paramInfo.isDAE) {
+                    // deferred execution
+                    LOG("Parameter[{}] is marked for DAE streaming", paramIndex);
+                    dataPtr = const_cast<void*>(reinterpret_cast<const void*>(&paramInfos[paramIndex]));
+                    strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
+                    *strLenOrIndPtr = SQL_LEN_DATA_AT_EXEC(0);
+                    bufferLength = 0;  // Not used
+                } else {
+                    // Normal small-string case
+                    std::wstring* strParam =
+                        AllocateParamBuffer<std::wstring>(paramBuffers, param.cast<std::wstring>());
+                    LOG("SQL_C_WCHAR Parameter[{}]: Length={}, Content='{}'",
+                        paramIndex,
+                        strParam->size(),
+                        (strParam->size() <= 100
+                            ? WideToUTF8(std::wstring(strParam->begin(), strParam->end()))
+                            : WideToUTF8(std::wstring(strParam->begin(), strParam->begin() + 100)) + "..."));
+
+            #if defined(__APPLE__) || defined(__linux__)
+                    std::vector<SQLWCHAR>* sqlwcharBuffer =
+                        AllocateParamBuffer<std::vector<SQLWCHAR>>(paramBuffers);
+                    sqlwcharBuffer->resize(strParam->size() + 1, 0);
                     for (size_t i = 0; i < strParam->size(); i++) {
-                        unsigned char ch = static_cast<unsigned char>((*strParam)[i]);
-                        LOG("  char[{}] = {} ({})", i, static_cast<int>(ch), DescribeChar(ch));
+                        (*sqlwcharBuffer)[i] = static_cast<SQLWCHAR>((*strParam)[i]);
                     }
+                    dataPtr = sqlwcharBuffer->data();
+                    bufferLength = (strParam->size() + 1) * sizeof(SQLWCHAR);
+            #else
+                    dataPtr = const_cast<void*>(static_cast<const void*>(strParam->c_str()));
+                    bufferLength = (strParam->size() + 1) * sizeof(wchar_t);
+            #endif
+                    strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
+                    *strLenOrIndPtr = SQL_NTS;
                 }
-#if defined(__APPLE__) || defined(__linux__)
-                // On macOS/Linux, we need special handling for wide characters
-                // Create a properly encoded SQLWCHAR buffer for the parameter
-                std::vector<SQLWCHAR>* sqlwcharBuffer =
-                    AllocateParamBuffer<std::vector<SQLWCHAR>>(paramBuffers);
-
-                // Reserve space and convert from wstring to SQLWCHAR array
-                sqlwcharBuffer->resize(strParam->size() + 1, 0); // +1 for null terminator
-
-                // Convert each wchar_t (4 bytes on macOS) to SQLWCHAR (2 bytes)
-                for (size_t i = 0; i < strParam->size(); i++) {
-                    (*sqlwcharBuffer)[i] = static_cast<SQLWCHAR>((*strParam)[i]);
-                }
-                // Use the SQLWCHAR buffer instead of the wstring directly
-                dataPtr = sqlwcharBuffer->data();
-                bufferLength = (strParam->size() + 1) * sizeof(SQLWCHAR);
-                LOG("macOS: Created SQLWCHAR buffer for parameter with size: {} bytes", bufferLength);
-#else
-                // On Windows, wchar_t and SQLWCHAR are the same size, so direct cast works
-                dataPtr = const_cast<void*>(static_cast<const void*>(strParam->c_str()));
-                bufferLength = (strParam->size() + 1 /* null terminator */) * sizeof(wchar_t);
-#endif
-                strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
-                *strLenOrIndPtr = SQL_NTS;
                 break;
             }
             case SQL_C_BIT: {
@@ -787,6 +782,9 @@ DriverHandle LoadDriverOrThrowException() {
 
     SQLGetDiagRec_ptr = GetFunctionPointer<SQLGetDiagRecFunc>(handle, "SQLGetDiagRecW");
 
+    SQLParamData_ptr = GetFunctionPointer<SQLParamDataFunc>(handle, "SQLParamData");
+    SQLPutData_ptr = GetFunctionPointer<SQLPutDataFunc>(handle, "SQLPutData");
+
     bool success =
         SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
         SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
@@ -796,7 +794,8 @@ DriverHandle LoadDriverOrThrowException() {
         SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr &&
         SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr &&
         SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr &&
-        SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
+        SQLFreeStmt_ptr && SQLGetDiagRec_ptr && SQLParamData_ptr &&
+        SQLPutData_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver.");
@@ -995,16 +994,61 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         }
 
         rc = SQLExecute_ptr(hStmt);
+        if (rc == SQL_NEED_DATA) {
+            LOG("Beginning SQLParamData/SQLPutData loop for DAE.");
+            SQLPOINTER paramToken = nullptr;            
+            while ((rc = SQLParamData_ptr(hStmt, &paramToken)) == SQL_NEED_DATA) {
+                // Find the paramInfo that matches the returned token
+                const ParamInfo* matchedInfo = nullptr;
+                for (auto& info : paramInfos) {
+                    if (reinterpret_cast<SQLPOINTER>(const_cast<ParamInfo*>(&info)) == paramToken) {
+                        matchedInfo = &info;
+                        break;
+                    }
+                }
+                if (!matchedInfo) {
+                    ThrowStdException("Unrecognized paramToken returned by SQLParamData");
+                }
+
+                const py::object& pyObj = matchedInfo->dataPtr;
+                if (pyObj.is_none()) {
+                    SQLPutData_ptr(hStmt, nullptr, 0);
+                    continue;
+                }
+                if (py::isinstance<py::str>(pyObj)) {
+                    std::string utf16_str = pyObj.attr("encode")("utf-16-le").cast<py::bytes>();
+                    const char* dataPtr = utf16_str.data();
+                    SQLLEN totalBytes = static_cast<SQLLEN>(utf16_str.size());
+
+                    const size_t chunkSize = 8192;
+                    for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
+                        size_t len = std::min(chunkSize, totalBytes - offset);
+                        rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(len));
+                        if (!SQL_SUCCEEDED(rc)) {
+                            LOG("SQLPutData failed.");
+                            return rc;
+                        }
+                    }
+                } else {
+                    ThrowStdException("DAE only supported for str or bytes");
+                }
+            }
+
+            if (!SQL_SUCCEEDED(rc)) {
+                LOG("SQLParamData final rc: {}", rc);
+                return rc;
+            }
+            LOG("DAE complete, SQLExecute resumed internally.");
+        }
+
         if (!SQL_SUCCEEDED(rc) && rc != SQL_NO_DATA) {
             LOG("DDBCSQLExecute: Error during execution of the statement");
             return rc;
         }
-        // TODO: Handle huge input parameters by checking rc == SQL_NEED_DATA
 
         // Unbind the bound buffers for all parameters coz the buffers' memory will
         // be freed when this function exits (parambuffers goes out of scope)
         rc = SQLFreeStmt_ptr(hStmt, SQL_RESET_PARAMS);
-
         return rc;
     }
 }
@@ -2506,8 +2550,11 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("paramCType", &ParamInfo::paramCType)
         .def_readwrite("paramSQLType", &ParamInfo::paramSQLType)
         .def_readwrite("columnSize", &ParamInfo::columnSize)
-        .def_readwrite("decimalDigits", &ParamInfo::decimalDigits);
-    
+        .def_readwrite("decimalDigits", &ParamInfo::decimalDigits)
+        .def_readwrite("strLenOrInd", &ParamInfo::strLenOrInd)
+        .def_readwrite("dataPtr", &ParamInfo::dataPtr)
+        .def_readwrite("isDAE", &ParamInfo::isDAE);
+
     // Define numeric data class
     py::class_<NumericData>(m, "NumericData")
         .def(py::init<>())
