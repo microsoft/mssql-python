@@ -25,8 +25,8 @@ from mssql_python.exceptions import InterfaceError
 import pytest
 import time
 from mssql_python import Connection, connect, pooling
-import threading
 from contextlib import closing
+import threading
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
