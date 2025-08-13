@@ -35,7 +35,7 @@ class Cursor:
         callproc(procname, parameters=None) -> 
             Modified copy of the input sequence with output parameters.
         close() -> None.
-        execute(operation, parameters=None) -> None.
+        execute(operation, parameters=None) -> Cursor.
         executemany(operation, seq_of_parameters) -> None.
         fetchone() -> Single sequence or None if no more data is available.
         fetchmany(size=None) -> Sequence of sequences (e.g. list of tuples).
@@ -542,7 +542,7 @@ class Cursor:
         *parameters,
         use_prepare: bool = True,
         reset_cursor: bool = True
-    ) -> None:
+    ) -> 'Cursor':
         """
         Prepare and execute a database operation (query or command).
 
@@ -612,6 +612,9 @@ class Cursor:
 
         # Initialize description after execution
         self._initialize_description()
+
+        # Return self for method chaining
+        return self
 
     @staticmethod
     def _select_best_sample_value(column):
