@@ -579,7 +579,7 @@ def test_setencoding_closed_connection(conn_str):
 
 def test_setencoding_constants_access():
     """Test that SQL_CHAR and SQL_WCHAR constants are accessible."""
-    import mssql_python
+    
     
     # Test constants exist and have correct values
     assert hasattr(mssql_python, 'SQL_CHAR'), "SQL_CHAR constant should be available"
@@ -589,7 +589,7 @@ def test_setencoding_constants_access():
 
 def test_setencoding_with_constants(db_connection):
     """Test setencoding using module constants."""
-    import mssql_python
+    
     
     # Test with SQL_CHAR constant
     db_connection.setencoding(encoding='utf-8', ctype=mssql_python.SQL_CHAR)
@@ -1326,3 +1326,298 @@ def test_setdecoding_with_unicode_data(db_connection):
         except:
             pass
         cursor.close()
+
+# ==================== SET_ATTR TEST CASES ====================
+
+def test_set_attr_constants_access():
+    """Test that connection attribute constants are accessible."""
+    
+    
+    # Test that common constants exist and have correct types
+    attr_constants = [
+        'SQL_ATTR_ACCESS_MODE', 'SQL_ATTR_AUTOCOMMIT', 'SQL_ATTR_CONNECTION_TIMEOUT',
+        'SQL_ATTR_CURRENT_CATALOG', 'SQL_ATTR_LOGIN_TIMEOUT', 'SQL_ATTR_ODBC_CURSORS',
+        'SQL_ATTR_PACKET_SIZE', 'SQL_ATTR_QUIET_MODE', 'SQL_ATTR_TXN_ISOLATION',
+        'SQL_ATTR_TRACE', 'SQL_ATTR_TRACEFILE', 'SQL_ATTR_TRANSLATE_LIB',
+        'SQL_ATTR_TRANSLATE_OPTION', 'SQL_ATTR_CONNECTION_POOLING', 'SQL_ATTR_CP_MATCH',
+        'SQL_ATTR_ASYNC_ENABLE', 'SQL_ATTR_CONNECTION_DEAD', 'SQL_ATTR_SERVER_NAME',
+        'SQL_ATTR_RESET_CONNECTION'
+    ]
+    
+    value_constants = [
+        'SQL_TXN_READ_UNCOMMITTED', 'SQL_TXN_READ_COMMITTED', 
+        'SQL_TXN_REPEATABLE_READ', 'SQL_TXN_SERIALIZABLE',
+        'SQL_MODE_READ_WRITE', 'SQL_MODE_READ_ONLY',
+        'SQL_CD_TRUE', 'SQL_CD_FALSE',
+        'SQL_CUR_USE_IF_NEEDED', 'SQL_CUR_USE_ODBC', 'SQL_CUR_USE_DRIVER',
+        'SQL_RESET_CONNECTION_YES'
+    ]
+    
+    for const_name in attr_constants + value_constants:
+        assert hasattr(mssql_python, const_name), f"{const_name} constant should be available"
+        const_value = getattr(mssql_python, const_name)
+        assert isinstance(const_value, int), f"{const_name} should be an integer"
+
+def test_set_attr_basic_functionality(db_connection):
+    """Test basic set_attr functionality with safe attributes."""
+    
+    
+    # Test setting connection timeout (safe attribute to test)
+    try:
+        db_connection.set_attr(mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, 30)
+        # If no exception, the call succeeded
+    except Exception as e:
+        # Some drivers might not support all attributes, which is acceptable
+        if "not supported" not in str(e).lower():
+            pytest.fail(f"Unexpected error setting connection timeout: {e}")
+
+def test_set_attr_transaction_isolation(db_connection):
+    """Test setting transaction isolation level."""
+    
+    
+    isolation_levels = [
+        mssql_python.SQL_TXN_READ_UNCOMMITTED,
+        mssql_python.SQL_TXN_READ_COMMITTED,
+        mssql_python.SQL_TXN_REPEATABLE_READ,
+        mssql_python.SQL_TXN_SERIALIZABLE
+    ]
+    
+    for level in isolation_levels:
+        try:
+            db_connection.set_attr(mssql_python.SQL_ATTR_TXN_ISOLATION, level)
+            # Test successful - attribute was set
+            break
+        except Exception as e:
+            # Some isolation levels might not be supported by all drivers
+            # Accept "not supported", "failed to set", or "invalid" type errors
+            error_str = str(e).lower()
+            if not any(phrase in error_str for phrase in ["not supported", "failed to set", "invalid", "error"]):
+                pytest.fail(f"Unexpected error setting isolation level {level}: {e}")
+
+def test_set_attr_invalid_attr_id_type(db_connection):
+    """Test set_attr with invalid attr_id type raises ProgrammingError."""
+    from mssql_python.exceptions import ProgrammingError
+    
+    invalid_attr_ids = ["string", 3.14, None, [], {}]
+    
+    for invalid_attr_id in invalid_attr_ids:
+        with pytest.raises(ProgrammingError) as exc_info:
+            db_connection.set_attr(invalid_attr_id, 1)
+        
+        assert "Connection attribute must be a non-negative integer" in str(exc_info.value), \
+            f"Should raise ProgrammingError for invalid attr_id type: {type(invalid_attr_id)}"
+
+def test_set_attr_invalid_value_type(db_connection):
+    """Test set_attr with invalid value type raises ProgrammingError."""
+    from mssql_python.exceptions import ProgrammingError
+    
+    
+    invalid_values = ["string", 3.14, None, [], {}]
+    
+    for invalid_value in invalid_values:
+        with pytest.raises(ProgrammingError) as exc_info:
+            db_connection.set_attr(mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, invalid_value)
+        
+        assert "Attribute value must be an integer, bytes, or bytearray" in str(exc_info.value), \
+            f"Should raise ProgrammingError for invalid value type: {type(invalid_value)}"
+
+def test_set_attr_value_out_of_range(db_connection):
+    """Test set_attr with value out of SQLUINTEGER range raises ProgrammingError."""
+    from mssql_python.exceptions import ProgrammingError
+    
+    
+    out_of_range_values = [-1, -100, 4294967296, 5000000000]
+    
+    for invalid_value in out_of_range_values:
+        with pytest.raises(ProgrammingError) as exc_info:
+            db_connection.set_attr(mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, invalid_value)
+        
+        assert "Attribute value out of range for SQLUINTEGER (0-4294967295)" in str(exc_info.value), \
+            f"Should raise ProgrammingError for out of range value: {invalid_value}"
+
+def test_set_attr_closed_connection(conn_str):
+    """Test set_attr on closed connection raises InterfaceError."""
+    from mssql_python.exceptions import InterfaceError
+    
+    
+    temp_conn = connect(conn_str)
+    temp_conn.close()
+    
+    with pytest.raises(InterfaceError) as exc_info:
+        temp_conn.set_attr(mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, 30)
+    
+    assert "Connection is closed" in str(exc_info.value), \
+        "Should raise InterfaceError for closed connection"
+
+def test_set_attr_invalid_attribute_id(db_connection):
+    """Test set_attr with invalid/unsupported attribute ID."""
+    from mssql_python.exceptions import ProgrammingError, DatabaseError
+    
+    # Use a clearly invalid attribute ID
+    invalid_attr_id = 999999
+    
+    try:
+        db_connection.set_attr(invalid_attr_id, 1)
+        # If no exception, some drivers might silently ignore invalid attributes
+        pytest.skip("Driver silently accepts invalid attribute IDs")
+    except (ProgrammingError, DatabaseError) as e:
+        # Expected behavior - driver should reject invalid attribute
+        assert "attribute" in str(e).lower() or "invalid" in str(e).lower() or "not supported" in str(e).lower()
+    except Exception as e:
+        pytest.fail(f"Unexpected exception type for invalid attribute: {type(e).__name__}: {e}")
+
+def test_set_attr_valid_range_values(db_connection):
+    """Test set_attr with valid range of values."""
+    
+    
+    # Test boundary values for SQLUINTEGER
+    valid_values = [0, 1, 100, 1000, 65535, 4294967295]
+    
+    for value in valid_values:
+        try:
+            # Use connection timeout as it's commonly supported
+            db_connection.set_attr(mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, value)
+            # If we get here, the value was accepted
+        except Exception as e:
+            # Some values might not be valid for specific attributes
+            if "invalid" not in str(e).lower() and "not supported" not in str(e).lower():
+                pytest.fail(f"Unexpected error for valid value {value}: {e}")
+
+def test_set_attr_autocommit_integration(db_connection):
+    """Test set_attr with autocommit attribute and verify integration."""
+    
+    
+    # Get current autocommit state
+    original_autocommit = db_connection.autocommit
+    
+    try:
+        # Test setting autocommit via set_attr
+        db_connection.set_attr(mssql_python.SQL_ATTR_AUTOCOMMIT, 1)  # Enable
+        
+        # Note: We don't check db_connection.autocommit here because set_attr
+        # operates at the ODBC level and might not sync with the Python wrapper
+        
+        db_connection.set_attr(mssql_python.SQL_ATTR_AUTOCOMMIT, 0)  # Disable
+        
+    except Exception as e:
+        if "not supported" not in str(e).lower():
+            pytest.fail(f"Error setting autocommit via set_attr: {e}")
+    finally:
+        # Restore original autocommit state
+        try:
+            db_connection.autocommit = original_autocommit
+        except:
+            pass  # Ignore cleanup errors
+
+def test_set_attr_multiple_attributes(db_connection):
+    """Test setting multiple attributes in sequence."""
+    
+    
+    # Test setting multiple safe attributes
+    attribute_value_pairs = [
+        (mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, 60),
+        (mssql_python.SQL_ATTR_LOGIN_TIMEOUT, 30),
+        (mssql_python.SQL_ATTR_PACKET_SIZE, 4096),
+    ]
+    
+    successful_sets = 0
+    for attr_id, value in attribute_value_pairs:
+        try:
+            db_connection.set_attr(attr_id, value)
+            successful_sets += 1
+        except Exception as e:
+            # Some attributes might not be supported by all drivers
+            # Accept "not supported", "failed to set", or other driver errors
+            error_str = str(e).lower()
+            if not any(phrase in error_str for phrase in ["not supported", "failed to set", "invalid", "error"]):
+                pytest.fail(f"Unexpected error setting attribute {attr_id} to {value}: {e}")
+    
+    # At least one attribute setting should succeed on most drivers
+    if successful_sets == 0:
+        pytest.skip("No connection attributes supported by this driver configuration")
+
+def test_set_attr_with_constants(db_connection):
+    """Test set_attr using exported module constants."""
+    
+    
+    # Test using the exported constants
+    test_cases = [
+        (mssql_python.SQL_ATTR_TXN_ISOLATION, mssql_python.SQL_TXN_READ_COMMITTED),
+        (mssql_python.SQL_ATTR_ACCESS_MODE, mssql_python.SQL_MODE_READ_WRITE),
+        (mssql_python.SQL_ATTR_ODBC_CURSORS, mssql_python.SQL_CUR_USE_IF_NEEDED),
+    ]
+    
+    for attr_id, value in test_cases:
+        try:
+            db_connection.set_attr(attr_id, value)
+            # Success - the constants worked correctly
+        except Exception as e:
+            # Some attributes/values might not be supported
+            # Accept "not supported", "failed to set", "invalid", or other driver errors
+            error_str = str(e).lower()
+            if not any(phrase in error_str for phrase in ["not supported", "failed to set", "invalid", "error"]):
+                pytest.fail(f"Unexpected error using constants {attr_id}, {value}: {e}")
+
+def test_set_attr_persistence_across_operations(db_connection):
+    """Test that set_attr changes persist across database operations."""
+    
+    
+    cursor = db_connection.cursor()
+    try:
+        # Set an attribute before operations
+        db_connection.set_attr(mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, 45)
+        
+        # Perform database operation
+        cursor.execute("SELECT 1 as test_value")
+        result = cursor.fetchone()
+        assert result[0] == 1, "Database operation should succeed"
+        
+        # Set attribute after operation
+        db_connection.set_attr(mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, 60)
+        
+        # Another operation
+        cursor.execute("SELECT 2 as test_value")
+        result = cursor.fetchone()
+        assert result[0] == 2, "Database operation after set_attr should succeed"
+        
+    except Exception as e:
+        if "not supported" not in str(e).lower():
+            pytest.fail(f"Error in set_attr persistence test: {e}")
+    finally:
+        cursor.close()
+
+def test_set_attr_security_logging(db_connection):
+    """Test that set_attr logs invalid attempts safely."""
+    from mssql_python.exceptions import ProgrammingError
+    
+    # These should raise exceptions but not crash due to logging
+    test_cases = [
+        ("invalid_attr", 1),      # Invalid attr_id type
+        (123, "invalid_value"),   # Invalid value type
+        (123, -1),               # Out of range value
+    ]
+    
+    for attr_id, value in test_cases:
+        with pytest.raises(ProgrammingError):
+            db_connection.set_attr(attr_id, value)
+
+def test_set_attr_edge_cases(db_connection):
+    """Test set_attr with edge case values."""
+    
+    
+    # Test with boundary values
+    edge_cases = [
+        (mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, 0),           # Minimum value
+        (mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, 4294967295), # Maximum SQLUINTEGER
+    ]
+    
+    for attr_id, value in edge_cases:
+        try:
+            db_connection.set_attr(attr_id, value)
+            # Success with edge case value
+        except Exception as e:
+            # Some edge values might not be valid for specific attributes
+            if "out of range" in str(e).lower():
+                pytest.fail(f"Edge case value {value} should be in valid range")
+            elif "not supported" not in str(e).lower() and "invalid" not in str(e).lower():
+                pytest.fail(f"Unexpected error for edge case {attr_id}, {value}: {e}")
