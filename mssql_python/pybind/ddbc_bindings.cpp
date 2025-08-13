@@ -1195,7 +1195,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                         ThrowStdException("Error encoding string to UTF-16: " + std::string(e.what()));
                     }
                     const char* dataPtr = utf16_str.data();
-                    SQLLEN totalBytes = static_cast<SQLLEN>(utf16_str.size());
+                    size_t totalBytes = utf16_str.size();
                     const size_t chunkSize = DAE_CHUNK_SIZE;
                     for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
                         size_t len = std::min(chunkSize, totalBytes - offset);

@@ -272,7 +272,7 @@ target_compile_definitions(ddbc_bindings PRIVATE
 
 # Add warning level flags for MSVC
 if(MSVC)
-    target_compile_options(ddbc_bindings PRIVATE /W4 )
+    target_compile_options(ddbc_bindings PRIVATE /W4 /WX)
 endif()
 
 # Add macOS-specific string conversion fix
