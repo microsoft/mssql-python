@@ -399,16 +399,6 @@ class Cursor:
                 0,
                 False,
             )
-        
-        # if isinstance(param, (bytes, bytearray)):
-        #     is_large = len(param) > 8000
-        #     return (
-        #         ddbc_sql_const.SQL_VARBINARY.value if is_large else ddbc_sql_const.SQL_BINARY.value,
-        #         ddbc_sql_const.SQL_C_BINARY.value,
-        #         len(param),
-        #         0,
-        #         is_large,
-        #     )
 
         if isinstance(param, datetime.datetime):
             return (
