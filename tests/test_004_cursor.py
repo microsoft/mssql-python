@@ -2820,6 +2820,1026 @@ def test_fetchval_performance_common_patterns(cursor, db_connection):
         except:
             pass
 
+def test_cursor_commit_basic(cursor, db_connection):
+    """Test basic cursor commit functionality"""
+    try:
+        # Set autocommit to False to test manual commit
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_cursor_commit")
+        cursor.execute("CREATE TABLE #pytest_cursor_commit (id INTEGER, name VARCHAR(50))")
+        cursor.commit()  # Commit table creation
+        
+        # Insert data using cursor
+        cursor.execute("INSERT INTO #pytest_cursor_commit VALUES (1, 'test1')")
+        cursor.execute("INSERT INTO #pytest_cursor_commit VALUES (2, 'test2')")
+        
+        # Before commit, data should still be visible in same transaction
+        cursor.execute("SELECT COUNT(*) FROM #pytest_cursor_commit")
+        count = cursor.fetchval()
+        assert count == 2, "Data should be visible before commit in same transaction"
+        
+        # Commit using cursor
+        cursor.commit()
+        
+        # Verify data is committed
+        cursor.execute("SELECT COUNT(*) FROM #pytest_cursor_commit")
+        count = cursor.fetchval()
+        assert count == 2, "Data should be committed and visible"
+        
+        # Verify specific data
+        cursor.execute("SELECT name FROM #pytest_cursor_commit ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 2, "Should have 2 rows after commit"
+        assert rows[0][0] == 'test1', "First row should be 'test1'"
+        assert rows[1][0] == 'test2', "Second row should be 'test2'"
+        
+    except Exception as e:
+        pytest.fail(f"Cursor commit basic test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_cursor_commit")
+            cursor.commit()
+        except:
+            pass
+
+def test_cursor_rollback_basic(cursor, db_connection):
+    """Test basic cursor rollback functionality"""
+    try:
+        # Set autocommit to False to test manual rollback
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_cursor_rollback")
+        cursor.execute("CREATE TABLE #pytest_cursor_rollback (id INTEGER, name VARCHAR(50))")
+        cursor.commit()  # Commit table creation
+        
+        # Insert initial data and commit
+        cursor.execute("INSERT INTO #pytest_cursor_rollback VALUES (1, 'permanent')")
+        cursor.commit()
+        
+        # Insert more data but don't commit
+        cursor.execute("INSERT INTO #pytest_cursor_rollback VALUES (2, 'temp1')")
+        cursor.execute("INSERT INTO #pytest_cursor_rollback VALUES (3, 'temp2')")
+        
+        # Before rollback, data should be visible in same transaction
+        cursor.execute("SELECT COUNT(*) FROM #pytest_cursor_rollback")
+        count = cursor.fetchval()
+        assert count == 3, "All data should be visible before rollback in same transaction"
+        
+        # Rollback using cursor
+        cursor.rollback()
+        
+        # Verify only committed data remains
+        cursor.execute("SELECT COUNT(*) FROM #pytest_cursor_rollback")
+        count = cursor.fetchval()
+        assert count == 1, "Only committed data should remain after rollback"
+        
+        # Verify specific data
+        cursor.execute("SELECT name FROM #pytest_cursor_rollback")
+        row = cursor.fetchone()
+        assert row[0] == 'permanent', "Only the committed row should remain"
+        
+    except Exception as e:
+        pytest.fail(f"Cursor rollback basic test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_cursor_rollback")
+            cursor.commit()
+        except:
+            pass
+
+def test_cursor_commit_affects_all_cursors(db_connection):
+    """Test that cursor commit affects all cursors on the same connection"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create two cursors
+        cursor1 = db_connection.cursor()
+        cursor2 = db_connection.cursor()
+        
+        # Create test table using cursor1
+        drop_table_if_exists(cursor1, "#pytest_multi_cursor")
+        cursor1.execute("CREATE TABLE #pytest_multi_cursor (id INTEGER, source VARCHAR(10))")
+        cursor1.commit()  # Commit table creation
+        
+        # Insert data using cursor1
+        cursor1.execute("INSERT INTO #pytest_multi_cursor VALUES (1, 'cursor1')")
+        
+        # Insert data using cursor2
+        cursor2.execute("INSERT INTO #pytest_multi_cursor VALUES (2, 'cursor2')")
+        
+        # Both cursors should see both inserts before commit
+        cursor1.execute("SELECT COUNT(*) FROM #pytest_multi_cursor")
+        count1 = cursor1.fetchval()
+        cursor2.execute("SELECT COUNT(*) FROM #pytest_multi_cursor")
+        count2 = cursor2.fetchval()
+        assert count1 == 2, "Cursor1 should see both inserts"
+        assert count2 == 2, "Cursor2 should see both inserts"
+        
+        # Commit using cursor1 (should affect both cursors)
+        cursor1.commit()
+        
+        # Both cursors should still see the committed data
+        cursor1.execute("SELECT COUNT(*) FROM #pytest_multi_cursor")
+        count1 = cursor1.fetchval()
+        cursor2.execute("SELECT COUNT(*) FROM #pytest_multi_cursor")
+        count2 = cursor2.fetchval()
+        assert count1 == 2, "Cursor1 should see committed data"
+        assert count2 == 2, "Cursor2 should see committed data"
+        
+        # Verify data content
+        cursor1.execute("SELECT source FROM #pytest_multi_cursor ORDER BY id")
+        rows = cursor1.fetchall()
+        assert rows[0][0] == 'cursor1', "First row should be from cursor1"
+        assert rows[1][0] == 'cursor2', "Second row should be from cursor2"
+        
+    except Exception as e:
+        pytest.fail(f"Multi-cursor commit test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor1.execute("DROP TABLE #pytest_multi_cursor")
+            cursor1.commit()
+            cursor1.close()
+            cursor2.close()
+        except:
+            pass
+
+def test_cursor_rollback_affects_all_cursors(db_connection):
+    """Test that cursor rollback affects all cursors on the same connection"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create two cursors
+        cursor1 = db_connection.cursor()
+        cursor2 = db_connection.cursor()
+        
+        # Create test table and insert initial data
+        drop_table_if_exists(cursor1, "#pytest_multi_rollback")
+        cursor1.execute("CREATE TABLE #pytest_multi_rollback (id INTEGER, source VARCHAR(10))")
+        cursor1.execute("INSERT INTO #pytest_multi_rollback VALUES (0, 'initial')")
+        cursor1.commit()  # Commit initial state
+        
+        # Insert data using both cursors
+        cursor1.execute("INSERT INTO #pytest_multi_rollback VALUES (1, 'cursor1')")
+        cursor2.execute("INSERT INTO #pytest_multi_rollback VALUES (2, 'cursor2')")
+        
+        # Both cursors should see all data before rollback
+        cursor1.execute("SELECT COUNT(*) FROM #pytest_multi_rollback")
+        count1 = cursor1.fetchval()
+        cursor2.execute("SELECT COUNT(*) FROM #pytest_multi_rollback")
+        count2 = cursor2.fetchval()
+        assert count1 == 3, "Cursor1 should see all data before rollback"
+        assert count2 == 3, "Cursor2 should see all data before rollback"
+        
+        # Rollback using cursor2 (should affect both cursors)
+        cursor2.rollback()
+        
+        # Both cursors should only see the initial committed data
+        cursor1.execute("SELECT COUNT(*) FROM #pytest_multi_rollback")
+        count1 = cursor1.fetchval()
+        cursor2.execute("SELECT COUNT(*) FROM #pytest_multi_rollback")
+        count2 = cursor2.fetchval()
+        assert count1 == 1, "Cursor1 should only see committed data after rollback"
+        assert count2 == 1, "Cursor2 should only see committed data after rollback"
+        
+        # Verify only initial data remains
+        cursor1.execute("SELECT source FROM #pytest_multi_rollback")
+        row = cursor1.fetchone()
+        assert row[0] == 'initial', "Only initial committed data should remain"
+        
+    except Exception as e:
+        pytest.fail(f"Multi-cursor rollback test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor1.execute("DROP TABLE #pytest_multi_rollback")
+            cursor1.commit()
+            cursor1.close()
+            cursor2.close()
+        except:
+            pass
+
+def test_cursor_commit_closed_cursor(db_connection):
+    """Test cursor commit on closed cursor should raise exception"""
+    try:
+        cursor = db_connection.cursor()
+        cursor.close()
+        
+        with pytest.raises(Exception) as exc_info:
+            cursor.commit()
+        
+        assert "closed" in str(exc_info.value).lower(), "commit on closed cursor should raise exception mentioning cursor is closed"
+        
+    except Exception as e:
+        if "closed" not in str(e).lower():
+            pytest.fail(f"Cursor commit closed cursor test failed: {e}")
+
+def test_cursor_rollback_closed_cursor(db_connection):
+    """Test cursor rollback on closed cursor should raise exception"""
+    try:
+        cursor = db_connection.cursor()
+        cursor.close()
+        
+        with pytest.raises(Exception) as exc_info:
+            cursor.rollback()
+        
+        assert "closed" in str(exc_info.value).lower(), "rollback on closed cursor should raise exception mentioning cursor is closed"
+        
+    except Exception as e:
+        if "closed" not in str(e).lower():
+            pytest.fail(f"Cursor rollback closed cursor test failed: {e}")
+
+def test_cursor_commit_equivalent_to_connection_commit(cursor, db_connection):
+    """Test that cursor.commit() is equivalent to connection.commit()"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_commit_equiv")
+        cursor.execute("CREATE TABLE #pytest_commit_equiv (id INTEGER, method VARCHAR(20))")
+        cursor.commit()
+        
+        # Test 1: Use cursor.commit()
+        cursor.execute("INSERT INTO #pytest_commit_equiv VALUES (1, 'cursor_commit')")
+        cursor.commit()
+        
+        cursor.execute("SELECT COUNT(*) FROM #pytest_commit_equiv")
+        count = cursor.fetchval()
+        assert count == 1, "Data should be committed via cursor.commit()"
+        
+        # Test 2: Use connection.commit()
+        cursor.execute("INSERT INTO #pytest_commit_equiv VALUES (2, 'conn_commit')")
+        db_connection.commit()
+        
+        cursor.execute("SELECT COUNT(*) FROM #pytest_commit_equiv")
+        count = cursor.fetchval()
+        assert count == 2, "Data should be committed via connection.commit()"
+        
+        # Test 3: Mix both methods
+        cursor.execute("INSERT INTO #pytest_commit_equiv VALUES (3, 'mixed1')")
+        cursor.commit()  # Use cursor
+        cursor.execute("INSERT INTO #pytest_commit_equiv VALUES (4, 'mixed2')")
+        db_connection.commit()  # Use connection
+        
+        cursor.execute("SELECT COUNT(*) FROM #pytest_commit_equiv")
+        count = cursor.fetchval()
+        assert count == 4, "Both commit methods should work equivalently"
+        
+    except Exception as e:
+        pytest.fail(f"Cursor commit equivalence test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_commit_equiv")
+            cursor.commit()
+        except:
+            pass
+
+def test_cursor_transaction_boundary_behavior(cursor, db_connection):
+    """Test cursor commit/rollback behavior at transaction boundaries"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_transaction")
+        cursor.execute("CREATE TABLE #pytest_transaction (id INTEGER, step VARCHAR(20))")
+        cursor.commit()
+        
+        # Transaction 1: Insert and commit
+        cursor.execute("INSERT INTO #pytest_transaction VALUES (1, 'step1')")
+        cursor.commit()
+        
+        # Transaction 2: Insert, rollback, then insert different data and commit
+        cursor.execute("INSERT INTO #pytest_transaction VALUES (2, 'temp')")
+        cursor.rollback()  # This should rollback the temp insert
+        
+        cursor.execute("INSERT INTO #pytest_transaction VALUES (2, 'step2')")
+        cursor.commit()
+        
+        # Verify final state
+        cursor.execute("SELECT step FROM #pytest_transaction ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 2, "Should have 2 rows"
+        assert rows[0][0] == 'step1', "First row should be step1"
+        assert rows[1][0] == 'step2', "Second row should be step2 (not temp)"
+        
+        # Transaction 3: Multiple operations with rollback
+        cursor.execute("INSERT INTO #pytest_transaction VALUES (3, 'temp1')")
+        cursor.execute("INSERT INTO #pytest_transaction VALUES (4, 'temp2')")
+        cursor.execute("DELETE FROM #pytest_transaction WHERE id = 1")
+        cursor.rollback()  # Rollback all operations in transaction 3
+        
+        # Verify rollback worked
+        cursor.execute("SELECT COUNT(*) FROM #pytest_transaction")
+        count = cursor.fetchval()
+        assert count == 2, "Rollback should restore previous state"
+        
+        cursor.execute("SELECT id FROM #pytest_transaction ORDER BY id")
+        rows = cursor.fetchall()
+        assert rows[0][0] == 1, "Row 1 should still exist after rollback"
+        assert rows[1][0] == 2, "Row 2 should still exist after rollback"
+        
+    except Exception as e:
+        pytest.fail(f"Transaction boundary behavior test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_transaction")
+            cursor.commit()
+        except:
+            pass
+
+def test_cursor_commit_with_method_chaining(cursor, db_connection):
+    """Test cursor commit in method chaining scenarios"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_chaining")
+        cursor.execute("CREATE TABLE #pytest_chaining (id INTEGER, value VARCHAR(20))")
+        cursor.commit()
+        
+        # Test method chaining with execute and commit
+        cursor.execute("INSERT INTO #pytest_chaining VALUES (1, 'chained')")
+        cursor.commit()
+        
+        # Verify the chained operation worked
+        result = cursor.execute("SELECT value FROM #pytest_chaining WHERE id = 1").fetchval()
+        assert result == 'chained', "Method chaining with commit should work"
+        
+        # Verify rollback worked
+        count = cursor.execute("SELECT COUNT(*) FROM #pytest_chaining").fetchval()
+        assert count == 1, "Rollback after chained operations should work"
+        
+    except Exception as e:
+        pytest.fail(f"Cursor commit method chaining test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_chaining")
+            cursor.commit()
+        except:
+            pass
+
+def test_cursor_commit_error_scenarios(cursor, db_connection):
+    """Test cursor commit error scenarios and recovery"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_commit_errors")
+        cursor.execute("CREATE TABLE #pytest_commit_errors (id INTEGER PRIMARY KEY, value VARCHAR(20))")
+        cursor.commit()
+        
+        # Insert valid data
+        cursor.execute("INSERT INTO #pytest_commit_errors VALUES (1, 'valid')")
+        cursor.commit()
+        
+        # Try to insert duplicate key (should fail)
+        try:
+            cursor.execute("INSERT INTO #pytest_commit_errors VALUES (1, 'duplicate')")
+            cursor.commit()  # This might succeed depending on when the constraint is checked
+            pytest.fail("Expected constraint violation")
+        except Exception:
+            # Expected - constraint violation
+            cursor.rollback()  # Clean up the failed transaction
+        
+        # Verify we can still use the cursor after error and rollback
+        cursor.execute("INSERT INTO #pytest_commit_errors VALUES (2, 'after_error')")
+        cursor.commit()
+        
+        cursor.execute("SELECT COUNT(*) FROM #pytest_commit_errors")
+        count = cursor.fetchval()
+        assert count == 2, "Should have 2 rows after error recovery"
+        
+        # Verify data integrity
+        cursor.execute("SELECT value FROM #pytest_commit_errors ORDER BY id")
+        rows = cursor.fetchall()
+        assert rows[0][0] == 'valid', "First row should be unchanged"
+        assert rows[1][0] == 'after_error', "Second row should be the recovery insert"
+        
+    except Exception as e:
+        pytest.fail(f"Cursor commit error scenarios test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_commit_errors")
+            cursor.commit()
+        except:
+            pass
+
+def test_cursor_commit_performance_patterns(cursor, db_connection):
+    """Test cursor commit with performance-related patterns"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_commit_perf")
+        cursor.execute("CREATE TABLE #pytest_commit_perf (id INTEGER, batch_num INTEGER)")
+        cursor.commit()
+        
+        # Test batch insert with periodic commits
+        batch_size = 5
+        total_records = 15
+        
+        for i in range(total_records):
+            batch_num = i // batch_size
+            cursor.execute("INSERT INTO #pytest_commit_perf VALUES (?, ?)", i, batch_num)
+            
+            # Commit every batch_size records
+            if (i + 1) % batch_size == 0:
+                cursor.commit()
+        
+        # Commit any remaining records
+        cursor.commit()
+        
+        # Verify all records were inserted
+        cursor.execute("SELECT COUNT(*) FROM #pytest_commit_perf")
+        count = cursor.fetchval()
+        assert count == total_records, f"Should have {total_records} records"
+        
+        # Verify batch distribution
+        cursor.execute("SELECT batch_num, COUNT(*) FROM #pytest_commit_perf GROUP BY batch_num ORDER BY batch_num")
+        batches = cursor.fetchall()
+        assert len(batches) == 3, "Should have 3 batches"
+        assert batches[0][1] == 5, "First batch should have 5 records"
+        assert batches[1][1] == 5, "Second batch should have 5 records"
+        assert batches[2][1] == 5, "Third batch should have 5 records"
+        
+    except Exception as e:
+        pytest.fail(f"Cursor commit performance patterns test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_commit_perf")
+            cursor.commit()
+        except:
+            pass
+
+def test_cursor_rollback_error_scenarios(cursor, db_connection):
+    """Test cursor rollback error scenarios and recovery"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_rollback_errors")
+        cursor.execute("CREATE TABLE #pytest_rollback_errors (id INTEGER PRIMARY KEY, value VARCHAR(20))")
+        cursor.commit()
+        
+        # Insert valid data and commit
+        cursor.execute("INSERT INTO #pytest_rollback_errors VALUES (1, 'committed')")
+        cursor.commit()
+        
+        # Start a transaction with multiple operations
+        cursor.execute("INSERT INTO #pytest_rollback_errors VALUES (2, 'temp1')")
+        cursor.execute("INSERT INTO #pytest_rollback_errors VALUES (3, 'temp2')")
+        cursor.execute("UPDATE #pytest_rollback_errors SET value = 'modified' WHERE id = 1")
+        
+        # Verify uncommitted changes are visible within transaction
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_errors")
+        count = cursor.fetchval()
+        assert count == 3, "Should see all uncommitted changes within transaction"
+        
+        cursor.execute("SELECT value FROM #pytest_rollback_errors WHERE id = 1")
+        modified_value = cursor.fetchval()
+        assert modified_value == 'modified', "Should see uncommitted modification"
+        
+        # Rollback the transaction
+        cursor.rollback()
+        
+        # Verify rollback restored original state
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_errors")
+        count = cursor.fetchval()
+        assert count == 1, "Should only have committed data after rollback"
+        
+        cursor.execute("SELECT value FROM #pytest_rollback_errors WHERE id = 1")
+        original_value = cursor.fetchval()
+        assert original_value == 'committed', "Original value should be restored after rollback"
+        
+        # Verify cursor is still usable after rollback
+        cursor.execute("INSERT INTO #pytest_rollback_errors VALUES (4, 'after_rollback')")
+        cursor.commit()
+        
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_errors")
+        count = cursor.fetchval()
+        assert count == 2, "Should have 2 rows after recovery"
+        
+        # Verify data integrity
+        cursor.execute("SELECT value FROM #pytest_rollback_errors ORDER BY id")
+        rows = cursor.fetchall()
+        assert rows[0][0] == 'committed', "First row should be unchanged"
+        assert rows[1][0] == 'after_rollback', "Second row should be the recovery insert"
+        
+    except Exception as e:
+        pytest.fail(f"Cursor rollback error scenarios test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_rollback_errors")
+            cursor.commit()
+        except:
+            pass
+
+def test_cursor_rollback_with_method_chaining(cursor, db_connection):
+    """Test cursor rollback in method chaining scenarios"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_rollback_chaining")
+        cursor.execute("CREATE TABLE #pytest_rollback_chaining (id INTEGER, value VARCHAR(20))")
+        cursor.commit()
+        
+        # Insert initial committed data
+        cursor.execute("INSERT INTO #pytest_rollback_chaining VALUES (1, 'permanent')")
+        cursor.commit()
+        
+        # Test method chaining with execute and rollback
+        cursor.execute("INSERT INTO #pytest_rollback_chaining VALUES (2, 'temporary')")
+        
+        # Verify temporary data is visible before rollback
+        result = cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_chaining").fetchval()
+        assert result == 2, "Should see temporary data before rollback"
+        
+        # Rollback the temporary insert
+        cursor.rollback()
+        
+        # Verify rollback worked with method chaining
+        count = cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_chaining").fetchval()
+        assert count == 1, "Should only have permanent data after rollback"
+        
+        # Test chaining after rollback
+        value = cursor.execute("SELECT value FROM #pytest_rollback_chaining WHERE id = 1").fetchval()
+        assert value == 'permanent', "Method chaining should work after rollback"
+        
+    except Exception as e:
+        pytest.fail(f"Cursor rollback method chaining test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_rollback_chaining")
+            cursor.commit()
+        except:
+            pass
+
+def test_cursor_rollback_savepoints_simulation(cursor, db_connection):
+    """Test cursor rollback with simulated savepoint behavior"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_rollback_savepoints")
+        cursor.execute("CREATE TABLE #pytest_rollback_savepoints (id INTEGER, stage VARCHAR(20))")
+        cursor.commit()
+        
+        # Stage 1: Insert and commit (simulated savepoint)
+        cursor.execute("INSERT INTO #pytest_rollback_savepoints VALUES (1, 'stage1')")
+        cursor.commit()
+        
+        # Stage 2: Insert more data but don't commit
+        cursor.execute("INSERT INTO #pytest_rollback_savepoints VALUES (2, 'stage2')")
+        cursor.execute("INSERT INTO #pytest_rollback_savepoints VALUES (3, 'stage2')")
+        
+        # Verify stage 2 data is visible
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_savepoints WHERE stage = 'stage2'")
+        stage2_count = cursor.fetchval()
+        assert stage2_count == 2, "Should see stage 2 data before rollback"
+        
+        # Rollback stage 2 (back to stage 1)
+        cursor.rollback()
+        
+        # Verify only stage 1 data remains
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_savepoints")
+        total_count = cursor.fetchval()
+        assert total_count == 1, "Should only have stage 1 data after rollback"
+        
+        cursor.execute("SELECT stage FROM #pytest_rollback_savepoints")
+        remaining_stage = cursor.fetchval()
+        assert remaining_stage == 'stage1', "Should only have stage 1 data"
+        
+        # Stage 3: Try different operations and rollback
+        cursor.execute("INSERT INTO #pytest_rollback_savepoints VALUES (4, 'stage3')")
+        cursor.execute("UPDATE #pytest_rollback_savepoints SET stage = 'modified' WHERE id = 1")
+        cursor.execute("INSERT INTO #pytest_rollback_savepoints VALUES (5, 'stage3')")
+        
+        # Verify stage 3 changes
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_savepoints")
+        stage3_count = cursor.fetchval()
+        assert stage3_count == 3, "Should see all stage 3 changes"
+        
+        # Rollback stage 3
+        cursor.rollback()
+        
+        # Verify back to stage 1
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_savepoints")
+        final_count = cursor.fetchval()
+        assert final_count == 1, "Should be back to stage 1 after second rollback"
+        
+        cursor.execute("SELECT stage FROM #pytest_rollback_savepoints WHERE id = 1")
+        final_stage = cursor.fetchval()
+        assert final_stage == 'stage1', "Stage 1 data should be unmodified"
+        
+    except Exception as e:
+        pytest.fail(f"Cursor rollback savepoints simulation test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_rollback_savepoints")
+            cursor.commit()
+        except:
+            pass
+
+def test_cursor_rollback_performance_patterns(cursor, db_connection):
+    """Test cursor rollback with performance-related patterns"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_rollback_perf")
+        cursor.execute("CREATE TABLE #pytest_rollback_perf (id INTEGER, batch_num INTEGER, status VARCHAR(10))")
+        cursor.commit()
+        
+        # Simulate batch processing with selective rollback
+        batch_size = 5
+        total_batches = 3
+        
+        for batch_num in range(total_batches):
+            try:
+                # Process a batch
+                for i in range(batch_size):
+                    record_id = batch_num * batch_size + i + 1
+                    
+                    # Simulate some records failing based on business logic
+                    if batch_num == 1 and i >= 3:  # Simulate failure in batch 1
+                        cursor.execute("INSERT INTO #pytest_rollback_perf VALUES (?, ?, ?)", 
+                                     record_id, batch_num, 'error')
+                        # Simulate error condition
+                        raise Exception(f"Simulated error in batch {batch_num}")
+                    else:
+                        cursor.execute("INSERT INTO #pytest_rollback_perf VALUES (?, ?, ?)", 
+                                     record_id, batch_num, 'success')
+                
+                # If batch completed successfully, commit
+                cursor.commit()
+                print(f"Batch {batch_num} committed successfully")
+                
+            except Exception as e:
+                # If batch failed, rollback
+                cursor.rollback()
+                print(f"Batch {batch_num} rolled back due to: {e}")
+        
+        # Verify only successful batches were committed
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_perf")
+        total_count = cursor.fetchval()
+        assert total_count == 10, "Should have 10 records (2 successful batches of 5 each)"
+        
+        # Verify batch distribution
+        cursor.execute("SELECT batch_num, COUNT(*) FROM #pytest_rollback_perf GROUP BY batch_num ORDER BY batch_num")
+        batches = cursor.fetchall()
+        assert len(batches) == 2, "Should have 2 successful batches"
+        assert batches[0][0] == 0 and batches[0][1] == 5, "Batch 0 should have 5 records"
+        assert batches[1][0] == 2 and batches[1][1] == 5, "Batch 2 should have 5 records"
+        
+        # Verify no error records exist (they were rolled back)
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_perf WHERE status = 'error'")
+        error_count = cursor.fetchval()
+        assert error_count == 0, "No error records should exist after rollbacks"
+        
+    except Exception as e:
+        pytest.fail(f"Cursor rollback performance patterns test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_rollback_perf")
+            cursor.commit()
+        except:
+            pass
+
+def test_cursor_rollback_equivalent_to_connection_rollback(cursor, db_connection):
+    """Test that cursor.rollback() is equivalent to connection.rollback()"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_rollback_equiv")
+        cursor.execute("CREATE TABLE #pytest_rollback_equiv (id INTEGER, method VARCHAR(20))")
+        cursor.commit()
+        
+        # Test 1: Use cursor.rollback()
+        cursor.execute("INSERT INTO #pytest_rollback_equiv VALUES (1, 'cursor_rollback')")
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_equiv")
+        count = cursor.fetchval()
+        assert count == 1, "Data should be visible before rollback"
+        
+        cursor.rollback()  # Use cursor.rollback()
+        
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_equiv")
+        count = cursor.fetchval()
+        assert count == 0, "Data should be rolled back via cursor.rollback()"
+        
+        # Test 2: Use connection.rollback()
+        cursor.execute("INSERT INTO #pytest_rollback_equiv VALUES (2, 'conn_rollback')")
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_equiv")
+        count = cursor.fetchval()
+        assert count == 1, "Data should be visible before rollback"
+        
+        db_connection.rollback()  # Use connection.rollback()
+        
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_equiv")
+        count = cursor.fetchval()
+        assert count == 0, "Data should be rolled back via connection.rollback()"
+        
+        # Test 3: Mix both methods
+        cursor.execute("INSERT INTO #pytest_rollback_equiv VALUES (3, 'mixed1')")
+        cursor.rollback()  # Use cursor
+        
+        cursor.execute("INSERT INTO #pytest_rollback_equiv VALUES (4, 'mixed2')")
+        db_connection.rollback()  # Use connection
+        
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_equiv")
+        count = cursor.fetchval()
+        assert count == 0, "Both rollback methods should work equivalently"
+        
+        # Test 4: Verify both commit and rollback work together
+        cursor.execute("INSERT INTO #pytest_rollback_equiv VALUES (5, 'final_test')")
+        cursor.commit()  # Commit this one
+        
+        cursor.execute("INSERT INTO #pytest_rollback_equiv VALUES (6, 'temp')")
+        cursor.rollback()  # Rollback this one
+        
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_equiv")
+        count = cursor.fetchval()
+        assert count == 1, "Should have only the committed record"
+        
+        cursor.execute("SELECT method FROM #pytest_rollback_equiv")
+        method = cursor.fetchval()
+        assert method == 'final_test', "Should have the committed record"
+        
+    except Exception as e:
+        pytest.fail(f"Cursor rollback equivalence test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_rollback_equiv")
+            cursor.commit()
+        except:
+            pass
+
+def test_cursor_rollback_nested_transactions_simulation(cursor, db_connection):
+    """Test cursor rollback with simulated nested transaction behavior"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_rollback_nested")
+        cursor.execute("CREATE TABLE #pytest_rollback_nested (id INTEGER, level VARCHAR(20), operation VARCHAR(20))")
+        cursor.commit()
+        
+        # Outer transaction level
+        cursor.execute("INSERT INTO #pytest_rollback_nested VALUES (1, 'outer', 'insert')")
+        cursor.execute("INSERT INTO #pytest_rollback_nested VALUES (2, 'outer', 'insert')")
+        
+        # Verify outer level data
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_nested WHERE level = 'outer'")
+        outer_count = cursor.fetchval()
+        assert outer_count == 2, "Should have 2 outer level records"
+        
+        # Simulate inner transaction
+        cursor.execute("INSERT INTO #pytest_rollback_nested VALUES (3, 'inner', 'insert')")
+        cursor.execute("UPDATE #pytest_rollback_nested SET operation = 'updated' WHERE level = 'outer' AND id = 1")
+        cursor.execute("INSERT INTO #pytest_rollback_nested VALUES (4, 'inner', 'insert')")
+        
+        # Verify inner changes are visible
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_nested")
+        total_count = cursor.fetchval()
+        assert total_count == 4, "Should see all records including inner changes"
+        
+        cursor.execute("SELECT operation FROM #pytest_rollback_nested WHERE id = 1")
+        updated_op = cursor.fetchval()
+        assert updated_op == 'updated', "Should see updated operation"
+        
+        # Rollback everything (simulating inner transaction failure affecting outer)
+        cursor.rollback()
+        
+        # Verify complete rollback
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_nested")
+        final_count = cursor.fetchval()
+        assert final_count == 0, "All changes should be rolled back"
+        
+        # Test successful nested-like pattern
+        # Outer level
+        cursor.execute("INSERT INTO #pytest_rollback_nested VALUES (1, 'outer', 'insert')")
+        cursor.commit()  # Commit outer level
+        
+        # Inner level
+        cursor.execute("INSERT INTO #pytest_rollback_nested VALUES (2, 'inner', 'insert')")
+        cursor.execute("INSERT INTO #pytest_rollback_nested VALUES (3, 'inner', 'insert')")
+        cursor.rollback()  # Rollback only inner level
+        
+        # Verify only outer level remains
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_nested")
+        remaining_count = cursor.fetchval()
+        assert remaining_count == 1, "Should only have committed outer level data"
+        
+        cursor.execute("SELECT level FROM #pytest_rollback_nested")
+        remaining_level = cursor.fetchval()
+        assert remaining_level == 'outer', "Should only have outer level record"
+        
+    except Exception as e:
+        pytest.fail(f"Cursor rollback nested transactions test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_rollback_nested")
+            cursor.commit()
+        except:
+            pass
+
+def test_cursor_rollback_data_consistency(cursor, db_connection):
+    """Test cursor rollback maintains data consistency"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create related tables to test referential integrity
+        drop_table_if_exists(cursor, "#pytest_rollback_orders")
+        drop_table_if_exists(cursor, "#pytest_rollback_customers")
+        
+        cursor.execute("""
+            CREATE TABLE #pytest_rollback_customers (
+                id INTEGER PRIMARY KEY, 
+                name VARCHAR(50)
+            )
+        """)
+        
+        cursor.execute("""
+            CREATE TABLE #pytest_rollback_orders (
+                id INTEGER PRIMARY KEY, 
+                customer_id INTEGER, 
+                amount DECIMAL(10,2),
+                FOREIGN KEY (customer_id) REFERENCES #pytest_rollback_customers(id)
+            )
+        """)
+        cursor.commit()
+        
+        # Insert initial data
+        cursor.execute("INSERT INTO #pytest_rollback_customers VALUES (1, 'John Doe')")
+        cursor.execute("INSERT INTO #pytest_rollback_customers VALUES (2, 'Jane Smith')")
+        cursor.commit()
+        
+        # Start transaction with multiple related operations
+        cursor.execute("INSERT INTO #pytest_rollback_customers VALUES (3, 'Bob Wilson')")
+        cursor.execute("INSERT INTO #pytest_rollback_orders VALUES (1, 1, 100.00)")
+        cursor.execute("INSERT INTO #pytest_rollback_orders VALUES (2, 2, 200.00)")
+        cursor.execute("INSERT INTO #pytest_rollback_orders VALUES (3, 3, 300.00)")
+        cursor.execute("UPDATE #pytest_rollback_customers SET name = 'John Updated' WHERE id = 1")
+        
+        # Verify uncommitted changes
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_customers")
+        customer_count = cursor.fetchval()
+        assert customer_count == 3, "Should have 3 customers before rollback"
+        
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_orders")
+        order_count = cursor.fetchval()
+        assert order_count == 3, "Should have 3 orders before rollback"
+        
+        cursor.execute("SELECT name FROM #pytest_rollback_customers WHERE id = 1")
+        updated_name = cursor.fetchval()
+        assert updated_name == 'John Updated', "Should see updated name"
+        
+        # Rollback all changes
+        cursor.rollback()
+        
+        # Verify data consistency after rollback
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_customers")
+        final_customer_count = cursor.fetchval()
+        assert final_customer_count == 2, "Should have original 2 customers after rollback"
+        
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_orders")
+        final_order_count = cursor.fetchval()
+        assert final_order_count == 0, "Should have no orders after rollback"
+        
+        cursor.execute("SELECT name FROM #pytest_rollback_customers WHERE id = 1")
+        original_name = cursor.fetchval()
+        assert original_name == 'John Doe', "Should have original name after rollback"
+        
+        # Verify referential integrity is maintained
+        cursor.execute("SELECT name FROM #pytest_rollback_customers ORDER BY id")
+        names = cursor.fetchall()
+        assert len(names) == 2, "Should have exactly 2 customers"
+        assert names[0][0] == 'John Doe', "First customer should be John Doe"
+        assert names[1][0] == 'Jane Smith', "Second customer should be Jane Smith"
+        
+    except Exception as e:
+        pytest.fail(f"Cursor rollback data consistency test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_rollback_orders")
+            cursor.execute("DROP TABLE #pytest_rollback_customers")
+            cursor.commit()
+        except:
+            pass
+
+def test_cursor_rollback_large_transaction(cursor, db_connection):
+    """Test cursor rollback with large transaction"""
+    try:
+        # Set autocommit to False
+        original_autocommit = db_connection.autocommit
+        db_connection.autocommit = False
+        
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_rollback_large")
+        cursor.execute("CREATE TABLE #pytest_rollback_large (id INTEGER, data VARCHAR(100))")
+        cursor.commit()
+        
+        # Insert committed baseline data
+        cursor.execute("INSERT INTO #pytest_rollback_large VALUES (0, 'baseline')")
+        cursor.commit()
+        
+        # Start large transaction
+        large_transaction_size = 100
+        
+        for i in range(1, large_transaction_size + 1):
+            cursor.execute("INSERT INTO #pytest_rollback_large VALUES (?, ?)", 
+                         i, f'large_transaction_data_{i}')
+            
+            # Add some updates to make transaction more complex
+            if i % 10 == 0:
+                cursor.execute("UPDATE #pytest_rollback_large SET data = ? WHERE id = ?", 
+                             f'updated_data_{i}', i)
+        
+        # Verify large transaction data is visible
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_large")
+        total_count = cursor.fetchval()
+        assert total_count == large_transaction_size + 1, f"Should have {large_transaction_size + 1} records before rollback"
+        
+        # Verify some updated data
+        cursor.execute("SELECT data FROM #pytest_rollback_large WHERE id = 10")
+        updated_data = cursor.fetchval()
+        assert updated_data == 'updated_data_10', "Should see updated data"
+        
+        # Rollback the large transaction
+        cursor.rollback()
+        
+        # Verify rollback worked
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_large")
+        final_count = cursor.fetchval()
+        assert final_count == 1, "Should only have baseline data after rollback"
+        
+        cursor.execute("SELECT data FROM #pytest_rollback_large WHERE id = 0")
+        baseline_data = cursor.fetchval()
+        assert baseline_data == 'baseline', "Baseline data should be unchanged"
+        
+        # Verify no large transaction data remains
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_large WHERE id > 0")
+        large_data_count = cursor.fetchval()
+        assert large_data_count == 0, "No large transaction data should remain"
+        
+    except Exception as e:
+        pytest.fail(f"Cursor rollback large transaction test failed: {e}")
+    finally:
+        try:
+            db_connection.autocommit = original_autocommit
+            cursor.execute("DROP TABLE #pytest_rollback_large")
+            cursor.commit()
+        except:
+            pass
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
