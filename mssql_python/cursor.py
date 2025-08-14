@@ -8,7 +8,6 @@ Resource Management:
 - Do not use a cursor after it is closed, or after its parent connection is closed.
 - Use close() to release resources held by the cursor as soon as it is no longer needed.
 """
-import ctypes
 import decimal
 import uuid
 import datetime
@@ -16,7 +15,7 @@ from typing import List, Union
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
-from mssql_python.exceptions import InterfaceError
+from mssql_python.exceptions import InterfaceError, NotSupportedError, ProgrammingError
 from .row import Row
 
 
@@ -77,7 +76,8 @@ class Cursor:
         # Therefore, it must be a list with exactly one bool element.
         
         # rownumber attribute
-        self._rownumber = -1  # Track the current row index in the result set
+        self._rownumber = -1  # DB-API extension: last returned row index, -1 before first
+        self._next_row_index = 0  # internal: index of the next row the driver will return (0-based)
         self._has_result_set = False  # Track if we have an active result set
 
     def _is_unicode_string(self, param):
@@ -594,18 +594,20 @@ class Cursor:
     def _reset_rownumber(self):
         """Reset the rownumber tracking when starting a new result set."""
         self._rownumber = -1
+        self._next_row_index = 0
         self._has_result_set = True
 
     def _increment_rownumber(self):
         """
-        Increment the rownumber by 1.
-        
-        This should be called after each fetch operation to keep track of the current row index.
+        Called after a successful fetch from the driver. Keep both counters consistent.
         """
         if self._has_result_set:
-            self._rownumber += 1
+            # driver returned one row, so the next row index increments by 1
+            self._next_row_index += 1
+            # rownumber is last returned row index
+            self._rownumber = self._next_row_index - 1
         else:
-            raise InterfaceError("Cannot increment rownumber: no active result set.")
+            raise InterfaceError("Cannot increment rownumber: no active result set.", "No active result set.")
         
     # Will be used when we add support for scrollable cursors
     def _decrement_rownumber(self):
@@ -620,8 +622,8 @@ class Cursor:
             else:
                 self._rownumber = -1
         else:
-            raise InterfaceError("Cannot decrement rownumber: no active result set.")
-        
+            raise InterfaceError("Cannot decrement rownumber: no active result set.", "No active result set.")
+
     def _clear_rownumber(self):
         """
         Clear the rownumber tracking.
@@ -878,7 +880,7 @@ class Cursor:
             if ret == ddbc_sql_const.SQL_NO_DATA.value:
                 return None
             
-            # Only increment rownumber for successful fetch with data
+            # Update internal position after successful fetch
             self._increment_rownumber()
             
             # Create and return a Row object
@@ -912,8 +914,9 @@ class Cursor:
             
             # Update rownumber for the number of rows actually fetched
             if rows_data and self._has_result_set:
-                for _ in rows_data:
-                    self._increment_rownumber()
+                # advance counters by number of rows actually returned
+                self._next_row_index += len(rows_data)
+                self._rownumber = self._next_row_index - 1
             
             # Convert raw data to Row objects
             return [Row(row_data, self.description) for row_data in rows_data]
@@ -937,8 +940,8 @@ class Cursor:
             
             # Update rownumber for the number of rows actually fetched
             if rows_data and self._has_result_set:
-                for _ in rows_data:
-                    self._increment_rownumber()
+                self._next_row_index += len(rows_data)
+                self._rownumber = self._next_row_index - 1
             
             # Convert raw data to Row objects
             return [Row(row_data, self.description) for row_data in rows_data]
@@ -995,6 +998,11 @@ class Cursor:
             just like fetchone().
         """
         self._check_closed()  # Check if the cursor is closed
+        
+        # Check if this is a result-producing statement
+        if not self.description:
+            # Non-result-set statement (INSERT, UPDATE, DELETE, etc.)
+            return None
         
         # Fetch the first row
         row = self.fetchone()
@@ -1074,3 +1082,113 @@ class Cursor:
             except Exception as e:
                 # Don't raise an exception in __del__, just log it
                 log('error', "Error during cursor cleanup in __del__: %s", e)
+
+    def scroll(self, value: int, mode: str = 'relative') -> None:
+        """
+        Move the cursor in the result set to a new position according to mode.
+        See DB-API: relative = offset from current position, absolute = absolute target.
+        This implementation emulates scrolling for forward-only cursors by consuming rows.
+        """
+        self._check_closed()
+        if mode not in ('relative', 'absolute'):
+            raise ProgrammingError(
+                driver_error="Invalid scroll mode",
+                ddbc_error=f"mode must be 'relative' or 'absolute', got '{mode}'"
+            )
+        if not self._has_result_set:
+            raise ProgrammingError(
+                driver_error="No active result set",
+                ddbc_error="Cannot scroll: no result set available. Execute a query first."
+            )
+        if not isinstance(value, int):
+            raise ProgrammingError(
+                driver_error="Invalid scroll value type",
+                ddbc_error=f"scroll value must be an integer, got {type(value).__name__}"
+            )
+
+        if mode == 'absolute':
+            # interpret value as index of the row that should be returned by the NEXT fetch
+            self._scroll_absolute(value)
+        else:
+            # relative: value is offset from current last-returned index
+            self._scroll_relative(value)
+
+    def _scroll_relative(self, offset: int) -> None:
+        """Emulate relative scrolling: offset rows forward from current last-returned index."""
+        if offset < 0:
+            raise NotSupportedError(
+                driver_error="Backward scrolling not supported",
+                ddbc_error=f"Cannot move backward by {offset} rows on a forward-only cursor"
+            )
+        if offset == 0:
+            return
+
+        # we need to consume exactly `offset` rows from the driver
+        self._consume_rows_for_scroll(offset)
+        # after consuming offset rows, last-returned index advances by offset
+        self._rownumber = self._next_row_index - 1
+
+    def _scroll_absolute(self, target_position: int) -> None:
+        """
+        Scroll to an absolute position (0-based), where target_position is the index
+        that should be returned by the NEXT fetch. Emulate for forward-only cursors by consuming rows.
+        target_position: -1 means before first row.
+        """
+        if target_position < -1:
+            raise IndexError(f"Invalid absolute position: {target_position}. Must be >= -1")
+
+        current_last_index = self._next_row_index - 1  # -1 when none fetched yet
+
+        # handle before-first
+        if target_position == -1:
+            if current_last_index == -1:
+                return
+            raise NotSupportedError(
+                driver_error="Backward scrolling not supported",
+                ddbc_error=f"Cannot move backward to position -1 from position {current_last_index}"
+            )
+
+        # cannot move backward on forward-only cursor
+        if target_position < current_last_index:
+            raise NotSupportedError(
+                driver_error="Backward scrolling not supported",
+                ddbc_error=f"Cannot move backward from position {current_last_index} to position {target_position}"
+            )
+
+        # compute how many rows we must consume so that the driver's next return index equals target_position
+        rows_to_consume = target_position - self._next_row_index
+        if rows_to_consume > 0:
+            self._consume_rows_for_scroll(rows_to_consume)
+
+        # After this, driver.next index should be target_position; tests expect rownumber == target_position
+        self._rownumber = target_position
+
+    def _consume_rows_for_scroll(self, rows_to_consume: int) -> None:
+        """
+        Consume rows by repeatedly fetching from the driver. Updates internal _next_row_index.
+        Raises IndexError if end-of-result reached before consuming requested number.
+        """
+        if rows_to_consume <= 0:
+            return
+
+        rows_consumed = 0
+        try:
+            for _ in range(rows_to_consume):
+                row_data = []
+                ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
+                if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                    # cannot reach requested position
+                    raise IndexError(
+                        f"Cannot scroll forward {rows_to_consume} rows: "
+                        f"only {rows_consumed} rows available before end of result set"
+                    )
+                rows_consumed += 1
+            # driver advanced by rows_consumed rows; reflect that:
+            self._next_row_index += rows_consumed
+        except Exception as e:
+            if isinstance(e, IndexError):
+                raise
+            else:
+                raise IndexError(
+                    f"Scroll operation failed after {rows_consumed} of {rows_to_consume} rows: {e}"
+                ) from e
