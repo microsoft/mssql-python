@@ -1192,3 +1192,32 @@ class Cursor:
                 raise IndexError(
                     f"Scroll operation failed after {rows_consumed} of {rows_to_consume} rows: {e}"
                 ) from e
+            
+    def skip(self, count: int) -> None:
+        """
+        Skip the next 'count' records in the query result set.
+        
+        This is a convenience method that advances the cursor by 'count' 
+        positions without returning the skipped rows.
+        
+        Args:
+            count: Number of records to skip. Must be non-negative.
+            
+        Returns:
+            None
+            
+        Raises:
+            ProgrammingError: If the cursor is closed or no result set is available.
+            NotSupportedError: If count is negative (backward scrolling not supported).
+            IndexError: If attempting to skip past the end of the result set.
+            
+        Note:
+            For convenience, skip(0) is accepted and will do nothing.
+        """
+        self._check_closed()
+        
+        if count == 0:  # Skip 0 is a no-op
+            return
+            
+        # Use existing scroll method with relative mode
+        self.scroll(count, 'relative')
