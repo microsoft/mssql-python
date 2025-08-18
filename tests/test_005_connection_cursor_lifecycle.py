@@ -15,6 +15,7 @@ Functions:
 - test_multiple_cursor_operations_cleanup: Tests cleanup with multiple cursor operations.
 """
 
+import os
 import pytest
 import subprocess
 import sys
@@ -291,13 +292,11 @@ def test_cursor_close_raises_on_double_close(conn_str):
 
 def test_cursor_del_no_logging_during_shutdown(conn_str, tmp_path):
     """Test that cursor __del__ doesn't log errors during interpreter shutdown"""
-    test_script = tmp_path / "test_shutdown_logging.py"
-    test_script.write_text(f"""
-import sys
+    code = f"""
 from mssql_python import connect
 
 # Create connection and cursor
-conn = connect("{conn_str}")
+conn = connect(\"\"\"{conn_str}\"\"\")
 cursor = conn.cursor()
 cursor.execute("SELECT 1")
 cursor.fetchall()
@@ -305,16 +304,16 @@ cursor.fetchall()
 # Don't close cursor - let __del__ handle it during shutdown
 # This should not produce any log output during interpreter shutdown
 print("Test completed successfully")
-""")
+"""
     
     result = subprocess.run(
-        [sys.executable, str(test_script)],
+        [sys.executable, "-c", code],
         capture_output=True,
         text=True
     )
     
     # Should exit cleanly
-    assert result.returncode == 0
+    assert result.returncode == 0, f"Script failed: {result.stderr}"
     # Should not have any debug/error logs about cursor cleanup
     assert "Exception during cursor cleanup" not in result.stderr
     assert "Exception during cursor cleanup" not in result.stdout
@@ -354,11 +353,10 @@ def test_cursor_del_on_closed_cursor_no_errors(conn_str, caplog):
 def test_cursor_del_unclosed_cursor_cleanup(conn_str):
     """Test that __del__ properly cleans up unclosed cursors without errors"""
     code = f"""
-import sys
 from mssql_python import connect
 
 # Create connection and cursor
-conn = connect("{conn_str}")
+conn = connect(\"\"\"{conn_str}\"\"\")
 cursor = conn.cursor()
 cursor.execute("SELECT 1")
 cursor.fetchall()
@@ -379,7 +377,11 @@ conn.close()
 print("Cleanup successful")
 """
     
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    result = subprocess.run(
+        [sys.executable, "-c", code], 
+        capture_output=True, 
+        text=True
+    )
     assert result.returncode == 0, f"Expected successful cleanup, but got: {result.stderr}"
     assert "Cleanup successful" in result.stdout
     # Should not have any error messages
@@ -418,13 +420,12 @@ def test_cursor_operations_after_close_raise_errors(conn_str):
 
 def test_mixed_cursor_cleanup_scenarios(conn_str, tmp_path):
     """Test various mixed cleanup scenarios in one script"""
-    test_script = tmp_path / "test_mixed_cleanup.py"
-    test_script.write_text(f"""
+    code = f"""
 from mssql_python import connect
 from mssql_python.exceptions import ProgrammingError
 
 # Test 1: Normal cursor close
-conn1 = connect("{conn_str}")
+conn1 = connect(\"\"\"{conn_str}\"\"\")
 cursor1 = conn1.cursor()
 cursor1.execute("SELECT 1")
 cursor1.fetchall()
@@ -444,7 +445,7 @@ cursor2.fetchall()
 # Don't close cursor2, let __del__ handle it
 
 # Test 4: Connection close cleans up cursors
-conn2 = connect("{conn_str}")
+conn2 = connect(\"\"\"{conn_str}\"\"\")
 cursor3 = conn2.cursor()
 cursor4 = conn2.cursor()
 cursor3.execute("SELECT 3")
@@ -461,13 +462,17 @@ print("PASS: Connection close cleaned up cursors")
 # Clean up
 conn1.close()
 print("All tests passed")
-""")
+"""
     
     result = subprocess.run(
-        [sys.executable, str(test_script)],
+        [sys.executable, "-c", code],
         capture_output=True,
         text=True
     )
+    
+    if result.returncode != 0:
+        print(f"STDOUT: {result.stdout}")
+        print(f"STDERR: {result.stderr}")
     
     assert result.returncode == 0, f"Script failed: {result.stderr}"
     assert "PASS: Double close raised ProgrammingError" in result.stdout
