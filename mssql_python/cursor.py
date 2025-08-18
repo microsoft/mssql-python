@@ -445,10 +445,7 @@ class Cursor:
         Raises:
             Error: If any operation is attempted with the cursor after it is closed.
         """
-        if self.closed:
-            # Following common driver behavior, we raise a ProgrammingError if called on an already closed cursor.
-            # This ensures compatibility with existing code that expects this behavior.
-            raise ProgrammingError("Cursor is already closed.", "")
+        self._check_closed()
 
         if self.hstmt:
             self.hstmt.free()
@@ -464,7 +461,7 @@ class Cursor:
             Error: If the cursor is closed.
         """
         if self.closed:
-            raise Exception("Operation cannot be performed: the cursor is closed.")
+            raise ProgrammingError("Cursor is already closed.", "")
 
     def _create_parameter_types_list(self, parameter, param_info, parameters_list, i):
         """
