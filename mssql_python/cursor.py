@@ -908,8 +908,9 @@ class Cursor:
             # Update internal position after successful fetch
             self._increment_rownumber()
             
-            # Create and return a Row object
-            return Row(row_data, self.description)
+            # Create and return a Row object, passing column name map if available
+            column_map = getattr(self, '_column_name_map', None)
+            return Row(row_data, self.description, column_map)
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -948,7 +949,8 @@ class Cursor:
                 self._rownumber = self._next_row_index - 1
             
             # Convert raw data to Row objects
-            return [Row(row_data, self.description) for row_data in rows_data]
+            column_map = getattr(self, '_column_name_map', None)
+            return [Row(row_data, self.description, column_map) for row_data in rows_data]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -977,7 +979,8 @@ class Cursor:
                 self._rownumber = self._next_row_index - 1
             
             # Convert raw data to Row objects
-            return [Row(row_data, self.description) for row_data in rows_data]
+            column_map = getattr(self, '_column_name_map', None)
+            return [Row(row_data, self.description, column_map) for row_data in rows_data]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -1261,27 +1264,55 @@ class Cursor:
         # Simply delegate to the scroll method with 'relative' mode
         self.scroll(count, 'relative')
 
+    def _execute_tables(self, stmt_handle, catalog_name=None, schema_name=None, table_name=None, 
+                  table_type=None, search_escape=None):
+        """
+        Execute SQLTables ODBC function to retrieve table metadata.
+        
+        Args:
+            stmt_handle: ODBC statement handle
+            catalog_name: The catalog name pattern
+            schema_name: The schema name pattern
+            table_name: The table name pattern
+            table_type: The table type filter
+            search_escape: The escape character for pattern matching
+        """
+        # Convert None values to empty strings for ODBC
+        catalog = "" if catalog_name is None else catalog_name
+        schema = "" if schema_name is None else schema_name
+        table = "" if table_name is None else table_name
+        types = "" if table_type is None else table_type
+        
+        # Call the ODBC SQLTables function
+        retcode = ddbc_bindings.DDBCSQLTables(
+            stmt_handle,
+            catalog, 
+            schema,
+            table,
+            types
+        )
+        
+        # Check return code and handle errors
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, stmt_handle, retcode)
+        
+        # Capture any diagnostic messages
+        if stmt_handle:
+            self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(stmt_handle))
+
     def tables(self, table=None, catalog=None, schema=None, tableType=None):
         """
         Returns information about tables in the database that match the given criteria.
-        
-        Args:
-            table (str, optional): Table name pattern. Default None.
-            catalog (str, optional): Catalog name pattern. Default None.
-            schema (str, optional): Schema name pattern. Default None.
-            tableType (str or list, optional): Types of tables to include. Default None.
-        
-        Returns:
-            Cursor: Self, to allow iteration over results or chaining with fetch methods.
-            
-        Each row has columns: table_cat, table_schem, table_name, table_type, remarks
         """
-        # Check if we're looking for temporary tables (starting with #)
-        is_temp_table_search = table and table.startswith('#')
+        self._check_closed()
         
-        # Build the SQL queries - we'll need different handling for temp tables
-        if is_temp_table_search:
-            # For temporary tables, we need to query tempdb specifically
+        # Clear messages
+        self.messages = []
+        
+        # Special handling for temporary tables with '#' prefix
+        is_temp_search = table and isinstance(table, str) and '#' in table
+        
+        if is_temp_search:
+            # For temp tables, we need to use a direct SQL query to tempdb
             sql = """
             SELECT 
                 DB_NAME() AS table_cat,
@@ -1294,18 +1325,14 @@ class Cursor:
                 INNER JOIN tempdb.sys.schemas s ON t.schema_id = s.schema_id 
             WHERE 
                 t.name LIKE ? 
-                AND t.name LIKE '#%'
             """
-            params = [table.replace('#', '#%')]
+            params = [table]
             
             if schema is not None:
                 sql += " AND s.name LIKE ?"
                 params.append(schema)
-                
-            # tableType filter is ignored for temp tables as they're always BASE TABLE
-                
         else:
-            # Standard query for regular tables
+            # For regular tables, use INFORMATION_SCHEMA
             sql = """
             SELECT 
                 TABLE_CATALOG AS table_cat,
@@ -1319,7 +1346,6 @@ class Cursor:
                 1=1
             """
             
-            # Add filter conditions
             params = []
             
             if catalog is not None:
@@ -1335,7 +1361,6 @@ class Cursor:
                 params.append(table)
             
             if tableType is not None:
-                # Handle tableType as either a string or a list
                 if isinstance(tableType, str):
                     sql += " AND TABLE_TYPE LIKE ?"
                     params.append(tableType)
@@ -1347,5 +1372,5 @@ class Cursor:
         # Execute the query
         self.execute(sql, params)
         
-        # Return the cursor itself to allow iteration
+        # Return self to enable method chaining
         return self
