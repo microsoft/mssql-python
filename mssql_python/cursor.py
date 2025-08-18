@@ -435,13 +435,19 @@ class Cursor:
 
     def close(self) -> None:
         """
-        Close the cursor, if it is open.
+        Close the connection now (rather than whenever .__del__() is called).
         Idempotent: subsequent calls have no effect.
+
+        The idempotency here means that resources are freed only once - subsequent
+        calls won't double-free resources or cause corruption, but will raise a
+        predictable exception instead.
 
         Raises:
             Error: If any operation is attempted with the cursor after it is closed.
         """
         if self.closed:
+            # Following common driver behavior, we raise a ProgrammingError if called on an already closed cursor.
+            # This ensures compatibility with existing code that expects this behavior.
             raise ProgrammingError("Cursor is already closed.")
 
         if self.hstmt:
@@ -802,4 +808,9 @@ class Cursor:
                 self.close()
             except Exception as e:
                 # Don't raise an exception in __del__, just log it
+                # If interpreter is shutting down, we might not have logging set up
+                import sys
+                if sys and sys._is_finalizing():
+                    # Suppress logging during interpreter shutdown
+                    return
                 log('debug', "Exception during cursor cleanup in __del__: %s", e)
