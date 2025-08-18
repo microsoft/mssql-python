@@ -264,3 +264,214 @@ def test_multiple_cursor_operations_cleanup(conn_str):
     assert cursor_insert.closed is True
     assert cursor_select1.closed is True
     assert cursor_select2.closed is True
+
+def test_cursor_close_raises_on_double_close(conn_str):
+    """Test that closing a cursor twice raises ProgrammingError"""
+    conn = connect(conn_str)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1")
+    cursor.fetchall()
+    
+    # First close should succeed
+    cursor.close()
+    assert cursor.closed is True
+    
+    # Second close should raise ProgrammingError
+    from mssql_python.exceptions import ProgrammingError
+    with pytest.raises(ProgrammingError) as excinfo:
+        cursor.close()
+    assert "Cursor is already closed" in str(excinfo.value)
+    
+    # Third close should also raise
+    with pytest.raises(ProgrammingError):
+        cursor.close()
+    
+    conn.close()
+
+
+def test_cursor_del_no_logging_during_shutdown(conn_str, tmp_path):
+    """Test that cursor __del__ doesn't log errors during interpreter shutdown"""
+    test_script = tmp_path / "test_shutdown_logging.py"
+    test_script.write_text(f"""
+import sys
+from mssql_python import connect
+
+# Create connection and cursor
+conn = connect("{conn_str}")
+cursor = conn.cursor()
+cursor.execute("SELECT 1")
+cursor.fetchall()
+
+# Don't close cursor - let __del__ handle it during shutdown
+# This should not produce any log output during interpreter shutdown
+print("Test completed successfully")
+""")
+    
+    result = subprocess.run(
+        [sys.executable, str(test_script)],
+        capture_output=True,
+        text=True
+    )
+    
+    # Should exit cleanly
+    assert result.returncode == 0
+    # Should not have any debug/error logs about cursor cleanup
+    assert "Exception during cursor cleanup" not in result.stderr
+    assert "Exception during cursor cleanup" not in result.stdout
+    # Should have our success message
+    assert "Test completed successfully" in result.stdout
+
+
+def test_cursor_del_on_closed_cursor_no_errors(conn_str, caplog):
+    """Test that __del__ on already closed cursor doesn't produce error logs"""
+    import logging
+    caplog.set_level(logging.DEBUG)
+    
+    conn = connect(conn_str)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1")
+    cursor.fetchall()
+    
+    # Close cursor explicitly
+    cursor.close()
+    
+    # Clear any existing logs
+    caplog.clear()
+    
+    # Delete the cursor - should not produce any logs
+    del cursor
+    import gc
+    gc.collect()
+    
+    # Check that no error logs were produced
+    for record in caplog.records:
+        assert "Exception during cursor cleanup" not in record.message
+        assert "Cursor is already closed" not in record.message
+    
+    conn.close()
+
+
+def test_cursor_del_unclosed_cursor_cleanup(conn_str):
+    """Test that __del__ properly cleans up unclosed cursors without errors"""
+    code = f"""
+import sys
+from mssql_python import connect
+
+# Create connection and cursor
+conn = connect("{conn_str}")
+cursor = conn.cursor()
+cursor.execute("SELECT 1")
+cursor.fetchall()
+
+# Store cursor state before deletion
+cursor_closed_before = cursor.closed
+
+# Delete cursor without closing - __del__ should handle cleanup
+del cursor
+import gc
+gc.collect()
+
+# Verify cursor was not closed before deletion
+assert cursor_closed_before is False, "Cursor should not be closed before deletion"
+
+# Close connection
+conn.close()
+print("Cleanup successful")
+"""
+    
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, f"Expected successful cleanup, but got: {result.stderr}"
+    assert "Cleanup successful" in result.stdout
+    # Should not have any error messages
+    assert "Exception" not in result.stderr
+
+
+def test_cursor_operations_after_close_raise_errors(conn_str):
+    """Test that all cursor operations raise appropriate errors after close"""
+    conn = connect(conn_str)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1")
+    cursor.fetchall()
+    
+    # Close the cursor
+    cursor.close()
+    
+    # All operations should raise exceptions
+    with pytest.raises(Exception) as excinfo:
+        cursor.execute("SELECT 2")
+    assert "Operation cannot be performed: the cursor is closed" in str(excinfo.value)
+    
+    with pytest.raises(Exception) as excinfo:
+        cursor.fetchone()
+    assert "Operation cannot be performed: the cursor is closed" in str(excinfo.value)
+    
+    with pytest.raises(Exception) as excinfo:
+        cursor.fetchmany(5)
+    assert "Operation cannot be performed: the cursor is closed" in str(excinfo.value)
+    
+    with pytest.raises(Exception) as excinfo:
+        cursor.fetchall()
+    assert "Operation cannot be performed: the cursor is closed" in str(excinfo.value)
+    
+    conn.close()
+
+
+def test_mixed_cursor_cleanup_scenarios(conn_str, tmp_path):
+    """Test various mixed cleanup scenarios in one script"""
+    test_script = tmp_path / "test_mixed_cleanup.py"
+    test_script.write_text(f"""
+from mssql_python import connect
+from mssql_python.exceptions import ProgrammingError
+
+# Test 1: Normal cursor close
+conn1 = connect("{conn_str}")
+cursor1 = conn1.cursor()
+cursor1.execute("SELECT 1")
+cursor1.fetchall()
+cursor1.close()
+
+# Test 2: Double close raises error
+try:
+    cursor1.close()
+    print("ERROR: Double close should have raised ProgrammingError")
+except ProgrammingError as e:
+    print("PASS: Double close raised ProgrammingError")
+
+# Test 3: Cursor cleanup via __del__
+cursor2 = conn1.cursor()
+cursor2.execute("SELECT 2")
+cursor2.fetchall()
+# Don't close cursor2, let __del__ handle it
+
+# Test 4: Connection close cleans up cursors
+conn2 = connect("{conn_str}")
+cursor3 = conn2.cursor()
+cursor4 = conn2.cursor()
+cursor3.execute("SELECT 3")
+cursor3.fetchall()
+cursor4.execute("SELECT 4")
+cursor4.fetchall()
+conn2.close()  # Should close both cursors
+
+# Verify cursors are closed
+assert cursor3.closed is True
+assert cursor4.closed is True
+print("PASS: Connection close cleaned up cursors")
+
+# Clean up
+conn1.close()
+print("All tests passed")
+""")
+    
+    result = subprocess.run(
+        [sys.executable, str(test_script)],
+        capture_output=True,
+        text=True
+    )
+    
+    assert result.returncode == 0, f"Script failed: {result.stderr}"
+    assert "PASS: Double close raised ProgrammingError" in result.stdout
+    assert "PASS: Connection close cleaned up cursors" in result.stdout
+    assert "All tests passed" in result.stdout
+    # Should not have error logs
+    assert "Exception during cursor cleanup" not in result.stderr

@@ -448,7 +448,7 @@ class Cursor:
         if self.closed:
             # Following common driver behavior, we raise a ProgrammingError if called on an already closed cursor.
             # This ensures compatibility with existing code that expects this behavior.
-            raise ProgrammingError("Cursor is already closed.")
+            raise ProgrammingError("Cursor is already closed.", "")
 
         if self.hstmt:
             self.hstmt.free()
