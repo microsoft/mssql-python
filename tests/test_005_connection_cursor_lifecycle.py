@@ -13,6 +13,12 @@ Functions:
 - test_connection_close_idempotent: Tests that calling close() multiple times is safe.
 - test_cursor_after_connection_close: Tests that creating a cursor after closing the connection raises an error.
 - test_multiple_cursor_operations_cleanup: Tests cleanup with multiple cursor operations.
+- test_cursor_close_raises_on_double_close: Tests that closing a cursor twice raises a ProgrammingError.
+- test_cursor_del_no_logging_during_shutdown: Tests that cursor __del__ doesn't log errors during interpreter shutdown.
+- test_cursor_del_on_closed_cursor_no_errors: Tests that __del__ on already closed cursor doesn't produce error logs.
+- test_cursor_del_unclosed_cursor_cleanup: Tests that __del__ properly cleans up unclosed cursors without errors.
+- test_cursor_operations_after_close_raise_errors: Tests that all cursor operations raise appropriate errors after close.
+- test_mixed_cursor_cleanup_scenarios: Tests various mixed cleanup scenarios in one script.
 """
 
 import os
@@ -401,20 +407,20 @@ def test_cursor_operations_after_close_raise_errors(conn_str):
     # All operations should raise exceptions
     with pytest.raises(Exception) as excinfo:
         cursor.execute("SELECT 2")
-    assert "Operation cannot be performed: the cursor is closed" in str(excinfo.value)
+    assert "Cursor is already closed." in str(excinfo.value)
     
     with pytest.raises(Exception) as excinfo:
         cursor.fetchone()
-    assert "Operation cannot be performed: the cursor is closed" in str(excinfo.value)
-    
+    assert "Cursor is already closed." in str(excinfo.value)
+
     with pytest.raises(Exception) as excinfo:
         cursor.fetchmany(5)
-    assert "Operation cannot be performed: the cursor is closed" in str(excinfo.value)
-    
+    assert "Cursor is already closed." in str(excinfo.value)
+
     with pytest.raises(Exception) as excinfo:
         cursor.fetchall()
-    assert "Operation cannot be performed: the cursor is closed" in str(excinfo.value)
-    
+    assert "Cursor is already closed." in str(excinfo.value)
+
     conn.close()
 
 
