@@ -16,7 +16,7 @@ from typing import List, Union
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
-from mssql_python.exceptions import InterfaceError
+from mssql_python.exceptions import ProgrammingError
 from .row import Row
 
 
@@ -435,13 +435,14 @@ class Cursor:
 
     def close(self) -> None:
         """
-        Close the cursor now (rather than whenever __del__ is called).
+        Close the cursor, if it is open.
+        Idempotent: subsequent calls have no effect.
 
         Raises:
             Error: If any operation is attempted with the cursor after it is closed.
         """
         if self.closed:
-            raise Exception("Cursor is already closed.")
+            raise ProgrammingError("Cursor is already closed.")
 
         if self.hstmt:
             self.hstmt.free()
@@ -794,10 +795,11 @@ class Cursor:
         Destructor to ensure the cursor is closed when it is no longer needed.
         This is a safety net to ensure resources are cleaned up
         even if close() was not called explicitly.
+        If the cursor is already closed, it will not raise an exception during cleanup.
         """
-        if "_closed" not in self.__dict__ or not self._closed:
+        if "closed" not in self.__dict__ or not self.closed:
             try:
                 self.close()
             except Exception as e:
                 # Don't raise an exception in __del__, just log it
-                log('error', "Error during cursor cleanup in __del__: %s", e)
+                log('debug', "Exception during cursor cleanup in __del__: %s", e)
