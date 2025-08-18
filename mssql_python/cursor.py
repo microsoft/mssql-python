@@ -1258,19 +1258,94 @@ class Cursor:
         # Clear messages
         self.messages = []
         
-        # Validate arguments
-        if not isinstance(count, int):
-            raise ProgrammingError("Count must be an integer", "Invalid argument type")
+        # Simply delegate to the scroll method with 'relative' mode
+        self.scroll(count, 'relative')
+
+    def tables(self, table=None, catalog=None, schema=None, tableType=None):
+        """
+        Returns information about tables in the database that match the given criteria.
         
-        if count < 0:
-            raise NotSupportedError("Negative skip values are not supported", "Backward scrolling not supported")
+        Args:
+            table (str, optional): Table name pattern. Default None.
+            catalog (str, optional): Catalog name pattern. Default None.
+            schema (str, optional): Schema name pattern. Default None.
+            tableType (str or list, optional): Types of tables to include. Default None.
         
-        # Skip zero is a no-op
-        if count == 0:
-            return
+        Returns:
+            Cursor: Self, to allow iteration over results or chaining with fetch methods.
+            
+        Each row has columns: table_cat, table_schem, table_name, table_type, remarks
+        """
+        # Check if we're looking for temporary tables (starting with #)
+        is_temp_table_search = table and table.startswith('#')
         
-        # Skip the rows by fetching and discarding
-        for _ in range(count):
-            row = self.fetchone()
-            if row is None:
-                raise IndexError("Cannot skip beyond the end of the result set")
+        # Build the SQL queries - we'll need different handling for temp tables
+        if is_temp_table_search:
+            # For temporary tables, we need to query tempdb specifically
+            sql = """
+            SELECT 
+                DB_NAME() AS table_cat,
+                s.name AS table_schem,
+                t.name AS table_name,
+                'BASE TABLE' AS table_type,
+                '' AS remarks
+            FROM 
+                tempdb.sys.tables t
+                INNER JOIN tempdb.sys.schemas s ON t.schema_id = s.schema_id 
+            WHERE 
+                t.name LIKE ? 
+                AND t.name LIKE '#%'
+            """
+            params = [table.replace('#', '#%')]
+            
+            if schema is not None:
+                sql += " AND s.name LIKE ?"
+                params.append(schema)
+                
+            # tableType filter is ignored for temp tables as they're always BASE TABLE
+                
+        else:
+            # Standard query for regular tables
+            sql = """
+            SELECT 
+                TABLE_CATALOG AS table_cat,
+                TABLE_SCHEMA AS table_schem,
+                TABLE_NAME AS table_name,
+                TABLE_TYPE AS table_type,
+                '' AS remarks
+            FROM 
+                INFORMATION_SCHEMA.TABLES
+            WHERE 
+                1=1
+            """
+            
+            # Add filter conditions
+            params = []
+            
+            if catalog is not None:
+                sql += " AND TABLE_CATALOG LIKE ?"
+                params.append(catalog)
+            
+            if schema is not None:
+                sql += " AND TABLE_SCHEMA LIKE ?"
+                params.append(schema)
+            
+            if table is not None:
+                sql += " AND TABLE_NAME LIKE ?"
+                params.append(table)
+            
+            if tableType is not None:
+                # Handle tableType as either a string or a list
+                if isinstance(tableType, str):
+                    sql += " AND TABLE_TYPE LIKE ?"
+                    params.append(tableType)
+                elif isinstance(tableType, (list, tuple)):
+                    placeholders = ", ".join("?" for _ in tableType)
+                    sql += f" AND TABLE_TYPE IN ({placeholders})"
+                    params.extend(tableType)
+        
+        # Execute the query
+        self.execute(sql, params)
+        
+        # Return the cursor itself to allow iteration
+        return self

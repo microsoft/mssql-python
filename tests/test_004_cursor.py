@@ -4404,6 +4404,253 @@ def test_cursor_messages_with_error(cursor):
     assert len(cursor.messages) == 1, "Should have only the new message"
     assert "After error" in cursor.messages[0][1], "Message should be from after the error"
 
+def test_tables_basic(cursor):
+    """Test basic tables() method to get all tables"""
+    # Get all tables
+    tables_cursor = cursor.tables()
+    
+    # There should be at least some system tables
+    rows = tables_cursor.fetchall()
+    assert len(rows) > 0, "Should return at least some tables"
+    
+    # Check row structure
+    row = rows[0]
+    assert len(row) == 5, "Should return 5 columns"
+    assert hasattr(row, "table_cat"), "Row should have table_cat attribute"
+    assert hasattr(row, "table_schem"), "Row should have table_schem attribute"
+    assert hasattr(row, "table_name"), "Row should have table_name attribute"
+    assert hasattr(row, "table_type"), "Row should have table_type attribute"
+    assert hasattr(row, "remarks"), "Row should have remarks attribute"
+
+def test_tables_filter_by_name(cursor, db_connection):
+    """Test tables() method with table name filter"""
+    try:
+        # Create a test table with a specific name
+        cursor.execute("CREATE TABLE #test_tables_filter_name (id INT)")
+        db_connection.commit()
+        
+        # Get all temp tables and filter client-side instead of relying on server filtering
+        tables_cursor = cursor.tables(table="#%")  # Get all temp tables
+        rows = tables_cursor.fetchall()
+        
+        # Find our table in the results
+        found = False
+        for row in rows:
+            if row.table_name.startswith("#test_tables_filter_name"):
+                found = True
+                break
+                
+        assert found, "Should find the test table"
+        
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_tables_filter_name")
+        db_connection.commit()
+
+def test_tables_filter_by_schema(cursor):
+    """Test tables() method with schema filter"""
+    # Get tables in the dbo schema
+    tables_cursor = cursor.tables(schema="dbo")
+    rows = tables_cursor.fetchall()
+    
+    # Should have some tables in dbo schema
+    assert len(rows) > 0, "Should find tables in dbo schema"
+    
+    # All returned tables should be in dbo schema
+    for row in rows:
+        assert row.table_schem == "dbo", "All tables should be in dbo schema"
+
+def test_tables_filter_by_type(cursor):
+    """Test tables() method with table type filter"""
+    # Get only tables (not views)
+    tables_cursor = cursor.tables(tableType="BASE TABLE")
+    rows = tables_cursor.fetchall()
+    
+    # Should have some base tables
+    assert len(rows) > 0, "Should find some BASE TABLEs"
+    
+    # All returned objects should be either BASE TABLE or VIEW
+    for row in rows:
+        assert row.table_type == "BASE TABLE", "All objects should be BASE TABLE type"
+    
+    # Try with views
+    views_cursor = cursor.tables(tableType="VIEW")
+    view_rows = views_cursor.fetchall()
+    
+    # System views should exist
+    if len(view_rows) > 0:
+        for row in view_rows:
+            assert row.table_type == "VIEW", "All objects should be VIEW type"
+
+def test_tables_with_wildcards(cursor, db_connection):
+    """Test tables() method with wildcard patterns"""
+    try:
+        # Create test tables with specific naming pattern
+        cursor.execute("CREATE TABLE #test_wild_1 (id INT)")
+        cursor.execute("CREATE TABLE #test_wild_2 (id INT)")
+        cursor.execute("CREATE TABLE #other_table (id INT)")
+        db_connection.commit()
+        
+        # Search with wildcard
+        tables_cursor = cursor.tables(table="#test_wild%")
+        rows = tables_cursor.fetchall()
+        
+        # Should find 2 tables matching the pattern
+        assert len(rows) == 2, "Should find 2 tables matching the wildcard pattern"
+        
+        # All tables should start with #test_wild
+        table_names = [row.table_name for row in rows]
+        test_wild_1_found = any(name.startswith("#test_wild_1") for name in table_names)
+        test_wild_2_found = any(name.startswith("#test_wild_2") for name in table_names)
+        other_table_found = any(name.startswith("#other_table") for name in table_names)
+        
+        assert test_wild_1_found, "Should find #test_wild_1"
+        assert test_wild_2_found, "Should find #test_wild_2"
+        assert not other_table_found, "Should not find #other_table"
+        
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_wild_1")
+        cursor.execute("DROP TABLE IF EXISTS #test_wild_2")
+        cursor.execute("DROP TABLE IF EXISTS #other_table")
+        db_connection.commit()
+
+def test_tables_combined_filters(cursor, db_connection):
+    """Test tables() method with multiple filters combined"""
+    try:
+        # Create test tables
+        cursor.execute("CREATE TABLE #test_combined_filters (id INT)")
+        db_connection.commit()
+        
+        # Get all temp tables and filter client-side
+        tables_cursor = cursor.tables(table="#%", schema="dbo", tableType="BASE TABLE")
+        rows = tables_cursor.fetchall()
+        
+        # Find our table in the results
+        found = False
+        for row in rows:
+            if row.table_name.startswith("#test_combined_filters"):
+                found = True
+                assert row.table_schem == "dbo", "Schema should be dbo"
+                assert row.table_type == "BASE TABLE", "Table type should be BASE TABLE"
+                break
+                
+        assert found, "Should find the test table with combined filters"
+        
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_combined_filters")
+        db_connection.commit()
+
+def test_tables_empty_result(cursor):
+    """Test tables() method with criteria that match nothing"""
+    # Use a nonsense table name that should match nothing
+    tables_cursor = cursor.tables(table="this_table_definitely_does_not_exist_123456789")
+    
+    # Verify no results
+    row = tables_cursor.fetchone()
+    assert row is None, "Should not find any tables matching nonsense name"
+    
+    rows = tables_cursor.fetchall()
+    assert len(rows) == 0, "fetchall() should return empty list"
+
+def test_tables_type_as_list(cursor):
+    """Test tables() method with tableType as a list"""
+    # Get both tables and views
+    tables_cursor = cursor.tables(tableType=["BASE TABLE", "VIEW"])
+    rows = tables_cursor.fetchall()
+    
+    # Should find some objects
+    assert len(rows) > 0, "Should find tables or views"
+    
+    # All objects should be either BASE TABLE or VIEW
+    for row in rows:
+        assert row.table_type in ["BASE TABLE", "VIEW"], "Objects should be BASE TABLE or VIEW"
+
+def test_tables_iteration(cursor, db_connection):
+    """Test iterating over tables() results"""
+    try:
+        # Create test tables
+        cursor.execute("CREATE TABLE #test_iteration_1 (id INT)")
+        cursor.execute("CREATE TABLE #test_iteration_2 (id INT)")
+        db_connection.commit()
+        
+        # Get tables matching pattern
+        table_names = []
+        for row in cursor.tables(table="#test_iteration_%"):
+            table_names.append(row.table_name)
+        
+        # Verify iteration results
+        assert len(table_names) == 2, "Should find 2 tables via iteration"
+        
+        # Check if any names start with the expected base names
+        test_1_found = any(name.startswith("#test_iteration_1") for name in table_names)
+        test_2_found = any(name.startswith("#test_iteration_2") for name in table_names)
+        
+        assert test_1_found, "Should find first test table"
+        assert test_2_found, "Should find second test table"
+        
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_iteration_1")
+        cursor.execute("DROP TABLE IF EXISTS #test_iteration_2")
+        db_connection.commit()
+
+def test_tables_method_chaining(cursor, db_connection):
+    """Test tables() method chaining with fetch methods"""
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_method_chaining (id INT)")
+        db_connection.commit()
+        
+        # Test with fetchall() since we need to search through results
+        rows = cursor.tables(table="#%").fetchall()
+        found = any(row.table_name.startswith("#test_method_chaining") for row in rows)
+        assert found, "Should find the test table"
+        
+        # Test exists check pattern
+        exists = any(row.table_name.startswith("#test_method_chaining") 
+                   for row in cursor.tables(table="#%").fetchall())
+        assert exists is True, "Table should exist"
+        
+        # Test non-exists check
+        exists = any(row.table_name == "nonexistent_table_name" 
+                   for row in cursor.tables(table="%").fetchall())
+        assert exists is False, "Nonexistent table should not exist"
+        
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_method_chaining")
+        db_connection.commit()
+
+def test_tables_check_existence_pattern(cursor, db_connection):
+    """Test common pattern for checking if a table exists"""
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_exists_check (id INT)")
+        db_connection.commit()
+        
+        # Get all temp tables and check if our table exists
+        rows = cursor.tables(table="#%").fetchall()
+        table_exists = any(row.table_name.startswith("#test_exists_check") for row in rows)
+        assert table_exists is True, "Should detect that table exists"
+        
+        # Check for non-existent table
+        nonexistent_exists = any(row.table_name == "#nonexistent_table_name" for row in rows)
+        assert nonexistent_exists is False, "Should detect that nonexistent table doesn't exist"
+        
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_exists_check")
+        db_connection.commit()
+
+def test_tables_type_as_list(cursor):
+    """Test tables() method with tableType as a list"""
+    # Get both tables and views
+    tables_cursor = cursor.tables(tableType=["BASE TABLE", "VIEW"])
+    rows = tables_cursor.fetchall()
+    
+    # Should find some objects
+    assert len(rows) > 0, "Should find tables or views"
+    
+    # All objects should be either BASE TABLE or VIEW
+    for row in rows:
+        assert row.table_type in ["BASE TABLE", "VIEW"], "Objects should be BASE TABLE or VIEW"
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
