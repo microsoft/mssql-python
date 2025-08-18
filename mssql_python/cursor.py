@@ -80,6 +80,8 @@ class Cursor:
         self._next_row_index = 0  # internal: index of the next row the driver will return (0-based)
         self._has_result_set = False  # Track if we have an active result set
 
+        self.messages = []  # Store diagnostic messages
+
     def _is_unicode_string(self, param):
         """
         Check if a string contains non-ASCII characters.
@@ -452,6 +454,9 @@ class Cursor:
         if self.closed:
             raise Exception("Cursor is already closed.")
 
+        # Clear messages per DBAPI
+        self.messages = []
+        
         if self.hstmt:
             self.hstmt.free()
             self.hstmt = None
@@ -695,6 +700,9 @@ class Cursor:
         if reset_cursor:
             self._reset_cursor()
 
+        # Clear any previous messages
+        self.messages = []
+
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
 
@@ -742,7 +750,14 @@ class Cursor:
             self.is_stmt_prepared,
             use_prepare,
         )
+        
+        # Check for errors but don't raise exceptions for info/warning messages
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+        
+        # Capture any diagnostic messages (SQL_SUCCESS_WITH_INFO, etc.)
+        if self.hstmt:
+            self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+    
         self.last_executed_stmt = operation
 
         # Update rowcount after execution
@@ -822,7 +837,10 @@ class Cursor:
         """
         self._check_closed()
         self._reset_cursor()
-
+        
+        # Clear any previous messages
+        self.messages = []
+        
         if not seq_of_parameters:
             self.rowcount = 0
             return
@@ -854,6 +872,10 @@ class Cursor:
         )
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
+        # Capture any diagnostic messages after execution
+        if self.hstmt:
+            self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+    
         self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
         self.last_executed_stmt = operation
         self._initialize_description()
@@ -876,6 +898,9 @@ class Cursor:
         row_data = []
         try:
             ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
+            
+            if self.hstmt:
+                self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
             
             if ret == ddbc_sql_const.SQL_NO_DATA.value:
                 return None
@@ -911,6 +936,10 @@ class Cursor:
         rows_data = []
         try:
             ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
+
+            if self.hstmt:
+                self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+            
             
             # Update rownumber for the number of rows actually fetched
             if rows_data and self._has_result_set:
@@ -937,6 +966,10 @@ class Cursor:
         rows_data = []
         try:
             ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+
+            if self.hstmt:
+                self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+            
             
             # Update rownumber for the number of rows actually fetched
             if rows_data and self._has_result_set:
@@ -961,6 +994,9 @@ class Cursor:
         """
         self._check_closed()  # Check if the cursor is closed
 
+        # Clear messages per DBAPI
+        self.messages = []
+        
         # Skip to the next result set
         ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
@@ -1041,6 +1077,9 @@ class Cursor:
         """
         self._check_closed()  # Check if the cursor is closed
         
+        # Clear messages per DBAPI
+        self.messages = []
+        
         # Delegate to the connection's commit method
         self._connection.commit()
 
@@ -1067,6 +1106,9 @@ class Cursor:
         """
         self._check_closed()  # Check if the cursor is closed
         
+        # Clear messages per DBAPI
+        self.messages = []
+        
         # Delegate to the connection's rollback method
         self._connection.rollback()
 
@@ -1090,6 +1132,10 @@ class Cursor:
         This implementation emulates scrolling for forward-only cursors by consuming rows.
         """
         self._check_closed()
+        
+        # Clear messages per DBAPI
+        self.messages = []
+        
         if mode not in ('relative', 'absolute'):
             raise ProgrammingError(
                 driver_error="Invalid scroll mode",
@@ -1195,29 +1241,36 @@ class Cursor:
             
     def skip(self, count: int) -> None:
         """
-        Skip the next 'count' records in the query result set.
-        
-        This is a convenience method that advances the cursor by 'count' 
-        positions without returning the skipped rows.
+        Skip the next count records in the query result set.
         
         Args:
-            count: Number of records to skip. Must be non-negative.
-            
-        Returns:
-            None
+            count: Number of records to skip.
             
         Raises:
-            ProgrammingError: If the cursor is closed or no result set is available.
-            NotSupportedError: If count is negative (backward scrolling not supported).
             IndexError: If attempting to skip past the end of the result set.
-            
-        Note:
-            For convenience, skip(0) is accepted and will do nothing.
+            ProgrammingError: If count is not an integer.
+            NotSupportedError: If attempting to skip backwards.
         """
+        from mssql_python.exceptions import ProgrammingError, NotSupportedError
+    
         self._check_closed()
         
-        if count == 0:  # Skip 0 is a no-op
+        # Clear messages
+        self.messages = []
+        
+        # Validate arguments
+        if not isinstance(count, int):
+            raise ProgrammingError("Count must be an integer", "Invalid argument type")
+        
+        if count < 0:
+            raise NotSupportedError("Negative skip values are not supported", "Backward scrolling not supported")
+        
+        # Skip zero is a no-op
+        if count == 0:
             return
-            
-        # Use existing scroll method with relative mode
-        self.scroll(count, 'relative')
+        
+        # Skip the rows by fetching and discarding
+        for _ in range(count):
+            row = self.fetchone()
+            if row is None:
+                raise IndexError("Cannot skip beyond the end of the result set")

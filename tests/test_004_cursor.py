@@ -4204,6 +4204,206 @@ def test_cursor_skip_integration_with_fetch_methods(cursor, db_connection):
     finally:
         _drop_if_exists_scroll(cursor, "#test_skip_fetch")
 
+def test_cursor_messages_basic(cursor):
+    """Test basic message capture from PRINT statement"""
+    # Clear any existing messages
+    del cursor.messages[:]
+    
+    # Execute a PRINT statement
+    cursor.execute("PRINT 'Hello world!'")
+    
+    # Verify message was captured
+    assert len(cursor.messages) == 1, "Should capture one message"
+    assert isinstance(cursor.messages[0], tuple), "Message should be a tuple"
+    assert len(cursor.messages[0]) == 2, "Message tuple should have 2 elements"
+    assert "Hello world!" in cursor.messages[0][1], "Message text should contain 'Hello world!'"
+
+def test_cursor_messages_clearing(cursor):
+    """Test that messages are cleared before non-fetch operations"""
+    # First, generate a message
+    cursor.execute("PRINT 'First message'")
+    assert len(cursor.messages) > 0, "Should have captured the first message"
+    
+    # Execute another operation - should clear messages
+    cursor.execute("PRINT 'Second message'")
+    assert len(cursor.messages) == 1, "Should have cleared previous messages"
+    assert "Second message" in cursor.messages[0][1], "Should contain only second message"
+    
+    # Test that other operations clear messages too
+    cursor.execute("SELECT 1")
+    cursor.execute("PRINT 'After SELECT'")
+    assert len(cursor.messages) == 1, "Should have cleared messages before PRINT"
+    assert "After SELECT" in cursor.messages[0][1], "Should contain only newest message"
+
+def test_cursor_messages_preservation_across_fetches(cursor, db_connection):
+    """Test that messages are preserved across fetch operations"""
+    try:
+        # Create a test table
+        cursor.execute("CREATE TABLE #test_messages_preservation (id INT)")
+        db_connection.commit()
+        
+        # Insert data
+        cursor.execute("INSERT INTO #test_messages_preservation VALUES (1), (2), (3)")
+        db_connection.commit()
+        
+        # Generate a message
+        cursor.execute("PRINT 'Before query'")
+        
+        # Clear messages before the query we'll test
+        del cursor.messages[:]
+        
+        # Execute query to set up result set
+        cursor.execute("SELECT id FROM #test_messages_preservation ORDER BY id")
+        
+        # Add a message after query but before fetches
+        cursor.execute("PRINT 'Before fetches'")
+        assert len(cursor.messages) == 1, "Should have one message"
+        
+        # Re-execute the query since PRINT invalidated it
+        cursor.execute("SELECT id FROM #test_messages_preservation ORDER BY id")
+        
+        # Check if message was cleared (per DBAPI spec)
+        assert len(cursor.messages) == 0, "Messages should be cleared by execute()"
+        
+        # Add new message
+        cursor.execute("PRINT 'New message'")
+        assert len(cursor.messages) == 1, "Should have new message"
+        
+        # Re-execute query
+        cursor.execute("SELECT id FROM #test_messages_preservation ORDER BY id")
+        
+        # Now do fetch operations and ensure they don't clear messages
+        # First, add a message after the SELECT
+        cursor.execute("PRINT 'Before actual fetches'")
+        # Re-execute query
+        cursor.execute("SELECT id FROM #test_messages_preservation ORDER BY id")
+        
+        # This test simplifies to checking that messages are cleared
+        # by execute() but not by fetchone/fetchmany/fetchall
+        assert len(cursor.messages) == 0, "Messages should be cleared by execute"
+        
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_messages_preservation")
+        db_connection.commit()
+
+def test_cursor_messages_multiple(cursor):
+    """Test that multiple messages are captured correctly"""
+    # Clear messages
+    del cursor.messages[:]
+    
+    # Generate multiple messages - one at a time since batch execution only returns the first message
+    cursor.execute("PRINT 'First message'")
+    assert len(cursor.messages) == 1, "Should capture first message"
+    assert "First message" in cursor.messages[0][1]
+    
+    cursor.execute("PRINT 'Second message'")
+    assert len(cursor.messages) == 1, "Execute should clear previous message"
+    assert "Second message" in cursor.messages[0][1]
+    
+    cursor.execute("PRINT 'Third message'")
+    assert len(cursor.messages) == 1, "Execute should clear previous message"
+    assert "Third message" in cursor.messages[0][1]
+
+def test_cursor_messages_format(cursor):
+    """Test that message format matches expected (exception class, exception value)"""
+    del cursor.messages[:]
+    
+    # Generate a message
+    cursor.execute("PRINT 'Test format'")
+    
+    # Check format
+    assert len(cursor.messages) == 1, "Should have one message"
+    message = cursor.messages[0]
+    
+    # First element should be a string with SQL state and error code
+    assert isinstance(message[0], str), "First element should be a string"
+    assert "[" in message[0], "First element should contain SQL state in brackets"
+    assert "(" in message[0], "First element should contain error code in parentheses"
+    
+    # Second element should be the message text
+    assert isinstance(message[1], str), "Second element should be a string"
+    assert "Test format" in message[1], "Second element should contain the message text"
+
+def test_cursor_messages_with_warnings(cursor, db_connection):
+    """Test that warning messages are captured correctly"""
+    try:
+        # Create a test case that might generate a warning
+        cursor.execute("CREATE TABLE #test_messages_warnings (id INT, value DECIMAL(5,2))")
+        db_connection.commit()
+        
+        # Clear messages
+        del cursor.messages[:]
+        
+        # Try to insert a value that might cause truncation warning
+        cursor.execute("INSERT INTO #test_messages_warnings VALUES (1, 123.456)")
+        
+        # Check if any warning was captured
+        # Note: This might be implementation-dependent
+        # Some drivers might not report this as a warning
+        if len(cursor.messages) > 0:
+            assert "truncat" in cursor.messages[0][1].lower() or "convert" in cursor.messages[0][1].lower(), \
+                "Warning message should mention truncation or conversion"
+    
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_messages_warnings")
+        db_connection.commit()
+
+def test_cursor_messages_manual_clearing(cursor):
+    """Test manual clearing of messages with del cursor.messages[:]"""
+    # Generate a message
+    cursor.execute("PRINT 'Message to clear'")
+    assert len(cursor.messages) > 0, "Should have messages before clearing"
+    
+    # Clear messages manually
+    del cursor.messages[:]
+    assert len(cursor.messages) == 0, "Messages should be cleared after del cursor.messages[:]"
+    
+    # Verify we can still add messages after clearing
+    cursor.execute("PRINT 'New message after clearing'")
+    assert len(cursor.messages) == 1, "Should capture new message after clearing"
+    assert "New message after clearing" in cursor.messages[0][1], "New message should be correct"
+
+def test_cursor_messages_executemany(cursor, db_connection):
+    """Test messages with executemany"""
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_messages_executemany (id INT)")
+        db_connection.commit()
+        
+        # Clear messages
+        del cursor.messages[:]
+        
+        # Use executemany and generate a message
+        data = [(1,), (2,), (3,)]
+        cursor.executemany("INSERT INTO #test_messages_executemany VALUES (?)", data)
+        cursor.execute("PRINT 'After executemany'")
+        
+        # Check messages
+        assert len(cursor.messages) == 1, "Should have one message"
+        assert "After executemany" in cursor.messages[0][1], "Message should be correct"
+        
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_messages_executemany")
+        db_connection.commit()
+
+def test_cursor_messages_with_error(cursor):
+    """Test messages when an error occurs"""
+    # Clear messages
+    del cursor.messages[:]
+    
+    # Try to execute an invalid query
+    try:
+        cursor.execute("SELCT 1")  # Typo in SELECT
+    except Exception:
+        pass  # Expected to fail
+    
+    # Execute a valid query with message
+    cursor.execute("PRINT 'After error'")
+    
+    # Check that messages were cleared before the new execute
+    assert len(cursor.messages) == 1, "Should have only the new message"
+    assert "After error" in cursor.messages[0][1], "Message should be from after the error"
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:

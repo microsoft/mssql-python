@@ -901,6 +901,65 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
     return errorInfo;
 }
 
+py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
+    LOG("Retrieving all diagnostic records");
+    if (!SQLGetDiagRec_ptr) {
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();
+    }
+    
+    py::list records;
+    SQLHANDLE rawHandle = handle->get();
+    SQLSMALLINT handleType = handle->type();
+    
+    // Iterate through all available diagnostic records
+    for (SQLSMALLINT recNumber = 1; ; recNumber++) {
+        SQLWCHAR sqlState[6] = {0};
+        SQLWCHAR message[SQL_MAX_MESSAGE_LENGTH] = {0};
+        SQLINTEGER nativeError = 0;
+        SQLSMALLINT messageLen = 0;
+        
+        SQLRETURN diagReturn = SQLGetDiagRec_ptr(
+            handleType, rawHandle, recNumber, sqlState, &nativeError, 
+            message, SQL_MAX_MESSAGE_LENGTH, &messageLen);
+            
+        if (diagReturn == SQL_NO_DATA || !SQL_SUCCEEDED(diagReturn))
+            break;
+        
+#if defined(_WIN32)
+        // On Windows, create a formatted UTF-8 string for state+error
+        char stateWithError[50];
+        sprintf(stateWithError, "[%ls] (%d)", sqlState, nativeError);
+        
+        // Convert wide string message to UTF-8
+        int msgSize = WideCharToMultiByte(CP_UTF8, 0, message, -1, NULL, 0, NULL, NULL);
+        std::vector<char> msgBuffer(msgSize);
+        WideCharToMultiByte(CP_UTF8, 0, message, -1, msgBuffer.data(), msgSize, NULL, NULL);
+        
+        // Create the tuple with converted strings
+        records.append(py::make_tuple(
+            py::str(stateWithError),
+            py::str(msgBuffer.data())
+        ));
+#else
+        // On Unix, use the SQLWCHARToWString utility and then convert to UTF-8
+        std::string stateStr = WideToUTF8(SQLWCHARToWString(sqlState));
+        std::string msgStr = WideToUTF8(SQLWCHARToWString(message, messageLen));
+        
+        // Format the state string
+        std::string stateWithError = "[" + stateStr + "] (" + std::to_string(nativeError) + ")";
+        
+        // Create the tuple with converted strings
+        records.append(py::make_tuple(
+            py::str(stateWithError),
+            py::str(msgStr)
+        ));
+#endif
+    }
+    
+    return records;
+}
+
 // Wrap SQLExecDirect
 SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Query) {
     LOG("Execute SQL query directly - {}", Query.c_str());
@@ -2553,6 +2612,10 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
+        // Add this to your PYBIND11_MODULE section
+    m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,
+          "Get all diagnostic records for a handle",
+          py::arg("handle"));
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
