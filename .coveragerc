@@ -3,6 +3,7 @@ omit =
     main.py
     setup.py
     bcp_options.py
+    testing_ddbc_bindings.py
     tests/*
 
 [report]
