@@ -6,6 +6,26 @@ This module initializes the mssql_python package.
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
+
+# GLOBALS
+# Read-Only
+apilevel = "2.0"
+paramstyle = "qmark"
+threadsafety = 1
+
+class Settings:
+    def __init__(self):
+        self.lowercase = False
+
+# Create a global instance
+_settings = Settings()
+
+def get_settings():
+    return _settings
+
+lowercase = _settings.lowercase  # Default is False
+
+# Import necessary modules
 from .exceptions import (
     Warning,
     Error,
@@ -46,12 +66,6 @@ from .logging_config import setup_logging, get_logger
 
 # Constants
 from .constants import ConstantsDDBC
-
-# GLOBALS
-# Read-Only
-apilevel = "2.0"
-paramstyle = "qmark"
-threadsafety = 1
 
 from .pooling import PoolingManager
 def pooling(max_size=100, idle_timeout=600, enabled=True):

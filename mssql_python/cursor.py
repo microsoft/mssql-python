@@ -17,7 +17,8 @@ from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import InterfaceError
-from .row import Row
+from mssql_python.row import Row
+from mssql_python import get_settings
 
 
 class Cursor:
@@ -73,6 +74,8 @@ class Cursor:
         # Is a list instead of a bool coz bools in Python are immutable.
         # Hence, we can't pass around bools by reference & modify them.
         # Therefore, it must be a list with exactly one bool element.
+        
+        self.lowercase = get_settings().lowercase
 
     def _is_unicode_string(self, param):
         """
@@ -480,26 +483,32 @@ class Cursor:
         paraminfo.decimalDigits = decimal_digits
         return paraminfo
 
-    def _initialize_description(self):
-        """
-        Initialize the description attribute using SQLDescribeCol.
-        """
-        col_metadata = []
-        ret = ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, col_metadata)
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+    def _initialize_description(self, column_metadata=None):
+        """Initialize the description attribute from column metadata."""
+        if not column_metadata:
+            self.description = None
+            return
+        import mssql_python
 
-        self.description = [
-            (
-                col["ColumnName"],
-                self._map_data_type(col["DataType"]),
-                None,
-                col["ColumnSize"],
-                col["ColumnSize"],
-                col["DecimalDigits"],
-                col["Nullable"] == ddbc_sql_const.SQL_NULLABLE.value,
-            )
-            for col in col_metadata
-        ]
+        description = []
+        for i, col in enumerate(column_metadata):
+            # Get column name - lowercase it if the lowercase flag is set
+            column_name = col["ColumnName"]
+            
+            if mssql_python.lowercase:
+                column_name = column_name.lower()
+                
+            # Add to description tuple (7 elements as per PEP-249)
+            description.append((
+                column_name,                           # name 
+                self._map_data_type(col["DataType"]),  # type_code
+                None,                                  # display_size
+                col["ColumnSize"],                     # internal_size
+                col["ColumnSize"],                     # precision - should match ColumnSize
+                col["DecimalDigits"],                  # scale
+                col["Nullable"] == ddbc_sql_const.SQL_NULLABLE.value, # null_ok
+            ))
+        self.description = description
 
     def _map_data_type(self, sql_type):
         """
@@ -611,7 +620,14 @@ class Cursor:
         self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
 
         # Initialize description after execution
-        self._initialize_description()
+        # After successful execution, initialize description if there are results
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except Exception as e:
+            # If describe fails, it's likely there are no results (e.g., for INSERT)
+            self.description = None
 
     @staticmethod
     def _select_best_sample_value(column):
@@ -727,7 +743,7 @@ class Cursor:
             return None
         
         # Create and return a Row object
-        return Row(row_data, self.description)
+        return Row(self, self.description, row_data)
 
     def fetchmany(self, size: int = None) -> List[Row]:
         """
@@ -752,7 +768,7 @@ class Cursor:
         ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
         
         # Convert raw data to Row objects
-        return [Row(row_data, self.description) for row_data in rows_data]
+        return [Row(self, self.description, row_data) for row_data in rows_data]
 
     def fetchall(self) -> List[Row]:
         """
@@ -768,7 +784,7 @@ class Cursor:
         ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
         
         # Convert raw data to Row objects
-        return [Row(row_data, self.description) for row_data in rows_data]
+        return [Row(self, self.description, row_data) for row_data in rows_data]
 
     def nextset(self) -> Union[bool, None]:
         """
