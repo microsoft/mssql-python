@@ -9,14 +9,17 @@ class Row:
         print(row.column_name)  # Access by column name
     """
     
-    def __init__(self, values, cursor_description):
+    def __init__(self, cursor, description, values, column_map=None):
         """
         Initialize a Row object with values and cursor description.
         
         Args:
+            cursor: The cursor object
+            description: The cursor description containing column metadata
             values: List of values for this row
-            cursor_description: The cursor description containing column metadata
+            column_map: Optional pre-built column map (for optimization)
         """
+        self._cursor = cursor
         self._values = values
         
         # TODO: ADO task - Optimize memory usage by sharing column map across rows
@@ -26,10 +29,14 @@ class Row:
         # 3. Remove cursor_description from Row objects entirely
         
         # Create mapping of column names to indices
-        self._column_map = {}
-        for i, desc in enumerate(cursor_description):
-            if desc and desc[0]:  # Ensure column name exists
-                self._column_map[desc[0]] = i
+        # If column_map is not provided, build it from description
+        if column_map is None:
+            column_map = {}
+            for i, col_desc in enumerate(description):
+                col_name = col_desc[0]  # Name is first item in description tuple
+                column_map[col_name] = i
+                
+        self._column_map = column_map
     
     def __getitem__(self, index):
         """Allow accessing by numeric index: row[0]"""
@@ -37,9 +44,19 @@ class Row:
     
     def __getattr__(self, name):
         """Allow accessing by column name as attribute: row.column_name"""
+        # Handle lowercase attribute access - if lowercase is enabled,
+        # try to match attribute names case-insensitively
         if name in self._column_map:
             return self._values[self._column_map[name]]
-        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+        
+        # If lowercase is enabled on the cursor, try case-insensitive lookup
+        if hasattr(self._cursor, 'lowercase') and self._cursor.lowercase:
+            name_lower = name.lower()
+            for col_name in self._column_map:
+                if col_name.lower() == name_lower:
+                    return self._values[self._column_map[col_name]]
+        
+        raise AttributeError(f"Row has no attribute '{name}'")
     
     def __eq__(self, other):
         """
