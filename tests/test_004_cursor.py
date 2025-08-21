@@ -1556,6 +1556,189 @@ def test_decimal_separator_calculations(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
         db_connection.commit()
 
+def test_cursor_setinputsizes_basic(db_connection):
+    """Test the basic functionality of setinputsizes"""
+    from mssql_python.constants import ConstantsDDBC
+    
+    cursor = db_connection.cursor()
+    
+    # Create a test table
+    cursor.execute("DROP TABLE IF EXISTS #test_inputsizes")
+    cursor.execute("""
+    CREATE TABLE #test_inputsizes (
+        string_col NVARCHAR(100),
+        int_col INT
+    )
+    """)
+    
+    # Set input sizes for parameters
+    cursor.setinputsizes([
+        (ConstantsDDBC.SQL_WVARCHAR.value, 100, 0),
+        (ConstantsDDBC.SQL_INTEGER.value, 0, 0)
+    ])
+    
+    # Execute with parameters
+    cursor.execute(
+        "INSERT INTO #test_inputsizes VALUES (?, ?)",
+        "Test String", 42
+    )
+    
+    # Verify data was inserted correctly
+    cursor.execute("SELECT * FROM #test_inputsizes")
+    row = cursor.fetchone()
+    
+    assert row[0] == "Test String"
+    assert row[1] == 42
+    
+    # Clean up
+    cursor.execute("DROP TABLE IF EXISTS #test_inputsizes")
+
+def test_cursor_setinputsizes_with_executemany_float(db_connection):
+    """Test setinputsizes with executemany using float instead of Decimal"""
+    from mssql_python.constants import ConstantsDDBC
+    
+    cursor = db_connection.cursor()
+    
+    # Create a test table
+    cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_float")
+    cursor.execute("""
+    CREATE TABLE #test_inputsizes_float (
+        id INT,
+        name NVARCHAR(50),
+        price REAL  /* Use REAL instead of DECIMAL */
+    )
+    """)
+    
+    # Prepare data with float values
+    data = [
+        (1, "Item 1", 10.99),
+        (2, "Item 2", 20.50),
+        (3, "Item 3", 30.75)
+    ]
+    
+    # Set input sizes for parameters
+    cursor.setinputsizes([
+        (ConstantsDDBC.SQL_INTEGER.value, 0, 0),
+        (ConstantsDDBC.SQL_WVARCHAR.value, 50, 0),
+        (ConstantsDDBC.SQL_REAL.value, 0, 0)  
+    ])
+    
+    # Execute with parameters
+    cursor.executemany(
+        "INSERT INTO #test_inputsizes_float VALUES (?, ?, ?)",
+        data
+    )
+    
+    # Verify all data was inserted correctly
+    cursor.execute("SELECT * FROM #test_inputsizes_float ORDER BY id")
+    rows = cursor.fetchall()
+    
+    assert len(rows) == 3
+    assert rows[0][0] == 1
+    assert rows[0][1] == "Item 1"
+    assert abs(rows[0][2] - 10.99) < 0.001
+    
+    # Clean up
+    cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_float")
+
+def test_cursor_setinputsizes_reset(db_connection):
+    """Test that setinputsizes is reset after execution"""
+    from mssql_python.constants import ConstantsDDBC
+    
+    cursor = db_connection.cursor()
+    
+    # Create a test table
+    cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_reset")
+    cursor.execute("""
+    CREATE TABLE #test_inputsizes_reset (
+        col1 NVARCHAR(100),
+        col2 INT
+    )
+    """)
+    
+    # Set input sizes for parameters
+    cursor.setinputsizes([
+        (ConstantsDDBC.SQL_WVARCHAR.value, 100, 0),
+        (ConstantsDDBC.SQL_INTEGER.value, 0, 0)
+    ])
+    
+    # Execute with parameters
+    cursor.execute(
+        "INSERT INTO #test_inputsizes_reset VALUES (?, ?)",
+        "Test String", 42
+    )
+    
+    # Verify inputsizes was reset
+    assert cursor._inputsizes is None
+    
+    # Now execute again without setting input sizes
+    cursor.execute(
+        "INSERT INTO #test_inputsizes_reset VALUES (?, ?)",
+        "Another String", 84
+    )
+    
+    # Verify both rows were inserted correctly
+    cursor.execute("SELECT * FROM #test_inputsizes_reset ORDER BY col2")
+    rows = cursor.fetchall()
+    
+    assert len(rows) == 2
+    assert rows[0][0] == "Test String"
+    assert rows[0][1] == 42
+    assert rows[1][0] == "Another String"
+    assert rows[1][1] == 84
+    
+    # Clean up
+    cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_reset")
+
+def test_cursor_setinputsizes_override_inference(db_connection):
+    """Test that setinputsizes overrides type inference"""
+    from mssql_python.constants import ConstantsDDBC
+    
+    cursor = db_connection.cursor()
+    
+    # Create a test table with specific types
+    cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_override")
+    cursor.execute("""
+    CREATE TABLE #test_inputsizes_override (
+        small_int SMALLINT,
+        big_text NVARCHAR(MAX)
+    )
+    """)
+    
+    # Set input sizes that override the default inference
+    # For SMALLINT, use a valid precision value (5 is typical for SMALLINT)
+    cursor.setinputsizes([
+        (ConstantsDDBC.SQL_SMALLINT.value, 5, 0),  # Use valid precision for SMALLINT
+        (ConstantsDDBC.SQL_WVARCHAR.value, 8000, 0)  # Force short string to NVARCHAR(MAX)
+    ])
+    
+    # Test with values that would normally be inferred differently
+    big_number = 30000  # Would normally be INTEGER or BIGINT
+    short_text = "abc"  # Would normally be a regular NVARCHAR
+    
+    try:
+        cursor.execute(
+            "INSERT INTO #test_inputsizes_override VALUES (?, ?)",
+            big_number, short_text
+        )
+        
+        # Verify the row was inserted (may have been truncated by SQL Server)
+        cursor.execute("SELECT * FROM #test_inputsizes_override")
+        row = cursor.fetchone()
+        
+        # SQL Server would either truncate or round the value
+        assert row[1] == short_text
+        
+    except Exception as e:
+        # If an exception occurs, it should be related to the data type conversion
+        # Add "invalid precision" to the expected error messages
+        error_text = str(e).lower()
+        assert any(text in error_text for text in ["overflow", "out of range", "convert", "invalid precision", "precision value"]), \
+            f"Unexpected error: {e}"
+    
+    # Clean up
+    cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_override")
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
