@@ -485,3 +485,164 @@ def test_connection_pooling_basic(conn_str):
 
     conn1.close()
     conn2.close()
+
+def test_connection_execute(db_connection):
+    """Test the execute() convenience method for Connection class"""
+    # Test basic execution
+    cursor = db_connection.execute("SELECT 1 AS test_value")
+    result = cursor.fetchone()
+    assert result is not None, "Execute failed: No result returned"
+    assert result[0] == 1, "Execute failed: Incorrect result"
+    
+    # Test with parameters
+    cursor = db_connection.execute("SELECT ? AS test_value", 42)
+    result = cursor.fetchone()
+    assert result is not None, "Execute with parameters failed: No result returned"
+    assert result[0] == 42, "Execute with parameters failed: Incorrect result"
+    
+    # Test that cursor is tracked by connection
+    assert cursor in db_connection._cursors, "Cursor from execute() not tracked by connection"
+    
+    # Test with data modification and verify it requires commit
+    if not db_connection.autocommit:
+        drop_table_if_exists(db_connection.cursor(), "#pytest_test_execute")
+        cursor1 = db_connection.execute("CREATE TABLE #pytest_test_execute (id INT, value VARCHAR(50))")
+        cursor2 = db_connection.execute("INSERT INTO #pytest_test_execute VALUES (1, 'test_value')")
+        cursor3 = db_connection.execute("SELECT * FROM #pytest_test_execute")
+        result = cursor3.fetchone()
+        assert result is not None, "Execute with table creation failed"
+        assert result[0] == 1, "Execute with table creation returned wrong id"
+        assert result[1] == 'test_value', "Execute with table creation returned wrong value"
+        
+        # Clean up
+        db_connection.execute("DROP TABLE #pytest_test_execute")
+        db_connection.commit()
+
+def test_connection_execute_error_handling(db_connection):
+    """Test that execute() properly handles SQL errors"""
+    with pytest.raises(Exception):
+        db_connection.execute("SELECT * FROM nonexistent_table")
+        
+def test_connection_execute_empty_result(db_connection):
+    """Test execute() with a query that returns no rows"""
+    cursor = db_connection.execute("SELECT * FROM sys.tables WHERE name = 'nonexistent_table_name'")
+    result = cursor.fetchone()
+    assert result is None, "Query should return no results"
+    
+    # Test empty result with fetchall
+    rows = cursor.fetchall()
+    assert len(rows) == 0, "fetchall should return empty list for empty result set"
+
+def test_connection_execute_different_parameter_types(db_connection):
+    """Test execute() with different parameter data types"""
+    # Test with different data types
+    params = [
+        1234,                      # Integer
+        3.14159,                   # Float
+        "test string",             # String
+        bytearray(b'binary data'), # Binary data
+        True,                      # Boolean
+        None                       # NULL
+    ]
+    
+    for param in params:
+        cursor = db_connection.execute("SELECT ? AS value", param)
+        result = cursor.fetchone()
+        if param is None:
+            assert result[0] is None, "NULL parameter not handled correctly"
+        else:
+            assert result[0] == param, f"Parameter {param} of type {type(param)} not handled correctly"
+
+def test_connection_execute_with_transaction(db_connection):
+    """Test execute() in the context of explicit transactions"""
+    if db_connection.autocommit:
+        db_connection.autocommit = False
+    
+    cursor1 = db_connection.cursor()
+    drop_table_if_exists(cursor1, "#pytest_test_execute_transaction")
+    
+    try:
+        # Create table and insert data
+        db_connection.execute("CREATE TABLE #pytest_test_execute_transaction (id INT, value VARCHAR(50))")
+        db_connection.execute("INSERT INTO #pytest_test_execute_transaction VALUES (1, 'before rollback')")
+        
+        # Check data is there
+        cursor = db_connection.execute("SELECT * FROM #pytest_test_execute_transaction")
+        result = cursor.fetchone()
+        assert result is not None, "Data should be visible within transaction"
+        assert result[1] == 'before rollback', "Incorrect data in transaction"
+        
+        # Rollback and verify data is gone
+        db_connection.rollback()
+        
+        # Need to recreate table since it was rolled back
+        db_connection.execute("CREATE TABLE #pytest_test_execute_transaction (id INT, value VARCHAR(50))")
+        db_connection.execute("INSERT INTO #pytest_test_execute_transaction VALUES (2, 'after rollback')")
+        
+        cursor = db_connection.execute("SELECT * FROM #pytest_test_execute_transaction")
+        result = cursor.fetchone()
+        assert result is not None, "Data should be visible after new insert"
+        assert result[0] == 2, "Should see the new data after rollback"
+        assert result[1] == 'after rollback', "Incorrect data after rollback"
+        
+        # Commit and verify data persists
+        db_connection.commit()
+    finally:
+        # Clean up
+        try:
+            db_connection.execute("DROP TABLE #pytest_test_execute_transaction")
+            db_connection.commit()
+        except Exception:
+            pass
+
+def test_connection_execute_vs_cursor_execute(db_connection):
+    """Compare behavior of connection.execute() vs cursor.execute()"""
+    # Connection.execute creates a new cursor each time
+    cursor1 = db_connection.execute("SELECT 1 AS first_query")
+    # Consume the results from cursor1 before creating cursor2
+    result1 = cursor1.fetchall()
+    assert result1[0][0] == 1, "First cursor should have result from first query"
+    
+    # Now it's safe to create a second cursor
+    cursor2 = db_connection.execute("SELECT 2 AS second_query")
+    result2 = cursor2.fetchall()
+    assert result2[0][0] == 2, "Second cursor should have result from second query"
+    
+    # These should be different cursor objects
+    assert cursor1 != cursor2, "Connection.execute should create a new cursor each time"
+    
+    # Now compare with reusing the same cursor
+    cursor3 = db_connection.cursor()
+    cursor3.execute("SELECT 3 AS third_query")
+    result3 = cursor3.fetchone()
+    assert result3[0] == 3, "Direct cursor execution failed"
+    
+    # Reuse the same cursor
+    cursor3.execute("SELECT 4 AS fourth_query")
+    result4 = cursor3.fetchone()
+    assert result4[0] == 4, "Reused cursor should have new results"
+    
+    # The previous results should no longer be accessible
+    cursor3.execute("SELECT 3 AS third_query_again")
+    result5 = cursor3.fetchone()
+    assert result5[0] == 3, "Cursor reexecution should work"
+
+def test_connection_execute_many_parameters(db_connection):
+    """Test execute() with many parameters"""
+    # First make sure no active results are pending
+    # by using a fresh cursor and fetching all results
+    cursor = db_connection.cursor()
+    cursor.execute("SELECT 1")
+    cursor.fetchall()
+    
+    # Create a query with 10 parameters
+    params = list(range(1, 11))
+    query = "SELECT " + ", ".join(["?" for _ in params]) + " AS many_params"
+    
+    # Now execute with many parameters
+    cursor = db_connection.execute(query, *params)
+    result = cursor.fetchall()  # Use fetchall to consume all results
+    
+    # Verify all parameters were correctly passed
+    for i, value in enumerate(params):
+        assert result[0][i] == value, f"Parameter at position {i} not correctly passed"
