@@ -1600,12 +1600,17 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, numericStr, sizeof(numericStr), &indicator);
 
                 if (SQL_SUCCEEDED(ret)) {
-                    try{
-                    // Convert numericStr to py::decimal.Decimal and append to row
-                    row.append(py::module_::import("decimal").attr("Decimal")(
-                        std::string(reinterpret_cast<const char*>(numericStr), indicator)));
+                    try {
+                        // Use the original string with period for Python's Decimal constructor
+                        std::string numStr(reinterpret_cast<const char*>(numericStr), indicator);
+                        
+                        // Create Python Decimal object
+                        py::object decimalObj = py::module_::import("decimal").attr("Decimal")(numStr);
+                        
+                        // Add to row
+                        row.append(decimalObj);
                     } catch (const py::error_already_set& e) {
-                        // If the conversion fails, append None
+                        // If conversion fails, append None
                         LOG("Error converting to decimal: {}", e.what());
                         row.append(py::none());
                     }
@@ -2085,11 +2090,20 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_DECIMAL:
                 case SQL_NUMERIC: {
                     try {
-                        // Convert numericStr to py::decimal.Decimal and append to row
-                        row.append(py::module_::import("decimal").attr("Decimal")(std::string(
-                            reinterpret_cast<const char*>(
-                                &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]),
-                            buffers.indicators[col - 1][i])));
+                        // Convert the string to use the current decimal separator
+                        std::string numStr(reinterpret_cast<const char*>(
+                            &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]),
+                            buffers.indicators[col - 1][i]);
+                        if (g_decimalSeparator != ".") {
+                            // Replace the driver's decimal point with our configured separator
+                            size_t pos = numStr.find('.');
+                            if (pos != std::string::npos) {
+                                numStr.replace(pos, 1, g_decimalSeparator);
+                            }
+                        }
+                        
+                        // Convert to Python decimal
+                        row.append(py::module_::import("decimal").attr("Decimal")(numStr));
                     } catch (const py::error_already_set& e) {
                         // Handle the exception, e.g., log the error and append py::none()
                         LOG("Error converting to decimal: {}", e.what());
@@ -2480,6 +2494,14 @@ void enable_pooling(int maxSize, int idleTimeout) {
     });
 }
 
+// Global decimal separator setting with default value
+std::string g_decimalSeparator = ".";
+
+void DDBCSetDecimalSeparator(const std::string& separator) {
+    LOG("Setting decimal separator to: {}", separator);
+    g_decimalSeparator = separator;
+}
+
 // Architecture-specific defines
 #ifndef ARCHITECTURE
 #define ARCHITECTURE "win64"  // Default to win64 if not defined during compilation
@@ -2553,6 +2575,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
+    m.def("DDBCSetDecimalSeparator", &DDBCSetDecimalSeparator, "Set the decimal separator character");
+
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";

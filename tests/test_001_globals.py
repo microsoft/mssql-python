@@ -10,7 +10,7 @@ Functions:
 import pytest
 
 # Import global variables from the repository
-from mssql_python import apilevel, threadsafety, paramstyle, lowercase
+from mssql_python import apilevel, threadsafety, paramstyle, lowercase, getDecimalSeparator, setDecimalSeparator
 
 def test_apilevel():
     # Check if apilevel has the expected value
@@ -27,4 +27,30 @@ def test_paramstyle():
 def test_lowercase():
     # Check if lowercase has the expected default value
     assert lowercase is False, "lowercase should default to False"
+
+def test_decimal_separator():
+    """Test decimal separator functionality"""
+    
+    # Check default value
+    assert getDecimalSeparator() == '.', "Default decimal separator should be '.'"
+    
+    try:
+        # Test setting a new value
+        setDecimalSeparator(',')
+        assert getDecimalSeparator() == ',', "Decimal separator should be ',' after setting"
+        
+        # Test invalid input
+        with pytest.raises(ValueError):
+            setDecimalSeparator('too long')
+            
+        with pytest.raises(ValueError):
+            setDecimalSeparator('')
+            
+        with pytest.raises(ValueError):
+            setDecimalSeparator(123)  # Non-string input
+    
+    finally:
+        # Restore default value
+        setDecimalSeparator('.')
+        assert getDecimalSeparator() == '.', "Decimal separator should be restored to '.'"
 
