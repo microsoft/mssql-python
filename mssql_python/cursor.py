@@ -46,7 +46,7 @@ class Cursor:
         setoutputsize(size, column=None) -> None.
     """
 
-    def __init__(self, connection) -> None:
+    def __init__(self, connection, timeout: int = 0) -> None:
         """
         Initialize the cursor with a database connection.
 
@@ -54,6 +54,7 @@ class Cursor:
             connection: Database connection object.
         """
         self.connection = connection
+        self._timeout = timeout
         # self.connection.autocommit = False
         self.hstmt = None
         self._initialize_cursor()
@@ -565,6 +566,20 @@ class Cursor:
         if reset_cursor:
             self._reset_cursor()
 
+        # Apply timeout if set (non-zero)
+        if self._timeout > 0:
+            try:
+                timeout_value = int(self._timeout) 
+                ret = ddbc_bindings.DDBCSQLSetStmtAttr(
+                    self.hstmt,
+                    ddbc_sql_const.SQL_ATTR_QUERY_TIMEOUT.value,
+                    timeout_value
+                )
+                check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+                log('debug', f"Set query timeout to {timeout_value} seconds")
+            except Exception as e:
+                log('warning', f"Failed to set query timeout: {e}")
+
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
 
@@ -694,6 +709,20 @@ class Cursor:
         if not seq_of_parameters:
             self.rowcount = 0
             return
+        
+        # Apply timeout if set (non-zero)
+        if self._timeout > 0:
+            try:
+                timeout_value = int(self._timeout)
+                ret = ddbc_bindings.DDBCSQLSetStmtAttr(
+                    self.hstmt,
+                    ddbc_sql_const.SQL_ATTR_QUERY_TIMEOUT.value,
+                    timeout_value
+                )
+                check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+                log('debug', f"Set query timeout to {self._timeout} seconds")
+            except Exception as e:
+                log('warning', f"Failed to set query timeout: {e}")
 
         param_info = ddbc_bindings.ParamInfo
         param_count = len(seq_of_parameters[0])
