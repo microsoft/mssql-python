@@ -185,6 +185,29 @@ class Connection:
         cursor = Cursor(self)
         self._cursors.add(cursor)  # Track the cursor
         return cursor
+    
+    def execute(self, sql, *args):
+        """
+        Creates a new Cursor object, calls its execute method, and returns the new cursor.
+        
+        This is a convenience method that is not part of the DB API. Since a new Cursor
+        is allocated by each call, this should not be used if more than one SQL statement
+        needs to be executed on the connection.
+        
+        Args:
+            sql (str): The SQL query to execute.
+            *args: Parameters to be passed to the query.
+            
+        Returns:
+            Cursor: A new cursor with the executed query.
+            
+        Raises:
+            DatabaseError: If there is an error executing the query.
+            InterfaceError: If the connection is closed.
+        """
+        cursor = self.cursor()
+        cursor.execute(sql, *args)
+        return cursor
 
     def commit(self) -> None:
         """
