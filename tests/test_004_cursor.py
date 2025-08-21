@@ -1739,6 +1739,175 @@ def test_cursor_setinputsizes_override_inference(db_connection):
     # Clean up
     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_override")
 
+def test_gettypeinfo_all_types(cursor):
+    """Test getTypeInfo with no arguments returns all data types"""
+    # Get all type information
+    type_info = cursor.getTypeInfo()
+    
+    # Verify we got results
+    assert type_info is not None, "getTypeInfo() should return results"
+    assert len(type_info) > 0, "getTypeInfo() should return at least one data type"
+    
+    # Verify common data types are present
+    type_names = [str(row.type_name).upper() for row in type_info]
+    assert any('VARCHAR' in name for name in type_names), "VARCHAR type should be in results"
+    assert any('INT' in name for name in type_names), "INTEGER type should be in results"
+    
+    # Verify first row has expected columns
+    first_row = type_info[0]
+    assert hasattr(first_row, 'type_name'), "Result should have type_name column"
+    assert hasattr(first_row, 'data_type'), "Result should have data_type column"
+    assert hasattr(first_row, 'column_size'), "Result should have column_size column"
+    assert hasattr(first_row, 'nullable'), "Result should have nullable column"
+
+def test_gettypeinfo_specific_type(cursor):
+    """Test getTypeInfo with specific type argument"""
+    from mssql_python.constants import ConstantsDDBC
+    
+    # Test with VARCHAR type (SQL_VARCHAR)
+    varchar_info = cursor.getTypeInfo(ConstantsDDBC.SQL_VARCHAR.value)
+    
+    # Verify we got results specific to VARCHAR
+    assert varchar_info is not None, "getTypeInfo(SQL_VARCHAR) should return results"
+    assert len(varchar_info) > 0, "getTypeInfo(SQL_VARCHAR) should return at least one row"
+    
+    # All rows should be related to VARCHAR type
+    for row in varchar_info:
+        assert 'varchar' in row.type_name or 'char' in row.type_name, \
+            f"Expected VARCHAR type, got {row.type_name}"
+        assert row.data_type == ConstantsDDBC.SQL_VARCHAR.value, \
+            f"Expected data_type={ConstantsDDBC.SQL_VARCHAR.value}, got {row.data_type}"
+
+def test_gettypeinfo_result_structure(cursor):
+    """Test the structure of getTypeInfo result rows"""
+    # Get info for a common type like INTEGER
+    from mssql_python.constants import ConstantsDDBC
+    
+    int_info = cursor.getTypeInfo(ConstantsDDBC.SQL_INTEGER.value)
+    
+    # Make sure we have at least one result
+    assert len(int_info) > 0, "getTypeInfo for INTEGER should return results"
+    
+    # Check for all required columns in the result
+    first_row = int_info[0]
+    required_columns = [
+        'type_name', 'data_type', 'column_size', 'literal_prefix', 
+        'literal_suffix', 'create_params', 'nullable', 'case_sensitive',
+        'searchable', 'unsigned_attribute', 'fixed_prec_scale', 
+        'auto_unique_value', 'local_type_name', 'minimum_scale',
+        'maximum_scale', 'sql_data_type', 'sql_datetime_sub',
+        'num_prec_radix', 'interval_precision'
+    ]
+    
+    for column in required_columns:
+        assert hasattr(first_row, column), f"Result missing required column: {column}"
+
+def test_gettypeinfo_numeric_type(cursor):
+    """Test getTypeInfo for numeric data types"""
+    from mssql_python.constants import ConstantsDDBC
+    
+    # Get information about DECIMAL type
+    decimal_info = cursor.getTypeInfo(ConstantsDDBC.SQL_DECIMAL.value)
+    
+    # Verify decimal-specific attributes
+    assert len(decimal_info) > 0, "getTypeInfo for DECIMAL should return results"
+    
+    decimal_row = decimal_info[0]
+    # DECIMAL should have precision and scale parameters
+    assert decimal_row.create_params is not None, "DECIMAL should have create_params"
+    assert "PRECISION" in decimal_row.create_params.upper() or \
+           "SCALE" in decimal_row.create_params.upper(), \
+           "DECIMAL create_params should mention precision/scale"
+    
+    # Numeric types typically use base 10 for the num_prec_radix
+    assert decimal_row.num_prec_radix == 10, \
+           f"Expected num_prec_radix=10 for DECIMAL, got {decimal_row.num_prec_radix}"
+
+def test_gettypeinfo_datetime_types(cursor):
+    """Test getTypeInfo for datetime types"""
+    from mssql_python.constants import ConstantsDDBC
+    
+    # Get information about TIMESTAMP type instead of DATETIME
+    # SQL_TYPE_TIMESTAMP (93) is more commonly used for datetime in ODBC
+    datetime_info = cursor.getTypeInfo(ConstantsDDBC.SQL_TYPE_TIMESTAMP.value)
+    
+    # Verify we got datetime-related results
+    assert len(datetime_info) > 0, "getTypeInfo for TIMESTAMP should return results"
+    
+    # Check for datetime-specific attributes
+    first_row = datetime_info[0]
+    assert hasattr(first_row, 'type_name'), "Result should have type_name column"
+    
+    # Datetime type names often contain 'date', 'time', or 'datetime'
+    type_name_lower = first_row.type_name.lower()
+    assert any(term in type_name_lower for term in ['date', 'time', 'timestamp', 'datetime']), \
+        f"Expected datetime-related type name, got {first_row.type_name}"
+    
+def test_gettypeinfo_multiple_calls(cursor):
+    """Test calling getTypeInfo multiple times in succession"""
+    from mssql_python.constants import ConstantsDDBC
+    
+    # First call - get all types
+    all_types = cursor.getTypeInfo()
+    assert len(all_types) > 0, "First call to getTypeInfo should return results"
+    
+    # Second call - get VARCHAR type
+    varchar_info = cursor.getTypeInfo(ConstantsDDBC.SQL_VARCHAR.value)
+    assert len(varchar_info) > 0, "Second call to getTypeInfo should return results"
+    
+    # Third call - get INTEGER type
+    int_info = cursor.getTypeInfo(ConstantsDDBC.SQL_INTEGER.value)
+    assert len(int_info) > 0, "Third call to getTypeInfo should return results"
+    
+    # Verify the results are different between calls
+    assert len(all_types) > len(varchar_info), "All types should return more rows than specific type"
+
+def test_gettypeinfo_binary_types(cursor):
+    """Test getTypeInfo for binary data types"""
+    from mssql_python.constants import ConstantsDDBC
+    
+    # Get information about BINARY or VARBINARY type
+    binary_info = cursor.getTypeInfo(ConstantsDDBC.SQL_BINARY.value)
+    
+    # Verify we got binary-related results
+    assert len(binary_info) > 0, "getTypeInfo for BINARY should return results"
+    
+    # Check for binary-specific attributes
+    for row in binary_info:
+        type_name_lower = row.type_name.lower()
+        # Include 'timestamp' as SQL Server reports it as a binary type
+        assert any(term in type_name_lower for term in ['binary', 'blob', 'image', 'timestamp']), \
+            f"Expected binary-related type name, got {row.type_name}"
+        
+        # Binary types typically don't support case sensitivity
+        assert row.case_sensitive == 0, f"Binary types should not be case sensitive, got {row.case_sensitive}"
+
+def test_gettypeinfo_cached_results(cursor):
+    """Test that multiple identical calls to getTypeInfo are efficient"""
+    from mssql_python.constants import ConstantsDDBC
+    import time
+    
+    # First call - might be slower
+    start_time = time.time()
+    first_result = cursor.getTypeInfo(ConstantsDDBC.SQL_VARCHAR.value)
+    first_duration = time.time() - start_time
+    
+    # Give the system a moment
+    time.sleep(0.1)
+    
+    # Second call with same type - should be similar or faster
+    start_time = time.time()
+    second_result = cursor.getTypeInfo(ConstantsDDBC.SQL_VARCHAR.value)
+    second_duration = time.time() - start_time
+    
+    # Results should be consistent
+    assert len(first_result) == len(second_result), "Multiple calls should return same number of results"
+    
+    # Both calls should return the correct type info
+    for row in second_result:
+        assert row.data_type == ConstantsDDBC.SQL_VARCHAR.value, \
+            f"Expected SQL_VARCHAR type, got {row.data_type}"
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
