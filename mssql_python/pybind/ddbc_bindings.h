@@ -271,3 +271,9 @@ inline std::wstring Utf8ToWString(const std::string& str) {
     return converter.from_bytes(str);
 #endif
 }
+
+// Global decimal separator setting
+extern std::string g_decimalSeparator;
+
+// Function to set the decimal separator
+void DDBCSetDecimalSeparator(const std::string& separator);
