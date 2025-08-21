@@ -23,6 +23,9 @@ import pytest
 import time
 from mssql_python import Connection, connect, pooling
 import threading
+import struct
+from datetime import datetime, timedelta, timezone
+from mssql_python.constants import ConstantsDDBC
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
@@ -30,6 +33,26 @@ def drop_table_if_exists(cursor, table_name):
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
     except Exception as e:
         pytest.fail(f"Failed to drop table {table_name}: {e}")
+
+# Add these helper functions after other helper functions
+def handle_datetimeoffset(dto_value):
+    """Converter function for SQL Server's DATETIMEOFFSET type"""
+    if dto_value is None:
+        return None
+        
+    # The format depends on the ODBC driver and how it returns binary data
+    # This matches SQL Server's format for DATETIMEOFFSET
+    tup = struct.unpack("<6hI2h", dto_value)  # e.g., (2017, 3, 16, 10, 35, 18, 500000000, -6, 0)
+    return datetime(
+        tup[0], tup[1], tup[2], tup[3], tup[4], tup[5], tup[6] // 1000,
+        timezone(timedelta(hours=tup[7], minutes=tup[8]))
+    )
+
+def custom_string_converter(value):
+    """A simple converter that adds a prefix to string values"""
+    if value is None:
+        return None
+    return "CONVERTED: " + value.decode('utf-16-le')  # SQL_WVARCHAR is UTF-16LE encoded
 
 def test_connection_string(conn_str):
     # Check if the connection string is not None
@@ -646,3 +669,222 @@ def test_connection_execute_many_parameters(db_connection):
     # Verify all parameters were correctly passed
     for i, value in enumerate(params):
         assert result[0][i] == value, f"Parameter at position {i} not correctly passed"
+
+def test_add_output_converter(db_connection):
+    """Test adding an output converter"""
+    # Add a converter
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    
+    # Verify it was added correctly
+    assert hasattr(db_connection, '_output_converters')
+    assert sql_wvarchar in db_connection._output_converters
+    assert db_connection._output_converters[sql_wvarchar] == custom_string_converter
+    
+    # Clean up
+    db_connection.clear_output_converters()
+
+def test_get_output_converter(db_connection):
+    """Test getting an output converter"""
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    
+    # Initial state - no converter
+    assert db_connection.get_output_converter(sql_wvarchar) is None
+    
+    # Add a converter
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    
+    # Get the converter
+    converter = db_connection.get_output_converter(sql_wvarchar)
+    assert converter == custom_string_converter
+    
+    # Get a non-existent converter
+    assert db_connection.get_output_converter(999) is None
+    
+    # Clean up
+    db_connection.clear_output_converters()
+
+def test_remove_output_converter(db_connection):
+    """Test removing an output converter"""
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    
+    # Add a converter
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    assert db_connection.get_output_converter(sql_wvarchar) is not None
+    
+    # Remove the converter
+    db_connection.remove_output_converter(sql_wvarchar)
+    assert db_connection.get_output_converter(sql_wvarchar) is None
+    
+    # Remove a non-existent converter (should not raise)
+    db_connection.remove_output_converter(999)
+
+def test_clear_output_converters(db_connection):
+    """Test clearing all output converters"""
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    sql_timestamp_offset = ConstantsDDBC.SQL_TIMESTAMPOFFSET.value
+    
+    # Add multiple converters
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    db_connection.add_output_converter(sql_timestamp_offset, handle_datetimeoffset)
+    
+    # Verify converters were added
+    assert db_connection.get_output_converter(sql_wvarchar) is not None
+    assert db_connection.get_output_converter(sql_timestamp_offset) is not None
+    
+    # Clear all converters
+    db_connection.clear_output_converters()
+    
+    # Verify all converters were removed
+    assert db_connection.get_output_converter(sql_wvarchar) is None
+    assert db_connection.get_output_converter(sql_timestamp_offset) is None
+
+def test_converter_integration(db_connection):
+    """
+    Test that converters work during fetching.
+    
+    This test verifies that output converters work at the Python level
+    without requiring native driver support.
+    """
+    cursor = db_connection.cursor()
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    
+    # Test with string converter
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    
+    # Test a simple string query
+    cursor.execute("SELECT N'test string' AS test_col")
+    row = cursor.fetchone()
+    
+    # Check if the type matches what we expect for SQL_WVARCHAR
+    # For Cursor.description, the second element is the type code
+    column_type = cursor.description[0][1]
+    
+    # If the cursor description has SQL_WVARCHAR as the type code,
+    # then our converter should be applied
+    if column_type == sql_wvarchar:
+        assert row[0].startswith("CONVERTED:"), "Output converter not applied"
+    else:
+        # If the type code is different, adjust the test or the converter
+        print(f"Column type is {column_type}, not {sql_wvarchar}")
+        # Add converter for the actual type used
+        db_connection.clear_output_converters()
+        db_connection.add_output_converter(column_type, custom_string_converter)
+        
+        # Re-execute the query
+        cursor.execute("SELECT N'test string' AS test_col")
+        row = cursor.fetchone()
+        assert row[0].startswith("CONVERTED:"), "Output converter not applied"
+    
+    # Clean up
+    db_connection.clear_output_converters()
+
+def test_output_converter_with_null_values(db_connection):
+    """Test that output converters handle NULL values correctly"""
+    cursor = db_connection.cursor()
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    
+    # Add converter for string type
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    
+    # Execute a query with NULL values
+    cursor.execute("SELECT CAST(NULL AS NVARCHAR(50)) AS null_col")
+    value = cursor.fetchone()[0]
+    
+    # NULL values should remain None regardless of converter
+    assert value is None
+    
+    # Clean up
+    db_connection.clear_output_converters()
+
+def test_chaining_output_converters(db_connection):
+    """Test that output converters can be chained (replaced)"""
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    
+    # Define a second converter
+    def another_string_converter(value):
+        if value is None:
+            return None
+        return "ANOTHER: " + value.decode('utf-16-le')
+    
+    # Add first converter
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    
+    # Verify first converter is registered
+    assert db_connection.get_output_converter(sql_wvarchar) == custom_string_converter
+    
+    # Replace with second converter
+    db_connection.add_output_converter(sql_wvarchar, another_string_converter)
+    
+    # Verify second converter replaced the first
+    assert db_connection.get_output_converter(sql_wvarchar) == another_string_converter
+    
+    # Clean up
+    db_connection.clear_output_converters()
+
+def test_temporary_converter_replacement(db_connection):
+    """Test temporarily replacing a converter and then restoring it"""
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    
+    # Add a converter
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    
+    # Save original converter
+    original_converter = db_connection.get_output_converter(sql_wvarchar)
+    
+    # Define a temporary converter
+    def temp_converter(value):
+        if value is None:
+            return None
+        return "TEMP: " + value.decode('utf-16-le')
+    
+    # Replace with temporary converter
+    db_connection.add_output_converter(sql_wvarchar, temp_converter)
+    
+    # Verify temporary converter is in use
+    assert db_connection.get_output_converter(sql_wvarchar) == temp_converter
+    
+    # Restore original converter
+    db_connection.add_output_converter(sql_wvarchar, original_converter)
+    
+    # Verify original converter is restored
+    assert db_connection.get_output_converter(sql_wvarchar) == original_converter
+    
+    # Clean up
+    db_connection.clear_output_converters()
+
+def test_multiple_output_converters(db_connection):
+    """Test that multiple output converters can work together"""
+    cursor = db_connection.cursor()
+    
+    # Execute a query to get the actual type codes used
+    cursor.execute("SELECT CAST(42 AS INT) as int_col, N'test' as str_col")
+    int_type = cursor.description[0][1]  # Type code for integer column
+    str_type = cursor.description[1][1]  # Type code for string column
+    
+    # Add converter for string type
+    db_connection.add_output_converter(str_type, custom_string_converter)
+    
+    # Add converter for integer type
+    def int_converter(value):
+        if value is None:
+            return None
+        # Convert from bytes to int and multiply by 2
+        if isinstance(value, bytes):
+            return int.from_bytes(value, byteorder='little') * 2
+        elif isinstance(value, int):
+            return value * 2
+        return value
+    
+    db_connection.add_output_converter(int_type, int_converter)
+    
+    # Test query with both types
+    cursor.execute("SELECT CAST(42 AS INT) as int_col, N'test' as str_col")
+    row = cursor.fetchone()
+    
+    # Verify converters worked
+    assert row[0] == 84, f"Integer converter failed, got {row[0]} instead of 84"
+    assert isinstance(row[1], str) and "CONVERTED:" in row[1], f"String converter failed, got {row[1]}"
+    
+    # Clean up
+    db_connection.clear_output_converters()

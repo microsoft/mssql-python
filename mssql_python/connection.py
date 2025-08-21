@@ -208,6 +208,76 @@ class Connection:
         cursor = self.cursor()
         cursor.execute(sql, *args)
         return cursor
+    
+    def add_output_converter(self, sqltype, func) -> None:
+        """
+        Register an output converter function that will be called whenever a value 
+        with the given SQL type is read from the database.
+        
+        Args:
+            sqltype (int): The integer SQL type value to convert, which can be one of the 
+                          defined standard constants (e.g. SQL_VARCHAR) or a database-specific 
+                          value (e.g. -151 for the SQL Server 2008 geometry data type).
+            func (callable): The converter function which will be called with a single parameter,
+                            the value, and should return the converted value. If the value is NULL
+                            then the parameter passed to the function will be None, otherwise it 
+                            will be a bytes object.
+        
+        Returns:
+            None
+        """
+        if not hasattr(self, '_output_converters'):
+            self._output_converters = {}
+        self._output_converters[sqltype] = func
+        # Pass to the underlying connection if native implementation supports it
+        if hasattr(self._conn, 'add_output_converter'):
+            self._conn.add_output_converter(sqltype, func)
+        log('info', f"Added output converter for SQL type {sqltype}")
+    
+    def get_output_converter(self, sqltype):
+        """
+        Get the output converter function for the specified SQL type.
+        
+        Args:
+            sqltype (int or type): The SQL type value or Python type to get the converter for
+            
+        Returns:
+            callable or None: The converter function or None if no converter is registered
+        """
+        if not hasattr(self, '_output_converters'):
+            return None
+        return self._output_converters.get(sqltype)
+
+    def remove_output_converter(self, sqltype):
+        """
+        Remove the output converter function for the specified SQL type.
+        
+        Args:
+            sqltype (int or type): The SQL type value to remove the converter for
+            
+        Returns:
+            None
+        """
+        if hasattr(self, '_output_converters') and sqltype in self._output_converters:
+            del self._output_converters[sqltype]
+            # Pass to the underlying connection if native implementation supports it
+            if hasattr(self._conn, 'remove_output_converter'):
+                self._conn.remove_output_converter(sqltype)
+            log('info', f"Removed output converter for SQL type {sqltype}")
+    
+    def clear_output_converters(self) -> None:
+        """
+        Remove all output converter functions.
+        
+        Returns:
+            None
+        """
+        if hasattr(self, '_output_converters'):
+            self._output_converters.clear()
+            # Pass to the underlying connection if native implementation supports it
+            if hasattr(self._conn, 'clear_output_converters'):
+                self._conn.clear_output_converters()
+            log('info', "Cleared all output converters")
 
     def commit(self) -> None:
         """

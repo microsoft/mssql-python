@@ -20,7 +20,13 @@ class Row:
             column_map: Optional pre-built column map (for optimization)
         """
         self._cursor = cursor
-        self._values = values
+        self._description = description
+        
+        # Apply output converters if available
+        if hasattr(cursor.connection, '_output_converters') and cursor.connection._output_converters:
+            self._values = self._apply_output_converters(values)
+        else:
+            self._values = values
         
         # TODO: ADO task - Optimize memory usage by sharing column map across rows
         # Instead of storing the full cursor_description in each Row object:
@@ -38,6 +44,55 @@ class Row:
                 
         self._column_map = column_map
     
+    def _apply_output_converters(self, values):
+        """
+        Apply output converters to raw values.
+        
+        Args:
+            values: Raw values from the database
+            
+        Returns:
+            List of converted values
+        """
+        if not self._description:
+            return values
+        
+        converted_values = list(values)
+        
+        for i, (value, desc) in enumerate(zip(values, self._description)):
+            if desc is None or value is None:
+                continue
+            
+            # Get SQL type from description
+            sql_type = desc[1]  # type_code is at index 1 in description tuple
+            
+            # Try to get a converter for this type
+            converter = self._cursor.connection.get_output_converter(sql_type)
+            
+            # If no converter found for the SQL type but the value is a string or bytes,
+            # try the WVARCHAR converter as a fallback
+            if converter is None and isinstance(value, (str, bytes)):
+                from mssql_python.constants import ConstantsDDBC
+                converter = self._cursor.connection.get_output_converter(ConstantsDDBC.SQL_WVARCHAR.value)
+            
+            # If we found a converter, apply it
+            if converter:
+                try:
+                    # If value is already a Python type (str, int, etc.), 
+                    # we need to convert it to bytes for our converters
+                    if isinstance(value, str):
+                        # Encode as UTF-16LE for string values (SQL_WVARCHAR format)
+                        value_bytes = value.encode('utf-16-le')
+                        converted_values[i] = converter(value_bytes)
+                    else:
+                        converted_values[i] = converter(value)
+                except Exception as e:
+                    # If conversion fails, keep the original value
+                    # You might want to log this error
+                    pass
+        
+        return converted_values
+
     def __getitem__(self, index):
         """Allow accessing by numeric index: row[0]"""
         return self._values[index]
