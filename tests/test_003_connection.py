@@ -485,3 +485,87 @@ def test_connection_pooling_basic(conn_str):
 
     conn1.close()
     conn2.close()
+
+def test_getinfo_basic(db_connection):
+    """Test that getinfo() can retrieve basic driver and data source information."""
+    # Test SQL_DATA_SOURCE_NAME
+    data_source = db_connection.getinfo(1)  # SQL_DATA_SOURCE_NAME
+    assert data_source is not None, "Failed to retrieve data source name"
+    
+    # # Test SQL_DBMS_NAME
+    # dbms_name = db_connection.getinfo(17)  # SQL_DBMS_NAME
+    # assert dbms_name is not None, "Failed to retrieve DBMS name"
+    # assert "SQL Server" in dbms_name, "DBMS name should contain 'SQL Server'"
+    
+    # Test SQL_DRIVER_NAME
+    driver_name = db_connection.getinfo(6)  # SQL_DRIVER_NAME
+    assert driver_name is not None, "Failed to retrieve driver name"
+    assert "ODBC" in driver_name, "Driver name should contain 'ODBC'"
+
+def test_getinfo_return_types(db_connection):
+    """Test that getinfo() returns appropriate data types for different info types."""
+    # String type
+    dbms_ver = db_connection.getinfo(18)  # SQL_DBMS_VER
+    assert isinstance(dbms_ver, str), "DBMS version should be a string"
+    
+    # Integer type
+    max_columns = db_connection.getinfo(30)  # SQL_MAX_COLUMNS_IN_TABLE
+    assert isinstance(max_columns, int), "MAX_COLUMNS_IN_TABLE should be an integer"
+    
+    # Another integer type
+    max_tables = db_connection.getinfo(106)  # SQL_MAX_TABLES_IN_SELECT
+    assert isinstance(max_tables, int), "MAX_TABLES_IN_SELECT should be an integer"
+
+def test_getinfo_closed_connection(conn_str):
+    """Test that getinfo() raises an exception when called on a closed connection."""
+    from mssql_python import connect
+    
+    # Create and close a connection
+    conn = connect(conn_str)
+    conn.close()
+    
+    # Calling getinfo() on a closed connection should raise an exception
+    with pytest.raises(InterfaceError) as excinfo:
+        conn.getinfo(1)  # SQL_DATA_SOURCE_NAME
+    
+    assert "closed connection" in str(excinfo.value).lower(), "Exception message should mention closed connection"
+
+def test_getinfo_invalid_type(db_connection):
+    """Test that getinfo() handles invalid info types gracefully."""
+    # Using a very large number that's unlikely to be a valid info type
+    with pytest.raises(Exception):
+        db_connection.getinfo(999999)
+
+def test_getinfo_driver_version(db_connection):
+    """Test that getinfo() can retrieve the driver version."""
+    driver_ver = db_connection.getinfo(7)  # SQL_DRIVER_VER
+    assert driver_ver is not None, "Failed to retrieve driver version"
+    print(driver_ver)
+    
+    # Driver version should have a pattern like "nn.nn.nnnn.nn"
+    import re
+    assert re.match(r"\d+\.\d+(\.\d+)*", driver_ver), f"Driver version '{driver_ver}' not in expected format"
+
+def test_getinfo_odbc_version(db_connection):
+    """Test that getinfo() can retrieve the ODBC version."""
+    odbc_ver = db_connection.getinfo(10)  # SQL_DRIVER_ODBC_VER
+    assert odbc_ver is not None, "Failed to retrieve ODBC version"
+    print(odbc_ver)
+    
+    # ODBC version should have a pattern like "nn.nn" or "nn.nn.nnnn"
+    import re
+    assert re.match(r"\d+\.\d+(\.\d+)*", odbc_ver), f"ODBC version '{odbc_ver}' not in expected format"
+
+def test_getinfo_numeric_constants(db_connection):
+    """Test that getinfo() properly returns numeric constants."""
+    # SQL_MAX_CONCURRENT_ACTIVITIES should be a reasonable value > 0
+    max_activities = db_connection.getinfo(1)  # SQL_MAX_CONCURRENT_ACTIVITIES
+    assert isinstance(max_activities, (int, str)), "MAX_CONCURRENT_ACTIVITIES should be numeric or string"
+    
+    if isinstance(max_activities, int):
+        assert max_activities >= 1, "MAX_CONCURRENT_ACTIVITIES should be >= 1"
+    
+    # SQL_TXN_CAPABLE should indicate transaction capability
+    txn_capable = db_connection.getinfo(46)  # SQL_TXN_CAPABLE
+    assert isinstance(txn_capable, int), "TXN_CAPABLE should be an integer"
+    assert txn_capable > 0, "Driver should support transactions"

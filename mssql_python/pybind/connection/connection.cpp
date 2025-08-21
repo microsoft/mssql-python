@@ -315,3 +315,110 @@ SqlHandlePtr ConnectionHandle::allocStatementHandle() {
     }
     return _conn->allocStatementHandle();
 }
+
+py::object Connection::getInfo(SQLUSMALLINT infoType) const {
+    if (!_dbcHandle) {
+        ThrowStdException("Connection handle not allocated");
+    }
+    
+    LOG("Getting connection info for type {}", infoType);
+    
+    // For string results - allocate a buffer
+    char charBuffer[1024] = {0};
+    SQLSMALLINT stringLength = 0;
+    SQLRETURN ret;
+    
+    // First try to get the info as a string or binary data
+    ret = SQLGetInfo_ptr(_dbcHandle->get(), infoType, charBuffer, sizeof(charBuffer), &stringLength);
+    if (!SQL_SUCCEEDED(ret)) {
+        checkError(ret);
+    }
+    
+    // Determine return type based on the InfoType
+    // String types usually have InfoType > 10000
+    if (infoType > 10000 || 
+        infoType == SQL_DATA_SOURCE_NAME || 
+        infoType == SQL_DBMS_NAME || 
+        infoType == SQL_DBMS_VER || 
+        infoType == SQL_DRIVER_NAME || 
+        infoType == SQL_DRIVER_VER) {
+        // Return as string
+        return py::str(charBuffer);
+    } 
+    else if (infoType == SQL_DRIVER_ODBC_VER || 
+             infoType == SQL_SERVER_NAME) {
+        // Return as string
+        return py::str(charBuffer);
+    }
+    else {
+        // For numeric types, we need to interpret the buffer based on the expected return type
+        // Handle common numeric types
+        switch (infoType) {
+            // 16-bit unsigned integers
+            case SQL_MAX_CONCURRENT_ACTIVITIES:
+            case SQL_MAX_DRIVER_CONNECTIONS:
+            case SQL_ODBC_API_CONFORMANCE:
+            case SQL_ODBC_SQL_CONFORMANCE:
+            {
+                SQLUSMALLINT value = *reinterpret_cast<SQLUSMALLINT*>(charBuffer);
+                return py::int_(value);
+            }
+            
+            // 32-bit unsigned integers 
+            case SQL_ASYNC_MODE:
+            case SQL_GETDATA_EXTENSIONS:
+            case SQL_MAX_ASYNC_CONCURRENT_STATEMENTS:
+            case SQL_MAX_COLUMNS_IN_GROUP_BY:
+            case SQL_MAX_COLUMNS_IN_ORDER_BY:
+            case SQL_MAX_COLUMNS_IN_SELECT:
+            case SQL_MAX_COLUMNS_IN_TABLE:
+            case SQL_MAX_ROW_SIZE:
+            case SQL_MAX_TABLES_IN_SELECT:
+            case SQL_MAX_USER_NAME_LEN:
+            case SQL_NUMERIC_FUNCTIONS:
+            case SQL_STRING_FUNCTIONS:
+            case SQL_SYSTEM_FUNCTIONS:
+            case SQL_TIMEDATE_FUNCTIONS:
+            {
+                SQLUINTEGER value = *reinterpret_cast<SQLUINTEGER*>(charBuffer);
+                return py::int_(value);
+            }
+            
+            // Boolean flags (32-bit mask)
+            case SQL_AGGREGATE_FUNCTIONS:
+            case SQL_ALTER_TABLE:
+            case SQL_CATALOG_USAGE:
+            case SQL_DATETIME_LITERALS:
+            case SQL_INDEX_KEYWORDS:
+            case SQL_INSERT_STATEMENT:
+            case SQL_SCHEMA_USAGE:
+            case SQL_SQL_CONFORMANCE:
+            case SQL_SQL92_DATETIME_FUNCTIONS:
+            case SQL_SQL92_NUMERIC_VALUE_FUNCTIONS:
+            case SQL_SQL92_PREDICATES:
+            case SQL_SQL92_RELATIONAL_JOIN_OPERATORS:
+            case SQL_SQL92_STRING_FUNCTIONS:
+            case SQL_STATIC_CURSOR_ATTRIBUTES1:
+            case SQL_STATIC_CURSOR_ATTRIBUTES2:
+            {
+                SQLUINTEGER value = *reinterpret_cast<SQLUINTEGER*>(charBuffer);
+                return py::int_(value);
+            }
+            
+            // Handle any other types as integers
+            default:
+                SQLUINTEGER value = *reinterpret_cast<SQLUINTEGER*>(charBuffer);
+                return py::int_(value);
+        }
+    }
+    
+    // Default return in case nothing matched
+    return py::none();
+}
+
+py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {
+    if (!_conn) {
+        ThrowStdException("Connection object is not initialized");
+    }
+    return _conn->getInfo(infoType);
+}
