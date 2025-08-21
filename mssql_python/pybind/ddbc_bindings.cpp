@@ -123,6 +123,7 @@ SQLBindColFunc SQLBindCol_ptr = nullptr;
 SQLDescribeColFunc SQLDescribeCol_ptr = nullptr;
 SQLMoreResultsFunc SQLMoreResults_ptr = nullptr;
 SQLColAttributeFunc SQLColAttribute_ptr = nullptr;
+SQLGetTypeInfoFunc SQLGetTypeInfo_ptr = nullptr;
 
 // Transaction APIs
 SQLEndTranFunc SQLEndTran_ptr = nullptr;
@@ -779,6 +780,7 @@ DriverHandle LoadDriverOrThrowException() {
     SQLDescribeCol_ptr = GetFunctionPointer<SQLDescribeColFunc>(handle, "SQLDescribeColW");
     SQLMoreResults_ptr = GetFunctionPointer<SQLMoreResultsFunc>(handle, "SQLMoreResults");
     SQLColAttribute_ptr = GetFunctionPointer<SQLColAttributeFunc>(handle, "SQLColAttributeW");
+    SQLGetTypeInfo_ptr = GetFunctionPointer<SQLGetTypeInfoFunc>(handle, "SQLGetTypeInfoW");
 
     SQLEndTran_ptr = GetFunctionPointer<SQLEndTranFunc>(handle, "SQLEndTran");
     SQLDisconnect_ptr = GetFunctionPointer<SQLDisconnectFunc>(handle, "SQLDisconnect");
@@ -796,7 +798,8 @@ DriverHandle LoadDriverOrThrowException() {
         SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr &&
         SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr &&
         SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr &&
-        SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
+        SQLFreeStmt_ptr && SQLGetDiagRec_ptr &&
+        SQLGetTypeInfo_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver.");
@@ -859,6 +862,14 @@ void SqlHandle::free() {
         _handle = nullptr;
         // Don't log during destruction - it can cause segfaults during Python shutdown
     }
+}
+
+SQLRETURN SQLGetTypeInfo_Wrapper(SqlHandlePtr StatementHandle, SQLSMALLINT DataType) {
+    if (!SQLGetTypeInfo_ptr) {
+        ThrowStdException("SQLGetTypeInfo function not loaded");
+    }
+
+    return SQLGetTypeInfo_ptr(StatementHandle->get(), DataType);
 }
 
 // Helper function to check for driver errors
@@ -2579,7 +2590,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLSetStmtAttr", [](SqlHandlePtr stmt, SQLINTEGER attr, SQLPOINTER value) {
         return SQLSetStmtAttr_ptr(stmt->get(), attr, value, 0);
     }, "Set statement attributes");
-
+    m.def("DDBCSQLGetTypeInfo", &SQLGetTypeInfo_Wrapper, "Returns information about the data types that are supported by the data source",
+      py::arg("StatementHandle"), py::arg("DataType"));
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";

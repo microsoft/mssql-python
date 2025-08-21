@@ -723,6 +723,81 @@ class Cursor:
         
         self._reset_inputsizes()  # Reset input sizes after execution
 
+    def getTypeInfo(self, sqlType=None):
+        """
+        Executes SQLGetTypeInfo and creates a result set with information about 
+        the specified data type or all data types supported by the ODBC driver if not specified.
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        # SQL_ALL_TYPES = 0
+        sql_all_types = 0
+        
+        try:
+            if sqlType is None:
+                # Get information about all data types
+                ret = ddbc_bindings.DDBCSQLGetTypeInfo(self.hstmt, sql_all_types)
+            else:
+                # Get information about specified data type
+                ret = ddbc_bindings.DDBCSQLGetTypeInfo(self.hstmt, sqlType)
+    
+            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+    
+            # Initialize the description based on result set metadata
+            column_metadata = []
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+
+            # Initialize the description attribute with the column metadata
+            self._initialize_description(column_metadata)
+                
+            # Fetch all rows first
+            rows_data = []
+            ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+            
+            # If we have no rows, return an empty list
+            if not rows_data:
+                return []
+                
+            # Create a custom column map for our Row objects
+            column_map = {
+                'type_name': 0,
+                'data_type': 1,
+                'column_size': 2,
+                'literal_prefix': 3,
+                'literal_suffix': 4,
+                'create_params': 5,
+                'nullable': 6,
+                'case_sensitive': 7,
+                'searchable': 8,
+                'unsigned_attribute': 9,
+                'fixed_prec_scale': 10,
+                'auto_unique_value': 11,
+                'local_type_name': 12,
+                'minimum_scale': 13,
+                'maximum_scale': 14,
+                'sql_data_type': 15,
+                'sql_datetime_sub': 16,
+                'num_prec_radix': 17,
+                'interval_precision': 18
+            }
+            
+            # Create result rows with the custom column map
+            result_rows = []
+            for row_data in rows_data:
+                row = Row(self, self.description, row_data)
+                # Manually add the column map
+                row._column_map = column_map
+                result_rows.append(row)
+                
+            return result_rows
+        except Exception as e:
+            # Always reset the cursor on exception
+            self._reset_cursor()
+            raise e
+
     @staticmethod
     def _select_best_sample_value(column):
         """
