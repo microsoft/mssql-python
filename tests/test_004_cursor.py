@@ -2978,6 +2978,295 @@ def test_specialcolumns_cleanup(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Test cleanup failed: {e}")
 
+def test_statistics_setup(cursor, db_connection):
+    """Create test tables and indexes for statistics testing"""
+    try:
+        # Create a test schema for isolation
+        cursor.execute("IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'pytest_stats_schema') EXEC('CREATE SCHEMA pytest_stats_schema')")
+        
+        # Drop tables if they exist
+        cursor.execute("DROP TABLE IF EXISTS pytest_stats_schema.stats_test")
+        cursor.execute("DROP TABLE IF EXISTS pytest_stats_schema.empty_stats_test")
+        
+        # Create test table with various indexes
+        cursor.execute("""
+        CREATE TABLE pytest_stats_schema.stats_test (
+            id INT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            email VARCHAR(100) UNIQUE,
+            department VARCHAR(50) NOT NULL,
+            salary DECIMAL(10, 2) NULL,
+            hire_date DATE NOT NULL
+        )
+        """)
+        
+        # Create a non-unique index
+        cursor.execute("""
+        CREATE INDEX IX_stats_test_dept_date ON pytest_stats_schema.stats_test (department, hire_date)
+        """)
+        
+        # Create a unique index on multiple columns
+        cursor.execute("""
+        CREATE UNIQUE INDEX UX_stats_test_name_dept ON pytest_stats_schema.stats_test (name, department)
+        """)
+        
+        # Create an empty table for testing
+        cursor.execute("""
+        CREATE TABLE pytest_stats_schema.empty_stats_test (
+            id INT PRIMARY KEY,
+            data VARCHAR(100) NULL
+        )
+        """)
+        
+        db_connection.commit()
+    except Exception as e:
+        pytest.fail(f"Test setup failed: {e}")
+
+def test_statistics_basic(cursor, db_connection):
+    """Test basic functionality of statistics method"""
+    try:
+        # First set up our test tables
+        test_statistics_setup(cursor, db_connection)
+        
+        # Get statistics for the test table (all indexes)
+        stats = cursor.statistics(
+            table='stats_test', 
+            schema='pytest_stats_schema'
+        )
+        
+        # Verify we got results - should include PK, unique index on email, and non-unique index
+        assert stats is not None, "statistics() should return results"
+        assert len(stats) > 0, "statistics() should return at least one row"
+        
+        # Count different types of indexes
+        table_stats = [s for s in stats if s.type == 0]  # TABLE_STAT
+        indexes = [s for s in stats if s.type != 0]      # Actual indexes
+        
+        # We should have at least one table statistics row and multiple index rows
+        assert len(table_stats) <= 1, "Should have at most one TABLE_STAT row"
+        assert len(indexes) >= 3, "Should have at least 3 index entries (PK, unique email, non-unique dept+date)"
+        
+        # Verify column names in results
+        first_row = stats[0]
+        assert hasattr(first_row, 'table_name'), "Result should have table_name column"
+        assert hasattr(first_row, 'non_unique'), "Result should have non_unique column"
+        assert hasattr(first_row, 'index_name'), "Result should have index_name column"
+        assert hasattr(first_row, 'type'), "Result should have type column"
+        assert hasattr(first_row, 'column_name'), "Result should have column_name column"
+        
+        # Check that we can find the primary key
+        pk_found = False
+        for stat in stats:
+            if (hasattr(stat, 'index_name') and 
+                stat.index_name and 
+                'pk' in stat.index_name.lower()):
+                pk_found = True
+                break
+        
+        assert pk_found, "Primary key should be included in statistics results"
+        
+        # Check that we can find the unique index on email
+        email_index_found = False
+        for stat in stats:
+            if (hasattr(stat, 'column_name') and 
+                stat.column_name and 
+                stat.column_name.lower() == 'email' and
+                hasattr(stat, 'non_unique') and 
+                stat.non_unique == 0):  # 0 = unique
+                email_index_found = True
+                break
+        
+        assert email_index_found, "Unique index on email should be included in statistics results"
+        
+    finally:
+        # Clean up happens in test_statistics_cleanup
+        pass
+
+def test_statistics_unique_only(cursor, db_connection):
+    """Test statistics with unique=True to get only unique indexes"""
+    try:
+        # Get statistics for only unique indexes
+        stats = cursor.statistics(
+            table='stats_test', 
+            schema='pytest_stats_schema',
+            unique=True
+        )
+        
+        # Verify we got results
+        assert stats is not None, "statistics() with unique=True should return results"
+        assert len(stats) > 0, "statistics() with unique=True should return at least one row"
+        
+        # All index entries should be for unique indexes (non_unique = 0)
+        for stat in stats:
+            if hasattr(stat, 'type') and stat.type != 0:  # Skip TABLE_STAT entries
+                assert hasattr(stat, 'non_unique'), "Index entry should have non_unique column"
+                assert stat.non_unique == 0, "With unique=True, all indexes should be unique"
+        
+        # Count different types of indexes
+        indexes = [s for s in stats if hasattr(s, 'type') and s.type != 0]
+        
+        # We should have multiple unique indexes (PK, unique email, unique name+dept)
+        assert len(indexes) >= 3, "Should have at least 3 unique index entries"
+        
+    finally:
+        # Clean up happens in test_statistics_cleanup
+        pass
+
+def test_statistics_empty_table(cursor, db_connection):
+    """Test statistics on a table with no data (just schema)"""
+    try:
+        # Get statistics for the empty table
+        stats = cursor.statistics(
+            table='empty_stats_test', 
+            schema='pytest_stats_schema'
+        )
+        
+        # Should still return metadata about the primary key
+        assert stats is not None, "statistics() should return results even for empty table"
+        assert len(stats) > 0, "statistics() should return at least one row for empty table"
+        
+        # Check for primary key
+        pk_found = False
+        for stat in stats:
+            if (hasattr(stat, 'index_name') and 
+                stat.index_name and 
+                'pk' in stat.index_name.lower()):
+                pk_found = True
+                break
+        
+        assert pk_found, "Primary key should be included in statistics results for empty table"
+        
+    finally:
+        # Clean up happens in test_statistics_cleanup
+        pass
+
+def test_statistics_nonexistent(cursor):
+    """Test statistics with non-existent table name"""
+    # Use a table name that's highly unlikely to exist
+    stats = cursor.statistics('nonexistent_table_xyz123')
+    
+    # Should return empty list, not error
+    assert isinstance(stats, list), "Should return a list for non-existent table"
+    assert len(stats) == 0, "Should return empty list for non-existent table"
+
+def test_statistics_result_structure(cursor, db_connection):
+    """Test the complete structure of statistics result rows"""
+    try:
+        # Get statistics for the test table
+        stats = cursor.statistics(
+            table='stats_test', 
+            schema='pytest_stats_schema'
+        )
+        
+        # Verify we have results
+        assert len(stats) > 0, "Should have statistics results"
+        
+        # Find a row that's an actual index (not TABLE_STAT)
+        index_row = None
+        for stat in stats:
+            if hasattr(stat, 'type') and stat.type != 0:
+                index_row = stat
+                break
+                
+        assert index_row is not None, "Should have at least one index row"
+        
+        # Check for all required columns
+        required_columns = [
+            'table_cat', 'table_schem', 'table_name', 'non_unique',
+            'index_qualifier', 'index_name', 'type', 'ordinal_position',
+            'column_name', 'asc_or_desc', 'cardinality', 'pages', 
+            'filter_condition'
+        ]
+        
+        for column in required_columns:
+            assert hasattr(index_row, column), f"Result missing required column: {column}"
+            
+        # Check types of key columns
+        assert isinstance(index_row.table_name, str), "table_name should be a string"
+        assert isinstance(index_row.type, int), "type should be an integer"
+        
+        # Don't check the actual values of cardinality and pages as they may be NULL
+        # or driver-dependent, especially for empty tables
+        
+    finally:
+        # Clean up happens in test_statistics_cleanup
+        pass
+
+def test_statistics_catalog_filter(cursor, db_connection):
+    """Test statistics with catalog filter"""
+    try:
+        # Get current database name
+        cursor.execute("SELECT DB_NAME() AS current_db")
+        current_db = cursor.fetchone().current_db
+        
+        # Get statistics with current catalog
+        stats = cursor.statistics(
+            table='stats_test',
+            catalog=current_db,
+            schema='pytest_stats_schema'
+        )
+        
+        # Verify catalog filter worked
+        assert len(stats) > 0, "Should find statistics with correct catalog"
+        
+        # Verify catalog in results
+        for stat in stats:
+            if hasattr(stat, 'table_cat'):
+                assert stat.table_cat.lower() == current_db.lower(), "Wrong table catalog"
+            
+        # Get statistics with non-existent catalog
+        fake_stats = cursor.statistics(
+            table='stats_test',
+            catalog='nonexistent_db_xyz123',
+            schema='pytest_stats_schema'
+        )
+        assert len(fake_stats) == 0, "Should return empty list for non-existent catalog"
+        
+    finally:
+        # Clean up happens in test_statistics_cleanup
+        pass
+
+def test_statistics_with_quick_parameter(cursor, db_connection):
+    """Test statistics with quick parameter variations"""
+    try:
+        # Test with quick=True (default)
+        quick_stats = cursor.statistics(
+            table='stats_test', 
+            schema='pytest_stats_schema',
+            quick=True
+        )
+        
+        # Test with quick=False
+        thorough_stats = cursor.statistics(
+            table='stats_test', 
+            schema='pytest_stats_schema',
+            quick=False
+        )
+        
+        # Both should return results, but we can't guarantee behavior differences
+        # since it depends on the ODBC driver and database system
+        assert len(quick_stats) > 0, "quick=True should return results"
+        assert len(thorough_stats) > 0, "quick=False should return results"
+        
+        # Just verify that changing the parameter didn't cause errors
+        
+    finally:
+        # Clean up happens in test_statistics_cleanup
+        pass
+
+def test_statistics_cleanup(cursor, db_connection):
+    """Clean up test tables after testing"""
+    try:
+        # Drop all test tables
+        cursor.execute("DROP TABLE IF EXISTS pytest_stats_schema.stats_test")
+        cursor.execute("DROP TABLE IF EXISTS pytest_stats_schema.empty_stats_test")
+        
+        # Drop the test schema
+        cursor.execute("DROP SCHEMA IF EXISTS pytest_stats_schema")
+        db_connection.commit()
+    except Exception as e:
+        pytest.fail(f"Test cleanup failed: {e}")
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
