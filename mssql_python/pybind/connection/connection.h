@@ -42,6 +42,9 @@ public:
     // Allocate a new statement handle on this connection.
     SqlHandlePtr allocStatementHandle();
 
+    // Get information about the driver and data source
+    py::object getInfo(SQLUSMALLINT infoType) const;
+
 private:
     void allocateDbcHandle();
     void checkError(SQLRETURN ret) const;
@@ -66,6 +69,9 @@ public:
     void setAutocommit(bool enabled);
     bool getAutocommit() const;
     SqlHandlePtr allocStatementHandle();
+
+    // Get information about the driver and data source
+    py::object getInfo(SQLUSMALLINT infoType) const;
 
 private:
     std::shared_ptr<Connection> _conn;

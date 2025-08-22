@@ -185,6 +185,30 @@ class Connection:
         cursor = Cursor(self)
         self._cursors.add(cursor)  # Track the cursor
         return cursor
+    
+    def getinfo(self, info_type):
+        """
+        Return general information about the driver and data source.
+        
+        Args:
+            info_type (int): The type of information to return. See the ODBC
+                             SQLGetInfo documentation for the supported values.
+        
+        Returns:
+            The requested information. The type of the returned value depends
+            on the information requested. It will be a string, integer, or boolean.
+        
+        Raises:
+            DatabaseError: If there is an error retrieving the information.
+            InterfaceError: If the connection is closed.
+        """
+        if self._closed:
+            raise InterfaceError(
+                driver_error="Cannot get info on closed connection",
+                ddbc_error="Cannot get info on closed connection",
+            )
+        
+        return self._conn.get_info(info_type)
 
     def commit(self) -> None:
         """
