@@ -127,6 +127,7 @@ SQLGetTypeInfoFunc SQLGetTypeInfo_ptr = nullptr;
 SQLProceduresFunc SQLProcedures_ptr = nullptr;
 SQLForeignKeysFunc SQLForeignKeys_ptr = nullptr;
 SQLPrimaryKeysFunc SQLPrimaryKeys_ptr = nullptr;
+SQLSpecialColumnsFunc SQLSpecialColumns_ptr = nullptr;
 
 // Transaction APIs
 SQLEndTranFunc SQLEndTran_ptr = nullptr;
@@ -787,6 +788,7 @@ DriverHandle LoadDriverOrThrowException() {
     SQLProcedures_ptr = GetFunctionPointer<SQLProceduresFunc>(handle, "SQLProceduresW");
     SQLForeignKeys_ptr = GetFunctionPointer<SQLForeignKeysFunc>(handle, "SQLForeignKeysW");
     SQLPrimaryKeys_ptr = GetFunctionPointer<SQLPrimaryKeysFunc>(handle, "SQLPrimaryKeysW");
+    SQLSpecialColumns_ptr = GetFunctionPointer<SQLSpecialColumnsFunc>(handle, "SQLSpecialColumnsW");
 
     SQLEndTran_ptr = GetFunctionPointer<SQLEndTranFunc>(handle, "SQLEndTran");
     SQLDisconnect_ptr = GetFunctionPointer<SQLDisconnectFunc>(handle, "SQLDisconnect");
@@ -806,7 +808,7 @@ DriverHandle LoadDriverOrThrowException() {
         SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr &&
         SQLFreeStmt_ptr && SQLGetDiagRec_ptr &&
         SQLGetTypeInfo_ptr && SQLProcedures_ptr && SQLForeignKeys_ptr &&
-        SQLPrimaryKeys_ptr;
+        SQLPrimaryKeys_ptr && SQLSpecialColumns_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver.");
@@ -1558,6 +1560,50 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
         }
     }
     return SQL_SUCCESS;
+}
+
+SQLRETURN SQLSpecialColumns_wrap(SqlHandlePtr StatementHandle, 
+                              SQLSMALLINT identifierType,
+                              const std::wstring& catalog,
+                              const std::wstring& schema,
+                              const std::wstring& table,
+                              SQLSMALLINT scope,
+                              SQLSMALLINT nullable) {
+    if (!SQLSpecialColumns_ptr) {
+        ThrowStdException("SQLSpecialColumns function not loaded");
+    }
+
+#if defined(__APPLE__) || defined(__linux__)
+    // Unix implementation
+    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalog);
+    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
+    std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
+    
+    return SQLSpecialColumns_ptr(
+        StatementHandle->get(),
+        identifierType,
+        catalog.empty() ? nullptr : catalogBuf.data(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : schemaBuf.data(), 
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : tableBuf.data(), 
+        table.empty() ? 0 : SQL_NTS,
+        scope,
+        nullable);
+#else
+    // Windows implementation
+    return SQLSpecialColumns_ptr(
+        StatementHandle->get(),
+        identifierType,
+        catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(), 
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : (SQLWCHAR*)table.c_str(), 
+        table.empty() ? 0 : SQL_NTS,
+        scope,
+        nullable);
+#endif
 }
 
 // Wrap SQLFetch to retrieve rows
@@ -2745,6 +2791,17 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                                 const std::wstring& schema,
                                 const std::wstring& table) {
         return SQLPrimaryKeys_wrap(StatementHandle, catalog, schema, table);
+    });
+    m.def("DDBCSQLSpecialColumns", [](SqlHandlePtr StatementHandle, 
+                                SQLSMALLINT identifierType,
+                                const std::wstring& catalog,
+                                const std::wstring& schema,
+                                const std::wstring& table,
+                                SQLSMALLINT scope,
+                                SQLSMALLINT nullable) {
+        return SQLSpecialColumns_wrap(StatementHandle, 
+                                identifierType, catalog, schema, table, 
+                                scope, nullable);
     });
 
     // Add a version attribute

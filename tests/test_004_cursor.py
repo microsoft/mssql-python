@@ -2636,6 +2636,348 @@ def test_primarykeys_cleanup(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Test cleanup failed: {e}")
 
+def test_specialcolumns_setup(cursor, db_connection):
+    """Create test tables for testing rowIdColumns and rowVerColumns"""
+    try:
+        # Create a test schema for isolation
+        cursor.execute("IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'pytest_special_schema') EXEC('CREATE SCHEMA pytest_special_schema')")
+        
+        # Drop tables if they exist
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.rowid_test")
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.timestamp_test")
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.multiple_unique_test")
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.identity_test")
+        
+        # Create table with primary key (for rowIdColumns)
+        cursor.execute("""
+        CREATE TABLE pytest_special_schema.rowid_test (
+            id INT PRIMARY KEY,
+            name NVARCHAR(100) NOT NULL,
+            unique_col NVARCHAR(100) UNIQUE,
+            non_unique_col NVARCHAR(100)
+        )
+        """)
+        
+        # Create table with rowversion column (for rowVerColumns)
+        cursor.execute("""
+        CREATE TABLE pytest_special_schema.timestamp_test (
+            id INT PRIMARY KEY,
+            name NVARCHAR(100) NOT NULL,
+            last_updated ROWVERSION
+        )
+        """)
+        
+        # Create table with multiple unique identifiers
+        cursor.execute("""
+        CREATE TABLE pytest_special_schema.multiple_unique_test (
+            id INT NOT NULL,
+            code VARCHAR(10) NOT NULL,
+            email VARCHAR(100) UNIQUE,
+            order_number VARCHAR(20) UNIQUE,
+            CONSTRAINT PK_multiple_unique_test PRIMARY KEY (id, code)
+        )
+        """)
+        
+        # Create table with identity column
+        cursor.execute("""
+        CREATE TABLE pytest_special_schema.identity_test (
+            id INT IDENTITY(1,1) PRIMARY KEY,
+            name NVARCHAR(100) NOT NULL,
+            last_modified DATETIME DEFAULT GETDATE()
+        )
+        """)
+        
+        db_connection.commit()
+    except Exception as e:
+        pytest.fail(f"Test setup failed: {e}")
+
+def test_rowid_columns_basic(cursor, db_connection):
+    """Test basic functionality of rowIdColumns"""
+    try:
+        # Get row identifier columns for simple table
+        rowid_cols = cursor.rowIdColumns(
+            table='rowid_test', 
+            schema='pytest_special_schema'
+        )
+        
+        # LIMITATION: Only returns first column of primary key
+        assert len(rowid_cols) == 1, "Should find exactly one ROWID column (first column of PK)"
+        
+        # Verify column name in the results
+        col = rowid_cols[0]
+        assert col.column_name.lower() == 'id', "Primary key column should be included in ROWID results"
+        
+        # Verify result structure
+        assert hasattr(col, 'scope'), "Result should have scope column"
+        assert hasattr(col, 'column_name'), "Result should have column_name column"
+        assert hasattr(col, 'data_type'), "Result should have data_type column"
+        assert hasattr(col, 'type_name'), "Result should have type_name column"
+        assert hasattr(col, 'column_size'), "Result should have column_size column"
+        assert hasattr(col, 'buffer_length'), "Result should have buffer_length column"
+        assert hasattr(col, 'decimal_digits'), "Result should have decimal_digits column"
+        assert hasattr(col, 'pseudo_column'), "Result should have pseudo_column column"
+        
+        # The scope should be one of the valid values or NULL
+        assert col.scope in [0, 1, 2, None], f"Invalid scope value: {col.scope}"
+        
+        # The pseudo_column should be one of the valid values
+        assert col.pseudo_column in [0, 1, 2, None], f"Invalid pseudo_column value: {col.pseudo_column}"
+            
+    except Exception as e:
+        pytest.fail(f"rowIdColumns basic test failed: {e}")
+    finally:
+        # Clean up happens in test_specialcolumns_cleanup
+        pass
+
+def test_rowid_columns_identity(cursor, db_connection):
+    """Test rowIdColumns with identity column"""
+    try:
+        # Get row identifier columns for table with identity column
+        rowid_cols = cursor.rowIdColumns(
+            table='identity_test', 
+            schema='pytest_special_schema'
+        )
+        
+        # LIMITATION: Only returns the identity column if it's the primary key
+        assert len(rowid_cols) == 1, "Should find exactly one ROWID column (identity column as PK)"
+        
+        # Verify it's the identity column
+        col = rowid_cols[0]
+        assert col.column_name.lower() == 'id', "Identity column should be included as it's the PK"
+        
+    except Exception as e:
+        pytest.fail(f"rowIdColumns identity test failed: {e}")
+    finally:
+        # Clean up happens in test_specialcolumns_cleanup
+        pass
+
+def test_rowid_columns_composite(cursor, db_connection):
+    """Test rowIdColumns with composite primary key"""
+    try:
+        # Get row identifier columns for table with composite primary key
+        rowid_cols = cursor.rowIdColumns(
+            table='multiple_unique_test', 
+            schema='pytest_special_schema'
+        )
+        
+        # LIMITATION: Only returns first column of composite primary key
+        assert len(rowid_cols) >= 1, "Should find at least one ROWID column (first column of PK)"
+        
+        # Verify column names in the results - should be the first PK column
+        col_names = [col.column_name.lower() for col in rowid_cols]
+        assert 'id' in col_names, "First part of composite PK should be included"
+        
+        # LIMITATION: Other parts of the PK or unique constraints may not be included
+        if len(rowid_cols) > 1:
+            # If additional columns are returned, they should be valid
+            for col in rowid_cols:
+                assert col.column_name.lower() in ['id', 'code'], "Only PK columns should be returned"
+            
+    except Exception as e:
+        pytest.fail(f"rowIdColumns composite test failed: {e}")
+    finally:
+        # Clean up happens in test_specialcolumns_cleanup
+        pass
+
+def test_rowid_columns_nonexistent(cursor):
+    """Test rowIdColumns with non-existent table"""
+    # Use a table name that's highly unlikely to exist
+    rowid_cols = cursor.rowIdColumns('nonexistent_table_xyz123')
+    
+    # Should return empty list, not error
+    assert isinstance(rowid_cols, list), "Should return a list for non-existent table"
+    assert len(rowid_cols) == 0, "Should return empty list for non-existent table"
+
+def test_rowid_columns_nullable(cursor, db_connection):
+    """Test rowIdColumns with nullable parameter"""
+    try:
+        # First create a table with nullable unique column and non-nullable PK
+        cursor.execute("""
+        CREATE TABLE pytest_special_schema.nullable_test (
+            id INT PRIMARY KEY, -- PK can't be nullable in SQL Server
+            data NVARCHAR(100) NULL
+        )
+        """)
+        db_connection.commit()
+        
+        # Test with nullable=True (default)
+        rowid_cols_with_nullable = cursor.rowIdColumns(
+            table='nullable_test', 
+            schema='pytest_special_schema'
+        )
+        
+        # Verify PK column is included
+        assert len(rowid_cols_with_nullable) == 1, "Should return exactly one column (PK)"
+        assert rowid_cols_with_nullable[0].column_name.lower() == 'id', "PK column should be returned"
+        
+        # Test with nullable=False
+        rowid_cols_no_nullable = cursor.rowIdColumns(
+            table='nullable_test', 
+            schema='pytest_special_schema',
+            nullable=False
+        )
+        
+        # The behavior of SQLSpecialColumns with SQL_NO_NULLS is to only return
+        # non-nullable columns that uniquely identify a row, but SQL Server returns
+        # an empty set in this case - this is expected behavior
+        assert len(rowid_cols_no_nullable) == 0, "Should return empty list when nullable=False (ODBC API behavior)"
+        
+    except Exception as e:
+        pytest.fail(f"rowIdColumns nullable test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.nullable_test")
+        db_connection.commit()
+
+def test_rowver_columns_basic(cursor, db_connection):
+    """Test basic functionality of rowVerColumns"""
+    try:
+        # Get version columns from timestamp test table
+        rowver_cols = cursor.rowVerColumns(
+            table='timestamp_test', 
+            schema='pytest_special_schema'
+        )
+        
+        # Verify we got results
+        assert len(rowver_cols) == 1, "Should find exactly one ROWVER column"
+        
+        # Verify the column is the rowversion column
+        rowver_col = rowver_cols[0]
+        assert rowver_col.column_name.lower() == 'last_updated', "ROWVER column should be 'last_updated'"
+        assert rowver_col.type_name.lower() in ['rowversion', 'timestamp'], "ROWVER column should have rowversion or timestamp type"
+        
+        # Verify result structure - allowing for NULL values
+        assert hasattr(rowver_col, 'scope'), "Result should have scope column"
+        assert hasattr(rowver_col, 'column_name'), "Result should have column_name column"
+        assert hasattr(rowver_col, 'data_type'), "Result should have data_type column"
+        assert hasattr(rowver_col, 'type_name'), "Result should have type_name column"
+        assert hasattr(rowver_col, 'column_size'), "Result should have column_size column"
+        assert hasattr(rowver_col, 'buffer_length'), "Result should have buffer_length column"        
+        assert hasattr(rowver_col, 'decimal_digits'), "Result should have decimal_digits column"      
+        assert hasattr(rowver_col, 'pseudo_column'), "Result should have pseudo_column column"        
+        
+        # The scope should be one of the valid values or NULL
+        assert rowver_col.scope in [0, 1, 2, None], f"Invalid scope value: {rowver_col.scope}"
+        
+    except Exception as e:
+        pytest.fail(f"rowVerColumns basic test failed: {e}")
+    finally:
+        # Clean up happens in test_specialcolumns_cleanup
+        pass
+
+def test_rowver_columns_nonexistent(cursor):
+    """Test rowVerColumns with non-existent table"""
+    # Use a table name that's highly unlikely to exist
+    rowver_cols = cursor.rowVerColumns('nonexistent_table_xyz123')
+    
+    # Should return empty list, not error
+    assert isinstance(rowver_cols, list), "Should return a list for non-existent table"
+    assert len(rowver_cols) == 0, "Should return empty list for non-existent table"
+
+def test_rowver_columns_nullable(cursor, db_connection):
+    """Test rowVerColumns with nullable parameter (not expected to have effect)"""
+    try:
+        # First create a table with rowversion column
+        cursor.execute("""
+        CREATE TABLE pytest_special_schema.nullable_rowver_test (
+            id INT PRIMARY KEY,
+            ts ROWVERSION
+        )
+        """)
+        db_connection.commit()
+        
+        # Test with nullable=True (default)
+        rowver_cols_with_nullable = cursor.rowVerColumns(
+            table='nullable_rowver_test', 
+            schema='pytest_special_schema'
+        )
+        
+        # Verify rowversion column is included (rowversion can't be nullable)
+        assert len(rowver_cols_with_nullable) == 1, "Should find exactly one ROWVER column"
+        assert rowver_cols_with_nullable[0].column_name.lower() == 'ts', "ROWVERSION column should be included"
+        
+        # Test with nullable=False
+        rowver_cols_no_nullable = cursor.rowVerColumns(
+            table='nullable_rowver_test', 
+            schema='pytest_special_schema',
+            nullable=False
+        )
+        
+        # Verify rowversion column is still included
+        assert len(rowver_cols_no_nullable) == 1, "Should find exactly one ROWVER column"
+        assert rowver_cols_no_nullable[0].column_name.lower() == 'ts', "ROWVERSION column should be included even with nullable=False"
+        
+    except Exception as e:
+        pytest.fail(f"rowVerColumns nullable test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.nullable_rowver_test")
+        db_connection.commit()
+
+def test_specialcolumns_catalog_filter(cursor, db_connection):
+    """Test special columns with catalog filter"""
+    try:
+        # Get current database name
+        cursor.execute("SELECT DB_NAME() AS current_db")
+        current_db = cursor.fetchone().current_db
+        
+        # Test rowIdColumns with current catalog
+        rowid_cols = cursor.rowIdColumns(
+            table='rowid_test',
+            catalog=current_db,
+            schema='pytest_special_schema'
+        )
+        
+        # Verify catalog filter worked
+        assert len(rowid_cols) > 0, "Should find ROWID columns with correct catalog"
+        
+        # Test rowIdColumns with non-existent catalog
+        fake_rowid_cols = cursor.rowIdColumns(
+            table='rowid_test',
+            catalog='nonexistent_db_xyz123',
+            schema='pytest_special_schema'
+        )
+        assert len(fake_rowid_cols) == 0, "Should return empty list for non-existent catalog"
+        
+        # Test rowVerColumns with current catalog
+        rowver_cols = cursor.rowVerColumns(
+            table='timestamp_test',
+            catalog=current_db,
+            schema='pytest_special_schema'
+        )
+        
+        # Verify catalog filter worked
+        assert len(rowver_cols) > 0, "Should find ROWVER columns with correct catalog"
+        
+        # Test rowVerColumns with non-existent catalog
+        fake_rowver_cols = cursor.rowVerColumns(
+            table='timestamp_test',
+            catalog='nonexistent_db_xyz123',
+            schema='pytest_special_schema'
+        )
+        assert len(fake_rowver_cols) == 0, "Should return empty list for non-existent catalog"
+        
+    except Exception as e:
+        pytest.fail(f"Special columns catalog filter test failed: {e}")
+    finally:
+        # Clean up happens in test_specialcolumns_cleanup
+        pass
+
+def test_specialcolumns_cleanup(cursor, db_connection):
+    """Clean up test tables after testing"""
+    try:
+        # Drop all test tables
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.rowid_test")
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.timestamp_test")
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.multiple_unique_test")
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.identity_test")
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.nullable_unique_test")
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.nullable_timestamp_test")
+        
+        # Drop the test schema
+        cursor.execute("DROP SCHEMA IF EXISTS pytest_special_schema")
+        db_connection.commit()
+    except Exception as e:
+        pytest.fail(f"Test cleanup failed: {e}")
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
