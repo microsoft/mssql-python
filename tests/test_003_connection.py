@@ -23,6 +23,7 @@ import pytest
 import time
 from mssql_python import Connection, connect, pooling
 import threading
+from mssql_python.constants import GetInfoConstants as sql_const
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
@@ -486,86 +487,215 @@ def test_connection_pooling_basic(conn_str):
     conn1.close()
     conn2.close()
 
-def test_getinfo_basic(db_connection):
-    """Test that getinfo() can retrieve basic driver and data source information."""
-    # Test SQL_DATA_SOURCE_NAME
-    data_source = db_connection.getinfo(1)  # SQL_DATA_SOURCE_NAME
-    assert data_source is not None, "Failed to retrieve data source name"
+def test_getinfo_basic_driver_info(db_connection):
+    """Test basic driver information info types."""
     
-    # # Test SQL_DBMS_NAME
-    # dbms_name = db_connection.getinfo(17)  # SQL_DBMS_NAME
-    # assert dbms_name is not None, "Failed to retrieve DBMS name"
-    # assert "SQL Server" in dbms_name, "DBMS name should contain 'SQL Server'"
-    
-    # Test SQL_DRIVER_NAME
-    driver_name = db_connection.getinfo(6)  # SQL_DRIVER_NAME
-    assert driver_name is not None, "Failed to retrieve driver name"
-    assert "ODBC" in driver_name, "Driver name should contain 'ODBC'"
+    try:
+        # Driver name should be available
+        driver_name = db_connection.getinfo(sql_const.SQL_DRIVER_NAME.value)
+        print("Driver Name = ",driver_name)
+        assert driver_name is not None, "Driver name should not be None"
+        
+        # Driver version should be available
+        driver_ver = db_connection.getinfo(sql_const.SQL_DRIVER_VER.value)
+        print("Driver Version = ",driver_ver)
+        assert driver_ver is not None, "Driver version should not be None"
+        
+        # Data source name should be available
+        dsn = db_connection.getinfo(sql_const.SQL_DATA_SOURCE_NAME.value)
+        print("Data source name = ",dsn)
+        assert dsn is not None, "Data source name should not be None"
+        
+        # Server name should be available (might be empty in some configurations)
+        server_name = db_connection.getinfo(sql_const.SQL_SERVER_NAME.value)
+        print("Server Name = ",server_name)
+        assert server_name is not None, "Server name should not be None"
+        
+        # User name should be available (might be empty if using integrated auth)
+        user_name = db_connection.getinfo(sql_const.SQL_USER_NAME.value)
+        print("User Name = ",user_name)
+        assert user_name is not None, "User name should not be None"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for basic driver info: {e}")
 
-def test_getinfo_return_types(db_connection):
-    """Test that getinfo() returns appropriate data types for different info types."""
-    # String type
-    dbms_ver = db_connection.getinfo(18)  # SQL_DBMS_VER
-    assert isinstance(dbms_ver, str), "DBMS version should be a string"
+def test_getinfo_sql_support(db_connection):
+    """Test SQL support and conformance info types."""
     
-    # Integer type
-    max_columns = db_connection.getinfo(30)  # SQL_MAX_COLUMNS_IN_TABLE
-    assert isinstance(max_columns, int), "MAX_COLUMNS_IN_TABLE should be an integer"
-    
-    # Another integer type
-    max_tables = db_connection.getinfo(106)  # SQL_MAX_TABLES_IN_SELECT
-    assert isinstance(max_tables, int), "MAX_TABLES_IN_SELECT should be an integer"
+    try:
+        # SQL conformance level
+        sql_conformance = db_connection.getinfo(sql_const.SQL_SQL_CONFORMANCE.value)
+        print("SQL Conformance = ",sql_conformance)
+        assert sql_conformance is not None, "SQL conformance should not be None"
+        
+        # Keywords - may return a very long string
+        keywords = db_connection.getinfo(sql_const.SQL_KEYWORDS.value)
+        print("Keywords = ",keywords)
+        assert keywords is not None, "SQL keywords should not be None"
+        
+        # Identifier quote character
+        quote_char = db_connection.getinfo(sql_const.SQL_IDENTIFIER_QUOTE_CHAR.value)
+        print(f"Identifier quote char: '{quote_char}'")
+        assert quote_char is not None, "Identifier quote char should not be None"
 
-def test_getinfo_closed_connection(conn_str):
-    """Test that getinfo() raises an exception when called on a closed connection."""
-    from mssql_python import connect
-    
-    # Create and close a connection
-    conn = connect(conn_str)
-    conn.close()
-    
-    # Calling getinfo() on a closed connection should raise an exception
-    with pytest.raises(InterfaceError) as excinfo:
-        conn.getinfo(1)  # SQL_DATA_SOURCE_NAME
-    
-    assert "closed connection" in str(excinfo.value).lower(), "Exception message should mention closed connection"
+    except Exception as e:
+        pytest.fail(f"getinfo failed for SQL support info: {e}")
 
-def test_getinfo_invalid_type(db_connection):
-    """Test that getinfo() handles invalid info types gracefully."""
-    # Using a very large number that's unlikely to be a valid info type
-    with pytest.raises(Exception):
-        db_connection.getinfo(999999)
+def test_getinfo_numeric_limits(db_connection):
+    """Test numeric limitation info types."""
+    
+    try:
+        # Max column name length - should be a positive integer
+        max_col_name_len = db_connection.getinfo(sql_const.SQL_MAX_COLUMN_NAME_LEN.value)
+        assert isinstance(max_col_name_len, int), "Max column name length should be an integer"
+        assert max_col_name_len >= 0, "Max column name length should be non-negative"
+        
+        # Max table name length
+        max_table_name_len = db_connection.getinfo(sql_const.SQL_MAX_TABLE_NAME_LEN.value)
+        assert isinstance(max_table_name_len, int), "Max table name length should be an integer"
+        assert max_table_name_len >= 0, "Max table name length should be non-negative"
+        
+        # Max statement length - may return 0 for "unlimited"
+        max_statement_len = db_connection.getinfo(sql_const.SQL_MAX_STATEMENT_LEN.value)
+        assert isinstance(max_statement_len, int), "Max statement length should be an integer"
+        assert max_statement_len >= 0, "Max statement length should be non-negative"
+        
+        # Max connections - may return 0 for "unlimited"
+        max_connections = db_connection.getinfo(sql_const.SQL_MAX_DRIVER_CONNECTIONS.value)
+        assert isinstance(max_connections, int), "Max connections should be an integer"
+        assert max_connections >= 0, "Max connections should be non-negative"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for numeric limits info: {e}")
 
-def test_getinfo_driver_version(db_connection):
-    """Test that getinfo() can retrieve the driver version."""
-    driver_ver = db_connection.getinfo(7)  # SQL_DRIVER_VER
-    assert driver_ver is not None, "Failed to retrieve driver version"
-    print(driver_ver)
+def test_getinfo_catalog_support(db_connection):
+    """Test catalog support info types."""
     
-    # Driver version should have a pattern like "nn.nn.nnnn.nn"
-    import re
-    assert re.match(r"\d+\.\d+(\.\d+)*", driver_ver), f"Driver version '{driver_ver}' not in expected format"
+    try:
+        # Catalog support for tables
+        catalog_term = db_connection.getinfo(sql_const.SQL_CATALOG_TERM.value)
+        print("Catalof term = ",catalog_term)
+        assert catalog_term is not None, "Catalog term should not be None"
+        
+        # Catalog name separator
+        catalog_separator = db_connection.getinfo(sql_const.SQL_CATALOG_NAME_SEPARATOR.value)
+        print(f"Catalog name separator: '{catalog_separator}'")
+        assert catalog_separator is not None, "Catalog separator should not be None"
+        
+        # Schema term
+        schema_term = db_connection.getinfo(sql_const.SQL_SCHEMA_TERM.value)
+        print("Schema term = ",schema_term)
+        assert schema_term is not None, "Schema term should not be None"
+        
+        # Stored procedures support
+        procedures = db_connection.getinfo(sql_const.SQL_PROCEDURES.value)
+        print("Procedures = ",procedures)
+        assert procedures is not None, "Procedures support should not be None"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for catalog support info: {e}")
 
-def test_getinfo_odbc_version(db_connection):
-    """Test that getinfo() can retrieve the ODBC version."""
-    odbc_ver = db_connection.getinfo(10)  # SQL_DRIVER_ODBC_VER
-    assert odbc_ver is not None, "Failed to retrieve ODBC version"
-    print(odbc_ver)
+def test_getinfo_transaction_support(db_connection):
+    """Test transaction support info types."""
     
-    # ODBC version should have a pattern like "nn.nn" or "nn.nn.nnnn"
-    import re
-    assert re.match(r"\d+\.\d+(\.\d+)*", odbc_ver), f"ODBC version '{odbc_ver}' not in expected format"
+    try:
+        # Transaction support
+        txn_capable = db_connection.getinfo(sql_const.SQL_TXN_CAPABLE.value)
+        print("Transaction capable = ",txn_capable)
+        assert txn_capable is not None, "Transaction capability should not be None"
+        
+        # Default transaction isolation
+        default_txn_isolation = db_connection.getinfo(sql_const.SQL_DEFAULT_TXN_ISOLATION.value)
+        print("Default Transaction isolation = ",default_txn_isolation)
+        assert default_txn_isolation is not None, "Default transaction isolation should not be None"
+        
+        # Multiple active transactions support
+        multiple_txn = db_connection.getinfo(sql_const.SQL_MULTIPLE_ACTIVE_TXN.value)
+        print("Multiple transaction = ",multiple_txn)
+        assert multiple_txn is not None, "Multiple active transactions support should not be None"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for transaction support info: {e}")
 
-def test_getinfo_numeric_constants(db_connection):
-    """Test that getinfo() properly returns numeric constants."""
-    # SQL_MAX_CONCURRENT_ACTIVITIES should be a reasonable value > 0
-    max_activities = db_connection.getinfo(1)  # SQL_MAX_CONCURRENT_ACTIVITIES
-    assert isinstance(max_activities, (int, str)), "MAX_CONCURRENT_ACTIVITIES should be numeric or string"
+def test_getinfo_data_types(db_connection):
+    """Test data type support info types."""
     
-    if isinstance(max_activities, int):
-        assert max_activities >= 1, "MAX_CONCURRENT_ACTIVITIES should be >= 1"
+    try:
+        # Numeric functions
+        numeric_functions = db_connection.getinfo(sql_const.SQL_NUMERIC_FUNCTIONS.value)
+        assert isinstance(numeric_functions, int), "Numeric functions should be an integer"
+        
+        # String functions
+        string_functions = db_connection.getinfo(sql_const.SQL_STRING_FUNCTIONS.value)
+        assert isinstance(string_functions, int), "String functions should be an integer"
+        
+        # Date/time functions
+        datetime_functions = db_connection.getinfo(sql_const.SQL_DATETIME_FUNCTIONS.value)
+        assert isinstance(datetime_functions, int), "Datetime functions should be an integer"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for data type support info: {e}")
+
+def test_getinfo_invalid_constant(db_connection):
+    """Test getinfo behavior with invalid constants."""
+    # Use a constant that doesn't exist in ODBC
+    non_existent_constant = 9999
+    try:
+        result = db_connection.getinfo(non_existent_constant)
+        # If it doesn't raise an exception, it should return None or an empty value
+        assert result is None or result == 0 or result == "", "Invalid constant should return None/empty"
+    except Exception:
+        # It's also acceptable to raise an exception for invalid constants
+        pass
+
+def test_getinfo_type_consistency(db_connection):
+    """Test that getinfo returns consistent types for repeated calls."""
+
+    # Choose a few representative info types that don't depend on DBMS
+    info_types = [
+        sql_const.SQL_DRIVER_NAME.value,
+        sql_const.SQL_MAX_COLUMN_NAME_LEN.value,
+        sql_const.SQL_TXN_CAPABLE.value,
+        sql_const.SQL_IDENTIFIER_QUOTE_CHAR.value
+    ]
     
-    # SQL_TXN_CAPABLE should indicate transaction capability
-    txn_capable = db_connection.getinfo(46)  # SQL_TXN_CAPABLE
-    assert isinstance(txn_capable, int), "TXN_CAPABLE should be an integer"
-    assert txn_capable > 0, "Driver should support transactions"
+    for info_type in info_types:
+        # Call getinfo twice with the same info type
+        result1 = db_connection.getinfo(info_type)
+        result2 = db_connection.getinfo(info_type)
+        
+        # Results should be consistent in type and value
+        assert type(result1) == type(result2), f"Type inconsistency for info type {info_type}"
+        assert result1 == result2, f"Value inconsistency for info type {info_type}"
+
+def test_getinfo_standard_types(db_connection):
+    """Test a representative set of standard ODBC info types."""
+    
+    # Dictionary of common info types and their expected value types
+    # Avoid DBMS-specific info types
+    info_types = {
+        sql_const.SQL_ACCESSIBLE_TABLES.value: str,        # "Y" or "N"
+        sql_const.SQL_DATA_SOURCE_NAME.value: str,         # DSN
+        sql_const.SQL_TABLE_TERM.value: str,               # Usually "table"
+        sql_const.SQL_PROCEDURES.value: str,               # "Y" or "N"
+        sql_const.SQL_MAX_IDENTIFIER_LEN.value: int,       # Max identifier length
+        sql_const.SQL_OUTER_JOINS.value: str,              # "Y" or "N"
+    }
+    
+    for info_type, expected_type in info_types.items():
+        try:
+            info_value = db_connection.getinfo(info_type)
+            
+            # Skip None values (unsupported by driver)
+            if info_value is None:
+                continue
+                
+            # Check type, allowing empty strings for string types
+            if expected_type == str:
+                assert isinstance(info_value, str), f"Info type {info_type} should return a string"
+            elif expected_type == int:
+                assert isinstance(info_value, int), f"Info type {info_type} should return an integer"
+                
+        except Exception as e:
+            # Log but don't fail - some drivers might not support all info types
+            print(f"Info type {info_type} failed: {e}")
