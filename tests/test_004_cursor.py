@@ -2478,6 +2478,164 @@ def test_cleanup_schema(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Schema cleanup failed: {e}")
 
+def test_primarykeys_setup(cursor, db_connection):
+    """Create tables with primary keys for testing"""
+    try:
+        # Create a test schema for isolation
+        cursor.execute("IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'pytest_pk_schema') EXEC('CREATE SCHEMA pytest_pk_schema')")
+        
+        # Drop tables if they exist
+        cursor.execute("DROP TABLE IF EXISTS pytest_pk_schema.single_pk_test")
+        cursor.execute("DROP TABLE IF EXISTS pytest_pk_schema.composite_pk_test")
+        
+        # Create table with simple primary key
+        cursor.execute("""
+        CREATE TABLE pytest_pk_schema.single_pk_test (
+            id INT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            description VARCHAR(200) NULL
+        )
+        """)
+        
+        # Create table with composite primary key
+        cursor.execute("""
+        CREATE TABLE pytest_pk_schema.composite_pk_test (
+            dept_id INT NOT NULL,
+            emp_id INT NOT NULL,
+            hire_date DATE NOT NULL,
+            CONSTRAINT PK_composite_test PRIMARY KEY (dept_id, emp_id)
+        )
+        """)
+        
+        db_connection.commit()
+    except Exception as e:
+        pytest.fail(f"Test setup failed: {e}")
+
+def test_primarykeys_simple(cursor, db_connection):
+    """Test primaryKeys returns information about a simple primary key"""
+    try:
+        # First set up our test tables
+        test_primarykeys_setup(cursor, db_connection)
+        
+        # Get primary key information
+        pks = cursor.primaryKeys('single_pk_test', schema='pytest_pk_schema')
+        
+        # Verify we got results
+        assert len(pks) == 1, "Should find exactly one primary key column"
+        pk = pks[0]
+        
+        # Verify primary key details
+        assert pk.table_name.lower() == 'single_pk_test', "Wrong table name"
+        assert pk.column_name.lower() == 'id', "Wrong primary key column name"
+        assert pk.key_seq == 1, "Wrong key sequence number"
+        assert pk.pk_name is not None, "Primary key name should not be None"
+        
+    finally:
+        # Clean up happens in test_primarykeys_cleanup
+        pass
+
+def test_primarykeys_composite(cursor, db_connection):
+    """Test primaryKeys with a composite primary key"""
+    try:
+        # Get primary key information
+        pks = cursor.primaryKeys('composite_pk_test', schema='pytest_pk_schema')
+        
+        # Verify we got results for both columns
+        assert len(pks) == 2, "Should find two primary key columns"
+        
+        # Sort by key_seq to ensure consistent order
+        pks = sorted(pks, key=lambda row: row.key_seq)
+        
+        # Verify first column
+        assert pks[0].table_name.lower() == 'composite_pk_test', "Wrong table name"
+        assert pks[0].column_name.lower() == 'dept_id', "Wrong first primary key column name"
+        assert pks[0].key_seq == 1, "Wrong key sequence number for first column"
+        
+        # Verify second column
+        assert pks[1].table_name.lower() == 'composite_pk_test', "Wrong table name"
+        assert pks[1].column_name.lower() == 'emp_id', "Wrong second primary key column name"
+        assert pks[1].key_seq == 2, "Wrong key sequence number for second column"
+        
+        # Both should have the same PK name
+        assert pks[0].pk_name == pks[1].pk_name, "Both columns should have the same primary key name"
+        
+    finally:
+        # Clean up happens in test_primarykeys_cleanup
+        pass
+
+def test_primarykeys_column_info(cursor, db_connection):
+    """Test that primaryKeys returns correct column information"""
+    try:
+        # Get primary key information
+        pks = cursor.primaryKeys('single_pk_test', schema='pytest_pk_schema')
+        
+        # Verify column information
+        assert len(pks) == 1, "Should find exactly one primary key column"
+        pk = pks[0]
+        
+        # Verify expected columns are present
+        assert hasattr(pk, 'table_cat'), "Result should have table_cat column"
+        assert hasattr(pk, 'table_schem'), "Result should have table_schem column"
+        assert hasattr(pk, 'table_name'), "Result should have table_name column"
+        assert hasattr(pk, 'column_name'), "Result should have column_name column"
+        assert hasattr(pk, 'key_seq'), "Result should have key_seq column"
+        assert hasattr(pk, 'pk_name'), "Result should have pk_name column"
+        
+        # Verify values are correct
+        assert pk.table_schem.lower() == 'pytest_pk_schema', "Wrong schema name"
+        assert pk.table_name.lower() == 'single_pk_test', "Wrong table name"
+        assert pk.column_name.lower() == 'id', "Wrong column name"
+        assert isinstance(pk.key_seq, int), "key_seq should be an integer"
+        
+    finally:
+        # Clean up happens in test_primarykeys_cleanup
+        pass
+
+def test_primarykeys_nonexistent(cursor):
+    """Test primaryKeys() with non-existent table name"""
+    # Use a table name that's highly unlikely to exist
+    pks = cursor.primaryKeys('nonexistent_table_xyz123')
+    
+    # Should return empty list, not error
+    assert isinstance(pks, list), "Should return a list for non-existent table"
+    assert len(pks) == 0, "Should return empty list for non-existent table"
+
+def test_primarykeys_catalog_filter(cursor, db_connection):
+    """Test primaryKeys() with catalog filter"""
+    try:
+        # Get current database name
+        cursor.execute("SELECT DB_NAME() AS current_db")
+        current_db = cursor.fetchone().current_db
+        
+        # Get primary keys with current catalog
+        pks = cursor.primaryKeys('single_pk_test', catalog=current_db, schema='pytest_pk_schema')
+        
+        # Verify catalog filter worked
+        assert len(pks) == 1, "Should find exactly one primary key column"
+        pk = pks[0]
+        assert pk.table_cat == current_db, f"Expected catalog {current_db}, got {pk.table_cat}"
+            
+        # Get primary keys with non-existent catalog
+        fake_pks = cursor.primaryKeys('single_pk_test', catalog='nonexistent_db_xyz123')
+        assert len(fake_pks) == 0, "Should return empty list for non-existent catalog"
+        
+    finally:
+        # Clean up happens in test_primarykeys_cleanup
+        pass
+
+def test_primarykeys_cleanup(cursor, db_connection):
+    """Clean up test tables after testing"""
+    try:
+        # Drop all test tables
+        cursor.execute("DROP TABLE IF EXISTS pytest_pk_schema.single_pk_test")
+        cursor.execute("DROP TABLE IF EXISTS pytest_pk_schema.composite_pk_test")
+        
+        # Drop the test schema
+        cursor.execute("DROP SCHEMA IF EXISTS pytest_pk_schema")
+        db_connection.commit()
+    except Exception as e:
+        pytest.fail(f"Test cleanup failed: {e}")
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
