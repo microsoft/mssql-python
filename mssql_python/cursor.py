@@ -1348,6 +1348,122 @@ class Cursor:
             result_rows.append(row)
         
         return result_rows
+    
+    def columns(self, table=None, catalog=None, schema=None, column=None):
+        """
+        Creates a result set of column information in the specified tables 
+        using the SQLColumns function.
+        
+        Args:
+            table (str, optional): The table name pattern. Default is None (all tables).
+            catalog (str, optional): The catalog name. Default is None.
+            schema (str, optional): The schema name pattern. Default is None.
+            column (str, optional): The column name pattern. Default is None (all columns).
+        
+        Returns:
+            list: A list of Row objects containing column information with these columns:
+                  - table_cat: Catalog name
+                  - table_schem: Schema name
+                  - table_name: Table name
+                  - column_name: Column name
+                  - data_type: SQL data type code
+                  - type_name: Data source-dependent type name
+                  - column_size: Column size
+                  - buffer_length: Transfer size in bytes
+                  - decimal_digits: Number of decimal digits
+                  - num_prec_radix: Numeric precision radix
+                  - nullable: Is NULL allowed
+                  - remarks: Comments about column
+                  - column_def: Default value
+                  - sql_data_type: SQL data type
+                  - sql_datetime_sub: Datetime/interval subcode
+                  - char_octet_length: Maximum length in bytes of a character/binary type
+                  - ordinal_position: Column sequence number (starting with 1)
+                  - is_nullable: "NO" means column does not allow NULL, "YES" means it does
+        
+        Example:
+            # Get all columns in table 'Customers'
+            columns = cursor.columns(table='Customers')
+            
+            # Get all columns in table 'Customers' in schema 'dbo'
+            columns = cursor.columns(table='Customers', schema='dbo')
+            
+            # Get column named 'CustomerID' in any table
+            columns = cursor.columns(column='CustomerID')
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        # Convert None values to empty strings as required by ODBC API
+        catalog_p = "" if catalog is None else catalog
+        schema_p = "" if schema is None else schema
+        table_p = "" if table is None else table
+        column_p = "" if column is None else column
+        
+        # Call the SQLColumns function
+        retcode = ddbc_bindings.DDBCSQLColumns(
+            self.hstmt,
+            catalog_p,
+            schema_p,
+            table_p,
+            column_p
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Initialize description from column metadata
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except Exception:
+            # If describe fails, create a manual description for the standard columns
+            column_types = [str, str, str, str, int, str, int, int, int, int, int, str, str, int, int, int, int, str]
+            self.description = [
+                ("table_cat", column_types[0], None, 128, 128, 0, True),
+                ("table_schem", column_types[1], None, 128, 128, 0, True),
+                ("table_name", column_types[2], None, 128, 128, 0, False),
+                ("column_name", column_types[3], None, 128, 128, 0, False),
+                ("data_type", column_types[4], None, 10, 10, 0, False),
+                ("type_name", column_types[5], None, 128, 128, 0, False),
+                ("column_size", column_types[6], None, 10, 10, 0, True),
+                ("buffer_length", column_types[7], None, 10, 10, 0, True),
+                ("decimal_digits", column_types[8], None, 10, 10, 0, True),
+                ("num_prec_radix", column_types[9], None, 10, 10, 0, True),
+                ("nullable", column_types[10], None, 10, 10, 0, False),
+                ("remarks", column_types[11], None, 254, 254, 0, True),
+                ("column_def", column_types[12], None, 254, 254, 0, True),
+                ("sql_data_type", column_types[13], None, 10, 10, 0, False),
+                ("sql_datetime_sub", column_types[14], None, 10, 10, 0, True),
+                ("char_octet_length", column_types[15], None, 10, 10, 0, True),
+                ("ordinal_position", column_types[16], None, 10, 10, 0, False),
+                ("is_nullable", column_types[17], None, 254, 254, 0, True)
+            ]
+        
+        # Define column names in ODBC standard order
+        column_names = [
+            "table_cat", "table_schem", "table_name", "column_name", "data_type",
+            "type_name", "column_size", "buffer_length", "decimal_digits", 
+            "num_prec_radix", "nullable", "remarks", "column_def", "sql_data_type",
+            "sql_datetime_sub", "char_octet_length", "ordinal_position", "is_nullable"
+        ]
+        
+        # Fetch all rows
+        rows_data = []
+        ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+        
+        # Create a column map for attribute access
+        column_map = {name: i for i, name in enumerate(column_names)}
+        
+        # Create Row objects with the column map
+        result_rows = []
+        for row_data in rows_data:
+            row = Row(self, self.description, row_data)
+            row._column_map = column_map
+            result_rows.append(row)
+        
+        return result_rows
 
     @staticmethod
     def _select_best_sample_value(column):
