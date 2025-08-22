@@ -2141,6 +2141,323 @@ def test_procedures_result_set_info(cursor, db_connection):
         cursor.execute("DROP PROCEDURE IF EXISTS #test_multiple_results")
         db_connection.commit()
 
+def test_foreignkeys_setup(cursor, db_connection):
+    """Create tables with foreign key relationships for testing"""
+    try:
+        # Create a test schema for isolation
+        cursor.execute("IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'pytest_fk_schema') EXEC('CREATE SCHEMA pytest_fk_schema')")
+        
+        # Drop tables if they exist (in reverse order to avoid constraint conflicts)
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.orders")
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.customers")
+        
+        # Create parent table
+        cursor.execute("""
+        CREATE TABLE pytest_fk_schema.customers (
+            customer_id INT PRIMARY KEY,
+            customer_name VARCHAR(100) NOT NULL
+        )
+        """)
+        
+        # Create child table with foreign key
+        cursor.execute("""
+        CREATE TABLE pytest_fk_schema.orders (
+            order_id INT PRIMARY KEY,
+            order_date DATETIME NOT NULL,
+            customer_id INT NOT NULL,
+            total_amount DECIMAL(10, 2) NOT NULL,
+            CONSTRAINT FK_Orders_Customers FOREIGN KEY (customer_id)
+                REFERENCES pytest_fk_schema.customers (customer_id)
+        )
+        """)
+        
+        # Insert test data
+        cursor.execute("""
+        INSERT INTO pytest_fk_schema.customers (customer_id, customer_name)
+        VALUES (1, 'Test Customer 1'), (2, 'Test Customer 2')
+        """)
+        
+        cursor.execute("""
+        INSERT INTO pytest_fk_schema.orders (order_id, order_date, customer_id, total_amount)
+        VALUES (101, GETDATE(), 1, 150.00), (102, GETDATE(), 2, 250.50)
+        """)
+        
+        db_connection.commit()
+    except Exception as e:
+        pytest.fail(f"Test setup failed: {e}")
+
+def test_foreignkeys_all(cursor, db_connection):
+    """Test getting all foreign keys"""
+    try:
+        # First set up our test tables
+        test_foreignkeys_setup(cursor, db_connection)
+        
+        # Get all foreign keys
+        fks = cursor.foreignKeys(table='orders', schema='pytest_fk_schema')
+        
+        # Verify we got results
+        assert fks is not None, "foreignKeys() should return results"
+        assert len(fks) > 0, "foreignKeys() should return at least one foreign key"
+        
+        # Verify our test FK is in the results
+        # Search case-insensitively since the database might return different case
+        found_test_fk = False
+        for fk in fks:
+            if (fk.fktable_name.lower() == 'orders' and
+                fk.pktable_name.lower() == 'customers'):
+                found_test_fk = True
+                break
+                
+        assert found_test_fk, "Could not find the test foreign key in results"
+        
+    finally:
+        # Clean up
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.orders")
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.customers")
+        db_connection.commit()
+
+def test_foreignkeys_specific_table(cursor, db_connection):
+    """Test getting foreign keys for a specific table"""
+    try:
+        # First set up our test tables
+        test_foreignkeys_setup(cursor, db_connection)
+        
+        # Get foreign keys for the orders table
+        fks = cursor.foreignKeys(table='orders', schema='pytest_fk_schema')
+        
+        # Verify we got results
+        assert len(fks) == 1, "Should find exactly one foreign key for orders table"
+        
+        # Verify the foreign key details
+        fk = fks[0]
+        assert fk.fktable_name.lower() == 'orders', "Wrong foreign key table name"
+        assert fk.pktable_name.lower() == 'customers', "Wrong primary key table name"
+        assert fk.fkcolumn_name.lower() == 'customer_id', "Wrong foreign key column name"
+        assert fk.pkcolumn_name.lower() == 'customer_id', "Wrong primary key column name"
+        
+    finally:
+        # Clean up
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.orders")
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.customers")
+        db_connection.commit()
+
+def test_foreignkeys_specific_foreign_table(cursor, db_connection):
+    """Test getting foreign keys that reference a specific table"""
+    try:
+        # First set up our test tables
+        test_foreignkeys_setup(cursor, db_connection)
+        
+        # Get foreign keys that reference the customers table
+        fks = cursor.foreignKeys(foreignTable='customers', foreignSchema='pytest_fk_schema')
+        
+        # Verify we got results
+        assert len(fks) > 0, "Should find at least one foreign key referencing customers table"
+        
+        # Verify our test FK is in the results
+        found_test_fk = False
+        for fk in fks:
+            if (fk.fktable_name.lower() == 'orders' and
+                fk.pktable_name.lower() == 'customers'):
+                found_test_fk = True
+                break
+                
+        assert found_test_fk, "Could not find the test foreign key in results"
+        
+    finally:
+        # Clean up
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.orders")
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.customers")
+        db_connection.commit()
+
+def test_foreignkeys_both_tables(cursor, db_connection):
+    """Test getting foreign keys with both table and foreignTable specified"""
+    try:
+        # First set up our test tables
+        test_foreignkeys_setup(cursor, db_connection)
+        
+        # Get foreign keys between the two tables
+        fks = cursor.foreignKeys(
+            table='orders', schema='pytest_fk_schema',
+            foreignTable='customers', foreignSchema='pytest_fk_schema'
+        )
+        
+        # Verify we got results
+        assert len(fks) == 1, "Should find exactly one foreign key between specified tables"
+        
+        # Verify the foreign key details
+        fk = fks[0]
+        assert fk.fktable_name.lower() == 'orders', "Wrong foreign key table name"
+        assert fk.pktable_name.lower() == 'customers', "Wrong primary key table name"
+        assert fk.fkcolumn_name.lower() == 'customer_id', "Wrong foreign key column name"
+        assert fk.pkcolumn_name.lower() == 'customer_id', "Wrong primary key column name"
+        
+    finally:
+        # Clean up
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.orders")
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.customers")
+        db_connection.commit()
+
+def test_foreignkeys_nonexistent(cursor):
+    """Test foreignKeys() with non-existent table name"""
+    # Use a table name that's highly unlikely to exist
+    fks = cursor.foreignKeys(table='nonexistent_table_xyz123')
+    
+    # Should return empty list, not error
+    assert isinstance(fks, list), "Should return a list for non-existent table"
+    assert len(fks) == 0, "Should return empty list for non-existent table"
+
+def test_foreignkeys_catalog_schema(cursor, db_connection):
+    """Test foreignKeys() with catalog and schema filters"""
+    try:
+        # First set up our test tables
+        test_foreignkeys_setup(cursor, db_connection)
+        
+        # Get current database name
+        cursor.execute("SELECT DB_NAME() AS current_db")
+        row = cursor.fetchone()
+        current_db = row.current_db
+        
+        # Get foreign keys with current catalog and pytest schema
+        fks = cursor.foreignKeys(
+            table='orders',
+            catalog=current_db,
+            schema='pytest_fk_schema'
+        )
+        
+        # Verify we got results
+        assert len(fks) > 0, "Should find foreign keys with correct catalog/schema"
+        
+        # Verify catalog/schema in results
+        for fk in fks:
+            assert fk.fktable_cat == current_db, "Wrong foreign key table catalog"
+            assert fk.fktable_schem == 'pytest_fk_schema', "Wrong foreign key table schema"
+                
+    finally:
+        # Clean up
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.orders")
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.customers")
+        db_connection.commit()
+
+def test_foreignkeys_result_structure(cursor, db_connection):
+    """Test the structure of foreignKeys result rows"""
+    try:
+        # First set up our test tables
+        test_foreignkeys_setup(cursor, db_connection)
+        
+        # Get foreign keys for the orders table
+        fks = cursor.foreignKeys(table='orders', schema='pytest_fk_schema')
+        
+        # Verify we got results
+        assert len(fks) > 0, "Should find at least one foreign key"
+        
+        # Check for all required columns in the result
+        first_row = fks[0]
+        required_columns = [
+            'pktable_cat', 'pktable_schem', 'pktable_name', 'pkcolumn_name',
+            'fktable_cat', 'fktable_schem', 'fktable_name', 'fkcolumn_name',
+            'key_seq', 'update_rule', 'delete_rule', 'fk_name', 'pk_name',
+            'deferrability'
+        ]
+        
+        for column in required_columns:
+            assert hasattr(first_row, column), f"Result missing required column: {column}"
+            
+        # Verify specific values
+        assert first_row.fktable_name.lower() == 'orders', "Wrong foreign key table name"
+        assert first_row.pktable_name.lower() == 'customers', "Wrong primary key table name"
+        assert first_row.fkcolumn_name.lower() == 'customer_id', "Wrong foreign key column name"
+        assert first_row.pkcolumn_name.lower() == 'customer_id', "Wrong primary key column name"
+        assert first_row.key_seq == 1, "Wrong key sequence number"
+        assert first_row.fk_name is not None, "Foreign key name should not be None"
+        assert first_row.pk_name is not None, "Primary key name should not be None"
+        
+    finally:
+        # Clean up
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.orders")
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.customers")
+        db_connection.commit()
+
+def test_foreignkeys_multiple_column_fk(cursor, db_connection):
+    """Test foreignKeys() with a multi-column foreign key"""
+    try:
+        # First create the schema if needed
+        cursor.execute("IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'pytest_fk_schema') EXEC('CREATE SCHEMA pytest_fk_schema')")
+        
+        # Drop tables if they exist (in reverse order to avoid constraint conflicts)
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.order_details")
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.product_variants")
+        
+        # Create parent table with composite primary key
+        cursor.execute("""
+        CREATE TABLE pytest_fk_schema.product_variants (
+            product_id INT NOT NULL,
+            variant_id INT NOT NULL,
+            variant_name VARCHAR(100) NOT NULL,
+            PRIMARY KEY (product_id, variant_id)
+        )
+        """)
+        
+        # Create child table with composite foreign key
+        cursor.execute("""
+        CREATE TABLE pytest_fk_schema.order_details (
+            order_id INT NOT NULL,
+            product_id INT NOT NULL,
+            variant_id INT NOT NULL,
+            quantity INT NOT NULL,
+            PRIMARY KEY (order_id, product_id, variant_id),
+            CONSTRAINT FK_OrderDetails_ProductVariants FOREIGN KEY (product_id, variant_id)
+                REFERENCES pytest_fk_schema.product_variants (product_id, variant_id)
+        )
+        """)
+        
+        db_connection.commit()
+        
+        # Get foreign keys for the order_details table
+        fks = cursor.foreignKeys(table='order_details', schema='pytest_fk_schema')
+        
+        # Verify we got results
+        assert len(fks) == 2, "Should find two rows for the composite foreign key (one per column)"
+        
+        # Group by key_seq to verify both columns
+        fk_columns = {}
+        for fk in fks:
+            fk_columns[fk.key_seq] = {
+                'pkcolumn': fk.pkcolumn_name.lower(),
+                'fkcolumn': fk.fkcolumn_name.lower()
+            }
+        
+        # Verify both columns are present
+        assert 1 in fk_columns, "First column of composite key missing"
+        assert 2 in fk_columns, "Second column of composite key missing"
+        
+        # Verify column mappings
+        assert fk_columns[1]['pkcolumn'] == 'product_id', "Wrong primary key column 1"
+        assert fk_columns[1]['fkcolumn'] == 'product_id', "Wrong foreign key column 1"
+        assert fk_columns[2]['pkcolumn'] == 'variant_id', "Wrong primary key column 2"
+        assert fk_columns[2]['fkcolumn'] == 'variant_id', "Wrong foreign key column 2"
+        
+    finally:
+        # Clean up
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.order_details")
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.product_variants")
+        db_connection.commit()
+
+def test_cleanup_schema(cursor, db_connection):
+    """Clean up the test schema after all tests"""
+    try:
+        # Make sure no tables remain
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.orders")
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.customers")
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.order_details")
+        cursor.execute("DROP TABLE IF EXISTS pytest_fk_schema.product_variants")
+        db_connection.commit()
+        
+        # Drop the schema
+        cursor.execute("DROP SCHEMA IF EXISTS pytest_fk_schema")
+        db_connection.commit()
+    except Exception as e:
+        pytest.fail(f"Schema cleanup failed: {e}")
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:

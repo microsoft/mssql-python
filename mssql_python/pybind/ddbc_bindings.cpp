@@ -125,6 +125,7 @@ SQLMoreResultsFunc SQLMoreResults_ptr = nullptr;
 SQLColAttributeFunc SQLColAttribute_ptr = nullptr;
 SQLGetTypeInfoFunc SQLGetTypeInfo_ptr = nullptr;
 SQLProceduresFunc SQLProcedures_ptr = nullptr;
+SQLForeignKeysFunc SQLForeignKeys_ptr = nullptr;
 
 // Transaction APIs
 SQLEndTranFunc SQLEndTran_ptr = nullptr;
@@ -783,6 +784,7 @@ DriverHandle LoadDriverOrThrowException() {
     SQLColAttribute_ptr = GetFunctionPointer<SQLColAttributeFunc>(handle, "SQLColAttributeW");
     SQLGetTypeInfo_ptr = GetFunctionPointer<SQLGetTypeInfoFunc>(handle, "SQLGetTypeInfoW");
     SQLProcedures_ptr = GetFunctionPointer<SQLProceduresFunc>(handle, "SQLProceduresW");
+    SQLForeignKeys_ptr = GetFunctionPointer<SQLForeignKeysFunc>(handle, "SQLForeignKeysW");
 
     SQLEndTran_ptr = GetFunctionPointer<SQLEndTranFunc>(handle, "SQLEndTran");
     SQLDisconnect_ptr = GetFunctionPointer<SQLDisconnectFunc>(handle, "SQLDisconnect");
@@ -801,7 +803,7 @@ DriverHandle LoadDriverOrThrowException() {
         SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr &&
         SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr &&
         SQLFreeStmt_ptr && SQLGetDiagRec_ptr &&
-        SQLGetTypeInfo_ptr && SQLProcedures_ptr;
+        SQLGetTypeInfo_ptr && SQLProcedures_ptr && SQLForeignKeys_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver.");
@@ -906,6 +908,59 @@ SQLRETURN SQLProcedures_wrap(SqlHandlePtr StatementHandle,
         schema.empty() ? 0 : SQL_NTS,
         procedure.empty() ? nullptr : (SQLWCHAR*)procedure.c_str(), 
         procedure.empty() ? 0 : SQL_NTS);
+#endif
+}
+
+SQLRETURN SQLForeignKeys_wrap(SqlHandlePtr StatementHandle, 
+                             const std::wstring& pkCatalog,
+                             const std::wstring& pkSchema,
+                             const std::wstring& pkTable,
+                             const std::wstring& fkCatalog,
+                             const std::wstring& fkSchema,
+                             const std::wstring& fkTable) {
+    if (!SQLForeignKeys_ptr) {
+        ThrowStdException("SQLForeignKeys function not loaded");
+    }
+
+#if defined(__APPLE__) || defined(__linux__)
+    // Unix implementation
+    std::vector<SQLWCHAR> pkCatalogBuf = WStringToSQLWCHAR(pkCatalog);
+    std::vector<SQLWCHAR> pkSchemaBuf = WStringToSQLWCHAR(pkSchema);
+    std::vector<SQLWCHAR> pkTableBuf = WStringToSQLWCHAR(pkTable);
+    std::vector<SQLWCHAR> fkCatalogBuf = WStringToSQLWCHAR(fkCatalog);
+    std::vector<SQLWCHAR> fkSchemaBuf = WStringToSQLWCHAR(fkSchema);
+    std::vector<SQLWCHAR> fkTableBuf = WStringToSQLWCHAR(fkTable);
+    
+    return SQLForeignKeys_ptr(
+        StatementHandle->get(),
+        pkCatalog.empty() ? nullptr : pkCatalogBuf.data(), 
+        pkCatalog.empty() ? 0 : SQL_NTS,
+        pkSchema.empty() ? nullptr : pkSchemaBuf.data(), 
+        pkSchema.empty() ? 0 : SQL_NTS,
+        pkTable.empty() ? nullptr : pkTableBuf.data(), 
+        pkTable.empty() ? 0 : SQL_NTS,
+        fkCatalog.empty() ? nullptr : fkCatalogBuf.data(), 
+        fkCatalog.empty() ? 0 : SQL_NTS,
+        fkSchema.empty() ? nullptr : fkSchemaBuf.data(), 
+        fkSchema.empty() ? 0 : SQL_NTS,
+        fkTable.empty() ? nullptr : fkTableBuf.data(), 
+        fkTable.empty() ? 0 : SQL_NTS);
+#else
+    // Windows implementation
+    return SQLForeignKeys_ptr(
+        StatementHandle->get(),
+        pkCatalog.empty() ? nullptr : (SQLWCHAR*)pkCatalog.c_str(), 
+        pkCatalog.empty() ? 0 : SQL_NTS,
+        pkSchema.empty() ? nullptr : (SQLWCHAR*)pkSchema.c_str(), 
+        pkSchema.empty() ? 0 : SQL_NTS,
+        pkTable.empty() ? nullptr : (SQLWCHAR*)pkTable.c_str(), 
+        pkTable.empty() ? 0 : SQL_NTS,
+        fkCatalog.empty() ? nullptr : (SQLWCHAR*)fkCatalog.c_str(), 
+        fkCatalog.empty() ? 0 : SQL_NTS,
+        fkSchema.empty() ? nullptr : (SQLWCHAR*)fkSchema.c_str(), 
+        fkSchema.empty() ? 0 : SQL_NTS,
+        fkTable.empty() ? nullptr : (SQLWCHAR*)fkTable.c_str(), 
+        fkTable.empty() ? 0 : SQL_NTS);
 #endif
 }
 
@@ -2633,8 +2688,19 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                              const std::wstring& catalog,
                              const std::wstring& schema,
                              const std::wstring& procedure) {
-    return SQLProcedures_wrap(StatementHandle, catalog, schema, procedure);
-});
+        return SQLProcedures_wrap(StatementHandle, catalog, schema, procedure);
+    });
+        m.def("DDBCSQLForeignKeys", [](SqlHandlePtr StatementHandle, 
+                                 const std::wstring& pkCatalog,
+                                 const std::wstring& pkSchema,
+                                 const std::wstring& pkTable,
+                                 const std::wstring& fkCatalog,
+                                 const std::wstring& fkSchema,
+                                 const std::wstring& fkTable) {
+        return SQLForeignKeys_wrap(StatementHandle, 
+                                   pkCatalog, pkSchema, pkTable, 
+                                   fkCatalog, fkSchema, fkTable);
+    });
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";

@@ -16,7 +16,7 @@ from typing import List, Union
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
-from mssql_python.exceptions import InterfaceError
+from mssql_python.exceptions import InterfaceError, ProgrammingError
 from mssql_python.row import Row
 from mssql_python import get_settings
 
@@ -919,6 +919,113 @@ class Cursor:
                 proc_name_parts = row.procedure_name.split(';')
                 row._values[column_map["procedure_name"]] = proc_name_parts[0]
             
+            result_rows.append(row)
+        
+        return result_rows
+
+    def foreignKeys(self, table=None, catalog=None, schema=None, foreignTable=None, foreignCatalog=None, foreignSchema=None):
+        """
+        Executes the SQLForeignKeys function and creates a result set of column names that are foreign keys.
+        
+        This function returns:
+        1. Foreign keys in the specified table that reference primary keys in other tables, OR
+        2. Foreign keys in other tables that reference the primary key in the specified table
+        
+        Args:
+            table (str, optional): The table containing the foreign key columns
+            catalog (str, optional): The catalog containing table
+            schema (str, optional): The schema containing table
+            foreignTable (str, optional): The table containing the primary key columns
+            foreignCatalog (str, optional): The catalog containing foreignTable
+            foreignSchema (str, optional): The schema containing foreignTable
+                
+        Returns:
+            List of Row objects, each containing foreign key information with these columns:
+            - pktable_cat (str): Primary key table catalog name
+            - pktable_schem (str): Primary key table schema name
+            - pktable_name (str): Primary key table name
+            - pkcolumn_name (str): Primary key column name
+            - fktable_cat (str): Foreign key table catalog name
+            - fktable_schem (str): Foreign key table schema name
+            - fktable_name (str): Foreign key table name
+            - fkcolumn_name (str): Foreign key column name
+            - key_seq (int): Sequence number of the column in the foreign key
+            - update_rule (int): Action for update (CASCADE, SET NULL, etc.)
+            - delete_rule (int): Action for delete (CASCADE, SET NULL, etc.)
+            - fk_name (str): Foreign key name
+            - pk_name (str): Primary key name
+            - deferrability (int): Indicates if constraint checking can be deferred
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        # Check if we have at least one table specified - mimic pyodbc behavior
+        if table is None and foreignTable is None:
+            raise ProgrammingError("Either table or foreignTable must be specified", "HY000")
+        
+        # Convert None values to empty strings as required by ODBC API
+        pk_catalog = "" if foreignCatalog is None else foreignCatalog
+        pk_schema = "" if foreignSchema is None else foreignSchema
+        pk_table = "" if foreignTable is None else foreignTable
+        
+        fk_catalog = "" if catalog is None else catalog
+        fk_schema = "" if schema is None else schema
+        fk_table = "" if table is None else table
+        
+        # Call the SQLForeignKeys function
+        retcode = ddbc_bindings.DDBCSQLForeignKeys(
+            self.hstmt, 
+            pk_catalog, pk_schema, pk_table,
+            fk_catalog, fk_schema, fk_table
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Initialize description from column metadata
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except Exception:
+            # If describe fails, create a manual description for the standard columns
+            column_types = [str, str, str, str, str, str, str, str, int, int, int, str, str, int]
+            self.description = [
+                ("pktable_cat", column_types[0], None, 128, 128, 0, True),
+                ("pktable_schem", column_types[1], None, 128, 128, 0, True),
+                ("pktable_name", column_types[2], None, 128, 128, 0, False),
+                ("pkcolumn_name", column_types[3], None, 128, 128, 0, False),
+                ("fktable_cat", column_types[4], None, 128, 128, 0, True),
+                ("fktable_schem", column_types[5], None, 128, 128, 0, True),
+                ("fktable_name", column_types[6], None, 128, 128, 0, False),
+                ("fkcolumn_name", column_types[7], None, 128, 128, 0, False),
+                ("key_seq", column_types[8], None, 10, 10, 0, False),
+                ("update_rule", column_types[9], None, 10, 10, 0, False),
+                ("delete_rule", column_types[10], None, 10, 10, 0, False),
+                ("fk_name", column_types[11], None, 128, 128, 0, True),
+                ("pk_name", column_types[12], None, 128, 128, 0, True),
+                ("deferrability", column_types[13], None, 10, 10, 0, False)
+            ]
+        
+        # Define column names in ODBC standard order
+        column_names = [
+            "pktable_cat", "pktable_schem", "pktable_name", "pkcolumn_name",
+            "fktable_cat", "fktable_schem", "fktable_name", "fkcolumn_name",
+            "key_seq", "update_rule", "delete_rule", "fk_name", "pk_name", "deferrability"
+        ]
+        
+        # Fetch all rows
+        rows_data = []
+        ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+        
+        # Create a column map for attribute access
+        column_map = {name: i for i, name in enumerate(column_names)}
+        
+        # Create Row objects with the column map
+        result_rows = []
+        for row_data in rows_data:
+            row = Row(self, self.description, row_data)
+            row._column_map = column_map
             result_rows.append(row)
         
         return result_rows
