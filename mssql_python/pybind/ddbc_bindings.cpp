@@ -129,6 +129,7 @@ SQLForeignKeysFunc SQLForeignKeys_ptr = nullptr;
 SQLPrimaryKeysFunc SQLPrimaryKeys_ptr = nullptr;
 SQLSpecialColumnsFunc SQLSpecialColumns_ptr = nullptr;
 SQLStatisticsFunc SQLStatistics_ptr = nullptr;
+SQLColumnsFunc SQLColumns_ptr = nullptr;
 
 // Transaction APIs
 SQLEndTranFunc SQLEndTran_ptr = nullptr;
@@ -791,6 +792,7 @@ DriverHandle LoadDriverOrThrowException() {
     SQLPrimaryKeys_ptr = GetFunctionPointer<SQLPrimaryKeysFunc>(handle, "SQLPrimaryKeysW");
     SQLSpecialColumns_ptr = GetFunctionPointer<SQLSpecialColumnsFunc>(handle, "SQLSpecialColumnsW");
     SQLStatistics_ptr = GetFunctionPointer<SQLStatisticsFunc>(handle, "SQLStatisticsW");
+    SQLColumns_ptr = GetFunctionPointer<SQLColumnsFunc>(handle, "SQLColumnsW");
 
     SQLEndTran_ptr = GetFunctionPointer<SQLEndTranFunc>(handle, "SQLEndTran");
     SQLDisconnect_ptr = GetFunctionPointer<SQLDisconnectFunc>(handle, "SQLDisconnect");
@@ -810,7 +812,8 @@ DriverHandle LoadDriverOrThrowException() {
         SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr &&
         SQLFreeStmt_ptr && SQLGetDiagRec_ptr &&
         SQLGetTypeInfo_ptr && SQLProcedures_ptr && SQLForeignKeys_ptr &&
-        SQLPrimaryKeys_ptr && SQLSpecialColumns_ptr && SQLStatistics_ptr;
+        SQLPrimaryKeys_ptr && SQLSpecialColumns_ptr && SQLStatistics_ptr &&
+        SQLColumns_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver.");
@@ -1044,6 +1047,47 @@ SQLRETURN SQLStatistics_wrap(SqlHandlePtr StatementHandle,
         table.empty() ? 0 : SQL_NTS,
         unique,
         reserved);
+#endif
+}
+
+SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, 
+                         const std::wstring& catalog,
+                         const std::wstring& schema,
+                         const std::wstring& table,
+                         const std::wstring& column) {
+    if (!SQLColumns_ptr) {
+        ThrowStdException("SQLColumns function not loaded");
+    }
+
+#if defined(__APPLE__) || defined(__linux__)
+    // Unix implementation
+    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalog);
+    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
+    std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
+    std::vector<SQLWCHAR> columnBuf = WStringToSQLWCHAR(column);
+    
+    return SQLColumns_ptr(
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : catalogBuf.data(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : schemaBuf.data(), 
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : tableBuf.data(), 
+        table.empty() ? 0 : SQL_NTS,
+        column.empty() ? nullptr : columnBuf.data(),
+        column.empty() ? 0 : SQL_NTS);
+#else
+    // Windows implementation
+    return SQLColumns_ptr(
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(), 
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : (SQLWCHAR*)table.c_str(), 
+        table.empty() ? 0 : SQL_NTS,
+        column.empty() ? nullptr : (SQLWCHAR*)column.c_str(),
+        column.empty() ? 0 : SQL_NTS);
 #endif
 }
 
@@ -2853,6 +2897,14 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                             SQLUSMALLINT reserved) {
         return SQLStatistics_wrap(StatementHandle, catalog, schema, table, unique, reserved);
     });
+    m.def("DDBCSQLColumns", [](SqlHandlePtr StatementHandle, 
+                            const std::wstring& catalog,
+                            const std::wstring& schema,
+                            const std::wstring& table,
+                            const std::wstring& column) {
+        return SQLColumns_wrap(StatementHandle, catalog, schema, table, column);
+    });
+
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
