@@ -117,6 +117,11 @@ class ConstantsDDBC(Enum):
     SQL_NULLABLE = 1
     SQL_MAX_NUMERIC_LEN = 16
     SQL_ATTR_QUERY_TIMEOUT = 0
+    SQL_SCOPE_CURROW = 0
+    SQL_BEST_ROWID = 1
+    SQL_ROWVER = 2
+    SQL_NO_NULLS = 0
+    SQL_NULLABLE_UNKNOWN = 2
 
 class AuthType(Enum):
     """Constants for authentication types"""
