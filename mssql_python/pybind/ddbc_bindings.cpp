@@ -124,6 +124,7 @@ SQLDescribeColFunc SQLDescribeCol_ptr = nullptr;
 SQLMoreResultsFunc SQLMoreResults_ptr = nullptr;
 SQLColAttributeFunc SQLColAttribute_ptr = nullptr;
 SQLGetTypeInfoFunc SQLGetTypeInfo_ptr = nullptr;
+SQLProceduresFunc SQLProcedures_ptr = nullptr;
 
 // Transaction APIs
 SQLEndTranFunc SQLEndTran_ptr = nullptr;
@@ -781,6 +782,7 @@ DriverHandle LoadDriverOrThrowException() {
     SQLMoreResults_ptr = GetFunctionPointer<SQLMoreResultsFunc>(handle, "SQLMoreResults");
     SQLColAttribute_ptr = GetFunctionPointer<SQLColAttributeFunc>(handle, "SQLColAttributeW");
     SQLGetTypeInfo_ptr = GetFunctionPointer<SQLGetTypeInfoFunc>(handle, "SQLGetTypeInfoW");
+    SQLProcedures_ptr = GetFunctionPointer<SQLProceduresFunc>(handle, "SQLProceduresW");
 
     SQLEndTran_ptr = GetFunctionPointer<SQLEndTranFunc>(handle, "SQLEndTran");
     SQLDisconnect_ptr = GetFunctionPointer<SQLDisconnectFunc>(handle, "SQLDisconnect");
@@ -799,7 +801,7 @@ DriverHandle LoadDriverOrThrowException() {
         SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr &&
         SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr &&
         SQLFreeStmt_ptr && SQLGetDiagRec_ptr &&
-        SQLGetTypeInfo_ptr;
+        SQLGetTypeInfo_ptr && SQLProcedures_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver.");
@@ -870,6 +872,41 @@ SQLRETURN SQLGetTypeInfo_Wrapper(SqlHandlePtr StatementHandle, SQLSMALLINT DataT
     }
 
     return SQLGetTypeInfo_ptr(StatementHandle->get(), DataType);
+}
+
+SQLRETURN SQLProcedures_wrap(SqlHandlePtr StatementHandle, 
+                            const std::wstring& catalog,
+                            const std::wstring& schema,
+                            const std::wstring& procedure) {
+    if (!SQLProcedures_ptr) {
+        ThrowStdException("SQLProcedures function not loaded");
+    }
+
+#if defined(__APPLE__) || defined(__linux__)
+    // Unix implementation
+    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalog);
+    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
+    std::vector<SQLWCHAR> procedureBuf = WStringToSQLWCHAR(procedure);
+    
+    return SQLProcedures_ptr(
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : catalogBuf.data(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : schemaBuf.data(), 
+        schema.empty() ? 0 : SQL_NTS,
+        procedure.empty() ? nullptr : procedureBuf.data(), 
+        procedure.empty() ? 0 : SQL_NTS);
+#else
+    // Windows implementation
+    return SQLProcedures_ptr(
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(), 
+        schema.empty() ? 0 : SQL_NTS,
+        procedure.empty() ? nullptr : (SQLWCHAR*)procedure.c_str(), 
+        procedure.empty() ? 0 : SQL_NTS);
+#endif
 }
 
 // Helper function to check for driver errors
@@ -2592,6 +2629,12 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     }, "Set statement attributes");
     m.def("DDBCSQLGetTypeInfo", &SQLGetTypeInfo_Wrapper, "Returns information about the data types that are supported by the data source",
       py::arg("StatementHandle"), py::arg("DataType"));
+    m.def("DDBCSQLProcedures", [](SqlHandlePtr StatementHandle, 
+                             const std::wstring& catalog,
+                             const std::wstring& schema,
+                             const std::wstring& procedure) {
+    return SQLProcedures_wrap(StatementHandle, catalog, schema, procedure);
+});
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";

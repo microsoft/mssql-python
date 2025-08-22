@@ -1907,6 +1907,239 @@ def test_gettypeinfo_cached_results(cursor):
     for row in second_result:
         assert row.data_type == ConstantsDDBC.SQL_VARCHAR.value, \
             f"Expected SQL_VARCHAR type, got {row.data_type}"
+        
+def test_procedures_all(cursor, db_connection):
+    """Test getting information about all procedures"""
+    # Create test stored procedures
+    try:
+        cursor.execute("""
+        CREATE PROCEDURE #test_proc1
+        AS
+        BEGIN
+            SELECT 1 AS result
+        END
+        """)
+        
+        cursor.execute("""
+        CREATE PROCEDURE #test_proc2 @param1 INT, @param2 VARCHAR(50) OUTPUT
+        AS
+        BEGIN
+            SELECT @param2 = 'Output ' + CAST(@param1 AS VARCHAR(10))
+            RETURN @param1
+        END
+        """)
+        db_connection.commit()
+        
+        # Get all procedures
+        procs = cursor.procedures()
+        
+        # Verify we got results
+        assert procs is not None, "procedures() should return results"
+        assert len(procs) > 0, "procedures() should return at least one procedure"
+        
+        # Verify structure of results
+        first_row = procs[0]
+        assert hasattr(first_row, 'procedure_cat'), "Result should have procedure_cat column"
+        assert hasattr(first_row, 'procedure_schem'), "Result should have procedure_schem column"
+        assert hasattr(first_row, 'procedure_name'), "Result should have procedure_name column"
+        assert hasattr(first_row, 'num_input_params'), "Result should have num_input_params column"
+        assert hasattr(first_row, 'num_output_params'), "Result should have num_output_params column"
+        assert hasattr(first_row, 'num_result_sets'), "Result should have num_result_sets column"
+        assert hasattr(first_row, 'remarks'), "Result should have remarks column"
+        assert hasattr(first_row, 'procedure_type'), "Result should have procedure_type column"
+        
+    finally:
+        # Clean up
+        cursor.execute("DROP PROCEDURE IF EXISTS #test_proc1")
+        cursor.execute("DROP PROCEDURE IF EXISTS #test_proc2")
+        db_connection.commit()
+
+def test_procedures_specific(cursor, db_connection):
+    """Test getting information about a specific procedure"""
+    # Create test stored procedure
+    try:
+        cursor.execute("""
+        CREATE PROCEDURE #test_specific_proc @param1 INT
+        AS
+        BEGIN
+            SELECT @param1 AS result
+        END
+        """)
+        db_connection.commit()
+        
+        # Get specific procedure
+        procs = cursor.procedures(procedure='#test_specific_proc')
+        
+        # Verify we got the correct procedure
+        assert len(procs) == 1, "Should find exactly one procedure"
+        proc = procs[0]
+        assert proc.procedure_name == '#test_specific_proc', "Wrong procedure name returned"
+        assert proc.num_input_params == 1, "Wrong number of input parameters"
+        assert proc.num_output_params == 0, "Wrong number of output parameters"
+        
+    finally:
+        # Clean up
+        cursor.execute("DROP PROCEDURE IF EXISTS #test_specific_proc")
+        db_connection.commit()
+
+def test_procedures_with_schema(cursor, db_connection):
+    """Test getting procedures with schema filter"""
+    # First get current user's default schema
+    cursor.execute("SELECT SCHEMA_NAME() AS current_schema")
+    current_schema = cursor.fetchone().current_schema
+    
+    # Create test stored procedure
+    try:
+        cursor.execute(f"""
+        CREATE PROCEDURE {current_schema}.test_schema_proc
+        AS
+        BEGIN
+            SELECT 1 AS result
+        END
+        """)
+        db_connection.commit()
+        
+        # Get procedures for current schema
+        procs = cursor.procedures(schema=current_schema)
+        
+        # Verify schema filter worked
+        assert len(procs) > 0, "Should find at least one procedure in schema"
+        for proc in procs:
+            assert proc.procedure_schem == current_schema, f"Expected schema {current_schema}, got {proc.procedure_schem}"
+        
+        # Verify our specific procedure is in the results
+        proc_names = [p.procedure_name for p in procs]
+        assert 'test_schema_proc' in proc_names, "Created procedure should be in results"
+        
+    finally:
+        # Clean up
+        cursor.execute(f"DROP PROCEDURE IF EXISTS {current_schema}.test_schema_proc")
+        db_connection.commit()
+
+def test_procedures_with_parameters(cursor, db_connection):
+    """Test that procedures() correctly reports parameter information"""
+    try:
+        # Create a procedure with input and output parameters
+        cursor.execute("""
+        CREATE PROCEDURE #test_params_proc 
+            @in1 INT, 
+            @in2 VARCHAR(50),
+            @out1 DECIMAL(10,2) OUTPUT,
+            @out2 DATETIME OUTPUT
+        AS
+        BEGIN
+            SET @out1 = @in1 * 2.5
+            SET @out2 = GETDATE()
+            SELECT @in1, @in2
+        END
+        """)
+        db_connection.commit()
+        
+        # Get procedure info
+        procs = cursor.procedures(procedure='#test_params_proc')
+        
+        # Verify parameter counts
+        assert len(procs) == 1, "Should find exactly one procedure"
+        proc = procs[0]
+        assert proc.num_input_params == 2, "Should have 2 input parameters"
+        assert proc.num_output_params == 2, "Should have 2 output parameters"
+        
+    finally:
+        # Clean up
+        cursor.execute("DROP PROCEDURE IF EXISTS #test_params_proc")
+        db_connection.commit()
+
+def test_procedures_nonexistent(cursor):
+    """Test procedures() with non-existent procedure name"""
+    # Use a procedure name that's highly unlikely to exist
+    procs = cursor.procedures(procedure='nonexistent_procedure_xyz123')
+    
+    # Should return empty list, not error
+    assert isinstance(procs, list), "Should return a list for non-existent procedure"
+    assert len(procs) == 0, "Should return empty list for non-existent procedure"
+
+def test_procedures_catalog_filter(cursor, db_connection):
+    """Test procedures() with catalog filter"""
+    # Get current database name
+    cursor.execute("SELECT DB_NAME() AS current_db")
+    current_db = cursor.fetchone().current_db
+    
+    # Create test procedure
+    try:
+        cursor.execute("""
+        CREATE PROCEDURE #test_catalog_proc
+        AS
+        BEGIN
+            SELECT 1
+        END
+        """)
+        db_connection.commit()
+        
+        # Get procedures with current catalog
+        procs = cursor.procedures(catalog=current_db)
+        
+        # Verify catalog filter worked
+        assert len(procs) > 0, "Should find procedures in current catalog"
+        for proc in procs:
+            assert proc.procedure_cat == current_db, f"Expected catalog {current_db}, got {proc.procedure_cat}"
+            
+        # Get procedures with non-existent catalog
+        fake_procs = cursor.procedures(catalog='nonexistent_db_xyz123')
+        assert len(fake_procs) == 0, "Should return empty list for non-existent catalog"
+        
+    finally:
+        # Clean up
+        cursor.execute("DROP PROCEDURE IF EXISTS #test_catalog_proc")
+        db_connection.commit()
+
+def test_procedures_result_set_info(cursor, db_connection):
+    """Test that procedures() reports information about result sets"""
+    try:
+        # Create procedures with different result set patterns
+        cursor.execute("""
+        CREATE PROCEDURE #test_no_results
+        AS
+        BEGIN
+            DECLARE @x INT = 1
+        END
+        """)
+        
+        cursor.execute("""
+        CREATE PROCEDURE #test_one_result
+        AS
+        BEGIN
+            SELECT 1 AS col1, 'test' AS col2
+        END
+        """)
+        
+        cursor.execute("""
+        CREATE PROCEDURE #test_multiple_results
+        AS
+        BEGIN
+            SELECT 1 AS result1
+            SELECT 'test' AS result2
+            SELECT GETDATE() AS result3
+        END
+        """)
+        db_connection.commit()
+        
+        # Get procedure info for all test procedures
+        procs = cursor.procedures(procedure='#test_%')
+        
+        # Verify we found all three procedures
+        assert len(procs) == 3, "Should find all three test procedures"
+        
+        # The exact reporting of result sets depends on the driver and database,
+        # but we can verify the column exists
+        for proc in procs:
+            assert hasattr(proc, 'num_result_sets'), "Result should have num_result_sets column"
+            
+    finally:
+        # Clean up
+        cursor.execute("DROP PROCEDURE IF EXISTS #test_no_results")
+        cursor.execute("DROP PROCEDURE IF EXISTS #test_one_result")
+        cursor.execute("DROP PROCEDURE IF EXISTS #test_multiple_results")
+        db_connection.commit()
 
 def test_close(db_connection):
     """Test closing the cursor"""

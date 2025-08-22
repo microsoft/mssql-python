@@ -797,6 +797,131 @@ class Cursor:
             # Always reset the cursor on exception
             self._reset_cursor()
             raise e
+        
+    def procedures(self, procedure=None, catalog=None, schema=None):
+        """
+        Executes SQLProcedures and creates a result set of information about procedures in the data source.
+        
+        Args:
+            procedure (str, optional): Procedure name pattern. Default is None (all procedures).
+            catalog (str, optional): Catalog name pattern. Default is None (current catalog).
+            schema (str, optional): Schema name pattern. Default is None (all schemas).
+            
+        Returns:
+            List of Row objects, each containing procedure information with these columns:
+            - procedure_cat (str): The catalog name
+            - procedure_schem (str): The schema name
+            - procedure_name (str): The procedure name
+            - num_input_params (int): Number of input parameters
+            - num_output_params (int): Number of output parameters
+            - num_result_sets (int): Number of result sets
+            - remarks (str): Comments about the procedure
+            - procedure_type (int): Type of procedure (1=procedure, 2=function)
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        # Check if we're looking for temporary procedures (which start with #)
+        # The ODBC SQLProcedures doesn't return temp procedures, so we need to handle them separately
+        if procedure and procedure.startswith('#'):
+            # Use direct SQL query to find temporary procedures in tempdb
+            # SQL Server adds unique identifiers to temp procedure names in tempdb
+            sql = """
+            SELECT 
+                DB_NAME() AS procedure_cat,
+                USER_NAME(p.schema_id) AS procedure_schem, 
+                ? AS procedure_name,  -- Use original name for consistency
+                (SELECT COUNT(*) FROM tempdb.sys.parameters 
+                 WHERE object_id = p.object_id AND is_output = 0) AS num_input_params,
+                (SELECT COUNT(*) FROM tempdb.sys.parameters 
+                 WHERE object_id = p.object_id AND is_output = 1) AS num_output_params,
+                0 AS num_result_sets,
+                CONVERT(VARCHAR(254), p.create_date) AS remarks,
+                1 AS procedure_type
+            FROM tempdb.sys.procedures p
+            WHERE p.name LIKE ?
+            """
+            
+            # The % wildcard will match any characters after the procedure name
+            # This handles SQL Server's unique suffixes on temp procedure names
+            like_pattern = procedure + '%'
+            self.execute(sql, [procedure, like_pattern])
+            rows = self.fetchall()
+            
+            # Set up the column map for attribute access
+            column_names = [
+                "procedure_cat", "procedure_schem", "procedure_name",
+                "num_input_params", "num_output_params", "num_result_sets",
+                "remarks", "procedure_type"
+            ]
+            column_map = {name: i for i, name in enumerate(column_names)}
+            
+            # Apply the column map to each row
+            for row in rows:
+                row._column_map = column_map
+                
+            return rows
+        
+        # For non-temporary procedures, use the SQLProcedures API
+        # Convert parameters to empty strings if None
+        catalog_str = "" if catalog is None else catalog
+        schema_str = "" if schema is None else schema
+        procedure_str = "" if procedure is None else procedure
+        
+        # Call the SQLProcedures function
+        retcode = ddbc_bindings.DDBCSQLProcedures(self.hstmt, catalog_str, schema_str, procedure_str)
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Create column metadata and initialize description
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except Exception as e:
+            # If describe fails, create a manual description
+            column_types = [str, str, str, int, int, int, str, int]
+            self.description = [
+                ("procedure_cat", column_types[0], None, 128, 128, 0, True),
+                ("procedure_schem", column_types[1], None, 128, 128, 0, True),
+                ("procedure_name", column_types[2], None, 128, 128, 0, False),
+                ("num_input_params", column_types[3], None, 10, 10, 0, True),
+                ("num_output_params", column_types[4], None, 10, 10, 0, True),
+                ("num_result_sets", column_types[5], None, 10, 10, 0, True),
+                ("remarks", column_types[6], None, 254, 254, 0, True),
+                ("procedure_type", column_types[7], None, 10, 10, 0, False)
+            ]
+        
+        # Define column names in ODBC standard order
+        column_names = [
+            "procedure_cat", "procedure_schem", "procedure_name",
+            "num_input_params", "num_output_params", "num_result_sets",
+            "remarks", "procedure_type"
+        ]
+        
+        # Fetch all rows and create a custom column map
+        rows_data = []
+        ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+        
+        # Create a column map for attribute access
+        column_map = {name: i for i, name in enumerate(column_names)}
+        
+        # Create Row objects with the column map
+        result_rows = []
+        for row_data in rows_data:
+            row = Row(self, self.description, row_data)
+            row._column_map = column_map
+            
+            # Fix procedure name by removing semicolon and number if present
+            # The ODBC driver may return names in format "procedure_name;1"
+            if hasattr(row, 'procedure_name') and row.procedure_name and ';' in row.procedure_name:
+                proc_name_parts = row.procedure_name.split(';')
+                row._values[column_map["procedure_name"]] = proc_name_parts[0]
+            
+            result_rows.append(row)
+        
+        return result_rows
 
     @staticmethod
     def _select_best_sample_value(column):
