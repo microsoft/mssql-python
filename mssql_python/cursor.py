@@ -823,48 +823,6 @@ class Cursor:
         # Always reset the cursor first to ensure clean state
         self._reset_cursor()
         
-        # Check if we're looking for temporary procedures (which start with #)
-        # The ODBC SQLProcedures doesn't return temp procedures, so we need to handle them separately
-        if procedure and procedure.startswith('#'):
-            # Use direct SQL query to find temporary procedures in tempdb
-            # SQL Server adds unique identifiers to temp procedure names in tempdb
-            sql = """
-            SELECT 
-                DB_NAME() AS procedure_cat,
-                USER_NAME(p.schema_id) AS procedure_schem, 
-                ? AS procedure_name,  -- Use original name for consistency
-                (SELECT COUNT(*) FROM tempdb.sys.parameters 
-                 WHERE object_id = p.object_id AND is_output = 0) AS num_input_params,
-                (SELECT COUNT(*) FROM tempdb.sys.parameters 
-                 WHERE object_id = p.object_id AND is_output = 1) AS num_output_params,
-                0 AS num_result_sets,
-                CONVERT(VARCHAR(254), p.create_date) AS remarks,
-                1 AS procedure_type
-            FROM tempdb.sys.procedures p
-            WHERE p.name LIKE ?
-            """
-            
-            # The % wildcard will match any characters after the procedure name
-            # This handles SQL Server's unique suffixes on temp procedure names
-            like_pattern = procedure + '%'
-            self.execute(sql, [procedure, like_pattern])
-            rows = self.fetchall()
-            
-            # Set up the column map for attribute access
-            column_names = [
-                "procedure_cat", "procedure_schem", "procedure_name",
-                "num_input_params", "num_output_params", "num_result_sets",
-                "remarks", "procedure_type"
-            ]
-            column_map = {name: i for i, name in enumerate(column_names)}
-            
-            # Apply the column map to each row
-            for row in rows:
-                row._column_map = column_map
-                
-            return rows
-        
-        # For non-temporary procedures, use the SQLProcedures API
         # Convert parameters to empty strings if None
         catalog_str = "" if catalog is None else catalog
         schema_str = "" if schema is None else schema
