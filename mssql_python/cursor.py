@@ -1254,6 +1254,100 @@ class Cursor:
             result_rows.append(row)
         
         return result_rows
+    
+    def statistics(self, table, catalog=None, schema=None, unique=False, quick=True):
+        """
+        Creates a result set of statistics about a single table and the indexes associated 
+        with the table by executing SQLStatistics.
+        
+        Args:
+            table (str): The name of the table.
+            catalog (str, optional): The catalog name. Defaults to None.
+            schema (str, optional): The schema name. Defaults to None.
+            unique (bool, optional): If True, only unique indexes are returned. 
+                                    If False, all indexes are returned. Defaults to False.
+            quick (bool, optional): If True, CARDINALITY and PAGES are returned only 
+                                    if readily available. Defaults to True.
+        
+        Returns:
+            list: A list of Row objects containing statistics about the table and its indexes.
+                  Each row contains: table_cat, table_schem, table_name, non_unique,
+                  index_qualifier, index_name, type, ordinal_position, column_name,
+                  asc_or_desc, cardinality, pages, filter_condition
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        # Convert None values to empty strings as required by ODBC API
+        catalog_p = "" if catalog is None else catalog
+        schema_p = "" if schema is None else schema
+        table_p = table  # Table name is required
+        
+        # Set unique flag (SQL_INDEX_UNIQUE = 0, SQL_INDEX_ALL = 1)
+        unique_option = ddbc_sql_const.SQL_INDEX_UNIQUE.value if unique else ddbc_sql_const.SQL_INDEX_ALL.value
+        
+        # Set quick flag (SQL_QUICK = 0, SQL_ENSURE = 1)
+        reserved_option = ddbc_sql_const.SQL_QUICK.value if quick else ddbc_sql_const.SQL_ENSURE.value
+        
+        # Call the SQLStatistics function
+        retcode = ddbc_bindings.DDBCSQLStatistics(
+            self.hstmt,
+            catalog_p,
+            schema_p,
+            table_p,
+            unique_option,
+            reserved_option
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Initialize description from column metadata
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except Exception:
+            # If describe fails, create a manual description for the standard columns
+            column_types = [str, str, str, bool, str, str, int, int, str, str, int, int, str]
+            self.description = [
+                ("table_cat", column_types[0], None, 128, 128, 0, True),
+                ("table_schem", column_types[1], None, 128, 128, 0, True),
+                ("table_name", column_types[2], None, 128, 128, 0, False),
+                ("non_unique", column_types[3], None, 1, 1, 0, False),
+                ("index_qualifier", column_types[4], None, 128, 128, 0, True),
+                ("index_name", column_types[5], None, 128, 128, 0, True),
+                ("type", column_types[6], None, 10, 10, 0, False),
+                ("ordinal_position", column_types[7], None, 10, 10, 0, False),
+                ("column_name", column_types[8], None, 128, 128, 0, True),
+                ("asc_or_desc", column_types[9], None, 1, 1, 0, True),
+                ("cardinality", column_types[10], None, 20, 20, 0, True),
+                ("pages", column_types[11], None, 20, 20, 0, True),
+                ("filter_condition", column_types[12], None, 128, 128, 0, True)
+            ]
+        
+        # Define column names in ODBC standard order
+        column_names = [
+            "table_cat", "table_schem", "table_name", "non_unique",
+            "index_qualifier", "index_name", "type", "ordinal_position",
+            "column_name", "asc_or_desc", "cardinality", "pages", "filter_condition"
+        ]
+        
+        # Fetch all rows
+        rows_data = []
+        ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+        
+        # Create a column map for attribute access
+        column_map = {name: i for i, name in enumerate(column_names)}
+        
+        # Create Row objects with the column map
+        result_rows = []
+        for row_data in rows_data:
+            row = Row(self, self.description, row_data)
+            row._column_map = column_map
+            result_rows.append(row)
+        
+        return result_rows
 
     @staticmethod
     def _select_best_sample_value(column):

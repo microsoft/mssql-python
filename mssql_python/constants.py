@@ -122,6 +122,10 @@ class ConstantsDDBC(Enum):
     SQL_ROWVER = 2
     SQL_NO_NULLS = 0
     SQL_NULLABLE_UNKNOWN = 2
+    SQL_INDEX_UNIQUE = 0
+    SQL_INDEX_ALL = 1
+    SQL_QUICK = 0
+    SQL_ENSURE = 1
 
 class AuthType(Enum):
     """Constants for authentication types"""
