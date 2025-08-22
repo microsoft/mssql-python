@@ -126,6 +126,7 @@ SQLColAttributeFunc SQLColAttribute_ptr = nullptr;
 SQLGetTypeInfoFunc SQLGetTypeInfo_ptr = nullptr;
 SQLProceduresFunc SQLProcedures_ptr = nullptr;
 SQLForeignKeysFunc SQLForeignKeys_ptr = nullptr;
+SQLPrimaryKeysFunc SQLPrimaryKeys_ptr = nullptr;
 
 // Transaction APIs
 SQLEndTranFunc SQLEndTran_ptr = nullptr;
@@ -785,6 +786,7 @@ DriverHandle LoadDriverOrThrowException() {
     SQLGetTypeInfo_ptr = GetFunctionPointer<SQLGetTypeInfoFunc>(handle, "SQLGetTypeInfoW");
     SQLProcedures_ptr = GetFunctionPointer<SQLProceduresFunc>(handle, "SQLProceduresW");
     SQLForeignKeys_ptr = GetFunctionPointer<SQLForeignKeysFunc>(handle, "SQLForeignKeysW");
+    SQLPrimaryKeys_ptr = GetFunctionPointer<SQLPrimaryKeysFunc>(handle, "SQLPrimaryKeysW");
 
     SQLEndTran_ptr = GetFunctionPointer<SQLEndTranFunc>(handle, "SQLEndTran");
     SQLDisconnect_ptr = GetFunctionPointer<SQLDisconnectFunc>(handle, "SQLDisconnect");
@@ -803,7 +805,8 @@ DriverHandle LoadDriverOrThrowException() {
         SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr &&
         SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr &&
         SQLFreeStmt_ptr && SQLGetDiagRec_ptr &&
-        SQLGetTypeInfo_ptr && SQLProcedures_ptr && SQLForeignKeys_ptr;
+        SQLGetTypeInfo_ptr && SQLProcedures_ptr && SQLForeignKeys_ptr &&
+        SQLPrimaryKeys_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver.");
@@ -963,6 +966,42 @@ SQLRETURN SQLForeignKeys_wrap(SqlHandlePtr StatementHandle,
         fkTable.empty() ? 0 : SQL_NTS);
 #endif
 }
+
+SQLRETURN SQLPrimaryKeys_wrap(SqlHandlePtr StatementHandle, 
+                             const std::wstring& catalog,
+                             const std::wstring& schema,
+                             const std::wstring& table) {
+    if (!SQLPrimaryKeys_ptr) {
+        ThrowStdException("SQLPrimaryKeys function not loaded");
+    }
+
+#if defined(__APPLE__) || defined(__linux__)
+    // Unix implementation
+    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalog);
+    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
+    std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
+    
+    return SQLPrimaryKeys_ptr(
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : catalogBuf.data(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : schemaBuf.data(), 
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : tableBuf.data(), 
+        table.empty() ? 0 : SQL_NTS);
+#else
+    // Windows implementation
+    return SQLPrimaryKeys_ptr(
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(), 
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : (SQLWCHAR*)table.c_str(), 
+        table.empty() ? 0 : SQL_NTS);
+#endif
+}
+
 
 // Helper function to check for driver errors
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode) {
@@ -2690,7 +2729,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                              const std::wstring& procedure) {
         return SQLProcedures_wrap(StatementHandle, catalog, schema, procedure);
     });
-        m.def("DDBCSQLForeignKeys", [](SqlHandlePtr StatementHandle, 
+    m.def("DDBCSQLForeignKeys", [](SqlHandlePtr StatementHandle, 
                                  const std::wstring& pkCatalog,
                                  const std::wstring& pkSchema,
                                  const std::wstring& pkTable,
@@ -2700,6 +2739,12 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         return SQLForeignKeys_wrap(StatementHandle, 
                                    pkCatalog, pkSchema, pkTable, 
                                    fkCatalog, fkSchema, fkTable);
+    });
+    m.def("DDBCSQLPrimaryKeys", [](SqlHandlePtr StatementHandle, 
+                                const std::wstring& catalog,
+                                const std::wstring& schema,
+                                const std::wstring& table) {
+        return SQLPrimaryKeys_wrap(StatementHandle, catalog, schema, table);
     });
 
     // Add a version attribute

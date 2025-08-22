@@ -880,6 +880,85 @@ class Cursor:
             result_rows.append(row)
         
         return result_rows
+    
+    def primaryKeys(self, table, catalog=None, schema=None):
+        """
+        Creates a result set of column names that make up the primary key for a table
+        by executing the SQLPrimaryKeys function.
+        
+        Args:
+            table (str): The name of the table
+            catalog (str, optional): The catalog name (database). Defaults to None.
+            schema (str, optional): The schema name. Defaults to None.
+        
+        Returns:
+            list: A list of rows with the following columns:
+                - table_cat: Catalog name
+                - table_schem: Schema name
+                - table_name: Table name
+                - column_name: Column name that is part of the primary key
+                - key_seq: Column sequence number in the primary key (starting with 1)
+                - pk_name: Primary key name
+        
+        Raises:
+            ProgrammingError: If the cursor is closed
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        # Convert None values to empty strings as required by ODBC API
+        catalog_p = "" if catalog is None else catalog
+        schema_p = "" if schema is None else schema
+        table_p = table  # Table name is required
+        
+        # Call the SQLPrimaryKeys function
+        retcode = ddbc_bindings.DDBCSQLPrimaryKeys(
+            self.hstmt,
+            catalog_p,
+            schema_p,
+            table_p
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Initialize description from column metadata
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except Exception:
+            # If describe fails, create a manual description for the standard columns
+            column_types = [str, str, str, str, int, str]
+            self.description = [
+                ("table_cat", column_types[0], None, 128, 128, 0, True),
+                ("table_schem", column_types[1], None, 128, 128, 0, True),
+                ("table_name", column_types[2], None, 128, 128, 0, False),
+                ("column_name", column_types[3], None, 128, 128, 0, False),
+                ("key_seq", column_types[4], None, 10, 10, 0, False),
+                ("pk_name", column_types[5], None, 128, 128, 0, True)
+            ]
+        
+        # Define column names in ODBC standard order
+        column_names = [
+            "table_cat", "table_schem", "table_name", "column_name", "key_seq", "pk_name"
+        ]
+        
+        # Fetch all rows
+        rows_data = []
+        ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+        
+        # Create a column map for attribute access
+        column_map = {name: i for i, name in enumerate(column_names)}
+        
+        # Create Row objects with the column map
+        result_rows = []
+        for row_data in rows_data:
+            row = Row(self, self.description, row_data)
+            row._column_map = column_map
+            result_rows.append(row)
+        
+        return result_rows
 
     def foreignKeys(self, table=None, catalog=None, schema=None, foreignTable=None, foreignCatalog=None, foreignSchema=None):
         """
