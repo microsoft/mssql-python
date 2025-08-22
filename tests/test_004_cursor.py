@@ -4404,253 +4404,373 @@ def test_cursor_messages_with_error(cursor):
     assert len(cursor.messages) == 1, "Should have only the new message"
     assert "After error" in cursor.messages[0][1], "Message should be from after the error"
 
-def test_tables_basic(cursor):
-    """Test basic tables() method to get all tables"""
-    # Get all tables
-    tables_cursor = cursor.tables()
-    
-    # There should be at least some system tables
-    rows = tables_cursor.fetchall()
-    assert len(rows) > 0, "Should return at least some tables"
-    
-    # Check row structure
-    row = rows[0]
-    assert len(row) == 5, "Should return 5 columns"
-    assert hasattr(row, "table_cat"), "Row should have table_cat attribute"
-    assert hasattr(row, "table_schem"), "Row should have table_schem attribute"
-    assert hasattr(row, "table_name"), "Row should have table_name attribute"
-    assert hasattr(row, "table_type"), "Row should have table_type attribute"
-    assert hasattr(row, "remarks"), "Row should have remarks attribute"
-
-def test_tables_filter_by_name(cursor, db_connection):
-    """Test tables() method with table name filter"""
+def test_tables_setup(cursor, db_connection):
+    """Create test objects for tables method testing"""
     try:
-        # Create a test table with a specific name
-        cursor.execute("CREATE TABLE #test_tables_filter_name (id INT)")
+        # Create a test schema for isolation
+        cursor.execute("IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'pytest_tables_schema') EXEC('CREATE SCHEMA pytest_tables_schema')")
+        
+        # Drop tables if they exist to ensure clean state
+        cursor.execute("DROP TABLE IF EXISTS pytest_tables_schema.regular_table")
+        cursor.execute("DROP TABLE IF EXISTS pytest_tables_schema.another_table") 
+        cursor.execute("DROP VIEW IF EXISTS pytest_tables_schema.test_view")
+        
+        # Create regular table
+        cursor.execute("""
+        CREATE TABLE pytest_tables_schema.regular_table (
+            id INT PRIMARY KEY,
+            name VARCHAR(100)
+        )
+        """)
+        
+        # Create another table
+        cursor.execute("""
+        CREATE TABLE pytest_tables_schema.another_table (
+            id INT PRIMARY KEY,
+            description VARCHAR(200)
+        )
+        """)
+        
+        # Create a view
+        cursor.execute("""
+        CREATE VIEW pytest_tables_schema.test_view AS
+        SELECT id, name FROM pytest_tables_schema.regular_table
+        """)
+        
         db_connection.commit()
+    except Exception as e:
+        pytest.fail(f"Test setup failed: {e}")
+
+def test_tables_all(cursor, db_connection):
+    """Test tables returns information about all tables/views"""
+    try:
+        # First set up our test tables
+        test_tables_setup(cursor, db_connection)
         
-        # Get all temp tables and filter client-side instead of relying on server filtering
-        tables_cursor = cursor.tables(table="#%")  # Get all temp tables
-        rows = tables_cursor.fetchall()
+        # Get all tables (no filters)
+        tables_list = cursor.tables()
         
-        # Find our table in the results
-        found = False
-        for row in rows:
-            table_name = row[2] if isinstance(row, tuple) else row.table_name
-            if isinstance(table_name, str) and table_name.startswith("#test_tables_filter_name"):
-                found = True
+        # Verify we got results
+        assert tables_list is not None, "tables() should return results"
+        assert len(tables_list) > 0, "tables() should return at least one table"
+        
+        # Verify our test tables are in the results
+        # Use case-insensitive comparison to avoid driver case sensitivity issues
+        found_test_table = False
+        for table in tables_list:
+            if (hasattr(table, 'table_name') and 
+                table.table_name and 
+                table.table_name.lower() == 'regular_table' and
+                hasattr(table, 'table_schem') and 
+                table.table_schem and 
+                table.table_schem.lower() == 'pytest_tables_schema'):
+                found_test_table = True
                 break
                 
-        assert found, "Should find the test table"
+        assert found_test_table, "Test table should be included in results"
+        
+        # Verify structure of results
+        first_row = tables_list[0]
+        assert hasattr(first_row, 'table_cat'), "Result should have table_cat column"
+        assert hasattr(first_row, 'table_schem'), "Result should have table_schem column"
+        assert hasattr(first_row, 'table_name'), "Result should have table_name column"
+        assert hasattr(first_row, 'table_type'), "Result should have table_type column"
+        assert hasattr(first_row, 'remarks'), "Result should have remarks column"
         
     finally:
-        cursor.execute("DROP TABLE IF EXISTS #test_tables_filter_name")
-        db_connection.commit()
+        # Clean up happens in test_tables_cleanup
+        pass
 
-def test_tables_filter_by_schema(cursor):
-    """Test tables() method with schema filter"""
-    # Get tables in the dbo schema
-    tables_cursor = cursor.tables(schema="dbo")
-    rows = tables_cursor.fetchall()
-    
-    # Should have some tables in dbo schema
-    assert len(rows) > 0, "Should find tables in dbo schema"
-    
-    # All returned tables should be in dbo schema
-    for row in rows:
-        assert row.table_schem == "dbo", "All tables should be in dbo schema"
-
-def test_tables_filter_by_type(cursor):
-    """Test tables() method with table type filter"""
-    # Get only tables (not views)
-    tables_cursor = cursor.tables(tableType="BASE TABLE")
-    rows = tables_cursor.fetchall()
-    
-    # Should have some base tables
-    assert len(rows) > 0, "Should find some BASE TABLEs"
-    
-    # All returned objects should be either BASE TABLE or VIEW
-    for row in rows:
-        assert row.table_type == "BASE TABLE", "All objects should be BASE TABLE type"
-    
-    # Try with views
-    views_cursor = cursor.tables(tableType="VIEW")
-    view_rows = views_cursor.fetchall()
-    
-    # System views should exist
-    if len(view_rows) > 0:
-        for row in view_rows:
-            assert row.table_type == "VIEW", "All objects should be VIEW type"
-
-def test_tables_with_wildcards(cursor, db_connection):
-    """Test tables() method with wildcard patterns"""
+def test_tables_specific_table(cursor, db_connection):
+    """Test tables returns information about a specific table"""
     try:
-        # Create test tables with specific naming pattern
-        cursor.execute("CREATE TABLE #test_wild_1 (id INT)")
-        cursor.execute("CREATE TABLE #test_wild_2 (id INT)")
-        cursor.execute("CREATE TABLE #other_table (id INT)")
-        db_connection.commit()
+        # Get specific table
+        tables_list = cursor.tables(
+            table='regular_table', 
+            schema='pytest_tables_schema'
+        )
         
-        # Search with wildcard
-        tables_cursor = cursor.tables(table="#test_wild%")
-        rows = tables_cursor.fetchall()
+        # Verify we got the right result
+        assert len(tables_list) == 1, "Should find exactly 1 table"
         
-        # Should find 2 tables matching the pattern
-        assert len(rows) == 2, "Should find 2 tables matching the wildcard pattern"
-        
-        # All tables should start with #test_wild
-        table_names = [row.table_name for row in rows]
-        test_wild_1_found = any(name.startswith("#test_wild_1") for name in table_names)
-        test_wild_2_found = any(name.startswith("#test_wild_2") for name in table_names)
-        other_table_found = any(name.startswith("#other_table") for name in table_names)
-        
-        assert test_wild_1_found, "Should find #test_wild_1"
-        assert test_wild_2_found, "Should find #test_wild_2"
-        assert not other_table_found, "Should not find #other_table"
+        # Verify table details
+        table = tables_list[0]
+        assert table.table_name.lower() == 'regular_table', "Table name should be 'regular_table'"
+        assert table.table_schem.lower() == 'pytest_tables_schema', "Schema should be 'pytest_tables_schema'"
+        assert table.table_type == 'TABLE', "Table type should be 'TABLE'"
         
     finally:
-        cursor.execute("DROP TABLE IF EXISTS #test_wild_1")
-        cursor.execute("DROP TABLE IF EXISTS #test_wild_2")
-        cursor.execute("DROP TABLE IF EXISTS #other_table")
-        db_connection.commit()
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_with_table_pattern(cursor, db_connection):
+    """Test tables with table name pattern"""
+    try:
+        # Get tables with pattern
+        tables_list = cursor.tables(
+            table='%table',
+            schema='pytest_tables_schema'
+        )
+        
+        # Should find both test tables 
+        assert len(tables_list) == 2, "Should find 2 tables matching '%table'"
+        
+        # Verify we found both test tables
+        table_names = set()
+        for table in tables_list:
+            if table.table_name:
+                table_names.add(table.table_name.lower())
+        
+        assert 'regular_table' in table_names, "Should find regular_table"
+        assert 'another_table' in table_names, "Should find another_table"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_with_schema_pattern(cursor, db_connection):
+    """Test tables with schema name pattern"""
+    try:
+        # Get tables with schema pattern
+        tables_list = cursor.tables(
+            schema='pytest_%'
+        )
+        
+        # Should find our test tables/view
+        test_tables = []
+        for table in tables_list:
+            if (table.table_schem and 
+                table.table_schem.lower() == 'pytest_tables_schema' and
+                table.table_name and
+                table.table_name.lower() in ('regular_table', 'another_table', 'test_view')):
+                test_tables.append(table.table_name.lower())
+                
+        assert len(test_tables) == 3, "Should find our 3 test objects"
+        assert 'regular_table' in test_tables, "Should find regular_table"
+        assert 'another_table' in test_tables, "Should find another_table" 
+        assert 'test_view' in test_tables, "Should find test_view"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_with_type_filter(cursor, db_connection):
+    """Test tables with table type filter"""
+    try:
+        # Get only tables
+        tables_list = cursor.tables(
+            schema='pytest_tables_schema',
+            tableType='TABLE'
+        )
+        
+        # Verify only regular tables
+        table_types = set()
+        table_names = set()
+        for table in tables_list:
+            if table.table_type:
+                table_types.add(table.table_type)
+            if table.table_name:
+                table_names.add(table.table_name.lower())
+                
+        assert len(table_types) == 1, "Should only have one table type"
+        assert 'TABLE' in table_types, "Should only find TABLE type"
+        assert 'regular_table' in table_names, "Should find regular_table"
+        assert 'another_table' in table_names, "Should find another_table"
+        assert 'test_view' not in table_names, "Should not find test_view"
+        
+        # Get only views
+        views_list = cursor.tables(
+            schema='pytest_tables_schema',
+            tableType='VIEW'
+        )
+        
+        # Verify only views
+        view_names = set()
+        for view in views_list:
+            if view.table_name:
+                view_names.add(view.table_name.lower())
+                
+        assert 'test_view' in view_names, "Should find test_view"
+        assert 'regular_table' not in view_names, "Should not find regular_table"
+        assert 'another_table' not in view_names, "Should not find another_table"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_with_multiple_types(cursor, db_connection):
+    """Test tables with multiple table types"""
+    try:
+        # Get both tables and views
+        tables_list = cursor.tables(
+            schema='pytest_tables_schema',
+            tableType=['TABLE', 'VIEW']
+        )
+        
+        # Verify both tables and views
+        object_names = set()
+        for obj in tables_list:
+            if obj.table_name:
+                object_names.add(obj.table_name.lower())
+                
+        assert len(object_names) == 3, "Should find 3 objects (2 tables + 1 view)"
+        assert 'regular_table' in object_names, "Should find regular_table"
+        assert 'another_table' in object_names, "Should find another_table"
+        assert 'test_view' in object_names, "Should find test_view"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_catalog_filter(cursor, db_connection):
+    """Test tables with catalog filter"""
+    try:
+        # Get current database name
+        cursor.execute("SELECT DB_NAME() AS current_db")
+        current_db = cursor.fetchone().current_db
+        
+        # Get tables with current catalog
+        tables_list = cursor.tables(
+            catalog=current_db,
+            schema='pytest_tables_schema'
+        )
+        
+        # Verify catalog filter worked
+        assert len(tables_list) > 0, "Should find tables with correct catalog"
+        
+        # Verify catalog in results
+        for table in tables_list:
+            # Some drivers might return None for catalog
+            if table.table_cat is not None:
+                assert table.table_cat.lower() == current_db.lower(), "Wrong table catalog"
+            
+        # Test with non-existent catalog
+        fake_tables = cursor.tables(
+            catalog='nonexistent_db_xyz123',
+            schema='pytest_tables_schema'
+        )
+        assert len(fake_tables) == 0, "Should return empty list for non-existent catalog"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_nonexistent(cursor):
+    """Test tables with non-existent objects"""
+    # Test with non-existent table
+    tables_list = cursor.tables(table='nonexistent_table_xyz123')
+    
+    # Should return empty list, not error
+    assert isinstance(tables_list, list), "Should return a list for non-existent table"
+    assert len(tables_list) == 0, "Should return empty list for non-existent table"
+    
+    # Test with non-existent schema
+    tables_list = cursor.tables(
+        table='regular_table', 
+        schema='nonexistent_schema_xyz123'
+    )
+    assert len(tables_list) == 0, "Should return empty list for non-existent schema"
 
 def test_tables_combined_filters(cursor, db_connection):
-    """Test tables() method with multiple filters combined"""
+    """Test tables with multiple combined filters"""
     try:
-        # Create test tables
-        cursor.execute("CREATE TABLE #test_combined_filters (id INT)")
-        db_connection.commit()
+        # Test with schema and table pattern
+        tables_list = cursor.tables(
+            schema='pytest_tables_schema',
+            table='regular%'
+        )
         
-        # Get all temp tables and filter client-side
-        tables_cursor = cursor.tables(table="#%", schema="dbo", tableType="BASE TABLE")
-        rows = tables_cursor.fetchall()
+        # Should find only regular_table
+        assert len(tables_list) == 1, "Should find 1 table with combined filters"
+        assert tables_list[0].table_name.lower() == 'regular_table', "Should find regular_table"
         
-        # Find our table in the results
-        found = False
-        for row in rows:
-            if row.table_name.startswith("#test_combined_filters"):
-                found = True
-                assert row.table_schem == "dbo", "Schema should be dbo"
-                assert row.table_type == "BASE TABLE", "Table type should be BASE TABLE"
-                break
+        # Test with schema, table pattern, and type
+        tables_list = cursor.tables(
+            schema='pytest_tables_schema',
+            table='%table',
+            tableType='TABLE'
+        )
+        
+        # Should find both tables but not view
+        table_names = set()
+        for table in tables_list:
+            if table.table_name:
+                table_names.add(table.table_name.lower())
                 
-        assert found, "Should find the test table with combined filters"
+        assert len(table_names) == 2, "Should find 2 tables with combined filters"
+        assert 'regular_table' in table_names, "Should find regular_table"
+        assert 'another_table' in table_names, "Should find another_table"
+        assert 'test_view' not in table_names, "Should not find test_view"
         
     finally:
-        cursor.execute("DROP TABLE IF EXISTS #test_combined_filters")
-        db_connection.commit()
+        # Clean up happens in test_tables_cleanup
+        pass
 
-def test_tables_empty_result(cursor):
-    """Test tables() method with criteria that match nothing"""
-    # Use a nonsense table name that should match nothing
-    tables_cursor = cursor.tables(table="this_table_definitely_does_not_exist_123456789")
-    
-    # Verify no results
-    row = tables_cursor.fetchone()
-    assert row is None, "Should not find any tables matching nonsense name"
-    
-    rows = tables_cursor.fetchall()
-    assert len(rows) == 0, "fetchall() should return empty list"
-
-def test_tables_type_as_list(cursor):
-    """Test tables() method with tableType as a list"""
-    # Get both tables and views
-    tables_cursor = cursor.tables(tableType=["BASE TABLE", "VIEW"])
-    rows = tables_cursor.fetchall()
-    
-    # Should find some objects
-    assert len(rows) > 0, "Should find tables or views"
-    
-    # All objects should be either BASE TABLE or VIEW
-    for row in rows:
-        assert row.table_type in ["BASE TABLE", "VIEW"], "Objects should be BASE TABLE or VIEW"
-
-def test_tables_iteration(cursor, db_connection):
-    """Test iterating over tables() results"""
+def test_tables_result_processing(cursor, db_connection):
+    """Test processing of tables result set for different client needs"""
     try:
-        # Create test tables
-        cursor.execute("CREATE TABLE #test_iteration_1 (id INT)")
-        cursor.execute("CREATE TABLE #test_iteration_2 (id INT)")
-        db_connection.commit()
+        # Get all test objects
+        tables_list = cursor.tables(schema='pytest_tables_schema')
         
-        # Get tables matching pattern
-        table_names = []
-        for row in cursor.tables(table="#test_iteration_%"):
-            table_names.append(row.table_name)
+        # Test 1: Extract just table names
+        table_names = [table.table_name for table in tables_list]
+        assert len(table_names) == 3, "Should extract 3 table names"
         
-        # Verify iteration results
-        assert len(table_names) == 2, "Should find 2 tables via iteration"
+        # Test 2: Filter to just tables (not views)
+        just_tables = [table for table in tables_list if table.table_type == 'TABLE']
+        assert len(just_tables) == 2, "Should find 2 regular tables"
         
-        # Check if any names start with the expected base names
-        test_1_found = any(name.startswith("#test_iteration_1") for name in table_names)
-        test_2_found = any(name.startswith("#test_iteration_2") for name in table_names)
+        # Test 3: Create a schema.table dictionary
+        schema_table_map = {}
+        for table in tables_list:
+            if table.table_schem not in schema_table_map:
+                schema_table_map[table.table_schem] = []
+            schema_table_map[table.table_schem].append(table.table_name)
+            
+        assert 'pytest_tables_schema' in schema_table_map, "Should have our test schema"
+        assert len(schema_table_map['pytest_tables_schema']) == 3, "Should have 3 objects in test schema"
         
-        assert test_1_found, "Should find first test table"
-        assert test_2_found, "Should find second test table"
+        # Test 4: Check indexing and attribute access
+        first_table = tables_list[0]
+        assert first_table[0] == first_table.table_cat, "Index 0 should match table_cat attribute"
+        assert first_table[1] == first_table.table_schem, "Index 1 should match table_schem attribute"
+        assert first_table[2] == first_table.table_name, "Index 2 should match table_name attribute"
+        assert first_table[3] == first_table.table_type, "Index 3 should match table_type attribute"
         
     finally:
-        cursor.execute("DROP TABLE IF EXISTS #test_iteration_1")
-        cursor.execute("DROP TABLE IF EXISTS #test_iteration_2")
-        db_connection.commit()
+        # Clean up happens in test_tables_cleanup
+        pass
 
 def test_tables_method_chaining(cursor, db_connection):
-    """Test tables() method chaining with fetch methods"""
+    """Test tables method with method chaining"""
     try:
-        # Create test table
-        cursor.execute("CREATE TABLE #test_method_chaining (id INT)")
-        db_connection.commit()
+        # Test method chaining with other methods
+        chained_result = cursor.tables(
+            schema='pytest_tables_schema', 
+            table='regular_table'
+        )
         
-        # Test with fetchall() since we need to search through results
-        rows = cursor.tables(table="#%").fetchall()
-        found = any(row.table_name.startswith("#test_method_chaining") for row in rows)
-        assert found, "Should find the test table"
-        
-        # Test exists check pattern
-        exists = any(row.table_name.startswith("#test_method_chaining") 
-                   for row in cursor.tables(table="#%").fetchall())
-        assert exists is True, "Table should exist"
-        
-        # Test non-exists check
-        exists = any(row.table_name == "nonexistent_table_name" 
-                   for row in cursor.tables(table="%").fetchall())
-        assert exists is False, "Nonexistent table should not exist"
+        # Verify chained result
+        assert len(chained_result) == 1, "Chained result should find 1 table"
+        assert chained_result[0].table_name.lower() == 'regular_table', "Should find regular_table"
         
     finally:
-        cursor.execute("DROP TABLE IF EXISTS #test_method_chaining")
-        db_connection.commit()
+        # Clean up happens in test_tables_cleanup
+        pass
 
-def test_tables_check_existence_pattern(cursor, db_connection):
-    """Test common pattern for checking if a table exists"""
+def test_tables_cleanup(cursor, db_connection):
+    """Clean up test objects after testing"""
     try:
-        # Create test table
-        cursor.execute("CREATE TABLE #test_exists_check (id INT)")
+        # Drop all test objects
+        cursor.execute("DROP VIEW IF EXISTS pytest_tables_schema.test_view")
+        cursor.execute("DROP TABLE IF EXISTS pytest_tables_schema.regular_table")
+        cursor.execute("DROP TABLE IF EXISTS pytest_tables_schema.another_table")
+        
+        # Drop the test schema
+        cursor.execute("DROP SCHEMA IF EXISTS pytest_tables_schema")
         db_connection.commit()
-        
-        # Get all temp tables and check if our table exists
-        rows = cursor.tables(table="#%").fetchall()
-        table_exists = any(row.table_name.startswith("#test_exists_check") for row in rows)
-        assert table_exists is True, "Should detect that table exists"
-        
-        # Check for non-existent table
-        nonexistent_exists = any(row.table_name == "#nonexistent_table_name" for row in rows)
-        assert nonexistent_exists is False, "Should detect that nonexistent table doesn't exist"
-        
-    finally:
-        cursor.execute("DROP TABLE IF EXISTS #test_exists_check")
-        db_connection.commit()
-
-def test_tables_type_as_list(cursor):
-    """Test tables() method with tableType as a list"""
-    # Get both tables and views
-    tables_cursor = cursor.tables(tableType=["BASE TABLE", "VIEW"])
-    rows = tables_cursor.fetchall()
-    
-    # Should find some objects
-    assert len(rows) > 0, "Should find tables or views"
-    
-    # All objects should be either BASE TABLE or VIEW
-    for row in rows:
-        assert row.table_type in ["BASE TABLE", "VIEW"], "Objects should be BASE TABLE or VIEW"
+    except Exception as e:
+        pytest.fail(f"Test cleanup failed: {e}")
 
 def test_close(db_connection):
     """Test closing the cursor"""

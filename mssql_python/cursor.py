@@ -1301,76 +1301,94 @@ class Cursor:
 
     def tables(self, table=None, catalog=None, schema=None, tableType=None):
         """
-        Returns information about tables in the database that match the given criteria.
+        Returns information about tables in the database that match the given criteria using
+        the SQLTables ODBC function.
+        
+        Args:
+            table (str, optional): The table name pattern. Default is None (all tables).
+            catalog (str, optional): The catalog name. Default is None.
+            schema (str, optional): The schema name pattern. Default is None.
+            tableType (str or list, optional): The table type filter. Default is None.
+                                              Example: "TABLE" or ["TABLE", "VIEW"]
+        
+        Returns:
+            list: A list of Row objects containing table information with these columns:
+                  - table_cat: Catalog name
+                  - table_schem: Schema name
+                  - table_name: Table name
+                  - table_type: Table type (e.g., "TABLE", "VIEW")
+                  - remarks: Comments about the table
+        
+        Example:
+            # Get all tables in the database
+            tables = cursor.tables()
+            
+            # Get all tables in schema 'dbo'
+            tables = cursor.tables(schema='dbo')
+            
+            # Get table named 'Customers'
+            tables = cursor.tables(table='Customers')
+            
+            # Get all views
+            tables = cursor.tables(tableType='VIEW')
         """
         self._check_closed()
         
         # Clear messages
         self.messages = []
         
-        # Special handling for temporary tables with '#' prefix
-        is_temp_search = table and isinstance(table, str) and '#' in table
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
         
-        if is_temp_search:
-            # For temp tables, we need to use a direct SQL query to tempdb
-            sql = """
-            SELECT 
-                DB_NAME() AS table_cat,
-                s.name AS table_schem,
-                t.name AS table_name,
-                'BASE TABLE' AS table_type,
-                '' AS remarks
-            FROM 
-                tempdb.sys.tables t
-                INNER JOIN tempdb.sys.schemas s ON t.schema_id = s.schema_id 
-            WHERE 
-                t.name LIKE ? 
-            """
-            params = [table]
-            
-            if schema is not None:
-                sql += " AND s.name LIKE ?"
-                params.append(schema)
-        else:
-            # For regular tables, use INFORMATION_SCHEMA
-            sql = """
-            SELECT 
-                TABLE_CATALOG AS table_cat,
-                TABLE_SCHEMA AS table_schem,
-                TABLE_NAME AS table_name,
-                TABLE_TYPE AS table_type,
-                '' AS remarks
-            FROM 
-                INFORMATION_SCHEMA.TABLES
-            WHERE 
-                1=1
-            """
-            
-            params = []
-            
-            if catalog is not None:
-                sql += " AND TABLE_CATALOG LIKE ?"
-                params.append(catalog)
-            
-            if schema is not None:
-                sql += " AND TABLE_SCHEMA LIKE ?"
-                params.append(schema)
-            
-            if table is not None:
-                sql += " AND TABLE_NAME LIKE ?"
-                params.append(table)
-            
-            if tableType is not None:
-                if isinstance(tableType, str):
-                    sql += " AND TABLE_TYPE LIKE ?"
-                    params.append(tableType)
-                elif isinstance(tableType, (list, tuple)):
-                    placeholders = ", ".join("?" for _ in tableType)
-                    sql += f" AND TABLE_TYPE IN ({placeholders})"
-                    params.extend(tableType)
+        # Format table_type parameter - SQLTables expects comma-separated string
+        table_type_str = None
+        if tableType is not None:
+            if isinstance(tableType, (list, tuple)):
+                table_type_str = ",".join(tableType)
+            else:
+                table_type_str = str(tableType)
         
-        # Execute the query
-        self.execute(sql, params)
+        # Call SQLTables via the helper method
+        self._execute_tables(
+            self.hstmt,
+            catalog_name=catalog,
+            schema_name=schema,
+            table_name=table,
+            table_type=table_type_str
+        )
         
-        # Return self to enable method chaining
-        return self
+        # Initialize description from column metadata
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except Exception:
+            # If describe fails, create a manual description for the standard columns
+            column_types = [str, str, str, str, str]
+            self.description = [
+                ("table_cat", column_types[0], None, 128, 128, 0, True),
+                ("table_schem", column_types[1], None, 128, 128, 0, True),
+                ("table_name", column_types[2], None, 128, 128, 0, False),
+                ("table_type", column_types[3], None, 128, 128, 0, False),
+                ("remarks", column_types[4], None, 254, 254, 0, True)
+            ]
+        
+        # Define column names in ODBC standard order
+        column_names = [
+            "table_cat", "table_schem", "table_name", "table_type", "remarks"
+        ]
+        
+        # Fetch all rows
+        rows_data = []
+        ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+        
+        # Create a column map for attribute access
+        column_map = {name: i for i, name in enumerate(column_names)}
+        
+        # Create Row objects with the column map
+        result_rows = []
+        for row_data in rows_data:
+            row = Row(row_data, self.description, column_map)
+            result_rows.append(row)
+        
+        return result_rows
