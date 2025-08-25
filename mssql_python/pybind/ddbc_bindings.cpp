@@ -134,6 +134,7 @@ SQLFreeStmtFunc SQLFreeStmt_ptr = nullptr;
 
 // Diagnostic APIs
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
+SQLTablesFunc SQLTables_ptr = nullptr;
 
 namespace {
 
@@ -786,6 +787,7 @@ DriverHandle LoadDriverOrThrowException() {
     SQLFreeStmt_ptr = GetFunctionPointer<SQLFreeStmtFunc>(handle, "SQLFreeStmt");
 
     SQLGetDiagRec_ptr = GetFunctionPointer<SQLGetDiagRecFunc>(handle, "SQLGetDiagRecW");
+    SQLTables_ptr = GetFunctionPointer<SQLTablesFunc>(handle, "SQLTablesW");
 
     bool success =
         SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
@@ -796,7 +798,7 @@ DriverHandle LoadDriverOrThrowException() {
         SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr &&
         SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr &&
         SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr &&
-        SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
+        SQLFreeStmt_ptr && SQLGetDiagRec_ptr && SQLTables_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver.");
@@ -979,6 +981,91 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Q
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to execute query directly");
     }
+    return ret;
+}
+
+// Wrapper for SQLTables
+SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, 
+                         const std::wstring& catalog,
+                         const std::wstring& schema, 
+                         const std::wstring& table,
+                         const std::wstring& tableType) {
+    
+    if (!SQLTables_ptr) {
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();
+    }
+
+    SQLWCHAR* catalogPtr = nullptr;
+    SQLWCHAR* schemaPtr = nullptr;
+    SQLWCHAR* tablePtr = nullptr;
+    SQLWCHAR* tableTypePtr = nullptr;
+    SQLSMALLINT catalogLen = 0;
+    SQLSMALLINT schemaLen = 0;
+    SQLSMALLINT tableLen = 0;
+    SQLSMALLINT tableTypeLen = 0;
+
+    std::vector<SQLWCHAR> catalogBuffer;
+    std::vector<SQLWCHAR> schemaBuffer;
+    std::vector<SQLWCHAR> tableBuffer;
+    std::vector<SQLWCHAR> tableTypeBuffer;
+
+#if defined(__APPLE__) || defined(__linux__)
+    // On Unix platforms, convert wstring to SQLWCHAR array
+    if (!catalog.empty()) {
+        catalogBuffer = WStringToSQLWCHAR(catalog);
+        catalogPtr = catalogBuffer.data();
+        catalogLen = SQL_NTS;
+    }
+    if (!schema.empty()) {
+        schemaBuffer = WStringToSQLWCHAR(schema);
+        schemaPtr = schemaBuffer.data();
+        schemaLen = SQL_NTS;
+    }
+    if (!table.empty()) {
+        tableBuffer = WStringToSQLWCHAR(table);
+        tablePtr = tableBuffer.data();
+        tableLen = SQL_NTS;
+    }
+    if (!tableType.empty()) {
+        tableTypeBuffer = WStringToSQLWCHAR(tableType);
+        tableTypePtr = tableTypeBuffer.data();
+        tableTypeLen = SQL_NTS;
+    }
+#else
+    // On Windows, direct assignment works
+    if (!catalog.empty()) {
+        catalogPtr = const_cast<SQLWCHAR*>(catalog.c_str());
+        catalogLen = SQL_NTS;
+    }
+    if (!schema.empty()) {
+        schemaPtr = const_cast<SQLWCHAR*>(schema.c_str());
+        schemaLen = SQL_NTS;
+    }
+    if (!table.empty()) {
+        tablePtr = const_cast<SQLWCHAR*>(table.c_str());
+        tableLen = SQL_NTS;
+    }
+    if (!tableType.empty()) {
+        tableTypePtr = const_cast<SQLWCHAR*>(tableType.c_str());
+        tableTypeLen = SQL_NTS;
+    }
+#endif
+
+    SQLRETURN ret = SQLTables_ptr(
+        StatementHandle->get(),
+        catalogPtr, catalogLen,
+        schemaPtr, schemaLen,
+        tablePtr, tableLen,
+        tableTypePtr, tableTypeLen
+    );
+
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("SQLTables failed with return code: {}", ret);
+    } else {
+        LOG("SQLTables succeeded");
+    }
+
     return ret;
 }
 
@@ -2616,6 +2703,12 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,
           "Get all diagnostic records for a handle",
           py::arg("handle"));
+        // Add to PYBIND11_MODULE section
+    m.def("DDBCSQLTables", &SQLTables_wrap, 
+          "Get table information using ODBC SQLTables",
+          py::arg("StatementHandle"), py::arg("catalog") = std::wstring(), 
+          py::arg("schema") = std::wstring(), py::arg("table") = std::wstring(), 
+          py::arg("tableType") = std::wstring());
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";

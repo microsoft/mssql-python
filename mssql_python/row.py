@@ -9,27 +9,27 @@ class Row:
         print(row.column_name)  # Access by column name
     """
     
-    def __init__(self, values, cursor_description):
+    def __init__(self, values, description, column_map=None):
         """
-        Initialize a Row object with values and cursor description.
+        Initialize a Row object with values and description.
         
         Args:
-            values: List of values for this row
-            cursor_description: The cursor description containing column metadata
+            values: List of values for this row.
+            description: Description of the columns (from cursor.description).
+            column_map: Optional mapping of column names to indices.
         """
         self._values = values
+        self._description = description
         
-        # TODO: ADO task - Optimize memory usage by sharing column map across rows
-        # Instead of storing the full cursor_description in each Row object:
-        # 1. Build the column map once at the cursor level after setting description
-        # 2. Pass only this map to each Row instance
-        # 3. Remove cursor_description from Row objects entirely
-        
-        # Create mapping of column names to indices
-        self._column_map = {}
-        for i, desc in enumerate(cursor_description):
-            if desc and desc[0]:  # Ensure column name exists
-                self._column_map[desc[0]] = i
+        # Build column map if not provided
+        if column_map is None:
+            self._column_map = {}
+            for i, desc in enumerate(description):
+                col_name = desc[0]
+                self._column_map[col_name] = i
+                self._column_map[col_name.lower()] = i  # Add lowercase for case-insensitivity
+        else:
+            self._column_map = column_map
     
     def __getitem__(self, index):
         """Allow accessing by numeric index: row[0]"""

@@ -105,7 +105,18 @@ typedef SQLRETURN (SQL_API* SQLDescribeColFunc)(SQLHSTMT, SQLUSMALLINT, SQLWCHAR
 typedef SQLRETURN (SQL_API* SQLMoreResultsFunc)(SQLHSTMT);
 typedef SQLRETURN (SQL_API* SQLColAttributeFunc)(SQLHSTMT, SQLUSMALLINT, SQLUSMALLINT, SQLPOINTER,
                                          SQLSMALLINT, SQLSMALLINT*, SQLPOINTER);
-
+typedef SQLRETURN (*SQLTablesFunc)(
+    SQLHSTMT       StatementHandle,
+    SQLWCHAR*      CatalogName,
+    SQLSMALLINT    NameLength1,
+    SQLWCHAR*      SchemaName,
+    SQLSMALLINT    NameLength2,
+    SQLWCHAR*      TableName,
+    SQLSMALLINT    NameLength3,
+    SQLWCHAR*      TableType,
+    SQLSMALLINT    NameLength4
+);
+                                         
 // Transaction APIs
 typedef SQLRETURN (SQL_API* SQLEndTranFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT);
 
@@ -148,6 +159,7 @@ extern SQLBindColFunc SQLBindCol_ptr;
 extern SQLDescribeColFunc SQLDescribeCol_ptr;
 extern SQLMoreResultsFunc SQLMoreResults_ptr;
 extern SQLColAttributeFunc SQLColAttribute_ptr;
+extern SQLTablesFunc SQLTables_ptr;
 
 // Transaction APIs
 extern SQLEndTranFunc SQLEndTran_ptr;
