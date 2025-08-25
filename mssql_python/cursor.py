@@ -1319,6 +1319,11 @@ class Cursor:
                   - table_type: Table type (e.g., "TABLE", "VIEW")
                   - remarks: Comments about the table
         
+        Notes:
+            This method only processes the standard five columns as defined in the ODBC
+            specification. Any additional columns that might be returned by specific ODBC
+            drivers are not included in the result set.
+        
         Example:
             # Get all tables in the database
             tables = cursor.tables()

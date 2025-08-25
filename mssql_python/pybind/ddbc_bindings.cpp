@@ -990,8 +990,6 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle,
                          const std::wstring& schema, 
                          const std::wstring& table,
                          const std::wstring& tableType) {
-    LOG("Calling SQLTables API with parameters: catalog={}, schema={}, table={}, tableType={}", 
-        WideToUTF8(catalog), WideToUTF8(schema), WideToUTF8(table), WideToUTF8(tableType));
     
     if (!SQLTables_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
