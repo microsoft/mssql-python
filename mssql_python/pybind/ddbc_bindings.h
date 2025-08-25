@@ -33,49 +33,107 @@ using namespace pybind11::literals;
 #include <sqlext.h>
 
 #if defined(__APPLE__) || defined(__linux__)
-    // macOS-specific headers
-    #include <dlfcn.h>
+#include <dlfcn.h>
 
-    inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
-        if (!sqlwStr) return std::wstring();
+// Unicode constants for surrogate ranges and max scalar value
+constexpr uint32_t UNICODE_SURROGATE_HIGH_START = 0xD800;
+constexpr uint32_t UNICODE_SURROGATE_HIGH_END   = 0xDBFF;
+constexpr uint32_t UNICODE_SURROGATE_LOW_START  = 0xDC00;
+constexpr uint32_t UNICODE_SURROGATE_LOW_END    = 0xDFFF;
+constexpr uint32_t UNICODE_MAX_CODEPOINT        = 0x10FFFF;
+constexpr uint32_t UNICODE_REPLACEMENT_CHAR     = 0xFFFD;
 
-        if (length == SQL_NTS) {
-            size_t i = 0;
-            while (sqlwStr[i] != 0) ++i;
-            length = i;
-        }
+// Validate whether a code point is a legal Unicode scalar value
+// (excludes surrogate halves and values beyond U+10FFFF)
+inline bool IsValidUnicodeScalar(uint32_t cp) {
+    return cp <= UNICODE_MAX_CODEPOINT &&
+           !(cp >= UNICODE_SURROGATE_HIGH_START && cp <= UNICODE_SURROGATE_LOW_END);
+}
 
-        std::wstring result;
-        result.reserve(length);
+inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
+    if (!sqlwStr) return std::wstring();
+
+    if (length == SQL_NTS) {
+        size_t i = 0;
+        while (sqlwStr[i] != 0) ++i;
+        length = i;
+    }
+    std::wstring result;
+    result.reserve(length);
+
+    if constexpr (sizeof(SQLWCHAR) == 2) {
+        // Decode UTF-16 to UTF-32 (with surrogate pair handling)
         for (size_t i = 0; i < length; ++i) {
-            result.push_back(static_cast<wchar_t>(sqlwStr[i]));
+            uint16_t wc = static_cast<uint16_t>(sqlwStr[i]);
+            // Check if this is a high surrogate (U+D800–U+DBFF)
+            if (wc >= UNICODE_SURROGATE_HIGH_START && wc <= UNICODE_SURROGATE_HIGH_END && i + 1 < length) {
+                uint16_t low = static_cast<uint16_t>(sqlwStr[i + 1]);
+                // Check if the next code unit is a low surrogate (U+DC00–U+DFFF)
+                if (low >= UNICODE_SURROGATE_LOW_START && low <= UNICODE_SURROGATE_LOW_END) {
+                    // Combine surrogate pair into a single code point
+                    uint32_t cp = (((wc - UNICODE_SURROGATE_HIGH_START) << 10) | (low - UNICODE_SURROGATE_LOW_START)) + 0x10000;
+                    result.push_back(static_cast<wchar_t>(cp));
+                    ++i; // Skip the low surrogate
+                    continue;
+                }
+            }
+            // If valid scalar then append, else append replacement char (U+FFFD)
+            if (IsValidUnicodeScalar(wc)) {
+                result.push_back(static_cast<wchar_t>(wc));
+            } else {
+                result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
+            }
         }
-        return result;
-    }
-
-    inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
-    std::vector<SQLWCHAR> result;
-
-    for (wchar_t wc : str) {
-        uint32_t codePoint = static_cast<uint32_t>(wc);
-        if (codePoint >= 0xD800 && codePoint <= 0xDFFF) {
-            // Skip invalid lone surrogates (shouldn't occur in well-formed wchar_t strings)
-            continue;
-        } else if (codePoint <= 0xFFFF) {
-            result.push_back(static_cast<SQLWCHAR>(codePoint));
-        } else if (codePoint <= 0x10FFFF) {
-            // Encode as surrogate pair
-            codePoint -= 0x10000;
-            SQLWCHAR highSurrogate = static_cast<SQLWCHAR>((codePoint >> 10) + 0xD800);
-            SQLWCHAR lowSurrogate  = static_cast<SQLWCHAR>((codePoint & 0x3FF) + 0xDC00);
-            result.push_back(highSurrogate);
-            result.push_back(lowSurrogate);
+    } else {
+        // SQLWCHAR is UTF-32, so just copy with validation
+        for (size_t i = 0; i < length; ++i) {
+            uint32_t cp = static_cast<uint32_t>(sqlwStr[i]);
+            if (IsValidUnicodeScalar(cp)) {
+                result.push_back(static_cast<wchar_t>(cp));
+            } else {
+                result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
+            }
         }
     }
-    result.push_back(0); // Null terminator
     return result;
 }
 
+inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
+    std::vector<SQLWCHAR> result;
+    result.reserve(str.size() + 2);
+    if constexpr (sizeof(SQLWCHAR) == 2) {
+        // Encode UTF-32 to UTF-16
+        for (wchar_t wc : str) {
+            uint32_t cp = static_cast<uint32_t>(wc);
+            if (!IsValidUnicodeScalar(cp)) {
+                cp = UNICODE_REPLACEMENT_CHAR;
+            }
+            if (cp <= 0xFFFF) {
+                // Fits in a single UTF-16 code unit
+                result.push_back(static_cast<SQLWCHAR>(cp));
+            } else {
+                // Encode as surrogate pair
+                cp -= 0x10000;
+                SQLWCHAR high = static_cast<SQLWCHAR>((cp >> 10) + UNICODE_SURROGATE_HIGH_START);
+                SQLWCHAR low  = static_cast<SQLWCHAR>((cp & 0x3FF) + UNICODE_SURROGATE_LOW_START);
+                result.push_back(high);
+                result.push_back(low);
+            }
+        }
+    } else {
+        // Encode UTF-32 directly
+        for (wchar_t wc : str) {
+            uint32_t cp = static_cast<uint32_t>(wc);
+            if (IsValidUnicodeScalar(cp)) {
+                result.push_back(static_cast<SQLWCHAR>(cp));
+            } else {
+                result.push_back(static_cast<SQLWCHAR>(UNICODE_REPLACEMENT_CHAR));
+            }
+        }
+    }
+    result.push_back(0); // null terminator
+    return result;
+}
 #endif
 
 #if defined(__APPLE__) || defined(__linux__)

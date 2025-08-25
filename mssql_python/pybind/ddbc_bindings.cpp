@@ -275,10 +275,16 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     AllocateParamBuffer<std::vector<SQLWCHAR>>(paramBuffers);
 
                 // Reserve space and convert from wstring to SQLWCHAR array
-                sqlwcharBuffer->resize(strParam->size() + 1, 0); // +1 for null terminator
                 std::vector<SQLWCHAR> utf16 = WStringToSQLWCHAR(*strParam);
-                sqlwcharBuffer->assign(utf16.begin(), utf16.end());
-
+                if (utf16.size() < strParam->size()) {
+                    LOG("Warning: UTF-16 encoding shrank string? input={} output={}",
+                        strParam->size(), utf16.size());
+                }
+                if (utf16.size() > strParam->size() * 2 + 1) {
+                    LOG("Warning: UTF-16 expansion unusually large: input={} output={}",
+                        strParam->size(), utf16.size());
+                }
+                *sqlwcharBuffer = std::move(utf16);
                 // Use the SQLWCHAR buffer instead of the wstring directly
                 dataPtr = sqlwcharBuffer->data();
                 bufferLength = sqlwcharBuffer->size() * sizeof(SQLWCHAR);
@@ -1704,6 +1710,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             // SQLGetData will null-terminate the data
 #if defined(__APPLE__) || defined(__linux__)
                             auto raw_bytes = reinterpret_cast<const char*>(dataBuffer.data());
+                            size_t actualBufferSize = dataBuffer.size() * sizeof(SQLWCHAR);
+                            if (dataLen < 0 || static_cast<size_t>(dataLen) > actualBufferSize) {
+                                LOG("Error: py::bytes creation request exceeds buffer size. dataLen={} buffer={}",
+                                    dataLen, actualBufferSize);
+                                ThrowStdException("Invalid buffer length for py::bytes");
+                            }
                             py::bytes py_bytes(raw_bytes, dataLen);
                             py::str decoded = py_bytes.attr("decode")("utf-16-le");
                             row.append(decoded);
