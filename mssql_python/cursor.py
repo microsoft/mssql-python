@@ -999,16 +999,7 @@ class Cursor:
         # Fetch the first row
         row = self.fetchone()
         
-        # If no row is available, return None
-        if row is None:
-            return None
-            
-        # If the row has no columns, return None (shouldn't happen in normal cases)
-        if len(row) == 0:
-            return None
-            
-        # Return the first column value (could be None if the column value is NULL)
-        return row[0]
+        return None if row is None else row[0]
 
     def __del__(self):
         """
