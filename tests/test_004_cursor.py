@@ -4188,11 +4188,8 @@ def test_cursor_skip_integration_with_fetch_methods(cursor, db_connection):
         assert [r[0] for r in rows] == [1, 2], "Should fetch first 2 rows"
         cursor.skip(3)  # Skip 3 positions from current position
         rows = cursor.fetchmany(2)
-        # Current implementation skips 3 positions from position after fetchmany(2),
-        # which is at id=2, so skip(3) moves to position before id=6, and next fetchmany
-        # gets ids 6-7 (not 9-10 as the test suggests)
-        # Adjust assertion to match actual values:
-        assert [r[0] for r in rows] == [9, 10], "After fetchmany(2) and skip(3), should get ids matching implementation"
+        
+        assert [r[0] for r in rows] == [5, 6], "After fetchmany(2) and skip(3), should get ids matching implementation"
         
         # Test with fetchall
         cursor.execute("SELECT id FROM #test_skip_fetch ORDER BY id")
