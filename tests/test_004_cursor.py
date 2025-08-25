@@ -1326,6 +1326,9 @@ def test_emoji_round_trip(cursor, db_connection):
         "Accented éüñç",
         "Chinese: 中文",
         "Japanese: 日本語",
+        "Hello 🚀 World",
+        "admin🔒user",
+        "1🚀' OR '1'='1",
     ]
 
     cursor.execute("""
