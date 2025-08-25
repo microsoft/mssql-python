@@ -1176,10 +1176,6 @@ class Cursor:
             if isinstance(e, (IndexError, NotSupportedError)):
                 raise
             raise IndexError(f"Scroll operation failed: {e}") from e
-            else:
-                raise IndexError(
-                    f"Scroll operation failed after {rows_consumed} of {rows_to_consume} rows: {e}"
-                ) from e
             
     def skip(self, count: int) -> None:
         """
