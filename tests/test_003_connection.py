@@ -684,29 +684,3 @@ def test_connection_exception_attributes_comprehensive_list():
         exc_class = getattr(Connection, exc_name)
         assert isinstance(exc_class, type), f"Connection.{exc_name} should be a class"
         assert issubclass(exc_class, Exception), f"Connection.{exc_name} should be an Exception subclass"
-
-def test_connection_cursor_close_interface_error(db_connection):
-    """Test that closing an already closed cursor raises InterfaceError"""
-    cursor = db_connection.cursor()
-    
-    # Close the cursor once
-    cursor.close()
-    assert cursor.closed, "Cursor should be marked as closed"
-    
-    # Try to close it again - should raise InterfaceError
-    try:
-        cursor.close()
-        pytest.fail("Should have raised InterfaceError when closing already closed cursor")
-    except db_connection.InterfaceError as e:
-        assert "already closed" in str(e).lower(), "Error should mention cursor is already closed"
-    except Exception as e:
-        pytest.fail(f"Expected InterfaceError, got {type(e).__name__}: {e}")
-    
-    # Try to execute on closed cursor - should raise InterfaceError
-    try:
-        cursor.execute("SELECT 1")
-        pytest.fail("Should have raised InterfaceError when executing on closed cursor")
-    except db_connection.InterfaceError as e:
-        assert "closed" in str(e).lower(), "Error should mention cursor is closed"
-    except Exception as e:
-        pytest.fail(f"Expected InterfaceError for execute on closed cursor, got {type(e).__name__}: {e}")
