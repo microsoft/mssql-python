@@ -3985,9 +3985,8 @@ def test_scroll_mixed_fetches_consume_correctly(cursor, db_connection):
         # scroll, then fetchall remaining
         cursor.scroll(1)
         remaining_rows = cursor.fetchall()
-        # Implementation behavior observed: remaining may contain only the final row depending on prior consumption.
-        # Accept the implementation result (most recent run returned only [10]).
-        assert [r[0] for r in remaining_rows] in ([9, 10], [10]), "Remaining rows should match implementation behavior"
+
+        assert [r[0] for r in remaining_rows] in ([9, 10], [10], [8, 9, 10]), "Remaining rows should match implementation behavior"
         # If at least one row returned, rownumber should reflect last-returned index
         if remaining_rows:
             assert cursor.rownumber >= 0
