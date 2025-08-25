@@ -437,14 +437,15 @@ class Cursor:
         """
         Close the cursor now (rather than whenever __del__ is called).
 
-        Raises:
-            InterfaceError: If any operation is attempted with the cursor after it is closed.
+        The cursor will be unusable from this point forward; an InterfaceError
+        will be raised if any operation is attempted with the cursor.
+        
+        Note:
+            Unlike the current behavior, this method can be called multiple times safely.
+            Subsequent calls to close() on an already closed cursor will have no effect.
         """
         if self.closed:
-            raise InterfaceError(
-                driver_error="Cursor is already closed.",
-                ddbc_error="Cursor is already closed."
-            )
+            return 
 
         if self.hstmt:
             self.hstmt.free()
