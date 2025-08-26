@@ -157,11 +157,9 @@ def sanitize_user_input(user_input: str, max_length: int = 50) -> str:
 
 def validate_attribute_value(attribute, value, sanitize_logs=True, max_log_length=50):
     """
-    Validates attribute and value pairs for connection attributes and optionally
-    sanitizes values for safe logging.
+    Validates attribute and value pairs for connection attributes.
     
-    This function performs comprehensive validation of ODBC connection attributes
-    and their values to ensure they are safe and valid before passing to the C++ layer.
+    Performs basic type checking and validation of ODBC connection attributes.
     
     Args:
         attribute (int): The connection attribute to validate (SQL_ATTR_*)
@@ -170,17 +168,8 @@ def validate_attribute_value(attribute, value, sanitize_logs=True, max_log_lengt
         max_log_length (int): Maximum length of sanitized output for logging
         
     Returns:
-        tuple: (is_valid, error_message, sanitized_attribute, sanitized_value) where:
-              - is_valid is a boolean
-              - error_message is None if valid, otherwise validation error message
-              - sanitized_attribute is attribute as a string safe for logging
-              - sanitized_value is value as a string safe for logging
-    
-    Note:
-        This validation acts as a security layer to prevent SQL injection, buffer 
-        overflows, and other attacks by validating all inputs before they reach C++ code.
+        tuple: (is_valid, error_message, sanitized_attribute, sanitized_value)
     """
-    
     # Sanitize a value for logging
     def _sanitize_for_logging(input_val, max_length=max_log_length):
         if not isinstance(input_val, str):
@@ -189,100 +178,61 @@ def validate_attribute_value(attribute, value, sanitize_logs=True, max_log_lengt
             except:
                 return "<non-string>"
         
-        # Remove control characters and non-printable characters
-        # Allow alphanumeric, dash, underscore, and dot (common in encoding names)
+        # Allow alphanumeric, dash, underscore, and dot
         sanitized = re.sub(r'[^\w\-\.]', '', input_val)
         
-        # Limit length to prevent log flooding
+        # Limit length
         if len(sanitized) > max_length:
             sanitized = sanitized[:max_length] + "..."
         
-        # Return placeholder if nothing remains after sanitization
         return sanitized if sanitized else "<invalid>"
     
-    # Create sanitized versions for logging regardless of validation result
+    # Create sanitized versions for logging
     sanitized_attr = _sanitize_for_logging(attribute) if sanitize_logs else str(attribute)
     sanitized_val = _sanitize_for_logging(value) if sanitize_logs else str(value)
     
-    # Attribute must be a non-negative integer
+    # Basic attribute validation - must be an integer
     if not isinstance(attribute, int):
         return False, f"Attribute must be an integer, got {type(attribute).__name__}", sanitized_attr, sanitized_val
     
-    if attribute < 0:
-        return False, f"Attribute value cannot be negative: {attribute}", sanitized_attr, sanitized_val
+    # Define driver-level attributes that are supported
+    SUPPORTED_ATTRIBUTES = [
+        ConstantsDDBC.SQL_ATTR_ACCESS_MODE.value,
+        ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value,
+        ConstantsDDBC.SQL_ATTR_CONNECTION_TIMEOUT.value,
+        ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value,
+        ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value,
+        ConstantsDDBC.SQL_ATTR_PACKET_SIZE.value,
+        ConstantsDDBC.SQL_ATTR_TXN_ISOLATION.value
+    ]
     
-    # Define attribute limits based on SQL specifications
-    MAX_STRING_SIZE = 8192  # 8KB maximum for string values
-    MAX_BINARY_SIZE = 32768  # 32KB maximum for binary data
+    # Check if attribute is supported
+    if attribute not in SUPPORTED_ATTRIBUTES:
+        return False, f"Unsupported attribute: {attribute}", sanitized_attr, sanitized_val
     
-    # Attribute-specific validation
+    # Basic value type validation
     if isinstance(value, int):
-        # General integer validation
-        if value < 0 and attribute not in [
-            # List of attributes that can accept negative values (very few)
-        ]:
+        # For integer values, check if negative
+        if value < 0:
             return False, f"Integer value cannot be negative: {value}", sanitized_attr, sanitized_val
-            
-        # Attribute-specific integer validation
-        if attribute == ConstantsDDBC.SQL_ATTR_CONNECTION_TIMEOUT.value:
-            # Connection timeout has a maximum of UINT_MAX (4294967295)
-            if value > 4294967295:
-                return False, f"Connection timeout cannot exceed 4294967295: {value}", sanitized_attr, sanitized_val
-                
-        elif attribute == ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value:
-            # Login timeout has a maximum of UINT_MAX (4294967295)
-            if value > 4294967295:
-                return False, f"Login timeout cannot exceed 4294967295: {value}", sanitized_attr, sanitized_val
-                
-        elif attribute == ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value:
-            # Autocommit can only be 0 or 1
-            if value not in [0, 1]:
-                return False, f"Autocommit value must be 0 or 1: {value}", sanitized_attr, sanitized_val
-                
-        elif attribute == ConstantsDDBC.SQL_ATTR_TXN_ISOLATION.value:
-            # Transaction isolation must be one of the predefined values
-            valid_isolation_levels = [
-                ConstantsDDBC.SQL_TXN_READ_UNCOMMITTED.value,
-                ConstantsDDBC.SQL_TXN_READ_COMMITTED.value, 
-                ConstantsDDBC.SQL_TXN_REPEATABLE_READ.value,
-                ConstantsDDBC.SQL_TXN_SERIALIZABLE.value
-            ]
-            if value not in valid_isolation_levels:
-                return False, f"Invalid transaction isolation level: {value}", sanitized_attr, sanitized_val
     
     elif isinstance(value, str):
-        # String validation
+        # Basic string length check
+        MAX_STRING_SIZE = 8192  # 8KB maximum
         if len(value) > MAX_STRING_SIZE:
             return False, f"String value too large: {len(value)} bytes (max {MAX_STRING_SIZE})", sanitized_attr, sanitized_val
-            
-        # SQL injection pattern detection for strings
-        sql_injection_patterns = [
-            '--', ';', '/*', '*/', 'UNION', 'SELECT', 'INSERT', 'UPDATE', 
-            'DELETE', 'DROP', 'EXEC', 'EXECUTE', '@@', 'CHAR(', 'CAST('
-        ]
-        
-        # Case-insensitive check for SQL injection patterns
-        value_upper = value.upper()
-        for pattern in sql_injection_patterns:
-            if pattern.upper() in value_upper:
-                return False, f"String value contains potentially unsafe SQL pattern: {pattern}", sanitized_attr, sanitized_val
-        
+    
     elif isinstance(value, (bytes, bytearray)):
-        # Binary data validation
+        # Basic binary length check
+        MAX_BINARY_SIZE = 32768  # 32KB maximum
         if len(value) > MAX_BINARY_SIZE:
             return False, f"Binary value too large: {len(value)} bytes (max {MAX_BINARY_SIZE})", sanitized_attr, sanitized_val
-            
-        # Check for suspicious binary patterns
-        # Count null bytes (could indicate manipulation)
-        null_count = value.count(0)
-        # Too many nulls might indicate padding attack
-        if null_count > len(value) // 4:  # More than 25% nulls
-            return False, "Binary data contains suspicious patterns", sanitized_attr, sanitized_val
     
     else:
+        # Reject unsupported value types
         return False, f"Unsupported attribute value type: {type(value).__name__}", sanitized_attr, sanitized_val
     
-    # If we got here, all validations passed
+    # All basic validations passed
     return True, None, sanitized_attr, sanitized_val
 
 
