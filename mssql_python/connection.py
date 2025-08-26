@@ -13,7 +13,6 @@ Resource Management:
 import weakref
 import re
 import codecs
-from functools import lru_cache
 from mssql_python.cursor import Cursor
 from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, sanitize_user_input, log
 from mssql_python import ddbc_bindings
@@ -29,13 +28,7 @@ UTF16_ENCODINGS = frozenset([
     'utf-16be'
 ])
 
-# Cache for encoding validation to improve performance
-# Using a simple dict instead of lru_cache for module-level caching
-_ENCODING_VALIDATION_CACHE = {}
-_CACHE_MAX_SIZE = 100  # Limit cache size to prevent memory bloat
 
-
-@lru_cache(maxsize=128)
 def _validate_encoding(encoding: str) -> bool:
     """
     Cached encoding validation using codecs.lookup().
@@ -251,8 +244,8 @@ class Connection:
                 ddbc_error=f"The encoding '{encoding}' is not supported by Python",
             )
         
-        # Normalize encoding to lowercase for consistency
-        encoding = encoding.lower()
+        # Normalize encoding to casefold for more robust Unicode handling
+        encoding = encoding.casefold()
         
         # Set default ctype based on encoding if not provided
         if ctype is None:
