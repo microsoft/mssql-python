@@ -437,7 +437,13 @@ class Cursor:
             )
 
         # For safety: unknown/unhandled Python types should not silently go to SQL
-        raise TypeError("Unsupported parameter type: The driver cannot safely convert it to a SQL type.")
+        # raise TypeError("Unsupported parameter type: The driver cannot safely convert it to a SQL type.")
+        return (
+            ddbc_sql_const.SQL_VARCHAR.value,
+            ddbc_sql_const.SQL_C_CHAR.value,
+            len(str(param)),
+            0,
+        )
 
     def _initialize_cursor(self) -> None:
         """
