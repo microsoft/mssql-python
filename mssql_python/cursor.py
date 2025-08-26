@@ -347,11 +347,10 @@ class Cursor:
             utf16_len = sum(2 if ord(c) > 0xFFFF else 1 for c in param)
             if utf16_len > MAX_INLINE_CHAR:  # Long strings -> DAE
                 if is_unicode:
-                    utf16_len = len(param.encode("utf-16-le")) // 2
                     return (
                         ddbc_sql_const.SQL_WLONGVARCHAR.value,
                         ddbc_sql_const.SQL_C_WCHAR.value,
-                        utf16_len,
+                        len(param),
                         0,
                         True,
                     )
@@ -387,7 +386,7 @@ class Cursor:
                     ddbc_sql_const.SQL_C_BINARY.value,
                     len(param),
                     0,
-                    True,
+                    False,
                 )
             return (
                 ddbc_sql_const.SQL_BINARY.value,
