@@ -233,7 +233,7 @@ class Cursor:
             return (
                 ddbc_sql_const.SQL_VARCHAR.value, # TODO: Add SQLDescribeParam to get correct type
                 ddbc_sql_const.SQL_C_DEFAULT.value,
-                1,
+                0,
                 0,
                 False,
             )
@@ -513,6 +513,18 @@ class Cursor:
             paraminfo.
         """
         paraminfo = param_info()
+        # Explicit None handling
+        if parameter is None:
+            paraminfo.paramSQLType = ddbc_sql_const.SQL_VARCHAR.value
+            paraminfo.paramCType = ddbc_sql_const.SQL_C_CHAR.value
+            paraminfo.columnSize = 0
+            paraminfo.decimalDigits = 0
+            paraminfo.isDAE = False
+            paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value
+            paraminfo.strLenOrInd = ddbc_sql_const.SQL_NULL_DATA.value
+            paraminfo.dataPtr = None
+            return paraminfo
+
         sql_type, c_type, column_size, decimal_digits, is_dae = self._map_sql_type(
             parameter, parameters_list, i
         )
