@@ -53,36 +53,16 @@ SQL_WCHAR = ConstantsDDBC.SQL_WCHAR.value
 SQL_WMETADATA = -99
 
 # Export connection attribute constants for set_attr()
-# NOTE: Some attributes are only supported when using an ODBC Driver Manager.
-# Attributes marked with [NO-OP] are not supported directly by the SQL Server ODBC driver
-# and will have no effect in this implementation.
+# Only include driver-level attributes that the SQL Server ODBC driver can handle directly
 
+# Core driver-level attributes
 SQL_ATTR_ACCESS_MODE = ConstantsDDBC.SQL_ATTR_ACCESS_MODE.value
 SQL_ATTR_AUTOCOMMIT = ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value
 SQL_ATTR_CONNECTION_TIMEOUT = ConstantsDDBC.SQL_ATTR_CONNECTION_TIMEOUT.value
 SQL_ATTR_CURRENT_CATALOG = ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value
 SQL_ATTR_LOGIN_TIMEOUT = ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value
-SQL_ATTR_ODBC_CURSORS = ConstantsDDBC.SQL_ATTR_ODBC_CURSORS.value
 SQL_ATTR_PACKET_SIZE = ConstantsDDBC.SQL_ATTR_PACKET_SIZE.value
 SQL_ATTR_TXN_ISOLATION = ConstantsDDBC.SQL_ATTR_TXN_ISOLATION.value
-
-# The following attributes are [NO-OP] in this implementation (require Driver Manager):
-# SQL_ATTR_QUIET_MODE
-# SQL_ATTR_TRACE
-# SQL_ATTR_TRACEFILE
-# SQL_ATTR_TRANSLATE_LIB
-# SQL_ATTR_TRANSLATE_OPTION
-# SQL_ATTR_CONNECTION_POOLING
-# SQL_ATTR_CP_MATCH
-# SQL_ATTR_ASYNC_ENABLE
-# SQL_ATTR_ENLIST_IN_DTC
-# SQL_ATTR_ENLIST_IN_XA
-# SQL_ATTR_CONNECTION_DEAD
-# SQL_ATTR_ASYNC_DBC_FUNCTIONS_ENABLE
-# SQL_ATTR_ASYNC_DBC_EVENT
-# SQL_ATTR_SERVER_NAME
-# SQL_ATTR_RESET_CONNECTION
-# SQL_RESET_CONNECTION_YES
 
 # Transaction Isolation Level Constants
 SQL_TXN_READ_UNCOMMITTED = ConstantsDDBC.SQL_TXN_READ_UNCOMMITTED.value
@@ -93,11 +73,6 @@ SQL_TXN_SERIALIZABLE = ConstantsDDBC.SQL_TXN_SERIALIZABLE.value
 # Access Mode Constants
 SQL_MODE_READ_WRITE = ConstantsDDBC.SQL_MODE_READ_WRITE.value
 SQL_MODE_READ_ONLY = ConstantsDDBC.SQL_MODE_READ_ONLY.value
-
-# ODBC Cursors Constants
-SQL_CUR_USE_IF_NEEDED = ConstantsDDBC.SQL_CUR_USE_IF_NEEDED.value
-SQL_CUR_USE_ODBC = ConstantsDDBC.SQL_CUR_USE_ODBC.value
-SQL_CUR_USE_DRIVER = ConstantsDDBC.SQL_CUR_USE_DRIVER.value
 
 
 # GLOBALS

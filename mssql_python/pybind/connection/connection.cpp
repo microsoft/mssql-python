@@ -169,149 +169,12 @@ SqlHandlePtr Connection::allocStatementHandle() {
     return std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT), stmt);
 }
 
-// Check if an attribute ID is in a list of sensitive attributes that need special handling
-bool Connection::isSensitiveAttribute(SQLINTEGER attribute) const {
-    // List of sensitive or restricted attributes
-    static const std::unordered_set<SQLINTEGER> restrictedAttrs = {
-        // Add any attributes that should be restricted or need special handling
-        // Example: 1256 // SQL_COPT_SS_ACCESS_TOKEN
-    };
-    
-    return restrictedAttrs.find(attribute) != restrictedAttrs.end();
-}
-
-// Validate integer values for specific attributes
-bool Connection::isValidIntegerValue(SQLINTEGER attribute, long long value) const {
-    // Attribute-specific validation
-    switch (attribute) {
-        // Example validation for connection timeout
-        case SQL_ATTR_CONNECTION_TIMEOUT:
-            // Ensure reasonable timeout values
-            // Allow values from 0 to UINT_MAX (4294967295)
-            return value >= 0 && value <= 4294967295LL; // Use LL suffix for 64-bit literal
-            
-        // Example validation for query timeout
-        case SQL_ATTR_QUERY_TIMEOUT:
-            // Allow full range of valid timeout values (0 to UINT_MAX)
-            return value >= 0 && value <= 4294967295LL;
-            
-        // Add other attribute-specific validations as needed
-            
-        default:
-            // For unknown attributes, just ensure it's not negative
-            // and within reasonable SQLULEN range for safe casting
-            return value >= 0 && value <= 4294967295LL;
-    }
-}
-
-// Check if a string value contains potential SQL injection patterns
-bool Connection::containsSQLInjectionPatterns(const std::string& value) const {
-    // Basic SQL injection pattern detection
-    // This is not exhaustive but covers common patterns
-    static const std::vector<std::string> sqlPatterns = {
-        "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER",
-        "EXEC", "EXECUTE", "UNION", "JOIN", "--", "/*", "*/", "xp_", "sp_"
-    };
-    
-    std::string upperValue = value;
-    // Use a lambda function that safely converts char to char, avoiding warning
-    std::transform(upperValue.begin(), upperValue.end(), upperValue.begin(), 
-                   [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-    
-    for (const auto& pattern : sqlPatterns) {
-        if (upperValue.find(pattern) != std::string::npos) {
-            return true;
-        }
-    }
-    
-    // Check for SQL comment sequences
-    if (upperValue.find("--") != std::string::npos || 
-        (upperValue.find("/*") != std::string::npos && upperValue.find("*/") != std::string::npos)) {
-        return true;
-    }
-    
-    return false;
-}
-
-// Check if an attribute requires string sanitization
-bool Connection::requiresStringSanitization(SQLINTEGER attribute) const {
-    // List of attributes that need string sanitization
-    static const std::unordered_set<SQLINTEGER> sanitizedAttrs = {
-        // Add attributes that process string values and might be sensitive
-        // Example: SQL_ATTR_CURRENT_CATALOG
-    };
-    
-    return sanitizedAttrs.find(attribute) != sanitizedAttrs.end();
-}
-
-// Sanitize string values for attributes that need it
-std::string Connection::sanitizeStringValue(const std::string& value) const {
-    std::string sanitized = value;
-    
-    // Remove SQL escape sequences and special characters
-    std::regex pattern("['\"\\\\;]");
-    sanitized = std::regex_replace(sanitized, pattern, "");
-    
-    return sanitized;
-}
-
-// Check if an attribute requires binary data sanitization
-bool Connection::requiresBinarySanitization(SQLINTEGER attribute) const {
-    // List of attributes that need binary data sanitization
-    static const std::unordered_set<SQLINTEGER> sanitizedAttrs = {
-        // Add attributes that process binary data and might be sensitive
-        // Example: SQL_COPT_SS_ACCESS_TOKEN
-        1256 // SQL_COPT_SS_ACCESS_TOKEN
-    };
-    
-    return sanitizedAttrs.find(attribute) != sanitizedAttrs.end();
-}
-
-// Check binary data for suspicious patterns
-bool Connection::containsSuspiciousBinaryPatterns(const std::string& data) const {
-    // Check for null bytes in unexpected positions (could indicate manipulation)
-    // This is a simple example - real implementations would be more sophisticated
-    size_t nullCount = 0;
-    for (size_t i = 0; i < data.size(); i++) {
-        if (data[i] == '\0') {
-            nullCount++;
-            
-            // Too many nulls might indicate padding attack
-            if (nullCount > data.size() / 4) {
-                return true;
-            }
-        }
-    }
-    
-    // Check for other suspicious binary patterns as needed
-    
-    return false;
-}
-
 SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     LOG("Setting SQL attribute");
-    
-    // Security check for sensitive attributes
-    if (isSensitiveAttribute(attribute)) {
-        LOG("Attempt to set restricted attribute: " + std::to_string(attribute));
-        return SQL_ERROR;
-    }
     
     if (py::isinstance<py::int_>(value)) {
         // Get the integer value
         long long longValue = value.cast<long long>();
-        
-        // Range check for negative values (since ODBC attributes shouldn't be negative)
-        if (longValue < 0) {
-            LOG("Integer value cannot be negative: " + std::to_string(longValue));
-            return SQL_ERROR;
-        }
-        
-        // Additional range validation for specific attributes
-        if (!isValidIntegerValue(attribute, longValue)) {
-            LOG("Invalid integer value for attribute: " + std::to_string(attribute));
-            return SQL_ERROR;
-        }
         
         SQLRETURN ret = SQLSetConnectAttr_ptr(
             _dbcHandle->get(), 
@@ -328,44 +191,22 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         return ret;
     } 
     else if (py::isinstance<py::str>(value)) {
-        // Handle string values with additional security
         try {
             static std::vector<std::wstring> wstr_buffers;  // Keep buffers alive
             std::string utf8_str = value.cast<std::string>();
             
-            // Basic size check to prevent excessive memory usage
-            constexpr size_t MAX_STRING_SIZE = 8192; // 8KB maximum size
-            if (utf8_str.size() > MAX_STRING_SIZE) {
-                std::string errorMsg = "String value too large: " + std::to_string(utf8_str.size()) + 
-                                       " bytes (max " + std::to_string(MAX_STRING_SIZE) + ")";
-                LOG(errorMsg);
+            // Convert to wide string
+            std::wstring wstr = Utf8ToWString(utf8_str);
+            if (wstr.empty() && !utf8_str.empty()) {
+                LOG("Failed to convert string value to wide string");
                 return SQL_ERROR;
-            }
-            
-            // Check for SQL injection patterns in string attributes
-            if (containsSQLInjectionPatterns(utf8_str)) {
-                LOG("String value contains potentially unsafe SQL patterns");
-                return SQL_ERROR;
-            }
-            
-            // Sanitize string value for sensitive attributes
-            if (requiresStringSanitization(attribute)) {
-                utf8_str = sanitizeStringValue(utf8_str);
             }
             
             // Limit static buffer growth for memory safety
             constexpr size_t MAX_BUFFER_COUNT = 100;
             if (wstr_buffers.size() >= MAX_BUFFER_COUNT) {
-                LOG("String buffer limit reached, clearing oldest entries");
                 // Remove oldest 50% of entries when limit reached
                 wstr_buffers.erase(wstr_buffers.begin(), wstr_buffers.begin() + (MAX_BUFFER_COUNT / 2));
-            }
-            
-            // Convert to wide string with error handling
-            std::wstring wstr = Utf8ToWString(utf8_str);
-            if (wstr.empty() && !utf8_str.empty()) {
-                LOG("Failed to convert string value to wide string");
-                return SQL_ERROR;
             }
             
             wstr_buffers.push_back(wstr);
@@ -404,30 +245,13 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         }
     }
     else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
-        // Handle binary data with additional safeguards
         try {
             static std::vector<std::string> buffers;
             std::string binary_data = value.cast<std::string>();
             
-            // Basic size check to prevent excessive memory usage
-            constexpr size_t MAX_BINARY_SIZE = 32768; // 32KB maximum
-            if (binary_data.size() > MAX_BINARY_SIZE) {
-                std::string errorMsg = "Binary value too large: " + std::to_string(binary_data.size()) + 
-                                       " bytes (max " + std::to_string(MAX_BINARY_SIZE) + ")";
-                LOG(errorMsg);
-                return SQL_ERROR;
-            }
-            
-            // Verify binary data doesn't contain malicious content
-            if (requiresBinarySanitization(attribute) && containsSuspiciousBinaryPatterns(binary_data)) {
-                LOG("Binary data contains suspicious patterns");
-                return SQL_ERROR;
-            }
-            
             // Limit static buffer growth
             constexpr size_t MAX_BUFFER_COUNT = 100;
             if (buffers.size() >= MAX_BUFFER_COUNT) {
-                LOG("Binary buffer limit reached, clearing oldest entries");
                 // Remove oldest 50% of entries when limit reached
                 buffers.erase(buffers.begin(), buffers.begin() + (MAX_BUFFER_COUNT / 2));
             }

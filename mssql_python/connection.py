@@ -15,7 +15,7 @@ import re
 import codecs
 from functools import lru_cache
 from mssql_python.cursor import Cursor
-from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, sanitize_user_input, log
+from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, log, validate_attribute_value, sanitize_user_input
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
 from mssql_python.exceptions import InterfaceError, ProgrammingError
@@ -534,8 +534,8 @@ class Connection:
             attribute (int): The connection attribute to set. Should be one of the
                            SQL_ATTR_* constants (e.g., SQL_ATTR_AUTOCOMMIT,
                            SQL_ATTR_TXN_ISOLATION).
-            value: The value to set for the attribute. Can be an integer or bytes/bytearray
-                  depending on the attribute type.
+            value: The value to set for the attribute. Can be an integer, string, 
+                   bytes, or bytearray depending on the attribute type.
 
         Raises:
             InterfaceError: If the connection is closed or attribute is invalid.
@@ -548,35 +548,27 @@ class Connection:
         if self._closed:
             raise InterfaceError("Cannot set attribute on closed connection", "Connection is closed")
 
-        # Validate attribute type and range
-        if not isinstance(attribute, int) or attribute < 0:
-            raise ProgrammingError("Connection attribute must be a non-negative integer", f"Invalid attribute: {attribute}")
-
-        # Validate value type - must be integer, bytes, bytearray, or string
-        if not isinstance(value, (int, bytes, bytearray, str)):
-            raise ProgrammingError("Attribute value must be an integer, bytes, bytearray, or string", 
-                                  f"Invalid value type: {type(value)}")
-
-        # For integer values
-        if isinstance(value, int):
-            if value < 0:
-                raise ProgrammingError(f"Attribute value must be non-negative", f"Invalid value: {value}")
-
-        # Sanitize user input for security
-        try:
-            sanitized_input = sanitize_user_input(str(attribute))
-            log('debug', f"Setting connection attribute: {sanitized_input}")
-        except Exception:
-            # If sanitization fails, log without user input
-            log('debug', "Setting connection attribute")
+        # Use the integrated validation helper function
+        is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(attribute, value)
+        
+        if not is_valid:
+            # Use the already sanitized values for logging
+            log('warning', f"Invalid attribute or value: {sanitized_attr}={sanitized_val}, {error_message}")
+            raise ProgrammingError(
+                driver_error=f"Invalid attribute or value: {error_message}",
+                ddbc_error=error_message
+            )
+        
+        # Log with sanitized values
+        log('debug', f"Setting connection attribute: {sanitized_attr}={sanitized_val}")
 
         try:
             # Call the underlying C++ method
             self._conn.set_attr(attribute, value)
-            log('info', f"Connection attribute {attribute} set successfully")
+            log('info', f"Connection attribute {sanitized_attr} set successfully")
 
         except Exception as e:
-            error_msg = f"Failed to set connection attribute {attribute}: {str(e)}"
+            error_msg = f"Failed to set connection attribute {sanitized_attr}: {str(e)}"
             log('error', error_msg)
 
             # Determine appropriate exception type based on error content

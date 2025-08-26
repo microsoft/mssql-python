@@ -47,15 +47,6 @@ public:
     // Add getter for DBC handle for error reporting
     const SqlHandlePtr& getDbcHandle() const { return _dbcHandle; }
 
-    // New security methods for setAttribute
-    bool isSensitiveAttribute(SQLINTEGER attribute) const;
-    bool isValidIntegerValue(SQLINTEGER attribute, long long value) const;
-    bool containsSQLInjectionPatterns(const std::string& value) const;
-    bool requiresStringSanitization(SQLINTEGER attribute) const;
-    std::string sanitizeStringValue(const std::string& value) const;
-    bool requiresBinarySanitization(SQLINTEGER attribute) const;
-    bool containsSuspiciousBinaryPatterns(const std::string& data) const;
-
 private:
     void allocateDbcHandle();
     void checkError(SQLRETURN ret) const;

@@ -1342,14 +1342,13 @@ def test_set_attr_constants_access():
     # ODBC-standard, driver-independent constants (should be public)
     odbc_attr_constants = [
         'SQL_ATTR_ACCESS_MODE', 'SQL_ATTR_AUTOCOMMIT', 'SQL_ATTR_CONNECTION_TIMEOUT',
-        'SQL_ATTR_CURRENT_CATALOG', 'SQL_ATTR_LOGIN_TIMEOUT', 'SQL_ATTR_ODBC_CURSORS',
+        'SQL_ATTR_CURRENT_CATALOG', 'SQL_ATTR_LOGIN_TIMEOUT',
         'SQL_ATTR_PACKET_SIZE', 'SQL_ATTR_TXN_ISOLATION',
     ]
     odbc_value_constants = [
         'SQL_TXN_READ_UNCOMMITTED', 'SQL_TXN_READ_COMMITTED',
         'SQL_TXN_REPEATABLE_READ', 'SQL_TXN_SERIALIZABLE',
         'SQL_MODE_READ_WRITE', 'SQL_MODE_READ_ONLY',
-        'SQL_CUR_USE_IF_NEEDED', 'SQL_CUR_USE_ODBC', 'SQL_CUR_USE_DRIVER',
     ]
 
     # Driver-manager–dependent or rarely supported constants (should NOT be public API)
@@ -1358,7 +1357,9 @@ def test_set_attr_constants_access():
         'SQL_ATTR_TRANSLATE_LIB', 'SQL_ATTR_TRANSLATE_OPTION',
         'SQL_ATTR_CONNECTION_POOLING', 'SQL_ATTR_CP_MATCH',
         'SQL_ATTR_ASYNC_ENABLE', 'SQL_ATTR_CONNECTION_DEAD',
-        'SQL_ATTR_SERVER_NAME', 'SQL_ATTR_RESET_CONNECTION'
+        'SQL_ATTR_SERVER_NAME', 'SQL_ATTR_RESET_CONNECTION',
+        'SQL_ATTR_ODBC_CURSORS', 'SQL_CUR_USE_IF_NEEDED', 'SQL_CUR_USE_ODBC',
+        'SQL_CUR_USE_DRIVER'
     ]
     dm_value_constants = [
         'SQL_CD_TRUE', 'SQL_CD_FALSE', 'SQL_RESET_CONNECTION_YES'
@@ -1407,13 +1408,12 @@ def test_set_attr_invalid_attr_id_type(db_connection):
         with pytest.raises(ProgrammingError) as exc_info:
             db_connection.set_attr(invalid_attr_id, 1)
         
-        assert "Connection attribute must be a non-negative integer" in str(exc_info.value), \
+        assert "Attribute must be an integer" in str(exc_info.value), \
             f"Should raise ProgrammingError for invalid attr_id type: {type(invalid_attr_id)}"
 
 def test_set_attr_invalid_value_type(db_connection):
     """Test set_attr with invalid value type raises ProgrammingError."""
     from mssql_python.exceptions import ProgrammingError
-    
     
     invalid_values = [3.14, None, [], {}]
     
@@ -1421,13 +1421,12 @@ def test_set_attr_invalid_value_type(db_connection):
         with pytest.raises(ProgrammingError) as exc_info:
             db_connection.set_attr(mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, invalid_value)
 
-        assert "Attribute value must be an integer, bytes, bytearray, or string" in str(exc_info.value), \
+        assert "Unsupported attribute value type" in str(exc_info.value), \
             f"Should raise ProgrammingError for invalid value type: {type(invalid_value)}"
 
 def test_set_attr_value_out_of_range(db_connection):
     """Test set_attr with value out of SQLULEN range raises ProgrammingError."""
     from mssql_python.exceptions import ProgrammingError
-    
     
     out_of_range_values = [-1, -100]
     
@@ -1435,7 +1434,7 @@ def test_set_attr_value_out_of_range(db_connection):
         with pytest.raises(ProgrammingError) as exc_info:
             db_connection.set_attr(mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, invalid_value)
         
-        assert "Attribute value must be non-negative" in str(exc_info.value), \
+        assert "Integer value cannot be negative" in str(exc_info.value), \
             f"Should raise ProgrammingError for out of range value: {invalid_value}"
     
 def test_set_attr_closed_connection(conn_str):
@@ -1547,7 +1546,6 @@ def test_set_attr_with_constants(db_connection):
     test_cases = [
         (mssql_python.SQL_ATTR_TXN_ISOLATION, mssql_python.SQL_TXN_READ_COMMITTED),
         (mssql_python.SQL_ATTR_ACCESS_MODE, mssql_python.SQL_MODE_READ_WRITE),
-        (mssql_python.SQL_ATTR_ODBC_CURSORS, mssql_python.SQL_CUR_USE_IF_NEEDED),
     ]
     
     for attr_id, value in test_cases:
@@ -1589,6 +1587,8 @@ def test_set_attr_persistence_across_operations(db_connection):
     finally:
         cursor.close()
 
+def test_set_attr_security_logging(db_connection):
+    """Test that set_attr logs invalid attempts safely."""
 def test_set_attr_security_logging(db_connection):
     """Test that set_attr logs invalid attempts safely."""
     from mssql_python.exceptions import ProgrammingError
