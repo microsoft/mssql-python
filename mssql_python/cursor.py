@@ -18,6 +18,8 @@ from mssql_python import ddbc_bindings
 from mssql_python.exceptions import InterfaceError, NotSupportedError, ProgrammingError
 from .row import Row
 
+# Constants for string handling
+MAX_INLINE_CHAR = 4000  # NVARCHAR/VARCHAR inline limit; this triggers NVARCHAR(MAX)/VARCHAR(MAX) + DAE
 
 class Cursor:
     """
@@ -340,14 +342,12 @@ class Cursor:
 
             # String mapping logic here
             is_unicode = self._is_unicode_string(param)
-            # TODO: revisit
-            if len(param) > 4000:  # Long strings
+            if len(param) > MAX_INLINE_CHAR:  # Long strings
                 if is_unicode:
-                    utf16_len = len(param.encode("utf-16-le")) // 2
                     return (
                         ddbc_sql_const.SQL_WLONGVARCHAR.value,
                         ddbc_sql_const.SQL_C_WCHAR.value,
-                        utf16_len,
+                        len(param),
                         0,
                         True,
                     )
@@ -382,7 +382,7 @@ class Cursor:
                     ddbc_sql_const.SQL_C_BINARY.value,
                     len(param),
                     0,
-                    True,
+                    False,
                 )
             return (
                 ddbc_sql_const.SQL_BINARY.value,
@@ -436,13 +436,8 @@ class Cursor:
                 False,
             )
 
-        return (
-            ddbc_sql_const.SQL_VARCHAR.value,
-            ddbc_sql_const.SQL_C_CHAR.value,
-            len(str(param)),
-            0,
-            False,
-        )
+        # For safety: unknown/unhandled Python types should not silently go to SQL
+        raise TypeError("Unsupported parameter type: The driver cannot safely convert it to a SQL type.")
 
     def _initialize_cursor(self) -> None:
         """
@@ -529,7 +524,6 @@ class Cursor:
         paraminfo.isDAE = is_dae
 
         if is_dae:
-            paraminfo.strLenOrInd = -1  # Tells ODBC this is streamed data
             paraminfo.dataPtr = parameter  # Will be converted to py::object* in C++
 
         return paraminfo
@@ -791,9 +785,15 @@ class Cursor:
             self.is_stmt_prepared,
             use_prepare,
         )
-        
+        # Check return code
+        try:
+            
         # Check for errors but don't raise exceptions for info/warning messages
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+        except Exception as e:
+            log('warning', "Execute failed, resetting cursor: %s", e)
+            self._reset_cursor()
+
         
         # Capture any diagnostic messages (SQL_SUCCESS_WITH_INFO, etc.)
         if self.hstmt:

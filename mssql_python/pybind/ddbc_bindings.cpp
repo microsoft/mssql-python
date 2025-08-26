@@ -260,13 +260,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     // Normal small-string case
                     std::wstring* strParam =
                         AllocateParamBuffer<std::wstring>(paramBuffers, param.cast<std::wstring>());
-                    LOG("SQL_C_WCHAR Parameter[{}]: Length={}, Content='{}'",
-                        paramIndex,
-                        strParam->size(),
-                        (strParam->size() <= 100
-                            ? WideToUTF8(std::wstring(strParam->begin(), strParam->end()))
-                            : WideToUTF8(std::wstring(strParam->begin(), strParam->begin() + 100)) + "..."));
-
+                    LOG("SQL_C_WCHAR Parameter[{}]: Length={}, isDAE={}", paramIndex, strParam->size(), paramInfo.isDAE);
             #if defined(__APPLE__) || defined(__linux__)
                     std::vector<SQLWCHAR>* sqlwcharBuffer =
                         AllocateParamBuffer<std::vector<SQLWCHAR>>(paramBuffers);
@@ -1188,20 +1182,21 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                     continue;
                 }
                 if (py::isinstance<py::str>(pyObj)) {
-                    std::string utf16_str;
-                    try {
-                        utf16_str = pyObj.attr("encode")("utf-16-le").cast<py::bytes>();
-                    } catch (const std::exception& e) {
-                        ThrowStdException("Error encoding string to UTF-16: " + std::string(e.what()));
-                    }
-                    const char* dataPtr = utf16_str.data();
-                    size_t totalBytes = utf16_str.size();
+                    std::wstring wstr = pyObj.cast<std::wstring>();
+#if defined(__APPLE__) || defined(__linux__)
+                    auto utf16Buf = WStringToSQLWCHAR(wstr);
+                    const char* dataPtr = reinterpret_cast<const char*>(utf16Buf.data());
+                    size_t totalBytes = (utf16Buf.size() - 1) * sizeof(SQLWCHAR);
+#else
+                    const char* dataPtr = reinterpret_cast<const char*>(wstr.data());
+                    size_t totalBytes = wstr.size() * sizeof(wchar_t);
+#endif
                     const size_t chunkSize = DAE_CHUNK_SIZE;
                     for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
                         size_t len = std::min(chunkSize, totalBytes - offset);
                         rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(len));
                         if (!SQL_SUCCEEDED(rc)) {
-                            LOG("SQLPutData failed.");
+                            LOG("SQLPutData failed at offset {} of {}", offset, totalBytes);
                             return rc;
                         }
                     }
