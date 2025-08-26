@@ -548,3 +548,51 @@ def test_context_manager_connection_closes(conn_str):
             
     except Exception as e:
         pytest.fail(f"Context manager connection close test failed: {e}")
+
+def test_close_with_autocommit_true(conn_str):
+    """Test that connection.close() with autocommit=True doesn't trigger rollback."""
+    cursor = None
+    conn = None
+    
+    try:
+        # Create a temporary table for testing
+        setup_conn = connect(conn_str)
+        setup_cursor = setup_conn.cursor()
+        drop_table_if_exists(setup_cursor, "pytest_autocommit_close_test")
+        setup_cursor.execute("CREATE TABLE pytest_autocommit_close_test (id INT PRIMARY KEY, value VARCHAR(50));")
+        setup_conn.commit()
+        setup_conn.close()
+        
+        # Create a connection with autocommit=True
+        conn = connect(conn_str)
+        conn.autocommit = True
+        assert conn.autocommit is True, "Autocommit should be True"
+        
+        # Insert data
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO pytest_autocommit_close_test (id, value) VALUES (1, 'test_autocommit');")
+        
+        # Close the connection without explicitly committing
+        conn.close()
+        
+        # Verify the data was committed automatically despite connection.close()
+        verify_conn = connect(conn_str)
+        verify_cursor = verify_conn.cursor()
+        verify_cursor.execute("SELECT * FROM pytest_autocommit_close_test WHERE id = 1;")
+        result = verify_cursor.fetchone()
+        
+        # Data should be present if autocommit worked and wasn't affected by close()
+        assert result is not None, "Autocommit failed: Data not found after connection close"
+        assert result[1] == 'test_autocommit', "Autocommit failed: Incorrect data after connection close"
+        
+        verify_conn.close()
+        
+    except Exception as e:
+        pytest.fail(f"Test failed: {e}")
+    finally:
+        # Clean up
+        cleanup_conn = connect(conn_str)
+        cleanup_cursor = cleanup_conn.cursor()
+        drop_table_if_exists(cleanup_cursor, "pytest_autocommit_close_test")
+        cleanup_conn.commit()
+        cleanup_conn.close()

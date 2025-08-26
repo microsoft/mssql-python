@@ -436,12 +436,9 @@ class Cursor:
     def close(self) -> None:
         """
         Close the cursor now (rather than whenever __del__ is called).
-
-        Raises:
-            Error: If any operation is attempted with the cursor after it is closed.
         """
         if self.closed:
-            raise Exception("Cursor is already closed.")
+            return
 
         if self.hstmt:
             self.hstmt.free()
