@@ -42,11 +42,19 @@ public:
     // Allocate a new statement handle on this connection.
     SqlHandlePtr allocStatementHandle();
 
-    // Move setAttribute from private to public
     SQLRETURN setAttribute(SQLINTEGER attribute, py::object value);
 
     // Add getter for DBC handle for error reporting
-    SqlHandlePtr getDbcHandle() const { return _dbcHandle; }
+    const SqlHandlePtr& getDbcHandle() const { return _dbcHandle; }
+
+    // New security methods for setAttribute
+    bool isSensitiveAttribute(SQLINTEGER attribute) const;
+    bool isValidIntegerValue(SQLINTEGER attribute, long long value) const;
+    bool containsSQLInjectionPatterns(const std::string& value) const;
+    bool requiresStringSanitization(SQLINTEGER attribute) const;
+    std::string sanitizeStringValue(const std::string& value) const;
+    bool requiresBinarySanitization(SQLINTEGER attribute) const;
+    bool containsSuspiciousBinaryPatterns(const std::string& data) const;
 
 private:
     void allocateDbcHandle();
@@ -71,7 +79,7 @@ public:
     void setAutocommit(bool enabled);
     bool getAutocommit() const;
     SqlHandlePtr allocStatementHandle();
-    void setAttr(int attribute, py::object value);  // Add this line
+    void setAttr(int attribute, py::object value);
 
 private:
     std::shared_ptr<Connection> _conn;

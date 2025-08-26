@@ -544,30 +544,23 @@ class Connection:
         Example:
             >>> conn.set_attr(SQL_ATTR_AUTOCOMMIT, SQL_AUTOCOMMIT_OFF)
             >>> conn.set_attr(SQL_ATTR_TXN_ISOLATION, SQL_TXN_READ_COMMITTED)
-
-        Note:
-            This method is compatible with pyodbc's set_attr functionality.
-            Attribute values must be within valid SQLUINTEGER range (0 to 4294967295).
         """
         if self._closed:
             raise InterfaceError("Cannot set attribute on closed connection", "Connection is closed")
 
-        # Validate attribute type and range for SQLUINTEGER compatibility
+        # Validate attribute type and range
         if not isinstance(attribute, int) or attribute < 0:
             raise ProgrammingError("Connection attribute must be a non-negative integer", f"Invalid attribute: {attribute}")
 
-        # Validate attribute is within SQLUINTEGER range
-        if attribute > 4294967295:  # 2^32 - 1
-            raise ProgrammingError("Connection attribute must be within SQLUINTEGER range (0-4294967295)", f"Attribute out of range: {attribute}")
+        # Validate value type - must be integer, bytes, bytearray, or string
+        if not isinstance(value, (int, bytes, bytearray, str)):
+            raise ProgrammingError("Attribute value must be an integer, bytes, bytearray, or string", 
+                                  f"Invalid value type: {type(value)}")
 
-        # Validate value type - must be integer, bytes, or bytearray
-        if not isinstance(value, (int, bytes, bytearray)):
-            raise ProgrammingError("Attribute value must be an integer, bytes, or bytearray", f"Invalid value type: {type(value)}")
-
-        # For integer values, validate SQLUINTEGER range
+        # For integer values
         if isinstance(value, int):
-            if value < 0 or value > 4294967295:  # 2^32 - 1
-                raise ProgrammingError("Attribute value out of range for SQLUINTEGER (0-4294967295)", f"Value out of range: {value}")
+            if value < 0:
+                raise ProgrammingError(f"Attribute value must be non-negative", f"Invalid value: {value}")
 
         # Sanitize user input for security
         try:
