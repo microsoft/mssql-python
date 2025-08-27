@@ -1034,6 +1034,22 @@ class Cursor:
 
         return True
 
+    def __enter__(self):
+        """
+        Enter the runtime context for the cursor.
+        
+        Returns:
+            The cursor instance itself.
+        """
+        self._check_closed()
+        return self
+    
+    def __exit__(self, *args):
+        """Closes the cursor when exiting the context, ensuring proper resource cleanup."""
+        if not self.closed:
+            self.close()
+        return None
+
     def fetchval(self):
         """
         Fetch the first column of the first row if there are results.
