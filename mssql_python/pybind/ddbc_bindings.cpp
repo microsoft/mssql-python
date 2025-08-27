@@ -931,7 +931,6 @@ py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
 #if defined(_WIN32)
         // On Windows, create a formatted UTF-8 string for state+error
         char stateWithError[50];
-        sprintf(stateWithError, "[%ls] (%d)", sqlState, nativeError);
         
         // Convert wide string message to UTF-8
         int msgSize = WideCharToMultiByte(CP_UTF8, 0, message, -1, NULL, 0, NULL, NULL);
