@@ -930,7 +930,14 @@ py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
         
 #if defined(_WIN32)
         // On Windows, create a formatted UTF-8 string for state+error
-        char stateWithError[50];
+        
+        // Convert SQLWCHAR sqlState to UTF-8
+        int stateSize = WideCharToMultiByte(CP_UTF8, 0, sqlState, -1, NULL, 0, NULL, NULL);
+        std::vector<char> stateBuffer(stateSize);
+        WideCharToMultiByte(CP_UTF8, 0, sqlState, -1, stateBuffer.data(), stateSize, NULL, NULL);
+        
+        // Format the state with error code
+        std::string stateWithError = "[" + std::string(stateBuffer.data()) + "] (" + std::to_string(nativeError) + ")";
         
         // Convert wide string message to UTF-8
         int msgSize = WideCharToMultiByte(CP_UTF8, 0, message, -1, NULL, 0, NULL, NULL);
@@ -2643,6 +2650,7 @@ SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
     SQLRETURN ret = SQLFreeHandle_ptr(HandleType, Handle->get());
     if (!SQL_SUCCEEDED(ret)) {
         LOG("SQLFreeHandle failed with error code - {}", ret);
+        return ret;
     }
     return ret;
 }
