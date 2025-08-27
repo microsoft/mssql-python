@@ -908,8 +908,9 @@ class Cursor:
             # Update internal position after successful fetch
             self._increment_rownumber()
             
-            # Create and return a Row object
-            return Row(row_data, self.description)
+            # Create and return a Row object, passing column name map if available
+            column_map = getattr(self, '_column_name_map', None)
+            return Row(row_data, self.description, column_map)
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -948,7 +949,8 @@ class Cursor:
                 self._rownumber = self._next_row_index - 1
             
             # Convert raw data to Row objects
-            return [Row(row_data, self.description) for row_data in rows_data]
+            column_map = getattr(self, '_column_name_map', None)
+            return [Row(row_data, self.description, column_map) for row_data in rows_data]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -977,7 +979,8 @@ class Cursor:
                 self._rownumber = self._next_row_index - 1
             
             # Convert raw data to Row objects
-            return [Row(row_data, self.description) for row_data in rows_data]
+            column_map = getattr(self, '_column_name_map', None)
+            return [Row(row_data, self.description, column_map) for row_data in rows_data]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -1258,19 +1261,139 @@ class Cursor:
         # Clear messages
         self.messages = []
         
-        # Validate arguments
-        if not isinstance(count, int):
-            raise ProgrammingError("Count must be an integer", "Invalid argument type")
+        # Simply delegate to the scroll method with 'relative' mode
+        self.scroll(count, 'relative')
+
+    def _execute_tables(self, stmt_handle, catalog_name=None, schema_name=None, table_name=None, 
+                  table_type=None, search_escape=None):
+        """
+        Execute SQLTables ODBC function to retrieve table metadata.
         
-        if count < 0:
-            raise NotSupportedError("Negative skip values are not supported", "Backward scrolling not supported")
+        Args:
+            stmt_handle: ODBC statement handle
+            catalog_name: The catalog name pattern
+            schema_name: The schema name pattern
+            table_name: The table name pattern
+            table_type: The table type filter
+            search_escape: The escape character for pattern matching
+        """
+        # Convert None values to empty strings for ODBC
+        catalog = "" if catalog_name is None else catalog_name
+        schema = "" if schema_name is None else schema_name
+        table = "" if table_name is None else table_name
+        types = "" if table_type is None else table_type
         
-        # Skip zero is a no-op
-        if count == 0:
-            return
+        # Call the ODBC SQLTables function
+        retcode = ddbc_bindings.DDBCSQLTables(
+            stmt_handle,
+            catalog, 
+            schema,
+            table,
+            types
+        )
         
-        # Skip the rows by fetching and discarding
-        for _ in range(count):
-            row = self.fetchone()
-            if row is None:
-                raise IndexError("Cannot skip beyond the end of the result set")
+        # Check return code and handle errors
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, stmt_handle, retcode)
+        
+        # Capture any diagnostic messages
+        if stmt_handle:
+            self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(stmt_handle))
+
+    def tables(self, table=None, catalog=None, schema=None, tableType=None):
+        """
+        Returns information about tables in the database that match the given criteria using
+        the SQLTables ODBC function.
+        
+        Args:
+            table (str, optional): The table name pattern. Default is None (all tables).
+            catalog (str, optional): The catalog name. Default is None.
+            schema (str, optional): The schema name pattern. Default is None.
+            tableType (str or list, optional): The table type filter. Default is None.
+                                              Example: "TABLE" or ["TABLE", "VIEW"]
+        
+        Returns:
+            list: A list of Row objects containing table information with these columns:
+                  - table_cat: Catalog name
+                  - table_schem: Schema name
+                  - table_name: Table name
+                  - table_type: Table type (e.g., "TABLE", "VIEW")
+                  - remarks: Comments about the table
+        
+        Notes:
+            This method only processes the standard five columns as defined in the ODBC
+            specification. Any additional columns that might be returned by specific ODBC
+            drivers are not included in the result set.
+        
+        Example:
+            # Get all tables in the database
+            tables = cursor.tables()
+            
+            # Get all tables in schema 'dbo'
+            tables = cursor.tables(schema='dbo')
+            
+            # Get table named 'Customers'
+            tables = cursor.tables(table='Customers')
+            
+            # Get all views
+            tables = cursor.tables(tableType='VIEW')
+        """
+        self._check_closed()
+        
+        # Clear messages
+        self.messages = []
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        # Format table_type parameter - SQLTables expects comma-separated string
+        table_type_str = None
+        if tableType is not None:
+            if isinstance(tableType, (list, tuple)):
+                table_type_str = ",".join(tableType)
+            else:
+                table_type_str = str(tableType)
+        
+        # Call SQLTables via the helper method
+        self._execute_tables(
+            self.hstmt,
+            catalog_name=catalog,
+            schema_name=schema,
+            table_name=table,
+            table_type=table_type_str
+        )
+        
+        # Initialize description from column metadata
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except Exception:
+            # If describe fails, create a manual description for the standard columns
+            column_types = [str, str, str, str, str]
+            self.description = [
+                ("table_cat", column_types[0], None, 128, 128, 0, True),
+                ("table_schem", column_types[1], None, 128, 128, 0, True),
+                ("table_name", column_types[2], None, 128, 128, 0, False),
+                ("table_type", column_types[3], None, 128, 128, 0, False),
+                ("remarks", column_types[4], None, 254, 254, 0, True)
+            ]
+        
+        # Define column names in ODBC standard order
+        column_names = [
+            "table_cat", "table_schem", "table_name", "table_type", "remarks"
+        ]
+        
+        # Fetch all rows
+        rows_data = []
+        ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+        
+        # Create a column map for attribute access
+        column_map = {name: i for i, name in enumerate(column_names)}
+        
+        # Create Row objects with the column map
+        result_rows = []
+        for row_data in rows_data:
+            row = Row(row_data, self.description, column_map)
+            result_rows.append(row)
+        
+        return result_rows
