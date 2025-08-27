@@ -25,6 +25,20 @@ import time
 from mssql_python import connect, Connection, pooling, SQL_CHAR, SQL_WCHAR
 import threading
 
+# Import all exception classes for testing
+from mssql_python.exceptions import (
+    Warning,
+    Error,
+    InterfaceError,
+    DatabaseError,
+    DataError,
+    OperationalError,
+    IntegrityError,
+    InternalError,
+    ProgrammingError,
+    NotSupportedError,
+)
+
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
     try:
@@ -1329,3 +1343,188 @@ def test_setdecoding_with_unicode_data(db_connection):
         except:
             pass
         cursor.close()
+
+# DB-API 2.0 Exception Attribute Tests
+def test_connection_exception_attributes_exist(db_connection):
+    """Test that all DB-API 2.0 exception classes are available as Connection attributes"""
+    # Test that all required exception attributes exist
+    assert hasattr(db_connection, 'Warning'), "Connection should have Warning attribute"
+    assert hasattr(db_connection, 'Error'), "Connection should have Error attribute"
+    assert hasattr(db_connection, 'InterfaceError'), "Connection should have InterfaceError attribute"
+    assert hasattr(db_connection, 'DatabaseError'), "Connection should have DatabaseError attribute"
+    assert hasattr(db_connection, 'DataError'), "Connection should have DataError attribute"
+    assert hasattr(db_connection, 'OperationalError'), "Connection should have OperationalError attribute"
+    assert hasattr(db_connection, 'IntegrityError'), "Connection should have IntegrityError attribute"
+    assert hasattr(db_connection, 'InternalError'), "Connection should have InternalError attribute"
+    assert hasattr(db_connection, 'ProgrammingError'), "Connection should have ProgrammingError attribute"
+    assert hasattr(db_connection, 'NotSupportedError'), "Connection should have NotSupportedError attribute"
+
+def test_connection_exception_attributes_are_classes(db_connection):
+    """Test that all exception attributes are actually exception classes"""
+    # Test that the attributes are the correct exception classes
+    assert db_connection.Warning is Warning, "Connection.Warning should be the Warning class"
+    assert db_connection.Error is Error, "Connection.Error should be the Error class"
+    assert db_connection.InterfaceError is InterfaceError, "Connection.InterfaceError should be the InterfaceError class"
+    assert db_connection.DatabaseError is DatabaseError, "Connection.DatabaseError should be the DatabaseError class"
+    assert db_connection.DataError is DataError, "Connection.DataError should be the DataError class"
+    assert db_connection.OperationalError is OperationalError, "Connection.OperationalError should be the OperationalError class"
+    assert db_connection.IntegrityError is IntegrityError, "Connection.IntegrityError should be the IntegrityError class"
+    assert db_connection.InternalError is InternalError, "Connection.InternalError should be the InternalError class"
+    assert db_connection.ProgrammingError is ProgrammingError, "Connection.ProgrammingError should be the ProgrammingError class"
+    assert db_connection.NotSupportedError is NotSupportedError, "Connection.NotSupportedError should be the NotSupportedError class"
+
+def test_connection_exception_inheritance(db_connection):
+    """Test that exception classes have correct inheritance hierarchy"""
+    # Test inheritance hierarchy according to DB-API 2.0
+    
+    # All exceptions inherit from Error (except Warning)
+    assert issubclass(db_connection.InterfaceError, db_connection.Error), "InterfaceError should inherit from Error"
+    assert issubclass(db_connection.DatabaseError, db_connection.Error), "DatabaseError should inherit from Error"
+    
+    # Database exceptions inherit from DatabaseError
+    assert issubclass(db_connection.DataError, db_connection.DatabaseError), "DataError should inherit from DatabaseError"
+    assert issubclass(db_connection.OperationalError, db_connection.DatabaseError), "OperationalError should inherit from DatabaseError"
+    assert issubclass(db_connection.IntegrityError, db_connection.DatabaseError), "IntegrityError should inherit from DatabaseError"
+    assert issubclass(db_connection.InternalError, db_connection.DatabaseError), "InternalError should inherit from DatabaseError"
+    assert issubclass(db_connection.ProgrammingError, db_connection.DatabaseError), "ProgrammingError should inherit from DatabaseError"
+    assert issubclass(db_connection.NotSupportedError, db_connection.DatabaseError), "NotSupportedError should inherit from DatabaseError"
+
+def test_connection_exception_instantiation(db_connection):
+    """Test that exception classes can be instantiated from Connection attributes"""
+    # Test that we can create instances of exceptions using connection attributes
+    warning = db_connection.Warning("Test warning", "DDBC warning")
+    assert isinstance(warning, db_connection.Warning), "Should be able to create Warning instance"
+    assert "Test warning" in str(warning), "Warning should contain driver error message"
+    
+    error = db_connection.Error("Test error", "DDBC error")
+    assert isinstance(error, db_connection.Error), "Should be able to create Error instance"
+    assert "Test error" in str(error), "Error should contain driver error message"
+    
+    interface_error = db_connection.InterfaceError("Interface error", "DDBC interface error")
+    assert isinstance(interface_error, db_connection.InterfaceError), "Should be able to create InterfaceError instance"
+    assert "Interface error" in str(interface_error), "InterfaceError should contain driver error message"
+    
+    db_error = db_connection.DatabaseError("Database error", "DDBC database error")
+    assert isinstance(db_error, db_connection.DatabaseError), "Should be able to create DatabaseError instance"
+    assert "Database error" in str(db_error), "DatabaseError should contain driver error message"
+
+def test_connection_exception_catching_with_connection_attributes(db_connection):
+    """Test that we can catch exceptions using Connection attributes in multi-connection scenarios"""
+    cursor = db_connection.cursor()
+    
+    try:
+        # Test catching InterfaceError using connection attribute
+        cursor.close()
+        cursor.execute("SELECT 1")  # Should raise InterfaceError on closed cursor
+        pytest.fail("Should have raised an exception")
+    except db_connection.InterfaceError as e:
+        assert "closed" in str(e).lower(), "Error message should mention closed cursor"
+    except Exception as e:
+        pytest.fail(f"Should have caught InterfaceError, but got {type(e).__name__}: {e}")
+
+def test_connection_exception_error_handling_example(db_connection):
+    """Test real-world error handling example using Connection exception attributes"""
+    cursor = db_connection.cursor()
+    
+    try:
+        # Try to create a table with invalid syntax (should raise ProgrammingError)
+        cursor.execute("CREATE INVALID TABLE syntax_error")
+        pytest.fail("Should have raised ProgrammingError")
+    except db_connection.ProgrammingError as e:
+        # This is the expected exception for syntax errors
+        assert "syntax" in str(e).lower() or "incorrect" in str(e).lower() or "near" in str(e).lower(), "Should be a syntax-related error"
+    except db_connection.DatabaseError as e:
+        # ProgrammingError inherits from DatabaseError, so this might catch it too
+        # This is acceptable according to DB-API 2.0
+        pass
+    except Exception as e:
+        pytest.fail(f"Expected ProgrammingError or DatabaseError, got {type(e).__name__}: {e}")
+
+def test_connection_exception_multi_connection_scenario(conn_str):
+    """Test exception handling in multi-connection environment"""
+    # Create two separate connections
+    conn1 = connect(conn_str)
+    conn2 = connect(conn_str)
+    
+    try:
+        cursor1 = conn1.cursor()
+        cursor2 = conn2.cursor()
+        
+        # Close first connection but try to use its cursor
+        conn1.close()
+        
+        try:
+            cursor1.execute("SELECT 1")
+            pytest.fail("Should have raised an exception")
+        except conn1.InterfaceError as e:
+            # Using conn1.InterfaceError even though conn1 is closed
+            # The exception class attribute should still be accessible
+            assert "closed" in str(e).lower(), "Should mention closed cursor"
+        except Exception as e:
+            pytest.fail(f"Expected InterfaceError from conn1 attributes, got {type(e).__name__}: {e}")
+        
+        # Second connection should still work
+        cursor2.execute("SELECT 1")
+        result = cursor2.fetchone()
+        assert result[0] == 1, "Second connection should still work"
+        
+        # Test using conn2 exception attributes
+        try:
+            cursor2.execute("SELECT * FROM nonexistent_table_12345")
+            pytest.fail("Should have raised an exception")
+        except conn2.ProgrammingError as e:
+            # Using conn2.ProgrammingError for table not found
+            assert "nonexistent_table_12345" in str(e) or "object" in str(e).lower() or "not" in str(e).lower(), "Should mention the missing table"
+        except conn2.DatabaseError as e:
+            # Acceptable since ProgrammingError inherits from DatabaseError
+            pass
+        except Exception as e:
+            pytest.fail(f"Expected ProgrammingError or DatabaseError from conn2, got {type(e).__name__}: {e}")
+            
+    finally:
+        try:
+            if not conn1._closed:
+                conn1.close()
+        except:
+            pass
+        try:
+            if not conn2._closed:
+                conn2.close()
+        except:
+            pass
+
+def test_connection_exception_attributes_consistency(conn_str):
+    """Test that exception attributes are consistent across multiple Connection instances"""
+    conn1 = connect(conn_str)
+    conn2 = connect(conn_str)
+    
+    try:
+        # Test that the same exception classes are referenced by different connections
+        assert conn1.Error is conn2.Error, "All connections should reference the same Error class"
+        assert conn1.InterfaceError is conn2.InterfaceError, "All connections should reference the same InterfaceError class"
+        assert conn1.DatabaseError is conn2.DatabaseError, "All connections should reference the same DatabaseError class"
+        assert conn1.ProgrammingError is conn2.ProgrammingError, "All connections should reference the same ProgrammingError class"
+        
+        # Test that the classes are the same as module-level imports
+        assert conn1.Error is Error, "Connection.Error should be the same as module-level Error"
+        assert conn1.InterfaceError is InterfaceError, "Connection.InterfaceError should be the same as module-level InterfaceError"
+        assert conn1.DatabaseError is DatabaseError, "Connection.DatabaseError should be the same as module-level DatabaseError"
+        
+    finally:
+        conn1.close()
+        conn2.close()
+
+def test_connection_exception_attributes_comprehensive_list():
+    """Test that all DB-API 2.0 required exception attributes are present on Connection class"""
+    # Test at the class level (before instantiation)
+    required_exceptions = [
+        'Warning', 'Error', 'InterfaceError', 'DatabaseError',
+        'DataError', 'OperationalError', 'IntegrityError', 
+        'InternalError', 'ProgrammingError', 'NotSupportedError'
+    ]
+    
+    for exc_name in required_exceptions:
+        assert hasattr(Connection, exc_name), f"Connection class should have {exc_name} attribute"
+        exc_class = getattr(Connection, exc_name)
+        assert isinstance(exc_class, type), f"Connection.{exc_name} should be a class"
+        assert issubclass(exc_class, Exception), f"Connection.{exc_name} should be an Exception subclass"

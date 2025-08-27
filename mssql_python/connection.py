@@ -51,6 +51,20 @@ def _validate_encoding(encoding: str) -> bool:
     except LookupError:
         return False
 
+# Import all DB-API 2.0 exception classes for Connection attributes
+from mssql_python.exceptions import (
+    Warning,
+    Error,
+    InterfaceError,
+    DatabaseError,
+    DataError,
+    OperationalError,
+    IntegrityError,
+    InternalError,
+    ProgrammingError,
+    NotSupportedError,
+)
+
 
 class Connection:
     """
@@ -72,6 +86,19 @@ class Connection:
         setdecoding(sqltype, encoding=None, ctype=None) -> None:
         getdecoding(sqltype) -> dict:
     """
+
+    # DB-API 2.0 Exception attributes
+    # These allow users to catch exceptions using connection.Error, connection.ProgrammingError, etc.
+    Warning = Warning
+    Error = Error
+    InterfaceError = InterfaceError
+    DatabaseError = DatabaseError
+    DataError = DataError
+    OperationalError = OperationalError
+    IntegrityError = IntegrityError
+    InternalError = InternalError
+    ProgrammingError = ProgrammingError
+    NotSupportedError = NotSupportedError
 
     def __init__(self, connection_str: str = "", autocommit: bool = False, attrs_before: dict = None, **kwargs) -> None:
         """
