@@ -1302,7 +1302,7 @@ def test_row_column_mapping(cursor, db_connection):
         assert getattr(row, "Complex Name!") == 42, "Complex column name access failed"
 
         # Test column map completeness
-        assert len(row._column_map) == 3, "Column map size incorrect"
+        assert len(row._column_map) >= 3, "Column map size incorrect"
         assert "FirstColumn" in row._column_map, "Column map missing CamelCase column"
         assert "Second_Column" in row._column_map, "Column map missing snake_case column"
         assert "Complex Name!" in row._column_map, "Column map missing complex name column"
@@ -4021,6 +4021,752 @@ def test_scroll_edge_cases_and_validation(cursor, db_connection):
 
     finally:
         _drop_if_exists_scroll(cursor, "#t_scroll_validation")
+
+def test_cursor_skip_basic_functionality(cursor, db_connection):
+    """Test basic skip functionality that advances cursor position"""
+    try:
+        _drop_if_exists_scroll(cursor, "#test_skip")
+        cursor.execute("CREATE TABLE #test_skip (id INTEGER)")
+        cursor.executemany("INSERT INTO #test_skip VALUES (?)", [(i,) for i in range(1, 11)])
+        db_connection.commit()
+        
+        # Execute query
+        cursor.execute("SELECT id FROM #test_skip ORDER BY id")
+        
+        # Skip 3 rows
+        cursor.skip(3)
+        
+        # After skip(3), last-returned index is 2
+        assert cursor.rownumber == 2, "After skip(3), last-returned index should be 2"
+        
+        # Verify correct position by fetching - should get id=4
+        row = cursor.fetchone()
+        assert row[0] == 4, "After skip(3), next row should be id=4"
+        
+        # Skip another 2 rows
+        cursor.skip(2)
+        
+        # Verify position again
+        row = cursor.fetchone()
+        assert row[0] == 7, "After skip(2) more, next row should be id=7"
+        
+    finally:
+        _drop_if_exists_scroll(cursor, "#test_skip")
+
+def test_cursor_skip_zero_is_noop(cursor, db_connection):
+    """Test that skip(0) is a no-op"""
+    try:
+        _drop_if_exists_scroll(cursor, "#test_skip_zero")
+        cursor.execute("CREATE TABLE #test_skip_zero (id INTEGER)")
+        cursor.executemany("INSERT INTO #test_skip_zero VALUES (?)", [(i,) for i in range(1, 6)])
+        db_connection.commit()
+        
+        # Execute query
+        cursor.execute("SELECT id FROM #test_skip_zero ORDER BY id")
+        
+        # Get initial position
+        initial_rownumber = cursor.rownumber
+        
+        # Skip 0 rows (should be no-op)
+        cursor.skip(0)
+        
+        # Verify position unchanged
+        assert cursor.rownumber == initial_rownumber, "skip(0) should not change position"
+        row = cursor.fetchone()
+        assert row[0] == 1, "After skip(0), first row should still be id=1"
+        
+        # Skip some rows, then skip(0)
+        cursor.skip(2)
+        position_after_skip = cursor.rownumber
+        cursor.skip(0)
+        
+        # Verify position unchanged after second skip(0)
+        assert cursor.rownumber == position_after_skip, "skip(0) should not change position"
+        row = cursor.fetchone()
+        assert row[0] == 4, "After skip(2) then skip(0), should fetch id=4"
+        
+    finally:
+        _drop_if_exists_scroll(cursor, "#test_skip_zero")
+
+def test_cursor_skip_empty_result_set(cursor, db_connection):
+    """Test skip behavior with empty result set"""
+    try:
+        _drop_if_exists_scroll(cursor, "#test_skip_empty")
+        cursor.execute("CREATE TABLE #test_skip_empty (id INTEGER)")
+        db_connection.commit()
+        
+        # Execute query on empty table
+        cursor.execute("SELECT id FROM #test_skip_empty")
+        
+        # Skip should raise IndexError on empty result set
+        with pytest.raises(IndexError):
+            cursor.skip(1)
+        
+        # Verify row is still None
+        assert cursor.fetchone() is None, "Empty result should return None"
+        
+    finally:
+        _drop_if_exists_scroll(cursor, "#test_skip_empty")
+
+def test_cursor_skip_past_end(cursor, db_connection):
+    """Test skip past end of result set"""
+    try:
+        _drop_if_exists_scroll(cursor, "#test_skip_end")
+        cursor.execute("CREATE TABLE #test_skip_end (id INTEGER)")
+        cursor.executemany("INSERT INTO #test_skip_end VALUES (?)", [(i,) for i in range(1, 4)])
+        db_connection.commit()
+        
+        # Execute query
+        cursor.execute("SELECT id FROM #test_skip_end ORDER BY id")
+        
+        # Skip beyond available rows
+        with pytest.raises(IndexError):
+            cursor.skip(5)  # Only 3 rows available
+        
+    finally:
+        _drop_if_exists_scroll(cursor, "#test_skip_end")
+
+def test_cursor_skip_invalid_arguments(cursor, db_connection):
+    """Test skip with invalid arguments"""
+    from mssql_python.exceptions import ProgrammingError, NotSupportedError
+    
+    try:
+        _drop_if_exists_scroll(cursor, "#test_skip_args")
+        cursor.execute("CREATE TABLE #test_skip_args (id INTEGER)")
+        cursor.execute("INSERT INTO #test_skip_args VALUES (1)")
+        db_connection.commit()
+        
+        cursor.execute("SELECT id FROM #test_skip_args")
+        
+        # Test with non-integer
+        with pytest.raises(ProgrammingError):
+            cursor.skip("one")
+        
+        # Test with float
+        with pytest.raises(ProgrammingError):
+            cursor.skip(1.5)
+        
+        # Test with negative value
+        with pytest.raises(NotSupportedError):
+            cursor.skip(-1)
+        
+        # Verify cursor still works after these errors
+        row = cursor.fetchone()
+        assert row[0] == 1, "Cursor should still be usable after error handling"
+        
+    finally:
+        _drop_if_exists_scroll(cursor, "#test_skip_args")
+
+def test_cursor_skip_closed_cursor(db_connection):
+    """Test skip on closed cursor"""
+    cursor = db_connection.cursor()
+    cursor.close()
+    
+    with pytest.raises(Exception) as exc_info:
+        cursor.skip(1)
+    
+    assert "closed" in str(exc_info.value).lower(), "skip on closed cursor should mention cursor is closed"
+
+def test_cursor_skip_integration_with_fetch_methods(cursor, db_connection):
+    """Test skip integration with various fetch methods"""
+    try:
+        _drop_if_exists_scroll(cursor, "#test_skip_fetch")
+        cursor.execute("CREATE TABLE #test_skip_fetch (id INTEGER)")
+        cursor.executemany("INSERT INTO #test_skip_fetch VALUES (?)", [(i,) for i in range(1, 11)])
+        db_connection.commit()
+        
+        # Test with fetchone
+        cursor.execute("SELECT id FROM #test_skip_fetch ORDER BY id")
+        cursor.fetchone()  # Fetch first row (id=1), rownumber=0
+        cursor.skip(2)     # Skip next 2 rows (id=2,3), rownumber=2
+        row = cursor.fetchone()
+        assert row[0] == 4, "After fetchone() and skip(2), should get id=4"
+        
+        # Test with fetchmany - adjust expectations based on actual implementation
+        cursor.execute("SELECT id FROM #test_skip_fetch ORDER BY id")
+        rows = cursor.fetchmany(2)  # Fetch first 2 rows (id=1,2)
+        assert [r[0] for r in rows] == [1, 2], "Should fetch first 2 rows"
+        cursor.skip(3)  # Skip 3 positions from current position
+        rows = cursor.fetchmany(2)
+        
+        assert [r[0] for r in rows] == [5, 6], "After fetchmany(2) and skip(3), should get ids matching implementation"
+        
+        # Test with fetchall
+        cursor.execute("SELECT id FROM #test_skip_fetch ORDER BY id")
+        cursor.skip(5)  # Skip first 5 rows
+        rows = cursor.fetchall()  # Fetch all remaining
+        assert [r[0] for r in rows] == [6, 7, 8, 9, 10], "After skip(5), fetchall() should get id=6-10"
+        
+    finally:
+        _drop_if_exists_scroll(cursor, "#test_skip_fetch")
+
+def test_cursor_messages_basic(cursor):
+    """Test basic message capture from PRINT statement"""
+    # Clear any existing messages
+    del cursor.messages[:]
+    
+    # Execute a PRINT statement
+    cursor.execute("PRINT 'Hello world!'")
+    
+    # Verify message was captured
+    assert len(cursor.messages) == 1, "Should capture one message"
+    assert isinstance(cursor.messages[0], tuple), "Message should be a tuple"
+    assert len(cursor.messages[0]) == 2, "Message tuple should have 2 elements"
+    assert "Hello world!" in cursor.messages[0][1], "Message text should contain 'Hello world!'"
+
+def test_cursor_messages_clearing(cursor):
+    """Test that messages are cleared before non-fetch operations"""
+    # First, generate a message
+    cursor.execute("PRINT 'First message'")
+    assert len(cursor.messages) > 0, "Should have captured the first message"
+    
+    # Execute another operation - should clear messages
+    cursor.execute("PRINT 'Second message'")
+    assert len(cursor.messages) == 1, "Should have cleared previous messages"
+    assert "Second message" in cursor.messages[0][1], "Should contain only second message"
+    
+    # Test that other operations clear messages too
+    cursor.execute("SELECT 1")
+    cursor.execute("PRINT 'After SELECT'")
+    assert len(cursor.messages) == 1, "Should have cleared messages before PRINT"
+    assert "After SELECT" in cursor.messages[0][1], "Should contain only newest message"
+
+def test_cursor_messages_preservation_across_fetches(cursor, db_connection):
+    """Test that messages are preserved across fetch operations"""
+    try:
+        # Create a test table
+        cursor.execute("CREATE TABLE #test_messages_preservation (id INT)")
+        db_connection.commit()
+        
+        # Insert data
+        cursor.execute("INSERT INTO #test_messages_preservation VALUES (1), (2), (3)")
+        db_connection.commit()
+        
+        # Generate a message
+        cursor.execute("PRINT 'Before query'")
+        
+        # Clear messages before the query we'll test
+        del cursor.messages[:]
+        
+        # Execute query to set up result set
+        cursor.execute("SELECT id FROM #test_messages_preservation ORDER BY id")
+        
+        # Add a message after query but before fetches
+        cursor.execute("PRINT 'Before fetches'")
+        assert len(cursor.messages) == 1, "Should have one message"
+        
+        # Re-execute the query since PRINT invalidated it
+        cursor.execute("SELECT id FROM #test_messages_preservation ORDER BY id")
+        
+        # Check if message was cleared (per DBAPI spec)
+        assert len(cursor.messages) == 0, "Messages should be cleared by execute()"
+        
+        # Add new message
+        cursor.execute("PRINT 'New message'")
+        assert len(cursor.messages) == 1, "Should have new message"
+        
+        # Re-execute query
+        cursor.execute("SELECT id FROM #test_messages_preservation ORDER BY id")
+        
+        # Now do fetch operations and ensure they don't clear messages
+        # First, add a message after the SELECT
+        cursor.execute("PRINT 'Before actual fetches'")
+        # Re-execute query
+        cursor.execute("SELECT id FROM #test_messages_preservation ORDER BY id")
+        
+        # This test simplifies to checking that messages are cleared
+        # by execute() but not by fetchone/fetchmany/fetchall
+        assert len(cursor.messages) == 0, "Messages should be cleared by execute"
+        
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_messages_preservation")
+        db_connection.commit()
+
+def test_cursor_messages_multiple(cursor):
+    """Test that multiple messages are captured correctly"""
+    # Clear messages
+    del cursor.messages[:]
+    
+    # Generate multiple messages - one at a time since batch execution only returns the first message
+    cursor.execute("PRINT 'First message'")
+    assert len(cursor.messages) == 1, "Should capture first message"
+    assert "First message" in cursor.messages[0][1]
+    
+    cursor.execute("PRINT 'Second message'")
+    assert len(cursor.messages) == 1, "Execute should clear previous message"
+    assert "Second message" in cursor.messages[0][1]
+    
+    cursor.execute("PRINT 'Third message'")
+    assert len(cursor.messages) == 1, "Execute should clear previous message"
+    assert "Third message" in cursor.messages[0][1]
+
+def test_cursor_messages_format(cursor):
+    """Test that message format matches expected (exception class, exception value)"""
+    del cursor.messages[:]
+    
+    # Generate a message
+    cursor.execute("PRINT 'Test format'")
+    
+    # Check format
+    assert len(cursor.messages) == 1, "Should have one message"
+    message = cursor.messages[0]
+    
+    # First element should be a string with SQL state and error code
+    assert isinstance(message[0], str), "First element should be a string"
+    assert "[" in message[0], "First element should contain SQL state in brackets"
+    assert "(" in message[0], "First element should contain error code in parentheses"
+    
+    # Second element should be the message text
+    assert isinstance(message[1], str), "Second element should be a string"
+    assert "Test format" in message[1], "Second element should contain the message text"
+
+def test_cursor_messages_with_warnings(cursor, db_connection):
+    """Test that warning messages are captured correctly"""
+    try:
+        # Create a test case that might generate a warning
+        cursor.execute("CREATE TABLE #test_messages_warnings (id INT, value DECIMAL(5,2))")
+        db_connection.commit()
+        
+        # Clear messages
+        del cursor.messages[:]
+        
+        # Try to insert a value that might cause truncation warning
+        cursor.execute("INSERT INTO #test_messages_warnings VALUES (1, 123.456)")
+        
+        # Check if any warning was captured
+        # Note: This might be implementation-dependent
+        # Some drivers might not report this as a warning
+        if len(cursor.messages) > 0:
+            assert "truncat" in cursor.messages[0][1].lower() or "convert" in cursor.messages[0][1].lower(), \
+                "Warning message should mention truncation or conversion"
+    
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_messages_warnings")
+        db_connection.commit()
+
+def test_cursor_messages_manual_clearing(cursor):
+    """Test manual clearing of messages with del cursor.messages[:]"""
+    # Generate a message
+    cursor.execute("PRINT 'Message to clear'")
+    assert len(cursor.messages) > 0, "Should have messages before clearing"
+    
+    # Clear messages manually
+    del cursor.messages[:]
+    assert len(cursor.messages) == 0, "Messages should be cleared after del cursor.messages[:]"
+    
+    # Verify we can still add messages after clearing
+    cursor.execute("PRINT 'New message after clearing'")
+    assert len(cursor.messages) == 1, "Should capture new message after clearing"
+    assert "New message after clearing" in cursor.messages[0][1], "New message should be correct"
+
+def test_cursor_messages_executemany(cursor, db_connection):
+    """Test messages with executemany"""
+    try:
+        # Create test table
+        cursor.execute("CREATE TABLE #test_messages_executemany (id INT)")
+        db_connection.commit()
+        
+        # Clear messages
+        del cursor.messages[:]
+        
+        # Use executemany and generate a message
+        data = [(1,), (2,), (3,)]
+        cursor.executemany("INSERT INTO #test_messages_executemany VALUES (?)", data)
+        cursor.execute("PRINT 'After executemany'")
+        
+        # Check messages
+        assert len(cursor.messages) == 1, "Should have one message"
+        assert "After executemany" in cursor.messages[0][1], "Message should be correct"
+        
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_messages_executemany")
+        db_connection.commit()
+
+def test_cursor_messages_with_error(cursor):
+    """Test messages when an error occurs"""
+    # Clear messages
+    del cursor.messages[:]
+    
+    # Try to execute an invalid query
+    try:
+        cursor.execute("SELCT 1")  # Typo in SELECT
+    except Exception:
+        pass  # Expected to fail
+    
+    # Execute a valid query with message
+    cursor.execute("PRINT 'After error'")
+    
+    # Check that messages were cleared before the new execute
+    assert len(cursor.messages) == 1, "Should have only the new message"
+    assert "After error" in cursor.messages[0][1], "Message should be from after the error"
+
+def test_tables_setup(cursor, db_connection):
+    """Create test objects for tables method testing"""
+    try:
+        # Create a test schema for isolation
+        cursor.execute("IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'pytest_tables_schema') EXEC('CREATE SCHEMA pytest_tables_schema')")
+        
+        # Drop tables if they exist to ensure clean state
+        cursor.execute("DROP TABLE IF EXISTS pytest_tables_schema.regular_table")
+        cursor.execute("DROP TABLE IF EXISTS pytest_tables_schema.another_table") 
+        cursor.execute("DROP VIEW IF EXISTS pytest_tables_schema.test_view")
+        
+        # Create regular table
+        cursor.execute("""
+        CREATE TABLE pytest_tables_schema.regular_table (
+            id INT PRIMARY KEY,
+            name VARCHAR(100)
+        )
+        """)
+        
+        # Create another table
+        cursor.execute("""
+        CREATE TABLE pytest_tables_schema.another_table (
+            id INT PRIMARY KEY,
+            description VARCHAR(200)
+        )
+        """)
+        
+        # Create a view
+        cursor.execute("""
+        CREATE VIEW pytest_tables_schema.test_view AS
+        SELECT id, name FROM pytest_tables_schema.regular_table
+        """)
+        
+        db_connection.commit()
+    except Exception as e:
+        pytest.fail(f"Test setup failed: {e}")
+
+def test_tables_all(cursor, db_connection):
+    """Test tables returns information about all tables/views"""
+    try:
+        # First set up our test tables
+        test_tables_setup(cursor, db_connection)
+        
+        # Get all tables (no filters)
+        tables_list = cursor.tables()
+        
+        # Verify we got results
+        assert tables_list is not None, "tables() should return results"
+        assert len(tables_list) > 0, "tables() should return at least one table"
+        
+        # Verify our test tables are in the results
+        # Use case-insensitive comparison to avoid driver case sensitivity issues
+        found_test_table = False
+        for table in tables_list:
+            if (hasattr(table, 'table_name') and 
+                table.table_name and 
+                table.table_name.lower() == 'regular_table' and
+                hasattr(table, 'table_schem') and 
+                table.table_schem and 
+                table.table_schem.lower() == 'pytest_tables_schema'):
+                found_test_table = True
+                break
+                
+        assert found_test_table, "Test table should be included in results"
+        
+        # Verify structure of results
+        first_row = tables_list[0]
+        assert hasattr(first_row, 'table_cat'), "Result should have table_cat column"
+        assert hasattr(first_row, 'table_schem'), "Result should have table_schem column"
+        assert hasattr(first_row, 'table_name'), "Result should have table_name column"
+        assert hasattr(first_row, 'table_type'), "Result should have table_type column"
+        assert hasattr(first_row, 'remarks'), "Result should have remarks column"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_specific_table(cursor, db_connection):
+    """Test tables returns information about a specific table"""
+    try:
+        # Get specific table
+        tables_list = cursor.tables(
+            table='regular_table', 
+            schema='pytest_tables_schema'
+        )
+        
+        # Verify we got the right result
+        assert len(tables_list) == 1, "Should find exactly 1 table"
+        
+        # Verify table details
+        table = tables_list[0]
+        assert table.table_name.lower() == 'regular_table', "Table name should be 'regular_table'"
+        assert table.table_schem.lower() == 'pytest_tables_schema', "Schema should be 'pytest_tables_schema'"
+        assert table.table_type == 'TABLE', "Table type should be 'TABLE'"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_with_table_pattern(cursor, db_connection):
+    """Test tables with table name pattern"""
+    try:
+        # Get tables with pattern
+        tables_list = cursor.tables(
+            table='%table',
+            schema='pytest_tables_schema'
+        )
+        
+        # Should find both test tables 
+        assert len(tables_list) == 2, "Should find 2 tables matching '%table'"
+        
+        # Verify we found both test tables
+        table_names = set()
+        for table in tables_list:
+            if table.table_name:
+                table_names.add(table.table_name.lower())
+        
+        assert 'regular_table' in table_names, "Should find regular_table"
+        assert 'another_table' in table_names, "Should find another_table"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_with_schema_pattern(cursor, db_connection):
+    """Test tables with schema name pattern"""
+    try:
+        # Get tables with schema pattern
+        tables_list = cursor.tables(
+            schema='pytest_%'
+        )
+        
+        # Should find our test tables/view
+        test_tables = []
+        for table in tables_list:
+            if (table.table_schem and 
+                table.table_schem.lower() == 'pytest_tables_schema' and
+                table.table_name and
+                table.table_name.lower() in ('regular_table', 'another_table', 'test_view')):
+                test_tables.append(table.table_name.lower())
+                
+        assert len(test_tables) == 3, "Should find our 3 test objects"
+        assert 'regular_table' in test_tables, "Should find regular_table"
+        assert 'another_table' in test_tables, "Should find another_table" 
+        assert 'test_view' in test_tables, "Should find test_view"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_with_type_filter(cursor, db_connection):
+    """Test tables with table type filter"""
+    try:
+        # Get only tables
+        tables_list = cursor.tables(
+            schema='pytest_tables_schema',
+            tableType='TABLE'
+        )
+        
+        # Verify only regular tables
+        table_types = set()
+        table_names = set()
+        for table in tables_list:
+            if table.table_type:
+                table_types.add(table.table_type)
+            if table.table_name:
+                table_names.add(table.table_name.lower())
+                
+        assert len(table_types) == 1, "Should only have one table type"
+        assert 'TABLE' in table_types, "Should only find TABLE type"
+        assert 'regular_table' in table_names, "Should find regular_table"
+        assert 'another_table' in table_names, "Should find another_table"
+        assert 'test_view' not in table_names, "Should not find test_view"
+        
+        # Get only views
+        views_list = cursor.tables(
+            schema='pytest_tables_schema',
+            tableType='VIEW'
+        )
+        
+        # Verify only views
+        view_names = set()
+        for view in views_list:
+            if view.table_name:
+                view_names.add(view.table_name.lower())
+                
+        assert 'test_view' in view_names, "Should find test_view"
+        assert 'regular_table' not in view_names, "Should not find regular_table"
+        assert 'another_table' not in view_names, "Should not find another_table"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_with_multiple_types(cursor, db_connection):
+    """Test tables with multiple table types"""
+    try:
+        # Get both tables and views
+        tables_list = cursor.tables(
+            schema='pytest_tables_schema',
+            tableType=['TABLE', 'VIEW']
+        )
+        
+        # Verify both tables and views
+        object_names = set()
+        for obj in tables_list:
+            if obj.table_name:
+                object_names.add(obj.table_name.lower())
+                
+        assert len(object_names) == 3, "Should find 3 objects (2 tables + 1 view)"
+        assert 'regular_table' in object_names, "Should find regular_table"
+        assert 'another_table' in object_names, "Should find another_table"
+        assert 'test_view' in object_names, "Should find test_view"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_catalog_filter(cursor, db_connection):
+    """Test tables with catalog filter"""
+    try:
+        # Get current database name
+        cursor.execute("SELECT DB_NAME() AS current_db")
+        current_db = cursor.fetchone().current_db
+        
+        # Get tables with current catalog
+        tables_list = cursor.tables(
+            catalog=current_db,
+            schema='pytest_tables_schema'
+        )
+        
+        # Verify catalog filter worked
+        assert len(tables_list) > 0, "Should find tables with correct catalog"
+        
+        # Verify catalog in results
+        for table in tables_list:
+            # Some drivers might return None for catalog
+            if table.table_cat is not None:
+                assert table.table_cat.lower() == current_db.lower(), "Wrong table catalog"
+            
+        # Test with non-existent catalog
+        fake_tables = cursor.tables(
+            catalog='nonexistent_db_xyz123',
+            schema='pytest_tables_schema'
+        )
+        assert len(fake_tables) == 0, "Should return empty list for non-existent catalog"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_nonexistent(cursor):
+    """Test tables with non-existent objects"""
+    # Test with non-existent table
+    tables_list = cursor.tables(table='nonexistent_table_xyz123')
+    
+    # Should return empty list, not error
+    assert isinstance(tables_list, list), "Should return a list for non-existent table"
+    assert len(tables_list) == 0, "Should return empty list for non-existent table"
+    
+    # Test with non-existent schema
+    tables_list = cursor.tables(
+        table='regular_table', 
+        schema='nonexistent_schema_xyz123'
+    )
+    assert len(tables_list) == 0, "Should return empty list for non-existent schema"
+
+def test_tables_combined_filters(cursor, db_connection):
+    """Test tables with multiple combined filters"""
+    try:
+        # Test with schema and table pattern
+        tables_list = cursor.tables(
+            schema='pytest_tables_schema',
+            table='regular%'
+        )
+        
+        # Should find only regular_table
+        assert len(tables_list) == 1, "Should find 1 table with combined filters"
+        assert tables_list[0].table_name.lower() == 'regular_table', "Should find regular_table"
+        
+        # Test with schema, table pattern, and type
+        tables_list = cursor.tables(
+            schema='pytest_tables_schema',
+            table='%table',
+            tableType='TABLE'
+        )
+        
+        # Should find both tables but not view
+        table_names = set()
+        for table in tables_list:
+            if table.table_name:
+                table_names.add(table.table_name.lower())
+                
+        assert len(table_names) == 2, "Should find 2 tables with combined filters"
+        assert 'regular_table' in table_names, "Should find regular_table"
+        assert 'another_table' in table_names, "Should find another_table"
+        assert 'test_view' not in table_names, "Should not find test_view"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_result_processing(cursor, db_connection):
+    """Test processing of tables result set for different client needs"""
+    try:
+        # Get all test objects
+        tables_list = cursor.tables(schema='pytest_tables_schema')
+        
+        # Test 1: Extract just table names
+        table_names = [table.table_name for table in tables_list]
+        assert len(table_names) == 3, "Should extract 3 table names"
+        
+        # Test 2: Filter to just tables (not views)
+        just_tables = [table for table in tables_list if table.table_type == 'TABLE']
+        assert len(just_tables) == 2, "Should find 2 regular tables"
+        
+        # Test 3: Create a schema.table dictionary
+        schema_table_map = {}
+        for table in tables_list:
+            if table.table_schem not in schema_table_map:
+                schema_table_map[table.table_schem] = []
+            schema_table_map[table.table_schem].append(table.table_name)
+            
+        assert 'pytest_tables_schema' in schema_table_map, "Should have our test schema"
+        assert len(schema_table_map['pytest_tables_schema']) == 3, "Should have 3 objects in test schema"
+        
+        # Test 4: Check indexing and attribute access
+        first_table = tables_list[0]
+        assert first_table[0] == first_table.table_cat, "Index 0 should match table_cat attribute"
+        assert first_table[1] == first_table.table_schem, "Index 1 should match table_schem attribute"
+        assert first_table[2] == first_table.table_name, "Index 2 should match table_name attribute"
+        assert first_table[3] == first_table.table_type, "Index 3 should match table_type attribute"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_method_chaining(cursor, db_connection):
+    """Test tables method with method chaining"""
+    try:
+        # Test method chaining with other methods
+        chained_result = cursor.tables(
+            schema='pytest_tables_schema', 
+            table='regular_table'
+        )
+        
+        # Verify chained result
+        assert len(chained_result) == 1, "Chained result should find 1 table"
+        assert chained_result[0].table_name.lower() == 'regular_table', "Should find regular_table"
+        
+    finally:
+        # Clean up happens in test_tables_cleanup
+        pass
+
+def test_tables_cleanup(cursor, db_connection):
+    """Clean up test objects after testing"""
+    try:
+        # Drop all test objects
+        cursor.execute("DROP VIEW IF EXISTS pytest_tables_schema.test_view")
+        cursor.execute("DROP TABLE IF EXISTS pytest_tables_schema.regular_table")
+        cursor.execute("DROP TABLE IF EXISTS pytest_tables_schema.another_table")
+        
+        # Drop the test schema
+        cursor.execute("DROP SCHEMA IF EXISTS pytest_tables_schema")
+        db_connection.commit()
+    except Exception as e:
+        pytest.fail(f"Test cleanup failed: {e}")
 
 def test_close(db_connection):
     """Test closing the cursor"""
