@@ -14,7 +14,7 @@ import weakref
 import re
 import codecs
 from mssql_python.cursor import Cursor
-from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, sanitize_user_input, log
+from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, log, validate_attribute_value, sanitize_user_input
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
 from mssql_python.exceptions import InterfaceError, ProgrammingError
@@ -71,6 +71,7 @@ class Connection:
         setencoding(encoding=None, ctype=None) -> None:
         setdecoding(sqltype, encoding=None, ctype=None) -> None:
         getdecoding(sqltype) -> dict:
+        set_attr(attribute, value) -> None:  # Add this line
     """
 
     def __init__(self, connection_str: str = "", autocommit: bool = False, attrs_before: dict = None, **kwargs) -> None:
@@ -515,6 +516,63 @@ class Connection:
         # Roll back the current transaction
         self._conn.rollback()
         log('info', "Transaction rolled back successfully.")
+
+    def set_attr(self, attribute, value):
+        """
+        Set a connection attribute.
+
+        This method sets a connection attribute using SQLSetConnectAttr.
+        It provides pyodbc-compatible functionality for configuring connection
+        behavior such as autocommit mode, transaction isolation level, and
+        connection timeouts.
+
+        Args:
+            attribute (int): The connection attribute to set. Should be one of the
+                           SQL_ATTR_* constants (e.g., SQL_ATTR_AUTOCOMMIT,
+                           SQL_ATTR_TXN_ISOLATION).
+            value: The value to set for the attribute. Can be an integer, string, 
+                   bytes, or bytearray depending on the attribute type.
+
+        Raises:
+            InterfaceError: If the connection is closed or attribute is invalid.
+            ProgrammingError: If the value type or range is invalid.
+
+        Example:
+            >>> conn.set_attr(SQL_ATTR_AUTOCOMMIT, SQL_AUTOCOMMIT_OFF)
+            >>> conn.set_attr(SQL_ATTR_TXN_ISOLATION, SQL_TXN_READ_COMMITTED)
+        """
+        if self._closed:
+            raise InterfaceError("Cannot set attribute on closed connection", "Connection is closed")
+
+        # Use the integrated validation helper function
+        is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(attribute, value)
+        
+        if not is_valid:
+            # Use the already sanitized values for logging
+            log('warning', f"Invalid attribute or value: {sanitized_attr}={sanitized_val}, {error_message}")
+            raise ProgrammingError(
+                driver_error=f"Invalid attribute or value: {error_message}",
+                ddbc_error=error_message
+            )
+        
+        # Log with sanitized values
+        log('debug', f"Setting connection attribute: {sanitized_attr}={sanitized_val}")
+
+        try:
+            # Call the underlying C++ method
+            self._conn.set_attr(attribute, value)
+            log('info', f"Connection attribute {sanitized_attr} set successfully")
+
+        except Exception as e:
+            error_msg = f"Failed to set connection attribute {sanitized_attr}: {str(e)}"
+            log('error', error_msg)
+
+            # Determine appropriate exception type based on error content
+            error_str = str(e).lower()
+            if 'invalid' in error_str or 'unsupported' in error_str or 'cast' in error_str:
+                raise InterfaceError(error_msg, str(e)) from e
+            else:
+                raise ProgrammingError(error_msg, str(e)) from e
 
     def close(self) -> None:
         """

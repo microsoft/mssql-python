@@ -42,10 +42,14 @@ public:
     // Allocate a new statement handle on this connection.
     SqlHandlePtr allocStatementHandle();
 
+    SQLRETURN setAttribute(SQLINTEGER attribute, py::object value);
+
+    // Add getter for DBC handle for error reporting
+    const SqlHandlePtr& getDbcHandle() const { return _dbcHandle; }
+
 private:
     void allocateDbcHandle();
     void checkError(SQLRETURN ret) const;
-    SQLRETURN setAttribute(SQLINTEGER attribute, py::object value);
     void applyAttrsBefore(const py::dict& attrs_before);
 
     std::wstring _connStr;
@@ -66,6 +70,7 @@ public:
     void setAutocommit(bool enabled);
     bool getAutocommit() const;
     SqlHandlePtr allocStatementHandle();
+    void setAttr(int attribute, py::object value);
 
 private:
     std::shared_ptr<Connection> _conn;
