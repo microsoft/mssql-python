@@ -16,7 +16,7 @@ from typing import List, Union
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
-from mssql_python.exceptions import InterfaceError
+from mssql_python.exceptions import InterfaceError, ProgrammingError
 from .row import Row
 
 
@@ -438,7 +438,7 @@ class Cursor:
         Close the cursor now (rather than whenever __del__ is called).
         """
         if self.closed:
-            return
+            raise ProgrammingError("Cursor is already closed.")
 
         if self.hstmt:
             self.hstmt.free()

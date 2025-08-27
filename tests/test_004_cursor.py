@@ -1599,30 +1599,6 @@ def test_cursor_context_manager_enter_returns_self(db_connection):
     # Cursor should be closed after context exit
     assert cursor.closed
 
-def test_double_close(db_connection):
-    """Test that calling cursor.close() multiple times is idempotent and doesn't raise an exception"""
-    try:
-        cursor = db_connection.cursor()
-        
-        # First close() call
-        cursor.close()
-        assert cursor.closed, "Cursor should be closed after first close() call"
-        
-        # Second close() call - should be a no-op and not raise an exception
-        cursor.close()
-        assert cursor.closed, "Cursor should still be closed after second close() call"
-        
-        # Multiple additional close() calls - should also be no-ops
-        cursor.close()
-        cursor.close()
-        assert cursor.closed, "Cursor should remain closed after multiple close() calls"
-        
-    except Exception as e:
-        pytest.fail(f"Multiple cursor.close() calls test failed: {e}")
-    finally:
-        # Create a new cursor for any subsequent tests
-        cursor = db_connection.cursor()
-
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
