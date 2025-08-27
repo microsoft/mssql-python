@@ -970,6 +970,18 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Q
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
+    // Ensure statement is scrollable BEFORE executing
+    if (SQLSetStmtAttr_ptr && StatementHandle && StatementHandle->get()) {
+        SQLSetStmtAttr_ptr(StatementHandle->get(),
+                           SQL_ATTR_CURSOR_TYPE,
+                           (SQLPOINTER)SQL_CURSOR_STATIC,
+                           0);
+        SQLSetStmtAttr_ptr(StatementHandle->get(),
+                           SQL_ATTR_CONCURRENCY,
+                           (SQLPOINTER)SQL_CONCUR_READ_ONLY,
+                           0);
+    }
+
     SQLWCHAR* queryPtr;
 #if defined(__APPLE__) || defined(__linux__)
     std::vector<SQLWCHAR> queryBuffer = WStringToSQLWCHAR(Query);
@@ -1094,6 +1106,19 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     if (!statementHandle || !statementHandle->get()) {
         LOG("Statement handle is null or empty");
     }
+
+    // Ensure statement is scrollable BEFORE executing
+    if (SQLSetStmtAttr_ptr && hStmt) {
+        SQLSetStmtAttr_ptr(hStmt,
+                           SQL_ATTR_CURSOR_TYPE,
+                           (SQLPOINTER)SQL_CURSOR_STATIC,
+                           0);
+        SQLSetStmtAttr_ptr(hStmt,
+                           SQL_ATTR_CONCURRENCY,
+                           (SQLPOINTER)SQL_CONCUR_READ_ONLY,
+                           0);
+    }
+
     SQLWCHAR* queryPtr;
 #if defined(__APPLE__) || defined(__linux__)
     std::vector<SQLWCHAR> queryBuffer = WStringToSQLWCHAR(query);
@@ -1963,6 +1988,20 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
     return ret;
 }
 
+SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOrientation, SQLLEN FetchOffset, py::list& /*row_data*/) {
+    LOG("Fetching with scroll: orientation={}, offset={}", FetchOrientation, FetchOffset);
+    if (!SQLFetchScroll_ptr) {
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();  // Load the driver
+    }
+
+    // Perform scroll; do not fetch row data here
+    return SQLFetchScroll_ptr
+        ? SQLFetchScroll_ptr(StatementHandle->get(), FetchOrientation, FetchOffset)
+        : SQL_ERROR;
+}
+
+
 // For column in the result set, binds a buffer to retrieve column data
 // TODO: Move to anonymous namespace, since it is not used outside this file
 SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
@@ -2453,6 +2492,10 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         return ret;
     }
 
+    // Reset attributes before returning to avoid using stack pointers later
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
+
     return ret;
 }
 
@@ -2542,6 +2585,10 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
             return ret;
         }
     }
+    
+    // Reset attributes before returning to avoid using stack pointers later
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
 
     return ret;
 }
@@ -2699,16 +2746,16 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
-        // Add this to your PYBIND11_MODULE section
     m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,
           "Get all diagnostic records for a handle",
           py::arg("handle"));
-        // Add to PYBIND11_MODULE section
     m.def("DDBCSQLTables", &SQLTables_wrap, 
           "Get table information using ODBC SQLTables",
           py::arg("StatementHandle"), py::arg("catalog") = std::wstring(), 
           py::arg("schema") = std::wstring(), py::arg("table") = std::wstring(), 
           py::arg("tableType") = std::wstring());
+    m.def("DDBCSQLFetchScroll", &SQLFetchScroll_wrap,
+          "Scroll to a specific position in the result set and optionally fetch data");
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
