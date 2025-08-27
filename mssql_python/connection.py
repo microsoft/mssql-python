@@ -16,8 +16,21 @@ from mssql_python.cursor import Cursor
 from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, log
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
-from mssql_python.exceptions import InterfaceError
 from mssql_python.auth import process_connection_string
+
+# Import all DB-API 2.0 exception classes for Connection attributes
+from mssql_python.exceptions import (
+    Warning,
+    Error,
+    InterfaceError,
+    DatabaseError,
+    DataError,
+    OperationalError,
+    IntegrityError,
+    InternalError,
+    ProgrammingError,
+    NotSupportedError,
+)
 
 
 class Connection:
@@ -56,6 +69,19 @@ class Connection:
         __enter__() -> Connection:
         __exit__() -> None:
     """
+
+    # DB-API 2.0 Exception attributes
+    # These allow users to catch exceptions using connection.Error, connection.ProgrammingError, etc.
+    Warning = Warning
+    Error = Error
+    InterfaceError = InterfaceError
+    DatabaseError = DatabaseError
+    DataError = DataError
+    OperationalError = OperationalError
+    IntegrityError = IntegrityError
+    InternalError = InternalError
+    ProgrammingError = ProgrammingError
+    NotSupportedError = NotSupportedError
 
     def __init__(self, connection_str: str = "", autocommit: bool = False, attrs_before: dict = None, **kwargs) -> None:
         """

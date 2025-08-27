@@ -436,9 +436,16 @@ class Cursor:
     def close(self) -> None:
         """
         Close the cursor now (rather than whenever __del__ is called).
+
+        The cursor will be unusable from this point forward; an InterfaceError
+        will be raised if any operation is attempted with the cursor.
+        
+        Note:
+            Unlike the current behavior, this method can be called multiple times safely.
+            Subsequent calls to close() on an already closed cursor will have no effect.
         """
         if self.closed:
-            raise ProgrammingError("Cursor is already closed.")
+            return 
 
         if self.hstmt:
             self.hstmt.free()
@@ -451,10 +458,13 @@ class Cursor:
         Check if the cursor is closed and raise an exception if it is.
 
         Raises:
-            Error: If the cursor is closed.
+            InterfaceError: If the cursor is closed.
         """
         if self.closed:
-            raise Exception("Operation cannot be performed: the cursor is closed.")
+            raise InterfaceError(
+                driver_error="Operation cannot be performed: the cursor is closed.",
+                ddbc_error="Operation cannot be performed: the cursor is closed."
+            )
 
     def _create_parameter_types_list(self, parameter, param_info, parameters_list, i):
         """
