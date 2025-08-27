@@ -16,7 +16,7 @@ from typing import List, Union
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
-from mssql_python.exceptions import InterfaceError
+from mssql_python.exceptions import InterfaceError, ProgrammingError
 from .row import Row
 
 
@@ -795,6 +795,22 @@ class Cursor:
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             return False
         return True
+
+    def __enter__(self):
+        """
+        Enter the runtime context for the cursor.
+        
+        Returns:
+            The cursor instance itself.
+        """
+        self._check_closed()
+        return self
+    
+    def __exit__(self, *args):
+        """Closes the cursor when exiting the context, ensuring proper resource cleanup."""
+        if not self.closed:
+            self.close()
+        return None
 
     def __del__(self):
         """

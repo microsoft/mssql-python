@@ -42,6 +42,23 @@ class Connection:
     to be used in a context where database operations are required, such as executing queries
     and fetching results.
 
+    The Connection class supports the Python context manager protocol (with statement).
+    When used as a context manager, it will automatically close the connection when
+    exiting the context, ensuring proper resource cleanup.
+
+    Example usage:
+        with connect(connection_string) as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO table VALUES (?)", [value])
+        # Connection is automatically closed when exiting the with block
+        
+    For long-lived connections, use without context manager:
+        conn = connect(connection_string)
+        try:
+            # Multiple operations...
+        finally:
+            conn.close()
+
     Methods:
         __init__(database: str) -> None:
         connect_to_db() -> None:
@@ -49,6 +66,8 @@ class Connection:
         commit() -> None:
         rollback() -> None:
         close() -> None:
+        __enter__() -> Connection:
+        __exit__() -> None:
     """
 
     # DB-API 2.0 Exception attributes
@@ -289,6 +308,7 @@ class Connection:
                     # If autocommit is disabled, rollback any uncommitted changes
                     # This is important to ensure no partial transactions remain
                     # For autocommit True, this is not necessary as each statement is committed immediately
+                    log('info', "Rolling back uncommitted changes before closing connection.")
                     self._conn.rollback()
                 # TODO: Check potential race conditions in case of multithreaded scenarios
                 # Close the connection
@@ -303,6 +323,35 @@ class Connection:
             self._closed = True
         
         log('info', "Connection closed successfully.")
+
+    def __enter__(self) -> 'Connection':
+        """
+        Enter the context manager.
+        
+        This method enables the Connection to be used with the 'with' statement.
+        When entering the context, it simply returns the connection object itself.
+        
+        Returns:
+            Connection: The connection object itself.
+            
+        Example:
+            with connect(connection_string) as conn:
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO table VALUES (?)", [value])
+                # Transaction will be committed automatically when exiting
+        """
+        log('info', "Entering connection context manager.")
+        return self
+
+    def __exit__(self, *args) -> None:
+        """
+        Exit the context manager.
+        
+        Closes the connection when exiting the context, ensuring proper resource cleanup.
+        This follows the modern standard used by most database libraries.
+        """
+        if not self._closed:
+            self.close()
 
     def __del__(self):
         """
