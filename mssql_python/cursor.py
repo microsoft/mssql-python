@@ -216,14 +216,6 @@ class Cursor:
         numeric_data.val = val
         return numeric_data
 
-    def _calculate_utf16_length(self, param: str) -> int:
-        """Return UTF-16 code unit length of a Python string."""
-        try:
-            return len(param.encode("utf-16-le")) // 2
-        except UnicodeEncodeError as e:
-            log('warning', "UTF-16 encoding failed for %r: %s. Falling back to len().", param, e)
-            return len(param)
-
     def _map_sql_type(self, param, parameters_list, i):
         """
         Map a Python data type to the corresponding SQL type, 
@@ -340,7 +332,7 @@ class Cursor:
             # TODO: revisit
             if len(param) > 4000:  # Long strings
                 if is_unicode:
-                    utf16_len = self._calculate_utf16_length(param)
+                    utf16_len = len(param.encode("utf-16-le")) // 2
                     return (
                         ddbc_sql_const.SQL_WLONGVARCHAR.value,
                         ddbc_sql_const.SQL_C_WCHAR.value,
@@ -354,7 +346,7 @@ class Cursor:
                     0,
                 )
             if is_unicode:  # Short Unicode strings
-                utf16_len = self._calculate_utf16_length(param)
+                utf16_len = len(param.encode("utf-16-le")) // 2
                 return (
                     ddbc_sql_const.SQL_WVARCHAR.value,
                     ddbc_sql_const.SQL_C_WCHAR.value,
