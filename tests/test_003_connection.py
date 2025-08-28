@@ -16,6 +16,9 @@ Functions:
 - test_connection_string_with_attrs_before: Check if the connection string is constructed correctly with attrs_before.
 - test_connection_string_with_odbc_param: Check if the connection string is constructed correctly with ODBC parameters.
 - test_rollback_on_close: Test that rollback occurs on connection close if autocommit is False.
+- test_context_manager_commit: Test that context manager commits transaction on normal exit.
+- test_context_manager_autocommit_mode: Test context manager behavior with autocommit enabled.
+- test_context_manager_connection_closes: Test that context manager closes the connection.
 """
 
 from mssql_python.exceptions import InterfaceError, ProgrammingError
@@ -23,6 +26,7 @@ import mssql_python
 import pytest
 import time
 from mssql_python import connect, Connection, pooling, SQL_CHAR, SQL_WCHAR
+from contextlib import closing
 import threading
 
 # Import all exception classes for testing
@@ -501,6 +505,113 @@ def test_connection_pooling_basic(conn_str):
     conn1.close()
     conn2.close()
 
+def test_context_manager_commit(conn_str):
+    """Test that context manager closes connection on normal exit"""
+    # Create a permanent table for testing across connections
+    setup_conn = connect(conn_str)
+    setup_cursor = setup_conn.cursor()
+    drop_table_if_exists(setup_cursor, "pytest_context_manager_test")
+    
+    try:
+        setup_cursor.execute("CREATE TABLE pytest_context_manager_test (id INT PRIMARY KEY, value VARCHAR(50));")
+        setup_conn.commit()
+        setup_conn.close()
+        
+        # Test context manager closes connection
+        with connect(conn_str) as conn:
+            assert conn.autocommit is False, "Autocommit should be False by default"
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO pytest_context_manager_test (id, value) VALUES (1, 'context_test');")
+            conn.commit()  # Manual commit now required
+        # Connection should be closed here
+        
+        # Verify data was committed manually
+        verify_conn = connect(conn_str)
+        verify_cursor = verify_conn.cursor()
+        verify_cursor.execute("SELECT * FROM pytest_context_manager_test WHERE id = 1;")
+        result = verify_cursor.fetchone()
+        assert result is not None, "Manual commit failed: No data found"
+        assert result[1] == 'context_test', "Manual commit failed: Incorrect data"
+        verify_conn.close()
+        
+    except Exception as e:
+        pytest.fail(f"Context manager test failed: {e}")
+    finally:
+        # Cleanup
+        cleanup_conn = connect(conn_str)
+        cleanup_cursor = cleanup_conn.cursor()
+        drop_table_if_exists(cleanup_cursor, "pytest_context_manager_test")
+        cleanup_conn.commit()
+        cleanup_conn.close()
+
+def test_context_manager_connection_closes(conn_str):
+    """Test that context manager closes the connection"""
+    conn = None
+    try:
+        with connect(conn_str) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            result = cursor.fetchone()
+            assert result[0] == 1, "Connection should work inside context manager"
+        
+        # Connection should be closed after exiting context manager
+        assert conn._closed, "Connection should be closed after exiting context manager"
+        
+        # Should not be able to use the connection after closing
+        with pytest.raises(InterfaceError):
+            conn.cursor()
+            
+    except Exception as e:
+        pytest.fail(f"Context manager connection close test failed: {e}")
+
+def test_close_with_autocommit_true(conn_str):
+    """Test that connection.close() with autocommit=True doesn't trigger rollback."""
+    cursor = None
+    conn = None
+    
+    try:
+        # Create a temporary table for testing
+        setup_conn = connect(conn_str)
+        setup_cursor = setup_conn.cursor()
+        drop_table_if_exists(setup_cursor, "pytest_autocommit_close_test")
+        setup_cursor.execute("CREATE TABLE pytest_autocommit_close_test (id INT PRIMARY KEY, value VARCHAR(50));")
+        setup_conn.commit()
+        setup_conn.close()
+        
+        # Create a connection with autocommit=True
+        conn = connect(conn_str)
+        conn.autocommit = True
+        assert conn.autocommit is True, "Autocommit should be True"
+        
+        # Insert data
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO pytest_autocommit_close_test (id, value) VALUES (1, 'test_autocommit');")
+        
+        # Close the connection without explicitly committing
+        conn.close()
+        
+        # Verify the data was committed automatically despite connection.close()
+        verify_conn = connect(conn_str)
+        verify_cursor = verify_conn.cursor()
+        verify_cursor.execute("SELECT * FROM pytest_autocommit_close_test WHERE id = 1;")
+        result = verify_cursor.fetchone()
+        
+        # Data should be present if autocommit worked and wasn't affected by close()
+        assert result is not None, "Autocommit failed: Data not found after connection close"
+        assert result[1] == 'test_autocommit', "Autocommit failed: Incorrect data after connection close"
+        
+        verify_conn.close()
+        
+    except Exception as e:
+        pytest.fail(f"Test failed: {e}")
+    finally:
+        # Clean up
+        cleanup_conn = connect(conn_str)
+        cleanup_cursor = cleanup_conn.cursor()
+        drop_table_if_exists(cleanup_cursor, "pytest_autocommit_close_test")
+        cleanup_conn.commit()
+        cleanup_conn.close()
+        
 def test_setencoding_default_settings(db_connection):
     """Test that default encoding settings are correct."""
     settings = db_connection.getencoding()
@@ -1528,3 +1639,4 @@ def test_connection_exception_attributes_comprehensive_list():
         exc_class = getattr(Connection, exc_name)
         assert isinstance(exc_class, type), f"Connection.{exc_name} should be a class"
         assert issubclass(exc_class, Exception), f"Connection.{exc_name} should be an Exception subclass"
+
