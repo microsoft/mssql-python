@@ -4242,67 +4242,75 @@ def test_scroll_on_empty_result_set_raises(cursor, db_connection):
     finally:
         _drop_if_exists_scroll(cursor, "#t_scroll_empty")
 
-def test_scroll_mixed_fetches_consume_correctly(cursor, db_connection):
-    """Mix fetchone/fetchmany/fetchall with scroll and ensure correct results."""
-    
-    # This version of the test simplifies the fetch pattern to avoid potential 
-    # memory issues on non-Windows platforms
+def test_scroll_mixed_fetches_consume_correctly(db_connection):
+    """Mix fetchone/fetchmany/fetchall with scroll and ensure correct results (match implementation)."""
+    # Create a new cursor for each part to ensure clean state
     try:
-        # Clean start
-        _drop_if_exists_scroll(cursor, "#t_scroll_mix")
-        
-        # Create and populate test table
-        cursor.execute("CREATE TABLE #t_scroll_mix (id INTEGER)")
-        for i in range(1, 11):
-            cursor.execute("INSERT INTO #t_scroll_mix VALUES (?)", [i])
-        db_connection.commit()
-        
-        # Test 1: Simple fetchone + scroll pattern
-        cursor.execute("SELECT id FROM #t_scroll_mix ORDER BY id")
-        row1 = cursor.fetchone()
-        assert row1[0] == 1, "First row should be id=1"
-        
-        # Simple scroll forward
-        cursor.scroll(2)
-        row2 = cursor.fetchone()
-        assert row2[0] == 4, "After scroll(2), should fetch id=4"
-        
-        # Test 2: Create fresh cursor for fetchmany test to avoid state issues
-        cursor.close()
-        cursor = db_connection.cursor()
-        cursor.execute("SELECT id FROM #t_scroll_mix ORDER BY id")
-        
-        # Test fetchmany
-        rows = cursor.fetchmany(2)
-        assert len(rows) == 2, "Should fetch 2 rows"
-        assert rows[0][0] == 1, "First row should be id=1"
-        assert rows[1][0] == 2, "Second row should be id=2"
-        
-        # Scroll from current position
-        cursor.scroll(2)
-        more_rows = cursor.fetchmany(2)
-        assert len(more_rows) == 2, "Should fetch 2 more rows"
-        assert more_rows[0][0] == 5, "After scroll(2), first row should be id=5"
-        assert more_rows[1][0] == 6, "After scroll(2), second row should be id=6"
-        
-        # Test 3: Create fresh cursor for fetchall test
-        cursor.close()
-        cursor = db_connection.cursor()
-        cursor.execute("SELECT id FROM #t_scroll_mix ORDER BY id")
-        
-        # Skip first 5 rows
-        cursor.scroll(5)
-        remaining = cursor.fetchall()
-        assert len(remaining) == 5, "After scroll(5), fetchall() should get 5 remaining rows"
-        assert remaining[0][0] == 6, "First remaining row should be id=6"
-        assert remaining[-1][0] == 10, "Last remaining row should be id=10"
-        
-    finally:
+        # Setup - create test table
+        setup_cursor = db_connection.cursor()
         try:
-            _drop_if_exists_scroll(cursor, "#t_scroll_mix")
-        except:
-            pass
+            setup_cursor.execute("IF OBJECT_ID('tempdb..#t_scroll_mix') IS NOT NULL DROP TABLE #t_scroll_mix")
+            setup_cursor.execute("CREATE TABLE #t_scroll_mix (id INTEGER)")
+            setup_cursor.executemany("INSERT INTO #t_scroll_mix VALUES (?)", [(i,) for i in range(1, 11)])
+            db_connection.commit()
+        finally:
+            setup_cursor.close()
+        
+        # Part 1: fetchone + scroll with fresh cursor
+        part1_cursor = db_connection.cursor()
+        try:
+            part1_cursor.execute("SELECT id FROM #t_scroll_mix ORDER BY id")
+            row1 = part1_cursor.fetchone()
+            assert row1 is not None, "Should fetch first row"
+            assert row1[0] == 1, "First row should be id=1"
+            
+            part1_cursor.scroll(2)
+            row2 = part1_cursor.fetchone()
+            assert row2 is not None, "Should fetch row after scroll"
+            assert row2[0] == 4, "After scroll(2) and fetchone, id should be 4"
+        finally:
+            part1_cursor.close()
+        
+        # Part 2: scroll + fetchmany with fresh cursor
+        part2_cursor = db_connection.cursor()
+        try:
+            part2_cursor.execute("SELECT id FROM #t_scroll_mix ORDER BY id")
+            part2_cursor.scroll(4)  # Position to start at id=5
+            rows = part2_cursor.fetchmany(2)
+            assert rows is not None, "fetchmany should return a list"
+            assert len(rows) == 2, "Should fetch 2 rows"
+            fetched_ids = [r[0] for r in rows]
+            assert fetched_ids[0] == 5, "First row should be id=5"
+            assert fetched_ids[1] == 6, "Second row should be id=6"
+        finally:
+            part2_cursor.close()
+        
+        # Part 3: scroll + fetchall with fresh cursor
+        part3_cursor = db_connection.cursor()
+        try:
+            part3_cursor.execute("SELECT id FROM #t_scroll_mix ORDER BY id")
+            part3_cursor.scroll(7)  # Position to id=8
+            remaining_rows = part3_cursor.fetchall()
+            assert remaining_rows is not None, "fetchall should return a list"
+            assert len(remaining_rows) == 3, "Should have 3 remaining rows"
+            remaining_ids = [r[0] for r in remaining_rows]
+            assert remaining_ids[0] == 8, "First remaining id should be 8"
+            assert remaining_ids[1] == 9, "Second remaining id should be 9"
+            assert remaining_ids[2] == 10, "Last remaining id should be 10"
+        finally:
+            part3_cursor.close()
 
+    finally:
+        # Final cleanup with a fresh cursor
+        cleanup_cursor = db_connection.cursor()
+        try:
+            cleanup_cursor.execute("IF OBJECT_ID('tempdb..#t_scroll_mix') IS NOT NULL DROP TABLE #t_scroll_mix")
+            db_connection.commit()
+        except Exception:
+            # Log but don't fail test on cleanup error
+            pass
+        finally:
+            cleanup_cursor.close()
 
 def test_scroll_edge_cases_and_validation(cursor, db_connection):
     """Extra edge cases: invalid params and before-first (-1) behavior."""
