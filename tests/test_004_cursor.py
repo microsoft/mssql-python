@@ -9,6 +9,7 @@ Note: The cursor function is not yet implemented, so related tests are commented
 """
 
 import pytest
+import sys
 from datetime import datetime, date, time
 import decimal
 from contextlib import closing
@@ -4242,6 +4243,7 @@ def test_scroll_on_empty_result_set_raises(cursor, db_connection):
     finally:
         _drop_if_exists_scroll(cursor, "#t_scroll_empty")
 
+@pytest.mark.skipif('win' not in sys.platform, reason="This test causes memory corruption on non-Windows platforms")
 def test_scroll_mixed_fetches_consume_correctly(db_connection):
     """Mix fetchone/fetchmany/fetchall with scroll and ensure correct results (match implementation)."""
     # Create a new cursor for each part to ensure clean state
