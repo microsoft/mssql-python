@@ -214,7 +214,7 @@ std::string DescribeChar(unsigned char ch) {
 // Given a list of parameters and their ParamInfo, calls SQLBindParameter on each of them with
 // appropriate arguments
 SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
-                         const std::vector<ParamInfo>& paramInfos,
+                         std::vector<ParamInfo>& paramInfos,
                          std::vector<std::shared_ptr<void>>& paramBuffers) {
     LOG("Starting parameter binding. Number of parameters: {}", params.size());
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
@@ -302,7 +302,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                         &nullable
                     );
                     if (!SQL_SUCCEEDED(rc)) {
-                        LOG("SQLDescribeParam failed for parameter {}", paramIndex);
+                        LOG("SQLDescribeParam failed for parameter {} with error code {}", paramIndex, rc);
                         return rc;
                     }
                     sqlType       = describedType;
@@ -313,9 +313,9 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                 *strLenOrIndPtr = SQL_NULL_DATA;
                 bufferLength = 0;
-                const_cast<ParamInfo&>(paramInfo).paramSQLType   = sqlType;
-                const_cast<ParamInfo&>(paramInfo).columnSize     = columnSize;
-                const_cast<ParamInfo&>(paramInfo).decimalDigits  = decimalDigits;
+                paramInfo.paramSQLType   = sqlType;
+                paramInfo.columnSize     = columnSize;
+                paramInfo.decimalDigits  = decimalDigits;
                 break;
             }
             case SQL_C_STINYINT:
