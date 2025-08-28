@@ -134,6 +134,7 @@ SQLFreeStmtFunc SQLFreeStmt_ptr = nullptr;
 
 // Diagnostic APIs
 SQLGetDiagRecFunc SQLGetDiagRec_ptr = nullptr;
+SQLTablesFunc SQLTables_ptr = nullptr;
 
 namespace {
 
@@ -786,6 +787,7 @@ DriverHandle LoadDriverOrThrowException() {
     SQLFreeStmt_ptr = GetFunctionPointer<SQLFreeStmtFunc>(handle, "SQLFreeStmt");
 
     SQLGetDiagRec_ptr = GetFunctionPointer<SQLGetDiagRecFunc>(handle, "SQLGetDiagRecW");
+    SQLTables_ptr = GetFunctionPointer<SQLTablesFunc>(handle, "SQLTablesW");
 
     bool success =
         SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
@@ -796,7 +798,7 @@ DriverHandle LoadDriverOrThrowException() {
         SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr &&
         SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr &&
         SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr &&
-        SQLFreeStmt_ptr && SQLGetDiagRec_ptr;
+        SQLFreeStmt_ptr && SQLGetDiagRec_ptr && SQLTables_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver.");
@@ -901,12 +903,89 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
     return errorInfo;
 }
 
+py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
+    LOG("Retrieving all diagnostic records");
+    if (!SQLGetDiagRec_ptr) {
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();
+    }
+    
+    py::list records;
+    SQLHANDLE rawHandle = handle->get();
+    SQLSMALLINT handleType = handle->type();
+    
+    // Iterate through all available diagnostic records
+    for (SQLSMALLINT recNumber = 1; ; recNumber++) {
+        SQLWCHAR sqlState[6] = {0};
+        SQLWCHAR message[SQL_MAX_MESSAGE_LENGTH] = {0};
+        SQLINTEGER nativeError = 0;
+        SQLSMALLINT messageLen = 0;
+        
+        SQLRETURN diagReturn = SQLGetDiagRec_ptr(
+            handleType, rawHandle, recNumber, sqlState, &nativeError, 
+            message, SQL_MAX_MESSAGE_LENGTH, &messageLen);
+            
+        if (diagReturn == SQL_NO_DATA || !SQL_SUCCEEDED(diagReturn))
+            break;
+        
+#if defined(_WIN32)
+        // On Windows, create a formatted UTF-8 string for state+error
+        
+        // Convert SQLWCHAR sqlState to UTF-8
+        int stateSize = WideCharToMultiByte(CP_UTF8, 0, sqlState, -1, NULL, 0, NULL, NULL);
+        std::vector<char> stateBuffer(stateSize);
+        WideCharToMultiByte(CP_UTF8, 0, sqlState, -1, stateBuffer.data(), stateSize, NULL, NULL);
+        
+        // Format the state with error code
+        std::string stateWithError = "[" + std::string(stateBuffer.data()) + "] (" + std::to_string(nativeError) + ")";
+        
+        // Convert wide string message to UTF-8
+        int msgSize = WideCharToMultiByte(CP_UTF8, 0, message, -1, NULL, 0, NULL, NULL);
+        std::vector<char> msgBuffer(msgSize);
+        WideCharToMultiByte(CP_UTF8, 0, message, -1, msgBuffer.data(), msgSize, NULL, NULL);
+        
+        // Create the tuple with converted strings
+        records.append(py::make_tuple(
+            py::str(stateWithError),
+            py::str(msgBuffer.data())
+        ));
+#else
+        // On Unix, use the SQLWCHARToWString utility and then convert to UTF-8
+        std::string stateStr = WideToUTF8(SQLWCHARToWString(sqlState));
+        std::string msgStr = WideToUTF8(SQLWCHARToWString(message, messageLen));
+        
+        // Format the state string
+        std::string stateWithError = "[" + stateStr + "] (" + std::to_string(nativeError) + ")";
+        
+        // Create the tuple with converted strings
+        records.append(py::make_tuple(
+            py::str(stateWithError),
+            py::str(msgStr)
+        ));
+#endif
+    }
+    
+    return records;
+}
+
 // Wrap SQLExecDirect
 SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Query) {
     LOG("Execute SQL query directly - {}", Query.c_str());
     if (!SQLExecDirect_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
         DriverLoader::getInstance().loadDriver();  // Load the driver
+    }
+
+    // Ensure statement is scrollable BEFORE executing
+    if (SQLSetStmtAttr_ptr && StatementHandle && StatementHandle->get()) {
+        SQLSetStmtAttr_ptr(StatementHandle->get(),
+                           SQL_ATTR_CURSOR_TYPE,
+                           (SQLPOINTER)SQL_CURSOR_STATIC,
+                           0);
+        SQLSetStmtAttr_ptr(StatementHandle->get(),
+                           SQL_ATTR_CONCURRENCY,
+                           (SQLPOINTER)SQL_CONCUR_READ_ONLY,
+                           0);
     }
 
     SQLWCHAR* queryPtr;
@@ -920,6 +999,91 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Q
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to execute query directly");
     }
+    return ret;
+}
+
+// Wrapper for SQLTables
+SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle, 
+                         const std::wstring& catalog,
+                         const std::wstring& schema, 
+                         const std::wstring& table,
+                         const std::wstring& tableType) {
+    
+    if (!SQLTables_ptr) {
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();
+    }
+
+    SQLWCHAR* catalogPtr = nullptr;
+    SQLWCHAR* schemaPtr = nullptr;
+    SQLWCHAR* tablePtr = nullptr;
+    SQLWCHAR* tableTypePtr = nullptr;
+    SQLSMALLINT catalogLen = 0;
+    SQLSMALLINT schemaLen = 0;
+    SQLSMALLINT tableLen = 0;
+    SQLSMALLINT tableTypeLen = 0;
+
+    std::vector<SQLWCHAR> catalogBuffer;
+    std::vector<SQLWCHAR> schemaBuffer;
+    std::vector<SQLWCHAR> tableBuffer;
+    std::vector<SQLWCHAR> tableTypeBuffer;
+
+#if defined(__APPLE__) || defined(__linux__)
+    // On Unix platforms, convert wstring to SQLWCHAR array
+    if (!catalog.empty()) {
+        catalogBuffer = WStringToSQLWCHAR(catalog);
+        catalogPtr = catalogBuffer.data();
+        catalogLen = SQL_NTS;
+    }
+    if (!schema.empty()) {
+        schemaBuffer = WStringToSQLWCHAR(schema);
+        schemaPtr = schemaBuffer.data();
+        schemaLen = SQL_NTS;
+    }
+    if (!table.empty()) {
+        tableBuffer = WStringToSQLWCHAR(table);
+        tablePtr = tableBuffer.data();
+        tableLen = SQL_NTS;
+    }
+    if (!tableType.empty()) {
+        tableTypeBuffer = WStringToSQLWCHAR(tableType);
+        tableTypePtr = tableTypeBuffer.data();
+        tableTypeLen = SQL_NTS;
+    }
+#else
+    // On Windows, direct assignment works
+    if (!catalog.empty()) {
+        catalogPtr = const_cast<SQLWCHAR*>(catalog.c_str());
+        catalogLen = SQL_NTS;
+    }
+    if (!schema.empty()) {
+        schemaPtr = const_cast<SQLWCHAR*>(schema.c_str());
+        schemaLen = SQL_NTS;
+    }
+    if (!table.empty()) {
+        tablePtr = const_cast<SQLWCHAR*>(table.c_str());
+        tableLen = SQL_NTS;
+    }
+    if (!tableType.empty()) {
+        tableTypePtr = const_cast<SQLWCHAR*>(tableType.c_str());
+        tableTypeLen = SQL_NTS;
+    }
+#endif
+
+    SQLRETURN ret = SQLTables_ptr(
+        StatementHandle->get(),
+        catalogPtr, catalogLen,
+        schemaPtr, schemaLen,
+        tablePtr, tableLen,
+        tableTypePtr, tableTypeLen
+    );
+
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("SQLTables failed with return code: {}", ret);
+    } else {
+        LOG("SQLTables succeeded");
+    }
+
     return ret;
 }
 
@@ -948,6 +1112,19 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
     if (!statementHandle || !statementHandle->get()) {
         LOG("Statement handle is null or empty");
     }
+
+    // Ensure statement is scrollable BEFORE executing
+    if (SQLSetStmtAttr_ptr && hStmt) {
+        SQLSetStmtAttr_ptr(hStmt,
+                           SQL_ATTR_CURSOR_TYPE,
+                           (SQLPOINTER)SQL_CURSOR_STATIC,
+                           0);
+        SQLSetStmtAttr_ptr(hStmt,
+                           SQL_ATTR_CONCURRENCY,
+                           (SQLPOINTER)SQL_CONCUR_READ_ONLY,
+                           0);
+    }
+
     SQLWCHAR* queryPtr;
 #if defined(__APPLE__) || defined(__linux__)
     std::vector<SQLWCHAR> queryBuffer = WStringToSQLWCHAR(query);
@@ -1817,6 +1994,32 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
     return ret;
 }
 
+SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOrientation, SQLLEN FetchOffset, py::list& row_data) {
+    LOG("Fetching with scroll: orientation={}, offset={}", FetchOrientation, FetchOffset);
+    if (!SQLFetchScroll_ptr) {
+        LOG("Function pointer not initialized. Loading the driver.");
+        DriverLoader::getInstance().loadDriver();  // Load the driver
+    }
+
+    // Unbind any columns from previous fetch operations to avoid memory corruption
+    SQLFreeStmt_ptr(StatementHandle->get(), SQL_UNBIND);
+    
+    // Perform scroll operation
+    SQLRETURN ret = SQLFetchScroll_ptr(StatementHandle->get(), FetchOrientation, FetchOffset);
+    
+    // If successful and caller wants data, retrieve it
+    if (SQL_SUCCEEDED(ret) && row_data.size() == 0) {
+        // Get column count
+        SQLSMALLINT colCount = SQLNumResultCols_wrap(StatementHandle);
+        
+        // Get the data in a consistent way with other fetch methods
+        ret = SQLGetData_wrap(StatementHandle, colCount, row_data);
+    }
+    
+    return ret;
+}
+
+
 // For column in the result set, binds a buffer to retrieve column data
 // TODO: Move to anonymous namespace, since it is not used outside this file
 SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
@@ -2307,6 +2510,10 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         return ret;
     }
 
+    // Reset attributes before returning to avoid using stack pointers later
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
+
     return ret;
 }
 
@@ -2396,6 +2603,10 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
             return ret;
         }
     }
+    
+    // Reset attributes before returning to avoid using stack pointers later
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
 
     return ret;
 }
@@ -2451,6 +2662,7 @@ SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
     SQLRETURN ret = SQLFreeHandle_ptr(HandleType, Handle->get());
     if (!SQL_SUCCEEDED(ret)) {
         LOG("SQLFreeHandle failed with error code - {}", ret);
+        return ret;
     }
     return ret;
 }
@@ -2553,6 +2765,16 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
+    m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,
+          "Get all diagnostic records for a handle",
+          py::arg("handle"));
+    m.def("DDBCSQLTables", &SQLTables_wrap, 
+          "Get table information using ODBC SQLTables",
+          py::arg("StatementHandle"), py::arg("catalog") = std::wstring(), 
+          py::arg("schema") = std::wstring(), py::arg("table") = std::wstring(), 
+          py::arg("tableType") = std::wstring());
+    m.def("DDBCSQLFetchScroll", &SQLFetchScroll_wrap,
+          "Scroll to a specific position in the result set and optionally fetch data");
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
