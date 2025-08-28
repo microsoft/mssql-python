@@ -219,7 +219,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
     LOG("Starting parameter binding. Number of parameters: {}", params.size());
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
         const auto& param = params[paramIndex];
-        const ParamInfo& paramInfo = paramInfos[paramIndex];
+        ParamInfo& paramInfo = paramInfos[paramIndex];
         LOG("Binding parameter {} - C Type: {}, SQL Type: {}", paramIndex, paramInfo.paramCType, paramInfo.paramSQLType);
         void* dataPtr = nullptr;
         SQLLEN bufferLength = 0;
@@ -1105,7 +1105,7 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle,
 // be prepared in a previous call.
 SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                           const std::wstring& query /* TODO: Use SQLTCHAR? */,
-                          const py::list& params, const std::vector<ParamInfo>& paramInfos,
+                          const py::list& params, std::vector<ParamInfo>& paramInfos,
                           py::list& isStmtPrepared, const bool usePrepare = true) {
     LOG("Execute SQL Query - {}", query.c_str());
     if (!SQLPrepare_ptr) {
