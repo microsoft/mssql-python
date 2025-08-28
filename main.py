@@ -4,20 +4,20 @@ import os
 import decimal
 
 # setup_logging('stdout')
+conn_str = os.getenv("DB_CONNECTION_STRING")
+conn = connect(conn_str)
 
-# conn = connect(conn_str)
+# conn.autocommit = True
 
-# # conn.autocommit = True
+cursor = conn.cursor()
+cursor.execute("SELECT database_id, name from sys.databases;")
+rows = cursor.fetchall()
 
-# cursor = conn.cursor()
-# cursor.execute("SELECT database_id, name from sys.databases;")
-# rows = cursor.fetchall()
+for row in rows:
+    print(f"Database ID: {row[0]}, Name: {row[1]}")
 
-# for row in rows:
-#     print(f"Database ID: {row[0]}, Name: {row[1]}")
-
-# cursor.close()
-# conn.close()
+cursor.close()
+conn.close()
 
 from mssql_python import connect, setup_logging
 
@@ -159,30 +159,30 @@ setup_logging('stdout')
 #     print("🎉 NVarCharMax test committed. Run: SELECT LEN(data), data FROM dbo.NVarCharMaxTest")
 
 
-def setup_table(cursor):
-    cursor.execute("IF OBJECT_ID('dbo.VarCharMaxTest', 'U') IS NOT NULL DROP TABLE dbo.VarCharMaxTest;")
-    cursor.execute("CREATE TABLE dbo.VarCharMaxTest (data VARCHAR(MAX));")
-    print("✅ VarCharMaxTest table created.")
+# def setup_table(cursor):
+#     cursor.execute("IF OBJECT_ID('dbo.VarCharMaxTest', 'U') IS NOT NULL DROP TABLE dbo.VarCharMaxTest;")
+#     cursor.execute("CREATE TABLE dbo.VarCharMaxTest (data VARCHAR(MAX));")
+#     print("✅ VarCharMaxTest table created.")
 
-def test_varcharmax(cursor):
-    # Small value
-    cursor.execute("INSERT INTO dbo.VarCharMaxTest (data) VALUES (?)", ["Hello World"])
+# def test_varcharmax(cursor):
+#     # Small value
+#     cursor.execute("INSERT INTO dbo.VarCharMaxTest (data) VALUES (?)", ["Hello World"])
 
-    # Large value (~200KB, triggers DAE)
-    cursor.execute("INSERT INTO dbo.VarCharMaxTest (data) VALUES (?)", ["A" * 200_000])
+#     # Large value (~200KB, triggers DAE)
+#     cursor.execute("INSERT INTO dbo.VarCharMaxTest (data) VALUES (?)", ["A" * 200_000])
 
-    # Empty string
-    cursor.execute("INSERT INTO dbo.VarCharMaxTest (data) VALUES (?)", [""])
+#     # Empty string
+#     cursor.execute("INSERT INTO dbo.VarCharMaxTest (data) VALUES (?)", [""])
 
-    # NULL
-    cursor.execute("INSERT INTO dbo.VarCharMaxTest (data) VALUES (?)", [None])
+#     # NULL
+#     cursor.execute("INSERT INTO dbo.VarCharMaxTest (data) VALUES (?)", [None])
 
-    print("✅ VarCharMax insert tests executed. Verify with SSMS.")
+#     print("✅ VarCharMax insert tests executed. Verify with SSMS.")
 
-if __name__ == "__main__":
-    conn = connect(conn_str)
-    cursor = conn.cursor()
-    setup_table(cursor)
-    test_varcharmax(cursor)
-    conn.commit()
-    print("🎉 VarCharMax test committed. Run: SELECT LEN(data), data FROM dbo.VarCharMaxTest")
+# if __name__ == "__main__":
+#     conn = connect(conn_str)
+#     cursor = conn.cursor()
+#     setup_table(cursor)
+#     test_varcharmax(cursor)
+#     conn.commit()
+#     print("🎉 VarCharMax test committed. Run: SELECT LEN(data), data FROM dbo.VarCharMaxTest")
