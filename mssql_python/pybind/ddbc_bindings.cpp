@@ -258,40 +258,14 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     bufferLength = 0;
                 } else {
                     // Normal small-string case
-            //         std::wstring* strParam =
-            //             AllocateParamBuffer<std::wstring>(paramBuffers, param.cast<std::wstring>());
-            //         LOG("SQL_C_WCHAR Parameter[{}]: Length={}, isDAE={}", paramIndex, strParam->size(), paramInfo.isDAE);
-            // #if defined(__APPLE__) || defined(__linux__)
-            //         std::vector<SQLWCHAR>* sqlwcharBuffer =
-            //             AllocateParamBuffer<std::vector<SQLWCHAR>>(paramBuffers);
-            //         sqlwcharBuffer->resize(strParam->size() + 1, 0);
-            //         for (size_t i = 0; i < strParam->size(); i++) {
-            //             (*sqlwcharBuffer)[i] = static_cast<SQLWCHAR>((*strParam)[i]);
-            //         }
-            //         dataPtr = sqlwcharBuffer->data();
-            //         bufferLength = (strParam->size() + 1) * sizeof(SQLWCHAR);
-            // #else
-            //         dataPtr = const_cast<void*>(static_cast<const void*>(strParam->c_str()));
-            //         bufferLength = (strParam->size() + 1) * sizeof(wchar_t);
-            // #endif
-            //         strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
-            //         *strLenOrIndPtr = SQL_NTS;
-                    // Normal small-string case
                     std::wstring* strParam =
                         AllocateParamBuffer<std::wstring>(paramBuffers, param.cast<std::wstring>());
-
                     LOG("SQL_C_WCHAR Parameter[{}]: Length={}, isDAE={}", paramIndex, strParam->size(), paramInfo.isDAE);
-
-                    // Always transcode wstring -> UTF-16 (SQLWCHAR) using the helper
                     std::vector<SQLWCHAR>* sqlwcharBuffer =
                         AllocateParamBuffer<std::vector<SQLWCHAR>>(paramBuffers, WStringToSQLWCHAR(*strParam));
-
                     dataPtr = sqlwcharBuffer->data();
-                    // IMPORTANT: bufferLength must reflect the *encoded* length, including null
                     bufferLength = sqlwcharBuffer->size() * sizeof(SQLWCHAR);
-
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
-                    // For SQL_C_WCHAR with a null-terminated buffer, SQL_NTS is correct
                     *strLenOrIndPtr = SQL_NTS;
 
                 }

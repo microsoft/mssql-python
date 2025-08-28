@@ -31,6 +31,7 @@ using namespace pybind11::literals;
 
 #include <sql.h>
 #include <sqlext.h>
+
 #if defined(_WIN32)
 inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
     std::vector<SQLWCHAR> result(str.begin(), str.end());
