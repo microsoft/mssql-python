@@ -1994,17 +1994,29 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
     return ret;
 }
 
-SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOrientation, SQLLEN FetchOffset, py::list& /*row_data*/) {
+SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOrientation, SQLLEN FetchOffset, py::list& row_data) {
     LOG("Fetching with scroll: orientation={}, offset={}", FetchOrientation, FetchOffset);
     if (!SQLFetchScroll_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    // Perform scroll; do not fetch row data here
-    return SQLFetchScroll_ptr
-        ? SQLFetchScroll_ptr(StatementHandle->get(), FetchOrientation, FetchOffset)
-        : SQL_ERROR;
+    // Unbind any columns from previous fetch operations to avoid memory corruption
+    SQLFreeStmt_ptr(StatementHandle->get(), SQL_UNBIND);
+    
+    // Perform scroll operation
+    SQLRETURN ret = SQLFetchScroll_ptr(StatementHandle->get(), FetchOrientation, FetchOffset);
+    
+    // If successful and caller wants data, retrieve it
+    if (SQL_SUCCEEDED(ret) && row_data.size() == 0) {
+        // Get column count
+        SQLSMALLINT colCount = SQLNumResultCols_wrap(StatementHandle);
+        
+        // Get the data in a consistent way with other fetch methods
+        ret = SQLGetData_wrap(StatementHandle, colCount, row_data);
+    }
+    
+    return ret;
 }
 
 

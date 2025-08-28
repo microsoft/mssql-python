@@ -4243,7 +4243,6 @@ def test_scroll_on_empty_result_set_raises(cursor, db_connection):
     finally:
         _drop_if_exists_scroll(cursor, "#t_scroll_empty")
 
-@pytest.mark.skipif('win' not in sys.platform, reason="This test causes memory corruption on non-Windows platforms")
 def test_scroll_mixed_fetches_consume_correctly(db_connection):
     """Mix fetchone/fetchmany/fetchall with scroll and ensure correct results (match implementation)."""
     # Create a new cursor for each part to ensure clean state
@@ -4486,7 +4485,6 @@ def test_cursor_skip_closed_cursor(db_connection):
     
     assert "closed" in str(exc_info.value).lower(), "skip on closed cursor should mention cursor is closed"
 
-@pytest.mark.skipif('win' not in sys.platform, reason="This test causes memory corruption on non-Windows platforms")
 def test_cursor_skip_integration_with_fetch_methods(cursor, db_connection):
     """Test skip integration with various fetch methods"""
     try:
