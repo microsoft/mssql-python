@@ -4,7 +4,6 @@ import os
 import decimal
 
 # setup_logging('stdout')
-# conn_str = "Server=Saumya;DATABASE=master;UID=sa;PWD=HappyPass1234;Trust_Connection=yes;TrustServerCertificate=yes;"
 
 # conn = connect(conn_str)
 
@@ -24,7 +23,6 @@ from mssql_python import connect, setup_logging
 
 setup_logging('stdout')
 
-conn_str = "Server=Saumya;DATABASE=master;UID=sa;PWD=HappyPass1234;Trust_Connection=yes;TrustServerCertificate=yes;"
 # conn = connect(conn_str)
 
 # cursor = conn.cursor()
