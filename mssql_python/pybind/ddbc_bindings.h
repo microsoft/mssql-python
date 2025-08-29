@@ -32,34 +32,116 @@ using namespace pybind11::literals;
 #include <sql.h>
 #include <sqlext.h>
 
+#if defined(_WIN32)
+inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
+    std::vector<SQLWCHAR> result(str.begin(), str.end());
+    result.push_back(0);
+    return result;
+}
+#endif
+
 #if defined(__APPLE__) || defined(__linux__)
-    // macOS-specific headers
-    #include <dlfcn.h>
+#include <dlfcn.h>
 
-    inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
-        if (!sqlwStr) return std::wstring();
+// Unicode constants for surrogate ranges and max scalar value
+constexpr uint32_t UNICODE_SURROGATE_HIGH_START = 0xD800;
+constexpr uint32_t UNICODE_SURROGATE_HIGH_END   = 0xDBFF;
+constexpr uint32_t UNICODE_SURROGATE_LOW_START  = 0xDC00;
+constexpr uint32_t UNICODE_SURROGATE_LOW_END    = 0xDFFF;
+constexpr uint32_t UNICODE_MAX_CODEPOINT        = 0x10FFFF;
+constexpr uint32_t UNICODE_REPLACEMENT_CHAR     = 0xFFFD;
 
-        if (length == SQL_NTS) {
-            size_t i = 0;
-            while (sqlwStr[i] != 0) ++i;
-            length = i;
-        }
+// Validate whether a code point is a legal Unicode scalar value
+// (excludes surrogate halves and values beyond U+10FFFF)
+inline bool IsValidUnicodeScalar(uint32_t cp) {
+    return cp <= UNICODE_MAX_CODEPOINT &&
+           !(cp >= UNICODE_SURROGATE_HIGH_START && cp <= UNICODE_SURROGATE_LOW_END);
+}
 
-        std::wstring result;
-        result.reserve(length);
+inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
+    if (!sqlwStr) return std::wstring();
+
+    if (length == SQL_NTS) {
+        size_t i = 0;
+        while (sqlwStr[i] != 0) ++i;
+        length = i;
+    }
+    std::wstring result;
+    result.reserve(length);
+
+    if constexpr (sizeof(SQLWCHAR) == 2) {
+        // Decode UTF-16 to UTF-32 (with surrogate pair handling)
         for (size_t i = 0; i < length; ++i) {
-            result.push_back(static_cast<wchar_t>(sqlwStr[i]));
+            uint16_t wc = static_cast<uint16_t>(sqlwStr[i]);
+            // Check if this is a high surrogate (U+D800–U+DBFF)
+            if (wc >= UNICODE_SURROGATE_HIGH_START && wc <= UNICODE_SURROGATE_HIGH_END && i + 1 < length) {
+                uint16_t low = static_cast<uint16_t>(sqlwStr[i + 1]);
+                // Check if the next code unit is a low surrogate (U+DC00–U+DFFF)
+                if (low >= UNICODE_SURROGATE_LOW_START && low <= UNICODE_SURROGATE_LOW_END) {
+                    // Combine surrogate pair into a single code point
+                    uint32_t cp = (((wc - UNICODE_SURROGATE_HIGH_START) << 10) | (low - UNICODE_SURROGATE_LOW_START)) + 0x10000;
+                    result.push_back(static_cast<wchar_t>(cp));
+                    ++i; // Skip the low surrogate
+                    continue;
+                }
+            }
+            // If valid scalar then append, else append replacement char (U+FFFD)
+            if (IsValidUnicodeScalar(wc)) {
+                result.push_back(static_cast<wchar_t>(wc));
+            } else {
+                result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
+            }
         }
-        return result;
+    } else {
+        // SQLWCHAR is UTF-32, so just copy with validation
+        for (size_t i = 0; i < length; ++i) {
+            uint32_t cp = static_cast<uint32_t>(sqlwStr[i]);
+            if (IsValidUnicodeScalar(cp)) {
+                result.push_back(static_cast<wchar_t>(cp));
+            } else {
+                result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
+            }
+        }
     }
+    return result;
+}
 
-    inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
-        std::vector<SQLWCHAR> result(str.size() + 1, 0);  // +1 for null terminator
-        for (size_t i = 0; i < str.size(); ++i) {
-            result[i] = static_cast<SQLWCHAR>(str[i]);
+inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
+    std::vector<SQLWCHAR> result;
+    result.reserve(str.size() + 2);
+    if constexpr (sizeof(SQLWCHAR) == 2) {
+        // Encode UTF-32 to UTF-16
+        for (wchar_t wc : str) {
+            uint32_t cp = static_cast<uint32_t>(wc);
+            if (!IsValidUnicodeScalar(cp)) {
+                cp = UNICODE_REPLACEMENT_CHAR;
+            }
+            if (cp <= 0xFFFF) {
+                // Fits in a single UTF-16 code unit
+                result.push_back(static_cast<SQLWCHAR>(cp));
+            } else {
+                // Encode as surrogate pair
+                cp -= 0x10000;
+                SQLWCHAR high = static_cast<SQLWCHAR>((cp >> 10) + UNICODE_SURROGATE_HIGH_START);
+                SQLWCHAR low  = static_cast<SQLWCHAR>((cp & 0x3FF) + UNICODE_SURROGATE_LOW_START);
+                result.push_back(high);
+                result.push_back(low);
+            }
         }
-        return result;
+    } else {
+        // Encode UTF-32 directly
+        for (wchar_t wc : str) {
+            uint32_t cp = static_cast<uint32_t>(wc);
+            if (IsValidUnicodeScalar(cp)) {
+                result.push_back(static_cast<SQLWCHAR>(cp));
+            } else {
+                result.push_back(static_cast<SQLWCHAR>(UNICODE_REPLACEMENT_CHAR));
+            }
+        }
     }
+    result.push_back(0); // null terminator
+    return result;
+}
 #endif
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -105,7 +187,18 @@ typedef SQLRETURN (SQL_API* SQLDescribeColFunc)(SQLHSTMT, SQLUSMALLINT, SQLWCHAR
 typedef SQLRETURN (SQL_API* SQLMoreResultsFunc)(SQLHSTMT);
 typedef SQLRETURN (SQL_API* SQLColAttributeFunc)(SQLHSTMT, SQLUSMALLINT, SQLUSMALLINT, SQLPOINTER,
                                          SQLSMALLINT, SQLSMALLINT*, SQLPOINTER);
-
+typedef SQLRETURN (*SQLTablesFunc)(
+    SQLHSTMT       StatementHandle,
+    SQLWCHAR*      CatalogName,
+    SQLSMALLINT    NameLength1,
+    SQLWCHAR*      SchemaName,
+    SQLSMALLINT    NameLength2,
+    SQLWCHAR*      TableName,
+    SQLSMALLINT    NameLength3,
+    SQLWCHAR*      TableType,
+    SQLSMALLINT    NameLength4
+);
+                                         
 // Transaction APIs
 typedef SQLRETURN (SQL_API* SQLEndTranFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT);
 
@@ -118,6 +211,9 @@ typedef SQLRETURN (SQL_API* SQLFreeStmtFunc)(SQLHSTMT, SQLUSMALLINT);
 typedef SQLRETURN (SQL_API* SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLWCHAR*, SQLINTEGER*,
                                        SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*);
 
+// DAE APIs
+typedef SQLRETURN (SQL_API* SQLParamDataFunc)(SQLHSTMT, SQLPOINTER*);
+typedef SQLRETURN (SQL_API* SQLPutDataFunc)(SQLHSTMT, SQLPOINTER, SQLLEN);
 //-------------------------------------------------------------------------------------------------
 // Extern function pointer declarations (defined in ddbc_bindings.cpp)
 //-------------------------------------------------------------------------------------------------
@@ -148,6 +244,7 @@ extern SQLBindColFunc SQLBindCol_ptr;
 extern SQLDescribeColFunc SQLDescribeCol_ptr;
 extern SQLMoreResultsFunc SQLMoreResults_ptr;
 extern SQLColAttributeFunc SQLColAttribute_ptr;
+extern SQLTablesFunc SQLTables_ptr;
 
 // Transaction APIs
 extern SQLEndTranFunc SQLEndTran_ptr;
@@ -159,6 +256,10 @@ extern SQLFreeStmtFunc SQLFreeStmt_ptr;
 
 // Diagnostic APIs
 extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
+
+// DAE APIs
+extern SQLParamDataFunc SQLParamData_ptr;
+extern SQLPutDataFunc SQLPutData_ptr;
 
 // Logging utility
 template <typename... Args>
