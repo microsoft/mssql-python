@@ -725,11 +725,7 @@ DriverHandle LoadDriverOrThrowException() {
     DriverHandle handle = LoadDriverLibrary(driverPath.string());
     if (!handle) {
         LOG("Failed to load driver: {}", GetLastErrorMessage());
-        // If this happens in linux, suggest installing libltdl7
-        #ifdef __linux__
-            ThrowStdException("Failed to load ODBC driver. If you are on Linux, please install libltdl7 package.");
-        #endif
-        ThrowStdException("Failed to load ODBC driver. Please check installation.");
+        ThrowStdException("Failed to load the driver. Please read the documentation (https://github.com/microsoft/mssql-python#installation) to install the required dependencies.");
     }
     LOG("Driver library successfully loaded.");
 
