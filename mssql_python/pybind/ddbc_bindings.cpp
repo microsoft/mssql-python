@@ -727,7 +727,7 @@ DriverHandle LoadDriverOrThrowException() {
         LOG("Failed to load driver: {}", GetLastErrorMessage());
         // If this happens in linux, suggest installing libltdl7
         #ifdef __linux__
-            ThrowStdException("Failed to load ODBC driver. If you are on Linux, please install libltdl7 package.");
+            ThrowStdException("Failed to load ODBC driver. If you are on Linux, please read the documentation to install the required dependencies.");
         #endif
         ThrowStdException("Failed to load ODBC driver. Please check installation.");
     }
