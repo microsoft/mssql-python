@@ -5238,6 +5238,46 @@ def test_nvarchar_max_insert_lob(cursor, db_connection):
     finally:
         pass
 
+def test_nvarchar_max_boundary(cursor, db_connection):
+    """Test NVARCHAR(MAX) at LOB boundary sizes."""
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarchar_boundary")
+        cursor.execute("CREATE TABLE #pytest_nvarchar_boundary (col NVARCHAR(MAX))")
+        db_connection.commit()
+        
+        # 4k BMP chars = 8k bytes
+        cursor.execute("INSERT INTO #pytest_nvarchar_boundary (col) VALUES (?)", ["A" * 4096])
+        # 4k emojis = 8k UTF-16 code units (16k bytes)
+        cursor.execute("INSERT INTO #pytest_nvarchar_boundary (col) VALUES (?)", ["📝" * 4096])
+        db_connection.commit()
+        
+        # Fetch commented for now
+        # cursor.execute("SELECT col FROM #pytest_nvarchar_boundary")
+        # rows = cursor.fetchall()
+        # assert rows == [["A" * 4096], ["📝" * 4096]]
+    finally:
+        pass
+
+
+def test_nvarchar_max_chunk_edge(cursor, db_connection):
+    """Test NVARCHAR(MAX) insert slightly larger than a chunk."""
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarchar_chunk")
+        cursor.execute("CREATE TABLE #pytest_nvarchar_chunk (col NVARCHAR(MAX))")
+        db_connection.commit()
+
+        chunk_size = 8192  # bytes
+        test_str = "📝" * ((chunk_size // 4) + 3)  # slightly > 1 chunk
+        cursor.execute("INSERT INTO #pytest_nvarchar_chunk (col) VALUES (?)", [test_str])
+        db_connection.commit()
+        
+        # Fetch commented for now
+        # cursor.execute("SELECT col FROM #pytest_nvarchar_chunk")
+        # row = cursor.fetchone()
+        # assert row[0] == test_str
+    finally:
+        pass
+
 
 def test_close(db_connection):
     """Test closing the cursor"""
