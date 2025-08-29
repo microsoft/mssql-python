@@ -1674,7 +1674,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 // TODO: Handle the return code better
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(),
                                      &dataLen);
-
                 if (SQL_SUCCEEDED(ret)) {
                     // TODO: Refactor these if's across other switches to avoid code duplication
                     // columnSize is in chars, dataLen is in bytes
@@ -1701,6 +1700,9 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         }
 				    } else if (dataLen == SQL_NULL_DATA) {
 					    row.append(py::none());
+                    } else if (dataLen == 0) {
+                        // Empty string
+                        row.append(std::string(""));
                     } else {
                         assert(dataLen == SQL_NO_TOTAL);
                         LOG("SQLGetData couldn't determine the length of the data. "
@@ -1757,6 +1759,9 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         }
 				    } else if (dataLen == SQL_NULL_DATA) {
 					    row.append(py::none());
+                    } else if (dataLen == 0) {
+                        // Empty string
+                        row.append(py::str(""));
                     } else {
                         assert(dataLen == SQL_NO_TOTAL);
                         LOG("SQLGetData couldn't determine the length of the data. "
@@ -1953,6 +1958,9 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         }
 				    } else if (dataLen == SQL_NULL_DATA) {
 					    row.append(py::none());
+                    } else if (dataLen == 0) {
+                        // Empty bytes
+                        row.append(py::bytes(""));
                     } else {
                         assert(dataLen == SQL_NO_TOTAL);
                         LOG("SQLGetData couldn't determine the length of the data. "
