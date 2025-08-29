@@ -99,7 +99,13 @@ mssql_python/
 │       ├── debian_ubuntu/
 │       │   ├── x86_64/lib/
 │       │   └── arm64/lib/
-│       └── rhel/
+│       ├── rhel/
+│       │   ├── x86_64/lib/
+│       │   └── arm64/lib/
+│       ├── suse/
+│       │   ├── x86_64/lib/
+│       │   └── arm64/lib/
+│       └── alpine/
 │           ├── x86_64/lib/
 │           └── arm64/lib/
 └── ddbc_bindings.cp{python_version}-{architecture}.{extension}
@@ -149,6 +155,22 @@ Linux builds support multiple distributions:
 - `libodbcinst.so.2` - Installer library
 
 **RHEL/CentOS ARM64:**
+- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libodbcinst.so.2` - Installer library
+
+**SUSE/openSUSE x86_64:**
+- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libodbcinst.so.2` - Installer library
+
+**SUSE/openSUSE ARM64:**
+- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libodbcinst.so.2` - Installer library
+
+**Alpine x86_64:**
+- `libmsodbcsql-18.5.so.1.1` - Main driver
+- `libodbcinst.so.2` - Installer library
+
+**Alpine ARM64:**
 - `libmsodbcsql-18.5.so.1.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 

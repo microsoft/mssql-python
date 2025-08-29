@@ -58,13 +58,15 @@ class DependencyTester:
     
     def _detect_linux_distro(self):
         """Detect Linux distribution for driver path selection."""
-        distro_name = "debian_ubuntu"  # default
+        distro_name = "ubuntu"  # default
         '''
         #ifdef __linux__
         if (fs::exists("/etc/alpine-release")) {
             platform = "alpine";
         } else if (fs::exists("/etc/redhat-release") || fs::exists("/etc/centos-release")) {
             platform = "rhel";
+        } else if (fs::exists("/etc/SuSE-release") || fs::exists("/etc/SUSE-brand")) {
+            platform = "suse";
         } else {
             platform = "ubuntu";
         }
@@ -77,8 +79,10 @@ class DependencyTester:
                 distro_name = "alpine"
             elif (Path("/etc/redhat-release").exists() or Path("/etc/centos-release").exists()):
                 distro_name = "rhel"
+            elif (Path("/etc/SuSE-release").exists() or Path("/etc/SUSE-brand").exists()):
+                distro_name = "suse"
             else:
-                distro_name = "debian_ubuntu"
+                distro_name = "ubuntu"  # Default for other Linux distributions
         except Exception:
             pass  # use default
         

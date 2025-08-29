@@ -32,17 +32,16 @@ apt-get install -y libltdl7
 # For RHEL
 dnf install -y libtool-ltdl
 
+# For SUSE/openSUSE
+zypper install -y libltdl7
+
 pip install mssql-python
 ```
 
 ## Key Features
 ### Supported Platforms
  
-Windows, MacOS and Linux (manylinux - Debian, Ubuntu, RHEL & musllinux - Alpine)
-
-> **Note:**
-> Support for additional Linux OSs (SUSE Linux) will come soon
->
+Windows, MacOS and Linux (manylinux - Debian, Ubuntu, RHEL, SUSE & musllinux - Alpine)
  
 ### DBAPI v2.0 Compliance
  
