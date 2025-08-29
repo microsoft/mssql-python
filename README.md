@@ -41,7 +41,10 @@ pip install mssql-python
 ## Key Features
 ### Supported Platforms
  
-Windows, MacOS and Linux (manylinux - Debian, Ubuntu, RHEL, SUSE & musllinux - Alpine)
+Windows, MacOS and Linux (manylinux - Debian, Ubuntu, RHEL, SUSE (x64 only) & musllinux - Alpine)
+
+> **Note:**
+> SUSE Linux ARM64 is not supported by Microsoft ODBC Driver. Use x64 architecture for SUSE deployments.
  
 ### DBAPI v2.0 Compliance
  

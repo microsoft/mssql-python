@@ -103,8 +103,7 @@ mssql_python/
 │       │   ├── x86_64/lib/
 │       │   └── arm64/lib/
 │       ├── suse/
-│       │   ├── x86_64/lib/
-│       │   └── arm64/lib/
+│       │   └── x86_64/lib/              # ARM64 not supported by Microsoft
 │       └── alpine/
 │           ├── x86_64/lib/
 │           └── arm64/lib/
@@ -162,9 +161,7 @@ Linux builds support multiple distributions:
 - `libmsodbcsql-18.5.so.1.1` - Main driver
 - `libodbcinst.so.2` - Installer library
 
-**SUSE/openSUSE ARM64:**
-- `libmsodbcsql-18.5.so.1.1` - Main driver
-- `libodbcinst.so.2` - Installer library
+> **Note:** SUSE/openSUSE ARM64 is not supported by Microsoft ODBC Driver 18
 
 **Alpine x86_64:**
 - `libmsodbcsql-18.5.so.1.1` - Main driver
