@@ -29,11 +29,11 @@ apk add libtool krb5-libs krb5-dev
 # For Debian/Ubuntu  
 apt-get install -y libltdl7 libkrb5-3 libgssapi-krb5-2
 
-# For RHEL/CentOS/Fedora
+# For RHEL
 dnf install -y libtool-ltdl krb5-libs
 
-# For SUSE/openSUSE
-zypper install -y libltdl7 libkrb5-3 libgssapi_krb5-2
+# For SUSE
+zypper install -y libltdl7 libkrb5-3 libgssapi-krb5-2
 
 pip install mssql-python
 ```
