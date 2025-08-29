@@ -2250,7 +2250,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 row.append(py::none());
                 continue;
             }
-            assert(dataLen > 0 && "Must be > 0 since SQL_NULL_DATA & SQL_NO_DATA is already handled");
+            assert(dataLen >= 0 && "Data length must be >= 0");
 
             switch (dataType) {
                 case SQL_CHAR:
