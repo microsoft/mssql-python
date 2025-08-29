@@ -1674,6 +1674,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 // TODO: Handle the return code better
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(),
                                      &dataLen);
+
                 if (SQL_SUCCEEDED(ret)) {
                     // TODO: Refactor these if's across other switches to avoid code duplication
                     // columnSize is in chars, dataLen is in bytes
@@ -2249,7 +2250,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 row.append(py::none());
                 continue;
             }
-            assert(dataLen >= 0 && "Data length must be >= 0");
+            assert(dataLen > 0 && "Must be > 0 since SQL_NULL_DATA & SQL_NO_DATA is already handled");
 
             switch (dataType) {
                 case SQL_CHAR:
