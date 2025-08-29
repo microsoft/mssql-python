@@ -58,7 +58,7 @@ class DependencyTester:
     
     def _detect_linux_distro(self):
         """Detect Linux distribution for driver path selection."""
-        distro_name = "ubuntu"  # default
+        distro_name = "debian_ubuntu"  # default
         '''
         #ifdef __linux__
         if (fs::exists("/etc/alpine-release")) {
@@ -68,7 +68,7 @@ class DependencyTester:
         } else if (fs::exists("/etc/SuSE-release") || fs::exists("/etc/SUSE-brand")) {
             platform = "suse";
         } else {
-            platform = "ubuntu";
+            platform = "debian_ubuntu";
         }
 
         fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.5.so.1.1";
@@ -82,7 +82,7 @@ class DependencyTester:
             elif (Path("/etc/SuSE-release").exists() or Path("/etc/SUSE-brand").exists()):
                 distro_name = "suse"
             else:
-                distro_name = "ubuntu"  # Default for other Linux distributions
+                distro_name = "debian_ubuntu"
         except Exception:
             pass  # use default
         
