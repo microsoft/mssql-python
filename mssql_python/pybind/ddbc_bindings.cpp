@@ -653,8 +653,10 @@ std::string GetDriverPathCpp(const std::string& moduleDir) {
             platform = "alpine";
         } else if (fs::exists("/etc/redhat-release") || fs::exists("/etc/centos-release")) {
             platform = "rhel";
+        } else if (fs::exists("/etc/SuSE-release") || fs::exists("/etc/SUSE-brand")) {
+            platform = "suse";
         } else {
-            platform = "debian_ubuntu";
+            platform = "debian_ubuntu"; // Default to debian_ubuntu for other distros
         }
 
         fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.5.so.1.1";
@@ -725,11 +727,7 @@ DriverHandle LoadDriverOrThrowException() {
     DriverHandle handle = LoadDriverLibrary(driverPath.string());
     if (!handle) {
         LOG("Failed to load driver: {}", GetLastErrorMessage());
-        // If this happens in linux, suggest installing libltdl7
-        #ifdef __linux__
-            ThrowStdException("Failed to load ODBC driver. If you are on Linux, please install libltdl7 package.");
-        #endif
-        ThrowStdException("Failed to load ODBC driver. Please check installation.");
+        ThrowStdException("Failed to load the driver. Please read the documentation (https://github.com/microsoft/mssql-python#installation) to install the required dependencies.");
     }
     LOG("Driver library successfully loaded.");
 
