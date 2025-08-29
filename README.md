@@ -24,13 +24,16 @@ pip install mssql-python
 **Linux:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
 ```bash
 # For Alpine
-apk add libtool krb5-libs
+apk add libtool krb5-libs krb5-dev
 
-# For Debian/Ubuntu
-apt-get install -y libltdl7
+# For Debian/Ubuntu  
+apt-get install -y libltdl7 libkrb5-3 libgssapi-krb5-2
 
 # For RHEL
-dnf install -y libtool-ltdl
+dnf install -y libtool-ltdl krb5-libs
+
+# For SUSE
+zypper install -y libltdl7 libkrb5-3 libgssapi-krb5-2
 
 # For SUSE/openSUSE
 zypper install -y libltdl7
