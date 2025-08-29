@@ -32,6 +32,14 @@ using namespace pybind11::literals;
 #include <sql.h>
 #include <sqlext.h>
 
+#if defined(_WIN32)
+inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
+    std::vector<SQLWCHAR> result(str.begin(), str.end());
+    result.push_back(0);
+    return result;
+}
+#endif
+
 #if defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
 
@@ -203,6 +211,9 @@ typedef SQLRETURN (SQL_API* SQLFreeStmtFunc)(SQLHSTMT, SQLUSMALLINT);
 typedef SQLRETURN (SQL_API* SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLWCHAR*, SQLINTEGER*,
                                        SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*);
 
+// DAE APIs
+typedef SQLRETURN (SQL_API* SQLParamDataFunc)(SQLHSTMT, SQLPOINTER*);
+typedef SQLRETURN (SQL_API* SQLPutDataFunc)(SQLHSTMT, SQLPOINTER, SQLLEN);
 //-------------------------------------------------------------------------------------------------
 // Extern function pointer declarations (defined in ddbc_bindings.cpp)
 //-------------------------------------------------------------------------------------------------
@@ -245,6 +256,10 @@ extern SQLFreeStmtFunc SQLFreeStmt_ptr;
 
 // Diagnostic APIs
 extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
+
+// DAE APIs
+extern SQLParamDataFunc SQLParamData_ptr;
+extern SQLPutDataFunc SQLPutData_ptr;
 
 // Logging utility
 template <typename... Args>
