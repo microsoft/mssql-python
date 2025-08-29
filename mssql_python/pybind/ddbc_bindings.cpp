@@ -1274,7 +1274,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                             }
                             offset += len;
                         }
-                    } else if (matchedInfo->paramCType == SQL_C_CHAR) {
+                    } 
+                    else if (matchedInfo->paramCType == SQL_C_CHAR) {
                         std::string s = pyObj.cast<std::string>();
                         const char* dataPtr = s.data();
                         size_t totalBytes = s.size();
