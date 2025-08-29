@@ -1699,6 +1699,9 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         }
 				    } else if (dataLen == SQL_NULL_DATA) {
 					    row.append(py::none());
+                    } else if (dataLen == 0) {
+                        // Empty string
+                        row.append(std::string(""));
                     } else {
                         assert(dataLen == SQL_NO_TOTAL);
                         LOG("SQLGetData couldn't determine the length of the data. "
@@ -1755,6 +1758,9 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         }
 				    } else if (dataLen == SQL_NULL_DATA) {
 					    row.append(py::none());
+                    } else if (dataLen == 0) {
+                        // Empty string
+                        row.append(py::str(""));
                     } else {
                         assert(dataLen == SQL_NO_TOTAL);
                         LOG("SQLGetData couldn't determine the length of the data. "
@@ -1951,6 +1957,9 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         }
 				    } else if (dataLen == SQL_NULL_DATA) {
 					    row.append(py::none());
+                    } else if (dataLen == 0) {
+                        // Empty bytes
+                        row.append(py::bytes(""));
                     } else {
                         assert(dataLen == SQL_NO_TOTAL);
                         LOG("SQLGetData couldn't determine the length of the data. "
@@ -2239,7 +2248,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 row.append(py::none());
                 continue;
             }
-            assert(dataLen > 0 && "Must be > 0 since SQL_NULL_DATA & SQL_NO_DATA is already handled");
+            assert(dataLen >= 0 && "Data length must be >= 0");
 
             switch (dataType) {
                 case SQL_CHAR:

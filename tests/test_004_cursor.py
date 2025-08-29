@@ -68,6 +68,134 @@ def test_cursor(cursor):
     """Check if the cursor is created"""
     assert cursor is not None, "Cursor should not be None"
 
+def test_empty_string_handling(cursor, db_connection):
+    """Test that empty strings are handled correctly without assertion failures"""
+    try:
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_empty_string")
+        cursor.execute("CREATE TABLE #pytest_empty_string (id INT, text_col NVARCHAR(100))")
+        db_connection.commit()
+        
+        # Insert empty string
+        cursor.execute("INSERT INTO #pytest_empty_string VALUES (1, '')")
+        db_connection.commit()
+        
+        # Fetch the empty string - this would previously cause assertion failure
+        cursor.execute("SELECT text_col FROM #pytest_empty_string WHERE id = 1")
+        row = cursor.fetchone()
+        assert row is not None, "Should return a row"
+        assert row[0] == '', "Should return empty string, not None"
+        
+        # Test with fetchall to ensure batch fetch works too
+        cursor.execute("SELECT text_col FROM #pytest_empty_string")
+        rows = cursor.fetchall()
+        assert len(rows) == 1, "Should return 1 row"
+        assert rows[0][0] == '', "fetchall should also return empty string"
+        
+    except Exception as e:
+        pytest.fail(f"Empty string handling test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE #pytest_empty_string")
+        db_connection.commit()
+
+def test_empty_binary_handling(cursor, db_connection):
+    """Test that empty binary data is handled correctly without assertion failures"""
+    try:
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_empty_binary")
+        cursor.execute("CREATE TABLE #pytest_empty_binary (id INT, binary_col VARBINARY(100))")
+        db_connection.commit()
+        
+        # Insert empty binary data
+        cursor.execute("INSERT INTO #pytest_empty_binary VALUES (1, 0x)")  # Empty binary literal
+        db_connection.commit()
+        
+        # Fetch the empty binary - this would previously cause assertion failure
+        cursor.execute("SELECT binary_col FROM #pytest_empty_binary WHERE id = 1")
+        row = cursor.fetchone()
+        assert row is not None, "Should return a row"
+        assert row[0] == b'', "Should return empty bytes, not None"
+        assert isinstance(row[0], bytes), "Should return bytes type"
+        assert len(row[0]) == 0, "Should be zero-length bytes"
+        
+    except Exception as e:
+        pytest.fail(f"Empty binary handling test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE #pytest_empty_binary")
+        db_connection.commit()
+
+def test_mixed_empty_and_null_values(cursor, db_connection):
+    """Test that empty strings/binary and NULL values are distinguished correctly"""
+    try:
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_empty_vs_null")
+        cursor.execute("""
+            CREATE TABLE #pytest_empty_vs_null (
+                id INT,
+                text_col NVARCHAR(100),
+                binary_col VARBINARY(100)
+            )
+        """)
+        db_connection.commit()
+        
+        # Insert mix of empty and NULL values
+        cursor.execute("INSERT INTO #pytest_empty_vs_null VALUES (1, '', 0x)")      # Empty string and binary
+        cursor.execute("INSERT INTO #pytest_empty_vs_null VALUES (2, NULL, NULL)")  # NULL values
+        cursor.execute("INSERT INTO #pytest_empty_vs_null VALUES (3, 'data', 0x1234)")  # Non-empty values
+        db_connection.commit()
+        
+        # Fetch all rows
+        cursor.execute("SELECT id, text_col, binary_col FROM #pytest_empty_vs_null ORDER BY id")
+        rows = cursor.fetchall()
+        
+        # Validate row 1: empty values
+        assert rows[0][1] == '', "Row 1 should have empty string, not None"
+        assert rows[0][2] == b'', "Row 1 should have empty bytes, not None"
+        
+        # Validate row 2: NULL values
+        assert rows[1][1] is None, "Row 2 should have NULL (None) for text"
+        assert rows[1][2] is None, "Row 2 should have NULL (None) for binary"
+        
+        # Validate row 3: non-empty values
+        assert rows[2][1] == 'data', "Row 3 should have non-empty string"
+        assert rows[2][2] == b'\x12\x34', "Row 3 should have non-empty binary"
+        
+    except Exception as e:
+        pytest.fail(f"Empty vs NULL test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE #pytest_empty_vs_null")
+        db_connection.commit()
+
+def test_empty_string_edge_cases(cursor, db_connection):
+    """Test edge cases with empty strings"""
+    try:
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_empty_edge")
+        cursor.execute("CREATE TABLE #pytest_empty_edge (id INT, data NVARCHAR(MAX))")
+        db_connection.commit()
+        
+        # Test various ways to insert empty strings
+        cursor.execute("INSERT INTO #pytest_empty_edge VALUES (1, '')")
+        cursor.execute("INSERT INTO #pytest_empty_edge VALUES (2, N'')")
+        cursor.execute("INSERT INTO #pytest_empty_edge VALUES (3, ?)", [''])
+        cursor.execute("INSERT INTO #pytest_empty_edge VALUES (4, ?)", [u''])
+        db_connection.commit()
+        
+        # Verify all are empty strings
+        cursor.execute("SELECT id, data, LEN(data) as length FROM #pytest_empty_edge ORDER BY id")
+        rows = cursor.fetchall()
+        
+        for row in rows:
+            assert row[1] == '', f"Row {row[0]} should have empty string"
+            assert row[2] == 0, f"Row {row[0]} should have length 0"
+            assert row[1] is not None, f"Row {row[0]} should not be None"
+            
+    except Exception as e:
+        pytest.fail(f"Empty string edge cases test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE #pytest_empty_edge")
+        db_connection.commit()
+
 def test_insert_id_column(cursor, db_connection):
     """Test inserting data into the id column"""
     try:
