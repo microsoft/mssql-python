@@ -5124,6 +5124,120 @@ def test_emoji_round_trip(cursor, db_connection):
         except Exception as e:
             pytest.fail(f"Error for input {repr(text)}: {e}")
 
+def test_varchar_max_insert_non_lob(cursor, db_connection):
+    """Test small VARCHAR(MAX) insert (non-LOB path)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_varchar_nonlob (col VARCHAR(MAX))")
+        db_connection.commit()
+        
+        small_str = "Hello, world!"  # small, non-LOB
+        cursor.execute(
+            "INSERT INTO #pytest_varchar_nonlob (col) VALUES (?)", 
+            [small_str]
+        )
+        db_connection.commit()
+        
+        empty_str = ""
+        cursor.execute(
+            "INSERT INTO #pytest_varchar_nonlob (col) VALUES (?)", 
+            [empty_str]
+        )
+        db_connection.commit()
+
+        # None value
+        cursor.execute(
+            "INSERT INTO #pytest_varchar_nonlob (col) VALUES (?)", 
+            [None]
+        )
+        db_connection.commit()
+        
+        # Fetch commented for now
+        # cursor.execute("SELECT col FROM #pytest_varchar_nonlob")
+        # rows = cursor.fetchall()
+        # assert rows == [[small_str], [empty_str], [None]]
+
+    finally:
+        pass
+
+
+def test_varchar_max_insert_lob(cursor, db_connection):
+    """Test large VARCHAR(MAX) insert (LOB path)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_varchar_lob (col VARCHAR(MAX))")
+        db_connection.commit()
+        
+        large_str = "A" * 100_000  # > 8k to trigger LOB
+        cursor.execute(
+            "INSERT INTO #pytest_varchar_lob (col) VALUES (?)", 
+            [large_str]
+        )
+        db_connection.commit()
+        
+        # Fetch commented for now
+        # cursor.execute("SELECT col FROM #pytest_varchar_lob")
+        # rows = cursor.fetchall()
+        # assert rows == [[large_str]]
+
+    finally:
+        pass
+
+
+def test_nvarchar_max_insert_non_lob(cursor, db_connection):
+    """Test small NVARCHAR(MAX) insert (non-LOB path)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_nvarchar_nonlob (col NVARCHAR(MAX))")
+        db_connection.commit()
+        
+        small_str = "Unicode ✨ test"
+        cursor.execute(
+            "INSERT INTO #pytest_nvarchar_nonlob (col) VALUES (?)",
+            [small_str]
+        )
+        db_connection.commit()
+        
+        empty_str = ""
+        cursor.execute(
+            "INSERT INTO #pytest_nvarchar_nonlob (col) VALUES (?)", 
+            [empty_str]
+        )
+        db_connection.commit()
+
+        cursor.execute(
+            "INSERT INTO #pytest_nvarchar_nonlob (col) VALUES (?)", 
+            [None]
+        )
+        db_connection.commit()
+
+        # Fetch commented for now
+        # cursor.execute("SELECT col FROM #pytest_nvarchar_nonlob")
+        # rows = cursor.fetchall()
+        # assert rows == [[small_str], [empty_str], [None]]
+
+    finally:
+        pass
+
+
+def test_nvarchar_max_insert_lob(cursor, db_connection):
+    """Test large NVARCHAR(MAX) insert (LOB path)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_nvarchar_lob (col NVARCHAR(MAX))")
+        db_connection.commit()
+        
+        large_str = "📝" * 50_000  # each emoji = 2 UTF-16 code units, total > 100k bytes
+        cursor.execute(
+            "INSERT INTO #pytest_nvarchar_lob (col) VALUES (?)",
+            [large_str]
+        )
+        db_connection.commit()
+
+        # Fetch commented for now
+        # cursor.execute("SELECT col FROM #pytest_nvarchar_lob")
+        # rows = cursor.fetchall()
+        # assert rows == [[large_str]]
+
+    finally:
+        pass
+
 
 def test_close(db_connection):
     """Test closing the cursor"""

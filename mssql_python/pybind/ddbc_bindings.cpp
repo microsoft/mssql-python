@@ -1196,35 +1196,35 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                 if (py::isinstance<py::str>(pyObj)) {
                     if (matchedInfo->paramCType == SQL_C_WCHAR) {
                         std::wstring wstr = pyObj.cast<std::wstring>();
-    #if defined(__APPLE__) || defined(__linux__)
-                        auto utf16Buf = WStringToSQLWCHAR(wstr);
-                        const char* dataPtr = reinterpret_cast<const char*>(utf16Buf.data());
-                        size_t totalBytes = (utf16Buf.size() - 1) * sizeof(SQLWCHAR);
-    #else
-                        const char* dataPtr = reinterpret_cast<const char*>(wstr.data());
-                        size_t totalBytes = wstr.size() * sizeof(wchar_t);
-    #endif
-                        const size_t chunkSize = DAE_CHUNK_SIZE;
-                        for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
-                            size_t len = std::min(chunkSize, totalBytes - offset);
+                        size_t totalChars = wstr.size(); // number of characters
+                        const SQLWCHAR* dataPtr = wstr.c_str();
+                        size_t offset = 0;
+                        size_t chunkChars = DAE_CHUNK_SIZE / sizeof(SQLWCHAR);
+                        while (offset < totalChars) {
+                            size_t len = std::min(chunkChars, totalChars - offset);
                             rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(len));
                             if (!SQL_SUCCEEDED(rc)) {
-                                LOG("SQLPutData failed at offset {} of {}", offset, totalBytes);
+                                LOG("SQLPutData failed at offset {} of {}", offset, totalChars);
                                 return rc;
                             }
+                            offset += len;
                         }
-                    } else if (matchedInfo->paramCType == SQL_C_CHAR) {
+                    } 
+                    else if (matchedInfo->paramCType == SQL_C_CHAR) {
                         std::string s = pyObj.cast<std::string>();
-                        const char* dataPtr = s.data();
                         size_t totalBytes = s.size();
-                        const size_t chunkSize = DAE_CHUNK_SIZE;
-                        for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
-                            size_t len = std::min(chunkSize, totalBytes - offset);
+                        const char* dataPtr = s.data();
+                        size_t offset = 0;
+                        size_t chunkBytes = DAE_CHUNK_SIZE;
+                        while (offset < totalBytes) {
+                            size_t len = std::min(chunkBytes, totalBytes - offset);
+
                             rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(len));
                             if (!SQL_SUCCEEDED(rc)) {
                                 LOG("SQLPutData failed at offset {} of {}", offset, totalBytes);
                                 return rc;
                             }
+                            offset += len;
                         }
                     } else {
                         ThrowStdException("Unsupported C type for str in DAE");
