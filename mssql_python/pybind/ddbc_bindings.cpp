@@ -225,23 +225,55 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
 
         // TODO: Add more data types like money, guid, interval, TVPs etc.
         switch (paramInfo.paramCType) {
-            case SQL_C_CHAR:
-            case SQL_C_BINARY: {
+            case SQL_C_CHAR: {
                 if (!py::isinstance<py::str>(param) && !py::isinstance<py::bytearray>(param) &&
                     !py::isinstance<py::bytes>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
-                std::string* strParam =
-                    AllocateParamBuffer<std::string>(paramBuffers, param.cast<std::string>());
-                if (strParam->size() > 8192 /* TODO: Fix max length */) {
-                    ThrowStdException(
-                        "Streaming parameters is not yet supported. Parameter size"
-                        " must be less than 8192 bytes");
+                if (paramInfo.isDAE) {
+                    LOG("Parameter[{}] is marked for DAE streaming", paramIndex);
+                    dataPtr = const_cast<void*>(reinterpret_cast<const void*>(&paramInfos[paramIndex]));
+                    strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
+                    *strLenOrIndPtr = SQL_LEN_DATA_AT_EXEC(0);
+                    bufferLength = 0;
+                } else {
+                    std::string* strParam =
+                        AllocateParamBuffer<std::string>(paramBuffers, param.cast<std::string>());
+                    dataPtr = const_cast<void*>(static_cast<const void*>(strParam->c_str()));
+                    bufferLength = strParam->size() + 1;
+                    strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
+                    *strLenOrIndPtr = SQL_NTS;
                 }
-                dataPtr = const_cast<void*>(static_cast<const void*>(strParam->c_str()));
-                bufferLength = strParam->size() + 1 /* null terminator */;
-                strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
-                *strLenOrIndPtr = SQL_NTS;
+                break;
+            }
+            case SQL_C_BINARY: {
+                if (!py::isinstance<py::bytes>(param) && !py::isinstance<py::bytearray>(param)) {
+                    ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
+                }
+                if (paramInfo.isDAE) {
+                    // Deferred execution for VARBINARY(MAX)
+                    LOG("Parameter[{}] is marked for DAE streaming (VARBINARY(MAX))", paramIndex);
+                    dataPtr = const_cast<void*>(reinterpret_cast<const void*>(&paramInfos[paramIndex]));
+                    strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
+                    *strLenOrIndPtr = SQL_LEN_DATA_AT_EXEC(0);
+                    bufferLength = 0;
+                } else {
+                    std::cout<<"I'm here"<<std::endl;
+                    // small binary
+                    std::string binData;
+                    if (py::isinstance<py::bytes>(param)) {
+                        binData = param.cast<std::string>();
+                    } else {
+                        // bytearray
+                        binData = std::string(reinterpret_cast<const char*>(PyByteArray_AsString(param.ptr())),
+                                            PyByteArray_Size(param.ptr()));
+                    }
+                    std::string* binBuffer = AllocateParamBuffer<std::string>(paramBuffers, binData);
+                    dataPtr = const_cast<void*>(static_cast<const void*>(binBuffer->data()));
+                    bufferLength = static_cast<SQLLEN>(binBuffer->size());
+                    strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
+                    *strLenOrIndPtr = bufferLength;
+                }
                 break;
             }
             case SQL_C_WCHAR: {
@@ -279,17 +311,67 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     static_cast<void*>(AllocateParamBuffer<bool>(paramBuffers, param.cast<bool>()));
                 break;
             }
+            // case SQL_C_DEFAULT: {
+            //     if (!py::isinstance<py::none>(param)) {
+            //         ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
+            //     }
+            //     // TODO: This wont work for None values added to BINARY/VARBINARY columns. None values
+            //     //       of binary columns need to have C type = SQL_C_BINARY & SQL type = SQL_BINARY
+            //     dataPtr = nullptr;
+            //     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
+            //     *strLenOrIndPtr = SQL_NULL_DATA;
+            //     bufferLength = 0;
+            //     break;
+            // }
             case SQL_C_DEFAULT: {
-                if (!py::isinstance<py::none>(param)) {
-                    ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
-                }
-                // TODO: This wont work for None values added to BINARY/VARBINARY columns. None values
-                //       of binary columns need to have C type = SQL_C_BINARY & SQL type = SQL_BINARY
-                dataPtr = nullptr;
-                strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
-                *strLenOrIndPtr = SQL_NULL_DATA;
-                break;
-            }
+    if (!py::isinstance<py::none>(param)) {
+        ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
+    }
+
+    SQLSMALLINT sqlType       = paramInfo.paramSQLType;
+    SQLULEN     columnSize    = paramInfo.columnSize;
+    SQLSMALLINT decimalDigits = paramInfo.decimalDigits;
+
+    // If Python layer marked this as SQL_UNKNOWN_TYPE, ask the driver
+    if (sqlType == SQL_UNKNOWN_TYPE) {
+        SQLSMALLINT describedType;
+        SQLULEN     describedSize;
+        SQLSMALLINT describedDigits;
+        SQLSMALLINT nullable;
+
+        RETCODE rc = SQLDescribeParam_ptr(
+            hStmt,
+            static_cast<SQLUSMALLINT>(paramIndex + 1),
+            &describedType,
+            &describedSize,
+            &describedDigits,
+            &nullable
+        );
+        if (!SQL_SUCCEEDED(rc)) {
+            LOG("SQLDescribeParam failed for parameter {}", paramIndex);
+            return rc;
+        }
+
+        sqlType       = describedType;
+        columnSize    = describedSize;
+        decimalDigits = describedDigits;
+    }
+
+    dataPtr = nullptr;
+    strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
+    *strLenOrIndPtr = SQL_NULL_DATA;
+    bufferLength = 0;
+
+    // Override the ParamInfo values so the common SQLBindParameter call
+    // (after the switch) uses correct metadata
+    const_cast<ParamInfo&>(paramInfo).paramSQLType   = sqlType;
+    const_cast<ParamInfo&>(paramInfo).columnSize     = columnSize;
+    const_cast<ParamInfo&>(paramInfo).decimalDigits  = decimalDigits;
+
+    break;
+}
+
+
             case SQL_C_STINYINT:
             case SQL_C_TINYINT:
             case SQL_C_SSHORT:
@@ -1174,15 +1256,46 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                     continue;
                 }
                 if (py::isinstance<py::str>(pyObj)) {
-                    std::wstring wstr = pyObj.cast<std::wstring>();
-#if defined(__APPLE__) || defined(__linux__)
-                    auto utf16Buf = WStringToSQLWCHAR(wstr);
-                    const char* dataPtr = reinterpret_cast<const char*>(utf16Buf.data());
-                    size_t totalBytes = (utf16Buf.size() - 1) * sizeof(SQLWCHAR);
-#else
-                    const char* dataPtr = reinterpret_cast<const char*>(wstr.data());
-                    size_t totalBytes = wstr.size() * sizeof(wchar_t);
-#endif
+                    if (matchedInfo->paramCType == SQL_C_WCHAR) {
+                        std::wstring wstr = pyObj.cast<std::wstring>();
+    #if defined(__APPLE__) || defined(__linux__)
+                        auto utf16Buf = WStringToSQLWCHAR(wstr);
+                        const char* dataPtr = reinterpret_cast<const char*>(utf16Buf.data());
+                        size_t totalBytes = (utf16Buf.size() - 1) * sizeof(SQLWCHAR);
+    #else
+                        const char* dataPtr = reinterpret_cast<const char*>(wstr.data());
+                        size_t totalBytes = wstr.size() * sizeof(wchar_t);
+    #endif
+                        const size_t chunkSize = DAE_CHUNK_SIZE;
+                        for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
+                            size_t len = std::min(chunkSize, totalBytes - offset);
+                            rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(len));
+                            if (!SQL_SUCCEEDED(rc)) {
+                                LOG("SQLPutData failed at offset {} of {}", offset, totalBytes);
+                                return rc;
+                            }
+                        }
+                    } else if (matchedInfo->paramCType == SQL_C_CHAR) {
+                        std::string s = pyObj.cast<std::string>();
+                        const char* dataPtr = s.data();
+                        size_t totalBytes = s.size();
+                        const size_t chunkSize = DAE_CHUNK_SIZE;
+                        for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
+                            size_t len = std::min(chunkSize, totalBytes - offset);
+                            rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(len));
+                            if (!SQL_SUCCEEDED(rc)) {
+                                LOG("SQLPutData failed at offset {} of {}", offset, totalBytes);
+                                return rc;
+                            }
+                        }
+                    } else {
+                        ThrowStdException("Unsupported C type for str in DAE");
+                    }
+                } else if (py::isinstance<py::bytes>(pyObj) || py::isinstance<py::bytearray>(pyObj)) {
+                    py::bytes b = pyObj.cast<py::bytes>();
+                    std::string s = b;
+                    const char* dataPtr = s.data();
+                    size_t totalBytes = s.size();
                     const size_t chunkSize = DAE_CHUNK_SIZE;
                     for (size_t offset = 0; offset < totalBytes; offset += chunkSize) {
                         size_t len = std::min(chunkSize, totalBytes - offset);

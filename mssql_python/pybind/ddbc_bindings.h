@@ -214,6 +214,16 @@ typedef SQLRETURN (SQL_API* SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLI
 // DAE APIs
 typedef SQLRETURN (SQL_API* SQLParamDataFunc)(SQLHSTMT, SQLPOINTER*);
 typedef SQLRETURN (SQL_API* SQLPutDataFunc)(SQLHSTMT, SQLPOINTER, SQLLEN);
+
+typedef SQLRETURN (SQL_API* SQLDescribeParamFunc)(
+    SQLHSTMT,
+    SQLUSMALLINT,
+    SQLSMALLINT*,   // DataTypePtr
+    SQLULEN*,       // ParameterSizePtr
+    SQLSMALLINT*,   // DecimalDigitsPtr
+    SQLSMALLINT*    // NullablePtr
+);
+
 //-------------------------------------------------------------------------------------------------
 // Extern function pointer declarations (defined in ddbc_bindings.cpp)
 //-------------------------------------------------------------------------------------------------
@@ -260,6 +270,8 @@ extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
 // DAE APIs
 extern SQLParamDataFunc SQLParamData_ptr;
 extern SQLPutDataFunc SQLPutData_ptr;
+
+extern SQLDescribeParamFunc SQLDescribeParam_ptr;
 
 // Logging utility
 template <typename... Args>
