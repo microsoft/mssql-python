@@ -1701,9 +1701,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         }
 				    } else if (dataLen == SQL_NULL_DATA) {
 					    row.append(py::none());
-                    } else if (dataLen == 0) {
-                        // Empty string
-                        row.append(std::string());
                     } else {
                         assert(dataLen == SQL_NO_TOTAL);
                         LOG("SQLGetData couldn't determine the length of the data. "
