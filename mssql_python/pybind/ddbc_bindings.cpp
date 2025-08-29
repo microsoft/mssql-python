@@ -1196,8 +1196,9 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                 if (py::isinstance<py::str>(pyObj)) {
                     if (matchedInfo->paramCType == SQL_C_WCHAR) {
                         std::wstring wstr = pyObj.cast<std::wstring>();
-                        size_t totalChars = wstr.size(); // number of characters
-                        const SQLWCHAR* dataPtr = wstr.c_str();
+                        std::vector<SQLWCHAR> sqlwStr = WStringToSQLWCHAR(wstr);
+                        size_t totalChars = sqlwStr.size() - 1;
+                        const SQLWCHAR* dataPtr = sqlwStr.data();
                         size_t offset = 0;
                         size_t chunkChars = DAE_CHUNK_SIZE / sizeof(SQLWCHAR);
                         while (offset < totalChars) {
@@ -1209,8 +1210,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                             }
                             offset += len;
                         }
-                    } 
-                    else if (matchedInfo->paramCType == SQL_C_CHAR) {
+                    } else if (matchedInfo->paramCType == SQL_C_CHAR) {
                         std::string s = pyObj.cast<std::string>();
                         size_t totalBytes = s.size();
                         const char* dataPtr = s.data();
