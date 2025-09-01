@@ -13,7 +13,7 @@ import sys
 from datetime import datetime, date, time
 import decimal
 from contextlib import closing
-from mssql_python import Connection
+from mssql_python import Connection, row
 
 # Setup test table
 TEST_TABLE = """
@@ -5278,6 +5278,32 @@ def test_nvarchar_max_chunk_edge(cursor, db_connection):
     finally:
         pass
 
+def test_empty_string_chunk(cursor, db_connection):
+    """Test inserting empty strings into VARCHAR(MAX) and NVARCHAR(MAX)."""
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_string")
+        cursor.execute("""
+            CREATE TABLE #pytest_empty_string (
+                varchar_col VARCHAR(MAX),
+                nvarchar_col NVARCHAR(MAX)
+            )
+        """)
+        db_connection.commit()
+
+        empty_varchar = ""
+        empty_nvarchar = ""
+        cursor.execute(
+            "INSERT INTO #pytest_empty_string (varchar_col, nvarchar_col) VALUES (?, ?)",
+            [empty_varchar, empty_nvarchar]
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT LEN(varchar_col), LEN(nvarchar_col) FROM #pytest_empty_string")
+        row = tuple(int(x) for x in cursor.fetchone())
+        assert row == (0, 0), f"Expected lengths (0,0), got {row}"
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_string")
+        db_connection.commit()
 
 def test_close(db_connection):
     """Test closing the cursor"""

@@ -1225,14 +1225,25 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                 if (py::isinstance<py::str>(pyObj)) {
                     if (matchedInfo->paramCType == SQL_C_WCHAR) {
                         std::wstring wstr = pyObj.cast<std::wstring>();
+                        const SQLWCHAR* dataPtr = nullptr;
+                        size_t totalChars = 0;
+#if defined(__APPLE__) || defined(__linux__)
                         std::vector<SQLWCHAR> sqlwStr = WStringToSQLWCHAR(wstr);
-                        size_t totalChars = sqlwStr.size() - 1;
-                        const SQLWCHAR* dataPtr = sqlwStr.data();
+                        totalChars = sqlwStr.size() - 1;
+                        dataPtr = sqlwStr.data();
+#else
+                        dataPtr = wstr.c_str();
+                        totalChars = wstr.size();
+#endif
                         size_t offset = 0;
                         size_t chunkChars = DAE_CHUNK_SIZE / sizeof(SQLWCHAR);
                         while (offset < totalChars) {
                             size_t len = std::min(chunkChars, totalChars - offset);
-                            rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(len));
+                            size_t lenBytes = len * sizeof(SQLWCHAR);
+                            if (lenBytes > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
+                                ThrowStdException("Chunk size exceeds maximum allowed by SQLLEN");
+                            }
+                            rc = SQLPutData_ptr(hStmt, (SQLPOINTER)(dataPtr + offset), static_cast<SQLLEN>(lenBytes));
                             if (!SQL_SUCCEEDED(rc)) {
                                 LOG("SQLPutData failed at offset {} of {}", offset, totalChars);
                                 return rc;
