@@ -260,7 +260,6 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     *strLenOrIndPtr = SQL_LEN_DATA_AT_EXEC(0);
                     bufferLength = 0;
                 } else {
-                    std::cout<<"I'm here"<<std::endl;
                     // small binary
                     std::string binData;
                     if (py::isinstance<py::bytes>(param)) {
@@ -313,18 +312,6 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     static_cast<void*>(AllocateParamBuffer<bool>(paramBuffers, param.cast<bool>()));
                 break;
             }
-            // case SQL_C_DEFAULT: {
-            //     if (!py::isinstance<py::none>(param)) {
-            //         ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
-            //     }
-            //     // TODO: This wont work for None values added to BINARY/VARBINARY columns. None values
-            //     //       of binary columns need to have C type = SQL_C_BINARY & SQL type = SQL_BINARY
-            //     dataPtr = nullptr;
-            //     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
-            //     *strLenOrIndPtr = SQL_NULL_DATA;
-            //     bufferLength = 0;
-            //     break;
-            // }
             case SQL_C_DEFAULT: {
                 if (!py::isinstance<py::none>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
