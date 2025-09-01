@@ -231,7 +231,7 @@ class Cursor:
         """
         if param is None:
             return (
-                ddbc_sql_const.SQL_VARCHAR.value, # TODO: Add SQLDescribeParam to get correct type
+                ddbc_sql_const.SQL_VARCHAR.value,
                 ddbc_sql_const.SQL_C_DEFAULT.value,
                 1,
                 0,
