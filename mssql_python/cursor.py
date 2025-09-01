@@ -350,7 +350,7 @@ class Cursor:
                     return (
                         ddbc_sql_const.SQL_WLONGVARCHAR.value,
                         ddbc_sql_const.SQL_C_WCHAR.value,
-                        len(param),
+                        utf16_len,
                         0,
                         True,
                     )
