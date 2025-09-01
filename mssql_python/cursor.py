@@ -230,13 +230,13 @@ class Cursor:
             - A tuple containing the SQL type, C type, column size, and decimal digits.
         """
         if param is None:
-                return (
-                    ddbc_sql_const.SQL_VARCHAR.value,
-                    ddbc_sql_const.SQL_C_DEFAULT.value,
-                    1,
-                    0,
-                    False,
-                )
+            return (
+                ddbc_sql_const.SQL_VARCHAR.value,
+                ddbc_sql_const.SQL_C_DEFAULT.value,
+                1,
+                0,
+                False,
+            )
 
         if isinstance(param, bool):
             return ddbc_sql_const.SQL_BIT.value, ddbc_sql_const.SQL_C_BIT.value, 1, 0, False
@@ -344,17 +344,14 @@ class Cursor:
                     False,
                 )
 
-            # String mapping logic here
+             # String mapping logic here
             is_unicode = self._is_unicode_string(param)
-
-            # Computes UTF-16 code units (handles surrogate pairs)
-            utf16_len = sum(2 if ord(c) > 0xFFFF else 1 for c in param)
-            if utf16_len > MAX_INLINE_CHAR:  # Long strings -> DAE
+            if len(param) > MAX_INLINE_CHAR:  # Long strings
                 if is_unicode:
                     return (
                         ddbc_sql_const.SQL_WLONGVARCHAR.value,
                         ddbc_sql_const.SQL_C_WCHAR.value,
-                        utf16_len,
+                        len(param),
                         0,
                         True,
                     )
@@ -365,9 +362,8 @@ class Cursor:
                     0,
                     True,
                 )
-
-            # Short strings
-            if is_unicode:
+            if is_unicode:  # Short Unicode strings
+                utf16_len = len(param.encode("utf-16-le")) // 2
                 return (
                     ddbc_sql_const.SQL_WVARCHAR.value,
                     ddbc_sql_const.SQL_C_WCHAR.value,
@@ -386,16 +382,16 @@ class Cursor:
         if isinstance(param, bytes):
             if len(param) > 8000:  # Assuming VARBINARY(MAX) for long byte arrays
                 return (
-                    ddbc_sql_const.SQL_LONGVARBINARY.value,
+                    ddbc_sql_const.SQL_VARBINARY.value,
                     ddbc_sql_const.SQL_C_BINARY.value,
-                    max(len(param), 1),
+                    len(param),
                     0,
-                    True,
+                    False,
                 )
             return (
-                ddbc_sql_const.SQL_VARBINARY.value,
+                ddbc_sql_const.SQL_BINARY.value,
                 ddbc_sql_const.SQL_C_BINARY.value,
-                max(len(param), 1),
+                len(param),
                 0,
                 False,
             )
@@ -403,20 +399,20 @@ class Cursor:
         if isinstance(param, bytearray):
             if len(param) > 8000:  # Assuming VARBINARY(MAX) for long byte arrays
                 return (
-                    ddbc_sql_const.SQL_LONGVARBINARY.value,
+                    ddbc_sql_const.SQL_VARBINARY.value,
                     ddbc_sql_const.SQL_C_BINARY.value,
-                    max(len(param), 1),
+                    len(param),
                     0,
                     True,
                 )
             return (
-                ddbc_sql_const.SQL_VARBINARY.value,
+                ddbc_sql_const.SQL_BINARY.value,
                 ddbc_sql_const.SQL_C_BINARY.value,
-                max(len(param), 1),
+                len(param),
                 0,
                 False,
             )
-
+        
         if isinstance(param, datetime.datetime):
             return (
                 ddbc_sql_const.SQL_TIMESTAMP.value,
@@ -530,7 +526,7 @@ class Cursor:
         paraminfo.isDAE = is_dae
 
         if is_dae:
-            paraminfo.dataPtr = parameter
+            paraminfo.dataPtr = parameter  # Will be converted to py::object* in C++
 
         return paraminfo
 
