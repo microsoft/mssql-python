@@ -474,11 +474,22 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 decimalPtr->precision = decimalParam.precision;
                 decimalPtr->scale = decimalParam.scale;
                 decimalPtr->sign = decimalParam.sign;
-                // Convert the integer decimalParam.val to char array
-                std::memset(static_cast<void*>(decimalPtr->val), 0, sizeof(decimalPtr->val));
-                std::memcpy(static_cast<void*>(decimalPtr->val),
-			    reinterpret_cast<char*>(&decimalParam.val),
-                            sizeof(decimalParam.val));
+                // // Convert the integer decimalParam.val to char array
+                // std::memset(static_cast<void*>(decimalPtr->val), 0, sizeof(decimalPtr->val));
+                // std::memcpy(static_cast<void*>(decimalPtr->val),
+			    // reinterpret_cast<char*>(&decimalParam.val),
+                //             sizeof(decimalParam.val));
+
+
+                // Zero out the byte array
+                std::memset(decimalPtr->val, 0, sizeof(decimalPtr->val));
+
+                // Encode val into little-endian byte array
+                uint64_t scaledVal = decimalParam.val;
+                for (size_t i = 0; i < sizeof(decimalPtr->val) && scaledVal > 0; i++) {
+                    decimalPtr->val[i] = static_cast<SQLCHAR>(scaledVal & 0xFF);
+                    scaledVal >>= 8;
+                }
                 dataPtr = static_cast<void*>(decimalPtr);
                 // TODO: Remove these lines
                 //strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
@@ -1910,31 +1921,59 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 }
                 break;
             }
+            // case SQL_DECIMAL:
+            // case SQL_NUMERIC: {
+            //     SQLCHAR numericStr[MAX_DIGITS_IN_NUMERIC] = {0};
+            //     SQLLEN indicator;
+            //     ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, numericStr, sizeof(numericStr), &indicator);
+
+            //     if (SQL_SUCCEEDED(ret)) {
+            //         try{
+            //         // Convert numericStr to py::decimal.Decimal and append to row
+            //         row.append(py::module_::import("decimal").attr("Decimal")(
+            //             std::string(reinterpret_cast<const char*>(numericStr), indicator)));
+            //         } catch (const py::error_already_set& e) {
+            //             // If the conversion fails, append None
+            //             LOG("Error converting to decimal: {}", e.what());
+            //             row.append(py::none());
+            //         }
+            //     }
+            //     else {
+            //         LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+            //             "code - {}. Returning NULL value instead",
+            //             i, dataType, ret);
+            //         row.append(py::none());
+            //     }
+            //     break;
+            // }
             case SQL_DECIMAL:
             case SQL_NUMERIC: {
                 SQLCHAR numericStr[MAX_DIGITS_IN_NUMERIC] = {0};
-                SQLLEN indicator;
+                SQLLEN indicator = 0;
+
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, numericStr, sizeof(numericStr), &indicator);
 
                 if (SQL_SUCCEEDED(ret)) {
-                    try{
-                    // Convert numericStr to py::decimal.Decimal and append to row
-                    row.append(py::module_::import("decimal").attr("Decimal")(
-                        std::string(reinterpret_cast<const char*>(numericStr), indicator)));
-                    } catch (const py::error_already_set& e) {
-                        // If the conversion fails, append None
-                        LOG("Error converting to decimal: {}", e.what());
+                    if (indicator == SQL_NULL_DATA) {
                         row.append(py::none());
+                    } else {
+                        try {
+                            std::string s(reinterpret_cast<const char*>(numericStr));
+                            auto Decimal = py::module_::import("decimal").attr("Decimal");
+                            row.append(Decimal(s));
+                        } catch (const py::error_already_set& e) {
+                            LOG("Error converting to Decimal: {}", e.what());
+                            row.append(py::none());
+                        }
                     }
-                }
-                else {
-                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
-                        "code - {}. Returning NULL value instead",
+                } else {
+                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData rc - {}",
                         i, dataType, ret);
                     row.append(py::none());
                 }
                 break;
             }
+
             case SQL_DOUBLE:
             case SQL_FLOAT: {
                 SQLDOUBLE doubleValue;

@@ -282,18 +282,49 @@ class Cursor:
                 0,
                 False,
             )
-
+        
         if isinstance(param, decimal.Decimal):
-            parameters_list[i] = self._get_numeric_data(
-                param
-            )  # Replace the parameter with the dictionary
-            return (
-                ddbc_sql_const.SQL_NUMERIC.value,
-                ddbc_sql_const.SQL_C_NUMERIC.value,
-                parameters_list[i].precision,
-                parameters_list[i].scale,
-                False,
-            )
+        # Detect MONEY / SMALLMONEY range
+            if -214748.3648 <= param <= 214748.3647:
+                # smallmoney
+                parameters_list[i] = str(param)  # let SQL Server handle rounding to 4 decimals
+                return (
+                    ddbc_sql_const.SQL_VARCHAR.value,
+                    ddbc_sql_const.SQL_C_CHAR.value,
+                    len(parameters_list[i]),
+                    0,
+                )
+            elif -922337203685477.5808 <= param <= 922337203685477.5807:
+                # money
+                parameters_list[i] = str(param)
+                return (
+                    ddbc_sql_const.SQL_VARCHAR.value,
+                    ddbc_sql_const.SQL_C_CHAR.value,
+                    len(parameters_list[i]),
+                    0,
+                )
+            else:
+                # fallback to generic numeric binding
+                parameters_list[i] = self._get_numeric_data(param)
+                return (
+                    ddbc_sql_const.SQL_NUMERIC.value,
+                    ddbc_sql_const.SQL_C_NUMERIC.value,
+                    parameters_list[i].precision,
+                    parameters_list[i].scale,
+                )
+
+        
+        # if isinstance(param, decimal.Decimal):
+        #     parameters_list[i] = self._get_numeric_data(
+        #         param
+        #     )  # Replace the parameter with the dictionary
+        #     return (
+        #         ddbc_sql_const.SQL_NUMERIC.value,
+        #         ddbc_sql_const.SQL_C_NUMERIC.value,
+        #         parameters_list[i].precision,
+        #         parameters_list[i].scale,
+        #         False,
+        #     )
 
         if isinstance(param, str):
             if (
