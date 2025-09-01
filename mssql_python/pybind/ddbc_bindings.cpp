@@ -140,6 +140,8 @@ SQLParamDataFunc SQLParamData_ptr = nullptr;
 SQLPutDataFunc SQLPutData_ptr = nullptr;
 SQLTablesFunc SQLTables_ptr = nullptr;
 
+SQLDescribeParamFunc SQLDescribeParam_ptr = nullptr;
+
 namespace {
 
 const char* GetSqlCTypeAsString(const SQLSMALLINT cType) {
@@ -212,12 +214,12 @@ std::string DescribeChar(unsigned char ch) {
 // Given a list of parameters and their ParamInfo, calls SQLBindParameter on each of them with
 // appropriate arguments
 SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
-                         const std::vector<ParamInfo>& paramInfos,
+                         std::vector<ParamInfo>& paramInfos,
                          std::vector<std::shared_ptr<void>>& paramBuffers) {
     LOG("Starting parameter binding. Number of parameters: {}", params.size());
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
         const auto& param = params[paramIndex];
-        const ParamInfo& paramInfo = paramInfos[paramIndex];
+        ParamInfo& paramInfo = paramInfos[paramIndex];
         LOG("Binding parameter {} - C Type: {}, SQL Type: {}", paramIndex, paramInfo.paramCType, paramInfo.paramSQLType);
         void* dataPtr = nullptr;
         SQLLEN bufferLength = 0;
@@ -303,11 +305,37 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 if (!py::isinstance<py::none>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
-                // TODO: This wont work for None values added to BINARY/VARBINARY columns. None values
-                //       of binary columns need to have C type = SQL_C_BINARY & SQL type = SQL_BINARY
+                SQLSMALLINT sqlType       = paramInfo.paramSQLType;
+                SQLULEN     columnSize    = paramInfo.columnSize;
+                SQLSMALLINT decimalDigits = paramInfo.decimalDigits;
+                if (sqlType == SQL_UNKNOWN_TYPE) {
+                    SQLSMALLINT describedType;
+                    SQLULEN     describedSize;
+                    SQLSMALLINT describedDigits;
+                    SQLSMALLINT nullable;
+                    RETCODE rc = SQLDescribeParam_ptr(
+                        hStmt,
+                        static_cast<SQLUSMALLINT>(paramIndex + 1),
+                        &describedType,
+                        &describedSize,
+                        &describedDigits,
+                        &nullable
+                    );
+                    if (!SQL_SUCCEEDED(rc)) {
+                        LOG("SQLDescribeParam failed for parameter {} with error code {}", paramIndex, rc);
+                        return rc;
+                    }
+                    sqlType       = describedType;
+                    columnSize    = describedSize;
+                    decimalDigits = describedDigits;
+                }
                 dataPtr = nullptr;
                 strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                 *strLenOrIndPtr = SQL_NULL_DATA;
+                bufferLength = 0;
+                paramInfo.paramSQLType   = sqlType;
+                paramInfo.columnSize     = columnSize;
+                paramInfo.decimalDigits  = decimalDigits;
                 break;
             }
             case SQL_C_STINYINT:
@@ -787,6 +815,8 @@ DriverHandle LoadDriverOrThrowException() {
     SQLPutData_ptr = GetFunctionPointer<SQLPutDataFunc>(handle, "SQLPutData");
     SQLTables_ptr = GetFunctionPointer<SQLTablesFunc>(handle, "SQLTablesW");
 
+    SQLDescribeParam_ptr = GetFunctionPointer<SQLDescribeParamFunc>(handle, "SQLDescribeParam");
+
     bool success =
         SQLAllocHandle_ptr && SQLSetEnvAttr_ptr && SQLSetConnectAttr_ptr &&
         SQLSetStmtAttr_ptr && SQLGetConnectAttr_ptr && SQLDriverConnect_ptr &&
@@ -797,7 +827,8 @@ DriverHandle LoadDriverOrThrowException() {
         SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr &&
         SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr &&
         SQLFreeStmt_ptr && SQLGetDiagRec_ptr && SQLParamData_ptr &&
-        SQLPutData_ptr && SQLTables_ptr;
+        SQLPutData_ptr && SQLTables_ptr &&
+        SQLDescribeParam_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver.");
@@ -1092,7 +1123,7 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle,
 // be prepared in a previous call.
 SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                           const std::wstring& query /* TODO: Use SQLTCHAR? */,
-                          const py::list& params, const std::vector<ParamInfo>& paramInfos,
+                          const py::list& params, std::vector<ParamInfo>& paramInfos,
                           py::list& isStmtPrepared, const bool usePrepare = true) {
     LOG("Execute SQL Query - {}", query.c_str());
     if (!SQLPrepare_ptr) {
