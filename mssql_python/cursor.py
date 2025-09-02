@@ -344,14 +344,17 @@ class Cursor:
                     False,
                 )
 
-             # String mapping logic here
+            # String mapping logic here
             is_unicode = self._is_unicode_string(param)
-            if len(param) > MAX_INLINE_CHAR:  # Long strings
+
+            # Computes UTF-16 code units (handles surrogate pairs)
+            utf16_len = sum(2 if ord(c) > 0xFFFF else 1 for c in param)
+            if utf16_len > MAX_INLINE_CHAR:  # Long strings -> DAE
                 if is_unicode:
                     return (
                         ddbc_sql_const.SQL_WLONGVARCHAR.value,
                         ddbc_sql_const.SQL_C_WCHAR.value,
-                        len(param),
+                        utf16_len,
                         0,
                         True,
                     )
@@ -362,8 +365,9 @@ class Cursor:
                     0,
                     True,
                 )
-            if is_unicode:  # Short Unicode strings
-                utf16_len = len(param.encode("utf-16-le")) // 2
+
+            # Short strings
+            if is_unicode:
                 return (
                     ddbc_sql_const.SQL_WVARCHAR.value,
                     ddbc_sql_const.SQL_C_WCHAR.value,
@@ -906,7 +910,10 @@ class Cursor:
         """
         self._check_closed()
         self._reset_cursor()
+
+        # Clear any previous messages
         self.messages = []
+
         if not seq_of_parameters:
             self.rowcount = 0
             return
@@ -931,6 +938,7 @@ class Cursor:
             len(seq_of_parameters), "\n".join(f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}" for i, p in enumerate(seq_of_parameters))
         )
 
+        # Execute batched statement
         ret = ddbc_bindings.SQLExecuteMany(
             self.hstmt,
             operation,
@@ -940,11 +948,14 @@ class Cursor:
         )
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
+        # Capture any diagnostic messages after execution
         if self.hstmt:
             self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+
         self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
         self.last_executed_stmt = operation
         self._initialize_description()
+        
         if self.description:
             self.rowcount = -1
             self._reset_rownumber()
