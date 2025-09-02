@@ -844,21 +844,26 @@ class Cursor:
             for i, val in enumerate(row):
                 columnwise[i].append(val)
         return columnwise
-
+    
     def _compute_column_type(self, column):
         """
-        Scan all rows in a column to determine:
-        - representative value (sample_value)
-        - is_dae flag
-        - final value to use in dummy row
-        - min_val/max_val for integers
+        Determine a representative and final value for a column.
+        
+        Args:
+            column: List of values in the column.
+        
+        Returns:
+            sample_value: Representative value for type inference.
+            final_value: Value to use in modified_row.
+            min_val: Minimum for integer columns (None otherwise).
+            max_val: Maximum for integer columns (None otherwise).
         """
         non_nulls = [v for v in column if v is not None]
         if not non_nulls:
-            return None, False, None, None, None
+            return None, None, None, None
 
-        is_dae = False
         sample_value = None
+        final_value = None
         min_val = max_val = None
 
         # Handle integers separately to determine min/max
@@ -866,36 +871,17 @@ class Cursor:
         if int_values:
             min_val, max_val = min(int_values), max(int_values)
             sample_value = max(int_values, key=lambda x: abs(x))
-            return sample_value, False, sample_value, min_val, max_val
+            final_value = sample_value
+            return sample_value, final_value, min_val, max_val
 
-        # Handle other types (strings, bytes, float, decimal, datetime)
+        # Handle other types
         for v in non_nulls:
-            if isinstance(v, str):
-                utf16_len = sum(2 if ord(c) > 0xFFFF else 1 for c in v)
-                if utf16_len > MAX_INLINE_CHAR:
-                    is_dae = True
-                if not sample_value or len(v) > len(sample_value):
-                    sample_value = v
-            elif isinstance(v, (bytes, bytearray)):
-                if len(v) > 8000:
-                    is_dae = True
-                if not sample_value or len(v) > len(sample_value):
-                    sample_value = v
-            elif isinstance(v, float):
-                if sample_value is None:
-                    sample_value = 0.0
-            elif isinstance(v, decimal.Decimal):
-                if sample_value is None or len(v.as_tuple().digits) > len(sample_value.as_tuple().digits):
-                    sample_value = v
-            elif isinstance(v, (datetime.datetime, datetime.date, datetime.time)):
-                if sample_value is None:
-                    sample_value = v
-            else:
-                if sample_value is None:
-                    sample_value = v
+            if not sample_value or (hasattr(v, '__len__') and len(v) > len(sample_value)):
+                sample_value = v
+            if final_value is None:
+                final_value = v
 
-        return sample_value, is_dae, sample_value, None, None
-
+        return sample_value, final_value, None, None
 
     def executemany(self, operation: str, seq_of_parameters: list) -> None:
         """
@@ -924,13 +910,12 @@ class Cursor:
 
         for col_index in range(param_count):
             column = [row[col_index] for row in seq_of_parameters]
-            sample_value, is_dae, final_value, min_val, max_val = self._compute_column_type(column)
-            dummy_row = list(seq_of_parameters[0])
-            dummy_row[col_index] = final_value
+            sample_value, final_value, min_val, max_val = self._compute_column_type(column)
+            modified_row = list(seq_of_parameters[0])
+            modified_row[col_index] = final_value
             paraminfo = self._create_parameter_types_list(
-                sample_value, param_info, dummy_row, col_index, min_val=min_val, max_val=max_val
+                final_value, param_info, modified_row, col_index, min_val=min_val, max_val=max_val
             )
-            paraminfo.isDAE = is_dae
             parameters_type.append(paraminfo) 
 
         columnwise_params = self._transpose_rowwise_to_columnwise(seq_of_parameters)
@@ -955,7 +940,7 @@ class Cursor:
         self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
         self.last_executed_stmt = operation
         self._initialize_description()
-        
+
         if self.description:
             self.rowcount = -1
             self._reset_rownumber()
