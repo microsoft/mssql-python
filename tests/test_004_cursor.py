@@ -547,12 +547,12 @@ def test_longvarbinary(cursor, db_connection):
             rows.append(cursor.fetchone())
         assert cursor.fetchone() == None, "longvarbinary_column is expected to have only {} rows".format(expectedRows)
         assert rows[0] == [bytearray("ABCDEFGHI", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchone - row 0"
-        assert rows[1] == [bytes("123!@#\0\0\0", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchone - row 1"
+        assert rows[1] == [bytes("123!@#", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchone - row 1"
         # fetchall test
         cursor.execute("SELECT longvarbinary_column FROM #pytest_longvarbinary_test")
         rows = cursor.fetchall()
         assert rows[0] == [bytearray("ABCDEFGHI", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchall - row 0"
-        assert rows[1] == [bytes("123!@#\0\0\0", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchall - row 1"
+        assert rows[1] == [bytes("123!@#", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_LONGVARBINARY parsing test failed: {e}")
     finally:
