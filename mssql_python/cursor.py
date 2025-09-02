@@ -847,41 +847,29 @@ class Cursor:
     
     def _compute_column_type(self, column):
         """
-        Determine a representative and final value for a column.
-        
-        Args:
-            column: List of values in the column.
+        Determine representative value and integer min/max for a column.
         
         Returns:
-            sample_value: Representative value for type inference.
-            final_value: Value to use in modified_row.
-            min_val: Minimum for integer columns (None otherwise).
-            max_val: Maximum for integer columns (None otherwise).
+            sample_value: Representative value for type inference and modified_row.
+            min_val: Minimum for integers (None otherwise).
+            max_val: Maximum for integers (None otherwise).
         """
         non_nulls = [v for v in column if v is not None]
         if not non_nulls:
-            return None, None, None, None
+            return None, None, None
 
-        sample_value = None
-        final_value = None
-        min_val = max_val = None
-
-        # Handle integers separately to determine min/max
         int_values = [v for v in non_nulls if isinstance(v, int)]
         if int_values:
             min_val, max_val = min(int_values), max(int_values)
-            sample_value = max(int_values, key=lambda x: abs(x))
-            final_value = sample_value
-            return sample_value, final_value, min_val, max_val
+            sample_value = max(int_values, key=abs)
+            return sample_value, min_val, max_val
 
-        # Handle other types
+        sample_value = None
         for v in non_nulls:
             if not sample_value or (hasattr(v, '__len__') and len(v) > len(sample_value)):
                 sample_value = v
-            if final_value is None:
-                final_value = v
 
-        return sample_value, final_value, None, None
+        return sample_value, None, None
 
     def executemany(self, operation: str, seq_of_parameters: list) -> None:
         """
@@ -910,11 +898,11 @@ class Cursor:
 
         for col_index in range(param_count):
             column = [row[col_index] for row in seq_of_parameters]
-            sample_value, final_value, min_val, max_val = self._compute_column_type(column)
+            sample_value, min_val, max_val = self._compute_column_type(column)
             modified_row = list(seq_of_parameters[0])
-            modified_row[col_index] = final_value
+            modified_row[col_index] = sample_value
             paraminfo = self._create_parameter_types_list(
-                final_value, param_info, modified_row, col_index, min_val=min_val, max_val=max_val
+                sample_value, param_info, modified_row, col_index, min_val=min_val, max_val=max_val
             )
             parameters_type.append(paraminfo) 
 
