@@ -220,7 +220,7 @@ class Cursor:
 
     def _map_sql_type(self, param, parameters_list, i, min_val=None, max_val=None):
         """
-                Map a Python data type to the corresponding SQL type, 
+        Map a Python data type to the corresponding SQL type, 
         C type, Column size, and Decimal digits.
         Takes:
             - param: The parameter to map.
