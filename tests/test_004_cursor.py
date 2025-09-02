@@ -13,7 +13,7 @@ import sys
 from datetime import datetime, date, time
 import decimal
 from contextlib import closing
-from mssql_python import Connection
+from mssql_python import Connection, row
 
 # Setup test table
 TEST_TABLE = """
@@ -5124,6 +5124,186 @@ def test_emoji_round_trip(cursor, db_connection):
         except Exception as e:
             pytest.fail(f"Error for input {repr(text)}: {e}")
 
+def test_varchar_max_insert_non_lob(cursor, db_connection):
+    """Test small VARCHAR(MAX) insert (non-LOB path)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_varchar_nonlob (col VARCHAR(MAX))")
+        db_connection.commit()
+        
+        small_str = "Hello, world!"  # small, non-LOB
+        cursor.execute(
+            "INSERT INTO #pytest_varchar_nonlob (col) VALUES (?)", 
+            [small_str]
+        )
+        db_connection.commit()
+        
+        empty_str = ""
+        cursor.execute(
+            "INSERT INTO #pytest_varchar_nonlob (col) VALUES (?)", 
+            [empty_str]
+        )
+        db_connection.commit()
+
+        # None value
+        cursor.execute(
+            "INSERT INTO #pytest_varchar_nonlob (col) VALUES (?)", 
+            [None]
+        )
+        db_connection.commit()
+        
+        # Fetch commented for now
+        # cursor.execute("SELECT col FROM #pytest_varchar_nonlob")
+        # rows = cursor.fetchall()
+        # assert rows == [[small_str], [empty_str], [None]]
+
+    finally:
+        pass
+
+
+def test_varchar_max_insert_lob(cursor, db_connection):
+    """Test large VARCHAR(MAX) insert (LOB path)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_varchar_lob (col VARCHAR(MAX))")
+        db_connection.commit()
+        
+        large_str = "A" * 100_000  # > 8k to trigger LOB
+        cursor.execute(
+            "INSERT INTO #pytest_varchar_lob (col) VALUES (?)", 
+            [large_str]
+        )
+        db_connection.commit()
+        
+        # Fetch commented for now
+        # cursor.execute("SELECT col FROM #pytest_varchar_lob")
+        # rows = cursor.fetchall()
+        # assert rows == [[large_str]]
+
+    finally:
+        pass
+
+
+def test_nvarchar_max_insert_non_lob(cursor, db_connection):
+    """Test small NVARCHAR(MAX) insert (non-LOB path)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_nvarchar_nonlob (col NVARCHAR(MAX))")
+        db_connection.commit()
+        
+        small_str = "Unicode ✨ test"
+        cursor.execute(
+            "INSERT INTO #pytest_nvarchar_nonlob (col) VALUES (?)",
+            [small_str]
+        )
+        db_connection.commit()
+        
+        empty_str = ""
+        cursor.execute(
+            "INSERT INTO #pytest_nvarchar_nonlob (col) VALUES (?)", 
+            [empty_str]
+        )
+        db_connection.commit()
+
+        cursor.execute(
+            "INSERT INTO #pytest_nvarchar_nonlob (col) VALUES (?)", 
+            [None]
+        )
+        db_connection.commit()
+
+        # Fetch commented for now
+        # cursor.execute("SELECT col FROM #pytest_nvarchar_nonlob")
+        # rows = cursor.fetchall()
+        # assert rows == [[small_str], [empty_str], [None]]
+
+    finally:
+        pass
+
+
+def test_nvarchar_max_insert_lob(cursor, db_connection):
+    """Test large NVARCHAR(MAX) insert (LOB path)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_nvarchar_lob (col NVARCHAR(MAX))")
+        db_connection.commit()
+        
+        large_str = "📝" * 50_000  # each emoji = 2 UTF-16 code units, total > 100k bytes
+        cursor.execute(
+            "INSERT INTO #pytest_nvarchar_lob (col) VALUES (?)",
+            [large_str]
+        )
+        db_connection.commit()
+
+        # Fetch commented for now
+        # cursor.execute("SELECT col FROM #pytest_nvarchar_lob")
+        # rows = cursor.fetchall()
+        # assert rows == [[large_str]]
+
+    finally:
+        pass
+
+def test_nvarchar_max_boundary(cursor, db_connection):
+    """Test NVARCHAR(MAX) at LOB boundary sizes."""
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarchar_boundary")
+        cursor.execute("CREATE TABLE #pytest_nvarchar_boundary (col NVARCHAR(MAX))")
+        db_connection.commit()
+        
+        # 4k BMP chars = 8k bytes
+        cursor.execute("INSERT INTO #pytest_nvarchar_boundary (col) VALUES (?)", ["A" * 4096])
+        # 4k emojis = 8k UTF-16 code units (16k bytes)
+        cursor.execute("INSERT INTO #pytest_nvarchar_boundary (col) VALUES (?)", ["📝" * 4096])
+        db_connection.commit()
+        
+        # Fetch commented for now
+        # cursor.execute("SELECT col FROM #pytest_nvarchar_boundary")
+        # rows = cursor.fetchall()
+        # assert rows == [["A" * 4096], ["📝" * 4096]]
+    finally:
+        pass
+
+
+def test_nvarchar_max_chunk_edge(cursor, db_connection):
+    """Test NVARCHAR(MAX) insert slightly larger than a chunk."""
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarchar_chunk")
+        cursor.execute("CREATE TABLE #pytest_nvarchar_chunk (col NVARCHAR(MAX))")
+        db_connection.commit()
+
+        chunk_size = 8192  # bytes
+        test_str = "📝" * ((chunk_size // 4) + 3)  # slightly > 1 chunk
+        cursor.execute("INSERT INTO #pytest_nvarchar_chunk (col) VALUES (?)", [test_str])
+        db_connection.commit()
+        
+        # Fetch commented for now
+        # cursor.execute("SELECT col FROM #pytest_nvarchar_chunk")
+        # row = cursor.fetchone()
+        # assert row[0] == test_str
+    finally:
+        pass
+
+def test_empty_string_chunk(cursor, db_connection):
+    """Test inserting empty strings into VARCHAR(MAX) and NVARCHAR(MAX)."""
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_string")
+        cursor.execute("""
+            CREATE TABLE #pytest_empty_string (
+                varchar_col VARCHAR(MAX),
+                nvarchar_col NVARCHAR(MAX)
+            )
+        """)
+        db_connection.commit()
+
+        empty_varchar = ""
+        empty_nvarchar = ""
+        cursor.execute(
+            "INSERT INTO #pytest_empty_string (varchar_col, nvarchar_col) VALUES (?, ?)",
+            [empty_varchar, empty_nvarchar]
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT LEN(varchar_col), LEN(nvarchar_col) FROM #pytest_empty_string")
+        row = tuple(int(x) for x in cursor.fetchone())
+        assert row == (0, 0), f"Expected lengths (0,0), got {row}"
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_string")
+        db_connection.commit()
 
 def test_close(db_connection):
     """Test closing the cursor"""
