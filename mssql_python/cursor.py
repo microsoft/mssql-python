@@ -389,9 +389,9 @@ class Cursor:
                     False,
                 )
             return (
-                ddbc_sql_const.SQL_VARBINARY.value,  # Use VARBINARY instead of BINARY
+                ddbc_sql_const.SQL_BINARY.value,
                 ddbc_sql_const.SQL_C_BINARY.value,
-                max(len(param), 1),  # Ensure minimum column size of 1
+                len(param),
                 0,
                 False,
             )
@@ -406,9 +406,9 @@ class Cursor:
                     True,
                 )
             return (
-                ddbc_sql_const.SQL_VARBINARY.value,  # Use VARBINARY instead of BINARY
+                ddbc_sql_const.SQL_BINARY.value,
                 ddbc_sql_const.SQL_C_BINARY.value,
-                max(len(param), 1),  # Ensure minimum column size of 1
+                len(param),
                 0,
                 False,
             )
@@ -849,8 +849,6 @@ class Cursor:
             return max(non_nulls, key=lambda s: len(str(s)))
         if all(isinstance(v, datetime.datetime) for v in non_nulls):
             return datetime.datetime.now()
-        if all(isinstance(v, (bytes, bytearray)) for v in non_nulls):
-            return max(non_nulls, key=lambda b: len(b))
         if all(isinstance(v, datetime.date) for v in non_nulls):
             return datetime.date.today()
         return non_nulls[0]  # fallback

@@ -1426,12 +1426,7 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                             std::string str = columnValues[i].cast<std::string>();
                             if (str.size() > info.columnSize)
                                 ThrowStdException("Input exceeds column size at index " + std::to_string(i));
-                            // Clear the entire buffer slot first
-                            std::memset(charArray + i * (info.columnSize + 1), 0, info.columnSize + 1);
-                            // Then copy the actual data
-                            if (str.size() > 0) {
-                                std::memcpy(charArray + i * (info.columnSize + 1), str.c_str(), str.size());
-                            }
+                            std::memcpy(charArray + i * (info.columnSize + 1), str.c_str(), str.size());
                             strLenOrIndArray[i] = static_cast<SQLLEN>(str.size());
                         }
                     }
