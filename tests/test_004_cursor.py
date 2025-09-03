@@ -1156,66 +1156,66 @@ def test_executemany_compare_with_execute(cursor, db_connection):
         except:
             pass
 
-# def test_executemany_edge_cases_empty_strings(cursor, db_connection):
-#     """Test executemany edge cases with empty strings and special characters"""
-#     try:
-#         # Create test table
-#         cursor.execute("""
-#             CREATE TABLE #pytest_edge_cases (
-#                 id INT,
-#                 varchar_data VARCHAR(100),
-#                 nvarchar_data NVARCHAR(100)
-#             )
-#         """)
+def test_executemany_edge_cases_empty_strings(cursor, db_connection):
+    """Test executemany edge cases with empty strings and special characters"""
+    try:
+        # Create test table
+        cursor.execute("""
+            CREATE TABLE #pytest_edge_cases (
+                id INT,
+                varchar_data VARCHAR(100),
+                nvarchar_data NVARCHAR(100)
+            )
+        """)
         
-#         # Clear any existing data
-#         cursor.execute("DELETE FROM #pytest_edge_cases")
-#         db_connection.commit()
+        # Clear any existing data
+        cursor.execute("DELETE FROM #pytest_edge_cases")
+        db_connection.commit()
         
-#         # Edge case test data
-#         test_data = [
-#             # All empty strings
-#             (1, '', ''),
-#             # One empty, one not
-#             (2, '', 'not empty'),
-#             (3, 'not empty', ''),
-#             # Special whitespace cases
-#             (4, ' ', '  '),  # Single and double space
-#             (5, '\t', '\n'),  # Tab and newline
-#             # Mixed Unicode and empty
-#             (6, '', '🚀'),
-#             (7, 'ASCII', ''),
-#             # Boundary cases
-#             (8, '', ''),  # Another all empty
-#         ]
+        # Edge case test data
+        test_data = [
+            # All empty strings
+            (1, '', ''),
+            # One empty, one not
+            (2, '', 'not empty'),
+            (3, 'not empty', ''),
+            # Special whitespace cases
+            (4, ' ', '  '),  # Single and double space
+            (5, '\t', '\n'),  # Tab and newline
+            # Mixed Unicode and empty
+            # (6, '', '🚀'), #TODO: Uncomment once nvarcharmax, varcharmax and unicode support is implemented for executemany
+            (7, 'ASCII', ''),
+            # Boundary cases
+            (8, '', ''),  # Another all empty
+        ]
         
-#         # Execute the batch insert
-#         cursor.executemany(
-#             "INSERT INTO #pytest_edge_cases VALUES (?, ?, ?)", 
-#             test_data
-#         )
-#         db_connection.commit()
+        # Execute the batch insert
+        cursor.executemany(
+            "INSERT INTO #pytest_edge_cases VALUES (?, ?, ?)", 
+            test_data
+        )
+        db_connection.commit()
         
-#         # Verify the data was inserted correctly
-#         cursor.execute("SELECT id, varchar_data, nvarchar_data FROM #pytest_edge_cases ORDER BY id")
-#         results = cursor.fetchall()
+        # Verify the data was inserted correctly
+        cursor.execute("SELECT id, varchar_data, nvarchar_data FROM #pytest_edge_cases ORDER BY id")
+        results = cursor.fetchall()
         
-#         # Check that we got the right number of rows
-#         assert len(results) == len(test_data), f"Expected {len(test_data)} rows, got {len(results)}"
+        # Check that we got the right number of rows
+        assert len(results) == len(test_data), f"Expected {len(test_data)} rows, got {len(results)}"
         
-#         # Check each row
-#         for i, (actual, expected_row) in enumerate(zip(results, test_data)):
-#             assert actual[0] == expected_row[0], f"Row {i}: ID mismatch"
-#             assert actual[1] == expected_row[1], f"Row {i}: VARCHAR mismatch - expected '{repr(expected_row[1])}', got '{repr(actual[1])}'"
-#             assert actual[2] == expected_row[2], f"Row {i}: NVARCHAR mismatch - expected '{repr(expected_row[2])}', got '{repr(actual[2])}'"
+        # Check each row
+        for i, (actual, expected_row) in enumerate(zip(results, test_data)):
+            assert actual[0] == expected_row[0], f"Row {i}: ID mismatch"
+            assert actual[1] == expected_row[1], f"Row {i}: VARCHAR mismatch - expected '{repr(expected_row[1])}', got '{repr(actual[1])}'"
+            assert actual[2] == expected_row[2], f"Row {i}: NVARCHAR mismatch - expected '{repr(expected_row[2])}', got '{repr(actual[2])}'"
         
-#     finally:
-#         # Cleanup
-#         try:
-#             cursor.execute("DROP TABLE IF EXISTS #pytest_edge_cases")
-#             db_connection.commit()
-#         except:
-#             pass
+    finally:
+        # Cleanup
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #pytest_edge_cases")
+            db_connection.commit()
+        except:
+            pass
 
 def test_executemany_null_vs_empty_string(cursor, db_connection):
     """Test that executemany correctly distinguishes between NULL and empty string"""
