@@ -1308,7 +1308,13 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                                 std::string offending = WideToUTF8(wstr);
                                 ThrowStdException("Input string exceeds allowed column size at parameter index " + std::to_string(paramIndex));
                             }
+#if defined(__APPLE__) || defined(__linux__)
+                            auto utf16Buf = WStringToSQLWCHAR(wstr);
+                            size_t copySize = std::min(utf16Buf.size(), static_cast<size_t>(info.columnSize + 1));
+                            std::memcpy(wcharArray + i * (info.columnSize + 1), utf16Buf.data(), copySize * sizeof(SQLWCHAR));
+#else
                             std::memcpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(), (wstr.length() + 1) * sizeof(SQLWCHAR));
+#endif
                             strLenOrIndArray[i] = SQL_NTS;
                         }
                     }
@@ -1372,7 +1378,12 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                             std::string str = columnValues[i].cast<std::string>();
                             if (str.size() > info.columnSize)
                                 ThrowStdException("Input exceeds column size at index " + std::to_string(i));
-                            std::memcpy(charArray + i * (info.columnSize + 1), str.c_str(), str.size());
+                            // Clear the entire buffer slot first
+                            std::memset(charArray + i * (info.columnSize + 1), 0, info.columnSize + 1);
+                            // Then copy the actual data
+                            if (str.size() > 0) {
+                                std::memcpy(charArray + i * (info.columnSize + 1), str.c_str(), str.size());
+                            }
                             strLenOrIndArray[i] = static_cast<SQLLEN>(str.size());
                         }
                     }
