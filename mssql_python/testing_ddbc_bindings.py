@@ -3,7 +3,7 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 This module provides functions to test DDBC bindings.
 """
-import ctypes
+
 import datetime
 import os
 from mssql_python import ddbc_bindings
@@ -26,10 +26,7 @@ def alloc_handle(handle_type, input_handle):
     """
     Allocate a handle for the given handle type and input handle.
     """
-    result_alloc, handle = ddbc_bindings.DDBCSQLAllocHandle(
-        handle_type,
-        input_handle
-    )
+    result_alloc, handle = ddbc_bindings.DDBCSQLAllocHandle(handle_type, input_handle)
     if result_alloc < 0:
         print(
             "Error:", ddbc_bindings.DDBCSQLCheckError(handle_type, handle, result_alloc)
@@ -62,7 +59,9 @@ def ddbc_sql_execute(
     if result_execute < 0:
         print(
             "Error: ",
-            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_STMT, stmt_handle, result_execute),
+            ddbc_bindings.DDBCSQLCheckError(
+                SQL_HANDLE_STMT, stmt_handle, result_execute
+            ),
         )
         raise RuntimeError(f"Failed to execute query. Error code: {result_execute}")
     return result_execute
@@ -145,7 +144,9 @@ def fetch_data(stmt_handle):
             raise RuntimeError(f"Failed to fetch data. Error code: {result_fetch}")
         if column_count > 0:
             row = []
-            result_get_data = ddbc_bindings.DDBCSQLGetData(stmt_handle, column_count, row)
+            result_get_data = ddbc_bindings.DDBCSQLGetData(
+                stmt_handle, column_count, row
+            )
             if result_get_data < 0:
                 print(
                     "Error: ",
@@ -167,7 +168,9 @@ def describe_columns(stmt_handle):
     if result_describe < 0:
         print(
             "Error: ",
-            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_STMT, stmt_handle, result_describe),
+            ddbc_bindings.DDBCSQLCheckError(
+                SQL_HANDLE_STMT, stmt_handle, result_describe
+            ),
         )
         raise RuntimeError(f"Failed to describe columns. Error code: {result_describe}")
     return column_names
@@ -177,7 +180,9 @@ def connect_to_db(dbc_handle, connection_string):
     """
     Connect to the database using DDBC bindings.
     """
-    result_connect = ddbc_bindings.DDBCSQLDriverConnect(dbc_handle, 0, connection_string)
+    result_connect = ddbc_bindings.DDBCSQLDriverConnect(
+        dbc_handle, 0, connection_string
+    )
     if result_connect < 0:
         print(
             "Error: ",
@@ -346,7 +351,7 @@ def add_numeric_param(params, param_infos, param):
 if __name__ == "__main__":
     # Allocate environment handle
     env_handle = alloc_handle(SQL_HANDLE_ENV, None)
-    
+
     # Set the DDBC version environment attribute
     result_set_env = ddbc_bindings.DDBCSQLSetEnvAttr(
         env_handle, SQL_ATTR_DDBC_VERSION, SQL_OV_DDBC3_80, 0
@@ -410,7 +415,12 @@ if __name__ == "__main__":
     # add_numeric_param(params_insert, param_info_list_insert, decimal.Decimal('12'))
     is_stmt_prepared_insert = [False]
     result_insert = ddbc_sql_execute(
-        stmt_handle, insert_sql_query, params_insert, param_info_list_insert, is_stmt_prepared_insert, True
+        stmt_handle,
+        insert_sql_query,
+        params_insert,
+        param_info_list_insert,
+        is_stmt_prepared_insert,
+        True,
     )
     print("DDBCSQLExecute result:", result_insert)
 
@@ -424,7 +434,12 @@ if __name__ == "__main__":
     params_select = []
     param_info_list_select = []
     result_select = ddbc_sql_execute(
-        stmt_handle, select_sql_query, params_select, param_info_list_select, is_stmt_prepared_select, False
+        stmt_handle,
+        select_sql_query,
+        params_select,
+        param_info_list_select,
+        is_stmt_prepared_select,
+        False,
     )
     print("DDBCSQLExecute result:", result_select)
 
@@ -448,7 +463,9 @@ if __name__ == "__main__":
     if result_disconnect < 0:
         print(
             "Error: ",
-            ddbc_bindings.DDBCSQLCheckError(SQL_HANDLE_DBC, dbc_handle, result_disconnect),
+            ddbc_bindings.DDBCSQLCheckError(
+                SQL_HANDLE_DBC, dbc_handle, result_disconnect
+            ),
         )
         raise RuntimeError(
             f"Failed to disconnect from the data source. Error code: {result_disconnect}"

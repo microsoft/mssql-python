@@ -3,13 +3,11 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 This module provides helper functions for the mssql_python package.
 """
+import re
 
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import raise_exception
 from mssql_python.logging_config import get_logger
-import platform
-from pathlib import Path
-from mssql_python.ddbc_bindings import normalize_architecture
 
 logger = get_logger()
 
@@ -124,7 +122,7 @@ def sanitize_connection_string(conn_str: str) -> str:
     """
     # Remove sensitive information from the connection string, Pwd section
     # Replace Pwd=...; or Pwd=... (end of string) with Pwd=***;
-    import re
+
     return re.sub(r"(Pwd\s*=\s*)[^;]*", r"\1***", conn_str, flags=re.IGNORECASE)
 
 
@@ -132,26 +130,24 @@ def sanitize_user_input(user_input: str, max_length: int = 50) -> str:
     """
     Sanitize user input for safe logging by removing control characters,
     limiting length, and ensuring safe characters only.
-    
+
     Args:
         user_input (str): The user input to sanitize.
         max_length (int): Maximum length of the sanitized output.
-    
+
     Returns:
         str: The sanitized string safe for logging.
     """
     if not isinstance(user_input, str):
         return "<non-string>"
-    
-    # Remove control characters and non-printable characters
-    import re
+
     # Allow alphanumeric, dash, underscore, and dot (common in encoding names)
-    sanitized = re.sub(r'[^\w\-\.]', '', user_input)
-    
+    sanitized = re.sub(r"[^\w\-\.]", "", user_input)
+
     # Limit length to prevent log flooding
     if len(sanitized) > max_length:
         sanitized = sanitized[:max_length] + "..."
-    
+
     # Return placeholder if nothing remains after sanitization
     return sanitized if sanitized else "<invalid>"
 
@@ -159,7 +155,7 @@ def sanitize_user_input(user_input: str, max_length: int = 50) -> str:
 def log(level: str, message: str, *args) -> None:
     """
     Universal logging helper that gets a fresh logger instance.
-    
+
     Args:
         level: Log level ('debug', 'info', 'warning', 'error')
         message: Log message with optional format placeholders

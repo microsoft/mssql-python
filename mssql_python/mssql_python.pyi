@@ -23,7 +23,7 @@ class STRING:
 
 class BINARY:
     """
-    This type object is used to describe (long) 
+    This type object is used to describe (long)
     binary columns in a database (e.g. LONG, RAW, BLOBs).
     """
 
@@ -54,7 +54,13 @@ class ROWID:
 def Date(year: int, month: int, day: int) -> datetime.date: ...
 def Time(hour: int, minute: int, second: int) -> datetime.time: ...
 def Timestamp(
-    year: int, month: int, day: int, hour: int, minute: int, second: int, microsecond: int
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int,
+    second: int,
+    microsecond: int,
 ) -> datetime.datetime: ...
 def DateFromTicks(ticks: int) -> datetime.date: ...
 def TimeFromTicks(ticks: int) -> datetime.time: ...

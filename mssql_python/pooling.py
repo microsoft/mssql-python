@@ -1,19 +1,33 @@
-# mssql_python/pooling.py
+"""
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+This module provides a connection pooling manager for efficient database connections.
+"""
 import atexit
-from mssql_python import ddbc_bindings
 import threading
+from mssql_python import ddbc_bindings
 
 class PoolingManager:
+    """
+    Manages connection pooling for the application.
+
+    This class provides methods to enable, disable, and
+    check the status of connection pooling.
+    """
     _enabled = False
-    _initialized = False 
+    _initialized = False
     _lock = threading.Lock()
-    _config = {
-        "max_size": 100,
-        "idle_timeout": 600
-    }
+    _config = {"max_size": 100, "idle_timeout": 600}
 
     @classmethod
     def enable(cls, max_size=100, idle_timeout=600):
+        """
+        Enable connection pooling with the specified parameters.
+
+        Args:
+            max_size (int): The maximum number of connections in the pool.
+            idle_timeout (int): The idle timeout for connections in the pool (in seconds).
+        """
         with cls._lock:
             if cls._enabled:
                 return
@@ -29,19 +43,32 @@ class PoolingManager:
 
     @classmethod
     def disable(cls):
+        """
+        Disable connection pooling.
+        """
         with cls._lock:
             cls._enabled = False
             cls._initialized = True
 
     @classmethod
     def is_enabled(cls):
+        """
+        Check if connection pooling is enabled.
+        """
         return cls._enabled
 
     @classmethod
     def is_initialized(cls):
+        """
+        Check if connection pooling is initialized.
+        """
         return cls._initialized
-    
+
+
 @atexit.register
 def shutdown_pooling():
+    """
+    Shutdown the connection pooling manager.
+    """
     if PoolingManager.is_enabled():
         ddbc_bindings.close_pooling()
