@@ -4874,7 +4874,7 @@ def test_tables_with_type_filter(cursor, db_connection):
         # Get only tables
         tables_list = cursor.tables(
             schema='pytest_tables_schema',
-            tableType='TABLE'
+            table_type='TABLE'
         )
         
         # Verify only regular tables
@@ -4895,7 +4895,7 @@ def test_tables_with_type_filter(cursor, db_connection):
         # Get only views
         views_list = cursor.tables(
             schema='pytest_tables_schema',
-            tableType='VIEW'
+            table_type='VIEW'
         )
         
         # Verify only views
@@ -4918,7 +4918,7 @@ def test_tables_with_multiple_types(cursor, db_connection):
         # Get both tables and views
         tables_list = cursor.tables(
             schema='pytest_tables_schema',
-            tableType=['TABLE', 'VIEW']
+            table_type=['TABLE', 'VIEW']
         )
         
         # Verify both tables and views
@@ -5002,7 +5002,7 @@ def test_tables_combined_filters(cursor, db_connection):
         tables_list = cursor.tables(
             schema='pytest_tables_schema',
             table='%table',
-            tableType='TABLE'
+            table_type='TABLE'
         )
         
         # Should find both tables but not view
