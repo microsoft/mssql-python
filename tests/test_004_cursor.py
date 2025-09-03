@@ -5861,6 +5861,119 @@ def test_empty_string_chunk(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS #pytest_empty_string")
         db_connection.commit()
 
+
+def test_varcharmax_short(cursor, db_connection):
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+
+        short_str = "hello"
+        cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [short_str])
+        db_connection.commit()
+        cursor.execute("SELECT col FROM #pytest_varcharmax WHERE col = ?", [short_str])
+        assert cursor.fetchone()[0] == short_str
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        db_connection.commit()
+
+
+def test_varcharmax_boundary(cursor, db_connection):
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+
+        boundary_str = "X" * 8000
+        cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [boundary_str])
+        db_connection.commit()
+        cursor.execute("SELECT col FROM #pytest_varcharmax WHERE col = ?", [boundary_str])
+        assert cursor.fetchone()[0] == boundary_str
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        db_connection.commit()
+
+
+def test_varcharmax_streaming(cursor, db_connection):
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+
+        streaming_str = "Y" * 8100
+        cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [streaming_str])
+        db_connection.commit()
+        cursor.execute("SELECT col FROM #pytest_varcharmax WHERE col = ?", [streaming_str])
+        assert cursor.fetchone()[0] == streaming_str
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        db_connection.commit()
+
+
+def test_varcharmax_large(cursor, db_connection):
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+
+        large_str = "Z" * 100_000
+        cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [large_str])
+        db_connection.commit()
+        cursor.execute("SELECT col FROM #pytest_varcharmax WHERE col = ?", [large_str])
+        assert cursor.fetchone()[0] == large_str
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        db_connection.commit()
+
+
+def test_varcharmax_empty_string(cursor, db_connection):
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [""])
+        db_connection.commit()
+        cursor.execute("SELECT col FROM #pytest_varcharmax WHERE col = ?", [""])
+        assert cursor.fetchone()[0] == ""
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        db_connection.commit()
+
+
+def test_varcharmax_null(cursor, db_connection):
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [None])
+        db_connection.commit()
+        cursor.execute("SELECT col FROM #pytest_varcharmax WHERE col IS NULL")
+        assert cursor.fetchone()[0] is None
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        db_connection.commit()
+
+
+def test_varcharmax_transaction_rollback(cursor, db_connection):
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+
+        db_connection.autocommit = False
+        rollback_str = "ROLLBACK" * 2000
+        cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [rollback_str])
+        db_connection.rollback()
+        cursor.execute("SELECT COUNT(*) FROM #pytest_varcharmax WHERE col = ?", [rollback_str])
+        assert cursor.fetchone()[0] == 0
+    finally:
+        db_connection.autocommit = True  # reset state
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        db_connection.commit()
+
+
 def test_empty_char_single_and_batch_fetch(cursor, db_connection):
     """Test that empty CHAR data is handled correctly in both single and batch fetch"""
     try:

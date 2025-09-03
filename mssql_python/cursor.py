@@ -348,16 +348,16 @@ class Cursor:
             if utf16_len > MAX_INLINE_CHAR:  # Long strings -> DAE
                 if is_unicode:
                     return (
-                        ddbc_sql_const.SQL_WLONGVARCHAR.value,
+                        ddbc_sql_const.SQL_WVARCHAR.value,
                         ddbc_sql_const.SQL_C_WCHAR.value,
-                        utf16_len,
+                        0,
                         0,
                         True,
                     )
                 return (
-                    ddbc_sql_const.SQL_LONGVARCHAR.value,
+                    ddbc_sql_const.SQL_VARCHAR.value,
                     ddbc_sql_const.SQL_C_CHAR.value,
-                    len(param),
+                    0,
                     0,
                     True,
                 )
@@ -753,20 +753,20 @@ class Cursor:
 # Executing a new statement. Reset is_stmt_prepared to false
             self.is_stmt_prepared = [False]
 
-        log('debug', "Executing query: %s", operation)
-        for i, param in enumerate(parameters):
-            log('debug',
-                """Parameter number: %s, Parameter: %s,
-                Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
-                i + 1,
-                param,
-                str(type(param)),
-                    parameters_type[i].paramSQLType,
-                    parameters_type[i].paramCType,
-                    parameters_type[i].columnSize,
-                    parameters_type[i].decimalDigits,
-                    parameters_type[i].inputOutputType,
-                )
+        # log('debug', "Executing query: %s", operation)
+        # for i, param in enumerate(parameters):
+        #     log('debug',
+        #         """Parameter number: %s, Parameter: %s,
+        #         Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
+        #         i + 1,
+        #         param,
+        #         str(type(param)),
+        #             parameters_type[i].paramSQLType,
+        #             parameters_type[i].paramCType,
+        #             parameters_type[i].columnSize,
+        #             parameters_type[i].decimalDigits,
+        #             parameters_type[i].inputOutputType,
+        #         )
 
         ret = ddbc_bindings.DDBCSQLExecute(
             self.hstmt,
