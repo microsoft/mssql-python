@@ -1767,7 +1767,7 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
             if (!isWideChar && chunk[copyCount - 1] == '\0') {
                 --copyCount;
                 LOG("Loop {}: Trimmed null terminator (narrow)", loopCount);
-            } else if (isWideChar) {
+            } else if (copyCount >= sizeof(wchar_t)) {
                 auto wcharBuf = reinterpret_cast<const wchar_t*>(chunk.data());
                 if (wcharBuf[(copyCount / sizeof(wchar_t)) - 1] == L'\0') {
                     copyCount -= sizeof(wchar_t);
@@ -1785,7 +1785,7 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
         }
     }
     LOG("FetchLobColumnData: Total bytes collected = {}", buffer.size());
-    
+
     if (indicator == 0 || buffer.empty()) {
         LOG("FetchLobColumnData: Returning empty string for col {}", colIndex);
         return py::str("");
