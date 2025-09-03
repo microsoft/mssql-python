@@ -1862,10 +1862,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR: {
+                // Use streaming for large VARCHAR / CHAR
                 if (columnSize == SQL_NO_TOTAL || columnSize == 0 || columnSize > 8000) {
                     LOG("Streaming LOB for column {}", i);
                     row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false));
                 } else {
+                    // Small VARCHAR, fetch directly
                     uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
                     std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
                     SQLLEN dataLen;
@@ -1878,16 +1880,13 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             if (numCharsInData < dataBuffer.size()) {
                                 // SQLGetData will null-terminate the data
     #if defined(__APPLE__) || defined(__linux__)
-                                std::string fullStr(reinterpret_cast<char*>(dataBuffer.data()));
+                                std::string fullStr(reinterpret_cast<char*>(dataBuffer.data()), dataLen);
                                 row.append(fullStr);
                                 LOG("macOS/Linux: Appended CHAR string of length {} to result row", fullStr.length());
     #else
                                 row.append(std::string(reinterpret_cast<char*>(dataBuffer.data())));
     #endif
                             }
-                        } else if (dataLen == SQL_NULL_DATA) {
-                            LOG("Column {} is NULL (CHAR)", i);
-                            row.append(py::none());
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
                         } else if (dataLen == SQL_NO_TOTAL) {
@@ -1911,62 +1910,42 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_WCHAR:
             case SQL_WVARCHAR:
-			case SQL_WLONGVARCHAR: {
-                // TODO: revisit
-                HandleZeroColumnSizeAtFetch(columnSize);
-		        uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
-                std::vector<SQLWCHAR> dataBuffer(fetchBufferSize);
-                SQLLEN dataLen;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(),
-                                     dataBuffer.size() * sizeof(SQLWCHAR), &dataLen);
-
-                if (SQL_SUCCEEDED(ret)) {
-                    // TODO: Refactor these if's across other switches to avoid code duplication
-                    if (dataLen > 0) {
-                        uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
-						if (numCharsInData < dataBuffer.size()) {
-                            // SQLGetData will null-terminate the data
-#if defined(__APPLE__) || defined(__linux__)
-                            auto raw_bytes = reinterpret_cast<const char*>(dataBuffer.data());
-                            size_t actualBufferSize = dataBuffer.size() * sizeof(SQLWCHAR);
-                            if (dataLen < 0 || static_cast<size_t>(dataLen) > actualBufferSize) {
-                                LOG("Error: py::bytes creation request exceeds buffer size. dataLen={} buffer={}",
-                                    dataLen, actualBufferSize);
-                                ThrowStdException("Invalid buffer length for py::bytes");
+            case SQL_WLONGVARCHAR: {
+                // Use streaming for large NVARCHAR / NCHAR
+                if (columnSize == SQL_NO_TOTAL || columnSize == 0 || columnSize > 4000) {
+                    LOG("Streaming LOB for column {} (NVARCHAR)", i);
+                    row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false));
+                } else {
+                    // Small NVARCHAR, fetch directly
+                    uint64_t fetchBufferSize = (columnSize + 1) * sizeof(SQLWCHAR);  // +1 for null terminator
+                    std::vector<SQLWCHAR> dataBuffer(columnSize + 1);
+                    SQLLEN dataLen;
+                    ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(), fetchBufferSize, &dataLen);
+                    if (SQL_SUCCEEDED(ret)) {
+                        if (dataLen > 0) {
+                            uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
+                            if (numCharsInData < dataBuffer.size()) {
+            #if defined(__APPLE__) || defined(__linux__)
+                                std::wstring wstr(reinterpret_cast<wchar_t*>(dataBuffer.data()), numCharsInData);
+                                row.append(py::cast(wstr));
+            #else
+                                std::wstring wstr(reinterpret_cast<wchar_t*>(dataBuffer.data()));
+                                row.append(py::cast(wstr));
+            #endif
+                                LOG("Appended NVARCHAR string of length {} to result row", numCharsInData);
                             }
-                            py::bytes py_bytes(raw_bytes, dataLen);
-                            py::str decoded = py_bytes.attr("decode")("utf-16-le");
-                            row.append(decoded);
-#else
-                            row.append(std::wstring(dataBuffer.data()));
-#endif
-						} else {
-                            // In this case, buffer size is smaller, and data to be retrieved is longer
-                            // TODO: Revisit
-                            std::ostringstream oss;
-                            oss << "Buffer length for fetch (" << dataBuffer.size()-1 << ") is smaller, & data "
-                                << "to be retrieved is longer (" << numCharsInData << "). ColumnID - "
-                                << i << ", datatype - " << dataType;
-                            ThrowStdException(oss.str());
+                        } else if (dataLen == 0) {
+                            row.append(py::str(""));
+                        } else {
+                            assert(dataLen == SQL_NO_TOTAL);
+                            LOG("SQLGetData couldn't determine the length of the NVARCHAR data. Returning NULL. Column ID - {}", i);
+                            row.append(py::none());
                         }
-				    } else if (dataLen == SQL_NULL_DATA) {
-					    row.append(py::none());
-                    } else if (dataLen == 0) {
-                        // Handle zero-length (non-NULL) data
-                        row.append(py::str(""));
-                    } else if (dataLen < 0) {
-                        // This is unexpected
-                        LOG("SQLGetData returned an unexpected negative data length. "
-                            "Raising exception. Column ID - {}, Data Type - {}, Data Length - {}",
-                            i, dataType, dataLen);
-                        ThrowStdException("SQLGetData returned an unexpected negative data length");
+                    } else {
+                        LOG("Error retrieving data for column {} (NVARCHAR), SQLGetData return code {}", i, ret);
+                        row.append(py::none());
                     }
-				} else {
-					LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
-						"code - {}. Returning NULL value instead",
-						i, dataType, ret);
-					row.append(py::none());
-				}
+                }
                 break;
             }
             case SQL_INTEGER: {

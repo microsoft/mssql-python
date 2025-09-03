@@ -5988,6 +5988,118 @@ def test_varcharmax_transaction_rollback(cursor, db_connection):
         db_connection.commit()
 
 
+def test_nvarcharmax_short(cursor, db_connection):
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+
+        short_str = "hello"
+        cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [short_str])
+        db_connection.commit()
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax WHERE col = ?", [short_str])
+        assert cursor.fetchone()[0] == short_str
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        db_connection.commit()
+
+
+def test_nvarcharmax_boundary(cursor, db_connection):
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+
+        boundary_str = "X" * 4000  # NVARCHAR inline limit
+        cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [boundary_str])
+        db_connection.commit()
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax WHERE col = ?", [boundary_str])
+        assert cursor.fetchone()[0] == boundary_str
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        db_connection.commit()
+
+
+def test_nvarcharmax_streaming(cursor, db_connection):
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+
+        streaming_str = "Y" * 4100  # Exceeds inline threshold → triggers streaming
+        cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [streaming_str])
+        db_connection.commit()
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax WHERE col = ?", [streaming_str])
+        assert cursor.fetchone()[0] == streaming_str
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        db_connection.commit()
+
+
+def test_nvarcharmax_large(cursor, db_connection):
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+
+        large_str = "Z" * 100_000
+        cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [large_str])
+        db_connection.commit()
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax WHERE col = ?", [large_str])
+        assert cursor.fetchone()[0] == large_str
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        db_connection.commit()
+
+
+def test_nvarcharmax_empty_string(cursor, db_connection):
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [""])
+        db_connection.commit()
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax WHERE col = ?", [""])
+        assert cursor.fetchone()[0] == ""
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        db_connection.commit()
+
+
+def test_nvarcharmax_null(cursor, db_connection):
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [None])
+        db_connection.commit()
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax WHERE col IS NULL")
+        assert cursor.fetchone()[0] is None
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        db_connection.commit()
+
+
+def test_nvarcharmax_transaction_rollback(cursor, db_connection):
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+
+        db_connection.autocommit = False
+        rollback_str = "ROLLBACK" * 2000
+        cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [rollback_str])
+        db_connection.rollback()
+        cursor.execute("SELECT COUNT(*) FROM #pytest_nvarcharmax WHERE col = ?", [rollback_str])
+        assert cursor.fetchone()[0] == 0
+    finally:
+        db_connection.autocommit = True
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        db_connection.commit()
+
+
 def test_empty_char_single_and_batch_fetch(cursor, db_connection):
     """Test that empty CHAR data is handled correctly in both single and batch fetch"""
     try:
