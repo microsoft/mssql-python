@@ -674,7 +674,6 @@ def test_longvarbinary(cursor, db_connection):
         for i in range(0, expectedRows):
             rows.append(cursor.fetchone())
         assert cursor.fetchone() == None, "longvarbinary_column is expected to have only {} rows".format(expectedRows)
-        # Both should return as bytes (database doesn't preserve Python type distinction)
         assert rows[0] == [bytearray("ABCDEFGHI", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchone - row 0"
         assert rows[1] == [bytes("123!@#\0\0\0", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchone - row 1"
         # fetchall test
