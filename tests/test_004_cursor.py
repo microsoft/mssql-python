@@ -934,14 +934,11 @@ def test_executemany_empty_strings(cursor, db_connection):
         for i, (actual, expected_row) in enumerate(zip(results, expected)):
             assert actual[0] == expected_row[0], f"Row {i}: ID mismatch - expected {expected_row[0]}, got {actual[0]}"
             assert actual[1] == expected_row[1], f"Row {i}: Data mismatch - expected '{expected_row[1]}', got '{actual[1]}'"
-        
+    except Exception as e:
+        pytest.fail(f"Executemany with empty strings failed: {e}")
     finally:
-        # Cleanup
-        try:
-            cursor.execute("DROP TABLE IF EXISTS #pytest_empty_batch")
-            db_connection.commit()
-        except:
-            pass
+        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_batch")
+        db_connection.commit()
 
 def test_executemany_empty_strings_various_types(cursor, db_connection):
     """Test executemany with empty strings in different column types"""
@@ -986,14 +983,11 @@ def test_executemany_empty_strings_various_types(cursor, db_connection):
         for i, (actual, expected_row) in enumerate(zip(results, test_data)):
             for j, (actual_val, expected_val) in enumerate(zip(actual, expected_row)):
                 assert actual_val == expected_val, f"Row {i}, Col {j}: expected '{expected_val}', got '{actual_val}'"
-        
+    except Exception as e:
+        pytest.fail(f"Executemany with empty strings in various types failed: {e}")
     finally:
-        # Cleanup
-        try:
-            cursor.execute("DROP TABLE IF EXISTS #pytest_string_types")
-            db_connection.commit()
-        except:
-            pass
+        cursor.execute("DROP TABLE IF EXISTS #pytest_string_types")
+        db_connection.commit()
 
 def test_executemany_unicode_and_empty_strings(cursor, db_connection):
     """Test executemany with mix of Unicode characters and empty strings"""
@@ -1036,14 +1030,11 @@ def test_executemany_unicode_and_empty_strings(cursor, db_connection):
         for i, (actual, expected_row) in enumerate(zip(results, test_data)):
             assert actual[0] == expected_row[0], f"Row {i}: ID mismatch"
             assert actual[1] == expected_row[1], f"Row {i}: Data mismatch - expected '{expected_row[1]}', got '{actual[1]}'"
-        
+    except Exception as e:
+        pytest.fail(f"Executemany with Unicode and empty strings failed: {e}")
     finally:
-        # Cleanup
-        try:
-            cursor.execute("DROP TABLE IF EXISTS #pytest_unicode_test")
-            db_connection.commit()
-        except:
-            pass
+        cursor.execute("DROP TABLE IF EXISTS #pytest_unicode_test")
+        db_connection.commit()
 
 def test_executemany_large_batch_with_empty_strings(cursor, db_connection):
     """Test executemany with large batch containing empty strings"""
@@ -1092,14 +1083,11 @@ def test_executemany_large_batch_with_empty_strings(cursor, db_connection):
         for actual, expected in zip(results, expected_subset):
             assert actual[0] == expected[0], f"ID mismatch: expected {expected[0]}, got {actual[0]}"
             assert actual[1] == expected[1], f"Data mismatch for ID {actual[0]}: expected '{expected[1]}', got '{actual[1]}'"
-        
+    except Exception as e:
+        pytest.fail(f"Executemany with large batch and empty strings failed: {e}")
     finally:
-        # Cleanup
-        try:
-            cursor.execute("DROP TABLE IF EXISTS #pytest_large_batch")
-            db_connection.commit()
-        except:
-            pass
+        cursor.execute("DROP TABLE IF EXISTS #pytest_large_batch")
+        db_connection.commit()
 
 def test_executemany_compare_with_execute(cursor, db_connection):
     """Test that executemany produces same results as individual execute calls"""
@@ -1146,14 +1134,11 @@ def test_executemany_compare_with_execute(cursor, db_connection):
         for i, (exec_row, batch_row) in enumerate(zip(execute_results, executemany_results)):
             assert exec_row[0] == batch_row[0], f"Row {i}: ID mismatch between execute and executemany"
             assert exec_row[1] == batch_row[1], f"Row {i}: Data mismatch between execute and executemany - execute: '{exec_row[1]}', executemany: '{batch_row[1]}'"
-        
+    except Exception as e:
+        pytest.fail(f"Executemany vs execute comparison failed: {e}")
     finally:
-        # Cleanup
-        try:
-            cursor.execute("DROP TABLE IF EXISTS #pytest_compare_test")
-            db_connection.commit()
-        except:
-            pass
+        cursor.execute("DROP TABLE IF EXISTS #pytest_compare_test")
+        db_connection.commit()
 
 def test_executemany_edge_cases_empty_strings(cursor, db_connection):
     """Test executemany edge cases with empty strings and special characters"""
@@ -1207,14 +1192,11 @@ def test_executemany_edge_cases_empty_strings(cursor, db_connection):
             assert actual[0] == expected_row[0], f"Row {i}: ID mismatch"
             assert actual[1] == expected_row[1], f"Row {i}: VARCHAR mismatch - expected '{repr(expected_row[1])}', got '{repr(actual[1])}'"
             assert actual[2] == expected_row[2], f"Row {i}: NVARCHAR mismatch - expected '{repr(expected_row[2])}', got '{repr(actual[2])}'"
-        
+    except Exception as e:
+        pytest.fail(f"Executemany edge cases with empty strings failed: {e}")
     finally:
-        # Cleanup
-        try:
-            cursor.execute("DROP TABLE IF EXISTS #pytest_edge_cases")
-            db_connection.commit()
-        except:
-            pass
+        cursor.execute("DROP TABLE IF EXISTS #pytest_edge_cases")
+        db_connection.commit()
 
 def test_executemany_null_vs_empty_string(cursor, db_connection):
     """Test that executemany correctly distinguishes between NULL and empty string"""
@@ -1277,14 +1259,11 @@ def test_executemany_null_vs_empty_string(cursor, db_connection):
         cursor.execute("SELECT COUNT(*) FROM #pytest_null_vs_empty WHERE data = ''")
         empty_count = cursor.fetchone()[0]
         assert empty_count == 2, f"Expected 2 empty strings, got {empty_count}"
-        
+    except Exception as e:
+        pytest.fail(f"Executemany NULL vs empty string test failed: {e}") 
     finally:
-        # Cleanup
-        try:
-            cursor.execute("DROP TABLE IF EXISTS #pytest_null_vs_empty")
-            db_connection.commit()
-        except:
-            pass
+        cursor.execute("DROP TABLE IF EXISTS #pytest_null_vs_empty")
+        db_connection.commit()
 
 def test_nextset(cursor):
     """Test nextset"""
