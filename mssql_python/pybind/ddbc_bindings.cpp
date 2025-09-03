@@ -1862,10 +1862,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR: {
+                // Use streaming for large VARCHAR / CHAR
                 if (columnSize == SQL_NO_TOTAL || columnSize == 0 || columnSize > 8000) {
                     LOG("Streaming LOB for column {}", i);
                     row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false));
                 } else {
+                    // Small VARCHAR, fetch directly
                     uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
                     std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
                     SQLLEN dataLen;
@@ -1878,7 +1880,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             if (numCharsInData < dataBuffer.size()) {
                                 // SQLGetData will null-terminate the data
     #if defined(__APPLE__) || defined(__linux__)
-                                std::string fullStr(reinterpret_cast<char*>(dataBuffer.data()));
+                                std::string fullStr(reinterpret_cast<char*>(dataBuffer.data()), dataLen);
                                 row.append(fullStr);
                                 LOG("macOS/Linux: Appended CHAR string of length {} to result row", fullStr.length());
     #else
@@ -1889,9 +1891,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 LOG("CHAR column {} data truncated, using streaming LOB", i);
                                 row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false));
                             }
-                        } else if (dataLen == SQL_NULL_DATA) {
-                            LOG("Column {} is NULL (CHAR)", i);
-                            row.append(py::none());
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
                         } else if (dataLen == SQL_NO_TOTAL) {
