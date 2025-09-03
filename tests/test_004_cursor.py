@@ -5987,7 +5987,6 @@ def test_varcharmax_transaction_rollback(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
         db_connection.commit()
 
-
 def test_nvarcharmax_short(cursor, db_connection):
     """Test inserting and retrieving a small string well below any size thresholds."""
     try:
