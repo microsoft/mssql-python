@@ -97,7 +97,6 @@ class ConstantsDDBC(Enum):
     SQL_ATTR_ROW_ARRAY_SIZE = 27
     SQL_ATTR_ROWS_FETCHED_PTR = 26
     SQL_ATTR_ROW_STATUS_PTR = 25
-    SQL_FETCH_NEXT = 1
     SQL_ROW_SUCCESS = 0
     SQL_ROW_SUCCESS_WITH_INFO = 1
     SQL_ROW_NOROW = 100
@@ -116,6 +115,14 @@ class ConstantsDDBC(Enum):
     SQL_C_WCHAR = -8
     SQL_NULLABLE = 1
     SQL_MAX_NUMERIC_LEN = 16
+
+    SQL_FETCH_NEXT = 1
+    SQL_FETCH_FIRST = 2
+    SQL_FETCH_LAST = 3
+    SQL_FETCH_PRIOR = 4
+    SQL_FETCH_ABSOLUTE = 5
+    SQL_FETCH_RELATIVE = 6
+    SQL_FETCH_BOOKMARK = 8
 
 class AuthType(Enum):
     """Constants for authentication types"""
