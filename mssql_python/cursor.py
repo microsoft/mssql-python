@@ -380,16 +380,8 @@ class Cursor:
             )
         
         if isinstance(param, bytes):
-            if len(param) > 8000:  # Assuming VARBINARY(MAX) for long byte arrays
-                return (
-                    ddbc_sql_const.SQL_VARBINARY.value,
-                    ddbc_sql_const.SQL_C_BINARY.value,
-                    len(param),
-                    0,
-                    False,
-                )
             return (
-                ddbc_sql_const.SQL_BINARY.value,
+                ddbc_sql_const.SQL_VARBINARY.value,
                 ddbc_sql_const.SQL_C_BINARY.value,
                 len(param),
                 0,
@@ -397,16 +389,8 @@ class Cursor:
             )
 
         if isinstance(param, bytearray):
-            if len(param) > 8000:  # Assuming VARBINARY(MAX) for long byte arrays
-                return (
-                    ddbc_sql_const.SQL_VARBINARY.value,
-                    ddbc_sql_const.SQL_C_BINARY.value,
-                    len(param),
-                    0,
-                    True,
-                )
             return (
-                ddbc_sql_const.SQL_BINARY.value,
+                ddbc_sql_const.SQL_VARBINARY.value,
                 ddbc_sql_const.SQL_C_BINARY.value,
                 len(param),
                 0,

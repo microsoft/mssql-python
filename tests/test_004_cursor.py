@@ -667,7 +667,7 @@ def test_longvarbinary(cursor, db_connection):
         db_connection.commit()
         cursor.execute("INSERT INTO #pytest_longvarbinary_test (longvarbinary_column) VALUES (?), (?)", [bytearray("ABCDEFGHI", 'utf-8'), bytes("123!@#", 'utf-8')])
         db_connection.commit()
-        expectedRows = 3
+        expectedRows = 2  # Only 2 rows are inserted
         # fetchone test
         cursor.execute("SELECT longvarbinary_column FROM #pytest_longvarbinary_test")
         rows = []
@@ -675,12 +675,12 @@ def test_longvarbinary(cursor, db_connection):
             rows.append(cursor.fetchone())
         assert cursor.fetchone() == None, "longvarbinary_column is expected to have only {} rows".format(expectedRows)
         assert rows[0] == [bytearray("ABCDEFGHI", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchone - row 0"
-        assert rows[1] == [bytes("123!@#\0\0\0", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchone - row 1"
+        assert rows[1] == [bytes("123!@#", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchone - row 1"
         # fetchall test
         cursor.execute("SELECT longvarbinary_column FROM #pytest_longvarbinary_test")
         rows = cursor.fetchall()
         assert rows[0] == [bytearray("ABCDEFGHI", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchall - row 0"
-        assert rows[1] == [bytes("123!@#\0\0\0", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchall - row 1"
+        assert rows[1] == [bytes("123!@#", 'utf-8')], "SQL_LONGVARBINARY parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_LONGVARBINARY parsing test failed: {e}")
     finally:
@@ -1264,6 +1264,56 @@ def test_executemany_null_vs_empty_string(cursor, db_connection):
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_null_vs_empty")
         db_connection.commit()
+
+def test_executemany_binary_data_edge_cases(cursor, db_connection):
+    """Test executemany with binary data and empty byte arrays"""
+    try:
+        # Create test table
+        cursor.execute("""
+            CREATE TABLE #pytest_binary_test (
+                id INT,
+                binary_data VARBINARY(100)
+            )
+        """)
+        
+        # Clear any existing data
+        cursor.execute("DELETE FROM #pytest_binary_test")
+        db_connection.commit()
+        
+        # Test data with binary data and empty bytes
+        test_data = [
+            (1, b''),              # Empty bytes
+            (2, b'hello'),         # Regular bytes
+            (3, b''),              # Empty bytes again
+            (4, b'\x00\x01\x02'),  # Binary data with null bytes
+            (5, b''),              # Empty bytes
+            (6, None),             # NULL
+        ]
+        
+        # Execute the batch insert
+        cursor.executemany("INSERT INTO #pytest_binary_test VALUES (?, ?)", test_data)
+        db_connection.commit()
+        
+        # Verify the data was inserted correctly
+        cursor.execute("SELECT id, binary_data FROM #pytest_binary_test ORDER BY id")
+        results = cursor.fetchall()
+        
+        # Check that we got the right number of rows
+        assert len(results) == 6, f"Expected 6 rows, got {len(results)}"
+        
+        # Check each row
+        for i, (actual, expected_row) in enumerate(zip(results, test_data)):
+            assert actual[0] == expected_row[0], f"Row {i}: ID mismatch"
+            if expected_row[1] is None:
+                assert actual[1] is None, f"Row {i}: Expected NULL, got {actual[1]}"
+            else:
+                assert actual[1] == expected_row[1], f"Row {i}: Binary data mismatch  expected {expected_row[1]}, got {actual[1]}"
+    except Exception as e:
+        pytest.fail(f"Executemany with binary data edge cases failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_binary_test")
+        db_connection.commit()
+
 
 def test_nextset(cursor):
     """Test nextset"""
