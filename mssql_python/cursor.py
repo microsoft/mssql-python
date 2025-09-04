@@ -380,6 +380,8 @@ class Cursor:
             )
         
         if isinstance(param, bytes):
+            # Use VARBINARY for Python bytes/bytearray since they are variable-length by nature.
+            # This avoids storage waste from BINARY's zero-padding and matches Python's semantics.
             return (
                 ddbc_sql_const.SQL_VARBINARY.value,
                 ddbc_sql_const.SQL_C_BINARY.value,
@@ -389,6 +391,8 @@ class Cursor:
             )
 
         if isinstance(param, bytearray):
+            # Use VARBINARY for Python bytes/bytearray since they are variable-length by nature.
+            # This avoids storage waste from BINARY's zero-padding and matches Python's semantics.
             return (
                 ddbc_sql_const.SQL_VARBINARY.value,
                 ddbc_sql_const.SQL_C_BINARY.value,
