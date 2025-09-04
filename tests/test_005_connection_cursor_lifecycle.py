@@ -287,7 +287,7 @@ def test_cursor_close_raises_on_double_close(conn_str):
     from mssql_python.exceptions import ProgrammingError
     with pytest.raises(ProgrammingError) as excinfo:
         cursor.close()
-    assert "Cursor is already closed" in str(excinfo.value)
+    assert "Operation cannot be performed: The cursor is closed." in str(excinfo.value)
     
     # Third close should also raise
     with pytest.raises(ProgrammingError):
@@ -351,7 +351,7 @@ def test_cursor_del_on_closed_cursor_no_errors(conn_str, caplog):
     # Check that no error logs were produced
     for record in caplog.records:
         assert "Exception during cursor cleanup" not in record.message
-        assert "Cursor is already closed" not in record.message
+        assert "Operation cannot be performed: The cursor is closed." not in record.message
     
     conn.close()
 
@@ -407,19 +407,19 @@ def test_cursor_operations_after_close_raise_errors(conn_str):
     # All operations should raise exceptions
     with pytest.raises(Exception) as excinfo:
         cursor.execute("SELECT 2")
-    assert "Cursor is already closed." in str(excinfo.value)
+    assert "Operation cannot be performed: The cursor is closed." in str(excinfo.value)
     
     with pytest.raises(Exception) as excinfo:
         cursor.fetchone()
-    assert "Cursor is already closed." in str(excinfo.value)
+    assert "Operation cannot be performed: The cursor is closed." in str(excinfo.value)
 
     with pytest.raises(Exception) as excinfo:
         cursor.fetchmany(5)
-    assert "Cursor is already closed." in str(excinfo.value)
+    assert "Operation cannot be performed: The cursor is closed." in str(excinfo.value)
 
     with pytest.raises(Exception) as excinfo:
         cursor.fetchall()
-    assert "Cursor is already closed." in str(excinfo.value)
+    assert "Operation cannot be performed: The cursor is closed." in str(excinfo.value)
 
     conn.close()
 

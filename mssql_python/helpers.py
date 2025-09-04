@@ -128,6 +128,34 @@ def sanitize_connection_string(conn_str: str) -> str:
     return re.sub(r"(Pwd\s*=\s*)[^;]*", r"\1***", conn_str, flags=re.IGNORECASE)
 
 
+def sanitize_user_input(user_input: str, max_length: int = 50) -> str:
+    """
+    Sanitize user input for safe logging by removing control characters,
+    limiting length, and ensuring safe characters only.
+    
+    Args:
+        user_input (str): The user input to sanitize.
+        max_length (int): Maximum length of the sanitized output.
+    
+    Returns:
+        str: The sanitized string safe for logging.
+    """
+    if not isinstance(user_input, str):
+        return "<non-string>"
+    
+    # Remove control characters and non-printable characters
+    import re
+    # Allow alphanumeric, dash, underscore, and dot (common in encoding names)
+    sanitized = re.sub(r'[^\w\-\.]', '', user_input)
+    
+    # Limit length to prevent log flooding
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length] + "..."
+    
+    # Return placeholder if nothing remains after sanitization
+    return sanitized if sanitized else "<invalid>"
+
+
 def log(level: str, message: str, *args) -> None:
     """
     Universal logging helper that gets a fresh logger instance.

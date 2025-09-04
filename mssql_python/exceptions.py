@@ -17,9 +17,12 @@ class Exception(Exception):
     def __init__(self, driver_error, ddbc_error) -> None:
         self.driver_error = driver_error
         self.ddbc_error = truncate_error_message(ddbc_error)
-        self.message = (
-            f"Driver Error: {self.driver_error}; DDBC Error: {self.ddbc_error}"
-        )
+        if self.ddbc_error:
+            self.message = (
+                f"Driver Error: {self.driver_error}; DDBC Error: {self.ddbc_error}"
+            )
+        else:
+            self.message = f"Driver Error: {self.driver_error}"
         super().__init__(self.message)
 
 
