@@ -472,20 +472,15 @@ class Cursor:
     def close(self) -> None:
         """
         Close the connection now (rather than whenever .__del__() is called).
-        Idempotent: subsequent calls have no effect.
-
-        The idempotency here means that resources are freed only once - subsequent
-        calls won't double-free resources or cause corruption, but will raise a
-        predictable exception instead.
+        Idempotent: subsequent calls have no effect and will be no-ops.
 
         The cursor will be unusable from this point forward; an InterfaceError
-        will be raised if any operation is attempted with the cursor.
-        
-        Note:
-            Unlike the current behavior, this method can be called multiple times safely.
-            Subsequent calls to close() on an already closed cursor will have no effect.
+        will be raised if any operation (other than close) is attempted with the cursor.
+        This is a deviation from pyodbc, which raises an exception if the cursor is already closed.
         """
-        self._check_closed()  # Check if already closed
+        if self.closed:
+            # Do nothing - not calling _check_closed() here since we want this to be idempotent
+            return
 
         # Clear messages per DBAPI
         self.messages = []
