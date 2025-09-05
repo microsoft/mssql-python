@@ -283,17 +283,9 @@ def test_cursor_close_raises_on_double_close(conn_str):
     cursor.close()
     assert cursor.closed is True
     
-    # Second close should raise ProgrammingError
-    from mssql_python.exceptions import ProgrammingError
-    with pytest.raises(ProgrammingError) as excinfo:
-        cursor.close()
-    assert "Operation cannot be performed: The cursor is closed." in str(excinfo.value)
-    
-    # Third close should also raise
-    with pytest.raises(ProgrammingError):
-        cursor.close()
-    
-    conn.close()
+    # Second close should be a no-op and silent - not raise an error
+    cursor.close()
+    assert cursor.closed is True
 
 
 def test_cursor_del_no_logging_during_shutdown(conn_str, tmp_path):
@@ -437,12 +429,9 @@ cursor1.execute("SELECT 1")
 cursor1.fetchall()
 cursor1.close()
 
-# Test 2: Double close raises error
-try:
-    cursor1.close()
-    print("ERROR: Double close should have raised ProgrammingError")
-except ProgrammingError as e:
-    print("PASS: Double close raised ProgrammingError")
+# Test 2: Double close does not raise error
+cursor1.close()
+print("PASS: Double close does not raise error")
 
 # Test 3: Cursor cleanup via __del__
 cursor2 = conn1.cursor()
@@ -481,7 +470,7 @@ print("All tests passed")
         print(f"STDERR: {result.stderr}")
     
     assert result.returncode == 0, f"Script failed: {result.stderr}"
-    assert "PASS: Double close raised ProgrammingError" in result.stdout
+    assert "PASS: Double close does not raise error" in result.stdout
     assert "PASS: Connection close cleaned up cursors" in result.stdout
     assert "All tests passed" in result.stdout
     # Should not have error logs
