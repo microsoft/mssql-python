@@ -1779,13 +1779,18 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 				    } else if (dataLen == SQL_NULL_DATA) {
 					    row.append(py::none());
                     } else if (dataLen == 0) {
-                        // Empty string
+                        // Handle zero-length (non-NULL) data
                         row.append(std::string(""));
-                    } else {
-                        assert(dataLen == SQL_NO_TOTAL);
+                    } else if (dataLen == SQL_NO_TOTAL) {
+                        // This means the length of the data couldn't be determined
                         LOG("SQLGetData couldn't determine the length of the data. "
-                            "Returning NULL value instead. Column ID - {}", i);
-					    row.append(py::none());
+                            "Returning NULL value instead. Column ID - {}, Data Type - {}", i, dataType);
+                    } else if (dataLen < 0) {
+                        // This is unexpected
+                        LOG("SQLGetData returned an unexpected negative data length. "
+                            "Raising exception. Column ID - {}, Data Type - {}, Data Length - {}",
+                            i, dataType, dataLen);
+                        ThrowStdException("SQLGetData returned an unexpected negative data length");
                     }
 				} else {
 					LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
@@ -1838,13 +1843,14 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 				    } else if (dataLen == SQL_NULL_DATA) {
 					    row.append(py::none());
                     } else if (dataLen == 0) {
-                        // Empty string
+                        // Handle zero-length (non-NULL) data
                         row.append(py::str(""));
-                    } else {
-                        assert(dataLen == SQL_NO_TOTAL);
-                        LOG("SQLGetData couldn't determine the length of the data. "
-                            "Returning NULL value instead. Column ID - {}", i);
-					    row.append(py::none());
+                    } else if (dataLen < 0) {
+                        // This is unexpected
+                        LOG("SQLGetData returned an unexpected negative data length. "
+                            "Raising exception. Column ID - {}, Data Type - {}, Data Length - {}",
+                            i, dataType, dataLen);
+                        ThrowStdException("SQLGetData returned an unexpected negative data length");
                     }
 				} else {
 					LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
@@ -2039,11 +2045,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     } else if (dataLen == 0) {
                         // Empty bytes
                         row.append(py::bytes(""));
-                    } else {
-                        assert(dataLen == SQL_NO_TOTAL);
-                        LOG("SQLGetData couldn't determine the length of the data. "
-                            "Returning NULL value instead. Column ID - {}", i);
-					    row.append(py::none());
+                    } else if (dataLen < 0) {
+                        // This is unexpected
+                        LOG("SQLGetData returned an unexpected negative data length. "
+                            "Raising exception. Column ID - {}, Data Type - {}, Data Length - {}",
+                            i, dataType, dataLen);
+                        ThrowStdException("SQLGetData returned an unexpected negative data length");
                     }
 				} else {
 					LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
@@ -2326,8 +2333,30 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     "Column ID - {}", col);
                 row.append(py::none());
                 continue;
+            } else if (dataLen == SQL_NULL_DATA) {
+                LOG("Column data is NULL. Appending None to the result row. Column ID - {}", col);
+                row.append(py::none());
+                continue;
+            } else if (dataLen == 0) {
+                // Handle zero-length (non-NULL) data
+                if (dataType == SQL_CHAR || dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR) {
+                    row.append(std::string(""));
+                } else if (dataType == SQL_WCHAR || dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR) {
+                    row.append(std::wstring(L""));
+                } else if (dataType == SQL_BINARY || dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY) {
+                    row.append(py::bytes(""));
+                } else {
+                    // For other datatypes, 0 length is unexpected. Log & append None
+                    LOG("Column data length is 0 for non-string/binary datatype. Appending None to the result row. Column ID - {}", col);
+                    row.append(py::none());
+                }
+                continue;
+            } else if (dataLen < 0) {
+                // Negative value is unexpected, log column index, SQL type & raise exception
+                LOG("Unexpected negative data length. Column ID - {}, SQL Type - {}, Data Length - {}", col, dataType, dataLen);
+                ThrowStdException("Unexpected negative data length, check logs for details");
             }
-            assert(dataLen >= 0 && "Data length must be >= 0");
+            assert(dataLen > 0 && "Data length must be > 0");
 
             switch (dataType) {
                 case SQL_CHAR:

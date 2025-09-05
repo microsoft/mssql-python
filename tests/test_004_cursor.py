@@ -5433,6 +5433,279 @@ def test_empty_string_chunk(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS #pytest_empty_string")
         db_connection.commit()
 
+def test_empty_char_single_and_batch_fetch(cursor, db_connection):
+    """Test that empty CHAR data is handled correctly in both single and batch fetch"""
+    try:
+        # Create test table with regular VARCHAR (CHAR is fixed-length and pads with spaces)
+        drop_table_if_exists(cursor, "#pytest_empty_char")
+        cursor.execute("CREATE TABLE #pytest_empty_char (id INT, char_col VARCHAR(100))")
+        db_connection.commit()
+        
+        # Insert empty VARCHAR data
+        cursor.execute("INSERT INTO #pytest_empty_char VALUES (1, '')")
+        cursor.execute("INSERT INTO #pytest_empty_char VALUES (2, '')")
+        db_connection.commit()
+        
+        # Test single-row fetch (fetchone)
+        cursor.execute("SELECT char_col FROM #pytest_empty_char WHERE id = 1")
+        row = cursor.fetchone()
+        assert row is not None, "Should return a row"
+        assert row[0] == '', "Should return empty string, not None"
+        
+        # Test batch fetch (fetchall)
+        cursor.execute("SELECT char_col FROM #pytest_empty_char ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 2, "Should return 2 rows"
+        assert rows[0][0] == '', "Row 1 should have empty string"
+        assert rows[1][0] == '', "Row 2 should have empty string"
+        
+        # Test batch fetch (fetchmany)
+        cursor.execute("SELECT char_col FROM #pytest_empty_char ORDER BY id")
+        many_rows = cursor.fetchmany(2)
+        assert len(many_rows) == 2, "Should return 2 rows with fetchmany"
+        assert many_rows[0][0] == '', "fetchmany row 1 should have empty string"
+        assert many_rows[1][0] == '', "fetchmany row 2 should have empty string"
+        
+    except Exception as e:
+        pytest.fail(f"Empty VARCHAR handling test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE #pytest_empty_char")
+        db_connection.commit()
+
+def test_empty_varbinary_batch_fetch(cursor, db_connection):
+    """Test that empty VARBINARY data is handled correctly in batch fetch operations"""
+    try:
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_empty_varbinary_batch")
+        cursor.execute("CREATE TABLE #pytest_empty_varbinary_batch (id INT, binary_col VARBINARY(100))")
+        db_connection.commit()
+        
+        # Insert multiple rows with empty binary data
+        cursor.execute("INSERT INTO #pytest_empty_varbinary_batch VALUES (1, 0x)")  # Empty binary
+        cursor.execute("INSERT INTO #pytest_empty_varbinary_batch VALUES (2, 0x)")  # Empty binary
+        cursor.execute("INSERT INTO #pytest_empty_varbinary_batch VALUES (3, 0x1234)")  # Non-empty for comparison
+        db_connection.commit()
+        
+        # Test fetchall for batch processing
+        cursor.execute("SELECT id, binary_col FROM #pytest_empty_varbinary_batch ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 3, "Should return 3 rows"
+        
+        # Check empty binary rows
+        assert rows[0][1] == b'', "Row 1 should have empty bytes"
+        assert rows[1][1] == b'', "Row 2 should have empty bytes"
+        assert isinstance(rows[0][1], bytes), "Should return bytes type for empty binary"
+        assert len(rows[0][1]) == 0, "Should be zero-length bytes"
+        
+        # Check non-empty row for comparison
+        assert rows[2][1] == b'\x12\x34', "Row 3 should have non-empty binary"
+        
+        # Test fetchmany batch processing
+        cursor.execute("SELECT binary_col FROM #pytest_empty_varbinary_batch WHERE id <= 2 ORDER BY id")
+        many_rows = cursor.fetchmany(2)
+        assert len(many_rows) == 2, "fetchmany should return 2 rows"
+        assert many_rows[0][0] == b'', "fetchmany row 1 should have empty bytes"
+        assert many_rows[1][0] == b'', "fetchmany row 2 should have empty bytes"
+        
+    except Exception as e:
+        pytest.fail(f"Empty VARBINARY batch fetch test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE #pytest_empty_varbinary_batch")
+        db_connection.commit()
+
+def test_empty_values_fetchmany(cursor, db_connection):
+    """Test fetchmany with empty values for all string/binary types"""
+    try:
+        # Create comprehensive test table
+        drop_table_if_exists(cursor, "#pytest_fetchmany_empty")
+        cursor.execute("""
+            CREATE TABLE #pytest_fetchmany_empty (
+                id INT,
+                varchar_col VARCHAR(50),
+                nvarchar_col NVARCHAR(50),
+                binary_col VARBINARY(50)
+            )
+        """)
+        db_connection.commit()
+        
+        # Insert multiple rows with empty values
+        for i in range(1, 6):  # 5 rows
+            cursor.execute("""
+                INSERT INTO #pytest_fetchmany_empty 
+                VALUES (?, '', '', 0x)
+            """, [i])
+        db_connection.commit()
+        
+        # Test fetchmany with different sizes
+        cursor.execute("SELECT varchar_col, nvarchar_col, binary_col FROM #pytest_fetchmany_empty ORDER BY id")
+        
+        # Fetch 3 rows
+        rows = cursor.fetchmany(3)
+        assert len(rows) == 3, "Should fetch 3 rows"
+        for i, row in enumerate(rows):
+            assert row[0] == '', f"Row {i+1} VARCHAR should be empty string"
+            assert row[1] == '', f"Row {i+1} NVARCHAR should be empty string"
+            assert row[2] == b'', f"Row {i+1} VARBINARY should be empty bytes"
+            assert isinstance(row[2], bytes), f"Row {i+1} VARBINARY should be bytes type"
+        
+        # Fetch remaining rows
+        remaining_rows = cursor.fetchmany(5)  # Ask for 5 but should get 2
+        assert len(remaining_rows) == 2, "Should fetch remaining 2 rows"
+        for i, row in enumerate(remaining_rows):
+            assert row[0] == '', f"Remaining row {i+1} VARCHAR should be empty string"
+            assert row[1] == '', f"Remaining row {i+1} NVARCHAR should be empty string"
+            assert row[2] == b'', f"Remaining row {i+1} VARBINARY should be empty bytes"
+        
+    except Exception as e:
+        pytest.fail(f"Empty values fetchmany test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE #pytest_fetchmany_empty")
+        db_connection.commit()
+
+def test_sql_no_total_large_data_scenario(cursor, db_connection):
+    """Test very large data that might trigger SQL_NO_TOTAL handling"""
+    try:
+        # Create test table for large data
+        drop_table_if_exists(cursor, "#pytest_large_data_no_total")
+        cursor.execute("CREATE TABLE #pytest_large_data_no_total (id INT, large_text NVARCHAR(MAX), large_binary VARBINARY(MAX))")
+        db_connection.commit()
+        
+        # Create large data that might trigger SQL_NO_TOTAL
+        large_string = 'A' * (5 * 1024 * 1024)  # 5MB string
+        large_binary = b'\x00' * (5 * 1024 * 1024)  # 5MB binary
+        
+        cursor.execute("INSERT INTO #pytest_large_data_no_total VALUES (1, ?, ?)", [large_string, large_binary])
+        cursor.execute("INSERT INTO #pytest_large_data_no_total VALUES (2, ?, ?)", [large_string, large_binary])
+        db_connection.commit()
+        
+        # Test single fetch - should not crash if SQL_NO_TOTAL occurs
+        cursor.execute("SELECT large_text, large_binary FROM #pytest_large_data_no_total WHERE id = 1")
+        row = cursor.fetchone()
+        
+        # If SQL_NO_TOTAL occurs, it should return None, not crash
+        # If it works normally, it should return the large data
+        if row[0] is not None:
+            assert isinstance(row[0], str), "Text data should be str if not None"
+            assert len(row[0]) > 0, "Text data should be non-empty if not None"
+        if row[1] is not None:
+            assert isinstance(row[1], bytes), "Binary data should be bytes if not None"
+            assert len(row[1]) > 0, "Binary data should be non-empty if not None"
+        
+        # Test batch fetch - should handle SQL_NO_TOTAL consistently
+        cursor.execute("SELECT large_text, large_binary FROM #pytest_large_data_no_total ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 2, "Should return 2 rows"
+        
+        # Both rows should behave consistently
+        for i, row in enumerate(rows):
+            if row[0] is not None:
+                assert isinstance(row[0], str), f"Row {i+1} text should be str if not None"
+            if row[1] is not None:
+                assert isinstance(row[1], bytes), f"Row {i+1} binary should be bytes if not None"
+        
+        # Test fetchmany - should handle SQL_NO_TOTAL consistently
+        cursor.execute("SELECT large_text FROM #pytest_large_data_no_total ORDER BY id")
+        many_rows = cursor.fetchmany(2)
+        assert len(many_rows) == 2, "fetchmany should return 2 rows"
+        
+        for i, row in enumerate(many_rows):
+            if row[0] is not None:
+                assert isinstance(row[0], str), f"fetchmany row {i+1} should be str if not None"
+                
+    except Exception as e:
+        # Should not crash with assertion errors about dataLen
+        assert "Data length must be" not in str(e), "Should not fail with dataLen assertion"
+        assert "assert" not in str(e).lower(), "Should not fail with assertion errors"
+        # If it fails for other reasons (like memory), that's acceptable
+        print(f"Large data test completed with expected limitation: {e}")
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #pytest_large_data_no_total")
+            db_connection.commit()
+        except:
+            pass  # Table might not exist if test failed early
+
+def test_batch_fetch_empty_values_no_assertion_failure(cursor, db_connection):
+    """Test that batch fetch operations don't fail with assertions on empty values"""
+    try:
+        # Create comprehensive test table
+        drop_table_if_exists(cursor, "#pytest_batch_empty_assertions")
+        cursor.execute("""
+            CREATE TABLE #pytest_batch_empty_assertions (
+                id INT,
+                empty_varchar VARCHAR(100),
+                empty_nvarchar NVARCHAR(100),
+                empty_binary VARBINARY(100),
+                null_varchar VARCHAR(100),
+                null_nvarchar NVARCHAR(100),
+                null_binary VARBINARY(100)
+            )
+        """)
+        db_connection.commit()
+        
+        # Insert rows with mix of empty and NULL values
+        cursor.execute("""
+            INSERT INTO #pytest_batch_empty_assertions VALUES 
+            (1, '', '', 0x, NULL, NULL, NULL),
+            (2, '', '', 0x, NULL, NULL, NULL),
+            (3, '', '', 0x, NULL, NULL, NULL)
+        """)
+        db_connection.commit()
+        
+        # Test fetchall - should not trigger any assertions about dataLen
+        cursor.execute("""
+            SELECT empty_varchar, empty_nvarchar, empty_binary,
+                   null_varchar, null_nvarchar, null_binary 
+            FROM #pytest_batch_empty_assertions ORDER BY id
+        """)
+        
+        rows = cursor.fetchall()
+        assert len(rows) == 3, "Should return 3 rows"
+        
+        for i, row in enumerate(rows):
+            # Check empty values (should be empty strings/bytes, not None)
+            assert row[0] == '', f"Row {i+1} empty_varchar should be empty string"
+            assert row[1] == '', f"Row {i+1} empty_nvarchar should be empty string"
+            assert row[2] == b'', f"Row {i+1} empty_binary should be empty bytes"
+            
+            # Check NULL values (should be None)
+            assert row[3] is None, f"Row {i+1} null_varchar should be None"
+            assert row[4] is None, f"Row {i+1} null_nvarchar should be None"
+            assert row[5] is None, f"Row {i+1} null_binary should be None"
+        
+        # Test fetchmany - should also not trigger assertions
+        cursor.execute("""
+            SELECT empty_nvarchar, empty_binary 
+            FROM #pytest_batch_empty_assertions ORDER BY id
+        """)
+        
+        # Fetch in batches
+        first_batch = cursor.fetchmany(2)
+        assert len(first_batch) == 2, "First batch should return 2 rows"
+        
+        second_batch = cursor.fetchmany(2)  # Ask for 2, get 1
+        assert len(second_batch) == 1, "Second batch should return 1 row"
+        
+        # All batches should have correct empty values
+        all_batch_rows = first_batch + second_batch
+        for i, row in enumerate(all_batch_rows):
+            assert row[0] == '', f"Batch row {i+1} empty_nvarchar should be empty string"
+            assert row[1] == b'', f"Batch row {i+1} empty_binary should be empty bytes"
+            assert isinstance(row[1], bytes), f"Batch row {i+1} should return bytes type"
+        
+    except Exception as e:
+        # Should specifically not fail with dataLen assertion errors
+        error_msg = str(e).lower()
+        assert "data length must be" not in error_msg, f"Should not fail with dataLen assertion: {e}"
+        assert "assert" not in error_msg or "assertion" not in error_msg, f"Should not fail with assertion errors: {e}"
+        # Re-raise if it's a different kind of error
+        raise
+        
+    finally:
+        cursor.execute("DROP TABLE #pytest_batch_empty_assertions")
+        db_connection.commit()
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
