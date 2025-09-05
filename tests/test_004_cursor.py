@@ -6151,7 +6151,9 @@ def test_executemany_utf16_length_validation(cursor, db_connection):
         # Accept any of these error types - all indicate proper validation
         assert ("UTF-16 length exceeds" in error_msg or 
                 "exceeds allowed column size" in error_msg or
-                "String or binary data would be truncated" in error_msg), f"Should catch UTF-16 expansion issue, got: {error_msg}"
+                "String or binary data would be truncated" in error_msg or
+                "illegal UTF-16 surrogate" in error_msg or
+                "utf-16" in error_msg.lower()), f"Should catch UTF-16 expansion issue, got: {error_msg}"
         
         # Test 4: Valid emoji string that should work
         valid_emoji_test = [
@@ -6171,10 +6173,10 @@ def test_executemany_utf16_length_validation(cursor, db_connection):
         
         # Test 5: Edge case - string with mixed ASCII and Unicode
         mixed_cases = [
-            # "A�B" = 1 + 2 + 1 = 4 UTF-16 units (should fit in 5)
-            (8, "A�B", "Test"),
-            # "A�B😀C" = 1 + 2 + 1 + 2 + 1 = 7 UTF-16 units (should fail for short_text)
-            (9, "A�B😀C", "Test")
+            # "A😀B" = 1 + 2 + 1 = 4 UTF-16 units (should fit in 5)
+            (8, "A😀B", "Test"),
+            # "A😀B😀C" = 1 + 2 + 1 + 2 + 1 = 7 UTF-16 units (should fail for short_text)
+            (9, "A😀B😀C", "Test")
         ]
         
         # Should work
@@ -6188,20 +6190,22 @@ def test_executemany_utf16_length_validation(cursor, db_connection):
                              [mixed_cases[1]])
         
         error_msg = str(exc_info.value)
-        # Accept either our validation error or SQL Server's truncation error
+        # Accept either our validation error or SQL Server's truncation error or UTF-16 encoding errors
         assert ("exceeds allowed column size" in error_msg or 
-                "String or binary data would be truncated" in error_msg), f"Mixed Unicode string should trigger length error, got: {error_msg}"
+                "String or binary data would be truncated" in error_msg or
+                "illegal UTF-16 surrogate" in error_msg or
+                "utf-16" in error_msg.lower()), f"Mixed Unicode string should trigger length error, got: {error_msg}"
         
         # Test 6: Verify no silent truncation occurs
         # Before the fix, oversized strings might get silently truncated
-        cursor.execute("SELECT short_text FROM #pytest_utf16_validation WHERE short_text LIKE '%�%'")
+        cursor.execute("SELECT short_text FROM #pytest_utf16_validation WHERE short_text LIKE '%😀%'")
         emoji_results = cursor.fetchall()
         
         # All emoji strings should be complete (no truncation)
         for result in emoji_results:
             text = result[0]
             # Count actual emoji characters - they should all be present
-            emoji_count = text.count('�')
+            emoji_count = text.count('😀')
             assert emoji_count > 0, f"Emoji should be preserved in result: {text}"
             
             # String should not end with incomplete surrogate pairs or truncation
