@@ -152,7 +152,7 @@ jobs:
       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run pytest with coverage'
     env:
-      DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=127.0.0.1;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
       DB_PASSWORD: $(DB_PASSWORD)
 
   - task: PublishTestResults@2
