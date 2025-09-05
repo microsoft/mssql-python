@@ -6084,6 +6084,139 @@ def test_batch_fetch_empty_values_no_assertion_failure(cursor, db_connection):
         cursor.execute("DROP TABLE #pytest_batch_empty_assertions")
         db_connection.commit()
 
+def test_executemany_utf16_length_validation(cursor, db_connection):
+    """Test UTF-16 length validation for executemany - prevents data corruption from Unicode expansion"""
+    import platform
+    
+    try:
+        # Create test table with small column size to trigger validation
+        drop_table_if_exists(cursor, "#pytest_utf16_validation")
+        cursor.execute("""
+            CREATE TABLE #pytest_utf16_validation (
+                id INT,
+                short_text NVARCHAR(5),  -- Small column to test length validation
+                medium_text NVARCHAR(10) -- Medium column for edge cases
+            )
+        """)
+        db_connection.commit()
+        
+        # Test 1: Valid strings that should work on all platforms
+        valid_data = [
+            (1, "Hi", "Hello"),      # Well within limits
+            (2, "Test", "World"),    # At or near limits  
+            (3, "", ""),             # Empty strings
+            (4, "12345", "1234567890") # Exactly at limits
+        ]
+        
+        cursor.executemany("INSERT INTO #pytest_utf16_validation VALUES (?, ?, ?)", valid_data)
+        db_connection.commit()
+        
+        # Verify valid data was inserted correctly
+        cursor.execute("SELECT COUNT(*) FROM #pytest_utf16_validation")
+        count = cursor.fetchone()[0]
+        assert count == 4, "All valid UTF-16 strings should be inserted successfully"
+        
+        # Test 2: String too long for short_text column (6 characters > 5 limit)
+        with pytest.raises(Exception) as exc_info:
+            cursor.executemany("INSERT INTO #pytest_utf16_validation VALUES (?, ?, ?)", 
+                             [(5, "TooLong", "Valid")])
+        
+        error_msg = str(exc_info.value)
+        # Accept either our validation error or SQL Server's truncation error
+        assert ("exceeds allowed column size" in error_msg or 
+                "String or binary data would be truncated" in error_msg), f"Should get length validation error, got: {error_msg}"
+        
+        # Test 3: Unicode characters that specifically test UTF-16 expansion
+        # This is the core test for our fix - emoji that expand from UTF-32 to UTF-16
+        
+        # Create a string that's exactly at the UTF-32 limit but exceeds UTF-16 limit
+        # "😀😀😀" = 3 UTF-32 chars, but 6 UTF-16 code units (each emoji = 2 units)
+        # This should fit in UTF-32 length check but fail UTF-16 length check on Unix
+        emoji_overflow_test = [
+            # 3 emoji = 3 UTF-32 chars (might pass initial check) but 6 UTF-16 units > 5 limit
+            (6, "😀😀😀", "Valid")  # Should fail on short_text due to UTF-16 expansion
+        ]
+        
+        with pytest.raises(Exception) as exc_info:
+            cursor.executemany("INSERT INTO #pytest_utf16_validation VALUES (?, ?, ?)", 
+                             emoji_overflow_test)
+        
+        error_msg = str(exc_info.value)
+        # This should trigger either our UTF-16 validation or SQL Server's length validation
+        # Both are correct - the important thing is that it fails instead of silently truncating
+        is_unix = platform.system() in ['Darwin', 'Linux']
+        
+        print(f"Emoji overflow test error on {platform.system()}: {error_msg[:100]}...")
+        
+        # Accept any of these error types - all indicate proper validation
+        assert ("UTF-16 length exceeds" in error_msg or 
+                "exceeds allowed column size" in error_msg or
+                "String or binary data would be truncated" in error_msg), f"Should catch UTF-16 expansion issue, got: {error_msg}"
+        
+        # Test 4: Valid emoji string that should work
+        valid_emoji_test = [
+            # 2 emoji = 2 UTF-32 chars, 4 UTF-16 units (fits in 5 unit limit)
+            (7, "😀😀", "Hello🌟")  # Should work: 4 units, 7 units
+        ]
+        
+        cursor.executemany("INSERT INTO #pytest_utf16_validation VALUES (?, ?, ?)", 
+                         valid_emoji_test)
+        db_connection.commit()
+        
+        # Verify emoji string was inserted correctly  
+        cursor.execute("SELECT short_text, medium_text FROM #pytest_utf16_validation WHERE id = 7")
+        result = cursor.fetchone()
+        assert result[0] == "😀😀", "Valid emoji string should be stored correctly"
+        assert result[1] == "Hello🌟", "Valid emoji string should be stored correctly"
+        
+        # Test 5: Edge case - string with mixed ASCII and Unicode
+        mixed_cases = [
+            # "A�B" = 1 + 2 + 1 = 4 UTF-16 units (should fit in 5)
+            (8, "A�B", "Test"),
+            # "A�B😀C" = 1 + 2 + 1 + 2 + 1 = 7 UTF-16 units (should fail for short_text)
+            (9, "A�B😀C", "Test")
+        ]
+        
+        # Should work
+        cursor.executemany("INSERT INTO #pytest_utf16_validation VALUES (?, ?, ?)", 
+                         [mixed_cases[0]])
+        db_connection.commit()
+        
+        # Should fail  
+        with pytest.raises(Exception) as exc_info:
+            cursor.executemany("INSERT INTO #pytest_utf16_validation VALUES (?, ?, ?)", 
+                             [mixed_cases[1]])
+        
+        error_msg = str(exc_info.value)
+        # Accept either our validation error or SQL Server's truncation error
+        assert ("exceeds allowed column size" in error_msg or 
+                "String or binary data would be truncated" in error_msg), f"Mixed Unicode string should trigger length error, got: {error_msg}"
+        
+        # Test 6: Verify no silent truncation occurs
+        # Before the fix, oversized strings might get silently truncated
+        cursor.execute("SELECT short_text FROM #pytest_utf16_validation WHERE short_text LIKE '%�%'")
+        emoji_results = cursor.fetchall()
+        
+        # All emoji strings should be complete (no truncation)
+        for result in emoji_results:
+            text = result[0]
+            # Count actual emoji characters - they should all be present
+            emoji_count = text.count('�')
+            assert emoji_count > 0, f"Emoji should be preserved in result: {text}"
+            
+            # String should not end with incomplete surrogate pairs or truncation
+            # This would happen if UTF-16 conversion was truncated mid-character
+            assert len(text) > 0, "String should not be empty due to truncation"
+        
+        print(f"UTF-16 length validation test completed successfully on {platform.system()}")
+        
+    except Exception as e:
+        pytest.fail(f"UTF-16 length validation test failed: {e}")
+    
+    finally:
+        drop_table_if_exists(cursor, "#pytest_utf16_validation")
+        db_connection.commit()
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
