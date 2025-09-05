@@ -342,12 +342,15 @@ class Cursor:
 
             # String mapping logic here
             is_unicode = self._is_unicode_string(param)
-            if len(param) > MAX_INLINE_CHAR:  # Long strings
+
+            # Computes UTF-16 code units (handles surrogate pairs)
+            utf16_len = sum(2 if ord(c) > 0xFFFF else 1 for c in param)
+            if utf16_len > MAX_INLINE_CHAR:  # Long strings -> DAE
                 if is_unicode:
                     return (
                         ddbc_sql_const.SQL_WLONGVARCHAR.value,
                         ddbc_sql_const.SQL_C_WCHAR.value,
-                        len(param),
+                        utf16_len,
                         0,
                         True,
                     )
@@ -358,8 +361,9 @@ class Cursor:
                     0,
                     True,
                 )
-            if is_unicode:  # Short Unicode strings
-                utf16_len = len(param.encode("utf-16-le")) // 2
+
+            # Short strings
+            if is_unicode:
                 return (
                     ddbc_sql_const.SQL_WVARCHAR.value,
                     ddbc_sql_const.SQL_C_WCHAR.value,
@@ -374,7 +378,7 @@ class Cursor:
                 0,
                 False,
             )
-
+        
         if isinstance(param, bytes):
             if len(param) > 8000:  # Assuming VARBINARY(MAX) for long byte arrays
                 return (
