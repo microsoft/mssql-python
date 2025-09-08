@@ -380,16 +380,10 @@ class Cursor:
             )
         
         if isinstance(param, bytes):
-            if len(param) > 8000:  # Assuming VARBINARY(MAX) for long byte arrays
-                return (
-                    ddbc_sql_const.SQL_VARBINARY.value,
-                    ddbc_sql_const.SQL_C_BINARY.value,
-                    len(param),
-                    0,
-                    False,
-                )
+            # Use VARBINARY for Python bytes/bytearray since they are variable-length by nature.
+            # This avoids storage waste from BINARY's zero-padding and matches Python's semantics.
             return (
-                ddbc_sql_const.SQL_BINARY.value,
+                ddbc_sql_const.SQL_VARBINARY.value,
                 ddbc_sql_const.SQL_C_BINARY.value,
                 len(param),
                 0,
@@ -397,16 +391,10 @@ class Cursor:
             )
 
         if isinstance(param, bytearray):
-            if len(param) > 8000:  # Assuming VARBINARY(MAX) for long byte arrays
-                return (
-                    ddbc_sql_const.SQL_VARBINARY.value,
-                    ddbc_sql_const.SQL_C_BINARY.value,
-                    len(param),
-                    0,
-                    True,
-                )
+            # Use VARBINARY for Python bytes/bytearray since they are variable-length by nature.
+            # This avoids storage waste from BINARY's zero-padding and matches Python's semantics.
             return (
-                ddbc_sql_const.SQL_BINARY.value,
+                ddbc_sql_const.SQL_VARBINARY.value,
                 ddbc_sql_const.SQL_C_BINARY.value,
                 len(param),
                 0,
@@ -848,6 +836,8 @@ class Cursor:
             return max(non_nulls, key=lambda s: len(str(s)))
         if all(isinstance(v, datetime.datetime) for v in non_nulls):
             return datetime.datetime.now()
+        if all(isinstance(v, (bytes, bytearray)) for v in non_nulls):
+            return max(non_nulls, key=lambda b: len(b))
         if all(isinstance(v, datetime.date) for v in non_nulls):
             return datetime.date.today()
         return non_nulls[0]  # fallback
