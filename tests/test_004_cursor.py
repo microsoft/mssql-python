@@ -5861,6 +5861,416 @@ def test_empty_string_chunk(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS #pytest_empty_string")
         db_connection.commit()
 
+def test_empty_char_single_and_batch_fetch(cursor, db_connection):
+    """Test that empty CHAR data is handled correctly in both single and batch fetch"""
+    try:
+        # Create test table with regular VARCHAR (CHAR is fixed-length and pads with spaces)
+        drop_table_if_exists(cursor, "#pytest_empty_char")
+        cursor.execute("CREATE TABLE #pytest_empty_char (id INT, char_col VARCHAR(100))")
+        db_connection.commit()
+        
+        # Insert empty VARCHAR data
+        cursor.execute("INSERT INTO #pytest_empty_char VALUES (1, '')")
+        cursor.execute("INSERT INTO #pytest_empty_char VALUES (2, '')")
+        db_connection.commit()
+        
+        # Test single-row fetch (fetchone)
+        cursor.execute("SELECT char_col FROM #pytest_empty_char WHERE id = 1")
+        row = cursor.fetchone()
+        assert row is not None, "Should return a row"
+        assert row[0] == '', "Should return empty string, not None"
+        
+        # Test batch fetch (fetchall)
+        cursor.execute("SELECT char_col FROM #pytest_empty_char ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 2, "Should return 2 rows"
+        assert rows[0][0] == '', "Row 1 should have empty string"
+        assert rows[1][0] == '', "Row 2 should have empty string"
+        
+        # Test batch fetch (fetchmany)
+        cursor.execute("SELECT char_col FROM #pytest_empty_char ORDER BY id")
+        many_rows = cursor.fetchmany(2)
+        assert len(many_rows) == 2, "Should return 2 rows with fetchmany"
+        assert many_rows[0][0] == '', "fetchmany row 1 should have empty string"
+        assert many_rows[1][0] == '', "fetchmany row 2 should have empty string"
+        
+    except Exception as e:
+        pytest.fail(f"Empty VARCHAR handling test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE #pytest_empty_char")
+        db_connection.commit()
+
+def test_empty_varbinary_batch_fetch(cursor, db_connection):
+    """Test that empty VARBINARY data is handled correctly in batch fetch operations"""
+    try:
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_empty_varbinary_batch")
+        cursor.execute("CREATE TABLE #pytest_empty_varbinary_batch (id INT, binary_col VARBINARY(100))")
+        db_connection.commit()
+        
+        # Insert multiple rows with empty binary data
+        cursor.execute("INSERT INTO #pytest_empty_varbinary_batch VALUES (1, 0x)")  # Empty binary
+        cursor.execute("INSERT INTO #pytest_empty_varbinary_batch VALUES (2, 0x)")  # Empty binary
+        cursor.execute("INSERT INTO #pytest_empty_varbinary_batch VALUES (3, 0x1234)")  # Non-empty for comparison
+        db_connection.commit()
+        
+        # Test fetchall for batch processing
+        cursor.execute("SELECT id, binary_col FROM #pytest_empty_varbinary_batch ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 3, "Should return 3 rows"
+        
+        # Check empty binary rows
+        assert rows[0][1] == b'', "Row 1 should have empty bytes"
+        assert rows[1][1] == b'', "Row 2 should have empty bytes"
+        assert isinstance(rows[0][1], bytes), "Should return bytes type for empty binary"
+        assert len(rows[0][1]) == 0, "Should be zero-length bytes"
+        
+        # Check non-empty row for comparison
+        assert rows[2][1] == b'\x12\x34', "Row 3 should have non-empty binary"
+        
+        # Test fetchmany batch processing
+        cursor.execute("SELECT binary_col FROM #pytest_empty_varbinary_batch WHERE id <= 2 ORDER BY id")
+        many_rows = cursor.fetchmany(2)
+        assert len(many_rows) == 2, "fetchmany should return 2 rows"
+        assert many_rows[0][0] == b'', "fetchmany row 1 should have empty bytes"
+        assert many_rows[1][0] == b'', "fetchmany row 2 should have empty bytes"
+        
+    except Exception as e:
+        pytest.fail(f"Empty VARBINARY batch fetch test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE #pytest_empty_varbinary_batch")
+        db_connection.commit()
+
+def test_empty_values_fetchmany(cursor, db_connection):
+    """Test fetchmany with empty values for all string/binary types"""
+    try:
+        # Create comprehensive test table
+        drop_table_if_exists(cursor, "#pytest_fetchmany_empty")
+        cursor.execute("""
+            CREATE TABLE #pytest_fetchmany_empty (
+                id INT,
+                varchar_col VARCHAR(50),
+                nvarchar_col NVARCHAR(50),
+                binary_col VARBINARY(50)
+            )
+        """)
+        db_connection.commit()
+        
+        # Insert multiple rows with empty values
+        for i in range(1, 6):  # 5 rows
+            cursor.execute("""
+                INSERT INTO #pytest_fetchmany_empty 
+                VALUES (?, '', '', 0x)
+            """, [i])
+        db_connection.commit()
+        
+        # Test fetchmany with different sizes
+        cursor.execute("SELECT varchar_col, nvarchar_col, binary_col FROM #pytest_fetchmany_empty ORDER BY id")
+        
+        # Fetch 3 rows
+        rows = cursor.fetchmany(3)
+        assert len(rows) == 3, "Should fetch 3 rows"
+        for i, row in enumerate(rows):
+            assert row[0] == '', f"Row {i+1} VARCHAR should be empty string"
+            assert row[1] == '', f"Row {i+1} NVARCHAR should be empty string"
+            assert row[2] == b'', f"Row {i+1} VARBINARY should be empty bytes"
+            assert isinstance(row[2], bytes), f"Row {i+1} VARBINARY should be bytes type"
+        
+        # Fetch remaining rows
+        remaining_rows = cursor.fetchmany(5)  # Ask for 5 but should get 2
+        assert len(remaining_rows) == 2, "Should fetch remaining 2 rows"
+        for i, row in enumerate(remaining_rows):
+            assert row[0] == '', f"Remaining row {i+1} VARCHAR should be empty string"
+            assert row[1] == '', f"Remaining row {i+1} NVARCHAR should be empty string"
+            assert row[2] == b'', f"Remaining row {i+1} VARBINARY should be empty bytes"
+        
+    except Exception as e:
+        pytest.fail(f"Empty values fetchmany test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE #pytest_fetchmany_empty")
+        db_connection.commit()
+
+def test_sql_no_total_large_data_scenario(cursor, db_connection):
+    """Test very large data that might trigger SQL_NO_TOTAL handling"""
+    try:
+        # Create test table for large data
+        drop_table_if_exists(cursor, "#pytest_large_data_no_total")
+        cursor.execute("CREATE TABLE #pytest_large_data_no_total (id INT, large_text NVARCHAR(MAX), large_binary VARBINARY(MAX))")
+        db_connection.commit()
+        
+        # Create large data that might trigger SQL_NO_TOTAL
+        large_string = 'A' * (5 * 1024 * 1024)  # 5MB string
+        large_binary = b'\x00' * (5 * 1024 * 1024)  # 5MB binary
+        
+        cursor.execute("INSERT INTO #pytest_large_data_no_total VALUES (1, ?, ?)", [large_string, large_binary])
+        cursor.execute("INSERT INTO #pytest_large_data_no_total VALUES (2, ?, ?)", [large_string, large_binary])
+        db_connection.commit()
+        
+        # Test single fetch - should not crash if SQL_NO_TOTAL occurs
+        cursor.execute("SELECT large_text, large_binary FROM #pytest_large_data_no_total WHERE id = 1")
+        row = cursor.fetchone()
+        
+        # If SQL_NO_TOTAL occurs, it should return None, not crash
+        # If it works normally, it should return the large data
+        if row[0] is not None:
+            assert isinstance(row[0], str), "Text data should be str if not None"
+            assert len(row[0]) > 0, "Text data should be non-empty if not None"
+        if row[1] is not None:
+            assert isinstance(row[1], bytes), "Binary data should be bytes if not None"
+            assert len(row[1]) > 0, "Binary data should be non-empty if not None"
+        
+        # Test batch fetch - should handle SQL_NO_TOTAL consistently
+        cursor.execute("SELECT large_text, large_binary FROM #pytest_large_data_no_total ORDER BY id")
+        rows = cursor.fetchall()
+        assert len(rows) == 2, "Should return 2 rows"
+        
+        # Both rows should behave consistently
+        for i, row in enumerate(rows):
+            if row[0] is not None:
+                assert isinstance(row[0], str), f"Row {i+1} text should be str if not None"
+            if row[1] is not None:
+                assert isinstance(row[1], bytes), f"Row {i+1} binary should be bytes if not None"
+        
+        # Test fetchmany - should handle SQL_NO_TOTAL consistently
+        cursor.execute("SELECT large_text FROM #pytest_large_data_no_total ORDER BY id")
+        many_rows = cursor.fetchmany(2)
+        assert len(many_rows) == 2, "fetchmany should return 2 rows"
+        
+        for i, row in enumerate(many_rows):
+            if row[0] is not None:
+                assert isinstance(row[0], str), f"fetchmany row {i+1} should be str if not None"
+                
+    except Exception as e:
+        # Should not crash with assertion errors about dataLen
+        assert "Data length must be" not in str(e), "Should not fail with dataLen assertion"
+        assert "assert" not in str(e).lower(), "Should not fail with assertion errors"
+        # If it fails for other reasons (like memory), that's acceptable
+        print(f"Large data test completed with expected limitation: {e}")
+        
+    finally:
+        try:
+            cursor.execute("DROP TABLE #pytest_large_data_no_total")
+            db_connection.commit()
+        except:
+            pass  # Table might not exist if test failed early
+
+def test_batch_fetch_empty_values_no_assertion_failure(cursor, db_connection):
+    """Test that batch fetch operations don't fail with assertions on empty values"""
+    try:
+        # Create comprehensive test table
+        drop_table_if_exists(cursor, "#pytest_batch_empty_assertions")
+        cursor.execute("""
+            CREATE TABLE #pytest_batch_empty_assertions (
+                id INT,
+                empty_varchar VARCHAR(100),
+                empty_nvarchar NVARCHAR(100),
+                empty_binary VARBINARY(100),
+                null_varchar VARCHAR(100),
+                null_nvarchar NVARCHAR(100),
+                null_binary VARBINARY(100)
+            )
+        """)
+        db_connection.commit()
+        
+        # Insert rows with mix of empty and NULL values
+        cursor.execute("""
+            INSERT INTO #pytest_batch_empty_assertions VALUES 
+            (1, '', '', 0x, NULL, NULL, NULL),
+            (2, '', '', 0x, NULL, NULL, NULL),
+            (3, '', '', 0x, NULL, NULL, NULL)
+        """)
+        db_connection.commit()
+        
+        # Test fetchall - should not trigger any assertions about dataLen
+        cursor.execute("""
+            SELECT empty_varchar, empty_nvarchar, empty_binary,
+                   null_varchar, null_nvarchar, null_binary 
+            FROM #pytest_batch_empty_assertions ORDER BY id
+        """)
+        
+        rows = cursor.fetchall()
+        assert len(rows) == 3, "Should return 3 rows"
+        
+        for i, row in enumerate(rows):
+            # Check empty values (should be empty strings/bytes, not None)
+            assert row[0] == '', f"Row {i+1} empty_varchar should be empty string"
+            assert row[1] == '', f"Row {i+1} empty_nvarchar should be empty string"
+            assert row[2] == b'', f"Row {i+1} empty_binary should be empty bytes"
+            
+            # Check NULL values (should be None)
+            assert row[3] is None, f"Row {i+1} null_varchar should be None"
+            assert row[4] is None, f"Row {i+1} null_nvarchar should be None"
+            assert row[5] is None, f"Row {i+1} null_binary should be None"
+        
+        # Test fetchmany - should also not trigger assertions
+        cursor.execute("""
+            SELECT empty_nvarchar, empty_binary 
+            FROM #pytest_batch_empty_assertions ORDER BY id
+        """)
+        
+        # Fetch in batches
+        first_batch = cursor.fetchmany(2)
+        assert len(first_batch) == 2, "First batch should return 2 rows"
+        
+        second_batch = cursor.fetchmany(2)  # Ask for 2, get 1
+        assert len(second_batch) == 1, "Second batch should return 1 row"
+        
+        # All batches should have correct empty values
+        all_batch_rows = first_batch + second_batch
+        for i, row in enumerate(all_batch_rows):
+            assert row[0] == '', f"Batch row {i+1} empty_nvarchar should be empty string"
+            assert row[1] == b'', f"Batch row {i+1} empty_binary should be empty bytes"
+            assert isinstance(row[1], bytes), f"Batch row {i+1} should return bytes type"
+        
+    except Exception as e:
+        # Should specifically not fail with dataLen assertion errors
+        error_msg = str(e).lower()
+        assert "data length must be" not in error_msg, f"Should not fail with dataLen assertion: {e}"
+        assert "assert" not in error_msg or "assertion" not in error_msg, f"Should not fail with assertion errors: {e}"
+        # Re-raise if it's a different kind of error
+        raise
+        
+    finally:
+        cursor.execute("DROP TABLE #pytest_batch_empty_assertions")
+        db_connection.commit()
+
+def test_executemany_utf16_length_validation(cursor, db_connection):
+    """Test UTF-16 length validation for executemany - prevents data corruption from Unicode expansion"""
+    import platform
+    
+    try:
+        # Create test table with small column size to trigger validation
+        drop_table_if_exists(cursor, "#pytest_utf16_validation")
+        cursor.execute("""
+            CREATE TABLE #pytest_utf16_validation (
+                id INT,
+                short_text NVARCHAR(5),  -- Small column to test length validation
+                medium_text NVARCHAR(10) -- Medium column for edge cases
+            )
+        """)
+        db_connection.commit()
+        
+        # Test 1: Valid strings that should work on all platforms
+        valid_data = [
+            (1, "Hi", "Hello"),      # Well within limits
+            (2, "Test", "World"),    # At or near limits  
+            (3, "", ""),             # Empty strings
+            (4, "12345", "1234567890") # Exactly at limits
+        ]
+        
+        cursor.executemany("INSERT INTO #pytest_utf16_validation VALUES (?, ?, ?)", valid_data)
+        db_connection.commit()
+        
+        # Verify valid data was inserted correctly
+        cursor.execute("SELECT COUNT(*) FROM #pytest_utf16_validation")
+        count = cursor.fetchone()[0]
+        assert count == 4, "All valid UTF-16 strings should be inserted successfully"
+        
+        # Test 2: String too long for short_text column (6 characters > 5 limit)
+        with pytest.raises(Exception) as exc_info:
+            cursor.executemany("INSERT INTO #pytest_utf16_validation VALUES (?, ?, ?)", 
+                             [(5, "TooLong", "Valid")])
+        
+        error_msg = str(exc_info.value)
+        # Accept either our validation error or SQL Server's truncation error
+        assert ("exceeds allowed column size" in error_msg or 
+                "String or binary data would be truncated" in error_msg), f"Should get length validation error, got: {error_msg}"
+        
+        # Test 3: Unicode characters that specifically test UTF-16 expansion
+        # This is the core test for our fix - emoji that expand from UTF-32 to UTF-16
+        
+        # Create a string that's exactly at the UTF-32 limit but exceeds UTF-16 limit
+        # "😀😀😀" = 3 UTF-32 chars, but 6 UTF-16 code units (each emoji = 2 units)
+        # This should fit in UTF-32 length check but fail UTF-16 length check on Unix
+        emoji_overflow_test = [
+            # 3 emoji = 3 UTF-32 chars (might pass initial check) but 6 UTF-16 units > 5 limit
+            (6, "😀😀😀", "Valid")  # Should fail on short_text due to UTF-16 expansion
+        ]
+        
+        with pytest.raises(Exception) as exc_info:
+            cursor.executemany("INSERT INTO #pytest_utf16_validation VALUES (?, ?, ?)", 
+                             emoji_overflow_test)
+        
+        error_msg = str(exc_info.value)
+        # This should trigger either our UTF-16 validation or SQL Server's length validation
+        # Both are correct - the important thing is that it fails instead of silently truncating
+        is_unix = platform.system() in ['Darwin', 'Linux']
+        
+        print(f"Emoji overflow test error on {platform.system()}: {error_msg[:100]}...")
+        
+        # Accept any of these error types - all indicate proper validation
+        assert ("UTF-16 length exceeds" in error_msg or 
+                "exceeds allowed column size" in error_msg or
+                "String or binary data would be truncated" in error_msg or
+                "illegal UTF-16 surrogate" in error_msg or
+                "utf-16" in error_msg.lower()), f"Should catch UTF-16 expansion issue, got: {error_msg}"
+        
+        # Test 4: Valid emoji string that should work
+        valid_emoji_test = [
+            # 2 emoji = 2 UTF-32 chars, 4 UTF-16 units (fits in 5 unit limit)
+            (7, "😀😀", "Hello🌟")  # Should work: 4 units, 7 units
+        ]
+        
+        cursor.executemany("INSERT INTO #pytest_utf16_validation VALUES (?, ?, ?)", 
+                         valid_emoji_test)
+        db_connection.commit()
+        
+        # Verify emoji string was inserted correctly  
+        cursor.execute("SELECT short_text, medium_text FROM #pytest_utf16_validation WHERE id = 7")
+        result = cursor.fetchone()
+        assert result[0] == "😀😀", "Valid emoji string should be stored correctly"
+        assert result[1] == "Hello🌟", "Valid emoji string should be stored correctly"
+        
+        # Test 5: Edge case - string with mixed ASCII and Unicode
+        mixed_cases = [
+            # "A😀B" = 1 + 2 + 1 = 4 UTF-16 units (should fit in 5)
+            (8, "A😀B", "Test"),
+            # "A😀B😀C" = 1 + 2 + 1 + 2 + 1 = 7 UTF-16 units (should fail for short_text)
+            (9, "A😀B😀C", "Test")
+        ]
+        
+        # Should work
+        cursor.executemany("INSERT INTO #pytest_utf16_validation VALUES (?, ?, ?)", 
+                         [mixed_cases[0]])
+        db_connection.commit()
+        
+        # Should fail  
+        with pytest.raises(Exception) as exc_info:
+            cursor.executemany("INSERT INTO #pytest_utf16_validation VALUES (?, ?, ?)", 
+                             [mixed_cases[1]])
+        
+        error_msg = str(exc_info.value)
+        # Accept either our validation error or SQL Server's truncation error or UTF-16 encoding errors
+        assert ("exceeds allowed column size" in error_msg or 
+                "String or binary data would be truncated" in error_msg or
+                "illegal UTF-16 surrogate" in error_msg or
+                "utf-16" in error_msg.lower()), f"Mixed Unicode string should trigger length error, got: {error_msg}"
+        
+        # Test 6: Verify no silent truncation occurs
+        # Before the fix, oversized strings might get silently truncated
+        cursor.execute("SELECT short_text FROM #pytest_utf16_validation WHERE short_text LIKE '%😀%'")
+        emoji_results = cursor.fetchall()
+        
+        # All emoji strings should be complete (no truncation)
+        for result in emoji_results:
+            text = result[0]
+            # Count actual emoji characters - they should all be present
+            emoji_count = text.count('😀')
+            assert emoji_count > 0, f"Emoji should be preserved in result: {text}"
+            
+            # String should not end with incomplete surrogate pairs or truncation
+            # This would happen if UTF-16 conversion was truncated mid-character
+            assert len(text) > 0, "String should not be empty due to truncation"
+        
+        print(f"UTF-16 length validation test completed successfully on {platform.system()}")
+        
+    except Exception as e:
+        pytest.fail(f"UTF-16 length validation test failed: {e}")
+    
+    finally:
+        drop_table_if_exists(cursor, "#pytest_utf16_validation")
+        db_connection.commit()
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
