@@ -23,6 +23,7 @@ We are making progress - The Public Preview of our driver is now available! This
   - Additional methods: `cursor.commit()`, `table()`
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
+
 If you have any feedback, questions or need support please mail us at mssql-python@microsoft.com.
 
 ### What's Next:
