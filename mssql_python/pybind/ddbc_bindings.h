@@ -1,32 +1,33 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-// INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
-//             taken up in future.
+// INFO|TODO - Note that is file is Windows specific right now. Making it arch
+// agnostic will be taken up in future.
 
 #pragma once
 
-#include <pybind11/pybind11.h> // pybind11.h must be the first include - https://pybind11.readthedocs.io/en/latest/basics.html#header-and-namespace-conventions
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
-#include <pybind11/pytypes.h>  // Add this line for datetime support
+#include <pybind11/pybind11.h>  // pybind11.h must be the first include - https://pybind11.readthedocs.io/en/latest/basics.html#header-and-namespace-conventions
+#include <pybind11/pytypes.h>   // Add this line for datetime support
 #include <pybind11/stl.h>
 namespace py = pybind11;
-using namespace pybind11::literals;
+using pybind11::literals::operator""_a;
 
-#include <string>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <vector>
 
 #ifdef _WIN32
-    // Windows-specific headers
-    #include <Windows.h>  // windows.h needs to be included before sql.h
-    #include <shlwapi.h>
-    #pragma comment(lib, "shlwapi.lib")
-    #define IS_WINDOWS 1
+// Windows-specific headers
+#include <Windows.h>  // windows.h needs to be included before sql.h
+#include <shlwapi.h>
+#pragma comment(lib, "shlwapi.lib")
+#define IS_WINDOWS 1
 #else
-    #define IS_WINDOWS 0
+#define IS_WINDOWS 0
 #endif
 
 #include <sql.h>
@@ -41,24 +42,27 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
 #endif
 
 #if defined(__APPLE__) || defined(__linux__)
-#include <dlfcn.h>
+#include "pybind/unix_buffers.h"  // For Unix-specific buffer handling
+#include "pybind/unix_utils.h"    // For Unix-specific Unicode encoding fixes
 
 // Unicode constants for surrogate ranges and max scalar value
 constexpr uint32_t UNICODE_SURROGATE_HIGH_START = 0xD800;
-constexpr uint32_t UNICODE_SURROGATE_HIGH_END   = 0xDBFF;
-constexpr uint32_t UNICODE_SURROGATE_LOW_START  = 0xDC00;
-constexpr uint32_t UNICODE_SURROGATE_LOW_END    = 0xDFFF;
-constexpr uint32_t UNICODE_MAX_CODEPOINT        = 0x10FFFF;
-constexpr uint32_t UNICODE_REPLACEMENT_CHAR     = 0xFFFD;
+constexpr uint32_t UNICODE_SURROGATE_HIGH_END = 0xDBFF;
+constexpr uint32_t UNICODE_SURROGATE_LOW_START = 0xDC00;
+constexpr uint32_t UNICODE_SURROGATE_LOW_END = 0xDFFF;
+constexpr uint32_t UNICODE_MAX_CODEPOINT = 0x10FFFF;
+constexpr uint32_t UNICODE_REPLACEMENT_CHAR = 0xFFFD;
 
 // Validate whether a code point is a legal Unicode scalar value
 // (excludes surrogate halves and values beyond U+10FFFF)
 inline bool IsValidUnicodeScalar(uint32_t cp) {
     return cp <= UNICODE_MAX_CODEPOINT &&
-           !(cp >= UNICODE_SURROGATE_HIGH_START && cp <= UNICODE_SURROGATE_LOW_END);
+           !(cp >= UNICODE_SURROGATE_HIGH_START &&
+             cp <= UNICODE_SURROGATE_LOW_END);
 }
 
-inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
+inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
+                                      size_t length = SQL_NTS) {
     if (!sqlwStr) return std::wstring();
 
     if (length == SQL_NTS) {
@@ -74,39 +78,55 @@ inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = S
         for (size_t i = 0; i < length; ++i) {
             uint16_t wc = static_cast<uint16_t>(sqlwStr[i]);
             // Check if this is a high surrogate (U+D800–U+DBFF)
-            if (wc >= UNICODE_SURROGATE_HIGH_START && wc <= UNICODE_SURROGATE_HIGH_END && i + 1 < length) {
-                uint16_t low = static_cast<uint16_t>(sqlwStr[i + 1]);
-                // Check if the next code unit is a low surrogate (U+DC00–U+DFFF)
-                if (low >= UNICODE_SURROGATE_LOW_START && low <= UNICODE_SURROGATE_LOW_END) {
+            if (wc >= UNICODE_SURROGATE_HIGH_START &&
+                wc <= UNICODE_SURROGATE_HIGH_END &&
+                i + 1 < length) {
+                uint16_t low =
+                    static_cast<uint16_t>(sqlwStr[i + 1]);
+                // Check if the next code unit is a low surrogate
+                // (U+DC00–U+DFFF)
+                if (low >= UNICODE_SURROGATE_LOW_START &&
+                    low <= UNICODE_SURROGATE_LOW_END) {
                     // Combine surrogate pair into a single code point
-                    uint32_t cp = (((wc - UNICODE_SURROGATE_HIGH_START) << 10) | (low - UNICODE_SURROGATE_LOW_START)) + 0x10000;
-                    result.push_back(static_cast<wchar_t>(cp));
-                    ++i; // Skip the low surrogate
+                    uint32_t cp =
+                        (((wc - UNICODE_SURROGATE_HIGH_START) << 10) |
+                         (low - UNICODE_SURROGATE_LOW_START)) +
+                        0x10000;
+                    result.push_back(
+                        static_cast<wchar_t>(cp));
+                    ++i;  // Skip the low surrogate
                     continue;
                 }
             }
-            // If valid scalar then append, else append replacement char (U+FFFD)
+            // If valid scalar then append, else append replacement char
+            // (U+FFFD)
             if (IsValidUnicodeScalar(wc)) {
-                result.push_back(static_cast<wchar_t>(wc));
+                result.push_back(
+                    static_cast<wchar_t>(wc));
             } else {
-                result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
+                result.push_back(
+                    static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
             }
         }
     } else {
         // SQLWCHAR is UTF-32, so just copy with validation
         for (size_t i = 0; i < length; ++i) {
-            uint32_t cp = static_cast<uint32_t>(sqlwStr[i]);
+            uint32_t cp =
+                static_cast<uint32_t>(sqlwStr[i]);
             if (IsValidUnicodeScalar(cp)) {
-                result.push_back(static_cast<wchar_t>(cp));
+                result.push_back(
+                    static_cast<wchar_t>(cp));
             } else {
-                result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
+                result.push_back(
+                    static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
             }
         }
     }
     return result;
 }
 
-inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
+inline std::vector<SQLWCHAR> WStringToSQLWCHAR(
+    const std::wstring& str) {
     std::vector<SQLWCHAR> result;
     result.reserve(str.size() + 2);
     if constexpr (sizeof(SQLWCHAR) == 2) {
@@ -118,12 +138,17 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
             }
             if (cp <= 0xFFFF) {
                 // Fits in a single UTF-16 code unit
-                result.push_back(static_cast<SQLWCHAR>(cp));
+                result.push_back(
+                    static_cast<SQLWCHAR>(cp));
             } else {
                 // Encode as surrogate pair
                 cp -= 0x10000;
-                SQLWCHAR high = static_cast<SQLWCHAR>((cp >> 10) + UNICODE_SURROGATE_HIGH_START);
-                SQLWCHAR low  = static_cast<SQLWCHAR>((cp & 0x3FF) + UNICODE_SURROGATE_LOW_START);
+                SQLWCHAR high = static_cast<SQLWCHAR>(
+                    (cp >> 10) +
+                    UNICODE_SURROGATE_HIGH_START);
+                SQLWCHAR low = static_cast<SQLWCHAR>(
+                    (cp & 0x3FF) +
+                    UNICODE_SURROGATE_LOW_START);
                 result.push_back(high);
                 result.push_back(low);
             }
@@ -133,20 +158,17 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
         for (wchar_t wc : str) {
             uint32_t cp = static_cast<uint32_t>(wc);
             if (IsValidUnicodeScalar(cp)) {
-                result.push_back(static_cast<SQLWCHAR>(cp));
+                result.push_back(
+                    static_cast<SQLWCHAR>(cp));
             } else {
-                result.push_back(static_cast<SQLWCHAR>(UNICODE_REPLACEMENT_CHAR));
+                result.push_back(
+                    static_cast<SQLWCHAR>(UNICODE_REPLACEMENT_CHAR));
             }
         }
     }
-    result.push_back(0); // null terminator
+    result.push_back(0);  // null terminator
     return result;
 }
-#endif
-
-#if defined(__APPLE__) || defined(__linux__)
-#include "unix_utils.h"  // For Unix-specific Unicode encoding fixes
-#include "unix_buffers.h"  // For Unix-specific buffer handling
 #endif
 
 //-------------------------------------------------------------------------------------------------
@@ -154,68 +176,105 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
 //-------------------------------------------------------------------------------------------------
 
 // Handle APIs
-typedef SQLRETURN (SQL_API* SQLAllocHandleFunc)(SQLSMALLINT, SQLHANDLE, SQLHANDLE*);
-typedef SQLRETURN (SQL_API* SQLSetEnvAttrFunc)(SQLHANDLE, SQLINTEGER, SQLPOINTER, SQLINTEGER);
-typedef SQLRETURN (SQL_API* SQLSetConnectAttrFunc)(SQLHDBC, SQLINTEGER, SQLPOINTER, SQLINTEGER);
-typedef SQLRETURN (SQL_API* SQLSetStmtAttrFunc)(SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER);
-typedef SQLRETURN (SQL_API* SQLGetConnectAttrFunc)(SQLHDBC, SQLINTEGER, SQLPOINTER, SQLINTEGER, SQLINTEGER*);
+typedef SQLRETURN(SQL_API* SQLAllocHandleFunc)(SQLSMALLINT, SQLHANDLE,
+                                               SQLHANDLE*);
+typedef SQLRETURN(SQL_API* SQLSetEnvAttrFunc)(SQLHANDLE, SQLINTEGER,
+                                              SQLPOINTER, SQLINTEGER);
+typedef SQLRETURN(SQL_API* SQLSetConnectAttrFunc)(SQLHDBC, SQLINTEGER,
+                                                  SQLPOINTER, SQLINTEGER);
+typedef SQLRETURN(SQL_API* SQLSetStmtAttrFunc)(SQLHSTMT, SQLINTEGER,
+                                               SQLPOINTER, SQLINTEGER);
+typedef SQLRETURN(SQL_API* SQLGetConnectAttrFunc)(SQLHDBC, SQLINTEGER,
+                                                  SQLPOINTER, SQLINTEGER,
+                                                  SQLINTEGER*);
 
 // Connection and Execution APIs
-typedef SQLRETURN (SQL_API* SQLDriverConnectFunc)(SQLHANDLE, SQLHWND, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*,
-                                          SQLSMALLINT, SQLSMALLINT*, SQLUSMALLINT);
-typedef SQLRETURN (SQL_API* SQLExecDirectFunc)(SQLHANDLE, SQLWCHAR*, SQLINTEGER);
-typedef SQLRETURN (SQL_API* SQLPrepareFunc)(SQLHANDLE, SQLWCHAR*, SQLINTEGER);
-typedef SQLRETURN (SQL_API* SQLBindParameterFunc)(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLSMALLINT,
-                                          SQLSMALLINT, SQLULEN, SQLSMALLINT, SQLPOINTER, SQLLEN,
-                                          SQLLEN*);
-typedef SQLRETURN (SQL_API* SQLExecuteFunc)(SQLHANDLE);
-typedef SQLRETURN (SQL_API* SQLRowCountFunc)(SQLHSTMT, SQLLEN*);
-typedef SQLRETURN (SQL_API* SQLSetDescFieldFunc)(SQLHDESC, SQLSMALLINT, SQLSMALLINT, SQLPOINTER, SQLINTEGER);
-typedef SQLRETURN (SQL_API* SQLGetStmtAttrFunc)(SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER, SQLINTEGER*);
+typedef SQLRETURN(SQL_API* SQLDriverConnectFunc)(
+    SQLHANDLE, SQLHWND, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT,
+    SQLSMALLINT*, SQLUSMALLINT);
+
+typedef SQLRETURN(SQL_API* SQLExecDirectFunc)(
+    SQLHANDLE, SQLWCHAR*, SQLINTEGER);
+
+typedef SQLRETURN(SQL_API* SQLPrepareFunc)(
+    SQLHANDLE, SQLWCHAR*, SQLINTEGER);
+
+typedef SQLRETURN(SQL_API* SQLBindParameterFunc)(
+    SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLSMALLINT, SQLSMALLINT,
+    SQLULEN, SQLSMALLINT, SQLPOINTER, SQLLEN, SQLLEN*);
+
+typedef SQLRETURN(SQL_API* SQLExecuteFunc)(
+    SQLHANDLE);
+
+typedef SQLRETURN(SQL_API* SQLRowCountFunc)(
+    SQLHSTMT, SQLLEN*);
+
+typedef SQLRETURN(SQL_API* SQLSetDescFieldFunc)(
+    SQLHDESC, SQLSMALLINT, SQLSMALLINT, SQLPOINTER, SQLINTEGER);
+
+typedef SQLRETURN(SQL_API* SQLGetStmtAttrFunc)(
+    SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER, SQLINTEGER*);
 
 // Data retrieval APIs
-typedef SQLRETURN (SQL_API* SQLFetchFunc)(SQLHANDLE);
-typedef SQLRETURN (SQL_API* SQLFetchScrollFunc)(SQLHANDLE, SQLSMALLINT, SQLLEN);
-typedef SQLRETURN (SQL_API* SQLGetDataFunc)(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER, SQLLEN,
-                                    SQLLEN*);
-typedef SQLRETURN (SQL_API* SQLNumResultColsFunc)(SQLHSTMT, SQLSMALLINT*);
-typedef SQLRETURN (SQL_API* SQLBindColFunc)(SQLHSTMT, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER, SQLLEN,
-                                    SQLLEN*);
-typedef SQLRETURN (SQL_API* SQLDescribeColFunc)(SQLHSTMT, SQLUSMALLINT, SQLWCHAR*, SQLSMALLINT,
-                                        SQLSMALLINT*, SQLSMALLINT*, SQLULEN*, SQLSMALLINT*,
-                                        SQLSMALLINT*);
-typedef SQLRETURN (SQL_API* SQLMoreResultsFunc)(SQLHSTMT);
-typedef SQLRETURN (SQL_API* SQLColAttributeFunc)(SQLHSTMT, SQLUSMALLINT, SQLUSMALLINT, SQLPOINTER,
-                                         SQLSMALLINT, SQLSMALLINT*, SQLPOINTER);
+typedef SQLRETURN(SQL_API* SQLFetchFunc)(
+    SQLHANDLE);
+
+typedef SQLRETURN(SQL_API* SQLFetchScrollFunc)(
+    SQLHANDLE, SQLSMALLINT, SQLLEN);
+
+typedef SQLRETURN(SQL_API* SQLGetDataFunc)(
+    SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER, SQLLEN, SQLLEN*);
+
+typedef SQLRETURN(SQL_API* SQLNumResultColsFunc)(
+    SQLHSTMT, SQLSMALLINT*);
+
+typedef SQLRETURN(SQL_API* SQLBindColFunc)(
+    SQLHSTMT, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER, SQLLEN, SQLLEN*);
+
+typedef SQLRETURN(SQL_API* SQLDescribeColFunc)(
+    SQLHSTMT, SQLUSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*,
+    SQLSMALLINT*, SQLULEN*, SQLSMALLINT*, SQLSMALLINT*);
+
+typedef SQLRETURN(SQL_API* SQLMoreResultsFunc)(
+    SQLHSTMT);
+
+typedef SQLRETURN(SQL_API* SQLColAttributeFunc)(
+    SQLHSTMT, SQLUSMALLINT, SQLUSMALLINT, SQLPOINTER, SQLSMALLINT,
+    SQLSMALLINT*, SQLPOINTER);
+
 typedef SQLRETURN (*SQLTablesFunc)(
-    SQLHSTMT       StatementHandle,
-    SQLWCHAR*      CatalogName,
-    SQLSMALLINT    NameLength1,
-    SQLWCHAR*      SchemaName,
-    SQLSMALLINT    NameLength2,
-    SQLWCHAR*      TableName,
-    SQLSMALLINT    NameLength3,
-    SQLWCHAR*      TableType,
-    SQLSMALLINT    NameLength4
-);
-                                         
+    SQLHSTMT StatementHandle, SQLWCHAR* CatalogName, SQLSMALLINT NameLength1,
+    SQLWCHAR* SchemaName, SQLSMALLINT NameLength2, SQLWCHAR* TableName,
+    SQLSMALLINT NameLength3, SQLWCHAR* TableType, SQLSMALLINT NameLength4);
+
 // Transaction APIs
-typedef SQLRETURN (SQL_API* SQLEndTranFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT);
+typedef SQLRETURN(SQL_API* SQLEndTranFunc)(
+    SQLSMALLINT, SQLHANDLE, SQLSMALLINT);
 
 // Disconnect/free APIs
-typedef SQLRETURN (SQL_API* SQLFreeHandleFunc)(SQLSMALLINT, SQLHANDLE);
-typedef SQLRETURN (SQL_API* SQLDisconnectFunc)(SQLHDBC);
-typedef SQLRETURN (SQL_API* SQLFreeStmtFunc)(SQLHSTMT, SQLUSMALLINT);
+typedef SQLRETURN(SQL_API* SQLFreeHandleFunc)(
+    SQLSMALLINT, SQLHANDLE);
+
+typedef SQLRETURN(SQL_API* SQLDisconnectFunc)(
+    SQLHDBC);
+
+typedef SQLRETURN(SQL_API* SQLFreeStmtFunc)(
+    SQLHSTMT, SQLUSMALLINT);
 
 // Diagnostic APIs
-typedef SQLRETURN (SQL_API* SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLWCHAR*, SQLINTEGER*,
-                                       SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*);
+typedef SQLRETURN(SQL_API* SQLGetDiagRecFunc)(
+    SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLWCHAR*, SQLINTEGER*, SQLWCHAR*,
+    SQLSMALLINT, SQLSMALLINT*);
 
-typedef SQLRETURN (SQL_API* SQLDescribeParamFunc)(SQLHSTMT, SQLUSMALLINT, SQLSMALLINT*, SQLULEN*, SQLSMALLINT*, SQLSMALLINT*);
+typedef SQLRETURN(SQL_API* SQLDescribeParamFunc)(
+    SQLHSTMT, SQLUSMALLINT, SQLSMALLINT*, SQLULEN*, SQLSMALLINT*, SQLSMALLINT*);
 
 // DAE APIs
-typedef SQLRETURN (SQL_API* SQLParamDataFunc)(SQLHSTMT, SQLPOINTER*);
-typedef SQLRETURN (SQL_API* SQLPutDataFunc)(SQLHSTMT, SQLPOINTER, SQLLEN);
+typedef SQLRETURN(SQL_API* SQLParamDataFunc)(
+    SQLHSTMT, SQLPOINTER*);
+
+typedef SQLRETURN(SQL_API* SQLPutDataFunc)(
+    SQLHSTMT, SQLPOINTER, SQLLEN);
 //-------------------------------------------------------------------------------------------------
 // Extern function pointer declarations (defined in ddbc_bindings.cpp)
 //-------------------------------------------------------------------------------------------------
@@ -280,7 +339,7 @@ typedef void* DriverHandle;
 #endif
 
 // Platform-agnostic function to get a function pointer from the loaded library
-template<typename T>
+template <typename T>
 T GetFunctionPointer(DriverHandle handle, const char* functionName) {
 #ifdef _WIN32
     // Windows: Use GetProcAddress
@@ -300,23 +359,25 @@ DriverHandle LoadDriverOrThrowException();
 //-------------------------------------------------------------------------------------------------
 // DriverLoader (Singleton)
 //
-// Ensures the ODBC driver and all function pointers are loaded exactly once across the process.
-// This avoids redundant work and ensures thread-safe, centralized initialization.
+// Ensures the ODBC driver and all function pointers are loaded exactly once
+// across the process. This avoids redundant work and ensures thread-safe,
+// centralized initialization.
 //
 // Not copyable or assignable.
 //-------------------------------------------------------------------------------------------------
 class DriverLoader {
-    public:
-        static DriverLoader& getInstance();
-        void loadDriver();
-    private:
-        DriverLoader();
-        DriverLoader(const DriverLoader&) = delete;
-        DriverLoader& operator=(const DriverLoader&) = delete;
+ public:
+    static DriverLoader& getInstance();
+    void loadDriver();
 
-        bool m_driverLoaded;
-        std::once_flag m_onceFlag;
-    };
+ private:
+    DriverLoader();
+    DriverLoader(const DriverLoader&) = delete;
+    DriverLoader& operator=(const DriverLoader&) = delete;
+
+    bool m_driverLoaded;
+    std::once_flag m_onceFlag;
+};
 
 //-------------------------------------------------------------------------------------------------
 // SqlHandle
@@ -325,36 +386,43 @@ class DriverLoader {
 // Use `std::shared_ptr<SqlHandle>` (alias: SqlHandlePtr) for shared ownership.
 //-------------------------------------------------------------------------------------------------
 class SqlHandle {
-    public:
-        SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle);
-        ~SqlHandle();
-        SQLHANDLE get() const;
-        SQLSMALLINT type() const;
-        void free();
-    private:
-        SQLSMALLINT _type;
-        SQLHANDLE _handle;
-    };
-    using SqlHandlePtr = std::shared_ptr<SqlHandle>;
+ public:
+    SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle);
+    ~SqlHandle();
+    SQLHANDLE get() const;
+    SQLSMALLINT type() const;
+    void free();
 
-// This struct is used to relay error info obtained from SQLDiagRec API to the Python module
+ private:
+    SQLSMALLINT _type;
+    SQLHANDLE _handle;
+};
+using SqlHandlePtr = std::shared_ptr<SqlHandle>;
+
+// This struct is used to relay error info obtained from SQLDiagRec API to the
+// Python module
 struct ErrorInfo {
     std::wstring sqlState;
     std::wstring ddbcErrorMsg;
 };
-ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);
+ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle,
+                                                         SQLRETURN retcode);
 
 inline std::string WideToUTF8(const std::wstring& wstr) {
     if (wstr.empty()) return {};
 #if defined(_WIN32)
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+    int size_needed = WideCharToMultiByte(
+            CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()),
+            nullptr, 0, nullptr, nullptr);
     if (size_needed == 0) return {};
     std::string result(size_needed, 0);
-    int converted = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), result.data(), size_needed, nullptr, nullptr);
+    int converted = WideCharToMultiByte(
+            CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()),
+            result.data(), size_needed, nullptr, nullptr);
     if (converted == 0) return {};
     return result;
 #else
-    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t> > converter;
     return converter.to_bytes(wstr);
 #endif
 }
@@ -362,17 +430,20 @@ inline std::string WideToUTF8(const std::wstring& wstr) {
 inline std::wstring Utf8ToWString(const std::string& str) {
     if (str.empty()) return {};
 #if defined(_WIN32)
-    int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
+    int size_needed = MultiByteToWideChar(
+            CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
     if (size_needed == 0) {
         LOG("MultiByteToWideChar failed.");
         return {};
     }
     std::wstring result(size_needed, 0);
-    int converted = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), result.data(), size_needed);
+    int converted = MultiByteToWideChar(
+            CP_UTF8, 0, str.data(), static_cast<int>(str.size()),
+            result.data(), size_needed);
     if (converted == 0) return {};
     return result;
 #else
-    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t> > converter;
     return converter.from_bytes(str);
 #endif
 }
