@@ -1,6 +1,6 @@
 # mssql-python
 
-This is a new Python driver for Microsoft SQL Server currently in Alpha phase.
+This is a new Python driver for Microsoft SQL Server currently in Public Preview phase.
 
 ## Public Preview Release
 
@@ -9,9 +9,11 @@ We are making progress - The Public Preview of our driver is now available! This
 ### What's Included:
 
 - Everything from previous releases
-- **Alpine Linux Support:** Added full support for Alpine Linux distribution (musllinux) with specialized driver handling and fixes for musl libc compatibility.
-- **Connection Management Improvements:** Fixed autocommit to be False by default and added automatic rollback on connection close for better transaction control.
-- **PyODBC Compatibility:** Enhanced type objects and constructor compatibility with pyodbc for seamless migration and interoperability.
+- **Linux Platform Expansion:** Added full support for SUSE and openSUSE distributions alongside existing Alpine Linux support, broadening enterprise Linux compatibility.
+- **Context Manager Support:** Implemented Python `with` statement support for Connection and Cursor classes with automatic transaction management and resource cleanup.
+- **Large Data Streaming:** Added Data At Execution (DAE) support for streaming large text and binary parameters, eliminating memory constraints for bulk operations.
+- **Enhanced Unicode Handling:** Improved emoji and international character support with robust UTF-16 encoding for reliable multilingual data processing.
+- **DB-API 2.0 Compliance:** Added standard exception classes and improved API consistency for seamless migration from other Python database drivers.
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
 
