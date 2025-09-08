@@ -9,7 +9,7 @@ We are making progress - The Public Preview of our driver is now available! This
 ### What's Included:
 
 - Everything from previous releases
-- **Linux Platform Expansion:** Added full support for SUSE and openSUSE distributions alongside existing Alpine Linux support, broadening enterprise Linux compatibility.
+- **SUSE Linux Support:** Added full support for SUSE and openSUSE distributions alongside existing Alpine Linux support, broadening enterprise Linux compatibility.
 - **Context Manager Support:** Implemented Python `with` statement support for Connection and Cursor classes with automatic transaction management and resource cleanup.
 - **Large Data Streaming:** Added Data At Execution (DAE) support for streaming large text and binary parameters, eliminating memory constraints for bulk operations.
 - **Enhanced Unicode Handling:** Improved emoji and international character support with robust UTF-16 encoding for reliable multilingual data processing.
