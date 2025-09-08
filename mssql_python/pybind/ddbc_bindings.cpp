@@ -1352,11 +1352,25 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                             std::memset(wcharArray + i * (info.columnSize + 1), 0, (info.columnSize + 1) * sizeof(SQLWCHAR));
                         } else {
                             std::wstring wstr = columnValues[i].cast<std::wstring>();
+#if defined(__APPLE__) || defined(__linux__)
+                            // Convert to UTF-16 first, then check the actual UTF-16 length
+                            auto utf16Buf = WStringToSQLWCHAR(wstr);
+                            // Check UTF-16 length (excluding null terminator) against column size
+                            if (utf16Buf.size() > 0 && (utf16Buf.size() - 1) > info.columnSize) {
+                                std::string offending = WideToUTF8(wstr);
+                                ThrowStdException("Input string UTF-16 length exceeds allowed column size at parameter index " + std::to_string(paramIndex) + 
+                                    ". UTF-16 length: " + std::to_string(utf16Buf.size() - 1) + ", Column size: " + std::to_string(info.columnSize));
+                            }
+                            // If we reach here, the UTF-16 string fits - copy it completely
+                            std::memcpy(wcharArray + i * (info.columnSize + 1), utf16Buf.data(), utf16Buf.size() * sizeof(SQLWCHAR));
+#else
+                            // On Windows, wchar_t is already UTF-16, so the original check is sufficient
                             if (wstr.length() > info.columnSize) {
                                 std::string offending = WideToUTF8(wstr);
                                 ThrowStdException("Input string exceeds allowed column size at parameter index " + std::to_string(paramIndex));
                             }
                             std::memcpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(), (wstr.length() + 1) * sizeof(SQLWCHAR));
+#endif
                             strLenOrIndArray[i] = SQL_NTS;
                         }
                     }
