@@ -1369,6 +1369,7 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                                 std::string offending = WideToUTF8(wstr);
                                 ThrowStdException("Input string exceeds allowed column size at parameter index " + std::to_string(paramIndex));
                             }
+                            std::memcpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(), (wstr.length() + 1) * sizeof(SQLWCHAR));
 #endif
                             strLenOrIndArray[i] = SQL_NTS;
                         }
