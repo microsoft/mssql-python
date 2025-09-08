@@ -20,7 +20,7 @@ We are making progress - The Public Preview of our driver is now available! This
   - Encoding configuration APIs: `setencoding()`, `getencoding()`, `setdecoding()`, `getdecoding()`
   - Cursor navigation APIs: `next()`, `__iter__()`, `scroll()`, `skip()`, `fetchval()`
   - Cursor attributes: `rownumber`, `messages`
-  - Additional methods: `cursor.commit()`, `cursor.rollback()` `table()`
+  - Additional methods: `cursor.commit()`, `cursor.rollback()`, `table()`
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
 
