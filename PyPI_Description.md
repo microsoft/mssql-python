@@ -11,7 +11,7 @@ We are making progress - The Public Preview of our driver is now available! This
 - Everything from previous releases
 - **SUSE Linux Support:** Added full support for SUSE and openSUSE distributions alongside existing Alpine Linux support, broadening enterprise Linux compatibility.
 - **Context Manager Support:** Implemented Python `with` statement support for Connection and Cursor classes with automatic transaction management and resource cleanup.
-- **Large Data Streaming:** Added Data At Execution (DAE) support for streaming large text and binary parameters, eliminating memory constraints for bulk operations.
+- **Large Text Streaming:** Added Data At Execution (DAE) support for streaming large text parameters, eliminating memory constraints for bulk text operations.
 - **Enhanced Unicode Handling:** Improved emoji and international character support with robust UTF-16 encoding for reliable multilingual data processing.
 - **DB-API 2.0 Compliance:** Added standard exception classes and improved API consistency for seamless migration from pyodbc.
 
