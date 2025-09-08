@@ -13,7 +13,7 @@ We are making progress - The Public Preview of our driver is now available! This
 - **Context Manager Support:** Implemented Python `with` statement support for Connection and Cursor classes with automatic transaction management and resource cleanup.
 - **Large Data Streaming:** Added Data At Execution (DAE) support for streaming large text and binary parameters, eliminating memory constraints for bulk operations.
 - **Enhanced Unicode Handling:** Improved emoji and international character support with robust UTF-16 encoding for reliable multilingual data processing.
-- **DB-API 2.0 Compliance:** Added standard exception classes and improved API consistency for seamless migration from other Python database drivers.
+- **DB-API 2.0 Compliance:** Added standard exception classes and improved API consistency for seamless migration from pyodbc.
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
 
