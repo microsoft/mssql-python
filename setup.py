@@ -88,7 +88,7 @@ setup(
     long_description=open('PyPI_Description.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
     author='Microsoft Corporation',
-    author_email='pysqldriver@microsoft.com',
+    author_email='mssql-python@microsoft.com',
     url='https://github.com/microsoft/mssql-python',
     packages=packages,
     package_data={
