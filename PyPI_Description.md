@@ -4,7 +4,7 @@ This is a new Python driver for Microsoft SQL Server currently in Public Preview
 
 ## Public Preview Release
 
-We are making progress - The Public Preview of our driver is now available! This marks a significant milestone in our development journey. While we saw a few early adopters of our alpha release, we are introducing the following functionalities to support your applications in a more robust and reliable manner.
+We are making progress - The Public Preview of our driver is now available! This marks a significant milestone in our development journey. While we saw a few early adopters of our public preview release, we are introducing the following functionalities to support your applications in a more robust and reliable manner.
 
 ### What's Included:
 
