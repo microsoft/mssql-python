@@ -753,6 +753,11 @@ class Cursor:
 # Executing a new statement. Reset is_stmt_prepared to false
             self.is_stmt_prepared = [False]
 
+        # Enhanced multi-statement handling - pyodbc approach
+        # Apply SET NOCOUNT ON to all multi-statement queries to prevent result set issues
+        if self._is_multistatement_query(operation):
+            operation = self._add_nocount_to_multistatement_sql(operation)
+
         log('debug', "Executing query: %s", operation)
         for i, param in enumerate(parameters):
             log('debug',
@@ -1426,3 +1431,32 @@ class Cursor:
             result_rows.append(row)
         
         return result_rows
+    
+    def _is_multistatement_query(self, sql: str) -> bool:
+        """Detect if this is a multi-statement query that could benefit from SET NOCOUNT ON"""
+        sql_lower = sql.lower().strip()
+        
+        # Skip if already has SET NOCOUNT
+        if sql_lower.startswith('set nocount'):
+            return False
+            
+        # Detect multiple statements by counting SQL keywords and separators
+        statement_indicators = (
+            sql_lower.count('select') + sql_lower.count('insert') + 
+            sql_lower.count('update') + sql_lower.count('delete') + 
+            sql_lower.count('create') + sql_lower.count('drop') +
+            sql_lower.count('alter') + sql_lower.count('exec')
+        )
+        
+        # Also check for explicit statement separators
+        has_separators = ';' in sql_lower or '\n\n' in sql
+        
+        # Consider it multi-statement if multiple SQL operations or explicit separators
+        return statement_indicators > 1 or has_separators
+
+    def _add_nocount_to_multistatement_sql(self, sql: str) -> str:
+        """Add SET NOCOUNT ON to multi-statement SQL - pyodbc approach"""
+        sql = sql.strip()
+        if not sql.upper().startswith('SET NOCOUNT'):
+            sql = 'SET NOCOUNT ON;\n' + sql
+        return sql
