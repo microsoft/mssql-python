@@ -3,6 +3,7 @@
 
 // INFO|TODO - Note that is file is Windows specific right now.
 // Making it arch agnostic will be taken up in beta release
+#include <filesystem>
 #include <cstdint>
 #include <iomanip>  // std::setw, std::setfill
 #include <iostream>
@@ -1710,6 +1711,7 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                             }
                             std::memcpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(), (wstr.length() + 1) * sizeof(SQLWCHAR));
                             strLenOrIndArray[i] = SQL_NTS;
+#endif
                         }
                     }
                     dataPtr = wcharArray;
@@ -2330,8 +2332,8 @@ SQLRETURN SQLGetData_wrap(
                             row.append(std::wstring(dataBuffer.data()));
 #endif
                         } else {
-                            // In this case, buffer size is 
-                            // smaller, and data to be retrieved is longer
+                            // In this case, buffer size is smaller,
+                            // and data to be retrieved is longer
                             // TODO: Revisit
                             std::ostringstream oss;
                             oss << "Buffer length for fetch (" <<
