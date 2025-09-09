@@ -287,7 +287,7 @@ class Cursor:
         # Detect MONEY / SMALLMONEY range
             if -214748.3648 <= param <= 214748.3647:
                 # smallmoney
-                parameters_list[i] = str(param)  # let SQL Server handle rounding to 4 decimals
+                parameters_list[i] = str(param)
                 return (
                     ddbc_sql_const.SQL_VARCHAR.value,
                     ddbc_sql_const.SQL_C_CHAR.value,
@@ -315,19 +315,6 @@ class Cursor:
                     parameters_list[i].scale,
                     False,
                 )
-
-        
-        # if isinstance(param, decimal.Decimal):
-        #     parameters_list[i] = self._get_numeric_data(
-        #         param
-        #     )  # Replace the parameter with the dictionary
-        #     return (
-        #         ddbc_sql_const.SQL_NUMERIC.value,
-        #         ddbc_sql_const.SQL_C_NUMERIC.value,
-        #         parameters_list[i].precision,
-        #         parameters_list[i].scale,
-        #         False,
-        #     )
 
         if isinstance(param, str):
             if (
