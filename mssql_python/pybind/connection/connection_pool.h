@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-// INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
+// INFO|TODO - Note that is file is Windows specific right now.
+//             Making it arch agnostic will be
 //             taken up in future.
 
 #pragma once
@@ -33,7 +34,8 @@ class ConnectionPool {
 
  private:
     size_t _max_size;        // Maximum number of connections allowed
-    int _idle_timeout_secs;  // Idle time before connections are considered stale
+    // Idle time before connections are considered stale
+    int _idle_timeout_secs;
     size_t _current_size = 0;
     std::deque<std::shared_ptr<Connection>> _pool;  // Available connections
     std::mutex _mutex;  // Mutex for thread-safe access

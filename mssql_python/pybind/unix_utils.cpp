@@ -13,15 +13,19 @@
 
 #if defined(__APPLE__) || defined(__linux__)
 // Constants for character encoding
-const char* kOdbcEncoding = "utf-16-le";  // ODBC uses UTF-16LE for SQLWCHAR
-const size_t kUcsLength = 2;              // SQLWCHAR is 2 bytes on all platforms
+// ODBC uses UTF-16LE for SQLWCHAR
+const char* kOdbcEncoding = "utf-16-le";
+// SQLWCHAR is 2 bytes on all platforms
+const size_t kUcsLength = 2;
 
 // TODO: Make Logger a separate module and import it across the project
 template <typename... Args>
 void LOG(const std::string& formatString, Args&&... args) {
     py::gil_scoped_acquire gil;  // <---- this ensures safe Python API usage
 
-    py::object logger = py::module_::import("mssql_python.logging_config").attr("get_logger")();
+    py::object logger =
+        py::module_::import(
+            "mssql_python.logging_config").attr("get_logger")();
     if (py::isinstance<py::none>(logger)) return;
 
     try {
@@ -29,7 +33,9 @@ void LOG(const std::string& formatString, Args&&... args) {
         if constexpr (sizeof...(args) == 0) {
             logger.attr("debug")(py::str(ddbcFormatString));
         } else {
-            py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
+            py::str message =
+                py::str(ddbcFormatString).format(
+                    std::forward<Args>(args)...);
             logger.attr("debug")(message);
         }
     } catch (const std::exception& e) {
@@ -38,7 +44,9 @@ void LOG(const std::string& formatString, Args&&... args) {
 }
 
 // Function to convert SQLWCHAR strings to std::wstring on macOS
-std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
+std::wstring SQLWCHARToWString(
+    const SQLWCHAR* sqlwStr,
+    size_t length = SQL_NTS) {
     if (!sqlwStr) return std::wstring();
 
     if (length == SQL_NTS) {
@@ -58,14 +66,19 @@ std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS)
     // Convert UTF-16LE to std::wstring (UTF-32 on macOS)
     try {
         // Use C++11 codecvt to convert between UTF-16LE and wstring
-        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t, 0x10ffff, std::little_endian>>
+        std::wstring_convert<
+            std::codecvt_utf8_utf16<
+            wchar_t, 0x10ffff, std::little_endian>>
             converter;
         return converter.from_bytes(
             reinterpret_cast<const char*>(utf16Bytes.data()),
-            reinterpret_cast<const char*>(utf16Bytes.data() + utf16Bytes.size()));
+            reinterpret_cast<const char*>(
+                utf16Bytes.data() + utf16Bytes.size()));
     } catch (const std::exception& e) {
         // Log a warning about using fallback conversion
-        LOG("Warning: Using fallback string conversion on macOS. Character data might be inexact.");
+        LOG(
+            "Warning: Using fallback string conversion on macOS."
+            " Character data might be inexact.");
         // Fallback to character-by-character conversion if codecvt fails
         std::wstring result;
         result.reserve(length);
@@ -80,7 +93,10 @@ std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS)
 std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
     try {
         // Convert wstring (UTF-32 on macOS) to UTF-16LE bytes
-        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t, 0x10ffff, std::little_endian>>
+        std::wstring_convert<
+            std::codecvt_utf8_utf16<
+                wchar_t, 0x10ffff,
+                std::little_endian>>
             converter;
         std::string utf16Bytes = converter.to_bytes(str);
 
@@ -93,10 +109,12 @@ std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
         return result;
     } catch (const std::exception& e) {
         // Log a warning about using fallback conversion
-        LOG("Warning: Using fallback conversion for std::wstring to SQLWCHAR on macOS. Character "
+        LOG("Warning: Using fallback conversion for"
+            " std::wstring to SQLWCHAR on macOS. Character "
             "data might be inexact.");
         // Fallback to simple casting if codecvt fails
-        std::vector<SQLWCHAR> result(str.size() + 1, 0);  // +1 for null terminator
+        // +1 for null terminator
+        std::vector<SQLWCHAR> result(str.size() + 1, 0);
         for (size_t i = 0; i < str.size(); ++i) {
             result[i] = static_cast<SQLWCHAR>(str[i]);
         }
@@ -120,14 +138,18 @@ std::string SQLWCHARToUTF8String(const SQLWCHAR* buffer) {
     }
 
     try {
-        std::wstring_convert<std::codecvt_utf8_utf16<char16_t, 0x10ffff, std::little_endian>>
+        std::wstring_convert<
+            std::codecvt_utf8_utf16<
+            char16_t, 0x10ffff, std::little_endian>>
             converter;
         return converter.to_bytes(
             reinterpret_cast<const char16_t*>(utf16Bytes.data()),
-            reinterpret_cast<const char16_t*>(utf16Bytes.data() + utf16Bytes.size()));
+            reinterpret_cast<const char16_t*>(
+                utf16Bytes.data() + utf16Bytes.size()));
     } catch (const std::exception& e) {
         // Log a warning about using fallback conversion
-        LOG("Warning: Using fallback conversion for SQLWCHAR to UTF-8 on macOS. Character data "
+        LOG("Warning: Using fallback conversion for "
+            "SQLWCHAR to UTF-8 on macOS. Character data "
             "might be inexact.");
         // Simple fallback conversion
         std::string result;
