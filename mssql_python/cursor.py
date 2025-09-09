@@ -965,6 +965,11 @@ class Cursor:
 # Executing a new statement. Reset is_stmt_prepared to false
             self.is_stmt_prepared = [False]
 
+        # Enhanced multi-statement handling - pyodbc approach
+        # Apply SET NOCOUNT ON to all multi-statement queries to prevent result set issues
+        if self._is_multistatement_query(operation):
+            operation = self._add_nocount_to_multistatement_sql(operation)
+
         log('debug', "Executing query: %s", operation)
         for i, param in enumerate(parameters):
             log('debug',
