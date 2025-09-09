@@ -21,13 +21,13 @@ using pybind11::literals::operator""_a;
 #include <vector>
 
 #ifdef _WIN32
-// Windows-specific headers
-#include <Windows.h>  // windows.h needs to be included before sql.h
-#include <shlwapi.h>
-#pragma comment(lib, "shlwapi.lib")
-#define IS_WINDOWS 1
+    // Windows-specific headers
+    #include <Windows.h>  // windows.h needs to be included before sql.h
+    #include <shlwapi.h>
+    #pragma comment(lib, "shlwapi.lib")
+    #define IS_WINDOWS 1
 #else
-#define IS_WINDOWS 0
+    #define IS_WINDOWS 0
 #endif
 
 #include <sql.h>
@@ -42,8 +42,9 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
 #endif
 
 #if defined(__APPLE__) || defined(__linux__)
-#include "unix_buffers.h"  // For Unix-specific buffer handling
-#include "unix_utils.h"    // For Unix-specific Unicode encoding fixes
+    #include <dlfcn.h>  // For dlsym, dlopen, and other dynamic linking functions
+    #include "unix_buffers.h"  // For Unix-specific buffer handling
+    #include "unix_utils.h"    // For Unix-specific Unicode encoding fixes
 
 // Unicode constants for surrogate ranges and max scalar value
 constexpr uint32_t UNICODE_SURROGATE_HIGH_START = 0xD800;
