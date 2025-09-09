@@ -1751,6 +1751,96 @@ SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
     return SQLFetch_ptr(StatementHandle->get());
 }
 
+static py::object FetchLobColumnData(SQLHSTMT hStmt,
+                                     SQLUSMALLINT colIndex,
+                                     SQLSMALLINT cType,
+                                     bool isWideChar,
+                                     bool isBinary)
+{
+    std::vector<char> buffer;
+    SQLLEN indicator = 0;
+    SQLRETURN ret;
+    int loopCount = 0;
+
+    while (true) {
+        ++loopCount;
+        std::vector<char> chunk(DAE_CHUNK_SIZE);
+        ret = SQLGetData_ptr(
+            hStmt,
+            colIndex,
+            cType,
+            chunk.data(),
+            DAE_CHUNK_SIZE,
+            &indicator
+        );
+        if (indicator == SQL_NULL_DATA) {
+            LOG("Loop {}: Column {} is NULL", loopCount, colIndex);
+            return py::none();
+        }
+        if (!SQL_SUCCEEDED(ret) && ret != SQL_SUCCESS_WITH_INFO) {
+            LOG("Loop {}: Error fetching col={} with cType={} ret={}", loopCount, colIndex, cType, ret);
+            return py::none();
+        }
+        SQLLEN copyCount = 0;
+        if (indicator > 0 && indicator != SQL_NO_TOTAL) {
+            copyCount = std::min<SQLLEN>(indicator, DAE_CHUNK_SIZE);
+        } else {
+            copyCount = DAE_CHUNK_SIZE;
+        }
+
+        // Check if last byte(s) is a null terminator
+        if (copyCount > 0) {
+            if (!isWideChar && chunk[copyCount - 1] == '\0') {
+                --copyCount;
+                LOG("Loop {}: Trimmed null terminator (narrow)", loopCount);
+            } else if (copyCount >= sizeof(wchar_t)) {
+                auto wcharBuf = reinterpret_cast<const wchar_t*>(chunk.data());
+                if (wcharBuf[(copyCount / sizeof(wchar_t)) - 1] == L'\0') {
+                    copyCount -= sizeof(wchar_t);
+                    LOG("Loop {}: Trimmed null terminator (wide)", loopCount);
+                }
+            }
+        }
+        if (copyCount > 0 && indicator != 0) {
+            buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + copyCount);
+            LOG("Loop {}: Appended {} bytes", loopCount, copyCount);
+        }
+        if (ret == SQL_SUCCESS) {
+            LOG("Loop {}: SQL_SUCCESS → no more data", loopCount);
+            break;
+        }
+    }
+    LOG("FetchLobColumnData: Total bytes collected = {}", buffer.size());
+
+    // Handle zero-length buffers correctly
+    if (buffer.empty()) {
+        if (isBinary) {
+            LOG("FetchLobColumnData: Returning empty bytes for binary column {}", colIndex);
+            return py::bytes(nullptr, 0);
+        } else if (isWideChar) {
+            LOG("FetchLobColumnData: Returning empty string for wide text column {}", colIndex);
+            return py::str("");
+        } else {
+            LOG("FetchLobColumnData: Returning empty string for narrow text column {}", colIndex);
+            return py::str("");
+        }
+    }
+
+    if (isWideChar) {
+        std::wstring wstr(reinterpret_cast<const wchar_t*>(buffer.data()),
+                          buffer.size() / sizeof(wchar_t));
+        LOG("FetchLobColumnData: Returning wide string of length {}", wstr.length());
+        return py::cast(wstr);
+    }
+    if (isBinary) {
+        LOG("FetchLobColumnData: Returning binary of {} bytes", buffer.size());
+        return py::bytes(buffer.data(), buffer.size());
+    }
+    std::string str(buffer.data(), buffer.size());
+    LOG("FetchLobColumnData: Returning narrow string of length {}", str.length());
+    return py::str(str);
+}
+
 // Helper function to retrieve column data
 // TODO: Handle variable length data correctly
 SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, py::list& row) {
@@ -2059,45 +2149,39 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_BINARY:
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY: {
-                // TODO: revisit
-                HandleZeroColumnSizeAtFetch(columnSize);
-                std::unique_ptr<SQLCHAR[]> dataBuffer(new SQLCHAR[columnSize]);
-                SQLLEN dataLen;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_BINARY, dataBuffer.get(), columnSize, &dataLen);
+                // Use streaming for large VARBINARY (columnSize unknown or > 8000)
+                if (columnSize == SQL_NO_TOTAL || columnSize == 0 || columnSize > 8000) {
+                    LOG("Streaming LOB for column {} (VARBINARY)", i);
+                    row.append(FetchLobColumnData(hStmt, i, SQL_C_BINARY, false, true));
+                } else {
+                    // Small VARBINARY, fetch directly
+                    std::vector<SQLCHAR> dataBuffer(columnSize);
+                    SQLLEN dataLen;
+                    ret = SQLGetData_ptr(hStmt, i, SQL_C_BINARY, dataBuffer.data(), columnSize, &dataLen);
 
-                if (SQL_SUCCEEDED(ret)) {
-                    // TODO: Refactor these if's across other switches to avoid code duplication
-                    if (dataLen > 0) {
-						if (static_cast<size_t>(dataLen) <= columnSize) {
-                            row.append(py::bytes(reinterpret_cast<const char*>(
-                                dataBuffer.get()), dataLen));
-						} else {
-                            // In this case, buffer size is smaller, and data to be retrieved is longer
-                            // TODO: Revisit
-                            std::ostringstream oss;
-                            oss << "Buffer length for fetch (" << columnSize << ") is smaller, & data "
-                                << "to be retrieved is longer (" << dataLen << "). ColumnID - "
-                                << i << ", datatype - " << dataType;
-                            ThrowStdException(oss.str());
+                    if (SQL_SUCCEEDED(ret)) {
+                        if (dataLen > 0) {
+                            if (static_cast<size_t>(dataLen) <= columnSize) {
+                                row.append(py::bytes(reinterpret_cast<const char*>(dataBuffer.data()), dataLen));
+                            } else {
+                                std::ostringstream oss;
+                                oss << "Buffer length for fetch (" << columnSize << ") is smaller than actual data ("
+                                    << dataLen << "). ColumnID - " << i << ", datatype - " << dataType;
+                                ThrowStdException(oss.str());
+                            }
+                        } else if (dataLen == SQL_NULL_DATA) {
+                            row.append(py::none());
+                        } else if (dataLen == 0) {
+                            row.append(py::bytes(""));
+                        } else {
+                            LOG("SQLGetData returned unexpected negative length: {}. Column ID - {}", dataLen, i);
+                            ThrowStdException("Unexpected negative SQLGetData length");
                         }
-				    } else if (dataLen == SQL_NULL_DATA) {
-					    row.append(py::none());
-                    } else if (dataLen == 0) {
-                        // Empty bytes
-                        row.append(py::bytes(""));
-                    } else if (dataLen < 0) {
-                        // This is unexpected
-                        LOG("SQLGetData returned an unexpected negative data length. "
-                            "Raising exception. Column ID - {}, Data Type - {}, Data Length - {}",
-                            i, dataType, dataLen);
-                        ThrowStdException("SQLGetData returned an unexpected negative data length");
+                    } else {
+                        LOG("Error retrieving VARBINARY data for column {}. SQLGetData rc = {}", i, ret);
+                        row.append(py::none());
                     }
-				} else {
-					LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
-						"code - {}. Returning NULL value instead",
-						i, dataType, ret);
-					row.append(py::none());
-				}
+                }
                 break;
             }
             case SQL_TINYINT: {
@@ -2342,7 +2426,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
 // Fetch rows in batches
 // TODO: Move to anonymous namespace, since it is not used outside this file
 SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
-                         py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched) {
+                         py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched, const std::vector<SQLUSMALLINT>& lobColumns) {
     LOG("Fetching data in batches");
     SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
     if (ret == SQL_NO_DATA) {
@@ -2539,21 +2623,12 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_BINARY:
                 case SQL_VARBINARY:
                 case SQL_LONGVARBINARY: {
-                    // TODO: variable length data needs special handling, this logic wont suffice
                     SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
-                    HandleZeroColumnSizeAtFetch(columnSize);
-                    if (static_cast<size_t>(dataLen) <= columnSize) {
-                        row.append(py::bytes(reinterpret_cast<const char*>(
-                                                 &buffers.charBuffers[col - 1][i * columnSize]),
-                                             dataLen));
+                    bool isLob = std::find(lobColumns.begin(), lobColumns.end(), col) != lobColumns.end();
+                    if (!isLob && static_cast<size_t>(dataLen) <= columnSize) {
+                        row.append(py::bytes(reinterpret_cast<const char*>(&buffers.charBuffers[col - 1][i * columnSize]), dataLen));
                     } else {
-                        // In this case, buffer size is smaller, and data to be retrieved is longer
-                        // TODO: Revisit
-                        std::ostringstream oss;
-                        oss << "Buffer length for fetch (" << columnSize << ") is smaller, & data "
-                            << "to be retrieved is longer (" << dataLen << "). ColumnID - "
-                            << col << ", datatype - " << dataType;
-                        ThrowStdException(oss.str());
+                        row.append(FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true));
                     }
                     break;
                 }
@@ -2682,6 +2757,35 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         return ret;
     }
 
+    std::vector<SQLUSMALLINT> lobColumns;
+    for (SQLSMALLINT i = 0; i < numCols; i++) {
+        auto colMeta = columnNames[i].cast<py::dict>();
+        SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
+        SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
+
+        if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || 
+             dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
+             dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY) &&
+            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > 8000)) {
+            lobColumns.push_back(i + 1); // 1-based
+        }
+    }
+
+    // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
+    if (!lobColumns.empty()) {
+        LOG("LOB columns detected → using per-row SQLGetData path");
+        while (true) {
+            ret = SQLFetch_ptr(hStmt);
+            if (ret == SQL_NO_DATA) break;
+            if (!SQL_SUCCEEDED(ret)) return ret;
+
+            py::list row;
+            SQLGetData_wrap(StatementHandle, numCols, row);  // <-- streams LOBs correctly
+            rows.append(row);
+        }
+        return SQL_SUCCESS;
+    }
+
     // Initialize column buffers
     ColumnBuffers buffers(numCols, fetchSize);
 
@@ -2696,7 +2800,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
-    ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched);
+    ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns);
     if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
         LOG("Error when fetching data");
         return ret;
@@ -2775,6 +2879,35 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
     }
     LOG("Fetching data in batch sizes of {}", fetchSize);
 
+     std::vector<SQLUSMALLINT> lobColumns;
+    for (SQLSMALLINT i = 0; i < numCols; i++) {
+        auto colMeta = columnNames[i].cast<py::dict>();
+        SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
+        SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
+
+        if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || 
+             dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
+             dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY) &&
+            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > 8000)) {
+            lobColumns.push_back(i + 1); // 1-based
+        }
+    }
+
+    // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
+    if (!lobColumns.empty()) {
+        LOG("LOB columns detected → using per-row SQLGetData path");
+        while (true) {
+            ret = SQLFetch_ptr(hStmt);
+            if (ret == SQL_NO_DATA) break;
+            if (!SQL_SUCCEEDED(ret)) return ret;
+
+            py::list row;
+            SQLGetData_wrap(StatementHandle, numCols, row);  // <-- streams LOBs correctly
+            rows.append(row);
+        }
+        return SQL_SUCCESS;
+    }
+
     ColumnBuffers buffers(numCols, fetchSize);
 
     // Bind columns
@@ -2789,7 +2922,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
     while (ret != SQL_NO_DATA) {
-        ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched);
+        ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns);
         if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
             LOG("Error when fetching data");
             return ret;
