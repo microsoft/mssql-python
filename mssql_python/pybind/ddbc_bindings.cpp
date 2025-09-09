@@ -525,18 +525,51 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 if (!py::isinstance(param, datetimeType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
-                SQL_TIMESTAMP_STRUCT* sqlTimestampPtr =
-                    AllocateParamBuffer<SQL_TIMESTAMP_STRUCT>(paramBuffers);
-                sqlTimestampPtr->year = static_cast<SQLSMALLINT>(param.attr("year").cast<int>());
-                sqlTimestampPtr->month = static_cast<SQLUSMALLINT>(param.attr("month").cast<int>());
-                sqlTimestampPtr->day = static_cast<SQLUSMALLINT>(param.attr("day").cast<int>());
-                sqlTimestampPtr->hour = static_cast<SQLUSMALLINT>(param.attr("hour").cast<int>());
-                sqlTimestampPtr->minute = static_cast<SQLUSMALLINT>(param.attr("minute").cast<int>());
-                sqlTimestampPtr->second = static_cast<SQLUSMALLINT>(param.attr("second").cast<int>());
-                // SQL server supports in ns, but python datetime supports in µs
-                sqlTimestampPtr->fraction = static_cast<SQLUINTEGER>(
-                    param.attr("microsecond").cast<int>() * 1000);  // Convert µs to ns
-                dataPtr = static_cast<void*>(sqlTimestampPtr);
+                if (paramInfo.paramSQLType == SQL_TIMESTAMP) {
+                    // Handle naive datetime
+                    SQL_TIMESTAMP_STRUCT* tsPtr = AllocateParamBuffer<SQL_TIMESTAMP_STRUCT>(paramBuffers);
+                    tsPtr->year   = static_cast<SQLSMALLINT>(param.attr("year").cast<int>());
+                    tsPtr->month  = static_cast<SQLUSMALLINT>(param.attr("month").cast<int>());
+                    tsPtr->day    = static_cast<SQLUSMALLINT>(param.attr("day").cast<int>());
+                    tsPtr->hour   = static_cast<SQLUSMALLINT>(param.attr("hour").cast<int>());
+                    tsPtr->minute = static_cast<SQLUSMALLINT>(param.attr("minute").cast<int>());
+                    tsPtr->second = static_cast<SQLUSMALLINT>(param.attr("second").cast<int>());
+                    tsPtr->fraction = static_cast<SQLUINTEGER>(param.attr("microsecond").cast<int>() * 1000);
+                    dataPtr = static_cast<void*>(tsPtr);
+                }
+                else if (paramInfo.paramSQLType == SQL_SS_TIMESTAMPOFFSET) {
+                    // Handle tz-aware datetime → SQL_DATETIMEOFFSET
+                    SQL_SS_TIMESTAMPOFFSET_STRUCT* dtoPtr = AllocateParamBuffer<SQL_SS_TIMESTAMPOFFSET_STRUCT>(paramBuffers);
+                    int year = param.attr("year").cast<int>();
+                    if (year < 1753 || year > 9999) {
+                        ThrowStdException("Date out of range for SQL Server (1753-9999) at paramIndex " + std::to_string(paramIndex));
+                    }
+                    dtoPtr->year   = static_cast<SQLSMALLINT>(year);
+                    dtoPtr->month  = static_cast<SQLUSMALLINT>(param.attr("month").cast<int>());
+                    dtoPtr->day    = static_cast<SQLUSMALLINT>(param.attr("day").cast<int>());
+                    dtoPtr->hour   = static_cast<SQLUSMALLINT>(param.attr("hour").cast<int>());
+                    dtoPtr->minute = static_cast<SQLUSMALLINT>(param.attr("minute").cast<int>());
+                    dtoPtr->second = static_cast<SQLUSMALLINT>(param.attr("second").cast<int>());
+                    dtoPtr->fraction = static_cast<SQLUINTEGER>(param.attr("microsecond").cast<int>() * 1000);
+
+                    py::object tzinfo = param.attr("tzinfo");
+                    if (tzinfo.is_none()) {
+                        ThrowStdException("Datetime object must have tzinfo for DATETIMEOFFSET at paramIndex " + std::to_string(paramIndex));
+                    }
+
+                    py::object utcoffset = tzinfo.attr("utcoffset")(param);
+                    if (utcoffset.is_none()) {
+                        ThrowStdException("utcoffset is None for DATETIMEOFFSET at paramIndex " + std::to_string(paramIndex));
+                    }
+
+                    int total_seconds = static_cast<int>(utcoffset.attr("total_seconds")().cast<double>());
+                    dtoPtr->timezone_hour   = static_cast<SQLSMALLINT>(total_seconds / 3600);
+                    dtoPtr->timezone_minute = static_cast<SQLSMALLINT>((abs(total_seconds) % 3600) / 60);
+                    dataPtr = static_cast<void*>(dtoPtr);
+                }
+                else {
+                    ThrowStdException("Unsupported SQL type for timestamp at paramIndex " + std::to_string(paramIndex));
+                }
                 break;
             }
             case SQL_C_NUMERIC: {
