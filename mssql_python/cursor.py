@@ -293,6 +293,7 @@ class Cursor:
                     ddbc_sql_const.SQL_C_CHAR.value,
                     len(parameters_list[i]),
                     0,
+                    False,
                 )
             elif -922337203685477.5808 <= param <= 922337203685477.5807:
                 # money
@@ -302,6 +303,7 @@ class Cursor:
                     ddbc_sql_const.SQL_C_CHAR.value,
                     len(parameters_list[i]),
                     0,
+                    False,
                 )
             else:
                 # fallback to generic numeric binding
@@ -311,6 +313,7 @@ class Cursor:
                     ddbc_sql_const.SQL_C_NUMERIC.value,
                     parameters_list[i].precision,
                     parameters_list[i].scale,
+                    False,
                 )
 
         
