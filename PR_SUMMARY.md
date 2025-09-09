@@ -27,11 +27,6 @@ Following pyodbc's proven approach, we now automatically apply `SET NOCOUNT ON` 
 - **`test_production_query_example.py`**: Real-world production scenarios
 - **`test_temp_table_implementation.py`**: Standalone logic tests
 
-### 3. **Documentation Updates** - `README.md`
-- **Lines 86-122**: Added "Multi-Statement SQL Enhancement" section with:
-  - Clear explanation of the feature
-  - Code example showing usage
-  - Key benefits and compatibility notes
 
 ## **Key Features**
 
