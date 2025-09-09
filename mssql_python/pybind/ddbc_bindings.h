@@ -42,8 +42,8 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
 #endif
 
 #if defined(__APPLE__) || defined(__linux__)
-#include "pybind/unix_buffers.h"  // For Unix-specific buffer handling
-#include "pybind/unix_utils.h"    // For Unix-specific Unicode encoding fixes
+#include "unix_buffers.h"  // For Unix-specific buffer handling
+#include "unix_utils.h"    // For Unix-specific Unicode encoding fixes
 
 // Unicode constants for surrogate ranges and max scalar value
 constexpr uint32_t UNICODE_SURROGATE_HIGH_START = 0xD800;

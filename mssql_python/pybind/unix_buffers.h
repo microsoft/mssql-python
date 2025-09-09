@@ -27,11 +27,11 @@ constexpr size_t UCS_LENGTH = 2;
  * handling memory allocation and conversion to std::wstring.
  */
 class SQLWCHARBuffer {
-   private:
+ private:
     std::unique_ptr<SQLWCHAR[]> buffer;
     size_t buffer_size;
 
-   public:
+ public:
     /**
      * Constructor allocates a buffer of the specified size
      */
@@ -85,7 +85,7 @@ class SQLWCHARBuffer {
  * Similar to the error list handling in the Python PoC _check_ret function
  */
 class DiagnosticRecords {
-   private:
+ private:
     struct Record {
         std::wstring sqlState;
         std::wstring message;
@@ -94,7 +94,7 @@ class DiagnosticRecords {
 
     std::vector<Record> records;
 
-   public:
+ public:
     void addRecord(const std::wstring& sqlState, const std::wstring& message,
                    SQLINTEGER nativeError) {
         records.push_back({sqlState, message, nativeError});
@@ -125,7 +125,9 @@ class DiagnosticRecords {
 
         // Add additional error messages if there are any
         for (size_t i = 1; i < records.size(); i++) {
-            fullMessage += L"; [" + records[i].sqlState + L"] " + records[i].message;
+            fullMessage += L"; [" +
+            records[i].sqlState + L"] " +
+            records[i].message;
         }
 
         return fullMessage;

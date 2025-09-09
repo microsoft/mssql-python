@@ -6,6 +6,11 @@
 // between SQLWCHAR, std::wstring, and UTF-8 strings to bridge encoding
 // differences specific to macOS.
 
+#include "unix_utils.h"
+#include <iostream>
+#include <vector>
+#include <string>
+
 #if defined(__APPLE__) || defined(__linux__)
 // Constants for character encoding
 const char* kOdbcEncoding = "utf-16-le";  // ODBC uses UTF-16LE for SQLWCHAR
