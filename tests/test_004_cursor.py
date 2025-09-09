@@ -10754,3 +10754,30 @@ def test_close(db_connection):
         pytest.fail(f"Cursor close test failed: {e}")
     finally:
         cursor = db_connection.cursor()
+
+def test_multi_statement_query(cursor, db_connection):
+    """Test multi-statement query with temp tables"""
+    try:
+        # Single SQL with multiple statements - tests pyODBC-style buffering
+        multi_statement_sql = """
+        CREATE TABLE #TestData (id INT, name NVARCHAR(50), value INT);
+        INSERT INTO #TestData VALUES (1, 'Test1', 100), (2, 'Test2', 200);
+        SELECT COALESCE(name, 'DEFAULT') as result_name, SUM(value) as total_value INTO #TempResult FROM #TestData GROUP BY name;
+        SELECT result_name, total_value, 'SUCCESS' as status FROM #TempResult ORDER BY result_name;
+        """
+        
+        cursor.execute(multi_statement_sql)
+        results = cursor.fetchall()
+        
+        assert len(results) > 0, "Multi-statement query should return results"
+        assert results[0][2] == 'SUCCESS', "Should return success status"
+        
+    except Exception as e:
+        pytest.fail(f"Multi-statement query test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE #TestData")
+            cursor.execute("DROP TABLE #TempResult")
+            db_connection.commit()
+        except:
+            pass

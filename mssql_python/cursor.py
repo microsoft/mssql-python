@@ -965,10 +965,6 @@ class Cursor:
 # Executing a new statement. Reset is_stmt_prepared to false
             self.is_stmt_prepared = [False]
 
-        # Enhanced multi-statement handling - pyodbc approach
-        # Apply SET NOCOUNT ON to all multi-statement queries to prevent result set issues
-        if self._is_multistatement_query(operation):
-            operation = self._add_nocount_to_multistatement_sql(operation)
 
         log('debug', "Executing query: %s", operation)
         for i, param in enumerate(parameters):
@@ -1010,9 +1006,9 @@ class Cursor:
     
         self.last_executed_stmt = operation
 
-        # Update rowcount after execution
+        # Update rowcount after execution (before buffering)
         # TODO: rowcount return code from SQL needs to be handled
-        self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
+        initial_rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
 
         # Initialize description after execution
         # After successful execution, initialize description if there are results
@@ -1024,12 +1020,16 @@ class Cursor:
             # If describe fails, it's likely there are no results (e.g., for INSERT)
             self.description = None
         
-        # Reset rownumber for new result set (only for SELECT statements)
+        # Buffer intermediate results automatically (pyODBC-style approach)
+        self._buffer_intermediate_results()
+        
+        # Set final rowcount based on result type (preserve original rowcount for non-SELECT)
         if self.description:  # If we have column descriptions, it's likely a SELECT
             self.rowcount = -1
             self._reset_rownumber()
         else:
-            self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
+            # For non-SELECT statements (INSERT/UPDATE/DELETE), preserve the original rowcount
+            self.rowcount = initial_rowcount
             self._clear_rownumber()
 
         # After successful execution, initialize description if there are results
@@ -2188,7 +2188,7 @@ class Cursor:
                 ("table_type", str, None, 128, 128, 0, False),
                 ("remarks", str, None, 254, 254, 0, True)
             ]
-            
+        
             # Use the helper method to prepare the result set
             return self._prepare_metadata_result_set(fallback_description=fallback_description)
         
