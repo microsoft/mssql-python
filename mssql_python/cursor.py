@@ -398,16 +398,10 @@ class Cursor:
             )
 
         if isinstance(param, bytes):
-            if len(param) > 8000:  # Assuming VARBINARY(MAX) for long byte arrays
-                return (
-                    ddbc_sql_const.SQL_VARBINARY.value,
-                    ddbc_sql_const.SQL_C_BINARY.value,
-                    len(param),
-                    0,
-                    False,
-                )
+            # Use VARBINARY for Python bytes/bytearray since they are variable-length by nature.
+            # This avoids storage waste from BINARY's zero-padding and matches Python's semantics.
             return (
-                ddbc_sql_const.SQL_BINARY.value,
+                ddbc_sql_const.SQL_VARBINARY.value,
                 ddbc_sql_const.SQL_C_BINARY.value,
                 len(param),
                 0,
@@ -415,16 +409,10 @@ class Cursor:
             )
 
         if isinstance(param, bytearray):
-            if len(param) > 8000:  # Assuming VARBINARY(MAX) for long byte arrays
-                return (
-                    ddbc_sql_const.SQL_VARBINARY.value,
-                    ddbc_sql_const.SQL_C_BINARY.value,
-                    len(param),
-                    0,
-                    True,
-                )
+            # Use VARBINARY for Python bytes/bytearray since they are variable-length by nature.
+            # This avoids storage waste from BINARY's zero-padding and matches Python's semantics.
             return (
-                ddbc_sql_const.SQL_BINARY.value,
+                ddbc_sql_const.SQL_VARBINARY.value,
                 ddbc_sql_const.SQL_C_BINARY.value,
                 len(param),
                 0,
@@ -491,16 +479,15 @@ class Cursor:
 
     def close(self) -> None:
         """
-        Close the cursor now (rather than whenever __del__ is called).
+        Close the connection now (rather than whenever .__del__() is called).
+        Idempotent: subsequent calls have no effect and will be no-ops.
 
         The cursor will be unusable from this point forward; an InterfaceError
-        will be raised if any operation is attempted with the cursor.
-
-        Note:
-            Unlike the current behavior, this method can be called multiple times safely.
-            Subsequent calls to close() on an already closed cursor will have no effect.
+        will be raised if any operation (other than close) is attempted with the cursor.
+        This is a deviation from pyodbc, which raises an exception if the cursor is already closed.
         """
         if self.closed:
+            # Do nothing - not calling _check_closed() here since we want this to be idempotent
             return
 
         # Clear messages per DBAPI
@@ -518,12 +505,12 @@ class Cursor:
         Check if the cursor is closed and raise an exception if it is.
 
         Raises:
-            InterfaceError: If the cursor is closed.
+            ProgrammingError: If the cursor is closed.
         """
         if self.closed:
-            raise InterfaceError(
-                driver_error="Operation cannot be performed: the cursor is closed.",
-                ddbc_error="Operation cannot be performed: the cursor is closed.",
+            raise ProgrammingError(
+                driver_error="Operation cannot be performed: The cursor is closed.",
+                ddbc_error=""
             )
 
     def _create_parameter_types_list(self, parameter, param_info, parameters_list, i):
@@ -876,6 +863,8 @@ class Cursor:
             return max(non_nulls, key=lambda s: len(str(s)))
         if all(isinstance(v, datetime.datetime) for v in non_nulls):
             return datetime.datetime.now()
+        if all(isinstance(v, (bytes, bytearray)) for v in non_nulls):
+            return max(non_nulls, key=lambda b: len(b))
         if all(isinstance(v, datetime.date) for v in non_nulls):
             return datetime.date.today()
         return non_nulls[0]  # fallback
@@ -1228,13 +1217,19 @@ class Cursor:
         Destructor to ensure the cursor is closed when it is no longer needed.
         This is a safety net to ensure resources are cleaned up
         even if close() was not called explicitly.
+        If the cursor is already closed, it will not raise an exception during cleanup.
         """
-        if "_closed" not in self.__dict__ or not self._closed:
+        if "closed" not in self.__dict__ or not self.closed:
             try:
                 self.close()
             except Exception as e:
                 # Don't raise an exception in __del__, just log it
-                log("error", "Error during cursor cleanup in __del__: %s", e)
+                # If interpreter is shutting down, we might not have logging set up
+                import sys
+                if sys and sys._is_finalizing():
+                    # Suppress logging during interpreter shutdown
+                    return
+                log('debug', "Exception during cursor cleanup in __del__: %s", e)
 
     def scroll(self, value: int, mode: str = "relative") -> None:
         """
