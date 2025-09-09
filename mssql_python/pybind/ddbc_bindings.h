@@ -339,8 +339,8 @@ typedef void* DriverHandle;
 #endif
 
 // Platform-agnostic function to get a function pointer from the loaded library
-template <typename T>
-T GetFunctionPointer(DriverHandle handle, const char* functionName) {
+template <typename T>T GetFunctionPointer(
+    DriverHandle handle, const char* functionName) {
 #ifdef _WIN32
     // Windows: Use GetProcAddress
     return reinterpret_cast<T>(GetProcAddress(handle, functionName));
