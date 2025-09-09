@@ -6,7 +6,6 @@
 // between SQLWCHAR, std::wstring, and UTF-8 strings to bridge encoding
 // differences specific to macOS.
 
-#include "unix_utils.h"
 #include <iostream>
 #include <vector>
 #include <string>
