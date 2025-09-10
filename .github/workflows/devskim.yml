@@ -32,6 +32,3 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: devskim-results.sarif
-          # Exclude TODO (DS176209) and localhost (DS162092) alerts
-          # Since they are used only for future improvements & tests respectively
-          exclude-rules: DS176209,DS162092

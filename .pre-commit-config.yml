@@ -1,0 +1,16 @@
+repos:
+-   repo: https://github.com/pre-commit/mirrors-pylint
+    rev: v3.0.0a5
+    hooks:
+    -   id: pylint
+        args: [--fail-under=8.5, --disable=fixme,no-member,too-many-arguments,too-many-positional-arguments,invalid-name,useless-parent-delegation]
+        
+-   repo: local
+    hooks:
+    -   id: cpplint
+        name: cpplint
+        entry: python -m cpplint
+        language: python
+        types: [c++]
+        args: [--filter=-readability/todo, --linelength=100]
+        exclude: ^.*build/.*$
