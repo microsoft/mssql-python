@@ -53,8 +53,7 @@ jobs:
         run: |
           echo "Running cpplint with maximum 10 errors per file..."
           
-          # Debug: Show what files we're finding
-          echo "Finding C++ files (excluding build directories)..."
+          # Find C++ files excluding build directories
           FILES=$(find mssql_python -name "*.cpp" -o -name "*.h" | grep -v "/build/")
           if [ -z "$FILES" ]; then
             echo "No C++ files found to check!"
@@ -65,32 +64,32 @@ jobs:
           echo "Found files to check:"
           echo "$FILES"
           
-          # Run cpplint directly on files without complex parsing
-          echo "Running initial cpplint check..."
-          python -m cpplint --filter=-readability/todo --linelength=100 $FILES > cpplint_output.txt 2>&1
-          CPPLINT_EXIT_CODE=$?
-          
-          # Display the output
-          cat cpplint_output.txt
-          
-          # Simple check for files with more than MAX_ERRORS errors
+          # Process each file individually to better handle errors
           MAX_ERRORS=10
           FAILED_FILES=""
           
-          # Process the output line by line to find error counts
-          grep "Total errors found:" cpplint_output.txt > error_counts.txt
-          while IFS= read -r line; do
-            # Extract error count and file name
-            ERROR_COUNT=$(echo "$line" | grep -o '[0-9]\+')
-            FILE_NAME=$(grep -B 1 "$line" cpplint_output.txt | head -n 1 | sed 's/Done processing //')
+          for FILE in $FILES; do
+            echo "Checking $FILE..."
             
-            echo "File $FILE_NAME has $ERROR_COUNT errors"
+            # Run cpplint on a single file and capture output
+            OUTPUT=$(python -m cpplint --filter=-readability/todo --linelength=100 "$FILE" 2>&1)
             
-            # Check if over threshold
-            if [ "$ERROR_COUNT" -gt "$MAX_ERRORS" ]; then
-              FAILED_FILES="$FAILED_FILES\n- $FILE_NAME ($ERROR_COUNT errors)"
+            # Display the output for this file
+            echo "$OUTPUT"
+            
+            # Look for "Total errors found: X" in the output
+            if [[ "$OUTPUT" =~ "Total errors found: "([0-9]+) ]]; then
+              ERROR_COUNT="${BASH_REMATCH[1]}"
+              echo "File $FILE has $ERROR_COUNT errors"
+              
+              # Check if over threshold
+              if [ "$ERROR_COUNT" -gt "$MAX_ERRORS" ]; then
+                FAILED_FILES="$FAILED_FILES\n- $FILE ($ERROR_COUNT errors)"
+              fi
+            else
+              echo "Warning: Could not determine error count for $FILE"
             fi
-          done < error_counts.txt
+          done
           
           # Output results
           if [ ! -z "$FAILED_FILES" ]; then
