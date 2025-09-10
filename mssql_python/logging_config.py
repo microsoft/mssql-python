@@ -23,34 +23,34 @@ class LoggingManager:
     _logger = None
     _log_file = None
 
-    def __new__(cls):
+    def __new__(cls) -> "LoggingManager":
         if cls._instance is None:
             cls._instance = super(LoggingManager, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self):
+    def __init__(self) -> None:
         if not self._initialized:
             self._initialized = True
             self._enabled = False
 
     @classmethod
-    def is_logging_enabled(cls):
+    def is_logging_enabled(cls) -> bool:
         """Class method to check if logging is enabled for backward compatibility"""
         if cls._instance is None:
             return False
         return cls._instance._enabled
 
     @property
-    def enabled(self):
+    def enabled(self) -> bool:
         """Check if logging is enabled"""
         return self._enabled
 
     @property
-    def log_file(self):
+    def log_file(self) -> str:
         """Get the current log file path"""
         return self._log_file
 
-    def setup(self, mode="file", log_level=logging.DEBUG):
+    def setup(self, mode: str = "file", log_level: int = logging.DEBUG) -> None:
         """
         Set up logging configuration.
 
@@ -105,7 +105,7 @@ class LoggingManager:
             """
             Custom formatter for Python Layer logs.
             """
-            def format(self, record):
+            def format(self, record: logging.LogRecord) -> str:
                 message = record.getMessage()
                 # Don't add [Python Layer log] prefix if the message already has
                 # [DDBC Bindings log] or [Python Layer log]
@@ -155,7 +155,7 @@ class LoggingManager:
 _manager = LoggingManager()
 
 
-def setup_logging(mode="file", log_level=logging.DEBUG):
+def setup_logging(mode: str = "file", log_level: int = logging.DEBUG) -> None:
     """
     Set up logging configuration.
 
@@ -168,7 +168,7 @@ def setup_logging(mode="file", log_level=logging.DEBUG):
     return _manager.setup(mode, log_level)
 
 
-def get_logger():
+def get_logger() -> logging.Logger:
     """
     Get the logger instance.
 

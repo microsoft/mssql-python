@@ -12,7 +12,7 @@ from mssql_python.logging_config import get_logger
 logger = get_logger()
 
 
-def add_driver_to_connection_str(connection_str):
+def add_driver_to_connection_str(connection_str: str) -> str:
     """
     Add the DDBC driver to the connection string if not present.
 
@@ -57,7 +57,7 @@ def add_driver_to_connection_str(connection_str):
     return connection_str
 
 
-def check_error(handle_type, handle, ret):
+def check_error(handle_type: int, handle: int, ret: int) -> None:
     """
     Check for errors and raise an exception if an error is found.
 
@@ -76,7 +76,7 @@ def check_error(handle_type, handle, ret):
         raise_exception(error_info.sqlState, error_info.ddbcErrorMsg)
 
 
-def add_driver_name_to_app_parameter(connection_string):
+def add_driver_name_to_app_parameter(connection_string: str) -> str:
     """
     Modifies the input connection string by appending the APP name.
 

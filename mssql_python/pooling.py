@@ -20,7 +20,7 @@ class PoolingManager:
     _config = {"max_size": 100, "idle_timeout": 600}
 
     @classmethod
-    def enable(cls, max_size=100, idle_timeout=600):
+    def enable(cls, max_size: int = 100, idle_timeout: int = 600) -> None:
         """
         Enable connection pooling with the specified parameters.
 
@@ -42,7 +42,7 @@ class PoolingManager:
             cls._initialized = True
 
     @classmethod
-    def disable(cls):
+    def disable(cls) -> None:
         """
         Disable connection pooling.
         """
@@ -51,14 +51,14 @@ class PoolingManager:
             cls._initialized = True
 
     @classmethod
-    def is_enabled(cls):
+    def is_enabled(cls) -> bool:
         """
         Check if connection pooling is enabled.
         """
         return cls._enabled
 
     @classmethod
-    def is_initialized(cls):
+    def is_initialized(cls) -> bool:
         """
         Check if connection pooling is initialized.
         """

@@ -15,7 +15,7 @@ class Row:
         print(row.column_name)  # Access by column name
     """
 
-    def __init__(self, values, description, column_map=None):
+    def __init__(self, values: list, description: list, column_map: dict = None) -> None:
         """
         Initialize a Row object with values and description.
 
@@ -39,11 +39,11 @@ class Row:
         else:
             self._column_map = column_map
 
-    def __getitem__(self, index):
+    def __getitem__(self, index: int) -> any:
         """Allow accessing by numeric index: row[0]"""
         return self._values[index]
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> any:
         """Allow accessing by column name as attribute: row.column_name"""
         if name in self._column_map:
             return self._values[self._column_map[name]]
@@ -51,7 +51,7 @@ class Row:
             f"'{self.__class__.__name__}' object has no attribute '{name}'"
         )
 
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
         """
         Support comparison with lists for test compatibility.
         This is the key change needed to fix the tests.
@@ -62,18 +62,18 @@ class Row:
             return self._values == other._values
         return super().__eq__(other)
 
-    def __len__(self):
+    def __len__(self) -> int:
         """Return the number of values in the row"""
         return len(self._values)
 
-    def __iter__(self):
+    def __iter__(self) -> iter:
         """Allow iteration through values"""
         return iter(self._values)
 
-    def __str__(self):
+    def __str__(self) -> str:
         """Return string representation of the row"""
         return str(tuple(self._values))
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """Return a detailed string representation for debugging"""
         return repr(tuple(self._values))

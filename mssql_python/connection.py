@@ -276,7 +276,7 @@ class Connection:
         """
         self._conn.set_autocommit(value)
 
-    def setencoding(self, encoding=None, ctype=None):
+    def setencoding(self, encoding: str = None, ctype: int = None) -> None:
         """
         Sets the text encoding for SQL statements and text parameters.
 
@@ -389,7 +389,7 @@ class Connection:
 
         return self._encoding_settings.copy()
 
-    def setdecoding(self, sqltype, encoding=None, ctype=None):
+    def setdecoding(self, sqltype: int, encoding: str = None, ctype: int = None) -> None:
         """
         Sets the text decoding used when reading SQL_CHAR and SQL_WCHAR from the database.
 
@@ -515,7 +515,7 @@ class Connection:
             sanitize_user_input(str(ctype)),
         )
 
-    def getdecoding(self, sqltype):
+    def getdecoding(self, sqltype: int) -> dict:
         """
         Gets the current text decoding settings for the specified SQL type.
 
@@ -714,7 +714,7 @@ class Connection:
         if not self._closed:
             self.close()
 
-    def __del__(self):
+    def __del__(self) -> None:
         """
         Destructor to ensure the connection is closed when the
         connection object is no longer needed.

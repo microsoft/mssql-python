@@ -14,7 +14,7 @@ Resource Management:
 import decimal
 import uuid
 import datetime
-from typing import List, Union
+from typing import List, Union, Any, Optional
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
@@ -97,7 +97,7 @@ class Cursor:
 
         self.messages = []  # Store diagnostic messages
 
-    def _is_unicode_string(self, param):
+    def _is_unicode_string(self, param: str) -> bool:
         """
         Check if a string contains non-ASCII characters.
 
@@ -113,7 +113,7 @@ class Cursor:
         except UnicodeEncodeError:
             return True  # Contains non-ASCII characters, so treat as Unicode
 
-    def _parse_date(self, param):
+    def _parse_date(self, param: str) -> Union[datetime.date, None]:
         """
         Attempt to parse a string as a date.
 
@@ -131,7 +131,7 @@ class Cursor:
                 continue
         return None
 
-    def _parse_datetime(self, param):
+    def _parse_datetime(self, param: str) -> Union[datetime.datetime, None]:
         """
         Attempt to parse a string as a datetime, smalldatetime, datetime2, timestamp.
 
@@ -155,7 +155,7 @@ class Cursor:
 
         return None  # If all formats fail, return None
 
-    def _parse_time(self, param):
+    def _parse_time(self, param: str) -> Union[datetime.time, None]:
         """
         Attempt to parse a string as a time.
 
@@ -176,7 +176,7 @@ class Cursor:
                 continue
         return None
 
-    def _get_numeric_data(self, param):
+    def _get_numeric_data(self, param: decimal.Decimal) -> ddbc_bindings.NumericData:
         """
         Get the data for a numeric parameter.
 
@@ -230,7 +230,7 @@ class Cursor:
         numeric_data.val = val
         return numeric_data
 
-    def _map_sql_type(self, param, parameters_list, i):
+    def _map_sql_type(self, param: Any, parameters_list: list, i: int) -> tuple:
         """
         Map a Python data type to the corresponding SQL type,
         C type, Column size, and Decimal digits.
@@ -457,7 +457,7 @@ class Cursor:
         """
         self._allocate_statement_handle()
 
-    def _allocate_statement_handle(self):
+    def _allocate_statement_handle(self) -> None:
         """
         Allocate the DDBC statement handle.
         """
@@ -500,7 +500,7 @@ class Cursor:
         self._clear_rownumber()
         self.closed = True
 
-    def _check_closed(self):
+    def _check_closed(self) -> None:
         """
         Check if the cursor is closed and raise an exception if it is.
 
@@ -513,7 +513,7 @@ class Cursor:
                 ddbc_error=""
             )
 
-    def _create_parameter_types_list(self, parameter, param_info, parameters_list, i):
+    def _create_parameter_types_list(self, parameter: Any, param_info: Any, parameters_list: list, i: int) -> None:
         """
         Maps parameter types for the given parameter.
 
@@ -539,7 +539,7 @@ class Cursor:
 
         return paraminfo
 
-    def _initialize_description(self):
+    def _initialize_description(self) -> None:
         """
         Initialize the description attribute using SQLDescribeCol.
         """
@@ -560,7 +560,7 @@ class Cursor:
             for col in col_metadata
         ]
 
-    def _map_data_type(self, sql_type):
+    def _map_data_type(self, sql_type: int) -> type:
         """
         Map SQL data type to Python data type.
 
@@ -596,7 +596,7 @@ class Cursor:
         return sql_to_python_type.get(sql_type, str)
 
     @property
-    def rownumber(self):
+    def rownumber(self) -> Union[int, None]:
         """
         DB-API extension: Current 0-based index of the cursor in the result set.
 
@@ -623,7 +623,7 @@ class Cursor:
         return self._rownumber  # Will be None until first fetch, then 0, 1, 2, etc.
 
     @property
-    def connection(self):
+    def connection(self) -> "Connection":
         """
         DB-API 2.0 attribute: Connection object that created this cursor.
 
@@ -640,14 +640,14 @@ class Cursor:
         """
         return self._connection
 
-    def _reset_rownumber(self):
+    def _reset_rownumber(self) -> None:
         """Reset the rownumber tracking when starting a new result set."""
         self._rownumber = -1
         self._next_row_index = 0
         self._has_result_set = True
         self._skip_increment_for_next_fetch = False
 
-    def _increment_rownumber(self):
+    def _increment_rownumber(self) -> None:
         """
         Called after a successful fetch from the driver. Keep both counters consistent.
         """
@@ -663,7 +663,7 @@ class Cursor:
             )
 
     # Will be used when we add support for scrollable cursors
-    def _decrement_rownumber(self):
+    def _decrement_rownumber(self) -> None:
         """
         Decrement the rownumber by 1.
 
@@ -680,7 +680,7 @@ class Cursor:
                 "No active result set.",
             )
 
-    def _clear_rownumber(self):
+    def _clear_rownumber(self) -> None:
         """
         Clear the rownumber tracking.
 
@@ -690,7 +690,7 @@ class Cursor:
         self._has_result_set = False
         self._skip_increment_for_next_fetch = False
 
-    def __iter__(self):
+    def __iter__(self) -> "Cursor":
         """
         Return the cursor itself as an iterator.
 
@@ -702,7 +702,7 @@ class Cursor:
         self._check_closed()
         return self
 
-    def __next__(self):
+    def __next__(self) -> "Row":
         """
         Fetch the next row when iterating over the cursor.
 
@@ -718,7 +718,7 @@ class Cursor:
             raise StopIteration
         return row
 
-    def next(self):
+    def next(self) -> "Row":
         """
         Fetch the next row from the cursor.
 
@@ -838,7 +838,7 @@ class Cursor:
         return self
 
     @staticmethod
-    def _select_best_sample_value(column):
+    def _select_best_sample_value(column: List[Any]) -> Any:
         """
         Selects the most representative non-null value from a column for type inference.
 
@@ -1102,7 +1102,7 @@ class Cursor:
 
         return True
 
-    def __enter__(self):
+    def __enter__(self) -> "Cursor":
         """
         Enter the runtime context for the cursor.
 
@@ -1112,13 +1112,13 @@ class Cursor:
         self._check_closed()
         return self
 
-    def __exit__(self, *args):
+    def __exit__(self, *args) -> None:
         """Closes the cursor when exiting the context, ensuring proper resource cleanup."""
         if not self.closed:
             self.close()
         return None
 
-    def fetchval(self):
+    def fetchval(self) -> Any:
         """
         Fetch the first column of the first row if there are results.
 
@@ -1154,7 +1154,7 @@ class Cursor:
 
         return None if row is None else row[0]
 
-    def commit(self):
+    def commit(self) -> None:
         """
         Commit all SQL statements executed on the connection that created this cursor.
 
@@ -1183,7 +1183,7 @@ class Cursor:
         # Delegate to the connection's commit method
         self._connection.commit()
 
-    def rollback(self):
+    def rollback(self) -> None:
         """
         Roll back all SQL statements executed on the connection that created this cursor.
 
@@ -1212,7 +1212,7 @@ class Cursor:
         # Delegate to the connection's rollback method
         self._connection.rollback()
 
-    def __del__(self):
+    def __del__(self) -> None:
         """
         Destructor to ensure the cursor is closed when it is no longer needed.
         This is a safety net to ensure resources are cleaned up
@@ -1351,12 +1351,12 @@ class Cursor:
 
     def _execute_tables(
         self,
-        stmt_handle,
-        catalog_name=None,
-        schema_name=None,
-        table_name=None,
-        table_type=None
-    ):
+        stmt_handle: int,
+        catalog_name: Optional[str] = None,
+        schema_name: Optional[str] = None,
+        table_name: Optional[str] = None,
+        table_type: Optional[str] = None
+    ) -> None:
         """
         Execute SQLTables ODBC function to retrieve table metadata.
 
@@ -1385,7 +1385,7 @@ class Cursor:
         if stmt_handle:
             self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(stmt_handle))
 
-    def tables(self, table=None, catalog=None, schema=None, table_type=None):
+    def tables(self, table: Optional[str] = None, catalog: Optional[str] = None, schema: Optional[str] = None, table_type: Optional[Union[str, List[str]]] = None) -> None:
         """
         Returns information about tables in the database that match the given criteria using
         the SQLTables ODBC function.

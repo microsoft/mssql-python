@@ -15,7 +15,7 @@ class Exception(Exception):
     Base class for all DB API 2.0 exceptions.
     """
 
-    def __init__(self, driver_error, ddbc_error) -> None:
+    def __init__(self, driver_error: str, ddbc_error: str) -> None:
         self.driver_error = driver_error
         self.ddbc_error = truncate_error_message(ddbc_error)
         if self.ddbc_error:
@@ -34,7 +34,7 @@ class Warning(Exception):
     Exception raised for important warnings like data truncations while inserting, etc.
     """
 
-    def __init__(self, driver_error, ddbc_error) -> None:
+    def __init__(self, driver_error: str, ddbc_error: str) -> None:
         super().__init__(driver_error, ddbc_error)
 
 
@@ -43,7 +43,7 @@ class Error(Exception):
     Base class for errors.
     """
 
-    def __init__(self, driver_error, ddbc_error) -> None:
+    def __init__(self, driver_error: str, ddbc_error: str) -> None:
         super().__init__(driver_error, ddbc_error)
 
 
@@ -53,7 +53,7 @@ class InterfaceError(Error):
     interface rather than the database itself.
     """
 
-    def __init__(self, driver_error, ddbc_error) -> None:
+    def __init__(self, driver_error: str, ddbc_error: str) -> None:
         super().__init__(driver_error, ddbc_error)
 
 
@@ -62,7 +62,7 @@ class DatabaseError(Error):
     Exception raised for errors that are related to the database.
     """
 
-    def __init__(self, driver_error, ddbc_error) -> None:
+    def __init__(self, driver_error: str, ddbc_error: str) -> None:
         super().__init__(driver_error, ddbc_error)
 
 
@@ -72,7 +72,7 @@ class DataError(DatabaseError):
     processed data like division by zero, numeric value out of range, etc.
     """
 
-    def __init__(self, driver_error, ddbc_error) -> None:
+    def __init__(self, driver_error: str, ddbc_error: str) -> None:
         super().__init__(driver_error, ddbc_error)
 
 
@@ -82,7 +82,7 @@ class OperationalError(DatabaseError):
     and not necessarily under the control of the programmer.
     """
 
-    def __init__(self, driver_error, ddbc_error) -> None:
+    def __init__(self, driver_error: str, ddbc_error: str) -> None:
         super().__init__(driver_error, ddbc_error)
 
 
@@ -92,7 +92,7 @@ class IntegrityError(DatabaseError):
     e.g., a foreign key check fails.
     """
 
-    def __init__(self, driver_error, ddbc_error) -> None:
+    def __init__(self, driver_error: str, ddbc_error: str) -> None:
         super().__init__(driver_error, ddbc_error)
 
 
@@ -102,7 +102,7 @@ class InternalError(DatabaseError):
     e.g., the cursor is not valid anymore, the transaction is out of sync, etc.
     """
 
-    def __init__(self, driver_error, ddbc_error) -> None:
+    def __init__(self, driver_error: str, ddbc_error: str) -> None:
         super().__init__(driver_error, ddbc_error)
 
 
@@ -113,7 +113,7 @@ class ProgrammingError(DatabaseError):
     wrong number of parameters specified, etc.
     """
 
-    def __init__(self, driver_error, ddbc_error) -> None:
+    def __init__(self, driver_error: str, ddbc_error: str) -> None:
         super().__init__(driver_error, ddbc_error)
 
 
@@ -124,7 +124,7 @@ class NotSupportedError(DatabaseError):
     on a connection that does not support transaction or has transactions turned off.
     """
 
-    def __init__(self, driver_error, ddbc_error) -> None:
+    def __init__(self, driver_error: str, ddbc_error: str) -> None:
         super().__init__(driver_error, ddbc_error)
 
 

@@ -6,7 +6,7 @@ This module contains type objects and constructors for the mssql_python package.
 
 import datetime
 import time
-
+from typing import Union
 
 # Type Objects
 class STRING(str):
@@ -14,7 +14,7 @@ class STRING(str):
     This type object is used to describe columns in a database that are string-based (e.g. CHAR).
     """
 
-    def __new__(cls):
+    def __new__(cls) -> str:
         return str.__new__(cls, "")
 
 
@@ -24,7 +24,7 @@ class BINARY(bytearray):
     binary columns in a database (e.g. LONG, RAW, BLOBs).
     """
 
-    def __new__(cls):
+    def __new__(cls) -> bytearray:
         return bytearray.__new__(cls)
 
 
@@ -33,7 +33,7 @@ class NUMBER(float):
     This type object is used to describe numeric columns in a database.
     """
 
-    def __new__(cls):
+    def __new__(cls) -> float:
         return float.__new__(cls, 0.0)
 
 
@@ -42,7 +42,7 @@ class DATETIME(datetime.datetime):
     This type object is used to describe date/time columns in a database.
     """
 
-    def __new__(cls, year: int = 1, month: int = 1, day: int = 1):
+    def __new__(cls, year: int = 1, month: int = 1, day: int = 1) -> datetime.datetime:
         return datetime.datetime.__new__(cls, year, month, day)
 
 
@@ -51,7 +51,7 @@ class ROWID(int):
     This type object is used to describe the "Row ID" column in a database.
     """
 
-    def __new__(cls):
+    def __new__(cls) -> int:
         return int.__new__(cls, 0)
 
 
@@ -106,7 +106,7 @@ def TimestampFromTicks(ticks: int) -> datetime.datetime:
     return datetime.datetime.fromtimestamp(ticks)
 
 
-def Binary(value) -> bytes:
+def Binary(value: Union[str, bytes, bytearray]) -> bytes:
     """
     Converts a string or bytes to bytes for use with binary database columns.
 
