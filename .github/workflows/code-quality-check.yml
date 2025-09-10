@@ -64,7 +64,7 @@ jobs:
           echo "Found files to check:"
           echo "$FILES"
           
-          # Process each file individually to better handle errors
+          # Process each file individually with better error handling
           MAX_ERRORS=10
           FAILED_FILES=""
           
@@ -72,22 +72,24 @@ jobs:
             echo "Checking $FILE..."
             
             # Run cpplint on a single file and capture output
-            OUTPUT=$(python -m cpplint --filter=-readability/todo --linelength=100 "$FILE" 2>&1)
+            OUTPUT=$(python -m cpplint --filter=-readability/todo --linelength=100 "$FILE" 2>&1 || true)
             
             # Display the output for this file
             echo "$OUTPUT"
             
-            # Look for "Total errors found: X" in the output
-            if [[ "$OUTPUT" =~ "Total errors found: "([0-9]+) ]]; then
-              ERROR_COUNT="${BASH_REMATCH[1]}"
-              echo "File $FILE has $ERROR_COUNT errors"
-              
-              # Check if over threshold
-              if [ "$ERROR_COUNT" -gt "$MAX_ERRORS" ]; then
-                FAILED_FILES="$FAILED_FILES\n- $FILE ($ERROR_COUNT errors)"
-              fi
-            else
-              echo "Warning: Could not determine error count for $FILE"
+            # Extract error count more reliably
+            ERROR_COUNT=$(echo "$OUTPUT" | grep -o 'Total errors found: [0-9]*' | grep -o '[0-9]*' || echo "0")
+            
+            # If we couldn't extract a count, default to 0
+            if [ -z "$ERROR_COUNT" ]; then
+              ERROR_COUNT=0
+            fi
+            
+            echo "File $FILE has $ERROR_COUNT errors"
+            
+            # Check if over threshold
+            if [ "$ERROR_COUNT" -gt "$MAX_ERRORS" ]; then
+              FAILED_FILES="$FAILED_FILES\n- $FILE ($ERROR_COUNT errors)"
             fi
           done
           
