@@ -23,7 +23,7 @@ By simplifying the architecture, DDBC delivers:
 - Consistency across platforms
 - Lower function call overhead
 - Zero external dependencies on Windows (`pip install mssql-python` is all you need)
-- Full control over connections, memory and statement handling
+- Full control over connections, memory, and statement handling
 
 ### Built with PyBind11 + Modern C++ for Performance and Safety
 
