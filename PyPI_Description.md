@@ -16,7 +16,7 @@ Key Advantages:
 - Interfaces directly with the native SQL Server drivers.
 - Integrates with the same TDS core library that powers the ODBC driver.
 
-### Why is this architecture immportant?
+### Why is this architecture important?
 
 By simplifying the architecture, DDBC delivers:
 
