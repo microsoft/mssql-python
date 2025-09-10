@@ -1723,6 +1723,7 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                                 wcharArray + i * (info.columnSize + 1),
                                 utf16Buf.data(),
                                 utf16Buf.size() * sizeof(SQLWCHAR));
+                            strLenOrIndArray[i] = SQL_NTS;
 #else
                             // On Windows, wchar_t is already UTF-16,
                             // so the original check is sufficient
@@ -2227,7 +2228,8 @@ SQLRETURN SQLGetData_wrap(
         if (!SQL_SUCCEEDED(ret)) {
             LOG(
                 "Error retrieving data for column - {}, "
-                "SQLDescribeCol return code - {}", i, ret);
+                "SQLDescribeCol return code - {}",
+                i, ret);
             row.append(py::none());
             // TODO: Do we want to continue in this case or return?
             continue;
