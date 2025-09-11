@@ -474,15 +474,11 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 decimalPtr->precision = decimalParam.precision;
                 decimalPtr->scale = decimalParam.scale;
                 decimalPtr->sign = decimalParam.sign;
-                // Zero out the byte array
-                std::memset(decimalPtr->val, 0, sizeof(decimalPtr->val));
-
-                // Encode val into little-endian byte array
-                uint64_t scaledVal = decimalParam.val;
-                for (size_t i = 0; i < sizeof(decimalPtr->val) && scaledVal > 0; i++) {
-                    decimalPtr->val[i] = static_cast<SQLCHAR>(scaledVal & 0xFF);
-                    scaledVal >>= 8;
-                }
+                // Convert the integer decimalParam.val to char array
+                std::memset(static_cast<void*>(decimalPtr->val), 0, sizeof(decimalPtr->val));
+                std::memcpy(static_cast<void*>(decimalPtr->val),
+			    reinterpret_cast<char*>(&decimalParam.val),
+                            sizeof(decimalParam.val));
                 dataPtr = static_cast<void*>(decimalPtr);
                 break;
             }

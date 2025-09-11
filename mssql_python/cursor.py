@@ -20,6 +20,10 @@ from .row import Row
 
 # Constants for string handling
 MAX_INLINE_CHAR = 4000  # NVARCHAR/VARCHAR inline limit; this triggers NVARCHAR(MAX)/VARCHAR(MAX) + DAE
+SMALLMONEY_MIN = decimal.Decimal('-214748.3648')
+SMALLMONEY_MAX = decimal.Decimal('214748.3647')
+MONEY_MIN = decimal.Decimal('-922337203685477.5808')
+MONEY_MAX = decimal.Decimal('922337203685477.5807')
 
 class Cursor:
     """
@@ -285,7 +289,7 @@ class Cursor:
         
         if isinstance(param, decimal.Decimal):
         # Detect MONEY / SMALLMONEY range
-            if -214748.3648 <= param <= 214748.3647:
+            if SMALLMONEY_MIN  <= param <= SMALLMONEY_MAX:
                 # smallmoney
                 parameters_list[i] = str(param)
                 return (
@@ -295,7 +299,7 @@ class Cursor:
                     0,
                     False,
                 )
-            elif -922337203685477.5808 <= param <= 922337203685477.5807:
+            elif MONEY_MIN <= param <= MONEY_MAX:
                 # money
                 parameters_list[i] = str(param)
                 return (
