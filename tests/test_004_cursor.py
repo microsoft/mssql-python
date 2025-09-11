@@ -5863,6 +5863,8 @@ def test_empty_string_chunk(cursor, db_connection):
 
 
 def test_varcharmax_short(cursor, db_connection):
+    """Test inserting and retrieving a small string well below any size thresholds.
+    # Verifies basic functionality for VARCHAR(MAX) with typical input size."""
     try:
         cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
         cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
@@ -5879,6 +5881,9 @@ def test_varcharmax_short(cursor, db_connection):
 
 
 def test_varcharmax_boundary(cursor, db_connection):
+    """Test inserting and retrieving a string at the boundary size (8000 characters),
+    which is the largest size supported without switching to streaming or large object handling.
+    Ensures proper handling at this edge case."""
     try:
         cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
         cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
@@ -5895,6 +5900,9 @@ def test_varcharmax_boundary(cursor, db_connection):
 
 
 def test_varcharmax_streaming(cursor, db_connection):
+    """Test inserting and retrieving a string just above the boundary size (8100 characters),
+    which requires streaming mechanisms to handle data efficiently.
+    Validates that larger data triggers correct processing without truncation."""
     try:
         cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
         cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
@@ -5911,6 +5919,8 @@ def test_varcharmax_streaming(cursor, db_connection):
 
 
 def test_varcharmax_large(cursor, db_connection):
+    """Test inserting and retrieving a very large string (100,000 characters),
+    which is well beyond typical sizes and ensures that the system can handle large VARCHAR(MAX) values."""
     try:
         cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
         cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
@@ -5927,6 +5937,7 @@ def test_varcharmax_large(cursor, db_connection):
 
 
 def test_varcharmax_empty_string(cursor, db_connection):
+    """Test inserting and retrieving an empty string to verify correct handling of zero-length data."""
     try:
         cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
         cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
@@ -5942,6 +5953,7 @@ def test_varcharmax_empty_string(cursor, db_connection):
 
 
 def test_varcharmax_null(cursor, db_connection):
+    """Test inserting and retrieving a NULL value to ensure proper handling of SQL NULLs."""
     try:
         cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
         cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
@@ -5957,6 +5969,8 @@ def test_varcharmax_null(cursor, db_connection):
 
 
 def test_varcharmax_transaction_rollback(cursor, db_connection):
+    """Test that inserting a large VARCHAR(MAX) within a transaction that is rolled back
+    does not persist the data, ensuring transactional integrity."""
     try:
         cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
         cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")

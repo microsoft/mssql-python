@@ -1889,11 +1889,15 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             row.append(py::none());
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
-                        } else {
-                            assert(dataLen == SQL_NO_TOTAL);
+                        } else if (dataLen == SQL_NO_TOTAL) {
                             LOG("SQLGetData couldn't determine the length of the data. "
-                                "Returning NULL value instead. Column ID - {}", i);
+                                "Returning NULL value instead. Column ID - {}, Data Type - {}", i, dataType);
                             row.append(py::none());
+                        } else if (dataLen < 0) {
+                            LOG("SQLGetData returned an unexpected negative data length. "
+                                "Raising exception. Column ID - {}, Data Type - {}, Data Length - {}",
+                                i, dataType, dataLen);
+                            ThrowStdException("SQLGetData returned an unexpected negative data length");
                         }
                     } else {
                         LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
