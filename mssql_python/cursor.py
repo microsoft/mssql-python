@@ -907,7 +907,7 @@ class Cursor:
             parameters_type.append(paraminfo) 
 
         columnwise_params = self._transpose_rowwise_to_columnwise(seq_of_parameters)
-        log('info', "Executing batch query with %d parameter sets:\n%s",
+        log('debug', "Executing batch query with %d parameter sets:\n%s",
             len(seq_of_parameters), "\n".join(f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}" for i, p in enumerate(seq_of_parameters))
         )
 
