@@ -31,6 +31,7 @@
 #define ARCHITECTURE "win64"  // Default to win64 if not defined during compilation
 #endif
 #define DAE_CHUNK_SIZE 8192
+#define SQL_MAX_LOB_SIZE 8000
 //-------------------------------------------------------------------------------------------------
 // Class definitions
 //-------------------------------------------------------------------------------------------------
@@ -1747,8 +1748,13 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
                          &actualRead);
 
         if (ret == SQL_ERROR || !SQL_SUCCEEDED(ret) && ret != SQL_SUCCESS_WITH_INFO) {
-            LOG("Loop {}: Error fetching column {} with cType={}", loopCount, colIndex, cType);
-            ThrowStdException("Error fetching column data");
+            std::ostringstream oss;
+            oss << "Error fetching LOB for column " << colIndex
+                << ", cType=" << cType
+                << ", loop=" << loopCount
+                << ", SQLGetData return=" << ret;
+            LOG(oss.str());
+            ThrowStdException(oss.str());
         }
         if (actualRead == SQL_NULL_DATA) {
             LOG("Loop {}: Column {} is NULL", loopCount, colIndex);
@@ -1862,7 +1868,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR: {
-                if (columnSize == SQL_NO_TOTAL || columnSize == 0 || columnSize > 8000) {
+                if (columnSize == SQL_NO_TOTAL || columnSize == 0 || columnSize > SQL_MAX_LOB_SIZE) {
                     LOG("Streaming LOB for column {}", i);
                     row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false));
                 } else {
@@ -2738,7 +2744,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || 
              dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
              dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY) &&
-            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > 8000)) {
+            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1); // 1-based
         }
     }
@@ -2860,7 +2866,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || 
              dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
              dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY) &&
-            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > 8000)) {
+            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1); // 1-based
         }
     }
