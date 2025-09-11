@@ -258,6 +258,9 @@ jobs:
     # Install CMake on macOS
     - script: |
         brew update
+        # Uninstall existing CMake to avoid tap conflicts
+        brew uninstall cmake --ignore-dependencies || echo "CMake not installed or already removed"
+        # Install CMake from homebrew/core
         brew install cmake
       displayName: 'Install CMake'
 
@@ -337,7 +340,7 @@ jobs:
         python -m pytest -v
       displayName: 'Run Pytest to validate bindings'
       env:
-        DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+        DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
     # Build wheel package for universal2
     - script: |

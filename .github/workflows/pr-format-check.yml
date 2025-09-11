@@ -57,9 +57,9 @@ jobs:
               // Extract the summary content
               const summaryContent = summaryMatch[1];
 
-              // Remove all HTML comments including the template placeholder
+              // Remove all HTML comments including unclosed ones (template placeholders)
               const contentWithoutComments = 
-                summaryContent.replace(/<!--[\s\S]*?-->/g, '');
+                summaryContent.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
 
               // Remove whitespace and check if there's actual text content
               const trimmedContent = contentWithoutComments.trim();
