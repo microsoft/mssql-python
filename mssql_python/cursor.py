@@ -435,7 +435,7 @@ class Cursor:
                 # Timezone-aware datetime -> DATETIMEOFFSET
                 return (
                     ddbc_sql_const.SQL_DATETIMEOFFSET.value,
-                    ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
+                    ddbc_sql_const.SQL_C_SS_TIMESTAMPOFFSET.value,
                     34,
                     7,
                     False,

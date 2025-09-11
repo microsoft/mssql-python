@@ -125,6 +125,7 @@ class ConstantsDDBC(Enum):
     SQL_FETCH_RELATIVE = 6
     SQL_FETCH_BOOKMARK = 8
     SQL_DATETIMEOFFSET = -155
+    SQL_C_SS_TIMESTAMPOFFSET = 0x4001
 
 class AuthType(Enum):
     """Constants for authentication types"""
