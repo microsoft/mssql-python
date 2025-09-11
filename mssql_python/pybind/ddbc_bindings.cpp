@@ -1725,8 +1725,114 @@ SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
     return SQLFetch_ptr(StatementHandle->get());
 }
 
+static py::object FetchLobColumnData(SQLHSTMT hStmt,
+                                     SQLUSMALLINT colIndex,
+                                     SQLSMALLINT cType,
+                                     bool isWideChar,
+                                     bool isBinary)
+{
+    std::vector<char> buffer;
+    SQLRETURN ret = SQL_SUCCESS_WITH_INFO;
+    int loopCount = 0;
+
+    while (true) {
+        ++loopCount;
+        std::vector<char> chunk(DAE_CHUNK_SIZE, 0);
+        SQLLEN actualRead = 0;
+        ret = SQLGetData_ptr(hStmt,
+                         colIndex,
+                         cType,
+                         chunk.data(),
+                         DAE_CHUNK_SIZE,
+                         &actualRead);
+
+        if (ret == SQL_ERROR || !SQL_SUCCEEDED(ret) && ret != SQL_SUCCESS_WITH_INFO) {
+            LOG("Loop {}: Error fetching column {} with cType={}", loopCount, colIndex, cType);
+            ThrowStdException("Error fetching column data");
+        }
+        if (actualRead == SQL_NULL_DATA) {
+            LOG("Loop {}: Column {} is NULL", loopCount, colIndex);
+            return py::none();
+        }
+
+        size_t bytesRead = 0;
+        if (actualRead >= 0) {
+            bytesRead = static_cast<size_t>(actualRead);
+            if (bytesRead > DAE_CHUNK_SIZE) {
+                bytesRead = DAE_CHUNK_SIZE;
+            }
+        } else {
+            // fallback: use full buffer size if actualRead is unknown
+            bytesRead = DAE_CHUNK_SIZE;
+        }
+
+        // For character data, trim trailing null terminators
+        if (!isBinary && bytesRead > 0) {
+            if (!isWideChar) {
+                // Narrow characters
+                while (bytesRead > 0 && chunk[bytesRead - 1] == '\0') {
+                    --bytesRead;
+                }
+                if (bytesRead < DAE_CHUNK_SIZE) {
+                    LOG("Loop {}: Trimmed null terminator (narrow)", loopCount);
+                }
+            } else {
+                // Wide characters
+                size_t wcharSize = sizeof(SQLWCHAR);
+                if (bytesRead >= wcharSize) {
+                    auto sqlwBuf = reinterpret_cast<const SQLWCHAR*>(chunk.data());
+                    size_t wcharCount = bytesRead / wcharSize;
+                    while (wcharCount > 0 && sqlwBuf[wcharCount - 1] == 0) {
+                        --wcharCount;
+                        bytesRead -= wcharSize;
+                    }
+                    if (bytesRead < DAE_CHUNK_SIZE) {
+                        LOG("Loop {}: Trimmed null terminator (wide)", loopCount);
+                    }
+                }
+            }
+        }
+        if (bytesRead > 0) {
+            buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + bytesRead);
+            LOG("Loop {}: Appended {} bytes", loopCount, bytesRead);
+        }
+        if (ret == SQL_SUCCESS) {
+            LOG("Loop {}: SQL_SUCCESS → no more data", loopCount);
+            break;
+        }
+    }
+    LOG("FetchLobColumnData: Total bytes collected = {}", buffer.size());
+
+    if (buffer.empty()) {
+        if (isBinary) {
+            return py::bytes("");
+        }
+        return py::str("");
+    }
+    if (isWideChar) {
+#if defined(_WIN32)
+        std::wstring wstr(reinterpret_cast<const wchar_t*>(buffer.data()), buffer.size() / sizeof(wchar_t));
+        std::string utf8str = WideToUTF8(wstr);
+        return py::str(utf8str);
+#else
+        // Linux/macOS handling
+        size_t wcharCount = buffer.size() / sizeof(SQLWCHAR);
+        const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(buffer.data());
+        std::wstring wstr = SQLWCHARToWString(sqlwBuf, wcharCount);
+        std::string utf8str = WideToUTF8(wstr);
+        return py::str(utf8str);
+#endif
+    }
+    if (isBinary) {
+        LOG("FetchLobColumnData: Returning binary of {} bytes", buffer.size());
+        return py::bytes(buffer.data(), buffer.size());
+    }
+    std::string str(buffer.data(), buffer.size());
+    LOG("FetchLobColumnData: Returning narrow string of length {}", str.length());
+    return py::str(str);
+}
+
 // Helper function to retrieve column data
-// TODO: Handle variable length data correctly
 SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, py::list& row) {
     LOG("Get data from columns");
     if (!SQLGetData_ptr) {
@@ -1749,7 +1855,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
         if (!SQL_SUCCEEDED(ret)) {
             LOG("Error retrieving data for column - {}, SQLDescribeCol return code - {}", i, ret);
             row.append(py::none());
-            // TODO: Do we want to continue in this case or return?
             continue;
         }
 
@@ -1757,60 +1862,50 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR: {
-                // TODO: revisit
-                HandleZeroColumnSizeAtFetch(columnSize);
-		uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
-                std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
-                SQLLEN dataLen;
-                // TODO: Handle the return code better
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(),
-                                     &dataLen);
-
-                if (SQL_SUCCEEDED(ret)) {
-                    // TODO: Refactor these if's across other switches to avoid code duplication
-                    // columnSize is in chars, dataLen is in bytes
-                    if (dataLen > 0) {
-                        uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
-                        // NOTE: dataBuffer.size() includes null-terminator, dataLen doesn't. Hence use '<'.
-						if (numCharsInData < dataBuffer.size()) {
-                            // SQLGetData will null-terminate the data
-#if defined(__APPLE__) || defined(__linux__)
-                            std::string fullStr(reinterpret_cast<char*>(dataBuffer.data()));
-                            row.append(fullStr);
-                            LOG("macOS/Linux: Appended CHAR string of length {} to result row", fullStr.length());
-#else
-                            row.append(std::string(reinterpret_cast<char*>(dataBuffer.data())));
-#endif
-						} else {
-                            // In this case, buffer size is smaller, and data to be retrieved is longer
-                            // TODO: Revisit
-                            std::ostringstream oss;
-                            oss << "Buffer length for fetch (" << dataBuffer.size()-1 << ") is smaller, & data "
-                                << "to be retrieved is longer (" << numCharsInData << "). ColumnID - "
-                                << i << ", datatype - " << dataType;
-                            ThrowStdException(oss.str());
+                if (columnSize == SQL_NO_TOTAL || columnSize == 0 || columnSize > 8000) {
+                    LOG("Streaming LOB for column {}", i);
+                    row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false));
+                } else {
+                    uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
+                    std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
+                    SQLLEN dataLen;
+                    ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(),
+                                        &dataLen);
+                    if (SQL_SUCCEEDED(ret)) {
+                        // columnSize is in chars, dataLen is in bytes
+                        if (dataLen > 0) {
+                            uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
+                            if (numCharsInData < dataBuffer.size()) {
+                                // SQLGetData will null-terminate the data
+    #if defined(__APPLE__) || defined(__linux__)
+                                std::string fullStr(reinterpret_cast<char*>(dataBuffer.data()));
+                                row.append(fullStr);
+                                LOG("macOS/Linux: Appended CHAR string of length {} to result row", fullStr.length());
+    #else
+                                row.append(std::string(reinterpret_cast<char*>(dataBuffer.data())));
+    #endif
+                            }
+                        } else if (dataLen == SQL_NULL_DATA) {
+                            LOG("Column {} is NULL (CHAR)", i);
+                            row.append(py::none());
+                        } else if (dataLen == 0) {
+                            row.append(py::str(""));
+                        } else if (dataLen == SQL_NO_TOTAL) {
+                            LOG("SQLGetData couldn't determine the length of the data. "
+                                "Returning NULL value instead. Column ID - {}, Data Type - {}", i, dataType);
+                            row.append(py::none());
+                        } else if (dataLen < 0) {
+                            LOG("SQLGetData returned an unexpected negative data length. "
+                                "Raising exception. Column ID - {}, Data Type - {}, Data Length - {}",
+                                i, dataType, dataLen);
+                            ThrowStdException("SQLGetData returned an unexpected negative data length");
                         }
-				    } else if (dataLen == SQL_NULL_DATA) {
-					    row.append(py::none());
-                    } else if (dataLen == 0) {
-                        // Handle zero-length (non-NULL) data
-                        row.append(std::string(""));
-                    } else if (dataLen == SQL_NO_TOTAL) {
-                        // This means the length of the data couldn't be determined
-                        LOG("SQLGetData couldn't determine the length of the data. "
-                            "Returning NULL value instead. Column ID - {}, Data Type - {}", i, dataType);
-                    } else if (dataLen < 0) {
-                        // This is unexpected
-                        LOG("SQLGetData returned an unexpected negative data length. "
-                            "Raising exception. Column ID - {}, Data Type - {}, Data Length - {}",
-                            i, dataType, dataLen);
-                        ThrowStdException("SQLGetData returned an unexpected negative data length");
+                    } else {
+                        LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+                            "code - {}. Returning NULL value instead",
+                            i, dataType, ret);
+                        row.append(py::none());
                     }
-				} else {
-					LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
-						"code - {}. Returning NULL value instead",
-						i, dataType, ret);
-					row.append(py::none());
 				}
                 break;
             }
@@ -1819,7 +1914,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 			case SQL_WLONGVARCHAR: {
                 // TODO: revisit
                 HandleZeroColumnSizeAtFetch(columnSize);
-		uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
+		        uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
                 std::vector<SQLWCHAR> dataBuffer(fetchBufferSize);
                 SQLLEN dataLen;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(),

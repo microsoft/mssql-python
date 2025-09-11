@@ -38,6 +38,18 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
     result.push_back(0);
     return result;
 }
+
+inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
+    if (!sqlwStr) return std::wstring();
+
+    if (length == SQL_NTS) {
+        size_t i = 0;
+        while (sqlwStr[i] != 0) ++i;
+        length = i;
+    }
+    return std::wstring(reinterpret_cast<const wchar_t*>(sqlwStr), length);
+}
+
 #endif
 
 #if defined(__APPLE__) || defined(__linux__)
