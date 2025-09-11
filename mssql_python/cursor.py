@@ -20,6 +20,10 @@ from .row import Row
 
 # Constants for string handling
 MAX_INLINE_CHAR = 4000  # NVARCHAR/VARCHAR inline limit; this triggers NVARCHAR(MAX)/VARCHAR(MAX) + DAE
+SMALLMONEY_MIN = decimal.Decimal('-214748.3648')
+SMALLMONEY_MAX = decimal.Decimal('214748.3647')
+MONEY_MIN = decimal.Decimal('-922337203685477.5808')
+MONEY_MAX = decimal.Decimal('922337203685477.5807')
 
 class Cursor:
     """
@@ -282,18 +286,39 @@ class Cursor:
                 0,
                 False,
             )
-
+        
         if isinstance(param, decimal.Decimal):
-            parameters_list[i] = self._get_numeric_data(
-                param
-            )  # Replace the parameter with the dictionary
-            return (
-                ddbc_sql_const.SQL_NUMERIC.value,
-                ddbc_sql_const.SQL_C_NUMERIC.value,
-                parameters_list[i].precision,
-                parameters_list[i].scale,
-                False,
-            )
+        # Detect MONEY / SMALLMONEY range
+            if SMALLMONEY_MIN  <= param <= SMALLMONEY_MAX:
+                # smallmoney
+                parameters_list[i] = str(param)
+                return (
+                    ddbc_sql_const.SQL_VARCHAR.value,
+                    ddbc_sql_const.SQL_C_CHAR.value,
+                    len(parameters_list[i]),
+                    0,
+                    False,
+                )
+            elif MONEY_MIN <= param <= MONEY_MAX:
+                # money
+                parameters_list[i] = str(param)
+                return (
+                    ddbc_sql_const.SQL_VARCHAR.value,
+                    ddbc_sql_const.SQL_C_CHAR.value,
+                    len(parameters_list[i]),
+                    0,
+                    False,
+                )
+            else:
+                # fallback to generic numeric binding
+                parameters_list[i] = self._get_numeric_data(param)
+                return (
+                    ddbc_sql_const.SQL_NUMERIC.value,
+                    ddbc_sql_const.SQL_C_NUMERIC.value,
+                    parameters_list[i].precision,
+                    parameters_list[i].scale,
+                    False,
+                )
 
         if isinstance(param, str):
             if (
