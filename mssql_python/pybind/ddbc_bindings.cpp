@@ -1884,6 +1884,10 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
     #else
                                 row.append(std::string(reinterpret_cast<char*>(dataBuffer.data())));
     #endif
+                            } else {
+                                // Buffer too small, fallback to streaming
+                                LOG("CHAR column {} data truncated, using streaming LOB", i);
+                                row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             LOG("Column {} is NULL (CHAR)", i);
@@ -1924,14 +1928,20 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         if (dataLen > 0) {
                             uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
                             if (numCharsInData < dataBuffer.size()) {
-            #if defined(__APPLE__) || defined(__linux__)
-                                std::wstring wstr(reinterpret_cast<wchar_t*>(dataBuffer.data()), numCharsInData);
-                                row.append(py::cast(wstr));
-            #else
+#if defined(__APPLE__) || defined(__linux__)
+                                const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(dataBuffer.data());
+                                std::wstring wstr = SQLWCHARToWString(sqlwBuf, numCharsInData);
+                                std::string utf8str = WideToUTF8(wstr);
+                                row.append(py::str(utf8str));
+#else
                                 std::wstring wstr(reinterpret_cast<wchar_t*>(dataBuffer.data()));
                                 row.append(py::cast(wstr));
-            #endif
+#endif
                                 LOG("Appended NVARCHAR string of length {} to result row", numCharsInData);
+                            }  else {
+                                // Buffer too small, fallback to streaming
+                                LOG("NVARCHAR column {} data truncated, using streaming LOB", i);
+                                row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             LOG("Column {} is NULL (CHAR)", i);
