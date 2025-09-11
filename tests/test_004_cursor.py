@@ -5989,6 +5989,7 @@ def test_varcharmax_transaction_rollback(cursor, db_connection):
 
 
 def test_nvarcharmax_short(cursor, db_connection):
+    """Test inserting and retrieving a small string well below any size thresholds."""
     try:
         cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
         cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
@@ -6005,6 +6006,7 @@ def test_nvarcharmax_short(cursor, db_connection):
 
 
 def test_nvarcharmax_boundary(cursor, db_connection):
+    """Test NVARCHAR(MAX) at the boundary size of 4000 characters (8000 bytes)."""
     try:
         cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
         cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
@@ -6021,6 +6023,7 @@ def test_nvarcharmax_boundary(cursor, db_connection):
 
 
 def test_nvarcharmax_streaming(cursor, db_connection):
+    """Test NVARCHAR(MAX) just above the boundary size (4100 characters) to trigger streaming."""
     try:
         cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
         cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
@@ -6037,6 +6040,7 @@ def test_nvarcharmax_streaming(cursor, db_connection):
 
 
 def test_nvarcharmax_large(cursor, db_connection):
+    """Test inserting and retrieving a very large NVARCHAR(MAX) string (100,000 characters)."""
     try:
         cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
         cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
@@ -6053,6 +6057,7 @@ def test_nvarcharmax_large(cursor, db_connection):
 
 
 def test_nvarcharmax_empty_string(cursor, db_connection):
+    """Test inserting and retrieving an empty NVARCHAR(MAX) string."""
     try:
         cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
         cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
@@ -6068,6 +6073,7 @@ def test_nvarcharmax_empty_string(cursor, db_connection):
 
 
 def test_nvarcharmax_null(cursor, db_connection):
+    """Test inserting and retrieving a NULL NVARCHAR(MAX) value."""
     try:
         cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
         cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
@@ -6083,6 +6089,8 @@ def test_nvarcharmax_null(cursor, db_connection):
 
 
 def test_nvarcharmax_transaction_rollback(cursor, db_connection):
+    """Test that inserting a large NVARCHAR(MAX) within a transaction that is rolled back
+    does not persist the data, ensuring transactional integrity."""
     try:
         cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
         cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
