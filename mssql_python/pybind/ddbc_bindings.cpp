@@ -1862,12 +1862,10 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR: {
-                // Use streaming for large VARCHAR / CHAR
                 if (columnSize == SQL_NO_TOTAL || columnSize == 0 || columnSize > 8000) {
                     LOG("Streaming LOB for column {}", i);
                     row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false));
                 } else {
-                    // Small VARCHAR, fetch directly
                     uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
                     std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
                     SQLLEN dataLen;
@@ -1880,13 +1878,16 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             if (numCharsInData < dataBuffer.size()) {
                                 // SQLGetData will null-terminate the data
     #if defined(__APPLE__) || defined(__linux__)
-                                std::string fullStr(reinterpret_cast<char*>(dataBuffer.data()), dataLen);
+                                std::string fullStr(reinterpret_cast<char*>(dataBuffer.data()));
                                 row.append(fullStr);
                                 LOG("macOS/Linux: Appended CHAR string of length {} to result row", fullStr.length());
     #else
                                 row.append(std::string(reinterpret_cast<char*>(dataBuffer.data())));
     #endif
                             }
+                        } else if (dataLen == SQL_NULL_DATA) {
+                            LOG("Column {} is NULL (CHAR)", i);
+                            row.append(py::none());
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
                         } else if (dataLen == SQL_NO_TOTAL) {
@@ -1911,12 +1912,10 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_WCHAR:
             case SQL_WVARCHAR:
             case SQL_WLONGVARCHAR: {
-                // Use streaming for large NVARCHAR / NCHAR
                 if (columnSize == SQL_NO_TOTAL || columnSize == 0 || columnSize > 4000) {
                     LOG("Streaming LOB for column {} (NVARCHAR)", i);
                     row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false));
                 } else {
-                    // Small NVARCHAR, fetch directly
                     uint64_t fetchBufferSize = (columnSize + 1) * sizeof(SQLWCHAR);  // +1 for null terminator
                     std::vector<SQLWCHAR> dataBuffer(columnSize + 1);
                     SQLLEN dataLen;
@@ -1934,12 +1933,19 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             #endif
                                 LOG("Appended NVARCHAR string of length {} to result row", numCharsInData);
                             }
+                        } else if (dataLen == SQL_NULL_DATA) {
+                            LOG("Column {} is NULL (CHAR)", i);
+                            row.append(py::none());
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
-                        } else {
-                            assert(dataLen == SQL_NO_TOTAL);
+                        } else if (dataLen == SQL_NO_TOTAL) {
                             LOG("SQLGetData couldn't determine the length of the NVARCHAR data. Returning NULL. Column ID - {}", i);
                             row.append(py::none());
+                        } else if (dataLen < 0) {
+                            LOG("SQLGetData returned an unexpected negative data length. "
+                                "Raising exception. Column ID - {}, Data Type - {}, Data Length - {}",
+                                i, dataType, dataLen);
+                            ThrowStdException("SQLGetData returned an unexpected negative data length");
                         }
                     } else {
                         LOG("Error retrieving data for column {} (NVARCHAR), SQLGetData return code {}", i, ret);
