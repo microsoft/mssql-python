@@ -1818,7 +1818,8 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
         // Linux/macOS handling
         size_t wcharCount = buffer.size() / sizeof(SQLWCHAR);
         const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(buffer.data());
-        std::string utf8str = SQLWCHARToUTF8String(sqlwBuf, wcharCount);
+        std::wstring wstr = SQLWCHARToWString(sqlwBuf, wcharCount);
+        std::string utf8str = WideToUTF8(wstr);
         return py::str(utf8str);
 #endif
     }
