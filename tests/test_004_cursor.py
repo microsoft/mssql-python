@@ -2213,7 +2213,7 @@ def test_foreignkeys_all(cursor, db_connection):
         test_foreignkeys_setup(cursor, db_connection)
         
         # Get all foreign keys
-        fks = cursor.foreignKeys(table='orders', schema='pytest_fk_schema')
+        fks = cursor.foreignKeys(table='orders', schema='pytest_fk_schema').fetchall()
         
         # Verify we got results
         assert fks is not None, "foreignKeys() should return results"
@@ -2243,7 +2243,7 @@ def test_foreignkeys_specific_table(cursor, db_connection):
         test_foreignkeys_setup(cursor, db_connection)
         
         # Get foreign keys for the orders table
-        fks = cursor.foreignKeys(table='orders', schema='pytest_fk_schema')
+        fks = cursor.foreignKeys(table='orders', schema='pytest_fk_schema').fetchall()
         
         # Verify we got results
         assert len(fks) == 1, "Should find exactly one foreign key for orders table"
@@ -2268,7 +2268,7 @@ def test_foreignkeys_specific_foreign_table(cursor, db_connection):
         test_foreignkeys_setup(cursor, db_connection)
         
         # Get foreign keys that reference the customers table
-        fks = cursor.foreignKeys(foreignTable='customers', foreignSchema='pytest_fk_schema')
+        fks = cursor.foreignKeys(foreignTable='customers', foreignSchema='pytest_fk_schema').fetchall()
         
         # Verify we got results
         assert len(fks) > 0, "Should find at least one foreign key referencing customers table"
@@ -2299,7 +2299,7 @@ def test_foreignkeys_both_tables(cursor, db_connection):
         fks = cursor.foreignKeys(
             table='orders', schema='pytest_fk_schema',
             foreignTable='customers', foreignSchema='pytest_fk_schema'
-        )
+        ).fetchall()
         
         # Verify we got results
         assert len(fks) == 1, "Should find exactly one foreign key between specified tables"
@@ -2320,7 +2320,7 @@ def test_foreignkeys_both_tables(cursor, db_connection):
 def test_foreignkeys_nonexistent(cursor):
     """Test foreignKeys() with non-existent table name"""
     # Use a table name that's highly unlikely to exist
-    fks = cursor.foreignKeys(table='nonexistent_table_xyz123')
+    fks = cursor.foreignKeys(table='nonexistent_table_xyz123').fetchall()
     
     # Should return empty list, not error
     assert isinstance(fks, list), "Should return a list for non-existent table"
@@ -2342,7 +2342,7 @@ def test_foreignkeys_catalog_schema(cursor, db_connection):
             table='orders',
             catalog=current_db,
             schema='pytest_fk_schema'
-        )
+        ).fetchall()
         
         # Verify we got results
         assert len(fks) > 0, "Should find foreign keys with correct catalog/schema"
@@ -2365,7 +2365,7 @@ def test_foreignkeys_result_structure(cursor, db_connection):
         test_foreignkeys_setup(cursor, db_connection)
         
         # Get foreign keys for the orders table
-        fks = cursor.foreignKeys(table='orders', schema='pytest_fk_schema')
+        fks = cursor.foreignKeys(table='orders', schema='pytest_fk_schema').fetchall()
         
         # Verify we got results
         assert len(fks) > 0, "Should find at least one foreign key"
@@ -2433,8 +2433,8 @@ def test_foreignkeys_multiple_column_fk(cursor, db_connection):
         db_connection.commit()
         
         # Get foreign keys for the order_details table
-        fks = cursor.foreignKeys(table='order_details', schema='pytest_fk_schema')
-        
+        fks = cursor.foreignKeys(table='order_details', schema='pytest_fk_schema').fetchall()
+
         # Verify we got results
         assert len(fks) == 2, "Should find two rows for the composite foreign key (one per column)"
         
