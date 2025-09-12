@@ -10,6 +10,7 @@ Note: The cursor function is not yet implemented, so related tests are commented
 
 import pytest
 from datetime import datetime, date, time
+import time as time_module
 import decimal
 from mssql_python import Connection
 import mssql_python
@@ -3272,13 +3273,13 @@ def test_columns_setup(cursor, db_connection):
     try:
         # Create a test schema for isolation
         cursor.execute("IF NOT EXISTS (SELECT * FROM sys.schemas WHERE name = 'pytest_cols_schema') EXEC('CREATE SCHEMA pytest_cols_schema')")
-        
+
         # Drop tables if they exist
         cursor.execute("DROP TABLE IF EXISTS pytest_cols_schema.columns_test")
         cursor.execute("DROP TABLE IF EXISTS pytest_cols_schema.columns_special_test")
         
         # Create test table with various column types
-        cursor.execute("""
+        cursor.execute(""" 
         CREATE TABLE pytest_cols_schema.columns_test (
             id INT PRIMARY KEY,
             name NVARCHAR(100) NOT NULL,
@@ -3293,7 +3294,7 @@ def test_columns_setup(cursor, db_connection):
         """)
         
         # Create table with special column names and edge cases - fix the problematic column name
-        cursor.execute("""
+        cursor.execute(""" 
         CREATE TABLE pytest_cols_schema.columns_special_test (
             [ID] INT PRIMARY KEY,
             [User Name] NVARCHAR(100) NULL,
@@ -3318,7 +3319,8 @@ def test_columns_all(cursor, db_connection):
         test_columns_setup(cursor, db_connection)
         
         # Get all columns (no filters)
-        cols = cursor.columns()
+        cols_cursor = cursor.columns()
+        cols = cols_cursor.fetchall()
         
         # Verify we got results
         assert cols is not None, "columns() should return results"
@@ -3371,7 +3373,7 @@ def test_columns_specific_table(cursor, db_connection):
         cols = cursor.columns(
             table='columns_test', 
             schema='pytest_cols_schema'
-        )
+        ).fetchall()
         
         # Verify we got results
         assert len(cols) == 9, "Should find exactly 9 columns in columns_test"
@@ -3411,7 +3413,7 @@ def test_columns_special_chars(cursor, db_connection):
         cols = cursor.columns(
             table='columns_special_test', 
             schema='pytest_cols_schema'
-        )
+        ).fetchall()
         
         # Verify we got results
         assert len(cols) == 9, "Should find exactly 9 columns in columns_special_test"
@@ -3445,7 +3447,7 @@ def test_columns_specific_column(cursor, db_connection):
             table='columns_test', 
             schema='pytest_cols_schema',
             column='name'
-        )
+        ).fetchall()
         
         # Verify we got just one result
         assert len(cols) == 1, "Should find exactly 1 column named 'name'"
@@ -3462,10 +3464,11 @@ def test_columns_specific_column(cursor, db_connection):
             table='columns_test', 
             schema='pytest_cols_schema',
             column='%date%'
-        )
+        ).fetchall()
         
         # Should find created_date column
         assert len(pattern_cols) == 1, "Should find 1 column matching '%date%'"
+
         assert pattern_cols[0].column_name.lower() == 'created_date', "Should find created_date column"
         
         # Get multiple columns with pattern
@@ -3473,7 +3476,7 @@ def test_columns_specific_column(cursor, db_connection):
             table='columns_test', 
             schema='pytest_cols_schema',
             column='%d%'  # Should match id, description, created_date
-        )
+        ).fetchall()
         
         # At least 3 columns should match this pattern
         assert len(multi_cols) >= 3, "Should find at least 3 columns matching '%d%'"
@@ -3486,7 +3489,7 @@ def test_columns_specific_column(cursor, db_connection):
         # Clean up happens in test_columns_cleanup
         pass
 
-def test_columns_with_underscore_pattern(cursor, db_connection):
+def test_columns_with_underscore_pattern(cursor):
     """Test columns with underscore wildcard pattern"""
     try:
         # Get columns with underscore pattern (one character wildcard)
@@ -3495,7 +3498,7 @@ def test_columns_with_underscore_pattern(cursor, db_connection):
             table='columns_test', 
             schema='pytest_cols_schema',
             column='__'
-        )
+        ).fetchall()
         
         # Should find 'id' column
         id_found = False
@@ -3512,7 +3515,7 @@ def test_columns_with_underscore_pattern(cursor, db_connection):
             table='columns_test', 
             schema='pytest_cols_schema',
             column='%_d%'
-        )
+        ).fetchall()
         
         # Should match 'id' (if considering case-insensitive) and 'created_date'
         match_names = [col.column_name.lower() for col in pattern_cols 
@@ -3536,7 +3539,7 @@ def test_columns_nonexistent(cursor):
         table='columns_test', 
         schema='pytest_cols_schema',
         column='nonexistent_column_xyz123'
-    )
+    ).fetchall()
     assert len(col_cols) == 0, "Should return empty list for non-existent column"
     
     # Test with non-existent schema
@@ -3546,14 +3549,14 @@ def test_columns_nonexistent(cursor):
     )
     assert len(schema_cols) == 0, "Should return empty list for non-existent schema"
 
-def test_columns_data_types(cursor, db_connection):
+def test_columns_data_types(cursor):
     """Test columns returns correct data type information"""
     try:
         # Get all columns from test table
         cols = cursor.columns(
             table='columns_test', 
             schema='pytest_cols_schema'
-        )
+        ).fetchall()
         
         # Create a dictionary mapping column names to their details
         col_dict = {col.column_name.lower(): col for col in cols}
@@ -3595,7 +3598,28 @@ def test_columns_data_types(cursor, db_connection):
         # Clean up happens in test_columns_cleanup
         pass
 
-def test_columns_catalog_filter(cursor, db_connection):
+def test_columns_nonexistent(cursor):
+    """Test columns with non-existent table or column"""
+    # Test with non-existent table
+    table_cols = cursor.columns(table='nonexistent_table_xyz123').fetchall()
+    assert len(table_cols) == 0, "Should return empty list for non-existent table"
+    
+    # Test with non-existent column in existing table
+    col_cols = cursor.columns(
+        table='columns_test', 
+        schema='pytest_cols_schema',
+        column='nonexistent_column_xyz123'
+    ).fetchall()
+    assert len(col_cols) == 0, "Should return empty list for non-existent column"
+    
+    # Test with non-existent schema
+    schema_cols = cursor.columns(
+        table='columns_test', 
+        schema='nonexistent_schema_xyz123'
+    ).fetchall()
+    assert len(schema_cols) == 0, "Should return empty list for non-existent schema"
+
+def test_columns_catalog_filter(cursor):
     """Test columns with catalog filter"""
     try:
         # Get current database name
@@ -3607,7 +3631,7 @@ def test_columns_catalog_filter(cursor, db_connection):
             table='columns_test',
             catalog=current_db,
             schema='pytest_cols_schema'
-        )
+        ).fetchall()
         
         # Verify catalog filter worked
         assert len(cols) > 0, "Should find columns with correct catalog"
@@ -3623,21 +3647,21 @@ def test_columns_catalog_filter(cursor, db_connection):
             table='columns_test',
             catalog='nonexistent_db_xyz123',
             schema='pytest_cols_schema'
-        )
+        ).fetchall()
         assert len(fake_cols) == 0, "Should return empty list for non-existent catalog"
         
     finally:
         # Clean up happens in test_columns_cleanup
         pass
 
-def test_columns_schema_pattern(cursor, db_connection):
+def test_columns_schema_pattern(cursor):
     """Test columns with schema name pattern"""
     try:
         # Get columns with schema pattern
         cols = cursor.columns(
             table='columns_test',
             schema='pytest_%'
-        )
+        ).fetchall()
         
         # Should find our test table columns
         test_cols = [col for col in cols if col.table_name.lower() == 'columns_test']
@@ -3647,7 +3671,7 @@ def test_columns_schema_pattern(cursor, db_connection):
         specific_cols = cursor.columns(
             table='columns_test',
             schema='pytest_cols%'
-        )
+        ).fetchall()
         
         # Should still find our test table columns
         test_cols = [col for col in specific_cols if col.table_name.lower() == 'columns_test']
@@ -3657,14 +3681,14 @@ def test_columns_schema_pattern(cursor, db_connection):
         # Clean up happens in test_columns_cleanup
         pass
 
-def test_columns_table_pattern(cursor, db_connection):
+def test_columns_table_pattern(cursor):
     """Test columns with table name pattern"""
     try:
         # Get columns with table pattern
         cols = cursor.columns(
             table='columns_%',
             schema='pytest_cols_schema'
-        )
+        ).fetchall()
         
         # Should find columns from both test tables
         tables_found = set()
@@ -3679,14 +3703,14 @@ def test_columns_table_pattern(cursor, db_connection):
         # Clean up happens in test_columns_cleanup
         pass
 
-def test_columns_ordinal_position(cursor, db_connection):
+def test_columns_ordinal_position(cursor):
     """Test ordinal_position is correct in columns results"""
     try:
         # Get columns for the test table
         cols = cursor.columns(
             table='columns_test', 
             schema='pytest_cols_schema'
-        )
+        ).fetchall()
         
         # Sort by ordinal position
         sorted_cols = sorted(cols, key=lambda col: col.ordinal_position)
