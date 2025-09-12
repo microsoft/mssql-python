@@ -1326,6 +1326,131 @@ class Cursor:
         # Return the cursor itself
         return self
 
+    def statistics(self, table: str, catalog: str = None, schema: str = None, unique: bool = False, quick: bool = True) -> 'Cursor':
+        """
+        Creates a result set of statistics about a single table and the indexes associated 
+        with the table by executing SQLStatistics.
+        
+        Args:
+            table (str): The name of the table.
+            catalog (str, optional): The catalog name. Defaults to None.
+            schema (str, optional): The schema name. Defaults to None.
+            unique (bool, optional): If True, only unique indexes are returned. 
+                                    If False, all indexes are returned. Defaults to False.
+            quick (bool, optional): If True, CARDINALITY and PAGES are returned only 
+                                    if readily available. Defaults to True.
+        
+        Returns:
+            cursor: The cursor itself, containing the result set. Use fetchone(), fetchmany(),
+                   or fetchall() to retrieve the results.
+            
+        Example:
+            # Get statistics for the 'Customers' table
+            stats_cursor = cursor.statistics(table='Customers')
+            
+            # Fetch rows as needed
+            first_stat = stats_cursor.fetchone()
+            next_10_stats = stats_cursor.fetchmany(10)
+            all_remaining = stats_cursor.fetchall()
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+
+        # Table name is required
+        if not table:
+            raise ProgrammingError("Table name is required", "HY000")
+        
+        # Set unique flag (SQL_INDEX_UNIQUE = 0, SQL_INDEX_ALL = 1)
+        unique_option = ddbc_sql_const.SQL_INDEX_UNIQUE.value if unique else ddbc_sql_const.SQL_INDEX_ALL.value
+        
+        # Set quick flag (SQL_QUICK = 0, SQL_ENSURE = 1)
+        reserved_option = ddbc_sql_const.SQL_QUICK.value if quick else ddbc_sql_const.SQL_ENSURE.value
+        
+        # Call the SQLStatistics function
+        retcode = ddbc_bindings.DDBCSQLStatistics(
+            self.hstmt,
+            catalog,
+            schema,
+            table,
+            unique_option,
+            reserved_option
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Initialize description from column metadata
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
+            # If describe fails, create a manual description for the standard columns
+            column_types = [str, str, str, bool, str, str, int, int, str, str, int, int, str]
+            self.description = [
+                ("table_cat", column_types[0], None, 128, 128, 0, True),
+                ("table_schem", column_types[1], None, 128, 128, 0, True),
+                ("table_name", column_types[2], None, 128, 128, 0, False),
+                ("non_unique", column_types[3], None, 1, 1, 0, False),
+                ("index_qualifier", column_types[4], None, 128, 128, 0, True),
+                ("index_name", column_types[5], None, 128, 128, 0, True),
+                ("type", column_types[6], None, 10, 10, 0, False),
+                ("ordinal_position", column_types[7], None, 10, 10, 0, False),
+                ("column_name", column_types[8], None, 128, 128, 0, True),
+                ("asc_or_desc", column_types[9], None, 1, 1, 0, True),
+                ("cardinality", column_types[10], None, 20, 20, 0, True),
+                ("pages", column_types[11], None, 20, 20, 0, True),
+                ("filter_condition", column_types[12], None, 128, 128, 0, True)
+            ]
+        
+        # Create a column map with both ODBC standard names and lowercase aliases
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
+        
+        # Remember original fetch methods (store only once)
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+    
+            # Create wrapper fetch methods that add column mappings
+            def fetchone_with_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    row._column_map = self._column_map
+                return row
+                
+            def fetchmany_with_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+                
+            def fetchall_with_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+                
+            # Replace fetch methods
+            self.fetchone = fetchone_with_mapping
+            self.fetchmany = fetchmany_with_mapping
+            self.fetchall = fetchall_with_mapping
+        
+        # Return the cursor itself
+        return self
+
     @staticmethod
     def _select_best_sample_value(column):
         """
