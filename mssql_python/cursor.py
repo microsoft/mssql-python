@@ -639,6 +639,16 @@ class Cursor:
             use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
             reset_cursor: Whether to reset the cursor before execution.
         """
+
+        # Restore original fetch methods if they exist
+        if hasattr(self, '_original_fetchone'):
+            self.fetchone = self._original_fetchone
+            self.fetchmany = self._original_fetchmany
+            self.fetchall = self._original_fetchall
+            del self._original_fetchone
+            del self._original_fetchmany
+            del self._original_fetchall
+            
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
             self._reset_cursor()
@@ -797,6 +807,103 @@ class Cursor:
             # Always reset the cursor on exception
             self._reset_cursor()
             raise e
+        
+    def procedures(self, procedure=None, catalog=None, schema=None):
+        """
+        Executes SQLProcedures and creates a result set of information about procedures in the data source.
+        
+        Args:
+            procedure (str, optional): Procedure name pattern. Default is None (all procedures).
+            catalog (str, optional): Catalog name pattern. Default is None (current catalog).
+            schema (str, optional): Schema name pattern. Default is None (all schemas).
+            
+        Returns:
+            List of Row objects, each containing procedure information with these columns:
+            - procedure_cat (str): The catalog name
+            - procedure_schem (str): The schema name
+            - procedure_name (str): The procedure name
+            - num_input_params (int): Number of input parameters
+            - num_output_params (int): Number of output parameters
+            - num_result_sets (int): Number of result sets
+            - remarks (str): Comments about the procedure
+            - procedure_type (int): Type of procedure (1=procedure, 2=function)
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        # Call the SQLProcedures function
+        retcode = ddbc_bindings.DDBCSQLProcedures(self.hstmt, catalog, schema, procedure)
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Create column metadata and initialize description
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
+            # If describe fails, create a manual description
+            column_types = [str, str, str, int, int, int, str, int]
+            self.description = [
+                ("procedure_cat", column_types[0], None, 128, 128, 0, True),
+                ("procedure_schem", column_types[1], None, 128, 128, 0, True),
+                ("procedure_name", column_types[2], None, 128, 128, 0, False),
+                ("num_input_params", column_types[3], None, 10, 10, 0, True),
+                ("num_output_params", column_types[4], None, 10, 10, 0, True),
+                ("num_result_sets", column_types[5], None, 10, 10, 0, True),
+                ("remarks", column_types[6], None, 254, 254, 0, True),
+                ("procedure_type", column_types[7], None, 10, 10, 0, False)
+            ]
+        
+        # Define column names in ODBC standard order
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
+
+        # Remember original fetch methods (store only once)
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+
+            # Create wrapper fetch methods that add column mappings
+            def fetchone_with_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    row._column_map = self._column_map
+                return row
+
+            def fetchmany_with_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            def fetchall_with_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            # Replace fetch methods
+            self.fetchone = fetchone_with_mapping
+            self.fetchmany = fetchmany_with_mapping
+            self.fetchall = fetchall_with_mapping
+
+        # Return the cursor itself
+        return self
 
     @staticmethod
     def _select_best_sample_value(column):
