@@ -14,6 +14,7 @@ from datetime import datetime, date, time
 import decimal
 from contextlib import closing
 from mssql_python import Connection, row
+import uuid
 
 # Setup test table
 TEST_TABLE = """
@@ -6821,6 +6822,159 @@ def test_money_smallmoney_invalid_values(cursor, db_connection):
         pytest.fail(f"MONEY and SMALLMONEY invalid values test failed: {e}")
     finally:
         drop_table_if_exists(cursor, "dbo.money_test")
+        db_connection.commit()
+
+def test_uuid_insert_and_select_none(cursor, db_connection):
+    """Test inserting and retrieving None in a nullable UUID column."""
+    table_name = "#pytest_uuid_nullable"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER,
+                name NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        # Insert a row with None for the UUID
+        cursor.execute(f"INSERT INTO {table_name} (id, name) VALUES (?, ?)", [None, "Bob"])
+        db_connection.commit()
+
+        # Fetch the row
+        cursor.execute(f"SELECT id, name FROM {table_name}")
+        row = cursor.fetchone()
+        retrieved_uuid, retrieved_name = row
+
+        # Assert that the retrieved UUID is None
+        assert retrieved_uuid is None, f"Expected None, got {type(retrieved_uuid)}"
+
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+def test_insert_multiple_uuids(cursor, db_connection):
+    """Test inserting multiple UUIDs and verifying retrieval."""
+    table_name = "#pytest_uuid_multiple"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER PRIMARY KEY,
+                description NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        uuids_to_insert = {f"Item {i}": uuid.uuid4() for i in range(5)}
+        
+        # Insert UUIDs and descriptions
+        for desc, uid in uuids_to_insert.items():
+            cursor.execute(f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", [uid, desc])
+        db_connection.commit()
+
+        # Fetch all data
+        cursor.execute(f"SELECT id, description FROM {table_name}")
+        rows = cursor.fetchall()
+        
+        # Verify each fetched row against the original data
+        assert len(rows) == len(uuids_to_insert), "Number of fetched rows does not match."
+        
+        for row in rows:
+            retrieved_uuid, retrieved_desc = row
+            
+            # Assert type is correct
+            assert isinstance(retrieved_uuid, uuid.UUID), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
+            
+            # Use the description to look up the original UUID
+            expected_uuid = uuids_to_insert.get(retrieved_desc)
+            
+            assert expected_uuid is not None, f"Retrieved description '{retrieved_desc}' was not in the original data."
+            assert retrieved_uuid == expected_uuid, f"UUID mismatch for '{retrieved_desc}': expected {expected_uuid}, got {retrieved_uuid}"
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+def test_uuid_insert_with_none(cursor, db_connection):
+    """Test that inserting None into a UUID column raises an error (or is handled)."""
+    table_name = "#pytest_uuid_none"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER,
+                name NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        cursor.execute(f"INSERT INTO {table_name} (id, name) VALUES (?, ?)", [None, "Bob"])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, name FROM {table_name}")
+        row = cursor.fetchone()
+        assert row[0] is None, f"Expected NULL UUID, got {row[0]}"
+        assert row[1] == "Bob"
+
+
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+def test_executemany_uuid_insert_and_select(cursor, db_connection):
+    """Test inserting multiple UUIDs using executemany and verifying retrieval."""
+    table_name = "#pytest_uuid_executemany"
+    
+    try:
+        # Drop and create a temporary table for the test
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER PRIMARY KEY,
+                description NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        # Generate data for insertion
+        data_to_insert = []
+        uuids_to_check = {}
+        for i in range(5):
+            new_uuid = uuid.uuid4()
+            description = f"Item {i}"
+            data_to_insert.append((new_uuid, description))
+            uuids_to_check[description] = new_uuid
+
+        # Insert all data with a single call to executemany
+        sql = f"INSERT INTO {table_name} (id, description) VALUES (?, ?)"
+        cursor.executemany(sql, data_to_insert)
+        db_connection.commit()
+
+        # Verify the number of rows inserted
+        assert cursor.rowcount == 5, f"Expected 5 rows inserted, but got {cursor.rowcount}"
+
+        # Fetch all data from the table
+        cursor.execute(f"SELECT id, description FROM {table_name}")
+        rows = cursor.fetchall()
+        
+        # Verify the number of fetched rows
+        assert len(rows) == len(data_to_insert), "Number of fetched rows does not match."
+        
+        # Verify each fetched row's data and type
+        for row in rows:
+            retrieved_uuid, retrieved_desc = row
+            
+            # Assert the type is correct
+            assert isinstance(retrieved_uuid, uuid.UUID), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
+            
+            # Assert the value matches the original data
+            expected_uuid = uuids_to_check.get(retrieved_desc)
+            assert expected_uuid is not None, f"Retrieved description '{retrieved_desc}' was not in the original data."
+            assert retrieved_uuid == expected_uuid, f"UUID mismatch for '{retrieved_desc}': expected {expected_uuid}, got {retrieved_uuid}"
+
+    finally:
+        # Clean up the temporary table
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
 
 def test_close(db_connection):

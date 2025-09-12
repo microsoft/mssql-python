@@ -484,7 +484,34 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 break;
             }
             case SQL_C_GUID: {
-                // TODO
+                if (!py::isinstance<py::bytes>(param)) {
+                    ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
+                }
+                py::bytes uuid_bytes = param.cast<py::bytes>();
+                const unsigned char* uuid_data = reinterpret_cast<const unsigned char*>(PyBytes_AS_STRING(uuid_bytes.ptr()));
+                if (PyBytes_GET_SIZE(uuid_bytes.ptr()) != 16) {
+                    ThrowStdException("UUID binary data must be exactly 16 bytes long.");
+                }
+                SQLGUID* guid_data_ptr = AllocateParamBuffer<SQLGUID>(paramBuffers);
+
+                guid_data_ptr->Data1 = 
+                    (static_cast<uint32_t>(uuid_data[3]) << 24) | 
+                    (static_cast<uint32_t>(uuid_data[2]) << 16) | 
+                    (static_cast<uint32_t>(uuid_data[1]) << 8)  | 
+                    (static_cast<uint32_t>(uuid_data[0]));
+                guid_data_ptr->Data2 = 
+                    (static_cast<uint16_t>(uuid_data[5]) << 8) | 
+                    (static_cast<uint16_t>(uuid_data[4]));
+                guid_data_ptr->Data3 = 
+                    (static_cast<uint16_t>(uuid_data[7]) << 8) | 
+                    (static_cast<uint16_t>(uuid_data[6]));
+
+                std::memcpy(guid_data_ptr->Data4, &uuid_data[8], 8);
+                dataPtr = static_cast<void*>(guid_data_ptr);
+                bufferLength = sizeof(SQLGUID);
+                strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
+                *strLenOrIndPtr = sizeof(SQLGUID);
+                break;
             }
             default: {
                 std::ostringstream errorString;
@@ -2199,20 +2226,27 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 #if (ODBCVER >= 0x0350)
             case SQL_GUID: {
                 SQLGUID guidValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_GUID, &guidValue, sizeof(guidValue), NULL);
-                if (SQL_SUCCEEDED(ret)) {
-                    std::ostringstream oss;
-                    oss << std::hex << std::setfill('0') << std::setw(8) << guidValue.Data1 << '-'
-                        << std::setw(4) << guidValue.Data2 << '-' << std::setw(4) << guidValue.Data3
-                        << '-' << std::setw(2) << static_cast<int>(guidValue.Data4[0])
-                        << std::setw(2) << static_cast<int>(guidValue.Data4[1]) << '-' << std::hex
-                        << std::setw(2) << static_cast<int>(guidValue.Data4[2]) << std::setw(2)
-                        << static_cast<int>(guidValue.Data4[3]) << std::setw(2)
-                        << static_cast<int>(guidValue.Data4[4]) << std::setw(2)
-                        << static_cast<int>(guidValue.Data4[5]) << std::setw(2)
-                        << static_cast<int>(guidValue.Data4[6]) << std::setw(2)
-                        << static_cast<int>(guidValue.Data4[7]);
-                    row.append(oss.str());  // Append GUID as a string
+                SQLLEN indicator;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_GUID, &guidValue, sizeof(guidValue), &indicator);
+
+                if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
+                    std::vector<char> guid_bytes(16);
+                    guid_bytes[0] = ((char*)&guidValue.Data1)[3];
+                    guid_bytes[1] = ((char*)&guidValue.Data1)[2];
+                    guid_bytes[2] = ((char*)&guidValue.Data1)[1];
+                    guid_bytes[3] = ((char*)&guidValue.Data1)[0];
+                    guid_bytes[4] = ((char*)&guidValue.Data2)[1];
+                    guid_bytes[5] = ((char*)&guidValue.Data2)[0];
+                    guid_bytes[6] = ((char*)&guidValue.Data3)[1];
+                    guid_bytes[7] = ((char*)&guidValue.Data3)[0];
+                    std::memcpy(&guid_bytes[8], guidValue.Data4, sizeof(guidValue.Data4));
+
+                    py::bytes py_guid_bytes(guid_bytes.data(), guid_bytes.size());
+                    py::object uuid_module = py::module_::import("uuid");
+                    py::object uuid_obj = uuid_module.attr("UUID")(py_guid_bytes);
+                    row.append(uuid_obj);
+                } else if (indicator == SQL_NULL_DATA) {
+                    row.append(py::none());
                 } else {
                     LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
                         "code - {}. Returning NULL value instead",
@@ -2221,7 +2255,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 }
                 break;
             }
-#endif
+        #endif
             default:
                 std::ostringstream errorString;
                 errorString << "Unsupported data type for column - " << columnName << ", Type - "
@@ -2590,9 +2624,19 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
                 case SQL_GUID: {
-                    row.append(
-                        py::bytes(reinterpret_cast<const char*>(&buffers.guidBuffers[col - 1][i]),
-                                  sizeof(SQLGUID)));
+                    SQLGUID* guidValue = &buffers.guidBuffers[col - 1][i];
+                    // We already have the raw bytes from SQL Server in the SQLGUID struct.
+                    // We do not need to perform any additional reordering here, as the C++
+                    // SQLGUID struct is already laid out in the non-standard SQL Server byte order.
+                    std::vector<char> guid_bytes(16);
+                    std::memcpy(guid_bytes.data(), guidValue, sizeof(SQLGUID));
+
+                    // Convert the raw C++ byte vector to a Python bytes object
+                    py::bytes py_guid_bytes(guid_bytes.data(), guid_bytes.size());
+                    py::dict kwargs;
+                    kwargs["bytes"] = py_guid_bytes;
+                    py::object uuid_obj = py::module_::import("uuid").attr("UUID")(**kwargs);
+                    row.append(uuid_obj);
                     break;
                 }
                 case SQL_BINARY:
