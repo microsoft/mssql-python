@@ -639,6 +639,16 @@ class Cursor:
             use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
             reset_cursor: Whether to reset the cursor before execution.
         """
+
+        # Restore original fetch methods if they exist
+        if hasattr(self, '_original_fetchone'):
+            self.fetchone = self._original_fetchone
+            self.fetchmany = self._original_fetchmany
+            self.fetchall = self._original_fetchall
+            del self._original_fetchone
+            del self._original_fetchmany
+            del self._original_fetchall
+
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
             self._reset_cursor()
@@ -880,6 +890,110 @@ class Cursor:
             result_rows.append(row)
         
         return result_rows
+    
+    def primaryKeys(self, table, catalog=None, schema=None):
+        """
+        Creates a result set of column names that make up the primary key for a table
+        by executing the SQLPrimaryKeys function.
+        
+        Args:
+            table (str): The name of the table
+            catalog (str, optional): The catalog name (database). Defaults to None.
+            schema (str, optional): The schema name. Defaults to None.
+        
+        Returns:
+            list: A list of rows with the following columns:
+                - table_cat: Catalog name
+                - table_schem: Schema name
+                - table_name: Table name
+                - column_name: Column name that is part of the primary key
+                - key_seq: Column sequence number in the primary key (starting with 1)
+                - pk_name: Primary key name
+        
+        Raises:
+            ProgrammingError: If the cursor is closed
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        if not table:
+            raise ProgrammingError("Table name must be specified", "HY000")
+        
+        # Call the SQLPrimaryKeys function
+        retcode = ddbc_bindings.DDBCSQLPrimaryKeys(
+            self.hstmt,
+            catalog,
+            schema,
+            table
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Initialize description from column metadata
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
+            # If describe fails, create a manual description for the standard columns
+            column_types = [str, str, str, str, int, str]
+            self.description = [
+                ("table_cat", column_types[0], None, 128, 128, 0, True),
+                ("table_schem", column_types[1], None, 128, 128, 0, True),
+                ("table_name", column_types[2], None, 128, 128, 0, False),
+                ("column_name", column_types[3], None, 128, 128, 0, False),
+                ("key_seq", column_types[4], None, 10, 10, 0, False),
+                ("pk_name", column_types[5], None, 128, 128, 0, True)
+            ]
+        
+        # Define column names in ODBC standard order
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
+
+        # Remember original fetch methods (store only once)
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+
+            # Create wrapper fetch methods that add column mappings
+            def fetchone_with_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    row._column_map = self._column_map
+                return row
+
+            def fetchmany_with_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            def fetchall_with_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            # Replace fetch methods
+            self.fetchone = fetchone_with_mapping
+            self.fetchmany = fetchmany_with_mapping
+            self.fetchall = fetchall_with_mapping
+
+        # Return the cursor itself
+        return self
 
     def foreignKeys(self, table=None, catalog=None, schema=None, foreignTable=None, foreignCatalog=None, foreignSchema=None):
         """
