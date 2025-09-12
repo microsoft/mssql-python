@@ -1564,14 +1564,18 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
 
 SQLRETURN SQLSpecialColumns_wrap(SqlHandlePtr StatementHandle, 
                               SQLSMALLINT identifierType,
-                              const std::wstring& catalog,
-                              const std::wstring& schema,
+                              const py::object& catalogObj,
+                              const py::object& schemaObj,
                               const std::wstring& table,
                               SQLSMALLINT scope,
                               SQLSMALLINT nullable) {
     if (!SQLSpecialColumns_ptr) {
         ThrowStdException("SQLSpecialColumns function not loaded");
     }
+
+    // Convert py::object to std::wstring, treating None as empty string
+    std::wstring catalog = catalogObj.is_none() ? L"" : catalogObj.cast<std::wstring>();
+    std::wstring schema = schemaObj.is_none() ? L"" : schemaObj.cast<std::wstring>();
 
 #if defined(__APPLE__) || defined(__linux__)
     // Unix implementation
@@ -2794,8 +2798,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     });
     m.def("DDBCSQLSpecialColumns", [](SqlHandlePtr StatementHandle, 
                                 SQLSMALLINT identifierType,
-                                const std::wstring& catalog,
-                                const std::wstring& schema,
+                                const py::object& catalog,
+                                const py::object& schema,
                                 const std::wstring& table,
                                 SQLSMALLINT scope,
                                 SQLSMALLINT nullable) {

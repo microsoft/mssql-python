@@ -46,6 +46,16 @@ class Cursor:
         setoutputsize(size, column=None) -> None.
     """
 
+    # TODO(jathakkar): Thread safety considerations
+    # The cursor class contains methods that are not thread-safe due to:
+    #  1. Methods that mutate cursor state (_reset_cursor, self.description, etc.)
+    #  2. Methods that call ODBC functions with shared handles (self.hstmt)
+    # 
+    # These methods should be properly synchronized or redesigned when implementing 
+    # async functionality to prevent race conditions and data corruption.
+    # Consider using locks, redesigning for immutability, or ensuring 
+    # cursor objects are never shared across threads.
+
     def __init__(self, connection, timeout: int = 0) -> None:
         """
         Initialize the cursor with a database connection.
@@ -639,6 +649,16 @@ class Cursor:
             use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
             reset_cursor: Whether to reset the cursor before execution.
         """
+
+        # Restore original fetch methods if they exist
+        if hasattr(self, '_original_fetchone'):
+            self.fetchone = self._original_fetchone
+            self.fetchmany = self._original_fetchmany
+            self.fetchall = self._original_fetchall
+            del self._original_fetchone
+            del self._original_fetchmany
+            del self._original_fetchall
+
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
             self._reset_cursor()
@@ -1095,9 +1115,8 @@ class Cursor:
         self._reset_cursor()
         
         # Convert None values to empty strings as required by ODBC API
-        catalog_p = "" if catalog is None else catalog
-        schema_p = "" if schema is None else schema
-        table_p = table  # Table name is required
+        if not table:
+            raise ProgrammingError("Table name must be specified", "HY000")
         
         # Set the identifier type to SQL_BEST_ROWID (1)
         identifier_type = ddbc_sql_const.SQL_BEST_ROWID.value
@@ -1112,9 +1131,9 @@ class Cursor:
         retcode = ddbc_bindings.DDBCSQLSpecialColumns(
             self.hstmt,
             identifier_type,
-            catalog_p,
-            schema_p,
-            table_p,
+            catalog,
+            schema,
+            table,
             scope,
             nullable_flag
         )
@@ -1125,7 +1144,15 @@ class Cursor:
         try:
             ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
             self._initialize_description(column_metadata)
-        except Exception:
+
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
             # If describe fails, create a manual description for the standard columns
             column_types = [int, str, int, str, int, int, int, int]
             self.description = [
@@ -1139,27 +1166,46 @@ class Cursor:
                 ("pseudo_column", column_types[7], None, 10, 10, 0, False)
             ]
         
-        # Define column names in ODBC standard order
-        column_names = [
-            "scope", "column_name", "data_type", "type_name",
-            "column_size", "buffer_length", "decimal_digits", "pseudo_column"
-        ]
-        
-        # Fetch all rows
-        rows_data = []
-        ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
-        
-        # Create a column map for attribute access
-        column_map = {name: i for i, name in enumerate(column_names)}
-        
-        # Create Row objects with the column map
-        result_rows = []
-        for row_data in rows_data:
-            row = Row(self, self.description, row_data)
-            row._column_map = column_map
-            result_rows.append(row)
-        
-        return result_rows
+        # Create a column map with both ODBC standard names and lowercase aliases
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
+
+        # Remember original fetch methods (store only once)
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+
+            # Create wrapper fetch methods that add column mappings
+            def fetchone_with_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    row._column_map = self._column_map
+                return row
+
+            def fetchmany_with_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            def fetchall_with_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            # Replace fetch methods
+            self.fetchone = fetchone_with_mapping
+            self.fetchmany = fetchmany_with_mapping
+            self.fetchall = fetchall_with_mapping
+
+        # Return the cursor itself
+        return self
     
     def rowVerColumns(self, table, catalog=None, schema=None, nullable=True):
         """
@@ -1188,10 +1234,8 @@ class Cursor:
         # Always reset the cursor first to ensure clean state
         self._reset_cursor()
         
-        # Convert None values to empty strings as required by ODBC API
-        catalog_p = "" if catalog is None else catalog
-        schema_p = "" if schema is None else schema
-        table_p = table  # Table name is required
+        if not table:
+            raise ProgrammingError("Table name must be specified", "HY000")
         
         # Set the identifier type to SQL_ROWVER (2)
         identifier_type = ddbc_sql_const.SQL_ROWVER.value
@@ -1206,9 +1250,9 @@ class Cursor:
         retcode = ddbc_bindings.DDBCSQLSpecialColumns(
             self.hstmt,
             identifier_type,
-            catalog_p,
-            schema_p,
-            table_p,
+            catalog,
+            schema,
+            table,
             scope,
             nullable_flag
         )
@@ -1219,7 +1263,15 @@ class Cursor:
         try:
             ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
             self._initialize_description(column_metadata)
-        except Exception:
+        
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
             # If describe fails, create a manual description for the standard columns
             column_types = [int, str, int, str, int, int, int, int]
             self.description = [
@@ -1233,27 +1285,46 @@ class Cursor:
                 ("pseudo_column", column_types[7], None, 10, 10, 0, False)
             ]
         
-        # Define column names in ODBC standard order
-        column_names = [
-            "scope", "column_name", "data_type", "type_name",
-            "column_size", "buffer_length", "decimal_digits", "pseudo_column"
-        ]
-        
-        # Fetch all rows
-        rows_data = []
-        ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
-        
-        # Create a column map for attribute access
-        column_map = {name: i for i, name in enumerate(column_names)}
-        
-        # Create Row objects with the column map
-        result_rows = []
-        for row_data in rows_data:
-            row = Row(self, self.description, row_data)
-            row._column_map = column_map
-            result_rows.append(row)
-        
-        return result_rows
+        # Create a column map with both ODBC standard names and lowercase aliases
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
+
+        # Remember original fetch methods (store only once)
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+
+            # Create wrapper fetch methods that add column mappings
+            def fetchone_with_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    row._column_map = self._column_map
+                return row
+
+            def fetchmany_with_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            def fetchall_with_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            # Replace fetch methods
+            self.fetchone = fetchone_with_mapping
+            self.fetchmany = fetchmany_with_mapping
+            self.fetchall = fetchall_with_mapping
+
+        # Return the cursor itself
+        return self
 
     @staticmethod
     def _select_best_sample_value(column):

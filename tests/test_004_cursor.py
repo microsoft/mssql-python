@@ -2698,8 +2698,8 @@ def test_rowid_columns_basic(cursor, db_connection):
         rowid_cols = cursor.rowIdColumns(
             table='rowid_test', 
             schema='pytest_special_schema'
-        )
-        
+        ).fetchall()
+
         # LIMITATION: Only returns first column of primary key
         assert len(rowid_cols) == 1, "Should find exactly one ROWID column (first column of PK)"
         
@@ -2736,8 +2736,8 @@ def test_rowid_columns_identity(cursor, db_connection):
         rowid_cols = cursor.rowIdColumns(
             table='identity_test', 
             schema='pytest_special_schema'
-        )
-        
+        ).fetchall()
+
         # LIMITATION: Only returns the identity column if it's the primary key
         assert len(rowid_cols) == 1, "Should find exactly one ROWID column (identity column as PK)"
         
@@ -2758,8 +2758,8 @@ def test_rowid_columns_composite(cursor, db_connection):
         rowid_cols = cursor.rowIdColumns(
             table='multiple_unique_test', 
             schema='pytest_special_schema'
-        )
-        
+        ).fetchall()
+
         # LIMITATION: Only returns first column of composite primary key
         assert len(rowid_cols) >= 1, "Should find at least one ROWID column (first column of PK)"
         
@@ -2782,8 +2782,8 @@ def test_rowid_columns_composite(cursor, db_connection):
 def test_rowid_columns_nonexistent(cursor):
     """Test rowIdColumns with non-existent table"""
     # Use a table name that's highly unlikely to exist
-    rowid_cols = cursor.rowIdColumns('nonexistent_table_xyz123')
-    
+    rowid_cols = cursor.rowIdColumns('nonexistent_table_xyz123').fetchall()
+
     # Should return empty list, not error
     assert isinstance(rowid_cols, list), "Should return a list for non-existent table"
     assert len(rowid_cols) == 0, "Should return empty list for non-existent table"
@@ -2804,8 +2804,8 @@ def test_rowid_columns_nullable(cursor, db_connection):
         rowid_cols_with_nullable = cursor.rowIdColumns(
             table='nullable_test', 
             schema='pytest_special_schema'
-        )
-        
+        ).fetchall()
+
         # Verify PK column is included
         assert len(rowid_cols_with_nullable) == 1, "Should return exactly one column (PK)"
         assert rowid_cols_with_nullable[0].column_name.lower() == 'id', "PK column should be returned"
@@ -2815,8 +2815,8 @@ def test_rowid_columns_nullable(cursor, db_connection):
             table='nullable_test', 
             schema='pytest_special_schema',
             nullable=False
-        )
-        
+        ).fetchall()
+
         # The behavior of SQLSpecialColumns with SQL_NO_NULLS is to only return
         # non-nullable columns that uniquely identify a row, but SQL Server returns
         # an empty set in this case - this is expected behavior
@@ -2835,8 +2835,8 @@ def test_rowver_columns_basic(cursor, db_connection):
         rowver_cols = cursor.rowVerColumns(
             table='timestamp_test', 
             schema='pytest_special_schema'
-        )
-        
+        ).fetchall()
+
         # Verify we got results
         assert len(rowver_cols) == 1, "Should find exactly one ROWVER column"
         
@@ -2867,7 +2867,7 @@ def test_rowver_columns_basic(cursor, db_connection):
 def test_rowver_columns_nonexistent(cursor):
     """Test rowVerColumns with non-existent table"""
     # Use a table name that's highly unlikely to exist
-    rowver_cols = cursor.rowVerColumns('nonexistent_table_xyz123')
+    rowver_cols = cursor.rowVerColumns('nonexistent_table_xyz123').fetchall()
     
     # Should return empty list, not error
     assert isinstance(rowver_cols, list), "Should return a list for non-existent table"
@@ -2889,8 +2889,8 @@ def test_rowver_columns_nullable(cursor, db_connection):
         rowver_cols_with_nullable = cursor.rowVerColumns(
             table='nullable_rowver_test', 
             schema='pytest_special_schema'
-        )
-        
+        ).fetchall()
+
         # Verify rowversion column is included (rowversion can't be nullable)
         assert len(rowver_cols_with_nullable) == 1, "Should find exactly one ROWVER column"
         assert rowver_cols_with_nullable[0].column_name.lower() == 'ts', "ROWVERSION column should be included"
@@ -2900,8 +2900,8 @@ def test_rowver_columns_nullable(cursor, db_connection):
             table='nullable_rowver_test', 
             schema='pytest_special_schema',
             nullable=False
-        )
-        
+        ).fetchall()
+
         # Verify rowversion column is still included
         assert len(rowver_cols_no_nullable) == 1, "Should find exactly one ROWVER column"
         assert rowver_cols_no_nullable[0].column_name.lower() == 'ts', "ROWVERSION column should be included even with nullable=False"
@@ -2924,8 +2924,8 @@ def test_specialcolumns_catalog_filter(cursor, db_connection):
             table='rowid_test',
             catalog=current_db,
             schema='pytest_special_schema'
-        )
-        
+        ).fetchall()
+
         # Verify catalog filter worked
         assert len(rowid_cols) > 0, "Should find ROWID columns with correct catalog"
         
@@ -2934,7 +2934,7 @@ def test_specialcolumns_catalog_filter(cursor, db_connection):
             table='rowid_test',
             catalog='nonexistent_db_xyz123',
             schema='pytest_special_schema'
-        )
+        ).fetchall()
         assert len(fake_rowid_cols) == 0, "Should return empty list for non-existent catalog"
         
         # Test rowVerColumns with current catalog
@@ -2942,7 +2942,7 @@ def test_specialcolumns_catalog_filter(cursor, db_connection):
             table='timestamp_test',
             catalog=current_db,
             schema='pytest_special_schema'
-        )
+        ).fetchall()
         
         # Verify catalog filter worked
         assert len(rowver_cols) > 0, "Should find ROWVER columns with correct catalog"
@@ -2952,7 +2952,7 @@ def test_specialcolumns_catalog_filter(cursor, db_connection):
             table='timestamp_test',
             catalog='nonexistent_db_xyz123',
             schema='pytest_special_schema'
-        )
+        ).fetchall()
         assert len(fake_rowver_cols) == 0, "Should return empty list for non-existent catalog"
         
     except Exception as e:
