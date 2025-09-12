@@ -875,12 +875,16 @@ SQLRETURN SQLGetTypeInfo_Wrapper(SqlHandlePtr StatementHandle, SQLSMALLINT DataT
 }
 
 SQLRETURN SQLProcedures_wrap(SqlHandlePtr StatementHandle, 
-                            const std::wstring& catalog,
-                            const std::wstring& schema,
-                            const std::wstring& procedure) {
+                            const py::object& catalogObj,
+                            const py::object& schemaObj,
+                            const py::object& procedureObj) {
     if (!SQLProcedures_ptr) {
         ThrowStdException("SQLProcedures function not loaded");
     }
+
+    std::wstring catalog = py::isinstance<py::none>(catalogObj) ? L"" : catalogObj.cast<std::wstring>();
+    std::wstring schema = py::isinstance<py::none>(schemaObj) ? L"" : schemaObj.cast<std::wstring>();
+    std::wstring procedure = py::isinstance<py::none>(procedureObj) ? L"" : procedureObj.cast<std::wstring>();
 
 #if defined(__APPLE__) || defined(__linux__)
     // Unix implementation
@@ -2630,9 +2634,9 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLGetTypeInfo", &SQLGetTypeInfo_Wrapper, "Returns information about the data types that are supported by the data source",
       py::arg("StatementHandle"), py::arg("DataType"));
     m.def("DDBCSQLProcedures", [](SqlHandlePtr StatementHandle, 
-                             const std::wstring& catalog,
-                             const std::wstring& schema,
-                             const std::wstring& procedure) {
+                             const py::object& catalog,
+                             const py::object& schema,
+                             const py::object& procedure) {
     return SQLProcedures_wrap(StatementHandle, catalog, schema, procedure);
 });
 
