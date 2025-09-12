@@ -968,12 +968,16 @@ SQLRETURN SQLForeignKeys_wrap(SqlHandlePtr StatementHandle,
 }
 
 SQLRETURN SQLPrimaryKeys_wrap(SqlHandlePtr StatementHandle, 
-                             const std::wstring& catalog,
-                             const std::wstring& schema,
+                             const py::object& catalogObj,
+                             const py::object& schemaObj,
                              const std::wstring& table) {
     if (!SQLPrimaryKeys_ptr) {
         ThrowStdException("SQLPrimaryKeys function not loaded");
     }
+
+    // Convert py::object to std::wstring, treating None as empty string
+    std::wstring catalog = catalogObj.is_none() ? L"" : catalogObj.cast<std::wstring>();
+    std::wstring schema = schemaObj.is_none() ? L"" : schemaObj.cast<std::wstring>();
 
 #if defined(__APPLE__) || defined(__linux__)
     // Unix implementation
@@ -2741,8 +2745,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                                    fkCatalog, fkSchema, fkTable);
     });
     m.def("DDBCSQLPrimaryKeys", [](SqlHandlePtr StatementHandle, 
-                                const std::wstring& catalog,
-                                const std::wstring& schema,
+                                const py::object& catalog,
+                                const py::object& schema,
                                 const std::wstring& table) {
         return SQLPrimaryKeys_wrap(StatementHandle, catalog, schema, table);
     });

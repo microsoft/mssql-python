@@ -2518,7 +2518,7 @@ def test_primarykeys_simple(cursor, db_connection):
         test_primarykeys_setup(cursor, db_connection)
         
         # Get primary key information
-        pks = cursor.primaryKeys('single_pk_test', schema='pytest_pk_schema')
+        pks = cursor.primaryKeys('single_pk_test', schema='pytest_pk_schema').fetchall()
         
         # Verify we got results
         assert len(pks) == 1, "Should find exactly one primary key column"
@@ -2538,7 +2538,7 @@ def test_primarykeys_composite(cursor, db_connection):
     """Test primaryKeys with a composite primary key"""
     try:
         # Get primary key information
-        pks = cursor.primaryKeys('composite_pk_test', schema='pytest_pk_schema')
+        pks = cursor.primaryKeys('composite_pk_test', schema='pytest_pk_schema').fetchall()
         
         # Verify we got results for both columns
         assert len(pks) == 2, "Should find two primary key columns"
@@ -2567,7 +2567,7 @@ def test_primarykeys_column_info(cursor, db_connection):
     """Test that primaryKeys returns correct column information"""
     try:
         # Get primary key information
-        pks = cursor.primaryKeys('single_pk_test', schema='pytest_pk_schema')
+        pks = cursor.primaryKeys('single_pk_test', schema='pytest_pk_schema').fetchall()
         
         # Verify column information
         assert len(pks) == 1, "Should find exactly one primary key column"
@@ -2594,8 +2594,8 @@ def test_primarykeys_column_info(cursor, db_connection):
 def test_primarykeys_nonexistent(cursor):
     """Test primaryKeys() with non-existent table name"""
     # Use a table name that's highly unlikely to exist
-    pks = cursor.primaryKeys('nonexistent_table_xyz123')
-    
+    pks = cursor.primaryKeys('nonexistent_table_xyz123').fetchall()
+
     # Should return empty list, not error
     assert isinstance(pks, list), "Should return a list for non-existent table"
     assert len(pks) == 0, "Should return empty list for non-existent table"
@@ -2608,7 +2608,7 @@ def test_primarykeys_catalog_filter(cursor, db_connection):
         current_db = cursor.fetchone().current_db
         
         # Get primary keys with current catalog
-        pks = cursor.primaryKeys('single_pk_test', catalog=current_db, schema='pytest_pk_schema')
+        pks = cursor.primaryKeys('single_pk_test', catalog=current_db, schema='pytest_pk_schema').fetchall()
         
         # Verify catalog filter worked
         assert len(pks) == 1, "Should find exactly one primary key column"
@@ -2616,7 +2616,7 @@ def test_primarykeys_catalog_filter(cursor, db_connection):
         assert pk.table_cat == current_db, f"Expected catalog {current_db}, got {pk.table_cat}"
             
         # Get primary keys with non-existent catalog
-        fake_pks = cursor.primaryKeys('single_pk_test', catalog='nonexistent_db_xyz123')
+        fake_pks = cursor.primaryKeys('single_pk_test', catalog='nonexistent_db_xyz123').fetchall()
         assert len(fake_pks) == 0, "Should return empty list for non-existent catalog"
         
     finally:
