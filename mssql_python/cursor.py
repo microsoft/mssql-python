@@ -639,6 +639,16 @@ class Cursor:
             use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
             reset_cursor: Whether to reset the cursor before execution.
         """
+
+        # Restore original fetch methods if they exist
+        if hasattr(self, '_original_fetchone'):
+            self.fetchone = self._original_fetchone
+            self.fetchmany = self._original_fetchmany
+            self.fetchall = self._original_fetchall
+            del self._original_fetchone
+            del self._original_fetchmany
+            del self._original_fetchall
+
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
             self._reset_cursor()
@@ -753,46 +763,46 @@ class Cursor:
             # Initialize the description attribute with the column metadata
             self._initialize_description(column_metadata)
                 
-            # Fetch all rows first
-            rows_data = []
-            ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
-            
-            # If we have no rows, return an empty list
-            if not rows_data:
-                return []
-                
-            # Create a custom column map for our Row objects
-            column_map = {
-                'type_name': 0,
-                'data_type': 1,
-                'column_size': 2,
-                'literal_prefix': 3,
-                'literal_suffix': 4,
-                'create_params': 5,
-                'nullable': 6,
-                'case_sensitive': 7,
-                'searchable': 8,
-                'unsigned_attribute': 9,
-                'fixed_prec_scale': 10,
-                'auto_unique_value': 11,
-                'local_type_name': 12,
-                'minimum_scale': 13,
-                'maximum_scale': 14,
-                'sql_data_type': 15,
-                'sql_datetime_sub': 16,
-                'num_prec_radix': 17,
-                'interval_precision': 18
-            }
-            
-            # Create result rows with the custom column map
-            result_rows = []
-            for row_data in rows_data:
-                row = Row(self, self.description, row_data)
-                # Manually add the column map
-                row._column_map = column_map
-                result_rows.append(row)
-                
-            return result_rows
+            # Define column names in ODBC standard order
+            self._column_map = {}
+            for i, (name, *_) in enumerate(self.description):
+                # Add standard name
+                self._column_map[name] = i
+                # Add lowercase alias
+                self._column_map[name.lower()] = i
+
+            # Remember original fetch methods (store only once)
+            if not hasattr(self, '_original_fetchone'):
+                self._original_fetchone = self.fetchone
+                self._original_fetchmany = self.fetchmany
+                self._original_fetchall = self.fetchall
+
+                # Create wrapper fetch methods that add column mappings
+                def fetchone_with_mapping():
+                    row = self._original_fetchone()
+                    if row is not None:
+                        row._column_map = self._column_map
+                    return row
+
+                def fetchmany_with_mapping(size=None):
+                    rows = self._original_fetchmany(size)
+                    for row in rows:
+                        row._column_map = self._column_map
+                    return rows
+
+                def fetchall_with_mapping():
+                    rows = self._original_fetchall()
+                    for row in rows:
+                        row._column_map = self._column_map
+                    return rows
+
+                # Replace fetch methods
+                self.fetchone = fetchone_with_mapping
+                self.fetchmany = fetchmany_with_mapping
+                self.fetchall = fetchall_with_mapping
+
+            # Return the cursor itself
+            return self
         except Exception as e:
             # Always reset the cursor on exception
             self._reset_cursor()

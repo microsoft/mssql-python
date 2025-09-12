@@ -1742,7 +1742,7 @@ def test_cursor_setinputsizes_override_inference(db_connection):
 def test_gettypeinfo_all_types(cursor):
     """Test getTypeInfo with no arguments returns all data types"""
     # Get all type information
-    type_info = cursor.getTypeInfo()
+    type_info = cursor.getTypeInfo().fetchall()
     
     # Verify we got results
     assert type_info is not None, "getTypeInfo() should return results"
@@ -1765,7 +1765,7 @@ def test_gettypeinfo_specific_type(cursor):
     from mssql_python.constants import ConstantsDDBC
     
     # Test with VARCHAR type (SQL_VARCHAR)
-    varchar_info = cursor.getTypeInfo(ConstantsDDBC.SQL_VARCHAR.value)
+    varchar_info = cursor.getTypeInfo(ConstantsDDBC.SQL_VARCHAR.value).fetchall()
     
     # Verify we got results specific to VARCHAR
     assert varchar_info is not None, "getTypeInfo(SQL_VARCHAR) should return results"
@@ -1783,7 +1783,7 @@ def test_gettypeinfo_result_structure(cursor):
     # Get info for a common type like INTEGER
     from mssql_python.constants import ConstantsDDBC
     
-    int_info = cursor.getTypeInfo(ConstantsDDBC.SQL_INTEGER.value)
+    int_info = cursor.getTypeInfo(ConstantsDDBC.SQL_INTEGER.value).fetchall()
     
     # Make sure we have at least one result
     assert len(int_info) > 0, "getTypeInfo for INTEGER should return results"
@@ -1807,7 +1807,7 @@ def test_gettypeinfo_numeric_type(cursor):
     from mssql_python.constants import ConstantsDDBC
     
     # Get information about DECIMAL type
-    decimal_info = cursor.getTypeInfo(ConstantsDDBC.SQL_DECIMAL.value)
+    decimal_info = cursor.getTypeInfo(ConstantsDDBC.SQL_DECIMAL.value).fetchall()
     
     # Verify decimal-specific attributes
     assert len(decimal_info) > 0, "getTypeInfo for DECIMAL should return results"
@@ -1829,7 +1829,7 @@ def test_gettypeinfo_datetime_types(cursor):
     
     # Get information about TIMESTAMP type instead of DATETIME
     # SQL_TYPE_TIMESTAMP (93) is more commonly used for datetime in ODBC
-    datetime_info = cursor.getTypeInfo(ConstantsDDBC.SQL_TYPE_TIMESTAMP.value)
+    datetime_info = cursor.getTypeInfo(ConstantsDDBC.SQL_TYPE_TIMESTAMP.value).fetchall()
     
     # Verify we got datetime-related results
     assert len(datetime_info) > 0, "getTypeInfo for TIMESTAMP should return results"
@@ -1848,15 +1848,15 @@ def test_gettypeinfo_multiple_calls(cursor):
     from mssql_python.constants import ConstantsDDBC
     
     # First call - get all types
-    all_types = cursor.getTypeInfo()
+    all_types = cursor.getTypeInfo().fetchall()
     assert len(all_types) > 0, "First call to getTypeInfo should return results"
     
     # Second call - get VARCHAR type
-    varchar_info = cursor.getTypeInfo(ConstantsDDBC.SQL_VARCHAR.value)
+    varchar_info = cursor.getTypeInfo(ConstantsDDBC.SQL_VARCHAR.value).fetchall()
     assert len(varchar_info) > 0, "Second call to getTypeInfo should return results"
     
     # Third call - get INTEGER type
-    int_info = cursor.getTypeInfo(ConstantsDDBC.SQL_INTEGER.value)
+    int_info = cursor.getTypeInfo(ConstantsDDBC.SQL_INTEGER.value).fetchall()
     assert len(int_info) > 0, "Third call to getTypeInfo should return results"
     
     # Verify the results are different between calls
@@ -1867,7 +1867,7 @@ def test_gettypeinfo_binary_types(cursor):
     from mssql_python.constants import ConstantsDDBC
     
     # Get information about BINARY or VARBINARY type
-    binary_info = cursor.getTypeInfo(ConstantsDDBC.SQL_BINARY.value)
+    binary_info = cursor.getTypeInfo(ConstantsDDBC.SQL_BINARY.value).fetchall()
     
     # Verify we got binary-related results
     assert len(binary_info) > 0, "getTypeInfo for BINARY should return results"
@@ -1889,7 +1889,7 @@ def test_gettypeinfo_cached_results(cursor):
     
     # First call - might be slower
     start_time = time.time()
-    first_result = cursor.getTypeInfo(ConstantsDDBC.SQL_VARCHAR.value)
+    first_result = cursor.getTypeInfo(ConstantsDDBC.SQL_VARCHAR.value).fetchall()
     first_duration = time.time() - start_time
     
     # Give the system a moment
@@ -1897,7 +1897,7 @@ def test_gettypeinfo_cached_results(cursor):
     
     # Second call with same type - should be similar or faster
     start_time = time.time()
-    second_result = cursor.getTypeInfo(ConstantsDDBC.SQL_VARCHAR.value)
+    second_result = cursor.getTypeInfo(ConstantsDDBC.SQL_VARCHAR.value).fetchall()
     second_duration = time.time() - start_time
     
     # Results should be consistent
