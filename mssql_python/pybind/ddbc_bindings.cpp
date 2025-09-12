@@ -2713,7 +2713,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 }
                 break;
             }
-#endif
+        #endif
             default:
                 std::ostringstream errorString;
                 errorString << "Unsupported data type for column - " << columnName << ", Type - "

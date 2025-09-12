@@ -465,6 +465,15 @@ class Cursor:
                     0,
                     False
                 )
+        
+        if isinstance(param, uuid.UUID):
+            return (
+                ddbc_sql_const.SQL_GUID.value,
+                ddbc_sql_const.SQL_C_GUID.value,
+                16,
+                0,
+                False,
+            )
 
         if isinstance(param, datetime.datetime):
             if param.tzinfo is not None:
@@ -984,6 +993,8 @@ class Cursor:
 
         if parameters:
             for i, param in enumerate(parameters):
+                if isinstance(param, uuid.UUID):
+                    parameters[i] = param.bytes
                 paraminfo = self._create_parameter_types_list(
                     param, param_info, parameters, i
                 )
