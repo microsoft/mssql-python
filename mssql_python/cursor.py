@@ -376,38 +376,6 @@ class Cursor:
             except ValueError:
                 pass
 
-
-            # Attempt to parse as date, datetime, datetime2, timestamp, smalldatetime or time
-            if self._parse_date(param):
-                parameters_list[i] = self._parse_date(
-                    param
-                )  # Replace the parameter with the date object
-                return (
-                    ddbc_sql_const.SQL_DATE.value,
-                    ddbc_sql_const.SQL_C_TYPE_DATE.value,
-                    10,
-                    0,
-                    False,
-                )
-            if self._parse_datetime(param):
-                parameters_list[i] = self._parse_datetime(param)
-                return (
-                    ddbc_sql_const.SQL_TIMESTAMP.value,
-                    ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
-                    26,
-                    6,
-                    False,
-                )
-            if self._parse_time(param):
-                parameters_list[i] = self._parse_time(param)
-                return (
-                    ddbc_sql_const.SQL_TIME.value,
-                    ddbc_sql_const.SQL_C_TYPE_TIME.value,
-                    8,
-                    0,
-                    False,
-                )
-
             # String mapping logic here
             is_unicode = self._is_unicode_string(param)
 
