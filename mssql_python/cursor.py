@@ -1296,6 +1296,10 @@ class Cursor:
         
         # Always reset the cursor first to ensure clean state
         self._reset_cursor()
+
+        # Table name is required
+        if not table:
+            raise ProgrammingError("Table name is required", "HY000")
         
         # Set unique flag (SQL_INDEX_UNIQUE = 0, SQL_INDEX_ALL = 1)
         unique_option = ddbc_sql_const.SQL_INDEX_UNIQUE.value if unique else ddbc_sql_const.SQL_INDEX_ALL.value
@@ -1319,7 +1323,14 @@ class Cursor:
         try:
             ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
             self._initialize_description(column_metadata)
-        except Exception:
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
             # If describe fails, create a manual description for the standard columns
             column_types = [str, str, str, bool, str, str, int, int, str, str, int, int, str]
             self.description = [
