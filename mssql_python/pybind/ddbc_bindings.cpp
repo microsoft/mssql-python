@@ -1051,43 +1051,49 @@ SQLRETURN SQLStatistics_wrap(SqlHandlePtr StatementHandle,
 }
 
 SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, 
-                         const std::wstring& catalog,
-                         const std::wstring& schema,
-                         const std::wstring& table,
-                         const std::wstring& column) {
+                          const py::object& catalogObj,
+                          const py::object& schemaObj,
+                          const py::object& tableObj,
+                          const py::object& columnObj) {
     if (!SQLColumns_ptr) {
         ThrowStdException("SQLColumns function not loaded");
     }
 
+    // Convert py::object to std::wstring, treating None as empty string
+    std::wstring catalogStr = catalogObj.is_none() ? L"" : catalogObj.cast<std::wstring>();
+    std::wstring schemaStr = schemaObj.is_none() ? L"" : schemaObj.cast<std::wstring>();
+    std::wstring tableStr = tableObj.is_none() ? L"" : tableObj.cast<std::wstring>();
+    std::wstring columnStr = columnObj.is_none() ? L"" : columnObj.cast<std::wstring>();
+
 #if defined(__APPLE__) || defined(__linux__)
     // Unix implementation
-    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalog);
-    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
-    std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
-    std::vector<SQLWCHAR> columnBuf = WStringToSQLWCHAR(column);
+    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalogStr);
+    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schemaStr);
+    std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(tableStr);
+    std::vector<SQLWCHAR> columnBuf = WStringToSQLWCHAR(columnStr);
     
     return SQLColumns_ptr(
         StatementHandle->get(),
-        catalog.empty() ? nullptr : catalogBuf.data(), 
-        catalog.empty() ? 0 : SQL_NTS,
-        schema.empty() ? nullptr : schemaBuf.data(), 
-        schema.empty() ? 0 : SQL_NTS,
-        table.empty() ? nullptr : tableBuf.data(), 
-        table.empty() ? 0 : SQL_NTS,
-        column.empty() ? nullptr : columnBuf.data(),
-        column.empty() ? 0 : SQL_NTS);
+        catalogStr.empty() ? nullptr : catalogBuf.data(), 
+        catalogStr.empty() ? 0 : SQL_NTS,
+        schemaStr.empty() ? nullptr : schemaBuf.data(), 
+        schemaStr.empty() ? 0 : SQL_NTS,
+        tableStr.empty() ? nullptr : tableBuf.data(), 
+        tableStr.empty() ? 0 : SQL_NTS,
+        columnStr.empty() ? nullptr : columnBuf.data(),
+        columnStr.empty() ? 0 : SQL_NTS);
 #else
     // Windows implementation
     return SQLColumns_ptr(
         StatementHandle->get(),
-        catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(), 
-        catalog.empty() ? 0 : SQL_NTS,
-        schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(), 
-        schema.empty() ? 0 : SQL_NTS,
-        table.empty() ? nullptr : (SQLWCHAR*)table.c_str(), 
-        table.empty() ? 0 : SQL_NTS,
-        column.empty() ? nullptr : (SQLWCHAR*)column.c_str(),
-        column.empty() ? 0 : SQL_NTS);
+        catalogStr.empty() ? nullptr : (SQLWCHAR*)catalogStr.c_str(), 
+        catalogStr.empty() ? 0 : SQL_NTS,
+        schemaStr.empty() ? nullptr : (SQLWCHAR*)schemaStr.c_str(), 
+        schemaStr.empty() ? 0 : SQL_NTS,
+        tableStr.empty() ? nullptr : (SQLWCHAR*)tableStr.c_str(), 
+        tableStr.empty() ? 0 : SQL_NTS,
+        columnStr.empty() ? nullptr : (SQLWCHAR*)columnStr.c_str(),
+        columnStr.empty() ? 0 : SQL_NTS);
 #endif
 }
 
@@ -2898,10 +2904,10 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         return SQLStatistics_wrap(StatementHandle, catalog, schema, table, unique, reserved);
     });
     m.def("DDBCSQLColumns", [](SqlHandlePtr StatementHandle, 
-                            const std::wstring& catalog,
-                            const std::wstring& schema,
-                            const std::wstring& table,
-                            const std::wstring& column) {
+                            const py::object& catalog,
+                            const py::object& schema,
+                            const py::object& table,
+                            const py::object& column) {
         return SQLColumns_wrap(StatementHandle, catalog, schema, table, column);
     });
 

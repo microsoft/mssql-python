@@ -1356,8 +1356,8 @@ class Cursor:
         
         Args:
             table (str, optional): The table name pattern. Default is None (all tables).
-            catalog (str, optional): The catalog name. Default is None.
-            schema (str, optional): The schema name pattern. Default is None.
+            catalog (str, optional): The catalog name. Default is None (current catalog).
+            schema (str, optional): The schema name pattern. Default is None (all schemas).
             column (str, optional): The column name pattern. Default is None (all columns).
         
         Returns:
@@ -1381,6 +1381,13 @@ class Cursor:
                   - ordinal_position: Column sequence number (starting with 1)
                   - is_nullable: "NO" means column does not allow NULL, "YES" means it does
         
+        Warning:
+            Calling this method without any filters (all parameters as None) will enumerate 
+            EVERY column in EVERY table in the database. This can be extremely expensive in 
+            large databases, potentially causing high memory usage, slow execution times, 
+            and in extreme cases, timeout errors. Always use filters (catalog, schema, table, 
+            or column) whenever possible to limit the result set.
+    
         Example:
             # Get all columns in table 'Customers'
             columns = cursor.columns(table='Customers')
@@ -1396,19 +1403,13 @@ class Cursor:
         # Always reset the cursor first to ensure clean state
         self._reset_cursor()
         
-        # Convert None values to empty strings as required by ODBC API
-        catalog_p = "" if catalog is None else catalog
-        schema_p = "" if schema is None else schema
-        table_p = "" if table is None else table
-        column_p = "" if column is None else column
-        
         # Call the SQLColumns function
         retcode = ddbc_bindings.DDBCSQLColumns(
             self.hstmt,
-            catalog_p,
-            schema_p,
-            table_p,
-            column_p
+            catalog,
+            schema,
+            table,
+            column
         )
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
         
@@ -1417,7 +1418,14 @@ class Cursor:
         try:
             ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
             self._initialize_description(column_metadata)
-        except Exception:
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
             # If describe fails, create a manual description for the standard columns
             column_types = [str, str, str, str, int, str, int, int, int, int, int, str, str, int, int, int, int, str]
             self.description = [
