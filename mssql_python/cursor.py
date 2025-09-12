@@ -639,6 +639,16 @@ class Cursor:
             use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
             reset_cursor: Whether to reset the cursor before execution.
         """
+
+        # Restore original fetch methods if they exist
+        if hasattr(self, '_original_fetchone'):
+            self.fetchone = self._original_fetchone
+            self.fetchmany = self._original_fetchmany
+            self.fetchall = self._original_fetchall
+            del self._original_fetchone
+            del self._original_fetchmany
+            del self._original_fetchall
+
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
             self._reset_cursor()
@@ -1361,26 +1371,29 @@ class Cursor:
             column (str, optional): The column name pattern. Default is None (all columns).
         
         Returns:
-            list: A list of Row objects containing column information with these columns:
-                  - table_cat: Catalog name
-                  - table_schem: Schema name
-                  - table_name: Table name
-                  - column_name: Column name
-                  - data_type: SQL data type code
-                  - type_name: Data source-dependent type name
-                  - column_size: Column size
-                  - buffer_length: Transfer size in bytes
-                  - decimal_digits: Number of decimal digits
-                  - num_prec_radix: Numeric precision radix
-                  - nullable: Is NULL allowed
-                  - remarks: Comments about column
-                  - column_def: Default value
-                  - sql_data_type: SQL data type
-                  - sql_datetime_sub: Datetime/interval subcode
-                  - char_octet_length: Maximum length in bytes of a character/binary type
-                  - ordinal_position: Column sequence number (starting with 1)
-                  - is_nullable: "NO" means column does not allow NULL, "YES" means it does
-        
+            cursor: The cursor itself, containing the result set. Use fetchone(), fetchmany(),
+                or fetchall() to retrieve the results.
+
+                Each row contains the following columns:
+                - table_cat (str): Catalog name
+                - table_schem (str): Schema name
+                - table_name (str): Table name
+                - column_name (str): Column name
+                - data_type (int): The ODBC SQL data type constant (e.g. SQL_CHAR)
+                - type_name (str): Data source dependent type name
+                - column_size (int): Column size
+                - buffer_length (int): Length of the column in bytes
+                - decimal_digits (int): Number of fractional digits
+                - num_prec_radix (int): Radix (typically 10 or 2)
+                - nullable (int): One of SQL_NO_NULLS, SQL_NULLABLE, SQL_NULLABLE_UNKNOWN
+                - remarks (str): Comments about the column
+                - column_def (str): Default value for the column
+                - sql_data_type (int): The SQL data type from java.sql.Types
+                - sql_datetime_sub (int): Subcode for datetime types
+                - char_octet_length (int): Maximum length in bytes for char types
+                - ordinal_position (int): Column position in the table (starting at 1)
+                - is_nullable (str): "YES", "NO", or "" (unknown)
+
         Warning:
             Calling this method without any filters (all parameters as None) will enumerate 
             EVERY column in EVERY table in the database. This can be extremely expensive in 
@@ -1448,30 +1461,57 @@ class Cursor:
                 ("ordinal_position", column_types[16], None, 10, 10, 0, False),
                 ("is_nullable", column_types[17], None, 254, 254, 0, True)
             ]
+
+        # Store the column mappings for this specific columns() call
+        column_names = [desc[0] for desc in self.description]
         
-        # Define column names in ODBC standard order
-        column_names = [
-            "table_cat", "table_schem", "table_name", "column_name", "data_type",
-            "type_name", "column_size", "buffer_length", "decimal_digits", 
-            "num_prec_radix", "nullable", "remarks", "column_def", "sql_data_type",
-            "sql_datetime_sub", "char_octet_length", "ordinal_position", "is_nullable"
-        ]
+        # Create a specialized column map for this result set
+        columns_map = {}
+        for i, name in enumerate(column_names):
+            columns_map[name] = i
+            columns_map[name.lower()] = i
         
-        # Fetch all rows
-        rows_data = []
-        ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+        # Define wrapped fetch methods that preserve existing column mapping
+        # but add our specialized mapping just for column results
+        def fetchone_with_columns_mapping():
+            row = self._original_fetchone()
+            if row is not None:
+                # Create a merged map with columns result taking precedence
+                merged_map = getattr(row, '_column_map', {}).copy()
+                merged_map.update(columns_map)
+                row._column_map = merged_map
+            return row
+            
+        def fetchmany_with_columns_mapping(size=None):
+            rows = self._original_fetchmany(size)
+            for row in rows:
+                # Create a merged map with columns result taking precedence
+                merged_map = getattr(row, '_column_map', {}).copy()
+                merged_map.update(columns_map)
+                row._column_map = merged_map
+            return rows
+            
+        def fetchall_with_columns_mapping():
+            rows = self._original_fetchall()
+            for row in rows:
+                # Create a merged map with columns result taking precedence
+                merged_map = getattr(row, '_column_map', {}).copy()
+                merged_map.update(columns_map)
+                row._column_map = merged_map
+            return rows
         
-        # Create a column map for attribute access
-        column_map = {name: i for i, name in enumerate(column_names)}
-        
-        # Create Row objects with the column map
-        result_rows = []
-        for row_data in rows_data:
-            row = Row(self, self.description, row_data)
-            row._column_map = column_map
-            result_rows.append(row)
-        
-        return result_rows
+        # Save original fetch methods
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+
+        # Override fetch methods with our wrapped versions
+        self.fetchone = fetchone_with_columns_mapping
+        self.fetchmany = fetchmany_with_columns_mapping
+        self.fetchall = fetchall_with_columns_mapping
+            
+        return self
 
     @staticmethod
     def _select_best_sample_value(column):
