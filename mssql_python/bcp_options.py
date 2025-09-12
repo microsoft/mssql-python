@@ -1,3 +1,9 @@
+"""
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+This module provides options for bulk copy operations.
+"""
+
 from dataclasses import dataclass, field
 from typing import List, Optional, Literal
 
@@ -31,6 +37,9 @@ class ColumnFormat:
     file_col: int = 1
 
     def __post_init__(self):
+        """
+        Validate column format options.
+        """
         if self.prefix_len < 0:
             raise ValueError("prefix_len must be a non-negative integer.")
         if self.data_len < 0:
@@ -88,12 +97,21 @@ class BCPOptions:
     columns: List[ColumnFormat] = field(default_factory=list)
 
     def __post_init__(self):
+        """
+        Validate BCP options.
+        """
         if self.direction not in ["in", "out"]:
             raise ValueError("direction must be 'in' or 'out'.")
         if not self.data_file:
-            raise ValueError("data_file must be provided and non-empty for 'in' or 'out' directions.")
-        if self.error_file is None or not self.error_file:  # Making error_file mandatory for in/out
-            raise ValueError("error_file must be provided and non-empty for 'in' or 'out' directions.")
+            raise ValueError(
+                "data_file must be provided and non-empty for 'in' or 'out' directions."
+            )
+        if (
+            self.error_file is None or not self.error_file
+        ):  # Making error_file mandatory for in/out
+            raise ValueError(
+                "error_file must be provided and non-empty for 'in' or 'out' directions."
+            )
 
         if self.format_file is not None and not self.format_file:
             raise ValueError("format_file, if provided, must not be an empty string.")

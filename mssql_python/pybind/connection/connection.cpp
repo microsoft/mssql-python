@@ -1,15 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-// INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
+// INFO|TODO - Note that is file is Windows specific right now.
+//             Making it arch agnostic will be
 //             taken up in future
 
-#include "connection.h"
-#include "connection_pool.h"
-#include <vector>
+#include "connection/connection.h"
+
 #include <pybind11/pybind11.h>
 
-#define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
+#include <vector>
+#include <string>  // for string
+#include <memory>  // for make_shared<>
+
+#include "connection/connection_pool.h"
+
+#define SQL_COPT_SS_ACCESS_TOKEN 1256  // Custom attribute ID for access token
 
 static SqlHandlePtr getEnvHandle() {
     static SqlHandlePtr envHandle = []() -> SqlHandlePtr {
@@ -19,15 +25,23 @@ static SqlHandlePtr getEnvHandle() {
             DriverLoader::getInstance().loadDriver();
         }
         SQLHANDLE env = nullptr;
-        SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &env);
+        SQLRETURN ret = SQLAllocHandle_ptr(
+            SQL_HANDLE_ENV,
+            SQL_NULL_HANDLE,
+            &env);
         if (!SQL_SUCCEEDED(ret)) {
             ThrowStdException("Failed to allocate environment handle");
         }
-        ret = SQLSetEnvAttr_ptr(env, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3_80, 0);
+        ret = SQLSetEnvAttr_ptr(env,
+            SQL_ATTR_ODBC_VERSION,
+            (void*)SQL_OV_ODBC3_80,
+            0);
         if (!SQL_SUCCEEDED(ret)) {
             ThrowStdException("Failed to set environment attributes");
         }
-        return std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_ENV), env);
+        return std::make_shared<SqlHandle>(
+            static_cast<SQLSMALLINT>(SQL_HANDLE_ENV),
+            env);
     }();
 
     return envHandle;
@@ -44,7 +58,7 @@ Connection::Connection(const std::wstring& conn_str, bool use_pool)
 }
 
 Connection::~Connection() {
-    disconnect();   // fallback if user forgets to disconnect
+    disconnect();  // fallback if user forgets to disconnect
 }
 
 // Allocates connection handle
@@ -54,7 +68,9 @@ void Connection::allocateDbcHandle() {
     LOG("Allocate SQL Connection Handle");
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(), &dbc);
     checkError(ret);
-    _dbcHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_DBC), dbc);
+    _dbcHandle = std::make_shared<SqlHandle>(
+        static_cast<SQLSMALLINT>(SQL_HANDLE_DBC),
+        dbc);
 }
 
 void Connection::connect(const py::dict& attrs_before) {
@@ -68,7 +84,7 @@ void Connection::connect(const py::dict& attrs_before) {
         }
     }
     SQLWCHAR* connStrPtr;
-#if defined(__APPLE__) || defined(__linux__) // macOS/Linux specific handling
+#if defined(__APPLE__) || defined(__linux__)  // macOS/Linux specific handling
     LOG("Creating connection string buffer for macOS/Linux");
     std::vector<SQLWCHAR> connStrBuffer = WStringToSQLWCHAR(_connStr);
     // Ensure the buffer is null-terminated
@@ -78,10 +94,9 @@ void Connection::connect(const py::dict& attrs_before) {
 #else
     connStrPtr = const_cast<SQLWCHAR*>(_connStr.c_str());
 #endif
-    SQLRETURN ret = SQLDriverConnect_ptr(
-        _dbcHandle->get(), nullptr,
-        connStrPtr, SQL_NTS,
-        nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    SQLRETURN ret = SQLDriverConnect_ptr(_dbcHandle->get(), nullptr,
+                                         connStrPtr, SQL_NTS, nullptr,
+                                         0, nullptr, SQL_DRIVER_NOPROMPT);
     checkError(ret);
     updateLastUsed();
 }
@@ -91,15 +106,15 @@ void Connection::disconnect() {
         LOG("Disconnecting from database");
         SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
         checkError(ret);
-        _dbcHandle.reset(); // triggers SQLFreeHandle via destructor, if last owner
-    }
-    else {
+        // triggers SQLFreeHandle via destructor, if last owner
+        _dbcHandle.reset();
+    } else {
         LOG("No connection handle to disconnect");
     }
 }
 
 // TODO: Add an exception class in C++ for error handling, DB spec compliant
-void Connection::checkError(SQLRETURN ret) const{
+void Connection::checkError(SQLRETURN ret) const {
     if (!SQL_SUCCEEDED(ret)) {
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
         std::string errorMsg = WideToUTF8(err.ddbcErrorMsg);
@@ -109,33 +124,43 @@ void Connection::checkError(SQLRETURN ret) const{
 
 void Connection::commit() {
     if (!_dbcHandle) {
-        ThrowStdException("Connection handle not allocated");
+        ThrowStdException("Connection object is not initialized");
     }
     updateLastUsed();
     LOG("Committing transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_COMMIT);
+    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC,
+                                   _dbcHandle->get(),
+                                   SQL_COMMIT);
     checkError(ret);
 }
 
 void Connection::rollback() {
     if (!_dbcHandle) {
-        ThrowStdException("Connection handle not allocated");
+        ThrowStdException("Connection object is not initialized");
     }
     updateLastUsed();
     LOG("Rolling back transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
+    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC,
+                                   _dbcHandle->get(),
+                                   SQL_ROLLBACK);
     checkError(ret);
 }
 
 void Connection::setAutocommit(bool enable) {
     if (!_dbcHandle) {
-        ThrowStdException("Connection handle not allocated");
+        ThrowStdException("Connection object is not initialized");
     }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
     LOG("Setting SQL Connection Attribute");
-    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
+    SQLRETURN ret =
+        SQLSetConnectAttr_ptr(
+            _dbcHandle->get(),
+            SQL_ATTR_AUTOCOMMIT,
+            reinterpret_cast<SQLPOINTER>(
+                static_cast<SQLULEN>(value)),
+            0);
     checkError(ret);
-    if(value == SQL_AUTOCOMMIT_ON) {
+    if (value == SQL_AUTOCOMMIT_ON) {
         LOG("SQL Autocommit set to True");
     } else {
         LOG("SQL Autocommit set to False");
@@ -145,28 +170,33 @@ void Connection::setAutocommit(bool enable) {
 
 bool Connection::getAutocommit() const {
     if (!_dbcHandle) {
-        ThrowStdException("Connection handle not allocated");
+        ThrowStdException("Connection object is not initialized");
     }
     LOG("Get SQL Connection Attribute");
     SQLINTEGER value;
     SQLINTEGER string_length;
-    SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, &value, sizeof(value), &string_length);
+    SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(),
+                                          SQL_ATTR_AUTOCOMMIT, &value,
+                                          sizeof(value), &string_length);
     checkError(ret);
     return value == SQL_AUTOCOMMIT_ON;
 }
 
 SqlHandlePtr Connection::allocStatementHandle() {
     if (!_dbcHandle) {
-        ThrowStdException("Connection handle not allocated");
+        ThrowStdException("Connection object is not initialized");
     }
     updateLastUsed();
     LOG("Allocating statement handle");
     SQLHANDLE stmt = nullptr;
-    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbcHandle->get(), &stmt);
+    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT,
+                                       _dbcHandle->get(),
+                                       &stmt);
     checkError(ret);
-    return std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT), stmt);
+    return std::make_shared<SqlHandle>(
+                                    static_cast<SQLSMALLINT>(SQL_HANDLE_STMT),
+                                    stmt);
 }
-
 
 SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     LOG("Setting SQL attribute");
@@ -177,7 +207,8 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         int intValue = value.cast<int>();
         ptr = reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(intValue));
         length = SQL_IS_INTEGER;
-    } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
+        } else if (py::isinstance<py::bytes>(value) ||
+               py::isinstance<py::bytearray>(value)) {
         static std::vector<std::string> buffers;
         buffers.emplace_back(value.cast<std::string>());
         ptr = const_cast<char*>(buffers.back().c_str());
@@ -187,11 +218,13 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         return SQL_ERROR;
     }
 
-    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
+    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(),
+                                          attribute,
+                                          ptr,
+                                          length);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to set attribute");
-    }
-    else {
+    } else {
         LOG("Set attribute successfully");
     }
     return ret;
@@ -206,8 +239,10 @@ void Connection::applyAttrsBefore(const py::dict& attrs) {
             continue;
         }
 
-        if (key == SQL_COPT_SS_ACCESS_TOKEN) {   
-            SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
+        if (key == SQL_COPT_SS_ACCESS_TOKEN) {
+            SQLRETURN ret = setAttribute(
+                key,
+                py::reinterpret_borrow<py::object>(item.second));
             if (!SQL_SUCCEEDED(ret)) {
                 ThrowStdException("Failed to set access token before connect");
             }
@@ -217,24 +252,27 @@ void Connection::applyAttrsBefore(const py::dict& attrs) {
 
 bool Connection::isAlive() const {
     if (!_dbcHandle) {
-        ThrowStdException("Connection handle not allocated");
+        ThrowStdException("Connection object is not initialized");
     }
     SQLUINTEGER status;
-    SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_CONNECTION_DEAD,
-        &status, 0, nullptr);
+    SQLRETURN ret =
+        SQLGetConnectAttr_ptr(_dbcHandle->get(),
+                              SQL_ATTR_CONNECTION_DEAD,
+                              &status,
+                              0,
+                              nullptr);
     return SQL_SUCCEEDED(ret) && status == SQL_CD_FALSE;
 }
 
 bool Connection::reset() {
     if (!_dbcHandle) {
-        ThrowStdException("Connection handle not allocated");
+        ThrowStdException("Connection object is not initialized");
     }
     LOG("Resetting connection via SQL_ATTR_RESET_CONNECTION");
-    SQLRETURN ret = SQLSetConnectAttr_ptr(
-        _dbcHandle->get(),
-        SQL_ATTR_RESET_CONNECTION,
-        (SQLPOINTER)SQL_RESET_CONNECTION_YES,
-        SQL_IS_INTEGER);
+    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(),
+                                          SQL_ATTR_RESET_CONNECTION,
+                                          (SQLPOINTER)SQL_RESET_CONNECTION_YES,
+                                          SQL_IS_INTEGER);
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to reset connection. Marking as dead.");
         disconnect();
@@ -252,11 +290,14 @@ std::chrono::steady_clock::time_point Connection::lastUsed() const {
     return _lastUsed;
 }
 
-ConnectionHandle::ConnectionHandle(const std::string& connStr, bool usePool, const py::dict& attrsBefore)
+ConnectionHandle::ConnectionHandle(const std::string& connStr,
+                                   bool usePool,
+                                   const py::dict& attrsBefore)
     : _usePool(usePool) {
     _connStr = Utf8ToWString(connStr);
     if (_usePool) {
-        _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore);
+        _conn = ConnectionPoolManager::getInstance().acquireConnection(
+            _connStr, attrsBefore);
     } else {
         _conn = std::make_shared<Connection>(_connStr, false);
         _conn->connect(attrsBefore);

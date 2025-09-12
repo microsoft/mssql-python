@@ -1,0 +1,11 @@
+[tool.pylint]
+disable = [
+    "fixme",
+    "no-member",
+    "too-many-arguments",
+    "too-many-positional-arguments",
+    "invalid-name",
+    "useless-parent-delegation"
+]
+fail-under = 8.5
+max-line-length = 100

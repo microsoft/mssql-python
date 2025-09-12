@@ -11,6 +11,7 @@ class ConstantsDDBC(Enum):
     """
     Constants used in the DDBC module.
     """
+
     SQL_HANDLE_ENV = 1
     SQL_HANDLE_DBC = 2
     SQL_HANDLE_STMT = 3
@@ -124,8 +125,10 @@ class ConstantsDDBC(Enum):
     SQL_FETCH_RELATIVE = 6
     SQL_FETCH_BOOKMARK = 8
 
+
 class AuthType(Enum):
     """Constants for authentication types"""
+
     INTERACTIVE = "activedirectoryinteractive"
     DEVICE_CODE = "activedirectorydevicecode"
     DEFAULT = "activedirectorydefault"

@@ -4,3 +4,6 @@ pybind11
 coverage
 unittest-xml-reporting
 setuptools
+pre-commit
+cpplint
+pylint

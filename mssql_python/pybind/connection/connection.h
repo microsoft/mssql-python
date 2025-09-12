@@ -1,18 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-// INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
+// INFO|TODO - Note that is file is Windows specific right now.
+//             Making it arch agnostic will be
 //             taken up in future.
 
 #pragma once
-#include "ddbc_bindings.h"
+#include <string>
+#include <memory>
+#include "../ddbc_bindings.h"
 
 // Represents a single ODBC database connection.
 // Manages connection handles.
 // Note: This class does NOT implement pooling logic directly.
 
 class Connection {
-public:
+ public:
     Connection(const std::wstring& connStr, bool fromPool);
 
     ~Connection();
@@ -42,7 +45,7 @@ public:
     // Allocate a new statement handle on this connection.
     SqlHandlePtr allocStatementHandle();
 
-private:
+ private:
     void allocateDbcHandle();
     void checkError(SQLRETURN ret) const;
     SQLRETURN setAttribute(SQLINTEGER attribute, py::object value);
@@ -56,8 +59,9 @@ private:
 };
 
 class ConnectionHandle {
-public:
-    ConnectionHandle(const std::string& connStr, bool usePool, const py::dict& attrsBefore = py::dict());
+ public:
+    ConnectionHandle(const std::string& connStr, bool usePool,
+                    const py::dict& attrsBefore = py::dict());
     ~ConnectionHandle();
 
     void close();
@@ -67,7 +71,7 @@ public:
     bool getAutocommit() const;
     SqlHandlePtr allocStatementHandle();
 
-private:
+ private:
     std::shared_ptr<Connection> _conn;
     bool _usePool;
     std::wstring _connStr;
