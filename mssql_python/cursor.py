@@ -639,6 +639,16 @@ class Cursor:
             use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
             reset_cursor: Whether to reset the cursor before execution.
         """
+
+        # Restore original fetch methods if they exist
+        if hasattr(self, '_original_fetchone'):
+            self.fetchone = self._original_fetchone
+            self.fetchmany = self._original_fetchmany
+            self.fetchall = self._original_fetchall
+            del self._original_fetchone
+            del self._original_fetchmany
+            del self._original_fetchall
+
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
             self._reset_cursor()
@@ -722,6 +732,81 @@ class Cursor:
             self.description = None
         
         self._reset_inputsizes()  # Reset input sizes after execution
+
+    def getTypeInfo(self, sqlType=None):
+        """
+        Executes SQLGetTypeInfo and creates a result set with information about 
+        the specified data type or all data types supported by the ODBC driver if not specified.
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        # SQL_ALL_TYPES = 0
+        sql_all_types = 0
+        
+        try:
+            if sqlType is None:
+                # Get information about all data types
+                ret = ddbc_bindings.DDBCSQLGetTypeInfo(self.hstmt, sql_all_types)
+            else:
+                # Get information about specified data type
+                ret = ddbc_bindings.DDBCSQLGetTypeInfo(self.hstmt, sqlType)
+    
+            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+    
+            # Initialize the description based on result set metadata
+            column_metadata = []
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+
+            # Initialize the description attribute with the column metadata
+            self._initialize_description(column_metadata)
+                
+            # Define column names in ODBC standard order
+            self._column_map = {}
+            for i, (name, *_) in enumerate(self.description):
+                # Add standard name
+                self._column_map[name] = i
+                # Add lowercase alias
+                self._column_map[name.lower()] = i
+
+            # Remember original fetch methods (store only once)
+            if not hasattr(self, '_original_fetchone'):
+                self._original_fetchone = self.fetchone
+                self._original_fetchmany = self.fetchmany
+                self._original_fetchall = self.fetchall
+
+                # Create wrapper fetch methods that add column mappings
+                def fetchone_with_mapping():
+                    row = self._original_fetchone()
+                    if row is not None:
+                        row._column_map = self._column_map
+                    return row
+
+                def fetchmany_with_mapping(size=None):
+                    rows = self._original_fetchmany(size)
+                    for row in rows:
+                        row._column_map = self._column_map
+                    return rows
+
+                def fetchall_with_mapping():
+                    rows = self._original_fetchall()
+                    for row in rows:
+                        row._column_map = self._column_map
+                    return rows
+
+                # Replace fetch methods
+                self.fetchone = fetchone_with_mapping
+                self.fetchmany = fetchmany_with_mapping
+                self.fetchall = fetchall_with_mapping
+
+            # Return the cursor itself
+            return self
+        except Exception as e:
+            # Always reset the cursor on exception
+            self._reset_cursor()
+            raise e
 
     @staticmethod
     def _select_best_sample_value(column):
