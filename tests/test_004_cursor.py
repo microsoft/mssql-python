@@ -3032,7 +3032,7 @@ def test_statistics_basic(cursor, db_connection):
         stats = cursor.statistics(
             table='stats_test', 
             schema='pytest_stats_schema'
-        )
+        ).fetchall()
         
         # Verify we got results - should include PK, unique index on email, and non-unique index
         assert stats is not None, "statistics() should return results"
@@ -3090,7 +3090,7 @@ def test_statistics_unique_only(cursor, db_connection):
             table='stats_test', 
             schema='pytest_stats_schema',
             unique=True
-        )
+        ).fetchall()
         
         # Verify we got results
         assert stats is not None, "statistics() with unique=True should return results"
@@ -3119,7 +3119,7 @@ def test_statistics_empty_table(cursor, db_connection):
         stats = cursor.statistics(
             table='empty_stats_test', 
             schema='pytest_stats_schema'
-        )
+        ).fetchall()
         
         # Should still return metadata about the primary key
         assert stats is not None, "statistics() should return results even for empty table"
@@ -3143,7 +3143,7 @@ def test_statistics_empty_table(cursor, db_connection):
 def test_statistics_nonexistent(cursor):
     """Test statistics with non-existent table name"""
     # Use a table name that's highly unlikely to exist
-    stats = cursor.statistics('nonexistent_table_xyz123')
+    stats = cursor.statistics('nonexistent_table_xyz123').fetchall()
     
     # Should return empty list, not error
     assert isinstance(stats, list), "Should return a list for non-existent table"
@@ -3156,7 +3156,7 @@ def test_statistics_result_structure(cursor, db_connection):
         stats = cursor.statistics(
             table='stats_test', 
             schema='pytest_stats_schema'
-        )
+        ).fetchall()
         
         # Verify we have results
         assert len(stats) > 0, "Should have statistics results"
@@ -3204,8 +3204,8 @@ def test_statistics_catalog_filter(cursor, db_connection):
             table='stats_test',
             catalog=current_db,
             schema='pytest_stats_schema'
-        )
-        
+        ).fetchall()
+
         # Verify catalog filter worked
         assert len(stats) > 0, "Should find statistics with correct catalog"
         
@@ -3219,7 +3219,7 @@ def test_statistics_catalog_filter(cursor, db_connection):
             table='stats_test',
             catalog='nonexistent_db_xyz123',
             schema='pytest_stats_schema'
-        )
+        ).fetchall()
         assert len(fake_stats) == 0, "Should return empty list for non-existent catalog"
         
     finally:
@@ -3234,14 +3234,14 @@ def test_statistics_with_quick_parameter(cursor, db_connection):
             table='stats_test', 
             schema='pytest_stats_schema',
             quick=True
-        )
+        ).fetchall()
         
         # Test with quick=False
         thorough_stats = cursor.statistics(
             table='stats_test', 
             schema='pytest_stats_schema',
             quick=False
-        )
+        ).fetchall()
         
         # Both should return results, but we can't guarantee behavior differences
         # since it depends on the ODBC driver and database system

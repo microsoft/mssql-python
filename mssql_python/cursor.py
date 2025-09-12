@@ -639,6 +639,16 @@ class Cursor:
             use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
             reset_cursor: Whether to reset the cursor before execution.
         """
+
+        # Restore original fetch methods if they exist
+        if hasattr(self, '_original_fetchone'):
+            self.fetchone = self._original_fetchone
+            self.fetchmany = self._original_fetchmany
+            self.fetchall = self._original_fetchall
+            del self._original_fetchone
+            del self._original_fetchmany
+            del self._original_fetchall
+
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
             self._reset_cursor()
@@ -1254,8 +1264,8 @@ class Cursor:
             result_rows.append(row)
         
         return result_rows
-    
-    def statistics(self, table, catalog=None, schema=None, unique=False, quick=True):
+
+    def statistics(self, table: str, catalog: str = None, schema: str = None, unique: bool = False, quick: bool = True) -> 'Cursor':
         """
         Creates a result set of statistics about a single table and the indexes associated 
         with the table by executing SQLStatistics.
@@ -1270,20 +1280,22 @@ class Cursor:
                                     if readily available. Defaults to True.
         
         Returns:
-            list: A list of Row objects containing statistics about the table and its indexes.
-                  Each row contains: table_cat, table_schem, table_name, non_unique,
-                  index_qualifier, index_name, type, ordinal_position, column_name,
-                  asc_or_desc, cardinality, pages, filter_condition
+            cursor: The cursor itself, containing the result set. Use fetchone(), fetchmany(),
+                   or fetchall() to retrieve the results.
+            
+        Example:
+            # Get statistics for the 'Customers' table
+            stats_cursor = cursor.statistics(table='Customers')
+            
+            # Fetch rows as needed
+            first_stat = stats_cursor.fetchone()
+            next_10_stats = stats_cursor.fetchmany(10)
+            all_remaining = stats_cursor.fetchall()
         """
         self._check_closed()
         
         # Always reset the cursor first to ensure clean state
         self._reset_cursor()
-        
-        # Convert None values to empty strings as required by ODBC API
-        catalog_p = "" if catalog is None else catalog
-        schema_p = "" if schema is None else schema
-        table_p = table  # Table name is required
         
         # Set unique flag (SQL_INDEX_UNIQUE = 0, SQL_INDEX_ALL = 1)
         unique_option = ddbc_sql_const.SQL_INDEX_UNIQUE.value if unique else ddbc_sql_const.SQL_INDEX_ALL.value
@@ -1294,9 +1306,9 @@ class Cursor:
         # Call the SQLStatistics function
         retcode = ddbc_bindings.DDBCSQLStatistics(
             self.hstmt,
-            catalog_p,
-            schema_p,
-            table_p,
+            catalog,
+            schema,
+            table,
             unique_option,
             reserved_option
         )
@@ -1326,28 +1338,46 @@ class Cursor:
                 ("filter_condition", column_types[12], None, 128, 128, 0, True)
             ]
         
-        # Define column names in ODBC standard order
-        column_names = [
-            "table_cat", "table_schem", "table_name", "non_unique",
-            "index_qualifier", "index_name", "type", "ordinal_position",
-            "column_name", "asc_or_desc", "cardinality", "pages", "filter_condition"
-        ]
+        # Create a column map with both ODBC standard names and lowercase aliases
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
         
-        # Fetch all rows
-        rows_data = []
-        ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+        # Remember original fetch methods (store only once)
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+    
+            # Create wrapper fetch methods that add column mappings
+            def fetchone_with_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    row._column_map = self._column_map
+                return row
+                
+            def fetchmany_with_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+                
+            def fetchall_with_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+                
+            # Replace fetch methods
+            self.fetchone = fetchone_with_mapping
+            self.fetchmany = fetchmany_with_mapping
+            self.fetchall = fetchall_with_mapping
         
-        # Create a column map for attribute access
-        column_map = {name: i for i, name in enumerate(column_names)}
-        
-        # Create Row objects with the column map
-        result_rows = []
-        for row_data in rows_data:
-            row = Row(self, self.description, row_data)
-            row._column_map = column_map
-            result_rows.append(row)
-        
-        return result_rows
+        # Return the cursor itself
+        return self
 
     @staticmethod
     def _select_best_sample_value(column):
