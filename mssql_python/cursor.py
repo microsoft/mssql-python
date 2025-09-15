@@ -373,16 +373,16 @@ class Cursor:
             if utf16_len > MAX_INLINE_CHAR:  # Long strings -> DAE
                 if is_unicode:
                     return (
-                        ddbc_sql_const.SQL_WLONGVARCHAR.value,
+                        ddbc_sql_const.SQL_WVARCHAR.value,
                         ddbc_sql_const.SQL_C_WCHAR.value,
-                        utf16_len,
+                        0,
                         0,
                         True,
                     )
                 return (
-                    ddbc_sql_const.SQL_LONGVARCHAR.value,
+                    ddbc_sql_const.SQL_VARCHAR.value,
                     ddbc_sql_const.SQL_C_CHAR.value,
-                    len(param),
+                    0,
                     0,
                     True,
                 )
