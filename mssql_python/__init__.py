@@ -3,6 +3,7 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 This module initializes the mssql_python package.
 """
+import locale
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
@@ -13,10 +14,22 @@ apilevel = "2.0"
 paramstyle = "qmark"
 threadsafety = 1
 
+# Initialize the locale setting only once at module import time
+# This avoids thread-safety issues with locale
+_DEFAULT_DECIMAL_SEPARATOR = "."
+try:
+    # Get the locale setting once during module initialization
+    _locale_separator = locale.localeconv()['decimal_point']
+    if _locale_separator and len(_locale_separator) == 1:
+        _DEFAULT_DECIMAL_SEPARATOR = _locale_separator
+except (AttributeError, KeyError, TypeError, ValueError):
+    pass  # Keep the default "." if locale access fails
+
 class Settings:
     def __init__(self):
         self.lowercase = False
-        self.decimal_separator = "."
+        # Use the pre-determined separator - no locale access here
+        self.decimal_separator = _DEFAULT_DECIMAL_SEPARATOR
 
 # Global settings instance
 _settings = Settings()
@@ -36,14 +49,37 @@ def setDecimalSeparator(separator):
     Sets the decimal separator character used when parsing NUMERIC/DECIMAL values 
     from the database, e.g. the "." in "1,234.56".
     
-    The default is "." (period). This function overrides the default.
+    The default is to use the current locale's "decimal_point" value when the module
+    was first imported, or "." if the locale is not available. This function overrides 
+    the default.
     
     Args:
         separator (str): The character to use as decimal separator
+        
+    Raises:
+        ValueError: If the separator is not a single character string
+        TypeError: If the separator is not a string
     """
-    if not isinstance(separator, str) or len(separator) != 1:
-        raise ValueError("Decimal separator must be a single character string")
+    # Type validation
+    if not isinstance(separator, str):
+        raise TypeError("Decimal separator must be a string")
     
+    # Length validation
+    if len(separator) == 0:
+        raise ValueError("Decimal separator cannot be empty")
+        
+    if len(separator) > 1:
+        raise ValueError("Decimal separator must be a single character")
+    
+    # Character validation
+    if separator.isspace():
+        raise ValueError("Whitespace characters are not allowed as decimal separators")
+        
+    # Check for specific disallowed characters
+    if separator in ['\t', '\n', '\r', '\v', '\f']:
+        raise ValueError(f"Control character '{repr(separator)}' is not allowed as a decimal separator")
+    
+    # Set in Python side settings
     _settings.decimal_separator = separator
     
     # Update the C++ side

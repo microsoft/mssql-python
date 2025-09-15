@@ -2094,11 +2094,15 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         std::string numStr(reinterpret_cast<const char*>(
                             &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]),
                             buffers.indicators[col - 1][i]);
-                        if (g_decimalSeparator != ".") {
+                        
+                        // Get the current separator in a thread-safe way
+                        std::string separator = GetDecimalSeparator();
+                        
+                        if (separator != ".") {
                             // Replace the driver's decimal point with our configured separator
                             size_t pos = numStr.find('.');
                             if (pos != std::string::npos) {
-                                numStr.replace(pos, 1, g_decimalSeparator);
+                                numStr.replace(pos, 1, separator);
                             }
                         }
                         
@@ -2494,12 +2498,11 @@ void enable_pooling(int maxSize, int idleTimeout) {
     });
 }
 
-// Global decimal separator setting with default value
-std::string g_decimalSeparator = ".";
+// Thread-safe decimal separator setting
+ThreadSafeDecimalSeparator g_decimalSeparator;
 
 void DDBCSetDecimalSeparator(const std::string& separator) {
-    LOG("Setting decimal separator to: {}", separator);
-    g_decimalSeparator = separator;
+    SetDecimalSeparator(separator);
 }
 
 // Architecture-specific defines

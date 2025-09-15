@@ -272,8 +272,46 @@ inline std::wstring Utf8ToWString(const std::string& str) {
 #endif
 }
 
-// Global decimal separator setting
-extern std::string g_decimalSeparator;
+// Thread-safe decimal separator accessor class
+class ThreadSafeDecimalSeparator {
+private:
+    std::string value;
+    mutable std::mutex mutex;
+
+public:
+    // Constructor with default value
+    ThreadSafeDecimalSeparator() : value(".") {}
+    
+    // Set the decimal separator with thread safety
+    void set(const std::string& separator) {
+        std::lock_guard<std::mutex> lock(mutex);
+        value = separator;
+    }
+    
+    // Get the decimal separator with thread safety
+    std::string get() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return value;
+    }
+    
+    // Returns whether the current separator is different from the default "."
+    bool isCustomSeparator() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return value != ".";
+    }
+};
+
+// Global instance
+extern ThreadSafeDecimalSeparator g_decimalSeparator;
+
+// Helper functions to replace direct access
+inline void SetDecimalSeparator(const std::string& separator) {
+    g_decimalSeparator.set(separator);
+}
+
+inline std::string GetDecimalSeparator() {
+    return g_decimalSeparator.get();
+}
 
 // Function to set the decimal separator
 void DDBCSetDecimalSeparator(const std::string& separator);
