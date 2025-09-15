@@ -86,9 +86,11 @@ class Row:
                         converted_values[i] = converter(value_bytes)
                     else:
                         converted_values[i] = converter(value)
-                except Exception as e:
+                except Exception:
+                    # Log the exception for debugging without leaking sensitive data
+                    if hasattr(self._cursor, 'log'):
+                        self._cursor.log('debug', 'Exception occurred in output converter', exc_info=True)
                     # If conversion fails, keep the original value
-                    # You might want to log this error
                     pass
         
         return converted_values

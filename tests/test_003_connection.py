@@ -888,3 +888,56 @@ def test_multiple_output_converters(db_connection):
     
     # Clean up
     db_connection.clear_output_converters()
+
+def test_output_converter_exception_handling(db_connection):
+    """Test that exceptions in output converters are properly handled"""
+    cursor = db_connection.cursor()
+    
+    # First determine the actual type code for NVARCHAR
+    cursor.execute("SELECT N'test string' AS test_col")
+    str_type = cursor.description[0][1]
+    
+    # Define a converter that will raise an exception
+    def faulty_converter(value):
+        if value is None:
+            return None
+        # Intentionally raise an exception with potentially sensitive info
+        # This simulates a bug in a custom converter
+        raise ValueError(f"Converter error with sensitive data: {value!r}")
+    
+    # Add the faulty converter
+    db_connection.add_output_converter(str_type, faulty_converter)
+    
+    try:
+        # Execute a query that will trigger the converter
+        cursor.execute("SELECT N'test string' AS test_col")
+        
+        # Attempt to fetch data, which should trigger the converter
+        row = cursor.fetchone()
+        
+        # The implementation could handle this in different ways:
+        # 1. Fall back to returning the unconverted value
+        # 2. Return None for the problematic column
+        # 3. Raise a sanitized exception
+        
+        # If we got here, the exception was caught and handled internally
+        assert row is not None, "Row should still be returned despite converter error"
+        assert row[0] is not None, "Column value shouldn't be None despite converter error"
+        
+        # Verify we can continue using the connection
+        cursor.execute("SELECT 1 AS test")
+        assert cursor.fetchone()[0] == 1, "Connection should still be usable"
+        
+    except Exception as e:
+        # If an exception is raised, ensure it doesn't contain the sensitive info
+        error_str = str(e)
+        assert "sensitive data" not in error_str, f"Exception leaked sensitive data: {error_str}"
+        assert not isinstance(e, ValueError), "Original exception type should not be exposed"
+        
+        # Verify we can continue using the connection after the error
+        cursor.execute("SELECT 1 AS test")
+        assert cursor.fetchone()[0] == 1, "Connection should still be usable after converter error"
+    
+    finally:
+        # Clean up
+        db_connection.clear_output_converters()

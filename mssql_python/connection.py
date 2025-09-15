@@ -12,6 +12,7 @@ Resource Management:
 """
 import weakref
 import re
+import threading
 from mssql_python.cursor import Cursor
 from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, log
 from mssql_python import ddbc_bindings
@@ -81,6 +82,10 @@ class Connection:
         # It prevents memory leaks by ensuring that cursors are cleaned up when no longer in use without requiring explicit deletion.
         # TODO: Think and implement scenarios for multi-threaded access to cursors
         self._cursors = weakref.WeakSet()
+        
+        # Initialize output converters dictionary and its lock for thread safety
+        self._output_converters = {}
+        self._converters_lock = threading.Lock()
 
         # Auto-enable pooling if user never called
         if not PoolingManager.is_initialized():
@@ -214,6 +219,13 @@ class Connection:
         Register an output converter function that will be called whenever a value 
         with the given SQL type is read from the database.
         
+        Thread-safe implementation that protects the converters dictionary with a lock.
+        
+        ⚠️ WARNING: Registering an output converter will cause the supplied Python function 
+        to be executed on every matching database value. Do not register converters from 
+        untrusted sources, as this can result in arbitrary code execution and security 
+        vulnerabilities. This API should never be exposed to untrusted or external input.
+        
         Args:
             sqltype (int): The integer SQL type value to convert, which can be one of the 
                           defined standard constants (e.g. SQL_VARCHAR) or a database-specific 
@@ -226,31 +238,37 @@ class Connection:
         Returns:
             None
         """
-        if not hasattr(self, '_output_converters'):
-            self._output_converters = {}
-        self._output_converters[sqltype] = func
-        # Pass to the underlying connection if native implementation supports it
-        if hasattr(self._conn, 'add_output_converter'):
-            self._conn.add_output_converter(sqltype, func)
+        with self._converters_lock:
+            self._output_converters[sqltype] = func
+            # Pass to the underlying connection if native implementation supports it
+            if hasattr(self._conn, 'add_output_converter'):
+                self._conn.add_output_converter(sqltype, func)
         log('info', f"Added output converter for SQL type {sqltype}")
     
     def get_output_converter(self, sqltype):
         """
         Get the output converter function for the specified SQL type.
         
+        Thread-safe implementation that protects the converters dictionary with a lock.
+        
         Args:
             sqltype (int or type): The SQL type value or Python type to get the converter for
             
         Returns:
             callable or None: The converter function or None if no converter is registered
+    
+        Note:
+            ⚠️ The returned converter function will be executed on database values. Only use
+            converters from trusted sources.
         """
-        if not hasattr(self, '_output_converters'):
-            return None
-        return self._output_converters.get(sqltype)
+        with self._converters_lock:
+            return self._output_converters.get(sqltype)
 
     def remove_output_converter(self, sqltype):
         """
         Remove the output converter function for the specified SQL type.
+        
+        Thread-safe implementation that protects the converters dictionary with a lock.
         
         Args:
             sqltype (int or type): The SQL type value to remove the converter for
@@ -258,26 +276,29 @@ class Connection:
         Returns:
             None
         """
-        if hasattr(self, '_output_converters') and sqltype in self._output_converters:
-            del self._output_converters[sqltype]
-            # Pass to the underlying connection if native implementation supports it
-            if hasattr(self._conn, 'remove_output_converter'):
-                self._conn.remove_output_converter(sqltype)
-            log('info', f"Removed output converter for SQL type {sqltype}")
+        with self._converters_lock:
+            if sqltype in self._output_converters:
+                del self._output_converters[sqltype]
+                # Pass to the underlying connection if native implementation supports it
+                if hasattr(self._conn, 'remove_output_converter'):
+                    self._conn.remove_output_converter(sqltype)
+        log('info', f"Removed output converter for SQL type {sqltype}")
     
     def clear_output_converters(self) -> None:
         """
         Remove all output converter functions.
         
+        Thread-safe implementation that protects the converters dictionary with a lock.
+        
         Returns:
             None
         """
-        if hasattr(self, '_output_converters'):
+        with self._converters_lock:
             self._output_converters.clear()
             # Pass to the underlying connection if native implementation supports it
             if hasattr(self._conn, 'clear_output_converters'):
                 self._conn.clear_output_converters()
-            log('info', "Cleared all output converters")
+        log('info', "Cleared all output converters")
 
     def commit(self) -> None:
         """
