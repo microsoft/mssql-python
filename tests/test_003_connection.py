@@ -902,18 +902,10 @@ def test_execute_with_large_parameters(db_connection):
         cursor.close()
 
 def test_connection_execute_cursor_lifecycle(db_connection):
-    """Test that cursors from execute() are properly managed throughout their lifecycle
-    
-    This test verifies that:
-    1. Cursors are added to the connection's tracking when created via execute()
-    2. Cursors are removed from tracking when explicitly closed
-    3. Cursors are removed from tracking when they go out of scope and are garbage collected
-    
-    This helps ensure that the connection properly manages cursor resources and prevents
-    memory/resource leaks over time.
-    """
+    """Test that cursors from execute() are properly managed throughout their lifecycle"""
     import gc
     import weakref
+    import sys
     
     # Clear any existing cursors and force garbage collection
     for cursor in list(db_connection._cursors):
@@ -945,27 +937,29 @@ def test_connection_execute_cursor_lifecycle(db_connection):
     remaining_cursor_ids = [id(c) for c in db_connection._cursors]
     assert cursor_id not in remaining_cursor_ids, "Closed cursor should be removed from connection tracking"
     
-    # 3. Test that a cursor is removed when it goes out of scope
-    def create_and_abandon_cursor():
-        temp_cursor = db_connection.execute("SELECT 2 AS test")
-        temp_cursor.fetchall()  # Consume results
-        # Keep track of this cursor with a weak reference so we can check if it's collected
-        return weakref.ref(temp_cursor)
+    # 3. Test that a cursor is tracked but then removed when it goes out of scope
+    # Note: We'll create a cursor and verify it's tracked BEFORE leaving the scope
+    temp_cursor = db_connection.execute("SELECT 2 AS test")
+    temp_cursor.fetchall()  # Consume results
     
-    # Create a cursor that will go out of scope
-    cursor_ref = create_and_abandon_cursor()
+    # Get a weak reference to the cursor for checking collection later
+    cursor_ref = weakref.ref(temp_cursor)
     
-    # Cursor should be tracked before garbage collection
-    assert len(db_connection._cursors) > initial_cursor_count, "Abandoned cursor should initially be tracked"
+    # Verify cursor is tracked immediately after creation
+    assert len(db_connection._cursors) > initial_cursor_count, "New cursor should be tracked immediately"
+    assert temp_cursor in db_connection._cursors, "New cursor should be in the connection's tracking set"
+    
+    # Now remove our reference to allow garbage collection
+    temp_cursor = None
     
     # Force garbage collection multiple times to ensure the cursor is collected
     for _ in range(3):
         gc.collect()
     
-    # Verify cursor was eventually removed from tracking
-    assert cursor_ref() is None, "Abandoned cursor should be garbage collected"
+    # Verify cursor was eventually removed from tracking after collection
+    assert cursor_ref() is None, "Cursor should be garbage collected after going out of scope"
     assert len(db_connection._cursors) == initial_cursor_count, \
-        "All created cursors should be removed from tracking after being closed or collected"
+        "All created cursors should be removed from tracking after collection"
     
     # 4. Verify that many cursors can be created and properly cleaned up
     cursors = []

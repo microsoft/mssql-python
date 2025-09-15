@@ -225,8 +225,18 @@ class Connection:
                 cursor.close()  # Explicitly release resources
         """
         cursor = self.cursor()
-        cursor.execute(sql, *args)
-        return cursor
+        try:
+            # Add the cursor to our tracking set BEFORE execution
+            # This ensures it's tracked even if execution fails
+            self._cursors.add(cursor)
+            
+            # Now execute the query
+            cursor.execute(sql, *args)
+            return cursor
+        except Exception:
+            # If execution fails, close the cursor to avoid leaking resources
+            cursor.close()
+            raise
 
     def batch_execute(self, statements, params=None, reuse_cursor=None, auto_close=False):
         """
@@ -452,6 +462,21 @@ class Connection:
             self._closed = True
         
         log('info', "Connection closed successfully.")
+    
+    def _remove_cursor(self, cursor):
+        """
+        Remove a cursor from the connection's tracking.
+        
+        This method is called when a cursor is closed to ensure proper cleanup.
+        
+        Args:
+            cursor: The cursor to remove from tracking.
+        """
+        if hasattr(self, '_cursors'):
+            try:
+                self._cursors.discard(cursor)
+            except Exception:
+                pass  # Ignore errors during cleanup
 
     def __del__(self):
         """
