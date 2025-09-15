@@ -3,7 +3,7 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 This module initializes the mssql_python package.
 """
-
+import threading
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
 
@@ -13,17 +13,25 @@ apilevel = "2.0"
 paramstyle = "qmark"
 threadsafety = 1
 
+_settings_lock = threading.Lock()
+
+# Create a settings object to hold configuration
 class Settings:
     def __init__(self):
         self.lowercase = False
 
-# Create a global instance
+# Create a global settings instance
 _settings = Settings()
 
+# Define the get_settings function for internal use
 def get_settings():
-    return _settings
+    """Return the global settings object"""
+    with _settings_lock:
+        _settings.lowercase = lowercase
+        return _settings
 
-lowercase = _settings.lowercase  # Default is False
+# Expose lowercase as a regular module variable that users can access and set
+lowercase = _settings.lowercase
 
 # Import necessary modules
 from .exceptions import (
@@ -85,4 +93,18 @@ def pooling(max_size=100, idle_timeout=600, enabled=True):
         PoolingManager.disable()
     else:
         PoolingManager.enable(max_size, idle_timeout)
-      
+
+import sys
+_original_module_setattr = sys.modules[__name__].__setattr__
+
+def _custom_setattr(name, value):
+    if name == 'lowercase':
+        with _settings_lock:
+            _settings.lowercase = bool(value)
+            # Update the module's lowercase variable
+            _original_module_setattr(name, _settings.lowercase)
+    else:
+        _original_module_setattr(name, value)
+
+# Replace the module's __setattr__ with our custom version
+sys.modules[__name__].__setattr__ = _custom_setattr

@@ -13,6 +13,7 @@ from datetime import datetime, date, time
 import decimal
 from mssql_python import Connection
 import mssql_python
+from mssql_python.exceptions import InterfaceError
 
 # Setup test table
 TEST_TABLE = """
@@ -1372,17 +1373,49 @@ def test_lowercase_attribute(cursor, db_connection):
         drop_cursor = db_connection.cursor()
         
     finally:
-        # Restore original value
+        # Restore original setting
         mssql_python.lowercase = original_lowercase
-        
-        try:
-            # Use a separate cursor for cleanup
-            if drop_cursor:
-                drop_cursor.execute("DROP TABLE IF EXISTS #pytest_lowercase_test")
+        # Clean up the table
+        if drop_cursor:
+            try:
+                drop_cursor.execute("DROP TABLE #pytest_lowercase_test")
                 db_connection.commit()
                 drop_cursor.close()
-        except Exception as e:
-            print(f"Warning: Failed to drop test table: {e}")
+            except Exception:
+                pass  # Suppress errors during cleanup
+
+def test_lowercase_setting_after_cursor_creation(cursor, db_connection):
+    """Test that changing lowercase setting after cursor creation doesn't affect existing cursor"""
+    original_lowercase = mssql_python.lowercase
+    try:
+        # Create table and execute with lowercase=False
+        mssql_python.lowercase = False
+        cursor.execute("CREATE TABLE #test_lowercase_after (UserName VARCHAR(50))")
+        db_connection.commit()
+        cursor.execute("SELECT * FROM #test_lowercase_after")
+        
+        # Change setting after cursor's description is initialized
+        mssql_python.lowercase = True
+        
+        # The existing cursor should still use the original casing
+        column_names = [desc[0] for desc in cursor.description]
+        assert "UserName" in column_names, "Column casing should not change after cursor creation"
+        assert "username" not in column_names, "Lowercase should not apply to existing cursor"
+        
+    finally:
+        mssql_python.lowercase = original_lowercase
+        try:
+            cursor.execute("DROP TABLE #test_lowercase_after")
+            db_connection.commit()
+        except Exception:
+            pass # Suppress cleanup errors
+
+@pytest.mark.skip(reason="Future work: relevant if per-cursor lowercase settings are implemented.")
+def test_concurrent_cursors_different_lowercase_settings():
+    """Test behavior when multiple cursors exist with different lowercase settings"""
+    # This test is a placeholder for when per-cursor settings might be supported.
+    # Currently, the global setting affects all new cursors uniformly.
+    pass
 
 def test_close(db_connection):
     """Test closing the cursor"""

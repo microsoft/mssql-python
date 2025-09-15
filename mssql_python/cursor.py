@@ -8,7 +8,6 @@ Resource Management:
 - Do not use a cursor after it is closed, or after its parent connection is closed.
 - Use close() to release resources held by the cursor as soon as it is no longer needed.
 """
-import ctypes
 import decimal
 import uuid
 import datetime
@@ -74,8 +73,6 @@ class Cursor:
         # Is a list instead of a bool coz bools in Python are immutable.
         # Hence, we can't pass around bools by reference & modify them.
         # Therefore, it must be a list with exactly one bool element.
-        
-        self.lowercase = get_settings().lowercase
 
     def _is_unicode_string(self, param):
         """
@@ -488,14 +485,14 @@ class Cursor:
         if not column_metadata:
             self.description = None
             return
-        import mssql_python
 
         description = []
         for i, col in enumerate(column_metadata):
             # Get column name - lowercase it if the lowercase flag is set
             column_name = col["ColumnName"]
             
-            if mssql_python.lowercase:
+            # Use the current global setting to ensure tests pass correctly
+            if get_settings().lowercase:
                 column_name = column_name.lower()
                 
             # Add to description tuple (7 elements as per PEP-249)
