@@ -129,6 +129,7 @@ SQLForeignKeysFunc SQLForeignKeys_ptr = nullptr;
 SQLPrimaryKeysFunc SQLPrimaryKeys_ptr = nullptr;
 SQLSpecialColumnsFunc SQLSpecialColumns_ptr = nullptr;
 SQLStatisticsFunc SQLStatistics_ptr = nullptr;
+SQLColumnsFunc SQLColumns_ptr = nullptr;
 
 // Transaction APIs
 SQLEndTranFunc SQLEndTran_ptr = nullptr;
@@ -791,6 +792,7 @@ DriverHandle LoadDriverOrThrowException() {
     SQLPrimaryKeys_ptr = GetFunctionPointer<SQLPrimaryKeysFunc>(handle, "SQLPrimaryKeysW");
     SQLSpecialColumns_ptr = GetFunctionPointer<SQLSpecialColumnsFunc>(handle, "SQLSpecialColumnsW");
     SQLStatistics_ptr = GetFunctionPointer<SQLStatisticsFunc>(handle, "SQLStatisticsW");
+    SQLColumns_ptr = GetFunctionPointer<SQLColumnsFunc>(handle, "SQLColumnsW");
 
     SQLEndTran_ptr = GetFunctionPointer<SQLEndTranFunc>(handle, "SQLEndTran");
     SQLDisconnect_ptr = GetFunctionPointer<SQLDisconnectFunc>(handle, "SQLDisconnect");
@@ -810,7 +812,8 @@ DriverHandle LoadDriverOrThrowException() {
         SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr &&
         SQLFreeStmt_ptr && SQLGetDiagRec_ptr &&
         SQLGetTypeInfo_ptr && SQLProcedures_ptr && SQLForeignKeys_ptr &&
-        SQLPrimaryKeys_ptr && SQLSpecialColumns_ptr && SQLStatistics_ptr;
+        SQLPrimaryKeys_ptr && SQLSpecialColumns_ptr && SQLStatistics_ptr &&
+        SQLColumns_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver.");
@@ -1048,6 +1051,53 @@ SQLRETURN SQLStatistics_wrap(SqlHandlePtr StatementHandle,
         table.empty() ? 0 : SQL_NTS,
         unique,
         reserved);
+#endif
+}
+
+SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, 
+                          const py::object& catalogObj,
+                          const py::object& schemaObj,
+                          const py::object& tableObj,
+                          const py::object& columnObj) {
+    if (!SQLColumns_ptr) {
+        ThrowStdException("SQLColumns function not loaded");
+    }
+
+    // Convert py::object to std::wstring, treating None as empty string
+    std::wstring catalogStr = catalogObj.is_none() ? L"" : catalogObj.cast<std::wstring>();
+    std::wstring schemaStr = schemaObj.is_none() ? L"" : schemaObj.cast<std::wstring>();
+    std::wstring tableStr = tableObj.is_none() ? L"" : tableObj.cast<std::wstring>();
+    std::wstring columnStr = columnObj.is_none() ? L"" : columnObj.cast<std::wstring>();
+
+#if defined(__APPLE__) || defined(__linux__)
+    // Unix implementation
+    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalogStr);
+    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schemaStr);
+    std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(tableStr);
+    std::vector<SQLWCHAR> columnBuf = WStringToSQLWCHAR(columnStr);
+    
+    return SQLColumns_ptr(
+        StatementHandle->get(),
+        catalogStr.empty() ? nullptr : catalogBuf.data(), 
+        catalogStr.empty() ? 0 : SQL_NTS,
+        schemaStr.empty() ? nullptr : schemaBuf.data(), 
+        schemaStr.empty() ? 0 : SQL_NTS,
+        tableStr.empty() ? nullptr : tableBuf.data(), 
+        tableStr.empty() ? 0 : SQL_NTS,
+        columnStr.empty() ? nullptr : columnBuf.data(),
+        columnStr.empty() ? 0 : SQL_NTS);
+#else
+    // Windows implementation
+    return SQLColumns_ptr(
+        StatementHandle->get(),
+        catalogStr.empty() ? nullptr : (SQLWCHAR*)catalogStr.c_str(), 
+        catalogStr.empty() ? 0 : SQL_NTS,
+        schemaStr.empty() ? nullptr : (SQLWCHAR*)schemaStr.c_str(), 
+        schemaStr.empty() ? 0 : SQL_NTS,
+        tableStr.empty() ? nullptr : (SQLWCHAR*)tableStr.c_str(), 
+        tableStr.empty() ? 0 : SQL_NTS,
+        columnStr.empty() ? nullptr : (SQLWCHAR*)columnStr.c_str(),
+        columnStr.empty() ? 0 : SQL_NTS);
 #endif
 }
 
@@ -2857,6 +2907,14 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                             SQLUSMALLINT reserved) {
         return SQLStatistics_wrap(StatementHandle, catalog, schema, table, unique, reserved);
     });
+    m.def("DDBCSQLColumns", [](SqlHandlePtr StatementHandle, 
+                            const py::object& catalog,
+                            const py::object& schema,
+                            const py::object& table,
+                            const py::object& column) {
+        return SQLColumns_wrap(StatementHandle, catalog, schema, table, column);
+    });
+
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
