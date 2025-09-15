@@ -8,11 +8,11 @@ Resource Management:
 - Do not use a cursor after it is closed, or after its parent connection is closed.
 - Use close() to release resources held by the cursor as soon as it is no longer needed.
 """
-import ctypes
 import decimal
 import uuid
 import datetime
-from typing import List, Union
+import warnings
+from typing import List, Union, Any
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
@@ -464,7 +464,7 @@ class Cursor:
         if self.closed:
             raise Exception("Operation cannot be performed: the cursor is closed.")
 
-    def setinputsizes(self, sizes):
+    def setinputsizes(self, sizes: List[Union[int, tuple]]) -> None:
         """
         Sets the type information to be used for parameters in execute and executemany.
         
@@ -501,7 +501,7 @@ class Cursor:
         """Reset input sizes after execution"""
         self._inputsizes = None
 
-    def _get_c_type_for_sql_type(self, sql_type):
+    def _get_c_type_for_sql_type(self, sql_type: int) -> int:
         """Map SQL type to appropriate C type for parameter binding"""
         sql_to_c_type = {
             ddbc_sql_const.SQL_CHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
@@ -529,7 +529,7 @@ class Cursor:
         }
         return sql_to_c_type.get(sql_type, ddbc_sql_const.SQL_C_DEFAULT.value)
 
-    def _create_parameter_types_list(self, parameter, param_info, parameters_list, i):
+    def _create_parameter_types_list(self, parameter: Any, param_info, parameters_list, i: int) -> 'param_info':
         """
         Maps parameter types for the given parameter.
 
@@ -542,12 +542,23 @@ class Cursor:
         paraminfo = param_info()
         
         # Check if we have explicit type information from setinputsizes
-        if hasattr(self, '_inputsizes') and self._inputsizes and i < len(self._inputsizes):
+        if self._inputsizes and i < len(self._inputsizes):
             # Use explicit type information
             sql_type, column_size, decimal_digits = self._inputsizes[i]
             
-            # Determine the appropriate C type based on SQL type
-            c_type = self._get_c_type_for_sql_type(sql_type)
+            if parameter is None:
+                # For NULL parameters, use SQL_C_DEFAULT instead of a specific C type
+                # This allows NULL to be properly sent for any SQL type
+                c_type = ddbc_sql_const.SQL_C_DEFAULT.value
+            else:
+                # For non-NULL parameters, determine the appropriate C type based on SQL type
+                c_type = self._get_c_type_for_sql_type(sql_type)
+
+            # Sanitize precision/scale for numeric types
+            if sql_type in (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value):
+                column_size = max(1, min(int(column_size) if column_size > 0 else 18, 38))
+                decimal_digits = min(max(0, decimal_digits), column_size)
+    
         else:
             # Fall back to automatic type inference
             sql_type, c_type, column_size, decimal_digits = self._map_sql_type(
@@ -666,6 +677,16 @@ class Cursor:
 
         parameters = list(parameters)
 
+        # Validate that inputsizes matches parameter count if both are present
+        if parameters and self._inputsizes:
+            if len(self._inputsizes) != len(parameters):
+
+                warnings.warn(
+                    f"Number of input sizes ({len(self._inputsizes)}) does not match "
+                    f"number of parameters ({len(parameters)}). This may lead to unexpected behavior.",
+                    Warning
+                )
+
         if parameters:
             for i, param in enumerate(parameters):
                 paraminfo = self._create_parameter_types_list(
@@ -752,29 +773,44 @@ class Cursor:
             return datetime.date.today()
         return non_nulls[0]  # fallback
 
-    def _transpose_rowwise_to_columnwise(self, seq_of_parameters: list) -> list:
+    def _transpose_rowwise_to_columnwise(self, seq_of_parameters: list) -> tuple[list, int]:
         """
-        Convert list of rows (row-wise) into list of columns (column-wise),
-        for array binding via ODBC.
+        Convert sequence of rows (row-wise) into list of columns (column-wise),
+        for array binding via ODBC. Works with both iterables and generators.
+        
         Args:
             seq_of_parameters: Sequence of sequences or mappings of parameters.
+            
+        Returns:
+            tuple: (columnwise_data, row_count)
         """
-        if not seq_of_parameters:
-            return []
-
-        num_params = len(seq_of_parameters[0])
-        columnwise = [[] for _ in range(num_params)]
+        columnwise = []
+        first_row = True
+        row_count = 0
+        
         for row in seq_of_parameters:
-            if len(row) != num_params:
-                raise ValueError("Inconsistent parameter row size in executemany()")
+            row_count += 1
+            if first_row:
+                # Initialize columnwise lists based on first row
+                num_params = len(row)
+                columnwise = [[] for _ in range(num_params)]
+                first_row = False
+            else:
+                # Validate row size consistency
+                if len(row) != num_params:
+                    raise ValueError("Inconsistent parameter row size in executemany()")
+        
+            # Add each value to its column list
             for i, val in enumerate(row):
                 columnwise[i].append(val)
-        return columnwise
+        
+        return columnwise, row_count
 
     def executemany(self, operation: str, seq_of_parameters: list) -> None:
         """
         Prepare a database operation and execute it against all parameter sequences.
         This version uses column-wise parameter binding and a single batched SQLExecute().
+        
         Args:
             operation: SQL query or command.
             seq_of_parameters: Sequence of sequences or mappings of parameters.
@@ -803,69 +839,75 @@ class Cursor:
             except Exception as e:
                 log('warning', f"Failed to set query timeout: {e}")
 
+        # Get sample row for parameter type detection and validation
+        sample_row = seq_of_parameters[0] if hasattr(seq_of_parameters, '__getitem__') else next(iter(seq_of_parameters))
+        param_count = len(sample_row)
         param_info = ddbc_bindings.ParamInfo
-        param_count = len(seq_of_parameters[0])
         parameters_type = []
         
-        # Make a copy of the parameters for potential transformation
-        processed_parameters = [list(params) for params in seq_of_parameters]
-
         # Check if we have explicit input sizes set
-        if hasattr(self, '_inputsizes') and self._inputsizes:
-            # Use the explicitly set input sizes
-            for col_index in range(param_count):
-                if col_index < len(self._inputsizes):
-                    sql_type, column_size, decimal_digits = self._inputsizes[col_index]
-                    c_type = self._get_c_type_for_sql_type(sql_type)
+        if self._inputsizes:
+            # Validate input sizes match parameter count
+            if len(self._inputsizes) != param_count:
+                warnings.warn(
+                    f"Number of input sizes ({len(self._inputsizes)}) does not match "
+                    f"number of parameters ({param_count}). This may lead to unexpected behavior.",
+                    Warning
+                )
 
-                    # If using SQL_DECIMAL/NUMERIC, we need to ensure the Python values
-                    # are properly converted for the driver
-                    if sql_type in (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value):
-                        # Make sure all values in this column are Decimal objects
-                        for row_idx, row in enumerate(processed_parameters):
-                            if not isinstance(row[col_index], decimal.Decimal):
-                                # Convert to Decimal if it's not already
-                                processed_parameters[row_idx][col_index] = decimal.Decimal(str(row[col_index]))
-
-                    paraminfo = param_info()
-                    paraminfo.paramCType = c_type
-                    paraminfo.paramSQLType = sql_type
-                    paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value
-                    paraminfo.columnSize = column_size
-                    paraminfo.decimalDigits = decimal_digits
-                    parameters_type.append(paraminfo)
+        # Prepare parameter type information
+        for col_index in range(param_count):
+            if self._inputsizes and col_index < len(self._inputsizes):
+                # Use explicitly set input sizes
+                sql_type, column_size, decimal_digits = self._inputsizes[col_index]
+                c_type = self._get_c_type_for_sql_type(sql_type)
+                
+                paraminfo = param_info()
+                paraminfo.paramCType = c_type
+                paraminfo.paramSQLType = sql_type
+                paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value
+                paraminfo.columnSize = column_size
+                paraminfo.decimalDigits = decimal_digits
+                parameters_type.append(paraminfo)
+            else:
+                # Use auto-detection for columns without explicit types
+                column = [row[col_index] for row in seq_of_parameters] if hasattr(seq_of_parameters, '__getitem__') else []
+                if not column:
+                    # For generators, use the sample row for inference
+                    sample_value = sample_row[col_index]
                 else:
-                    # Fall back to auto-detect for any parameters beyond those specified
-                    column = [row[col_index] for row in seq_of_parameters]
                     sample_value = self._select_best_sample_value(column)
-                    dummy_row = list(seq_of_parameters[0])
-                    parameters_type.append(
-                        self._create_parameter_types_list(sample_value, param_info, dummy_row, col_index)
-                    )
-        else:
-            # No input sizes set, use auto-detection
-            for col_index in range(param_count):
-                column = [row[col_index] for row in seq_of_parameters]
-                sample_value = self._select_best_sample_value(column)
-                dummy_row = list(seq_of_parameters[0])
+                
+                dummy_row = list(sample_row)
                 parameters_type.append(
                     self._create_parameter_types_list(sample_value, param_info, dummy_row, col_index)
                 )
 
-
-        columnwise_params = self._transpose_rowwise_to_columnwise(processed_parameters)
+        # Process parameters into column-wise format with possible type conversions
+        # First, convert any Decimal types as needed for NUMERIC/DECIMAL columns
+        processed_parameters = []
+        for row in seq_of_parameters:
+            processed_row = list(row)
+            for i, val in enumerate(processed_row):
+                if (parameters_type[i].paramSQLType in 
+                    (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value) and
+                    not isinstance(val, decimal.Decimal) and val is not None):
+                    try:
+                        processed_row[i] = decimal.Decimal(str(val))
+                    except:
+                        pass  # Keep original value if conversion fails
+            processed_parameters.append(processed_row)
         
-        log('info', "Executing batch query with %d parameter sets:\n%s",
-            len(seq_of_parameters), "\n".join(f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}" for i, p in enumerate(seq_of_parameters))
-        )
-
+        # Now transpose the processed parameters
+        columnwise_params, row_count = self._transpose_rowwise_to_columnwise(processed_parameters)
+        
         # Execute batched statement
         ret = ddbc_bindings.SQLExecuteMany(
             self.hstmt,
             operation,
             columnwise_params,
             parameters_type,
-            len(seq_of_parameters)
+            row_count
         )
         
         try:
@@ -876,7 +918,6 @@ class Cursor:
         finally:
             # Reset input sizes after execution
             self._reset_inputsizes()
-
         
 
     def fetchone(self) -> Union[None, Row]:

@@ -1558,7 +1558,6 @@ def test_decimal_separator_calculations(cursor, db_connection):
 
 def test_cursor_setinputsizes_basic(db_connection):
     """Test the basic functionality of setinputsizes"""
-    from mssql_python.constants import ConstantsDDBC
     
     cursor = db_connection.cursor()
     
@@ -1573,8 +1572,8 @@ def test_cursor_setinputsizes_basic(db_connection):
     
     # Set input sizes for parameters
     cursor.setinputsizes([
-        (ConstantsDDBC.SQL_WVARCHAR.value, 100, 0),
-        (ConstantsDDBC.SQL_INTEGER.value, 0, 0)
+        (mssql_python.SQL_WVARCHAR, 100, 0),
+        (mssql_python.SQL_INTEGER, 0, 0)
     ])
     
     # Execute with parameters
@@ -1595,7 +1594,6 @@ def test_cursor_setinputsizes_basic(db_connection):
 
 def test_cursor_setinputsizes_with_executemany_float(db_connection):
     """Test setinputsizes with executemany using float instead of Decimal"""
-    from mssql_python.constants import ConstantsDDBC
     
     cursor = db_connection.cursor()
     
@@ -1618,9 +1616,9 @@ def test_cursor_setinputsizes_with_executemany_float(db_connection):
     
     # Set input sizes for parameters
     cursor.setinputsizes([
-        (ConstantsDDBC.SQL_INTEGER.value, 0, 0),
-        (ConstantsDDBC.SQL_WVARCHAR.value, 50, 0),
-        (ConstantsDDBC.SQL_REAL.value, 0, 0)  
+        (mssql_python.SQL_INTEGER, 0, 0),
+        (mssql_python.SQL_WVARCHAR, 50, 0),
+        (mssql_python.SQL_REAL, 0, 0)  
     ])
     
     # Execute with parameters
@@ -1643,7 +1641,6 @@ def test_cursor_setinputsizes_with_executemany_float(db_connection):
 
 def test_cursor_setinputsizes_reset(db_connection):
     """Test that setinputsizes is reset after execution"""
-    from mssql_python.constants import ConstantsDDBC
     
     cursor = db_connection.cursor()
     
@@ -1658,8 +1655,8 @@ def test_cursor_setinputsizes_reset(db_connection):
     
     # Set input sizes for parameters
     cursor.setinputsizes([
-        (ConstantsDDBC.SQL_WVARCHAR.value, 100, 0),
-        (ConstantsDDBC.SQL_INTEGER.value, 0, 0)
+        (mssql_python.SQL_WVARCHAR, 100, 0),
+        (mssql_python.SQL_INTEGER, 0, 0)
     ])
     
     # Execute with parameters
@@ -1692,7 +1689,6 @@ def test_cursor_setinputsizes_reset(db_connection):
 
 def test_cursor_setinputsizes_override_inference(db_connection):
     """Test that setinputsizes overrides type inference"""
-    from mssql_python.constants import ConstantsDDBC
     
     cursor = db_connection.cursor()
     
@@ -1708,8 +1704,8 @@ def test_cursor_setinputsizes_override_inference(db_connection):
     # Set input sizes that override the default inference
     # For SMALLINT, use a valid precision value (5 is typical for SMALLINT)
     cursor.setinputsizes([
-        (ConstantsDDBC.SQL_SMALLINT.value, 5, 0),  # Use valid precision for SMALLINT
-        (ConstantsDDBC.SQL_WVARCHAR.value, 8000, 0)  # Force short string to NVARCHAR(MAX)
+        (mssql_python.SQL_SMALLINT, 5, 0),  # Use valid precision for SMALLINT
+        (mssql_python.SQL_WVARCHAR, 8000, 0)  # Force short string to NVARCHAR(MAX)
     ])
     
     # Test with values that would normally be inferred differently
@@ -1738,6 +1734,244 @@ def test_cursor_setinputsizes_override_inference(db_connection):
     
     # Clean up
     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_override")
+
+def test_setinputsizes_parameter_count_mismatch_fewer(db_connection):
+    """Test setinputsizes with fewer sizes than parameters"""
+    import warnings
+    
+    cursor = db_connection.cursor()
+    
+    # Create a test table
+    cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_mismatch")
+    cursor.execute("""
+    CREATE TABLE #test_inputsizes_mismatch (
+        col1 INT,
+        col2 NVARCHAR(100),
+        col3 FLOAT
+    )
+    """)
+    
+    # Set fewer input sizes than parameters
+    cursor.setinputsizes([
+        (mssql_python.SQL_INTEGER, 0, 0),
+        (mssql_python.SQL_WVARCHAR, 100, 0)
+        # Missing third parameter type
+    ])
+    
+    # Execute with more parameters than specified input sizes
+    # This should use automatic type inference for the third parameter
+    with warnings.catch_warnings(record=True) as w:
+        cursor.execute(
+            "INSERT INTO #test_inputsizes_mismatch VALUES (?, ?, ?)",
+            1, "Test String", 3.14
+        )
+        assert len(w) > 0, "Warning should be issued for parameter count mismatch"
+        assert "number of input sizes" in str(w[0].message).lower()
+    
+    # Verify data was inserted correctly
+    cursor.execute("SELECT * FROM #test_inputsizes_mismatch")
+    row = cursor.fetchone()
+    
+    assert row[0] == 1
+    assert row[1] == "Test String"
+    assert abs(row[2] - 3.14) < 0.0001
+    
+    # Clean up
+    cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_mismatch")
+
+def test_setinputsizes_parameter_count_mismatch_more(db_connection):
+    """Test setinputsizes with more sizes than parameters"""
+    import warnings
+    
+    cursor = db_connection.cursor()
+    
+    # Create a test table
+    cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_mismatch")
+    cursor.execute("""
+    CREATE TABLE #test_inputsizes_mismatch (
+        col1 INT,
+        col2 NVARCHAR(100)
+    )
+    """)
+    
+    # Set more input sizes than parameters
+    cursor.setinputsizes([
+        (mssql_python.SQL_INTEGER, 0, 0),
+        (mssql_python.SQL_WVARCHAR, 100, 0),
+        (mssql_python.SQL_FLOAT, 0, 0)  # Extra parameter type
+    ])
+    
+    # Execute with fewer parameters than specified input sizes
+    with warnings.catch_warnings(record=True) as w:
+        cursor.execute(
+            "INSERT INTO #test_inputsizes_mismatch VALUES (?, ?)",
+            1, "Test String"
+        )
+        assert len(w) > 0, "Warning should be issued for parameter count mismatch"
+        assert "number of input sizes" in str(w[0].message).lower()
+    
+    # Verify data was inserted correctly
+    cursor.execute("SELECT * FROM #test_inputsizes_mismatch")
+    row = cursor.fetchone()
+    
+    assert row[0] == 1
+    assert row[1] == "Test String"
+    
+    # Clean up
+    cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_mismatch")
+
+def test_setinputsizes_with_null_values(db_connection):
+    """Test setinputsizes with NULL values for various data types"""
+    
+    cursor = db_connection.cursor()
+    
+    # Create a test table with multiple data types
+    cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_null")
+    cursor.execute("""
+    CREATE TABLE #test_inputsizes_null (
+        int_col INT,
+        string_col NVARCHAR(100),
+        float_col FLOAT,
+        date_col DATE,
+        binary_col VARBINARY(100)
+    )
+    """)
+    
+    # Set input sizes for all columns
+    cursor.setinputsizes([
+        (mssql_python.SQL_INTEGER, 0, 0),
+        (mssql_python.SQL_WVARCHAR, 100, 0),
+        (mssql_python.SQL_FLOAT, 0, 0),
+        (mssql_python.SQL_DATE, 0, 0),
+        (mssql_python.SQL_VARBINARY, 100, 0)
+    ])
+    
+    # Insert row with all NULL values
+    cursor.execute(
+        "INSERT INTO #test_inputsizes_null VALUES (?, ?, ?, ?, ?)",
+        None, None, None, None, None
+    )
+    
+    # Insert row with mix of NULL and non-NULL values
+    cursor.execute(
+        "INSERT INTO #test_inputsizes_null VALUES (?, ?, ?, ?, ?)",
+        42, None, 3.14, None, b'binary data'
+    )
+    
+    # Verify data was inserted correctly
+    cursor.execute("SELECT * FROM #test_inputsizes_null ORDER BY CASE WHEN int_col IS NULL THEN 0 ELSE 1 END")
+    rows = cursor.fetchall()
+    
+    # First row should be all NULLs
+    assert len(rows) == 2
+    assert rows[0][0] is None
+    assert rows[0][1] is None
+    assert rows[0][2] is None
+    assert rows[0][3] is None
+    assert rows[0][4] is None
+    
+    # Second row should have mix of NULL and non-NULL
+    assert rows[1][0] == 42
+    assert rows[1][1] is None
+    assert abs(rows[1][2] - 3.14) < 0.0001
+    assert rows[1][3] is None
+    assert rows[1][4] == b'binary data'
+    
+    # Clean up
+    cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_null")
+
+# def test_setinputsizes_edge_cases(db_connection):
+#     """Test setinputsizes with edge cases for various data types"""
+#     from datetime import date, time, datetime
+#     import decimal
+    
+#     cursor = db_connection.cursor()
+    
+#     # Create a test table for edge cases
+#     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_edge")
+#     cursor.execute("""
+#     CREATE TABLE #test_inputsizes_edge (
+#         col_type VARCHAR(50),
+#         tinyint_col TINYINT NULL,
+#         smallint_col SMALLINT NULL,
+#         int_col INT NULL,
+#         bigint_col BIGINT NULL,
+#         decimal_col DECIMAL(18,9) NULL,
+#         float_col FLOAT NULL,
+#         date_col DATE NULL,
+#         time_col TIME(7) NULL,
+#         binary_col VARBINARY(100) NULL
+#     )
+#     """)
+    
+#     # Define edge case values within SQL Server's supported ranges
+#     edge_cases = [
+#         # Min values
+#         ("tinyint_min", 0, None, None, None, None, None, None, None, None),
+#         ("smallint_min", None, -32768, None, None, None, None, None, None, None),
+#         ("int_min", None, None, -2147483648, None, None, None, None, None, None),
+#         ("bigint_min", None, None, None, -9223372036854775808, None, None, None, None, None),
+#         ("decimal_min", None, None, None, None, decimal.Decimal('-99999.999999999'), None, None, None, None),
+#         ("float_min", None, None, None, None, None, -1.79E+308, None, None, None),
+#         # SQL Server's minimum date is 1753-01-01
+#         ("date_min", None, None, None, None, None, None, date(1753, 1, 1), None, None),
+#         ("time_min", None, None, None, None, None, None, None, time(0, 0, 0, 0), None),
+        
+#         # Max values
+#         ("tinyint_max", 255, None, None, None, None, None, None, None, None),
+#         ("smallint_max", None, 32767, None, None, None, None, None, None, None),
+#         ("int_max", None, None, 2147483647, None, None, None, None, None, None),
+#         ("bigint_max", None, None, None, 9223372036854775807, None, None, None, None, None),
+#         ("decimal_max", None, None, None, None, decimal.Decimal('99999.999999999'), None, None, None, None),
+#         ("float_max", None, None, None, None, None, 1.79E+308, None, None, None),
+#         ("date_max", None, None, None, None, None, None, date(9999, 12, 31), None, None),
+#         ("time_max", None, None, None, None, None, None, None, time(23, 59, 59, 999999), None),
+        
+#         # Special cases
+#         ("binary_empty", None, None, None, None, None, None, None, None, b''),
+#         ("binary_small", None, None, None, None, None, None, None, None, b'\x00\x01\x02\x03'),
+#     ]
+    
+#     # Set input sizes for accurate type binding
+#     cursor.setinputsizes([
+#         (mssql_python.SQL_VARCHAR, 50, 0),
+#         (mssql_python.SQL_TINYINT, 0, 0),
+#         (mssql_python.SQL_SMALLINT, 0, 0),
+#         (mssql_python.SQL_INTEGER, 0, 0),
+#         (mssql_python.SQL_BIGINT, 0, 0),
+#         (mssql_python.SQL_DECIMAL, 18, 9),
+#         (mssql_python.SQL_FLOAT, 0, 0),
+#         (mssql_python.SQL_DATE, 0, 0),
+#         (mssql_python.SQL_TIME, 7, 0),
+#         (mssql_python.SQL_VARBINARY, 100, 0)
+#     ])
+    
+#     # Insert test cases one by one to better identify failures
+#     success_count = 0
+#     for case in edge_cases:
+#         try:
+#             cursor.execute(
+#                 """INSERT INTO #test_inputsizes_edge 
+#                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+#                 case
+#             )
+#             success_count += 1
+#         except Exception as e:
+#             print(f"Failed to insert edge case {case[0]}: {e}")
+    
+#     # Verify data was inserted
+#     cursor.execute("SELECT COUNT(*) FROM #test_inputsizes_edge")
+#     count = cursor.fetchone()[0]
+#     assert count > 0, "At least some edge cases should be inserted successfully"
+#     print(f"Successfully inserted {success_count} of {len(edge_cases)} edge cases")
+    
+#     # Sample verification for specific values
+#     cursor.execute("SELECT * FROM #test_inputsizes_edge WHERE col_type = 'tinyint_max'")
+#     row = cursor.fetchone()
+#     assert row and row.tinyint_col == 255, "TINYINT max value should be correctly stored"
+    
+#     # Clean up
+#     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_edge")
 
 def test_close(db_connection):
     """Test closing the cursor"""
