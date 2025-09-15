@@ -404,27 +404,24 @@ class Cursor:
                 False,
             )
         
-        if isinstance(param, bytes):
-            # Use VARBINARY for Python bytes/bytearray since they are variable-length by nature.
-            # This avoids storage waste from BINARY's zero-padding and matches Python's semantics.
-            return (
-                ddbc_sql_const.SQL_VARBINARY.value,
-                ddbc_sql_const.SQL_C_BINARY.value,
-                len(param),
-                0,
-                False,
-            )
-
-        if isinstance(param, bytearray):
-            # Use VARBINARY for Python bytes/bytearray since they are variable-length by nature.
-            # This avoids storage waste from BINARY's zero-padding and matches Python's semantics.
-            return (
-                ddbc_sql_const.SQL_VARBINARY.value,
-                ddbc_sql_const.SQL_C_BINARY.value,
-                len(param),
-                0,
-                False,
-            )
+        if isinstance(param, (bytes, bytearray)):
+            length = len(param)
+            if length > 8000:  # Use VARBINARY(MAX) for large blobs
+                return (
+                    ddbc_sql_const.SQL_VARBINARY.value,
+                    ddbc_sql_const.SQL_C_BINARY.value,
+                    0,
+                    0,
+                    True
+                )
+            else:  # Small blobs → direct binding
+                return (
+                    ddbc_sql_const.SQL_VARBINARY.value,
+                    ddbc_sql_const.SQL_C_BINARY.value,
+                    max(length, 1),
+                    0,
+                    False
+                )
 
         if isinstance(param, datetime.datetime):
             return (
