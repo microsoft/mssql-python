@@ -401,8 +401,25 @@ struct ErrorInfo {
 };
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode);
 
+// inline std::string WideToUTF8(const std::wstring& wstr) {
+//     if (wstr.empty()) return {};
+// #if defined(_WIN32)
+//     int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+//     if (size_needed == 0) return {};
+//     std::string result(size_needed, 0);
+//     int converted = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), result.data(), size_needed, nullptr, nullptr);
+//     if (converted == 0) return {};
+//     return result;
+// #else
+//     std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+//     return converter.to_bytes(wstr);
+// #endif
+// }
+
+
 inline std::string WideToUTF8(const std::wstring& wstr) {
     if (wstr.empty()) return {};
+
 #if defined(_WIN32)
     int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
     if (size_needed == 0) return {};
@@ -411,8 +428,34 @@ inline std::string WideToUTF8(const std::wstring& wstr) {
     if (converted == 0) return {};
     return result;
 #else
-    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
-    return converter.to_bytes(wstr);
+    // Manual UTF-32 to UTF-8 conversion for macOS/Linux
+    std::string utf8_string;
+    utf8_string.reserve(wstr.size() * 4); // Reserve enough space for worst case (4 bytes per character)
+    
+    for (wchar_t wc : wstr) {
+        uint32_t code_point = static_cast<uint32_t>(wc);
+
+        if (code_point <= 0x7F) {
+            // 1-byte UTF-8 sequence for ASCII characters
+            utf8_string += static_cast<char>(code_point);
+        } else if (code_point <= 0x7FF) {
+            // 2-byte UTF-8 sequence
+            utf8_string += static_cast<char>(0xC0 | ((code_point >> 6) & 0x1F));
+            utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
+        } else if (code_point <= 0xFFFF) {
+            // 3-byte UTF-8 sequence
+            utf8_string += static_cast<char>(0xE0 | ((code_point >> 12) & 0x0F));
+            utf8_string += static_cast<char>(0x80 | ((code_point >> 6) & 0x3F));
+            utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
+        } else if (code_point <= 0x10FFFF) {
+            // 4-byte UTF-8 sequence for characters like emojis (e.g., U+1F604)
+            utf8_string += static_cast<char>(0xF0 | ((code_point >> 18) & 0x07));
+            utf8_string += static_cast<char>(0x80 | ((code_point >> 12) & 0x3F));
+            utf8_string += static_cast<char>(0x80 | ((code_point >> 6) & 0x3F));
+            utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
+        }
+    }
+    return utf8_string;
 #endif
 }
 
