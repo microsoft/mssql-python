@@ -3096,18 +3096,14 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
                 case SQL_GUID: {
                     SQLGUID* guidValue = &buffers.guidBuffers[col - 1][i];
-                    uint8_t reordered[16];
-                    reordered[0] = ((char*)&guidValue->Data1)[3];
-                    reordered[1] = ((char*)&guidValue->Data1)[2];
-                    reordered[2] = ((char*)&guidValue->Data1)[1];
-                    reordered[3] = ((char*)&guidValue->Data1)[0];
-                    reordered[4] = ((char*)&guidValue->Data2)[1];
-                    reordered[5] = ((char*)&guidValue->Data2)[0];
-                    reordered[6] = ((char*)&guidValue->Data3)[1];
-                    reordered[7] = ((char*)&guidValue->Data3)[0];
-                    std::memcpy(reordered + 8, guidValue->Data4, 8);
+                    // We already have the raw bytes from SQL Server in the SQLGUID struct.
+                    // We do not need to perform any additional reordering here, as the C++
+                    // SQLGUID struct is already laid out in the non-standard SQL Server byte order.
+                    std::vector<char> guid_bytes(16);
+                    std::memcpy(guid_bytes.data(), guidValue, sizeof(SQLGUID));
 
-                    py::bytes py_guid_bytes(reinterpret_cast<char*>(reordered), 16);
+                    // Convert the raw C++ byte vector to a Python bytes object
+                    py::bytes py_guid_bytes(guid_bytes.data(), guid_bytes.size());
                     py::dict kwargs;
                     kwargs["bytes"] = py_guid_bytes;
                     py::object uuid_obj = py::module_::import("uuid").attr("UUID")(**kwargs);
