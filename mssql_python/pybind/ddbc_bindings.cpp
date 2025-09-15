@@ -480,9 +480,6 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
 			    reinterpret_cast<char*>(&decimalParam.val),
                             sizeof(decimalParam.val));
                 dataPtr = static_cast<void*>(decimalPtr);
-                // TODO: Remove these lines
-                //strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
-                //*strLenOrIndPtr = sizeof(SQL_NUMERIC_STRUCT);
                 break;
             }
             case SQL_C_GUID: {
@@ -1913,28 +1910,31 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_DECIMAL:
             case SQL_NUMERIC: {
                 SQLCHAR numericStr[MAX_DIGITS_IN_NUMERIC] = {0};
-                SQLLEN indicator;
+                SQLLEN indicator = 0;
+
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, numericStr, sizeof(numericStr), &indicator);
 
                 if (SQL_SUCCEEDED(ret)) {
-                    try{
-                    // Convert numericStr to py::decimal.Decimal and append to row
-                    row.append(py::module_::import("decimal").attr("Decimal")(
-                        std::string(reinterpret_cast<const char*>(numericStr), indicator)));
-                    } catch (const py::error_already_set& e) {
-                        // If the conversion fails, append None
-                        LOG("Error converting to decimal: {}", e.what());
+                    if (indicator == SQL_NULL_DATA) {
                         row.append(py::none());
+                    } else {
+                        try {
+                            std::string s(reinterpret_cast<const char*>(numericStr));
+                            auto Decimal = py::module_::import("decimal").attr("Decimal");
+                            row.append(Decimal(s));
+                        } catch (const py::error_already_set& e) {
+                            LOG("Error converting to Decimal: {}", e.what());
+                            row.append(py::none());
+                        }
                     }
-                }
-                else {
-                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
-                        "code - {}. Returning NULL value instead",
+                } else {
+                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData rc - {}",
                         i, dataType, ret);
                     row.append(py::none());
                 }
                 break;
             }
+
             case SQL_DOUBLE:
             case SQL_FLOAT: {
                 SQLDOUBLE doubleValue;
