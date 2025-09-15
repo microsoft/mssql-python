@@ -16,7 +16,7 @@ from typing import List, Union
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
-from mssql_python.exceptions import InterfaceError
+from mssql_python.exceptions import InterfaceError, ProgrammingError
 from mssql_python.row import Row
 from mssql_python import get_settings
 
@@ -45,6 +45,16 @@ class Cursor:
         setinputsizes(sizes) -> None.
         setoutputsize(size, column=None) -> None.
     """
+
+    # TODO(jathakkar): Thread safety considerations
+    # The cursor class contains methods that are not thread-safe due to:
+    #  1. Methods that mutate cursor state (_reset_cursor, self.description, etc.)
+    #  2. Methods that call ODBC functions with shared handles (self.hstmt)
+    # 
+    # These methods should be properly synchronized or redesigned when implementing 
+    # async functionality to prevent race conditions and data corruption.
+    # Consider using locks, redesigning for immutability, or ensuring 
+    # cursor objects are never shared across threads.
 
     def __init__(self, connection, timeout: int = 0) -> None:
         """
@@ -639,6 +649,16 @@ class Cursor:
             use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
             reset_cursor: Whether to reset the cursor before execution.
         """
+
+        # Restore original fetch methods if they exist
+        if hasattr(self, '_original_fetchone'):
+            self.fetchone = self._original_fetchone
+            self.fetchmany = self._original_fetchmany
+            self.fetchall = self._original_fetchall
+            del self._original_fetchone
+            del self._original_fetchmany
+            del self._original_fetchall
+
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
             self._reset_cursor()
@@ -722,6 +742,923 @@ class Cursor:
             self.description = None
         
         self._reset_inputsizes()  # Reset input sizes after execution
+
+    def getTypeInfo(self, sqlType=None):
+        """
+        Executes SQLGetTypeInfo and creates a result set with information about 
+        the specified data type or all data types supported by the ODBC driver if not specified.
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        # SQL_ALL_TYPES = 0
+        sql_all_types = 0
+        
+        try:
+            if sqlType is None:
+                # Get information about all data types
+                ret = ddbc_bindings.DDBCSQLGetTypeInfo(self.hstmt, sql_all_types)
+            else:
+                # Get information about specified data type
+                ret = ddbc_bindings.DDBCSQLGetTypeInfo(self.hstmt, sqlType)
+    
+            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+    
+            # Initialize the description based on result set metadata
+            column_metadata = []
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+
+            # Initialize the description attribute with the column metadata
+            self._initialize_description(column_metadata)
+                
+            # Define column names in ODBC standard order
+            self._column_map = {}
+            for i, (name, *_) in enumerate(self.description):
+                # Add standard name
+                self._column_map[name] = i
+                # Add lowercase alias
+                self._column_map[name.lower()] = i
+
+            # Remember original fetch methods (store only once)
+            if not hasattr(self, '_original_fetchone'):
+                self._original_fetchone = self.fetchone
+                self._original_fetchmany = self.fetchmany
+                self._original_fetchall = self.fetchall
+
+                # Create wrapper fetch methods that add column mappings
+                def fetchone_with_mapping():
+                    row = self._original_fetchone()
+                    if row is not None:
+                        row._column_map = self._column_map
+                    return row
+
+                def fetchmany_with_mapping(size=None):
+                    rows = self._original_fetchmany(size)
+                    for row in rows:
+                        row._column_map = self._column_map
+                    return rows
+
+                def fetchall_with_mapping():
+                    rows = self._original_fetchall()
+                    for row in rows:
+                        row._column_map = self._column_map
+                    return rows
+
+                # Replace fetch methods
+                self.fetchone = fetchone_with_mapping
+                self.fetchmany = fetchmany_with_mapping
+                self.fetchall = fetchall_with_mapping
+
+            # Return the cursor itself
+            return self
+        except Exception as e:
+            # Always reset the cursor on exception
+            self._reset_cursor()
+            raise e
+        
+    def procedures(self, procedure=None, catalog=None, schema=None):
+        """
+        Executes SQLProcedures and creates a result set of information about procedures in the data source.
+        
+        Args:
+            procedure (str, optional): Procedure name pattern. Default is None (all procedures).
+            catalog (str, optional): Catalog name pattern. Default is None (current catalog).
+            schema (str, optional): Schema name pattern. Default is None (all schemas).
+            
+        Returns:
+            List of Row objects, each containing procedure information with these columns:
+            - procedure_cat (str): The catalog name
+            - procedure_schem (str): The schema name
+            - procedure_name (str): The procedure name
+            - num_input_params (int): Number of input parameters
+            - num_output_params (int): Number of output parameters
+            - num_result_sets (int): Number of result sets
+            - remarks (str): Comments about the procedure
+            - procedure_type (int): Type of procedure (1=procedure, 2=function)
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        # Call the SQLProcedures function
+        retcode = ddbc_bindings.DDBCSQLProcedures(self.hstmt, catalog, schema, procedure)
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Create column metadata and initialize description
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
+            # If describe fails, create a manual description
+            column_types = [str, str, str, int, int, int, str, int]
+            self.description = [
+                ("procedure_cat", column_types[0], None, 128, 128, 0, True),
+                ("procedure_schem", column_types[1], None, 128, 128, 0, True),
+                ("procedure_name", column_types[2], None, 128, 128, 0, False),
+                ("num_input_params", column_types[3], None, 10, 10, 0, True),
+                ("num_output_params", column_types[4], None, 10, 10, 0, True),
+                ("num_result_sets", column_types[5], None, 10, 10, 0, True),
+                ("remarks", column_types[6], None, 254, 254, 0, True),
+                ("procedure_type", column_types[7], None, 10, 10, 0, False)
+            ]
+        
+        # Define column names in ODBC standard order
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
+
+        # Remember original fetch methods (store only once)
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+
+            # Create wrapper fetch methods that add column mappings
+            def fetchone_with_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    row._column_map = self._column_map
+                return row
+
+            def fetchmany_with_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            def fetchall_with_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            # Replace fetch methods
+            self.fetchone = fetchone_with_mapping
+            self.fetchmany = fetchmany_with_mapping
+            self.fetchall = fetchall_with_mapping
+
+        # Return the cursor itself
+        return self
+    
+    def primaryKeys(self, table, catalog=None, schema=None):
+        """
+        Creates a result set of column names that make up the primary key for a table
+        by executing the SQLPrimaryKeys function.
+        
+        Args:
+            table (str): The name of the table
+            catalog (str, optional): The catalog name (database). Defaults to None.
+            schema (str, optional): The schema name. Defaults to None.
+        
+        Returns:
+            list: A list of rows with the following columns:
+                - table_cat: Catalog name
+                - table_schem: Schema name
+                - table_name: Table name
+                - column_name: Column name that is part of the primary key
+                - key_seq: Column sequence number in the primary key (starting with 1)
+                - pk_name: Primary key name
+        
+        Raises:
+            ProgrammingError: If the cursor is closed
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        if not table:
+            raise ProgrammingError("Table name must be specified", "HY000")
+        
+        # Call the SQLPrimaryKeys function
+        retcode = ddbc_bindings.DDBCSQLPrimaryKeys(
+            self.hstmt,
+            catalog,
+            schema,
+            table
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Initialize description from column metadata
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
+            # If describe fails, create a manual description for the standard columns
+            column_types = [str, str, str, str, int, str]
+            self.description = [
+                ("table_cat", column_types[0], None, 128, 128, 0, True),
+                ("table_schem", column_types[1], None, 128, 128, 0, True),
+                ("table_name", column_types[2], None, 128, 128, 0, False),
+                ("column_name", column_types[3], None, 128, 128, 0, False),
+                ("key_seq", column_types[4], None, 10, 10, 0, False),
+                ("pk_name", column_types[5], None, 128, 128, 0, True)
+            ]
+        
+        # Define column names in ODBC standard order
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
+
+        # Remember original fetch methods (store only once)
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+
+            # Create wrapper fetch methods that add column mappings
+            def fetchone_with_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    row._column_map = self._column_map
+                return row
+
+            def fetchmany_with_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            def fetchall_with_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            # Replace fetch methods
+            self.fetchone = fetchone_with_mapping
+            self.fetchmany = fetchmany_with_mapping
+            self.fetchall = fetchall_with_mapping
+
+        # Return the cursor itself
+        return self
+
+    def foreignKeys(self, table=None, catalog=None, schema=None, foreignTable=None, foreignCatalog=None, foreignSchema=None):
+        """
+        Executes the SQLForeignKeys function and creates a result set of column names that are foreign keys.
+        
+        This function returns:
+        1. Foreign keys in the specified table that reference primary keys in other tables, OR
+        2. Foreign keys in other tables that reference the primary key in the specified table
+        
+        Args:
+            table (str, optional): The table containing the foreign key columns
+            catalog (str, optional): The catalog containing table
+            schema (str, optional): The schema containing table
+            foreignTable (str, optional): The table containing the primary key columns
+            foreignCatalog (str, optional): The catalog containing foreignTable
+            foreignSchema (str, optional): The schema containing foreignTable
+                
+        Returns:
+            List of Row objects, each containing foreign key information with these columns:
+            - pktable_cat (str): Primary key table catalog name
+            - pktable_schem (str): Primary key table schema name
+            - pktable_name (str): Primary key table name
+            - pkcolumn_name (str): Primary key column name
+            - fktable_cat (str): Foreign key table catalog name
+            - fktable_schem (str): Foreign key table schema name
+            - fktable_name (str): Foreign key table name
+            - fkcolumn_name (str): Foreign key column name
+            - key_seq (int): Sequence number of the column in the foreign key
+            - update_rule (int): Action for update (CASCADE, SET NULL, etc.)
+            - delete_rule (int): Action for delete (CASCADE, SET NULL, etc.)
+            - fk_name (str): Foreign key name
+            - pk_name (str): Primary key name
+            - deferrability (int): Indicates if constraint checking can be deferred
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        # Check if we have at least one table specified - mimic pyodbc behavior
+        if table is None and foreignTable is None:
+            raise ProgrammingError("Either table or foreignTable must be specified", "HY000")
+        
+        # Call the SQLForeignKeys function
+        retcode = ddbc_bindings.DDBCSQLForeignKeys(
+            self.hstmt, 
+            foreignCatalog, foreignSchema, foreignTable,
+            catalog, schema, table
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Initialize description from column metadata
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
+            # If describe fails, create a manual description for the standard columns
+            column_types = [str, str, str, str, str, str, str, str, int, int, int, str, str, int]
+            self.description = [
+                ("pktable_cat", column_types[0], None, 128, 128, 0, True),
+                ("pktable_schem", column_types[1], None, 128, 128, 0, True),
+                ("pktable_name", column_types[2], None, 128, 128, 0, False),
+                ("pkcolumn_name", column_types[3], None, 128, 128, 0, False),
+                ("fktable_cat", column_types[4], None, 128, 128, 0, True),
+                ("fktable_schem", column_types[5], None, 128, 128, 0, True),
+                ("fktable_name", column_types[6], None, 128, 128, 0, False),
+                ("fkcolumn_name", column_types[7], None, 128, 128, 0, False),
+                ("key_seq", column_types[8], None, 10, 10, 0, False),
+                ("update_rule", column_types[9], None, 10, 10, 0, False),
+                ("delete_rule", column_types[10], None, 10, 10, 0, False),
+                ("fk_name", column_types[11], None, 128, 128, 0, True),
+                ("pk_name", column_types[12], None, 128, 128, 0, True),
+                ("deferrability", column_types[13], None, 10, 10, 0, False)
+            ]
+        
+        # Define column names in ODBC standard order
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
+
+        # Remember original fetch methods (store only once)
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+
+            # Create wrapper fetch methods that add column mappings
+            def fetchone_with_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    row._column_map = self._column_map
+                return row
+
+            def fetchmany_with_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            def fetchall_with_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            # Replace fetch methods
+            self.fetchone = fetchone_with_mapping
+            self.fetchmany = fetchmany_with_mapping
+            self.fetchall = fetchall_with_mapping
+
+        # Return the cursor itself
+        return self
+    
+    def rowIdColumns(self, table, catalog=None, schema=None, nullable=True):
+        """
+        Executes SQLSpecialColumns with SQL_BEST_ROWID which creates a result set of 
+        columns that uniquely identify a row.
+        
+        Args:
+            table (str): The table name
+            catalog (str, optional): The catalog name (database). Defaults to None.
+            schema (str, optional): The schema name. Defaults to None.
+            nullable (bool, optional): Whether to include nullable columns. Defaults to True.
+        
+        Returns:
+            list: A list of rows with the following columns:
+                - scope: One of SQL_SCOPE_CURROW, SQL_SCOPE_TRANSACTION, or SQL_SCOPE_SESSION
+                - column_name: Column name
+                - data_type: The ODBC SQL data type constant (e.g. SQL_CHAR)
+                - type_name: Type name
+                - column_size: Column size
+                - buffer_length: Buffer length
+                - decimal_digits: Decimal digits
+                - pseudo_column: One of SQL_PC_UNKNOWN, SQL_PC_NOT_PSEUDO, SQL_PC_PSEUDO
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        # Convert None values to empty strings as required by ODBC API
+        if not table:
+            raise ProgrammingError("Table name must be specified", "HY000")
+        
+        # Set the identifier type to SQL_BEST_ROWID (1)
+        identifier_type = ddbc_sql_const.SQL_BEST_ROWID.value
+        
+        # Set scope to SQL_SCOPE_CURROW (0) - default scope
+        scope = ddbc_sql_const.SQL_SCOPE_CURROW.value
+        
+        # Set nullable flag
+        nullable_flag = ddbc_sql_const.SQL_NULLABLE.value if nullable else ddbc_sql_const.SQL_NO_NULLS.value
+        
+        # Call the SQLSpecialColumns function
+        retcode = ddbc_bindings.DDBCSQLSpecialColumns(
+            self.hstmt,
+            identifier_type,
+            catalog,
+            schema,
+            table,
+            scope,
+            nullable_flag
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Initialize description from column metadata
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
+            # If describe fails, create a manual description for the standard columns
+            column_types = [int, str, int, str, int, int, int, int]
+            self.description = [
+                ("scope", column_types[0], None, 10, 10, 0, False),
+                ("column_name", column_types[1], None, 128, 128, 0, False),
+                ("data_type", column_types[2], None, 10, 10, 0, False),
+                ("type_name", column_types[3], None, 128, 128, 0, False),
+                ("column_size", column_types[4], None, 10, 10, 0, False),
+                ("buffer_length", column_types[5], None, 10, 10, 0, False),
+                ("decimal_digits", column_types[6], None, 10, 10, 0, True),
+                ("pseudo_column", column_types[7], None, 10, 10, 0, False)
+            ]
+        
+        # Create a column map with both ODBC standard names and lowercase aliases
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
+
+        # Remember original fetch methods (store only once)
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+
+            # Create wrapper fetch methods that add column mappings
+            def fetchone_with_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    row._column_map = self._column_map
+                return row
+
+            def fetchmany_with_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            def fetchall_with_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            # Replace fetch methods
+            self.fetchone = fetchone_with_mapping
+            self.fetchmany = fetchmany_with_mapping
+            self.fetchall = fetchall_with_mapping
+
+        # Return the cursor itself
+        return self
+    
+    def rowVerColumns(self, table, catalog=None, schema=None, nullable=True):
+        """
+        Executes SQLSpecialColumns with SQL_ROWVER which creates a result set of
+        columns that are automatically updated when any value in the row is updated.
+        
+        Args:
+            table (str): The table name
+            catalog (str, optional): The catalog name (database). Defaults to None.
+            schema (str, optional): The schema name. Defaults to None.
+            nullable (bool, optional): Whether to include nullable columns. Defaults to True.
+        
+        Returns:
+            list: A list of rows with the following columns:
+                - scope: One of SQL_SCOPE_CURROW, SQL_SCOPE_TRANSACTION, or SQL_SCOPE_SESSION
+                - column_name: Column name
+                - data_type: The ODBC SQL data type constant (e.g. SQL_CHAR)
+                - type_name: Type name
+                - column_size: Column size
+                - buffer_length: Buffer length
+                - decimal_digits: Decimal digits
+                - pseudo_column: One of SQL_PC_UNKNOWN, SQL_PC_NOT_PSEUDO, SQL_PC_PSEUDO
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        if not table:
+            raise ProgrammingError("Table name must be specified", "HY000")
+        
+        # Set the identifier type to SQL_ROWVER (2)
+        identifier_type = ddbc_sql_const.SQL_ROWVER.value
+        
+        # Set scope to SQL_SCOPE_CURROW (0) - default scope
+        scope = ddbc_sql_const.SQL_SCOPE_CURROW.value
+        
+        # Set nullable flag
+        nullable_flag = ddbc_sql_const.SQL_NULLABLE.value if nullable else ddbc_sql_const.SQL_NO_NULLS.value
+        
+        # Call the SQLSpecialColumns function
+        retcode = ddbc_bindings.DDBCSQLSpecialColumns(
+            self.hstmt,
+            identifier_type,
+            catalog,
+            schema,
+            table,
+            scope,
+            nullable_flag
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Initialize description from column metadata
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
+            # If describe fails, create a manual description for the standard columns
+            column_types = [int, str, int, str, int, int, int, int]
+            self.description = [
+                ("scope", column_types[0], None, 10, 10, 0, False),
+                ("column_name", column_types[1], None, 128, 128, 0, False),
+                ("data_type", column_types[2], None, 10, 10, 0, False),
+                ("type_name", column_types[3], None, 128, 128, 0, False),
+                ("column_size", column_types[4], None, 10, 10, 0, False),
+                ("buffer_length", column_types[5], None, 10, 10, 0, False),
+                ("decimal_digits", column_types[6], None, 10, 10, 0, True),
+                ("pseudo_column", column_types[7], None, 10, 10, 0, False)
+            ]
+        
+        # Create a column map with both ODBC standard names and lowercase aliases
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
+
+        # Remember original fetch methods (store only once)
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+
+            # Create wrapper fetch methods that add column mappings
+            def fetchone_with_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    row._column_map = self._column_map
+                return row
+
+            def fetchmany_with_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            def fetchall_with_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            # Replace fetch methods
+            self.fetchone = fetchone_with_mapping
+            self.fetchmany = fetchmany_with_mapping
+            self.fetchall = fetchall_with_mapping
+
+        # Return the cursor itself
+        return self
+
+    def statistics(self, table: str, catalog: str = None, schema: str = None, unique: bool = False, quick: bool = True) -> 'Cursor':
+        """
+        Creates a result set of statistics about a single table and the indexes associated 
+        with the table by executing SQLStatistics.
+        
+        Args:
+            table (str): The name of the table.
+            catalog (str, optional): The catalog name. Defaults to None.
+            schema (str, optional): The schema name. Defaults to None.
+            unique (bool, optional): If True, only unique indexes are returned. 
+                                    If False, all indexes are returned. Defaults to False.
+            quick (bool, optional): If True, CARDINALITY and PAGES are returned only 
+                                    if readily available. Defaults to True.
+        
+        Returns:
+            cursor: The cursor itself, containing the result set. Use fetchone(), fetchmany(),
+                   or fetchall() to retrieve the results.
+            
+        Example:
+            # Get statistics for the 'Customers' table
+            stats_cursor = cursor.statistics(table='Customers')
+            
+            # Fetch rows as needed
+            first_stat = stats_cursor.fetchone()
+            next_10_stats = stats_cursor.fetchmany(10)
+            all_remaining = stats_cursor.fetchall()
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+
+        # Table name is required
+        if not table:
+            raise ProgrammingError("Table name is required", "HY000")
+        
+        # Set unique flag (SQL_INDEX_UNIQUE = 0, SQL_INDEX_ALL = 1)
+        unique_option = ddbc_sql_const.SQL_INDEX_UNIQUE.value if unique else ddbc_sql_const.SQL_INDEX_ALL.value
+        
+        # Set quick flag (SQL_QUICK = 0, SQL_ENSURE = 1)
+        reserved_option = ddbc_sql_const.SQL_QUICK.value if quick else ddbc_sql_const.SQL_ENSURE.value
+        
+        # Call the SQLStatistics function
+        retcode = ddbc_bindings.DDBCSQLStatistics(
+            self.hstmt,
+            catalog,
+            schema,
+            table,
+            unique_option,
+            reserved_option
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Initialize description from column metadata
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
+            # If describe fails, create a manual description for the standard columns
+            column_types = [str, str, str, bool, str, str, int, int, str, str, int, int, str]
+            self.description = [
+                ("table_cat", column_types[0], None, 128, 128, 0, True),
+                ("table_schem", column_types[1], None, 128, 128, 0, True),
+                ("table_name", column_types[2], None, 128, 128, 0, False),
+                ("non_unique", column_types[3], None, 1, 1, 0, False),
+                ("index_qualifier", column_types[4], None, 128, 128, 0, True),
+                ("index_name", column_types[5], None, 128, 128, 0, True),
+                ("type", column_types[6], None, 10, 10, 0, False),
+                ("ordinal_position", column_types[7], None, 10, 10, 0, False),
+                ("column_name", column_types[8], None, 128, 128, 0, True),
+                ("asc_or_desc", column_types[9], None, 1, 1, 0, True),
+                ("cardinality", column_types[10], None, 20, 20, 0, True),
+                ("pages", column_types[11], None, 20, 20, 0, True),
+                ("filter_condition", column_types[12], None, 128, 128, 0, True)
+            ]
+        
+        # Create a column map with both ODBC standard names and lowercase aliases
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
+        
+        # Remember original fetch methods (store only once)
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+    
+            # Create wrapper fetch methods that add column mappings
+            def fetchone_with_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    row._column_map = self._column_map
+                return row
+                
+            def fetchmany_with_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+                
+            def fetchall_with_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+                
+            # Replace fetch methods
+            self.fetchone = fetchone_with_mapping
+            self.fetchmany = fetchmany_with_mapping
+            self.fetchall = fetchall_with_mapping
+        
+        return self
+    
+    def columns(self, table=None, catalog=None, schema=None, column=None):
+        """
+        Creates a result set of column information in the specified tables 
+        using the SQLColumns function.
+        
+        Args:
+            table (str, optional): The table name pattern. Default is None (all tables).
+            catalog (str, optional): The catalog name. Default is None (current catalog).
+            schema (str, optional): The schema name pattern. Default is None (all schemas).
+            column (str, optional): The column name pattern. Default is None (all columns).
+        
+        Returns:
+            cursor: The cursor itself, containing the result set. Use fetchone(), fetchmany(),
+                or fetchall() to retrieve the results.
+
+                Each row contains the following columns:
+                - table_cat (str): Catalog name
+                - table_schem (str): Schema name
+                - table_name (str): Table name
+                - column_name (str): Column name
+                - data_type (int): The ODBC SQL data type constant (e.g. SQL_CHAR)
+                - type_name (str): Data source dependent type name
+                - column_size (int): Column size
+                - buffer_length (int): Length of the column in bytes
+                - decimal_digits (int): Number of fractional digits
+                - num_prec_radix (int): Radix (typically 10 or 2)
+                - nullable (int): One of SQL_NO_NULLS, SQL_NULLABLE, SQL_NULLABLE_UNKNOWN
+                - remarks (str): Comments about the column
+                - column_def (str): Default value for the column
+                - sql_data_type (int): The SQL data type from java.sql.Types
+                - sql_datetime_sub (int): Subcode for datetime types
+                - char_octet_length (int): Maximum length in bytes for char types
+                - ordinal_position (int): Column position in the table (starting at 1)
+                - is_nullable (str): "YES", "NO", or "" (unknown)
+
+        Warning:
+            Calling this method without any filters (all parameters as None) will enumerate 
+            EVERY column in EVERY table in the database. This can be extremely expensive in 
+            large databases, potentially causing high memory usage, slow execution times, 
+            and in extreme cases, timeout errors. Always use filters (catalog, schema, table, 
+            or column) whenever possible to limit the result set.
+    
+        Example:
+            # Get all columns in table 'Customers'
+            columns = cursor.columns(table='Customers')
+            
+            # Get all columns in table 'Customers' in schema 'dbo'
+            columns = cursor.columns(table='Customers', schema='dbo')
+            
+            # Get column named 'CustomerID' in any table
+            columns = cursor.columns(column='CustomerID')
+        """
+        self._check_closed()
+        
+        # Always reset the cursor first to ensure clean state
+        self._reset_cursor()
+        
+        # Call the SQLColumns function
+        retcode = ddbc_bindings.DDBCSQLColumns(
+            self.hstmt,
+            catalog,
+            schema,
+            table,
+            column
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Initialize description from column metadata
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
+            # If describe fails, create a manual description for the standard columns
+            column_types = [str, str, str, str, int, str, int, int, int, int, int, str, str, int, int, int, int, str]
+            self.description = [
+                ("table_cat", column_types[0], None, 128, 128, 0, True),
+                ("table_schem", column_types[1], None, 128, 128, 0, True),
+                ("table_name", column_types[2], None, 128, 128, 0, False),
+                ("column_name", column_types[3], None, 128, 128, 0, False),
+                ("data_type", column_types[4], None, 10, 10, 0, False),
+                ("type_name", column_types[5], None, 128, 128, 0, False),
+                ("column_size", column_types[6], None, 10, 10, 0, True),
+                ("buffer_length", column_types[7], None, 10, 10, 0, True),
+                ("decimal_digits", column_types[8], None, 10, 10, 0, True),
+                ("num_prec_radix", column_types[9], None, 10, 10, 0, True),
+                ("nullable", column_types[10], None, 10, 10, 0, False),
+                ("remarks", column_types[11], None, 254, 254, 0, True),
+                ("column_def", column_types[12], None, 254, 254, 0, True),
+                ("sql_data_type", column_types[13], None, 10, 10, 0, False),
+                ("sql_datetime_sub", column_types[14], None, 10, 10, 0, True),
+                ("char_octet_length", column_types[15], None, 10, 10, 0, True),
+                ("ordinal_position", column_types[16], None, 10, 10, 0, False),
+                ("is_nullable", column_types[17], None, 254, 254, 0, True)
+            ]
+
+        # Store the column mappings for this specific columns() call
+        column_names = [desc[0] for desc in self.description]
+        
+        # Create a specialized column map for this result set
+        columns_map = {}
+        for i, name in enumerate(column_names):
+            columns_map[name] = i
+            columns_map[name.lower()] = i
+        
+        # Define wrapped fetch methods that preserve existing column mapping
+        # but add our specialized mapping just for column results
+        def fetchone_with_columns_mapping():
+            row = self._original_fetchone()
+            if row is not None:
+                # Create a merged map with columns result taking precedence
+                merged_map = getattr(row, '_column_map', {}).copy()
+                merged_map.update(columns_map)
+                row._column_map = merged_map
+            return row
+            
+        def fetchmany_with_columns_mapping(size=None):
+            rows = self._original_fetchmany(size)
+            for row in rows:
+                # Create a merged map with columns result taking precedence
+                merged_map = getattr(row, '_column_map', {}).copy()
+                merged_map.update(columns_map)
+                row._column_map = merged_map
+            return rows
+            
+        def fetchall_with_columns_mapping():
+            rows = self._original_fetchall()
+            for row in rows:
+                # Create a merged map with columns result taking precedence
+                merged_map = getattr(row, '_column_map', {}).copy()
+                merged_map.update(columns_map)
+                row._column_map = merged_map
+            return rows
+        
+        # Save original fetch methods
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+
+        # Override fetch methods with our wrapped versions
+        self.fetchone = fetchone_with_columns_mapping
+        self.fetchmany = fetchmany_with_columns_mapping
+        self.fetchall = fetchall_with_columns_mapping
+            
+      return self
 
     @staticmethod
     def _select_best_sample_value(column):
