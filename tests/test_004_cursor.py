@@ -6896,7 +6896,7 @@ def test_insert_multiple_uuids(cursor, db_connection):
         db_connection.commit()
 
 def test_uuid_insert_with_none(cursor, db_connection):
-    """Test that inserting None into a UUID column raises an error (or is handled)."""
+    """Test that inserting None into a UUID column results in a NULL value and is handled correctly."""
     table_name = "#pytest_uuid_none"
     try:
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")

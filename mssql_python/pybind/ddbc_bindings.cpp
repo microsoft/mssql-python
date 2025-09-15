@@ -2625,9 +2625,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
                 case SQL_GUID: {
                     SQLGUID* guidValue = &buffers.guidBuffers[col - 1][i];
-                    // We already have the raw bytes from SQL Server in the SQLGUID struct.
-                    // We do not need to perform any additional reordering here, as the C++
-                    // SQLGUID struct is already laid out in the non-standard SQL Server byte order.
                     std::vector<char> guid_bytes(16);
                     std::memcpy(guid_bytes.data(), guidValue, sizeof(SQLGUID));
 
