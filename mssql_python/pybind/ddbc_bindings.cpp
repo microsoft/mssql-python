@@ -1860,8 +1860,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             row.append(py::none());
             continue;
         }
-        LOG("Fetching column {}: size={}, type={}", i, columnSize, dataType);
-
 
         switch (dataType) {
             case SQL_CHAR:
@@ -1922,7 +1920,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_WVARCHAR:
             case SQL_WLONGVARCHAR: {
                 if (columnSize == SQL_NO_TOTAL || columnSize > 4000) {
-                    std::cout << "Column size: " << columnSize << std::endl;
                     LOG("Streaming LOB for column {} (NVARCHAR)", i);
                     row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false));
                 } else {
