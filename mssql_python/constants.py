@@ -132,3 +132,48 @@ class AuthType(Enum):
     INTERACTIVE = "activedirectoryinteractive"
     DEVICE_CODE = "activedirectorydevicecode"
     DEFAULT = "activedirectorydefault"
+
+class SQLTypes:
+    """Constants for valid SQL data types to use with setinputsizes"""
+    
+    @classmethod
+    def get_valid_types(cls) -> set:
+        """Returns a set of all valid SQL type constants"""
+        
+        return {
+            ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_VARCHAR.value, 
+            ConstantsDDBC.SQL_LONGVARCHAR.value, ConstantsDDBC.SQL_WCHAR.value,
+            ConstantsDDBC.SQL_WVARCHAR.value, ConstantsDDBC.SQL_WLONGVARCHAR.value,
+            ConstantsDDBC.SQL_DECIMAL.value, ConstantsDDBC.SQL_NUMERIC.value, 
+            ConstantsDDBC.SQL_BIT.value, ConstantsDDBC.SQL_TINYINT.value,
+            ConstantsDDBC.SQL_SMALLINT.value, ConstantsDDBC.SQL_INTEGER.value, 
+            ConstantsDDBC.SQL_BIGINT.value, ConstantsDDBC.SQL_REAL.value,
+            ConstantsDDBC.SQL_FLOAT.value, ConstantsDDBC.SQL_DOUBLE.value, 
+            ConstantsDDBC.SQL_BINARY.value, ConstantsDDBC.SQL_VARBINARY.value,
+            ConstantsDDBC.SQL_LONGVARBINARY.value, ConstantsDDBC.SQL_DATE.value, 
+            ConstantsDDBC.SQL_TIME.value, ConstantsDDBC.SQL_TIMESTAMP.value,
+            ConstantsDDBC.SQL_GUID.value
+        }
+    
+    # Could also add category methods for convenience
+    @classmethod
+    def get_string_types(cls) -> set:
+        """Returns a set of string SQL type constants"""
+        
+        return {
+            ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_VARCHAR.value, 
+            ConstantsDDBC.SQL_LONGVARCHAR.value, ConstantsDDBC.SQL_WCHAR.value,
+            ConstantsDDBC.SQL_WVARCHAR.value, ConstantsDDBC.SQL_WLONGVARCHAR.value
+        }
+    
+    @classmethod
+    def get_numeric_types(cls) -> set:
+        """Returns a set of numeric SQL type constants"""
+        
+        return {
+            ConstantsDDBC.SQL_DECIMAL.value, ConstantsDDBC.SQL_NUMERIC.value,
+            ConstantsDDBC.SQL_BIT.value, ConstantsDDBC.SQL_TINYINT.value,
+            ConstantsDDBC.SQL_SMALLINT.value, ConstantsDDBC.SQL_INTEGER.value,
+            ConstantsDDBC.SQL_BIGINT.value, ConstantsDDBC.SQL_REAL.value,
+            ConstantsDDBC.SQL_FLOAT.value, ConstantsDDBC.SQL_DOUBLE.value
+        }

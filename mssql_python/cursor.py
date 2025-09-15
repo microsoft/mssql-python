@@ -13,7 +13,7 @@ import uuid
 import datetime
 import warnings
 from typing import List, Union, Any
-from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
+from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import InterfaceError, ProgrammingError
@@ -489,8 +489,12 @@ class Cursor:
         
         Args:
             sizes: A sequence of tuples, one for each parameter. Each tuple contains
-                   (sql_type, size, decimal_digits) where size and decimal_digits are optional.
+                (sql_type, size, decimal_digits) where size and decimal_digits are optional.
         """
+        
+        # Get valid SQL types from centralized constants
+        valid_sql_types = SQLTypes.get_valid_types()
+        
         self._inputsizes = []
         
         if sizes:
@@ -498,14 +502,36 @@ class Cursor:
                 if isinstance(size_info, tuple):
                     # Handle tuple format (sql_type, size, decimal_digits)
                     if len(size_info) == 1:
-                        self._inputsizes.append((size_info[0], 0, 0))
+                        sql_type = size_info[0]
+                        column_size = 0
+                        decimal_digits = 0
                     elif len(size_info) == 2:
-                        self._inputsizes.append((size_info[0], size_info[1], 0))
+                        sql_type, column_size = size_info
+                        decimal_digits = 0
                     elif len(size_info) >= 3:
-                        self._inputsizes.append((size_info[0], size_info[1], size_info[2]))
+                        sql_type, column_size, decimal_digits = size_info
+                    
+                    # Validate SQL type
+                    if not isinstance(sql_type, int) or sql_type not in valid_sql_types:
+                        raise ValueError(f"Invalid SQL type: {sql_type}. Must be a valid SQL type constant.")
+                    
+                    # Validate size and precision
+                    if not isinstance(column_size, int) or column_size < 0:
+                        raise ValueError(f"Invalid column size: {column_size}. Must be a non-negative integer.")
+                    
+                    if not isinstance(decimal_digits, int) or decimal_digits < 0:
+                        raise ValueError(f"Invalid decimal digits: {decimal_digits}. Must be a non-negative integer.")
+                    
+                    self._inputsizes.append((sql_type, column_size, decimal_digits))
                 else:
                     # Handle single value (just sql_type)
-                    self._inputsizes.append((size_info, 0, 0))
+                    sql_type = size_info
+                    
+                    # Validate SQL type
+                    if not isinstance(sql_type, int) or sql_type not in valid_sql_types:
+                        raise ValueError(f"Invalid SQL type: {sql_type}. Must be a valid SQL type constant.")
+                    
+                    self._inputsizes.append((sql_type, 0, 0))
     
     def _reset_inputsizes(self):
         """Reset input sizes after execution"""
@@ -542,13 +568,15 @@ class Cursor:
     def _create_parameter_types_list(self, parameter: Any, param_info, parameters_list, i: int) -> 'param_info':
         """
         Maps parameter types for the given parameter.
-
+    
         Args:
             parameter: parameter to bind.
-
+    
         Returns:
             paraminfo.
         """
+        import decimal
+        
         paraminfo = param_info()
         
         # Check if we have explicit type information from setinputsizes
@@ -556,25 +584,49 @@ class Cursor:
             # Use explicit type information
             sql_type, column_size, decimal_digits = self._inputsizes[i]
             
+            # Validate SQL type against central list
+            if sql_type not in SQLTypes.get_valid_types():
+                log('warning', f"Invalid SQL type ({sql_type}) specified in inputsizes[{i}]")
+                
             if parameter is None:
                 # For NULL parameters, use SQL_C_DEFAULT instead of a specific C type
-                # This allows NULL to be properly sent for any SQL type
                 c_type = ddbc_sql_const.SQL_C_DEFAULT.value
             else:
                 # For non-NULL parameters, determine the appropriate C type based on SQL type
                 c_type = self._get_c_type_for_sql_type(sql_type)
-
+                
+                # Convert parameter to match expected C type if needed
+                if sql_type in (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value):
+                    # For DECIMAL/NUMERIC SQL types, parameter must be a Decimal
+                    if not isinstance(parameter, decimal.Decimal):
+                        try:
+                            # Convert to Decimal first
+                            parameter = decimal.Decimal(str(parameter))
+                        except (ValueError, decimal.InvalidOperation):
+                            warnings.warn(f"Parameter {i} could not be converted to Decimal", Warning)
+                    
+                    # Convert Decimal to special NumericData structure required by ODBC
+                    if isinstance(parameter, decimal.Decimal):
+                        parameters_list[i] = self._get_numeric_data(parameter)
+                
+                # Additional validation for string/binary data
+                elif sql_type in SQLTypes.get_string_types() and isinstance(parameter, str):
+                    # Check if parameter length exceeds specified size (excluding "unlimited" sizes)
+                    if column_size > 0 and len(parameter) > column_size:
+                        warnings.warn(f"String parameter exceeds specified size ({len(parameter)} > {column_size}). "
+                                     "Data may be truncated.", Warning)
+    
             # Sanitize precision/scale for numeric types
             if sql_type in (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value):
                 column_size = max(1, min(int(column_size) if column_size > 0 else 18, 38))
                 decimal_digits = min(max(0, decimal_digits), column_size)
-    
+        
         else:
             # Fall back to automatic type inference
             sql_type, c_type, column_size, decimal_digits = self._map_sql_type(
                 parameter, parameters_list, i
             )
-
+    
         paraminfo.paramCType = c_type
         paraminfo.paramSQLType = sql_type
         paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value

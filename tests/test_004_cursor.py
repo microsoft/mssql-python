@@ -1881,6 +1881,38 @@ def test_setinputsizes_with_null_values(db_connection):
     # Clean up
     cursor.execute("DROP TABLE IF EXISTS #test_inputsizes_null")
 
+def test_setinputsizes_sql_injection_protection(db_connection):
+    """Test that setinputsizes doesn't allow SQL injection"""
+    cursor = db_connection.cursor()
+
+    # Create a test table
+    cursor.execute("CREATE TABLE #test_sql_injection (id INT, name VARCHAR(100))")
+    
+    # Insert legitimate data
+    cursor.execute("INSERT INTO #test_sql_injection VALUES (1, 'safe')")
+    
+    # Set input sizes with potentially malicious SQL types and sizes
+    try:
+        # This should fail with a validation error
+        cursor.setinputsizes([(999999, 1000000, 1000000)])  # Invalid SQL type
+    except ValueError:
+        pass  # Expected
+    
+    # Test with valid types but attempt SQL injection in parameter
+    cursor.setinputsizes([(mssql_python.SQL_VARCHAR, 100, 0)])
+    injection_attempt = "x'; DROP TABLE #test_sql_injection; --"
+    
+    # This should safely parameterize without executing the injection
+    cursor.execute("SELECT * FROM #test_sql_injection WHERE name = ?", injection_attempt)
+    
+    # Verify table still exists and injection didn't work
+    cursor.execute("SELECT COUNT(*) FROM #test_sql_injection")
+    count = cursor.fetchone()[0]
+    assert count == 1, "SQL injection protection failed"
+    
+    # Clean up
+    cursor.execute("DROP TABLE #test_sql_injection")
+
 def test_gettypeinfo_all_types(cursor):
     """Test getTypeInfo with no arguments returns all data types"""
     # Get all type information
@@ -3687,7 +3719,7 @@ def test_columns_nonexistent(cursor):
     schema_cols = cursor.columns(
         table='columns_test', 
         schema='nonexistent_schema_xyz123'
-    )
+    ).fetchall()
     assert len(schema_cols) == 0, "Should return empty list for non-existent schema"
 
 def test_columns_data_types(cursor):
