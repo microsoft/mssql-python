@@ -70,9 +70,55 @@ inline bool IsValidUnicodeScalar(uint32_t cp) {
            !(cp >= UNICODE_SURROGATE_HIGH_START && cp <= UNICODE_SURROGATE_LOW_END);
 }
 
+// inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
+//     if (!sqlwStr) return std::wstring();
+
+//     if (length == SQL_NTS) {
+//         size_t i = 0;
+//         while (sqlwStr[i] != 0) ++i;
+//         length = i;
+//     }
+//     std::wstring result;
+//     result.reserve(length);
+
+//     if constexpr (sizeof(SQLWCHAR) == 2) {
+//         // Decode UTF-16 to UTF-32 (with surrogate pair handling)
+//         for (size_t i = 0; i < length; ++i) {
+//             uint16_t wc = static_cast<uint16_t>(sqlwStr[i]);
+//             // Check if this is a high surrogate (U+D800–U+DBFF)
+//             if (wc >= UNICODE_SURROGATE_HIGH_START && wc <= UNICODE_SURROGATE_HIGH_END && i + 1 < length) {
+//                 uint16_t low = static_cast<uint16_t>(sqlwStr[i + 1]);
+//                 // Check if the next code unit is a low surrogate (U+DC00–U+DFFF)
+//                 if (low >= UNICODE_SURROGATE_LOW_START && low <= UNICODE_SURROGATE_LOW_END) {
+//                     // Combine surrogate pair into a single code point
+//                     uint32_t cp = (((wc - UNICODE_SURROGATE_HIGH_START) << 10) | (low - UNICODE_SURROGATE_LOW_START)) + 0x10000;
+//                     result.push_back(static_cast<wchar_t>(cp));
+//                     ++i; // Skip the low surrogate
+//                     continue;
+//                 }
+//             }
+//             // If valid scalar then append, else append replacement char (U+FFFD)
+//             if (IsValidUnicodeScalar(wc)) {
+//                 result.push_back(static_cast<wchar_t>(wc));
+//             } else {
+//                 result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
+//             }
+//         }
+//     } else {
+//         // SQLWCHAR is UTF-32, so just copy with validation
+//         for (size_t i = 0; i < length; ++i) {
+//             uint32_t cp = static_cast<uint32_t>(sqlwStr[i]);
+//             if (IsValidUnicodeScalar(cp)) {
+//                 result.push_back(static_cast<wchar_t>(cp));
+//             } else {
+//                 result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
+//             }
+//         }
+//     }
+//     return result;
+// }
 inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
     if (!sqlwStr) return std::wstring();
-
     if (length == SQL_NTS) {
         size_t i = 0;
         while (sqlwStr[i] != 0) ++i;
@@ -80,29 +126,28 @@ inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = S
     }
     std::wstring result;
     result.reserve(length);
-
     if constexpr (sizeof(SQLWCHAR) == 2) {
-        // Decode UTF-16 to UTF-32 (with surrogate pair handling)
-        for (size_t i = 0; i < length; ++i) {
+        for (size_t i = 0; i < length; ) { // Use a manual increment to handle skipping
             uint16_t wc = static_cast<uint16_t>(sqlwStr[i]);
-            // Check if this is a high surrogate (U+D800–U+DBFF)
-            if (wc >= UNICODE_SURROGATE_HIGH_START && wc <= UNICODE_SURROGATE_HIGH_END && i + 1 < length) {
+            // Check for high surrogate and valid low surrogate
+            if (wc >= UNICODE_SURROGATE_HIGH_START && wc <= UNICODE_SURROGATE_HIGH_END && (i + 1 < length)) {
                 uint16_t low = static_cast<uint16_t>(sqlwStr[i + 1]);
-                // Check if the next code unit is a low surrogate (U+DC00–U+DFFF)
                 if (low >= UNICODE_SURROGATE_LOW_START && low <= UNICODE_SURROGATE_LOW_END) {
-                    // Combine surrogate pair into a single code point
+                    // Combine into a single code point
                     uint32_t cp = (((wc - UNICODE_SURROGATE_HIGH_START) << 10) | (low - UNICODE_SURROGATE_LOW_START)) + 0x10000;
                     result.push_back(static_cast<wchar_t>(cp));
-                    ++i; // Skip the low surrogate
+                    i += 2; // Move past both surrogates
                     continue;
                 }
             }
-            // If valid scalar then append, else append replacement char (U+FFFD)
+            // If we reach here, it's not a valid surrogate pair or is a BMP character.
+            // Check if it's a valid scalar and append, otherwise append replacement char.
             if (IsValidUnicodeScalar(wc)) {
                 result.push_back(static_cast<wchar_t>(wc));
             } else {
                 result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
             }
+            ++i; // Move to the next code unit
         }
     } else {
         // SQLWCHAR is UTF-32, so just copy with validation
