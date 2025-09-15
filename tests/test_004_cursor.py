@@ -1946,7 +1946,7 @@ def test_procedures_all(cursor, db_connection):
     
     try:
         # Get all procedures
-        procs = cursor.procedures()
+        procs = cursor.procedures().fetchall()
         
         # Verify we got results
         assert procs is not None, "procedures() should return results"
@@ -1971,12 +1971,12 @@ def test_procedures_specific(cursor, db_connection):
     """Test getting information about a specific procedure"""
     try:
         # Get specific procedure
-        procs = cursor.procedures(procedure='test_proc1', schema='pytest_proc_schema')
+        procs = cursor.procedures(procedure='test_proc1', schema='pytest_proc_schema').fetchall()
         
         # Verify we got the correct procedure
         assert len(procs) == 1, "Should find exactly one procedure"
         proc = procs[0]
-        assert proc.procedure_name == 'test_proc1', "Wrong procedure name returned"
+        assert proc.procedure_name == 'test_proc1;1', "Wrong procedure name returned"
         assert proc.procedure_schem == 'pytest_proc_schema', "Wrong schema returned"
         
     finally:
@@ -1987,7 +1987,7 @@ def test_procedures_with_schema(cursor, db_connection):
     """Test getting procedures with schema filter"""
     try:
         # Get procedures for our test schema
-        procs = cursor.procedures(schema='pytest_proc_schema')
+        procs = cursor.procedures(schema='pytest_proc_schema').fetchall()
         
         # Verify schema filter worked
         assert len(procs) >= 2, "Should find at least two procedures in schema"
@@ -1996,9 +1996,9 @@ def test_procedures_with_schema(cursor, db_connection):
         
         # Verify our specific procedures are in the results
         proc_names = [p.procedure_name for p in procs]
-        assert 'test_proc1' in proc_names, "test_proc1 should be in results"
-        assert 'test_proc2' in proc_names, "test_proc2 should be in results"
-        
+        assert 'test_proc1;1' in proc_names, "test_proc1;1 should be in results"
+        assert 'test_proc2;1' in proc_names, "test_proc2;1 should be in results"
+
     finally:
         # Clean up happens in test_procedures_cleanup
         pass
@@ -2006,7 +2006,7 @@ def test_procedures_with_schema(cursor, db_connection):
 def test_procedures_nonexistent(cursor):
     """Test procedures() with non-existent procedure name"""
     # Use a procedure name that's highly unlikely to exist
-    procs = cursor.procedures(procedure='nonexistent_procedure_xyz123')
+    procs = cursor.procedures(procedure='nonexistent_procedure_xyz123').fetchall()
     
     # Should return empty list, not error
     assert isinstance(procs, list), "Should return a list for non-existent procedure"
@@ -2020,7 +2020,7 @@ def test_procedures_catalog_filter(cursor, db_connection):
     
     try:
         # Get procedures with current catalog
-        procs = cursor.procedures(catalog=current_db, schema='pytest_proc_schema')
+        procs = cursor.procedures(catalog=current_db, schema='pytest_proc_schema').fetchall()
         
         # Verify catalog filter worked
         assert len(procs) >= 2, "Should find procedures in current catalog"
@@ -2028,7 +2028,7 @@ def test_procedures_catalog_filter(cursor, db_connection):
             assert proc.procedure_cat == current_db, f"Expected catalog {current_db}, got {proc.procedure_cat}"
             
         # Get procedures with non-existent catalog
-        fake_procs = cursor.procedures(catalog='nonexistent_db_xyz123')
+        fake_procs = cursor.procedures(catalog='nonexistent_db_xyz123').fetchall()
         assert len(fake_procs) == 0, "Should return empty list for non-existent catalog"
         
     finally:
@@ -2051,7 +2051,7 @@ def test_procedures_with_parameters(cursor, db_connection):
         db_connection.commit()
         
         # Get procedure info
-        procs = cursor.procedures(procedure='test_params_proc', schema='pytest_proc_schema')
+        procs = cursor.procedures(procedure='test_params_proc', schema='pytest_proc_schema').fetchall()
         
         # Verify we found the procedure
         assert len(procs) == 1, "Should find exactly one procedure"
@@ -2106,7 +2106,7 @@ def test_procedures_result_set_info(cursor, db_connection):
         db_connection.commit()
         
         # Get procedure info for all test procedures
-        procs = cursor.procedures(schema='pytest_proc_schema', procedure='test_%')
+        procs = cursor.procedures(schema='pytest_proc_schema', procedure='test_%').fetchall()
         
         # Verify we found at least some procedures
         assert len(procs) > 0, "Should find at least some test procedures"

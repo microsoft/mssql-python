@@ -843,13 +843,8 @@ class Cursor:
         # Always reset the cursor first to ensure clean state
         self._reset_cursor()
         
-        # Convert parameters to empty strings if None
-        catalog_str = "" if catalog is None else catalog
-        schema_str = "" if schema is None else schema
-        procedure_str = "" if procedure is None else procedure
-        
         # Call the SQLProcedures function
-        retcode = ddbc_bindings.DDBCSQLProcedures(self.hstmt, catalog_str, schema_str, procedure_str)
+        retcode = ddbc_bindings.DDBCSQLProcedures(self.hstmt, catalog, schema, procedure)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
         
         # Create column metadata and initialize description
@@ -857,7 +852,15 @@ class Cursor:
         try:
             ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
             self._initialize_description(column_metadata)
+
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
         except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
             # If describe fails, create a manual description
             column_types = [str, str, str, int, int, int, str, int]
             self.description = [
@@ -872,34 +875,45 @@ class Cursor:
             ]
         
         # Define column names in ODBC standard order
-        column_names = [
-            "procedure_cat", "procedure_schem", "procedure_name",
-            "num_input_params", "num_output_params", "num_result_sets",
-            "remarks", "procedure_type"
-        ]
-        
-        # Fetch all rows and create a custom column map
-        rows_data = []
-        ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
-        
-        # Create a column map for attribute access
-        column_map = {name: i for i, name in enumerate(column_names)}
-        
-        # Create Row objects with the column map
-        result_rows = []
-        for row_data in rows_data:
-            row = Row(self, self.description, row_data)
-            row._column_map = column_map
-            
-            # Fix procedure name by removing semicolon and number if present
-            # The ODBC driver may return names in format "procedure_name;1"
-            if hasattr(row, 'procedure_name') and row.procedure_name and ';' in row.procedure_name:
-                proc_name_parts = row.procedure_name.split(';')
-                row._values[column_map["procedure_name"]] = proc_name_parts[0]
-            
-            result_rows.append(row)
-        
-        return result_rows
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
+
+        # Remember original fetch methods (store only once)
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+
+            # Create wrapper fetch methods that add column mappings
+            def fetchone_with_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    row._column_map = self._column_map
+                return row
+
+            def fetchmany_with_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            def fetchall_with_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            # Replace fetch methods
+            self.fetchone = fetchone_with_mapping
+            self.fetchmany = fetchmany_with_mapping
+            self.fetchall = fetchall_with_mapping
+
+        # Return the cursor itself
+        return self
     
     def primaryKeys(self, table, catalog=None, schema=None):
         """
@@ -1089,27 +1103,45 @@ class Cursor:
             ]
         
         # Define column names in ODBC standard order
-        column_names = [
-            "pktable_cat", "pktable_schem", "pktable_name", "pkcolumn_name",
-            "fktable_cat", "fktable_schem", "fktable_name", "fkcolumn_name",
-            "key_seq", "update_rule", "delete_rule", "fk_name", "pk_name", "deferrability"
-        ]
-        
-        # Fetch all rows
-        rows_data = []
-        ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
-        
-        # Create a column map for attribute access
-        column_map = {name: i for i, name in enumerate(column_names)}
-        
-        # Create Row objects with the column map
-        result_rows = []
-        for row_data in rows_data:
-            row = Row(self, self.description, row_data)
-            row._column_map = column_map
-            result_rows.append(row)
-        
-        return result_rows
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
+
+        # Remember original fetch methods (store only once)
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+
+            # Create wrapper fetch methods that add column mappings
+            def fetchone_with_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    row._column_map = self._column_map
+                return row
+
+            def fetchmany_with_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            def fetchall_with_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    row._column_map = self._column_map
+                return rows
+
+            # Replace fetch methods
+            self.fetchone = fetchone_with_mapping
+            self.fetchmany = fetchmany_with_mapping
+            self.fetchall = fetchall_with_mapping
+
+        # Return the cursor itself
+        return self
     
     def rowIdColumns(self, table, catalog=None, schema=None, nullable=True):
         """
