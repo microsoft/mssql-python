@@ -178,8 +178,9 @@ class Connection:
                 if not isinstance(escape_char, str):
                     escape_char = '\\'  # Default to backslash if not a string
                 self._searchescape = escape_char
-            except Exception:
-                # Default to backslash if there's an error
+            except Exception as e:
+                # Log the exception for debugging, but do not expose sensitive info
+                log('warning', f"Failed to retrieve search escape character, using default '\\'. Exception: {type(e).__name__}")
                 self._searchescape = '\\'
         return self._searchescape
 
