@@ -922,15 +922,22 @@ SQLRETURN SQLProcedures_wrap(SqlHandlePtr StatementHandle,
 }
 
 SQLRETURN SQLForeignKeys_wrap(SqlHandlePtr StatementHandle, 
-                             const std::wstring& pkCatalog,
-                             const std::wstring& pkSchema,
-                             const std::wstring& pkTable,
-                             const std::wstring& fkCatalog,
-                             const std::wstring& fkSchema,
-                             const std::wstring& fkTable) {
+                             const py::object& pkCatalogObj,
+                             const py::object& pkSchemaObj,
+                             const py::object& pkTableObj,
+                             const py::object& fkCatalogObj,
+                             const py::object& fkSchemaObj,
+                             const py::object& fkTableObj) {
     if (!SQLForeignKeys_ptr) {
         ThrowStdException("SQLForeignKeys function not loaded");
     }
+
+    std::wstring pkCatalog = py::isinstance<py::none>(pkCatalogObj) ? L"" : pkCatalogObj.cast<std::wstring>();
+    std::wstring pkSchema = py::isinstance<py::none>(pkSchemaObj) ? L"" : pkSchemaObj.cast<std::wstring>();
+    std::wstring pkTable = py::isinstance<py::none>(pkTableObj) ? L"" : pkTableObj.cast<std::wstring>();
+    std::wstring fkCatalog = py::isinstance<py::none>(fkCatalogObj) ? L"" : fkCatalogObj.cast<std::wstring>();
+    std::wstring fkSchema = py::isinstance<py::none>(fkSchemaObj) ? L"" : fkSchemaObj.cast<std::wstring>();
+    std::wstring fkTable = py::isinstance<py::none>(fkTableObj) ? L"" : fkTableObj.cast<std::wstring>();
 
 #if defined(__APPLE__) || defined(__linux__)
     // Unix implementation
@@ -2879,13 +2886,14 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                              const std::wstring& procedure) {
         return SQLProcedures_wrap(StatementHandle, catalog, schema, procedure);
     });
-    m.def("DDBCSQLForeignKeys", [](SqlHandlePtr StatementHandle, 
-                                 const std::wstring& pkCatalog,
-                                 const std::wstring& pkSchema,
-                                 const std::wstring& pkTable,
-                                 const std::wstring& fkCatalog,
-                                 const std::wstring& fkSchema,
-                                 const std::wstring& fkTable) {
+
+        m.def("DDBCSQLForeignKeys", [](SqlHandlePtr StatementHandle, 
+                                 const py::object& pkCatalog,
+                                 const py::object& pkSchema,
+                                 const py::object& pkTable,
+                                 const py::object& fkCatalog,
+                                 const py::object& fkSchema,
+                                 const py::object& fkTable) {
         return SQLForeignKeys_wrap(StatementHandle, 
                                    pkCatalog, pkSchema, pkTable, 
                                    fkCatalog, fkSchema, fkTable);

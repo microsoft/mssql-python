@@ -1047,20 +1047,11 @@ class Cursor:
         if table is None and foreignTable is None:
             raise ProgrammingError("Either table or foreignTable must be specified", "HY000")
         
-        # Convert None values to empty strings as required by ODBC API
-        pk_catalog = "" if foreignCatalog is None else foreignCatalog
-        pk_schema = "" if foreignSchema is None else foreignSchema
-        pk_table = "" if foreignTable is None else foreignTable
-        
-        fk_catalog = "" if catalog is None else catalog
-        fk_schema = "" if schema is None else schema
-        fk_table = "" if table is None else table
-        
         # Call the SQLForeignKeys function
         retcode = ddbc_bindings.DDBCSQLForeignKeys(
             self.hstmt, 
-            pk_catalog, pk_schema, pk_table,
-            fk_catalog, fk_schema, fk_table
+            foreignCatalog, foreignSchema, foreignTable,
+            catalog, schema, table
         )
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
         
@@ -1069,7 +1060,15 @@ class Cursor:
         try:
             ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
             self._initialize_description(column_metadata)
-        except Exception:
+
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+
+        if not self.description:
             # If describe fails, create a manual description for the standard columns
             column_types = [str, str, str, str, str, str, str, str, int, int, int, str, str, int]
             self.description = [
@@ -1473,7 +1472,7 @@ class Cursor:
             self.fetchmany = fetchmany_with_mapping
             self.fetchall = fetchall_with_mapping
         
-        return result_rows
+        return self
     
     def columns(self, table=None, catalog=None, schema=None, column=None):
         """
@@ -1627,7 +1626,7 @@ class Cursor:
         self.fetchmany = fetchmany_with_columns_mapping
         self.fetchall = fetchall_with_columns_mapping
             
-        return self
+      return self
 
     @staticmethod
     def _select_best_sample_value(column):
