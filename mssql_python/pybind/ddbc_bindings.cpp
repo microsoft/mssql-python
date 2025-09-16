@@ -2170,10 +2170,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             if (static_cast<size_t>(dataLen) <= columnSize) {
                                 row.append(py::bytes(reinterpret_cast<const char*>(dataBuffer.data()), dataLen));
                             } else {
-                                std::ostringstream oss;
-                                oss << "Buffer length for fetch (" << columnSize << ") is smaller than actual data ("
-                                    << dataLen << "). ColumnID - " << i << ", datatype - " << dataType;
-                                ThrowStdException(oss.str());
+                                LOG("VARBINARY column {} data truncated, using streaming LOB", i);
+                                row.append(FetchLobColumnData(hStmt, i, SQL_C_BINARY, false, true));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             row.append(py::none());
