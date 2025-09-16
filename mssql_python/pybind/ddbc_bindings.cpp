@@ -2180,8 +2180,11 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         } else if (dataLen == 0) {
                             row.append(py::bytes(""));
                         } else {
-                            LOG("SQLGetData returned unexpected negative length: {}. Column ID - {}", dataLen, i);
-                            ThrowStdException("Unexpected negative SQLGetData length");
+                            std::ostringstream oss;
+                            oss << "Unexpected negative length (" << dataLen << ") returned by SQLGetData. ColumnID=" 
+                                << i << ", dataType=" << dataType << ", bufferSize=" << columnSize;
+                            LOG("Error: {}", oss.str());
+                            ThrowStdException(oss.str());
                         }
                     } else {
                         LOG("Error retrieving VARBINARY data for column {}. SQLGetData rc = {}", i, ret);

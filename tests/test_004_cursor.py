@@ -6340,6 +6340,40 @@ def test_binary_mostly_small_one_large(cursor, db_connection):
         drop_table_if_exists(cursor, "#pytest_mixed_size_binary")
         db_connection.commit()
 
+def test_varbinarymax_insert_fetch_null(cursor, db_connection):
+    """Test insertion and retrieval of NULL value in VARBINARY(MAX) column."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_varbinarymax_null")
+        cursor.execute("""
+            CREATE TABLE #pytest_varbinarymax_null (
+                id INT,
+                binary_data VARBINARY(MAX)
+            )
+        """)
+
+        # Insert a row with NULL for binary_data
+        cursor.execute(
+            "INSERT INTO #pytest_varbinarymax_null VALUES (?, CAST(NULL AS VARBINARY(MAX)))",
+            (1,)
+        )
+        db_connection.commit()
+
+        # Fetch the row
+        cursor.execute("SELECT id, binary_data FROM #pytest_varbinarymax_null")
+        row = cursor.fetchone()
+
+        assert row is not None, "No row fetched"
+        fetched_id, fetched_data = row
+        assert fetched_id == 1, "ID mismatch"
+        assert fetched_data is None, "Expected NULL for binary_data"
+
+    except Exception as e:
+        pytest.fail(f"VARBINARY(MAX) NULL insert/fetch test failed: {e}")
+
+    finally:
+        drop_table_if_exists(cursor, "#pytest_varbinarymax_null")
+        db_connection.commit()
+
 def test_only_null_and_empty_binary(cursor, db_connection):
     """Test table with only NULL and empty binary values to ensure fallback doesn't produce size=0"""
     try:
