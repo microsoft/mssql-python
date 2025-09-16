@@ -1758,52 +1758,74 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
                                      bool isBinary)
 {
     std::vector<char> buffer;
-    SQLLEN indicator = 0;
-    SQLRETURN ret;
+    SQLRETURN ret = SQL_SUCCESS_WITH_INFO;
     int loopCount = 0;
 
     while (true) {
         ++loopCount;
-        std::vector<char> chunk(DAE_CHUNK_SIZE);
-        ret = SQLGetData_ptr(
-            hStmt,
-            colIndex,
-            cType,
-            chunk.data(),
-            DAE_CHUNK_SIZE,
-            &indicator
-        );
-        if (indicator == SQL_NULL_DATA) {
+        std::vector<char> chunk(DAE_CHUNK_SIZE, 0);
+        SQLLEN actualRead = 0;
+        ret = SQLGetData_ptr(hStmt,
+                         colIndex,
+                         cType,
+                         chunk.data(),
+                         DAE_CHUNK_SIZE,
+                         &actualRead);
+
+        if (ret == SQL_ERROR || !SQL_SUCCEEDED(ret) && ret != SQL_SUCCESS_WITH_INFO) {
+            std::ostringstream oss;
+            oss << "Error fetching LOB for column " << colIndex
+                << ", cType=" << cType
+                << ", loop=" << loopCount
+                << ", SQLGetData return=" << ret;
+            LOG(oss.str());
+            ThrowStdException(oss.str());
+        }
+        if (actualRead == SQL_NULL_DATA) {
             LOG("Loop {}: Column {} is NULL", loopCount, colIndex);
             return py::none();
         }
-        if (!SQL_SUCCEEDED(ret) && ret != SQL_SUCCESS_WITH_INFO) {
-            LOG("Loop {}: Error fetching col={} with cType={} ret={}", loopCount, colIndex, cType, ret);
-            return py::none();
-        }
-        SQLLEN copyCount = 0;
-        if (indicator > 0 && indicator != SQL_NO_TOTAL) {
-            copyCount = std::min<SQLLEN>(indicator, DAE_CHUNK_SIZE);
+
+        size_t bytesRead = 0;
+        if (actualRead >= 0) {
+            bytesRead = static_cast<size_t>(actualRead);
+            if (bytesRead > DAE_CHUNK_SIZE) {
+                bytesRead = DAE_CHUNK_SIZE;
+            }
         } else {
-            copyCount = DAE_CHUNK_SIZE;
+            // fallback: use full buffer size if actualRead is unknown
+            bytesRead = DAE_CHUNK_SIZE;
         }
 
-        // Check if last byte(s) is a null terminator
-        if (copyCount > 0) {
-            if (!isWideChar && chunk[copyCount - 1] == '\0') {
-                --copyCount;
-                LOG("Loop {}: Trimmed null terminator (narrow)", loopCount);
-            } else if (copyCount >= sizeof(wchar_t)) {
-                auto wcharBuf = reinterpret_cast<const wchar_t*>(chunk.data());
-                if (wcharBuf[(copyCount / sizeof(wchar_t)) - 1] == L'\0') {
-                    copyCount -= sizeof(wchar_t);
-                    LOG("Loop {}: Trimmed null terminator (wide)", loopCount);
+        // For character data, trim trailing null terminators
+        if (!isBinary && bytesRead > 0) {
+            if (!isWideChar) {
+                // Narrow characters
+                while (bytesRead > 0 && chunk[bytesRead - 1] == '\0') {
+                    --bytesRead;
+                }
+                if (bytesRead < DAE_CHUNK_SIZE) {
+                    LOG("Loop {}: Trimmed null terminator (narrow)", loopCount);
+                }
+            } else {
+                // Wide characters
+                size_t wcharSize = sizeof(SQLWCHAR);
+                if (bytesRead >= wcharSize) {
+                    auto sqlwBuf = reinterpret_cast<const SQLWCHAR*>(chunk.data());
+                    size_t wcharCount = bytesRead / wcharSize;
+                    while (wcharCount > 0 && sqlwBuf[wcharCount - 1] == 0) {
+                        --wcharCount;
+                        bytesRead -= wcharSize;
+                    }
+                    if (bytesRead < DAE_CHUNK_SIZE) {
+                        LOG("Loop {}: Trimmed null terminator (wide)", loopCount);
+                    }
                 }
             }
         }
-        if (copyCount > 0 && indicator != 0) {
-            buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + copyCount);
-            LOG("Loop {}: Appended {} bytes", loopCount, copyCount);
+        if (bytesRead > 0) {
+            buffer.insert(buffer.end(), chunk.begin(), chunk.begin() + bytesRead);
+            LOG("Loop {}: Appended {} bytes", loopCount, bytesRead);
         }
         if (ret == SQL_SUCCESS) {
             LOG("Loop {}: SQL_SUCCESS → no more data", loopCount);
@@ -1812,25 +1834,25 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
     }
     LOG("FetchLobColumnData: Total bytes collected = {}", buffer.size());
 
-    // Handle zero-length buffers correctly
     if (buffer.empty()) {
         if (isBinary) {
-            LOG("FetchLobColumnData: Returning empty bytes for binary column {}", colIndex);
-            return py::bytes(nullptr, 0);
-        } else if (isWideChar) {
-            LOG("FetchLobColumnData: Returning empty string for wide text column {}", colIndex);
-            return py::str("");
-        } else {
-            LOG("FetchLobColumnData: Returning empty string for narrow text column {}", colIndex);
-            return py::str("");
+            return py::bytes("");
         }
+        return py::str("");
     }
-
     if (isWideChar) {
-        std::wstring wstr(reinterpret_cast<const wchar_t*>(buffer.data()),
-                          buffer.size() / sizeof(wchar_t));
-        LOG("FetchLobColumnData: Returning wide string of length {}", wstr.length());
-        return py::cast(wstr);
+#if defined(_WIN32)
+        std::wstring wstr(reinterpret_cast<const wchar_t*>(buffer.data()), buffer.size() / sizeof(wchar_t));
+        std::string utf8str = WideToUTF8(wstr);
+        return py::str(utf8str);
+#else
+        // Linux/macOS handling
+        size_t wcharCount = buffer.size() / sizeof(SQLWCHAR);
+        const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(buffer.data());
+        std::wstring wstr = SQLWCHARToWString(sqlwBuf, wcharCount);
+        std::string utf8str = WideToUTF8(wstr);
+        return py::str(utf8str);
+#endif
     }
     if (isBinary) {
         LOG("FetchLobColumnData: Returning binary of {} bytes", buffer.size());
@@ -2174,8 +2196,11 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         } else if (dataLen == 0) {
                             row.append(py::bytes(""));
                         } else {
-                            LOG("SQLGetData returned unexpected negative length: {}. Column ID - {}", dataLen, i);
-                            ThrowStdException("Unexpected negative SQLGetData length");
+                            std::ostringstream oss;
+                            oss << "Unexpected negative length (" << dataLen << ") returned by SQLGetData. ColumnID=" 
+                                << i << ", dataType=" << dataType << ", bufferSize=" << columnSize;
+                            LOG("Error: {}", oss.str());
+                            ThrowStdException(oss.str());
                         }
                     } else {
                         LOG("Error retrieving VARBINARY data for column {}. SQLGetData rc = {}", i, ret);
