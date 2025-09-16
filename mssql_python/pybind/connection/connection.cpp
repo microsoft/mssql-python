@@ -10,6 +10,7 @@
 #include <pybind11/pybind11.h>
 
 #define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
+#define SQL_MAX_SMALL_INT 32767  // Maximum value for SQLSMALLINT
 
 static SqlHandlePtr getEnvHandle() {
     static SqlHandlePtr envHandle = []() -> SqlHandlePtr {
@@ -323,45 +324,86 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
     
     LOG("Getting connection info for type {}", infoType);
     
-    // For string results - allocate a buffer
-    char charBuffer[1024] = {0};
-    SQLSMALLINT stringLength = 0;
+    // Use a vector for dynamic sizing
+    std::vector<char> buffer(1024, 0);
+    SQLSMALLINT actualLength = 0;
     SQLRETURN ret;
     
-    // First try to get the info as a string or binary data
-    ret = SQLGetInfo_ptr(_dbcHandle->get(), infoType, charBuffer, sizeof(charBuffer), &stringLength);
+    // First try to get the info - handle SQLSMALLINT size limit
+    SQLSMALLINT bufferSize = (buffer.size() <= SQL_MAX_SMALL_INT) 
+        ? static_cast<SQLSMALLINT>(buffer.size()) 
+        : SQL_MAX_SMALL_INT;
+        
+    ret = SQLGetInfo_ptr(_dbcHandle->get(), infoType, buffer.data(), bufferSize, &actualLength);
+    
+    // If truncation occurred (actualLength >= bufferSize means truncation)
+    if (SQL_SUCCEEDED(ret) && actualLength >= bufferSize) {
+        // Resize buffer to the needed size (add 1 for null terminator)
+        buffer.resize(actualLength + 1, 0);
+        
+        // Call again with the larger buffer - handle SQLSMALLINT size limit again
+        bufferSize = (buffer.size() <= SQL_MAX_SMALL_INT) 
+            ? static_cast<SQLSMALLINT>(buffer.size()) 
+            : SQL_MAX_SMALL_INT;
+            
+        ret = SQLGetInfo_ptr(_dbcHandle->get(), infoType, buffer.data(), bufferSize, &actualLength);
+    }
+    
+    // Check for errors
     if (!SQL_SUCCEEDED(ret)) {
         checkError(ret);
     }
     
+    // Note: This implementation assumes the ODBC driver handles any necessary
+    // endianness conversions between the database server and the client.
+    
     // Determine return type based on the InfoType
-    // String types usually have InfoType > 10000
+    // String types usually have InfoType > 10000 or are specifically known string values
     if (infoType > 10000 || 
         infoType == SQL_DATA_SOURCE_NAME || 
         infoType == SQL_DBMS_NAME || 
         infoType == SQL_DBMS_VER || 
         infoType == SQL_DRIVER_NAME || 
-        infoType == SQL_DRIVER_VER) {
+        infoType == SQL_DRIVER_VER ||
+        // Add missing string types
+        infoType == SQL_IDENTIFIER_QUOTE_CHAR ||
+        infoType == SQL_CATALOG_NAME_SEPARATOR ||
+        infoType == SQL_CATALOG_TERM ||
+        infoType == SQL_SCHEMA_TERM ||
+        infoType == SQL_TABLE_TERM ||
+        infoType == SQL_KEYWORDS ||
+        infoType == SQL_PROCEDURE_TERM) {
         // Return as string
-        return py::str(charBuffer);
+        return py::str(buffer.data());
     } 
     else if (infoType == SQL_DRIVER_ODBC_VER || 
              infoType == SQL_SERVER_NAME) {
         // Return as string
-        return py::str(charBuffer);
+        return py::str(buffer.data());
     }
     else {
-        // For numeric types, we need to interpret the buffer based on the expected return type
-        // Handle common numeric types
+        // For numeric types, use memcpy to safely extract the values
+        // This avoids potential alignment issues with direct casting
+        
+        // Ensure buffer has enough data for the expected type
         switch (infoType) {
             // 16-bit unsigned integers
             case SQL_MAX_CONCURRENT_ACTIVITIES:
             case SQL_MAX_DRIVER_CONNECTIONS:
             case SQL_ODBC_API_CONFORMANCE:
             case SQL_ODBC_SQL_CONFORMANCE:
+            case SQL_TXN_CAPABLE:              // Add missing numeric types
+            case SQL_MULTIPLE_ACTIVE_TXN:
+            case SQL_MAX_COLUMN_NAME_LEN:
+            case SQL_MAX_TABLE_NAME_LEN:
+            case SQL_PROCEDURES:
             {
-                SQLUSMALLINT value = *reinterpret_cast<SQLUSMALLINT*>(charBuffer);
-                return py::int_(value);
+                if (actualLength >= sizeof(SQLUSMALLINT)) {
+                    SQLUSMALLINT value;
+                    std::memcpy(&value, buffer.data(), sizeof(SQLUSMALLINT));
+                    return py::int_(value);
+                }
+                break;
             }
             
             // 32-bit unsigned integers 
@@ -379,9 +421,15 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
             case SQL_STRING_FUNCTIONS:
             case SQL_SYSTEM_FUNCTIONS:
             case SQL_TIMEDATE_FUNCTIONS:
+            case SQL_DEFAULT_TXN_ISOLATION:    // Add missing numeric types
+            case SQL_MAX_STATEMENT_LEN:
             {
-                SQLUINTEGER value = *reinterpret_cast<SQLUINTEGER*>(charBuffer);
-                return py::int_(value);
+                if (actualLength >= sizeof(SQLUINTEGER)) {
+                    SQLUINTEGER value;
+                    std::memcpy(&value, buffer.data(), sizeof(SQLUINTEGER));
+                    return py::int_(value);
+                }
+                break;
             }
             
             // Boolean flags (32-bit mask)
@@ -401,18 +449,44 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
             case SQL_STATIC_CURSOR_ATTRIBUTES1:
             case SQL_STATIC_CURSOR_ATTRIBUTES2:
             {
-                SQLUINTEGER value = *reinterpret_cast<SQLUINTEGER*>(charBuffer);
-                return py::int_(value);
+                if (actualLength >= sizeof(SQLUINTEGER)) {
+                    SQLUINTEGER value;
+                    std::memcpy(&value, buffer.data(), sizeof(SQLUINTEGER));
+                    return py::int_(value);
+                }
+                break;
             }
             
-            // Handle any other types as integers
+            // Handle any other types as integers, if enough data
             default:
-                SQLUINTEGER value = *reinterpret_cast<SQLUINTEGER*>(charBuffer);
-                return py::int_(value);
+                if (actualLength >= sizeof(SQLUINTEGER)) {
+                    SQLUINTEGER value;
+                    std::memcpy(&value, buffer.data(), sizeof(SQLUINTEGER));
+                    return py::int_(value);
+                }
+                else if (actualLength >= sizeof(SQLUSMALLINT)) {
+                    SQLUSMALLINT value;
+                    std::memcpy(&value, buffer.data(), sizeof(SQLUSMALLINT));
+                    return py::int_(value);
+                }
+                // For very small integers (like bytes/chars)
+                else if (actualLength > 0) {
+                    // Try to interpret as a small integer
+                    unsigned char value;
+                    std::memcpy(&value, buffer.data(), sizeof(unsigned char));
+                    return py::int_(value);
+                }
+                break;
         }
     }
     
-    // Default return in case nothing matched
+    // If we get here and actualLength > 0, try to return as string as a last resort
+    if (actualLength > 0) {
+        return py::str(buffer.data());
+    }
+    
+    // Default return in case nothing matched or buffer is too small
+    LOG("Unable to convert result for info type {}", infoType);
     return py::none();
 }
 
