@@ -6113,34 +6113,71 @@ def test_binary_data_over_8000_bytes(cursor, db_connection):
         drop_table_if_exists(cursor, "#pytest_small_binary")
         db_connection.commit()
 
-def test_binary_data_large(cursor, db_connection):
-    """Test insertion of binary data larger than 8000 bytes with streaming support."""
+def test_varbinarymax_insert_fetch(cursor, db_connection):
+    """Test for VARBINARY(MAX) insert and fetch (streaming support) using execute per row"""
     try:
-        drop_table_if_exists(cursor, "#pytest_large_binary")
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_varbinarymax")
         cursor.execute("""
-            CREATE TABLE #pytest_large_binary (
-                id INT PRIMARY KEY,
-                large_binary VARBINARY(MAX)
+            CREATE TABLE #pytest_varbinarymax (
+                id INT,
+                binary_data VARBINARY(MAX)
             )
         """)
-        
-        # Large binary data > 8000 bytes
-        large_data = b'A' * 10000  # 10 KB
-        cursor.execute("INSERT INTO #pytest_large_binary (id, large_binary) VALUES (?, ?)", (1, large_data))
+
+        # Prepare test data
+        test_data = [
+            (2, b''),                     # Empty bytes
+            (3, b'1234567890'),           # Small binary
+            (4, b'A' * 9000),             # Large binary > 8000 (streaming)
+            (5, b'B' * 20000),            # Large binary > 8000 (streaming)
+            (6, b'C' * 8000),             # Edge case: exactly 8000 bytes
+            (7, b'D' * 8001),             # Edge case: just over 8000 bytes
+        ]
+
+        # Insert each row using execute
+        for row_id, binary in test_data:
+            cursor.execute("INSERT INTO #pytest_varbinarymax VALUES (?, ?)", (row_id, binary))
         db_connection.commit()
-        print("Inserted large binary data (>8000 bytes) successfully.")
-        
-        # commented out for now
-        # cursor.execute("SELECT large_binary FROM #pytest_large_binary WHERE id=1")
-        # result = cursor.fetchone()
-        # assert result[0] == large_data, f"Large binary data mismatch, got {len(result[0])} bytes"
-        
-        # print("Large binary data (>8000 bytes) inserted and verified successfully.")
-        
+
+        # ---------- FETCHONE TEST (multi-column) ----------
+        cursor.execute("SELECT id, binary_data FROM #pytest_varbinarymax ORDER BY id")
+        rows = []
+        while True:
+            row = cursor.fetchone()
+            if row is None:
+                break
+            rows.append(row)
+
+        assert len(rows) == len(test_data), f"Expected {len(test_data)} rows, got {len(rows)}"
+
+        # Validate each row
+        for i, (expected_id, expected_data) in enumerate(test_data):
+            fetched_id, fetched_data = rows[i]
+            assert fetched_id == expected_id, f"Row {i+1} ID mismatch: expected {expected_id}, got {fetched_id}"
+            assert isinstance(fetched_data, bytes), f"Row {i+1} expected bytes, got {type(fetched_data)}"
+            assert fetched_data == expected_data, f"Row {i+1} data mismatch"
+
+        # ---------- FETCHALL TEST ----------
+        cursor.execute("SELECT id, binary_data FROM #pytest_varbinarymax ORDER BY id")
+        all_rows = cursor.fetchall()
+        assert len(all_rows) == len(test_data)
+
+        # ---------- FETCHMANY TEST ----------
+        cursor.execute("SELECT id, binary_data FROM #pytest_varbinarymax ORDER BY id")
+        batch_size = 2
+        batches = []
+        while True:
+            batch = cursor.fetchmany(batch_size)
+            if not batch:
+                break
+            batches.extend(batch)
+        assert len(batches) == len(test_data)
+
     except Exception as e:
-        pytest.fail(f"Large binary data insertion test failed: {e}")
+        pytest.fail(f"VARBINARY(MAX) insert/fetch test failed: {e}")
     finally:
-        drop_table_if_exists(cursor, "#pytest_large_binary")
+        drop_table_if_exists(cursor, "#pytest_varbinarymax")
         db_connection.commit()
 
 
@@ -6301,6 +6338,40 @@ def test_binary_mostly_small_one_large(cursor, db_connection):
         pytest.fail(f"Binary mostly small one large test failed: {e}")
     finally:
         drop_table_if_exists(cursor, "#pytest_mixed_size_binary")
+        db_connection.commit()
+
+def test_varbinarymax_insert_fetch_null(cursor, db_connection):
+    """Test insertion and retrieval of NULL value in VARBINARY(MAX) column."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_varbinarymax_null")
+        cursor.execute("""
+            CREATE TABLE #pytest_varbinarymax_null (
+                id INT,
+                binary_data VARBINARY(MAX)
+            )
+        """)
+
+        # Insert a row with NULL for binary_data
+        cursor.execute(
+            "INSERT INTO #pytest_varbinarymax_null VALUES (?, CAST(NULL AS VARBINARY(MAX)))",
+            (1,)
+        )
+        db_connection.commit()
+
+        # Fetch the row
+        cursor.execute("SELECT id, binary_data FROM #pytest_varbinarymax_null")
+        row = cursor.fetchone()
+
+        assert row is not None, "No row fetched"
+        fetched_id, fetched_data = row
+        assert fetched_id == 1, "ID mismatch"
+        assert fetched_data is None, "Expected NULL for binary_data"
+
+    except Exception as e:
+        pytest.fail(f"VARBINARY(MAX) NULL insert/fetch test failed: {e}")
+
+    finally:
+        drop_table_if_exists(cursor, "#pytest_varbinarymax_null")
         db_connection.commit()
 
 def test_only_null_and_empty_binary(cursor, db_connection):

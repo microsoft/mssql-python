@@ -2155,45 +2155,40 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_BINARY:
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY: {
-                // TODO: revisit
-                HandleZeroColumnSizeAtFetch(columnSize);
-                std::unique_ptr<SQLCHAR[]> dataBuffer(new SQLCHAR[columnSize]);
-                SQLLEN dataLen;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_BINARY, dataBuffer.get(), columnSize, &dataLen);
+                // Use streaming for large VARBINARY (columnSize unknown or > 8000)
+                if (columnSize == SQL_NO_TOTAL || columnSize == 0 || columnSize > 8000) {
+                    LOG("Streaming LOB for column {} (VARBINARY)", i);
+                    row.append(FetchLobColumnData(hStmt, i, SQL_C_BINARY, false, true));
+                } else {
+                    // Small VARBINARY, fetch directly
+                    std::vector<SQLCHAR> dataBuffer(columnSize);
+                    SQLLEN dataLen;
+                    ret = SQLGetData_ptr(hStmt, i, SQL_C_BINARY, dataBuffer.data(), columnSize, &dataLen);
 
-                if (SQL_SUCCEEDED(ret)) {
-                    // TODO: Refactor these if's across other switches to avoid code duplication
-                    if (dataLen > 0) {
-						if (static_cast<size_t>(dataLen) <= columnSize) {
-                            row.append(py::bytes(reinterpret_cast<const char*>(
-                                dataBuffer.get()), dataLen));
-						} else {
-                            // In this case, buffer size is smaller, and data to be retrieved is longer
-                            // TODO: Revisit
+                    if (SQL_SUCCEEDED(ret)) {
+                        if (dataLen > 0) {
+                            if (static_cast<size_t>(dataLen) <= columnSize) {
+                                row.append(py::bytes(reinterpret_cast<const char*>(dataBuffer.data()), dataLen));
+                            } else {
+                                LOG("VARBINARY column {} data truncated, using streaming LOB", i);
+                                row.append(FetchLobColumnData(hStmt, i, SQL_C_BINARY, false, true));
+                            }
+                        } else if (dataLen == SQL_NULL_DATA) {
+                            row.append(py::none());
+                        } else if (dataLen == 0) {
+                            row.append(py::bytes(""));
+                        } else {
                             std::ostringstream oss;
-                            oss << "Buffer length for fetch (" << columnSize << ") is smaller, & data "
-                                << "to be retrieved is longer (" << dataLen << "). ColumnID - "
-                                << i << ", datatype - " << dataType;
+                            oss << "Unexpected negative length (" << dataLen << ") returned by SQLGetData. ColumnID=" 
+                                << i << ", dataType=" << dataType << ", bufferSize=" << columnSize;
+                            LOG("Error: {}", oss.str());
                             ThrowStdException(oss.str());
                         }
-				    } else if (dataLen == SQL_NULL_DATA) {
-					    row.append(py::none());
-                    } else if (dataLen == 0) {
-                        // Empty bytes
-                        row.append(py::bytes(""));
-                    } else if (dataLen < 0) {
-                        // This is unexpected
-                        LOG("SQLGetData returned an unexpected negative data length. "
-                            "Raising exception. Column ID - {}, Data Type - {}, Data Length - {}",
-                            i, dataType, dataLen);
-                        ThrowStdException("SQLGetData returned an unexpected negative data length");
+                    } else {
+                        LOG("Error retrieving VARBINARY data for column {}. SQLGetData rc = {}", i, ret);
+                        row.append(py::none());
                     }
-				} else {
-					LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
-						"code - {}. Returning NULL value instead",
-						i, dataType, ret);
-					row.append(py::none());
-				}
+                }
                 break;
             }
             case SQL_TINYINT: {
