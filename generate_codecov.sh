@@ -26,12 +26,18 @@ if ! python -m pip show coverage-lcov &>/dev/null; then
     python -m pip install coverage-lcov
 fi
 
+# Install LCOV → Cobertura converter (for ADO)
+if ! python -m pip show lcov-cobertura &>/dev/null; then
+    echo "[ACTION] Installing lcov-cobertura via pip"
+    python -m pip install lcov-cobertura
+fi
+
 echo "==================================="
 echo "[STEP 2] Running pytest with Python coverage"
 echo "==================================="
 
 # Cleanup old coverage
-rm -f .coverage coverage.xml python-coverage.info cpp-coverage.info total.info total.cleaned.info
+rm -f .coverage coverage.xml python-coverage.info cpp-coverage.info total.info
 rm -rf htmlcov unified-coverage
 
 # Run pytest with Python coverage (XML + HTML output)
@@ -43,7 +49,7 @@ python -m pytest -v \
   --capture=tee-sys \
   --cache-clear
 
-# Convert Python coverage to LCOV format (restrict to your repo only)
+# Convert Python coverage to LCOV format (restrict to repo only)
 echo "[ACTION] Converting Python coverage to LCOV"
 coverage lcov -o python-coverage.info --include="mssql_python/*"
 
@@ -79,13 +85,31 @@ echo "==================================="
 echo "[STEP 4] Merging Python + C++ coverage"
 echo "==================================="
 
-# Merge LCOV reports (ignore minor inconsistencies in Python LCOV export)
+# Merge LCOV reports (ignore inconsistencies in Python LCOV export)
 lcov -a python-coverage.info -a cpp-coverage.info -o total.info \
   --ignore-errors inconsistent,corrupt
 
 # Normalize paths so everything starts from mssql_python/
 echo "[ACTION] Normalizing paths in LCOV report"
-lcov --path . --base-directory . --strip-path $(pwd) -o total.cleaned.info -a total.info
+sed -i "s|$(pwd)/||g" total.info
 
 # Generate full HTML report
-genhtml total.cleaned.info --output-directory unified-coverage --quiet --title "Unified Coverage Report"
+genhtml total.info \
+  --output-directory unified-coverage \
+  --quiet \
+  --title "Unified Coverage Report" \
+  --prefix "$(pwd)"
+
+# Generate Cobertura XML (for Azure DevOps Code Coverage tab)
+lcov_cobertura total.info --output coverage.xml
+
+# Generate plain-text summary for PR comment
+lcov --summary total.info > unified-coverage/summary.txt
+
+# Append link to artifact (for GH Actions)
+echo "" >> unified-coverage/summary.txt
+echo "👉 [Download full HTML report](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}#artifacts)" >> unified-coverage/summary.txt
+
+echo "[SUCCESS] Unified coverage report generated:"
+echo " - HTML: unified-coverage/index.html"
+echo " - Cobertura XML: coverage.xml"
