@@ -1528,7 +1528,7 @@ def test_connection_exception_catching_with_connection_attributes(db_connection)
         cursor.close()
         cursor.execute("SELECT 1")  # Should raise InterfaceError on closed cursor
         pytest.fail("Should have raised an exception")
-    except db_connection.InterfaceError as e:
+    except db_connection.ProgrammingError as e:
         assert "closed" in str(e).lower(), "Error message should mention closed cursor"
     except Exception as e:
         pytest.fail(f"Should have caught InterfaceError, but got {type(e).__name__}: {e}")
@@ -1567,12 +1567,12 @@ def test_connection_exception_multi_connection_scenario(conn_str):
         try:
             cursor1.execute("SELECT 1")
             pytest.fail("Should have raised an exception")
-        except conn1.InterfaceError as e:
-            # Using conn1.InterfaceError even though conn1 is closed
+        except conn1.ProgrammingError as e:
+            # Using conn1.ProgrammingError even though conn1 is closed
             # The exception class attribute should still be accessible
             assert "closed" in str(e).lower(), "Should mention closed cursor"
         except Exception as e:
-            pytest.fail(f"Expected InterfaceError from conn1 attributes, got {type(e).__name__}: {e}")
+            pytest.fail(f"Expected ProgrammingError from conn1 attributes, got {type(e).__name__}: {e}")
         
         # Second connection should still work
         cursor2.execute("SELECT 1")

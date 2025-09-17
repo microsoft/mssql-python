@@ -20,6 +20,10 @@ from .row import Row
 
 # Constants for string handling
 MAX_INLINE_CHAR = 4000  # NVARCHAR/VARCHAR inline limit; this triggers NVARCHAR(MAX)/VARCHAR(MAX) + DAE
+SMALLMONEY_MIN = decimal.Decimal('-214748.3648')
+SMALLMONEY_MAX = decimal.Decimal('214748.3647')
+MONEY_MIN = decimal.Decimal('-922337203685477.5808')
+MONEY_MAX = decimal.Decimal('922337203685477.5807')
 
 class Cursor:
     """
@@ -286,18 +290,39 @@ class Cursor:
                 0,
                 False,
             )
-
+        
         if isinstance(param, decimal.Decimal):
-            parameters_list[i] = self._get_numeric_data(
-                param
-            )  # Replace the parameter with the dictionary
-            return (
-                ddbc_sql_const.SQL_NUMERIC.value,
-                ddbc_sql_const.SQL_C_NUMERIC.value,
-                parameters_list[i].precision,
-                parameters_list[i].scale,
-                False,
-            )
+        # Detect MONEY / SMALLMONEY range
+            if SMALLMONEY_MIN  <= param <= SMALLMONEY_MAX:
+                # smallmoney
+                parameters_list[i] = str(param)
+                return (
+                    ddbc_sql_const.SQL_VARCHAR.value,
+                    ddbc_sql_const.SQL_C_CHAR.value,
+                    len(parameters_list[i]),
+                    0,
+                    False,
+                )
+            elif MONEY_MIN <= param <= MONEY_MAX:
+                # money
+                parameters_list[i] = str(param)
+                return (
+                    ddbc_sql_const.SQL_VARCHAR.value,
+                    ddbc_sql_const.SQL_C_CHAR.value,
+                    len(parameters_list[i]),
+                    0,
+                    False,
+                )
+            else:
+                # fallback to generic numeric binding
+                parameters_list[i] = self._get_numeric_data(param)
+                return (
+                    ddbc_sql_const.SQL_NUMERIC.value,
+                    ddbc_sql_const.SQL_C_NUMERIC.value,
+                    parameters_list[i].precision,
+                    parameters_list[i].scale,
+                    False,
+                )
 
         if isinstance(param, str):
             if (
@@ -352,16 +377,16 @@ class Cursor:
             if utf16_len > MAX_INLINE_CHAR:  # Long strings -> DAE
                 if is_unicode:
                     return (
-                        ddbc_sql_const.SQL_WLONGVARCHAR.value,
+                        ddbc_sql_const.SQL_WVARCHAR.value,
                         ddbc_sql_const.SQL_C_WCHAR.value,
-                        utf16_len,
+                        0,
                         0,
                         True,
                     )
                 return (
-                    ddbc_sql_const.SQL_LONGVARCHAR.value,
+                    ddbc_sql_const.SQL_VARCHAR.value,
                     ddbc_sql_const.SQL_C_CHAR.value,
-                    len(param),
+                    0,
                     0,
                     True,
                 )
@@ -383,40 +408,25 @@ class Cursor:
                 False,
             )
         
-        if isinstance(param, bytes):
-            if len(param) > 8000:  # Assuming VARBINARY(MAX) for long byte arrays
+        if isinstance(param, (bytes, bytearray)):
+            length = len(param)
+            if length > 8000:  # Use VARBINARY(MAX) for large blobs
                 return (
                     ddbc_sql_const.SQL_VARBINARY.value,
                     ddbc_sql_const.SQL_C_BINARY.value,
-                    len(param),
                     0,
-                    False,
+                    0,
+                    True
                 )
-            return (
-                ddbc_sql_const.SQL_BINARY.value,
-                ddbc_sql_const.SQL_C_BINARY.value,
-                len(param),
-                0,
-                False,
-            )
+            else:  # Small blobs → direct binding
+                return (
+                    ddbc_sql_const.SQL_VARBINARY.value,
+                    ddbc_sql_const.SQL_C_BINARY.value,
+                    max(length, 1),
+                    0,
+                    False
+                )
 
-        if isinstance(param, bytearray):
-            if len(param) > 8000:  # Assuming VARBINARY(MAX) for long byte arrays
-                return (
-                    ddbc_sql_const.SQL_VARBINARY.value,
-                    ddbc_sql_const.SQL_C_BINARY.value,
-                    len(param),
-                    0,
-                    True,
-                )
-            return (
-                ddbc_sql_const.SQL_BINARY.value,
-                ddbc_sql_const.SQL_C_BINARY.value,
-                len(param),
-                0,
-                False,
-            )
-        
         if isinstance(param, datetime.datetime):
             return (
                 ddbc_sql_const.SQL_TIMESTAMP.value,
@@ -475,17 +485,16 @@ class Cursor:
 
     def close(self) -> None:
         """
-        Close the cursor now (rather than whenever __del__ is called).
+        Close the connection now (rather than whenever .__del__() is called).
+        Idempotent: subsequent calls have no effect and will be no-ops.
 
         The cursor will be unusable from this point forward; an InterfaceError
-        will be raised if any operation is attempted with the cursor.
-        
-        Note:
-            Unlike the current behavior, this method can be called multiple times safely.
-            Subsequent calls to close() on an already closed cursor will have no effect.
+        will be raised if any operation (other than close) is attempted with the cursor.
+        This is a deviation from pyodbc, which raises an exception if the cursor is already closed.
         """
         if self.closed:
-            return 
+            # Do nothing - not calling _check_closed() here since we want this to be idempotent
+            return
 
         # Clear messages per DBAPI
         self.messages = []
@@ -502,12 +511,12 @@ class Cursor:
         Check if the cursor is closed and raise an exception if it is.
 
         Raises:
-            InterfaceError: If the cursor is closed.
+            ProgrammingError: If the cursor is closed.
         """
         if self.closed:
-            raise InterfaceError(
-                driver_error="Operation cannot be performed: the cursor is closed.",
-                ddbc_error="Operation cannot be performed: the cursor is closed."
+            raise ProgrammingError(
+                driver_error="Operation cannot be performed: The cursor is closed.",
+                ddbc_error=""
             )
     
     def _create_parameter_types_list(self, parameter, param_info, parameters_list, i, min_val=None, max_val=None):
@@ -1187,13 +1196,19 @@ class Cursor:
         Destructor to ensure the cursor is closed when it is no longer needed.
         This is a safety net to ensure resources are cleaned up
         even if close() was not called explicitly.
+        If the cursor is already closed, it will not raise an exception during cleanup.
         """
-        if "_closed" not in self.__dict__ or not self._closed:
+        if "closed" not in self.__dict__ or not self.closed:
             try:
                 self.close()
             except Exception as e:
                 # Don't raise an exception in __del__, just log it
-                log('error', "Error during cursor cleanup in __del__: %s", e)
+                # If interpreter is shutting down, we might not have logging set up
+                import sys
+                if sys and sys._is_finalizing():
+                    # Suppress logging during interpreter shutdown
+                    return
+                log('debug', "Exception during cursor cleanup in __del__: %s", e)
 
     def scroll(self, value: int, mode: str = 'relative') -> None:
         """
