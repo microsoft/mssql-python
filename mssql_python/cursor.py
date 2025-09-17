@@ -901,6 +901,7 @@ class Cursor:
             sample_value, min_val, max_val = self._compute_column_type(column)
             modified_row = list(seq_of_parameters[0])
             modified_row[col_index] = sample_value
+            # sending original values for all rows here, we may change this if any inconsistent behavior is observed
             paraminfo = self._create_parameter_types_list(
                 sample_value, param_info, modified_row, col_index, min_val=min_val, max_val=max_val
             )
