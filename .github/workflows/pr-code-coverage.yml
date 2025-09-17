@@ -130,19 +130,52 @@ jobs:
         with:
           header: Code Coverage Report
           message: |
-            ## 📊 Code Coverage Report
+            # 📊 Code Coverage Report
             
-            **Overall Coverage:** ${{ env.COVERAGE_PERCENTAGE }} (${{ env.COVERED_LINES }}/${{ env.TOTAL_LINES }} lines)
+            <table>
+            <tr>
+            <td align="center" width="100">
             
-            ###  Files Needing Attention
+            ### 🎯 Coverage
+            ## **${{ env.COVERAGE_PERCENTAGE }}**
+            
+            </td>
+            <td width="20"></td>
+            <td>
+            
+            **📈 Lines Covered:** `${{ env.COVERED_LINES }}` out of `${{ env.TOTAL_LINES }}`  
+            **📁 Project:** `mssql-python`  
+            **🔍 Parser:** `Cobertura`  
+            
+            </td>
+            </tr>
+            </table>
+            
+            ---
+            
+            ### 📋 Files Needing Attention
             <details>
-            <summary>Files with lowest coverage (click to expand)</summary>
+            <summary>📉 <strong>Files with lowest coverage</strong> (click to expand)</summary>
+            <br>
             
-            ```
+            ```diff
             ${{ env.LOW_COVERAGE_FILES }}
             ```
+            
+            > 💡 **Tip:** Focus on improving coverage for these files to boost overall project health
+            
             </details>
             
             ---
-            ✅ **Azure DevOps Build:** [View Full Report](${{ env.ADO_URL }}&view=codecoverage-tab)  
-            📊 **Detailed Coverage:** [Browse Coverage Details](${{ env.ADO_URL }}&view=codecoverage-tab)
+            
+            <div align="center">
+            
+            ### 🔗 Quick Links
+            
+            | � **Build Status** | 📊 **Coverage Details** |
+            |:---:|:---:|
+            | [View Azure DevOps Build](${{ env.ADO_URL }}) | [Browse Full Coverage Report](${{ env.ADO_URL }}&view=codecoverage-tab) |
+            
+            </div>
+            
+            <sub>🤖 This report was automatically generated from Azure DevOps build artifacts</sub>
