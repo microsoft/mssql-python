@@ -777,6 +777,7 @@ class Cursor:
 # Executing a new statement. Reset is_stmt_prepared to false
             self.is_stmt_prepared = [False]
 
+
         log('debug', "Executing query: %s", operation)
         for i, param in enumerate(parameters):
             log('debug',
@@ -817,19 +818,23 @@ class Cursor:
     
         self.last_executed_stmt = operation
 
-        # Update rowcount after execution
+        # Update rowcount after execution (before buffering)
         # TODO: rowcount return code from SQL needs to be handled
-        self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
+        initial_rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
 
         # Initialize description after execution
         self._initialize_description()
         
-        # Reset rownumber for new result set (only for SELECT statements)
+        # Buffer intermediate results automatically (pyODBC-style approach)
+        self._buffer_intermediate_results()
+        
+        # Set final rowcount based on result type (preserve original rowcount for non-SELECT)
         if self.description:  # If we have column descriptions, it's likely a SELECT
             self.rowcount = -1
             self._reset_rownumber()
         else:
-            self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
+            # For non-SELECT statements (INSERT/UPDATE/DELETE), preserve the original rowcount
+            self.rowcount = initial_rowcount
             self._clear_rownumber()
 
         # Return self for method chaining
@@ -1448,3 +1453,46 @@ class Cursor:
             result_rows.append(row)
         
         return result_rows
+    
+    def _buffer_intermediate_results(self):
+        """
+        Buffer intermediate results automatically - pyODBC approach.
+        
+        This method skips "rows affected" messages and empty result sets,
+        positioning the cursor on the first meaningful result set that contains
+        actual data. This eliminates the need for SET NOCOUNT ON detection.
+        
+        Similar to how pyODBC handles multiple result sets internally.
+        """
+        try:
+            # Keep advancing through result sets until we find one with actual data
+            # or reach the end
+            while True:
+                # Check if current result set has actual columns/data
+                if self.description and len(self.description) > 0:
+                    # We have a meaningful result set with columns, stop here
+                    break
+                
+                # Try to advance to next result set
+                try:
+                    ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt)
+                    
+                    # If no more result sets, we're done
+                    if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                        break
+                    
+                    # Check for errors
+                    check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+                    
+                    # Update description for the new result set
+                    self._initialize_description()
+                    
+                except Exception:
+                    # If we can't advance further, stop
+                    break
+                    
+        except Exception:
+            # If anything goes wrong during buffering, continue with current state
+            # This ensures we don't break existing functionality
+            pass
+    
