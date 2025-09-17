@@ -24,8 +24,8 @@ jobs:
           echo "Waiting for Azure DevOps build for PR #$PR_NUMBER ..."
 
           for i in {1..100}; do
-            BUILD_INFO=$(curl -s "$API_URL" | jq -c --arg PR "$PR_NUMBER" '.value[] | select(.triggerInfo["pr.number"]==$PR) | .' | head -n 1)
-            if [[ -n "$BUILD_INFO" ]]; then
+            BUILD_INFO=$(curl -s "$API_URL" | jq -c --arg PR "$PR_NUMBER" '[.value[] | select(.triggerInfo["pr.number"]==$PR)][0] // empty')
+            if [[ -n "$BUILD_INFO" && "$BUILD_INFO" != "null" ]]; then
               STATUS=$(echo "$BUILD_INFO" | jq -r .status)
               RESULT=$(echo "$BUILD_INFO" | jq -r .result)
               BUILD_ID=$(echo "$BUILD_INFO" | jq -r .id)
