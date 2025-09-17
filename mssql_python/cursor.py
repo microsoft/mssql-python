@@ -1340,6 +1340,24 @@ class Cursor:
                 sql_type, column_size, decimal_digits = self._inputsizes[col_index]
                 c_type = self._get_c_type_for_sql_type(sql_type)
                 
+                # For string types (especially WVARCHAR), we need to ensure column_size is large enough
+                # for all values in this column to avoid truncation on Unix/Mac
+                if sql_type in SQLTypes.get_string_types():
+                    # Extract all values for this column to find the max length
+                    column_values = []
+                    for row in seq_of_parameters:
+                        if isinstance(row[col_index], str):
+                            column_values.append(row[col_index])
+                    
+                    if column_values:
+                        # Calculate max length needed and add 1 for null terminator
+                        max_len = max(len(s) for s in column_values) + 1
+                        
+                        # If column_size is 0 (unlimited) or less than what we need, use the calculated size
+                        if column_size == 0 or column_size < max_len:
+                            column_size = max_len
+                            log('debug', f"Adjusted column size for parameter {col_index} to {column_size}")
+                
                 paraminfo = param_info()
                 paraminfo.paramCType = c_type
                 paraminfo.paramSQLType = sql_type
