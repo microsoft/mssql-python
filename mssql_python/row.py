@@ -15,7 +15,7 @@ class Row:
     
     def __init__(self, cursor, description, values, column_map=None):
         """
-        Initialize a Row object with values and cursor description.
+        Initialize a Row object with values and description.
         
         Args:
             cursor: The cursor object
