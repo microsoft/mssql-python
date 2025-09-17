@@ -80,7 +80,4 @@ jobs:
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: Unified Coverage Report
-          message: |
-            $(cat unified-coverage/summary.txt)
-
-            👉 [Download full HTML report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts)
+          path: unified-coverage/summary.txt
