@@ -1,4 +1,7 @@
 name: PR Validation (macOS with Unified Coverage)
+permissions:
+  contents: read
+  pull-requests: write
 
 on:
   pull_request:
