@@ -97,19 +97,7 @@ sed -i "s|$(pwd)/||g" total.info
 genhtml total.info \
   --output-directory unified-coverage \
   --quiet \
-  --title "Unified Coverage Report" \
-  --prefix "$(pwd)"
+  --title "Unified Coverage Report"
 
 # Generate Cobertura XML (for Azure DevOps Code Coverage tab)
 lcov_cobertura total.info --output coverage.xml
-
-# Generate plain-text summary for PR comment
-lcov --summary total.info > unified-coverage/summary.txt
-
-# Append link to artifact (for GH Actions)
-echo "" >> unified-coverage/summary.txt
-echo "👉 [Download full HTML report](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}#artifacts)" >> unified-coverage/summary.txt
-
-echo "[SUCCESS] Unified coverage report generated:"
-echo " - HTML: unified-coverage/index.html"
-echo " - Cobertura XML: coverage.xml"
