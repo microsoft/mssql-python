@@ -575,7 +575,6 @@ class Cursor:
         Returns:
             paraminfo.
         """
-        import decimal
         
         paraminfo = param_info()
         
@@ -615,7 +614,12 @@ class Cursor:
                     if column_size > 0 and len(parameter) > column_size:
                         warnings.warn(f"String parameter exceeds specified size ({len(parameter)} > {column_size}). "
                                      "Data may be truncated.", Warning)
-    
+                    # Fix for cross-platform compatibility: ensure column_size is always sufficient
+                    elif column_size == 0 or column_size < len(parameter):
+                        # If column_size is 0 or less than the actual string length, use the string length
+                        # This ensures strings won't be truncated on Unix/Mac platforms
+                        column_size = max(column_size, len(parameter) + 1)  # Add 1 for null terminator
+
             # Sanitize precision/scale for numeric types
             if sql_type in (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value):
                 column_size = max(1, min(int(column_size) if column_size > 0 else 18, 38))
