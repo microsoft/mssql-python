@@ -5,23 +5,19 @@ echo "==================================="
 echo "[STEP 1] Installing dependencies"
 echo "==================================="
 
-# Ensure Homebrew exists
-if ! command -v brew &>/dev/null; then
-    echo "[ERROR] Homebrew is required. Install from https://brew.sh/"
-    exit 1
-fi
+# Update package list
+sudo apt-get update
 
 # Install LLVM (for llvm-profdata, llvm-cov)
 if ! command -v llvm-profdata &>/dev/null; then
-    echo "[ACTION] Installing LLVM via Homebrew"
-    brew install llvm
+    echo "[ACTION] Installing LLVM via apt"
+    sudo apt-get install -y llvm
 fi
-export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
 
 # Install lcov (provides lcov + genhtml)
 if ! command -v genhtml &>/dev/null; then
-    echo "[ACTION] Installing lcov via Homebrew"
-    brew install lcov
+    echo "[ACTION] Installing lcov via apt"
+    sudo apt-get install -y lcov
 fi
 
 # Install Python plugin for LCOV export
@@ -63,20 +59,19 @@ fi
 
 llvm-profdata merge -sparse default.profraw -o default.profdata
 
-# Find the pybind .so (assuming universal2 build)
-PYBIND_SO=$(find mssql_python -name "*.so" | grep "universal2" | head -n 1)
+# Find the pybind .so file (Linux build)
+PYBIND_SO=$(find mssql_python -name "*.so" | head -n 1)
 if [ -z "$PYBIND_SO" ]; then
-    echo "[ERROR] Could not find pybind .so (universal2 build)."
+    echo "[ERROR] Could not find pybind .so"
     exit 1
 fi
 
 echo "[INFO] Using pybind module: $PYBIND_SO"
 
-# Export C++ coverage, excluding Python headers, pybind11, and Homebrew includes
+# Export C++ coverage, excluding Python headers, pybind11, and system includes
 llvm-cov export "$PYBIND_SO" \
   -instr-profile=default.profdata \
-  -arch arm64 \
-  -ignore-filename-regex='(python3\.13|cpython|pybind11|homebrew)' \
+  -ignore-filename-regex='(python3\.[0-9]+|cpython|pybind11|/usr/include/|/usr/lib/)' \
   -format=lcov > cpp-coverage.info
 
 echo "==================================="
