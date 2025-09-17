@@ -56,8 +56,11 @@ echo "[DIAGNOSTIC] Changed to build directory: ${BUILD_DIR}"
 # Configure CMake (architecture settings handled in CMakeLists.txt)
 echo "[DIAGNOSTIC] Running CMake configure"
 if [[ "$OS" == "macOS" ]]; then
-    echo "[DIAGNOSTIC] Configuring for macOS (universal2 is set automatically)"
-    cmake -DMACOS_STRING_FIX=ON "${SOURCE_DIR}"
+    echo "[ACTION] Configuring for macOS with Clang coverage instrumentation"
+    cmake -DMACOS_STRING_FIX=ON \
+          -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
+          -DCMAKE_C_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
+          "${SOURCE_DIR}"
 else
     echo "[DIAGNOSTIC] Configuring for Linux with architecture: $DETECTED_ARCH"
     cmake -DARCHITECTURE="$DETECTED_ARCH" "${SOURCE_DIR}"

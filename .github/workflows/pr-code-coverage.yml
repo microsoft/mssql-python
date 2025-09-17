@@ -1,0 +1,85 @@
+name: PR Validation (macOS with Unified Coverage)
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  pytest-macos:
+    name: macOS Unified Coverage
+    runs-on: macos-latest
+
+    env:
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install CMake
+        run: |
+          brew update
+          brew uninstall cmake --ignore-dependencies || echo "CMake not installed"
+          brew install cmake
+
+      - name: Install and start Colima-based Docker
+        run: |
+          brew install docker colima
+          colima start --cpu 4 --memory 8 --disk 50
+          docker context use colima >/dev/null || true
+          docker version
+          docker ps
+
+      - name: Start SQL Server container
+        run: |
+          docker pull mcr.microsoft.com/mssql/server:2022-latest
+          docker run \
+            --name sqlserver \
+            -e ACCEPT_EULA=Y \
+            -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+            -p 1433:1433 \
+            -d mcr.microsoft.com/mssql/server:2022-latest
+
+          # Wait until SQL Server is ready
+          for i in {1..30}; do
+            docker exec sqlserver \
+              /opt/mssql-tools18/bin/sqlcmd \
+              -S localhost \
+              -U SA \
+              -P "$DB_PASSWORD" \
+              -C -Q "SELECT 1" && break
+            sleep 2
+          done
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build pybind bindings
+        run: |
+          cd mssql_python/pybind
+          ./build.sh
+
+      - name: Run pytest (with raw coverage)
+        run: |
+          echo "Running pytest..."
+          python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
+
+      - name: Generate unified coverage (Python + C++)
+        run: |
+          chmod +x ./generate_codecov.sh
+          ./generate_codecov.sh
+
+      - name: Comment unified coverage on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: unified-coverage/index.html
+          header: Unified Coverage Report
