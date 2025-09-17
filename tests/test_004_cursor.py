@@ -6909,6 +6909,147 @@ def test_money_smallmoney_invalid_values(cursor, db_connection):
         drop_table_if_exists(cursor, "dbo.money_test")
         db_connection.commit()
 
+def test_string_vs_datetime_parameter_behavior(cursor, db_connection):
+    """
+    Test the difference between using string parameters vs datetime object parameters.
+    
+    This test demonstrates that:
+    1. String parameters like '2025-08-12' are treated as literal strings
+    2. Datetime objects like date(2025, 8, 12) are properly handled as datetime types
+    3. Both approaches work correctly in their intended contexts
+    """
+    try:
+        # Create test table with both string and date columns
+        drop_table_if_exists(cursor, "#pytest_string_vs_datetime")
+        cursor.execute("""
+            CREATE TABLE #pytest_string_vs_datetime (
+                id INT PRIMARY KEY,
+                string_col NVARCHAR(50),
+                date_col DATE
+            )
+        """)
+        db_connection.commit()
+        
+        # Test 1: Insert using actual datetime objects (should work)
+        actual_date = date(2025, 8, 12)
+        cursor.execute("INSERT INTO #pytest_string_vs_datetime (id, string_col, date_col) VALUES (?, ?, ?)", 
+                      (1, "test_string", actual_date))
+        db_connection.commit()
+        
+        # Test 2: Insert string into string column (should work)
+        date_string = '2025-08-12'
+        cursor.execute("INSERT INTO #pytest_string_vs_datetime (id, string_col, date_col) VALUES (?, ?, ?)", 
+                      (2, date_string, actual_date))
+        db_connection.commit()
+        
+        # Test 3: Query using string parameter (should work as string comparison)
+        cursor.execute("SELECT id FROM #pytest_string_vs_datetime WHERE string_col = ?", (date_string,))
+        rows = cursor.fetchall()
+        assert len(rows) == 1, f"Expected 1 row for string comparison, got {len(rows)}"
+        assert rows[0][0] == 2, "Should find row 2 with matching string"
+        
+        # Test 4: Query using datetime object parameter (should work as date comparison)
+        cursor.execute("SELECT id FROM #pytest_string_vs_datetime WHERE date_col = ?", (actual_date,))
+        rows = cursor.fetchall()
+        assert len(rows) == 2, f"Expected 2 rows for date comparison, got {len(rows)}"
+        
+        # Test 5: Verify string functions work with string parameters (the original bug)
+        cursor.execute("SELECT id FROM #pytest_string_vs_datetime WHERE RIGHT(string_col, 10) = ?", (date_string,))
+        rows = cursor.fetchall()
+        assert len(rows) == 1, f"RIGHT() function should work with string parameter, got {len(rows)} rows"
+        
+    except Exception as e:
+        pytest.fail(f"String vs datetime parameter behavior test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_string_vs_datetime")
+        db_connection.commit()
+
+def test_string_parameters_no_conversion_error(cursor, db_connection):
+    """
+    Test that string parameters that look like dates do NOT get automatically converted.
+    
+    This reproduces the exact scenario from the original bug report.
+    """
+    try:
+        # Create table similar to original bug report
+        drop_table_if_exists(cursor, "#pytest_string_no_conversion")
+        cursor.execute("CREATE TABLE #pytest_string_no_conversion (id INT, IncFileName NVARCHAR(100))")
+        db_connection.commit()
+        
+        # Insert test data
+        cursor.execute("INSERT INTO #pytest_string_no_conversion VALUES (1, 'order_data_2025-08-12')")
+        cursor.execute("INSERT INTO #pytest_string_no_conversion VALUES (2, 'order_data_2025-08-13')")
+        db_connection.commit()
+        
+        # The exact failing case from the bug report - should now work
+        date_str = '2025-08-12'
+        cursor.execute("SELECT IncFileName FROM #pytest_string_no_conversion WHERE RIGHT(IncFileName,10) = ?", 
+                      (str(date_str),))
+        rows = cursor.fetchall()
+        
+        # Should find exactly one match
+        assert len(rows) == 1, f"Expected 1 matching row, got {len(rows)}"
+        assert rows[0][0] == "order_data_2025-08-12", "Should find the correct filename"
+        
+    except Exception as e:
+        pytest.fail(f"String parameter no conversion error test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_string_no_conversion")
+        db_connection.commit()
+
+def test_datetime_objects_still_work(cursor, db_connection):
+    """
+    Test that actual datetime objects still work correctly after our fix.
+    
+    This ensures backward compatibility - existing code using datetime objects
+    should continue to work exactly as before.
+    """
+    try:
+        # Create table with various datetime column types
+        drop_table_if_exists(cursor, "#pytest_datetime_still_works")
+        cursor.execute("""
+            CREATE TABLE #pytest_datetime_still_works (
+                id INT PRIMARY KEY,
+                date_col DATE,
+                datetime_col DATETIME,
+                time_col TIME
+            )
+        """)
+        db_connection.commit()
+        
+        # Test with actual datetime objects (should work as before)
+        test_date = date(2025, 8, 12)
+        test_datetime = datetime(2025, 8, 12, 14, 30, 0)
+        test_time = time(14, 30, 0)
+        
+        # INSERT using datetime objects
+        cursor.execute("""
+            INSERT INTO #pytest_datetime_still_works 
+            (id, date_col, datetime_col, time_col) 
+            VALUES (?, ?, ?, ?)
+        """, (1, test_date, test_datetime, test_time))
+        db_connection.commit()
+        
+        # SELECT using datetime objects as parameters
+        cursor.execute("SELECT id FROM #pytest_datetime_still_works WHERE date_col = ?", (test_date,))
+        rows = cursor.fetchall()
+        assert len(rows) == 1, f"Datetime object parameter should work, got {len(rows)} rows"
+        
+        cursor.execute("SELECT id FROM #pytest_datetime_still_works WHERE time_col = ?", (test_time,))
+        rows = cursor.fetchall()
+        assert len(rows) == 1, f"Time object parameter should work, got {len(rows)} rows"
+        
+        # Verify the data was stored correctly
+        cursor.execute("SELECT date_col, datetime_col, time_col FROM #pytest_datetime_still_works WHERE id = 1")
+        row = cursor.fetchone()
+        assert row is not None, "Should retrieve the inserted datetime data"
+        
+    except Exception as e:
+        pytest.fail(f"Datetime objects still work test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_datetime_still_works")
+        db_connection.commit()
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
