@@ -23,23 +23,21 @@ jobs:
 
           echo "Waiting for Azure DevOps build for PR #$PR_NUMBER ..."
 
-          for i in {1..60}; do
-            BUILD_INFO=$(curl -s "$API_URL" | jq -c --arg PR "$PR_NUMBER" '.value[] | select(.triggerInfo["pr.number"]==$PR) | .')
+          for i in {1..100}; do
+            BUILD_INFO=$(curl -s "$API_URL" | jq -c --arg PR "$PR_NUMBER" '.value[] | select(.triggerInfo["pr.number"]==$PR) | .' | head -n 1)
             if [[ -n "$BUILD_INFO" ]]; then
               STATUS=$(echo "$BUILD_INFO" | jq -r .status)
               RESULT=$(echo "$BUILD_INFO" | jq -r .result)
               BUILD_ID=$(echo "$BUILD_INFO" | jq -r .id)
               WEB_URL=$(echo "$BUILD_INFO" | jq -r ._links.web.href)
 
-              echo "Found build $BUILD_ID, status=$STATUS, result=$RESULT"
-
               if [[ "$STATUS" == "completed" ]]; then
                 if [[ "$RESULT" == "succeeded" ]]; then
-                  echo "✅ Build succeeded: $WEB_URL"
+                  echo "✅ Build $BUILD_ID succeeded: $WEB_URL"
                   echo "ADO_URL=$WEB_URL" >> $GITHUB_ENV
                   break
                 else
-                  echo "❌ Build failed"
+                  echo "❌ Build $BUILD_ID failed"
                   exit 1
                 fi
               fi
