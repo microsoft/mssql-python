@@ -24,12 +24,29 @@ jobs:
           echo "Waiting for Azure DevOps build for PR #$PR_NUMBER ..."
 
           for i in {1..100}; do
-            BUILD_INFO=$(curl -s "$API_URL" | jq -c --arg PR "$PR_NUMBER" '[.value[] | select(.triggerInfo["pr.number"]==$PR)][0] // empty')
-            if [[ -n "$BUILD_INFO" && "$BUILD_INFO" != "null" ]]; then
-              STATUS=$(echo "$BUILD_INFO" | jq -r .status)
-              RESULT=$(echo "$BUILD_INFO" | jq -r .result)
-              BUILD_ID=$(echo "$BUILD_INFO" | jq -r .id)
-              WEB_URL=$(echo "$BUILD_INFO" | jq -r ._links.web.href)
+            echo "Attempt $i/100: Checking build status..."
+            
+            # Fetch API response with error handling
+            API_RESPONSE=$(curl -s "$API_URL")
+            
+            # Check if response is valid JSON
+            if ! echo "$API_RESPONSE" | jq . >/dev/null 2>&1; then
+              echo "❌ Invalid JSON response from Azure DevOps API"
+              echo "Response received: $API_RESPONSE"
+              echo "This usually indicates the Azure DevOps pipeline has failed or API is unavailable"
+              exit 1
+            fi
+            
+            # Parse build info safely
+            BUILD_INFO=$(echo "$API_RESPONSE" | jq -c --arg PR "$PR_NUMBER" '[.value[]? | select(.triggerInfo["pr.number"]?==$PR)] | .[0] // empty' 2>/dev/null)
+            
+            if [[ -n "$BUILD_INFO" && "$BUILD_INFO" != "null" && "$BUILD_INFO" != "empty" ]]; then
+              STATUS=$(echo "$BUILD_INFO" | jq -r '.status // "unknown"')
+              RESULT=$(echo "$BUILD_INFO" | jq -r '.result // "unknown"')
+              BUILD_ID=$(echo "$BUILD_INFO" | jq -r '.id // "unknown"')
+              WEB_URL=$(echo "$BUILD_INFO" | jq -r '._links.web.href // "unknown"')
+              
+              echo "Found build: ID=$BUILD_ID, Status=$STATUS, Result=$RESULT"
 
               if [[ "$STATUS" == "completed" ]]; then
                 if [[ "$RESULT" == "succeeded" ]]; then
@@ -38,13 +55,24 @@ jobs:
                   echo "BUILD_ID=$BUILD_ID" >> $GITHUB_ENV
                   break
                 else
-                  echo "❌ Build $BUILD_ID failed"
+                  echo "❌ Azure DevOps build $BUILD_ID failed with result: $RESULT"
+                  echo "🔗 Build URL: $WEB_URL"
+                  echo "This coverage workflow cannot proceed when the main build fails."
                   exit 1
                 fi
+              else
+                echo "⏳ Build $BUILD_ID is still $STATUS..."
               fi
+            else
+              echo "⏳ No build found for PR #$PR_NUMBER yet... (attempt $i/100)"
             fi
 
-            echo "⏳ Build not ready yet... retrying in 20s"
+            if [[ $i -eq 100 ]]; then
+              echo "❌ Timeout: No build found for PR #$PR_NUMBER after 100 attempts"
+              echo "This may indicate the Azure DevOps pipeline was not triggered or failed to start"
+              exit 1
+            fi
+
             sleep 20
           done
 
@@ -54,15 +82,34 @@ jobs:
           ARTIFACTS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID/artifacts?api-version=7.1-preview.5"
           
           echo "📥 Fetching artifacts for build $BUILD_ID..."
-          ARTIFACTS=$(curl -s "$ARTIFACTS_URL")
+          
+          # Fetch artifacts with error handling
+          ARTIFACTS_RESPONSE=$(curl -s "$ARTIFACTS_URL")
+          
+          # Check if response is valid JSON
+          if ! echo "$ARTIFACTS_RESPONSE" | jq . >/dev/null 2>&1; then
+            echo "❌ Invalid JSON response from artifacts API"
+            echo "Response received: $ARTIFACTS_RESPONSE"
+            echo "This indicates the Azure DevOps build may not have completed successfully or artifacts are not available"
+            exit 1
+          fi
           
           # Find the coverage report artifact
-          COVERAGE_ARTIFACT=$(echo "$ARTIFACTS" | jq -r '.value[] | select(.name | test("Code Coverage Report")) | .resource.downloadUrl')
+          COVERAGE_ARTIFACT=$(echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]? | select(.name | test("Code Coverage Report")) | .resource.downloadUrl // empty' 2>/dev/null)
           
-          if [[ -n "$COVERAGE_ARTIFACT" && "$COVERAGE_ARTIFACT" != "null" ]]; then
+          if [[ -n "$COVERAGE_ARTIFACT" && "$COVERAGE_ARTIFACT" != "null" && "$COVERAGE_ARTIFACT" != "empty" ]]; then
             echo "📊 Downloading coverage report..."
-            curl -L "$COVERAGE_ARTIFACT" -o coverage-report.zip
-            unzip -q coverage-report.zip
+            if ! curl -L "$COVERAGE_ARTIFACT" -o coverage-report.zip --fail --silent; then
+              echo "❌ Failed to download coverage report from Azure DevOps"
+              echo "This indicates the coverage artifacts may not be available or accessible"
+              exit 1
+            fi
+            
+            if ! unzip -q coverage-report.zip; then
+              echo "❌ Failed to extract coverage report zip file"
+              echo "The downloaded artifact may be corrupted"
+              exit 1
+            fi
             
             # Find the main index.html file
             INDEX_FILE=$(find . -name "index.html" -path "*/Code Coverage Report*" | head -1)
@@ -90,9 +137,16 @@ jobs:
               echo "COVERED_LINES=$COVERED_LINES"
               echo "TOTAL_LINES=$TOTAL_LINES"
               
+              # Validate that we got the essential data
+              if [[ -z "$OVERALL_PERCENTAGE" ]]; then
+                echo "❌ Could not extract coverage percentage from the report"
+                echo "The coverage report format may have changed or be incomplete"
+                exit 1
+              fi
+              
               echo "COVERAGE_PERCENTAGE=$OVERALL_PERCENTAGE" >> $GITHUB_ENV
-              echo "COVERED_LINES=$COVERED_LINES" >> $GITHUB_ENV
-              echo "TOTAL_LINES=$TOTAL_LINES" >> $GITHUB_ENV
+              echo "COVERED_LINES=${COVERED_LINES:-N/A}" >> $GITHUB_ENV
+              echo "TOTAL_LINES=${TOTAL_LINES:-N/A}" >> $GITHUB_ENV
               
               # Extract top files with low coverage - improved approach
               echo "📋 Extracting file-level coverage..."
@@ -112,16 +166,21 @@ jobs:
               fi
               
               echo "LOW_COVERAGE_FILES<<EOF" >> $GITHUB_ENV
-              echo "$LOW_COVERAGE_FILES" >> $GITHUB_ENV
+              echo "${LOW_COVERAGE_FILES:-No detailed file data available}" >> $GITHUB_ENV
               echo "EOF" >> $GITHUB_ENV
               
               echo "✅ Coverage data extracted successfully"
             else
               echo "❌ Could not find index.html in coverage report"
+              echo "Available files in the coverage report:"
+              find . -name "*.html" | head -10 || echo "No HTML files found"
               exit 1
             fi
           else
             echo "❌ Could not find coverage report artifact"
+            echo "Available artifacts from the build:"
+            echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]?.name // "No artifacts found"' 2>/dev/null || echo "Could not parse artifacts list"
+            echo "This indicates the Azure DevOps build may not have generated coverage reports"
             exit 1
           fi
 
