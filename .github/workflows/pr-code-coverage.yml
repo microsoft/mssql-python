@@ -75,8 +75,8 @@ jobs:
 
       - name: Generate unified coverage (Python + C++)
         run: |
-          chmod +x ./generate_universal_codecoverage.sh
-          ./generate_universal_codecoverage.sh
+          chmod +x ./generate_codecov.sh
+          ./generate_codecov.sh
           # Create summary text file from LCOV report
           genhtml total.info \
             --output-directory unified-coverage \
