@@ -1553,20 +1553,3 @@ jobs:
       reportDirectory: 'unified-coverage'
       failIfCoverageEmpty: true
     displayName: 'Publish unified code coverage results'
-
-  - task: PublishBuildArtifacts@1
-    condition: succeededOrFailed()
-    inputs:
-      PathtoPublish: 'unified-coverage'
-      ArtifactName: 'UnifiedCoverageHTML'
-      publishLocation: 'Container'
-    displayName: 'Publish unified coverage HTML report'
-
-  - task: PublishBuildArtifacts@1
-    condition: succeededOrFailed()
-    inputs:
-      PathtoPublish: 'total.info'
-      ArtifactName: 'UnifiedCoverageLCOV'
-      publishLocation: 'Container'
-    displayName: 'Publish unified coverage LCOV data'
-    continueOnError: true

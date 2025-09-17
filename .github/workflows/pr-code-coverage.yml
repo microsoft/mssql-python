@@ -35,6 +35,7 @@ jobs:
                 if [[ "$RESULT" == "succeeded" ]]; then
                   echo "✅ Build $BUILD_ID succeeded: $WEB_URL"
                   echo "ADO_URL=$WEB_URL" >> $GITHUB_ENV
+                  echo "BUILD_ID=$BUILD_ID" >> $GITHUB_ENV
                   break
                 else
                   echo "❌ Build $BUILD_ID failed"
@@ -47,10 +48,76 @@ jobs:
             sleep 20
           done
 
-      - name: Comment ADO coverage link on PR
+      - name: Download and parse coverage report
+        run: |
+          BUILD_ID=${{ env.BUILD_ID }}
+          ARTIFACTS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID/artifacts?api-version=7.1-preview.5"
+          
+          echo "📥 Fetching artifacts for build $BUILD_ID..."
+          ARTIFACTS=$(curl -s "$ARTIFACTS_URL")
+          
+          # Find the coverage report artifact
+          COVERAGE_ARTIFACT=$(echo "$ARTIFACTS" | jq -r '.value[] | select(.name | test("Code Coverage Report")) | .resource.downloadUrl')
+          
+          if [[ -n "$COVERAGE_ARTIFACT" && "$COVERAGE_ARTIFACT" != "null" ]]; then
+            echo "📊 Downloading coverage report..."
+            curl -L "$COVERAGE_ARTIFACT" -o coverage-report.zip
+            unzip -q coverage-report.zip
+            
+            # Find the main index.html file
+            INDEX_FILE=$(find . -name "index.html" -path "*/Code Coverage Report*" | head -1)
+            
+            if [[ -f "$INDEX_FILE" ]]; then
+              echo "🔍 Parsing coverage data from $INDEX_FILE..."
+              
+              # Extract coverage metrics using grep and sed
+              OVERALL_PERCENTAGE=$(grep -o 'card-header">Line coverage.*cardpercentagebar[0-9]*">[0-9]*%' "$INDEX_FILE" | grep -o '[0-9]*%' | head -1)
+              COVERED_LINES=$(grep -o 'Covered lines:.*title="[0-9]*"' "$INDEX_FILE" | grep -o '[0-9]*' | tail -1)
+              TOTAL_LINES=$(grep -o 'Coverable lines:.*title="[0-9]*"' "$INDEX_FILE" | grep -o '[0-9]*' | tail -1)
+              
+              echo "COVERAGE_PERCENTAGE=$OVERALL_PERCENTAGE" >> $GITHUB_ENV
+              echo "COVERED_LINES=$COVERED_LINES" >> $GITHUB_ENV
+              echo "TOTAL_LINES=$TOTAL_LINES" >> $GITHUB_ENV
+              
+              # Extract top files with low coverage
+              echo "📋 Extracting file-level coverage..."
+              LOW_COVERAGE_FILES=$(grep -o '<a href="[^"]*">[^<]*</a></td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td title="[^"]*" class="right">[0-9]*\.[0-9]*%' "$INDEX_FILE" | sed 's/<a href="[^"]*">\([^<]*\)<\/a><\/td><td class="right">[^<]*<\/td><td class="right">[^<]*<\/td><td class="right">[^<]*<\/td><td class="right">[^<]*<\/td><td title="[^"]*" class="right">\([0-9]*\.[0-9]*\)%/\1: \2%/' | sort -t: -k2 -n | head -5)
+              
+              echo "LOW_COVERAGE_FILES<<EOF" >> $GITHUB_ENV
+              echo "$LOW_COVERAGE_FILES" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
+              
+              echo "✅ Coverage data extracted successfully"
+            else
+              echo "❌ Could not find index.html in coverage report"
+              exit 1
+            fi
+          else
+            echo "❌ Could not find coverage report artifact"
+            exit 1
+          fi
+
+      - name: Comment coverage summary on PR
         uses: marocchino/sticky-pull-request-comment@v2
         with:
-          header: Azure DevOps Coverage Report
+          header: Code Coverage Report
           message: |
-            ✅ Azure DevOps build completed successfully.  
-            👉 [View Full Coverage Report](${{ env.ADO_URL }}&view=codecoverage-tab)
+            ## 📊 Code Coverage Report
+            
+            **Overall Coverage:** ${{ env.COVERAGE_PERCENTAGE }} (${{ env.COVERED_LINES }}/${{ env.TOTAL_LINES }} lines)
+            
+            ### 📈 Coverage Status
+            ${{ env.COVERAGE_PERCENTAGE >= '80' && '🟢 **Good Coverage**' || env.COVERAGE_PERCENTAGE >= '60' && '🟡 **Moderate Coverage**' || '🔴 **Low Coverage**' }}
+            
+            ### 📋 Files Needing Attention
+            <details>
+            <summary>Files with lowest coverage (click to expand)</summary>
+            
+            ```
+            ${{ env.LOW_COVERAGE_FILES }}
+            ```
+            </details>
+            
+            ---
+            ✅ **Azure DevOps Build:** [View Full Report](${{ env.ADO_URL }}&view=codecoverage-tab)  
+            📊 **Detailed Coverage:** [Browse Coverage Details](${{ env.ADO_URL }}&view=codecoverage-tab)
