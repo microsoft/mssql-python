@@ -26,6 +26,13 @@ else
     exit 1
 fi
 
+# Check for coverage mode and set flags accordingly
+COVERAGE_MODE=false
+if [[ "${1:-}" == "codecov" || "${1:-}" == "--coverage" ]]; then
+    COVERAGE_MODE=true
+    echo "[MODE] Enabling Clang coverage instrumentation"
+fi
+
 # Get Python version from active interpreter
 PYTAG=$(python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')")
 
@@ -53,9 +60,9 @@ mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 echo "[DIAGNOSTIC] Changed to build directory: ${BUILD_DIR}"
 
-# Configure CMake (with Clang coverage instrumentation on Linux)
+# Configure CMake (with Clang coverage instrumentation on Linux only - codecov is not supported for macOS)
 echo "[DIAGNOSTIC] Running CMake configure"
-if [[ "$OS" == "Linux" ]]; then
+if [[ "$COVERAGE_MODE" == "true" && "$OS" == "Linux" ]]; then
     echo "[ACTION] Configuring for Linux with Clang coverage instrumentation"
     cmake -DARCHITECTURE="$DETECTED_ARCH" \
           -DCMAKE_C_COMPILER=clang \
@@ -64,11 +71,13 @@ if [[ "$OS" == "Linux" ]]; then
           -DCMAKE_C_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
           "${SOURCE_DIR}"
 else
-    echo "[ACTION] Configuring for macOS with Clang coverage instrumentation"
-    cmake -DMACOS_STRING_FIX=ON \
-          -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
-          -DCMAKE_C_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
-          "${SOURCE_DIR}"
+    if [[ "$OS" == "macOS" ]]; then
+        echo "[ACTION] Configuring for macOS (default build)"
+        cmake -DMACOS_STRING_FIX=ON "${SOURCE_DIR}"
+    else
+        echo "[ACTION] Configuring for Linux with architecture: $DETECTED_ARCH"
+        cmake -DARCHITECTURE="$DETECTED_ARCH" "${SOURCE_DIR}"
+    fi
 fi
 
 # Check if CMake configuration succeeded

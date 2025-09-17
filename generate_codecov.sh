@@ -82,7 +82,10 @@ echo "==================================="
 lcov -a python-coverage.info -a cpp-coverage.info -o total.info \
   --ignore-errors inconsistent,corrupt
 
-# Generate unified HTML report
-genhtml total.info --output-directory unified-coverage
+# Generate full HTML report
+genhtml total.info --output-directory unified-coverage --quiet --title "Unified Coverage Report"
+
+# Generate plain-text summary for PR comment
+lcov --summary total.info > unified-coverage/summary.txt
 
 echo "[SUCCESS] Unified coverage report generated at unified-coverage/index.html"

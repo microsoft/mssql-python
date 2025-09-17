@@ -62,7 +62,7 @@ jobs:
       - name: Build pybind bindings
         run: |
           cd mssql_python/pybind
-          ./build.sh
+          ./build.sh codecov
 
       - name: Run pytest (with raw coverage)
         run: |
