@@ -88,4 +88,8 @@ genhtml total.info --output-directory unified-coverage --quiet --title "Unified 
 # Generate plain-text summary for PR comment
 lcov --summary total.info > unified-coverage/summary.txt
 
+# Append link to artifact
+echo "" >> unified-coverage/summary.txt
+echo "👉 [Download full HTML report](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}#artifacts)" >> unified-coverage/summary.txt
+
 echo "[SUCCESS] Unified coverage report generated at unified-coverage/index.html"

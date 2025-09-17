@@ -72,11 +72,11 @@ jobs:
       testResultsFiles: '**/test-results.xml'
       testRunTitle: 'Publish test results'
 
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage.xml'
-    displayName: 'Publish code coverage results'
+  # - task: PublishCodeCoverageResults@1
+  #   inputs:
+  #     codeCoverageTool: 'Cobertura'
+  #     summaryFileLocation: 'coverage.xml'
+  #   displayName: 'Publish code coverage results'
 
 - job: PytestOnMacOS
   displayName: 'macOS x86_64'
@@ -1477,3 +1477,96 @@ jobs:
     inputs:
       testResultsFiles: '**/test-results-alpine-arm64.xml'
       testRunTitle: 'Publish pytest results on Alpine ARM64'
+
+- job: CodeCoverageReport
+  displayName: 'Full Stack Coverage Report using Ubuntu Linux'
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  steps:
+  - script: |
+      # Install build dependencies
+      sudo apt-get update
+      sudo apt-get install -y cmake gcc g++ lcov unixodbc-dev llvm clang
+    displayName: 'Install build dependencies'
+
+  - script: |
+      # Start SQL Server container
+      docker pull mcr.microsoft.com/mssql/server:2022-latest
+      docker run \
+        --name sqlserver \
+        -e ACCEPT_EULA=Y \
+        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -p 1433:1433 \
+        -d mcr.microsoft.com/mssql/server:2022-latest
+
+      # Wait until SQL Server is ready
+      for i in {1..30}; do
+        docker exec sqlserver \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -P "$(DB_PASSWORD)" \
+          -C -Q "SELECT 1" && break
+        sleep 2
+      done
+    displayName: 'Start SQL Server container'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Install Python dependencies
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+      pip install coverage-lcov lcov-cobertura
+    displayName: 'Install Python dependencies'
+
+  - script: |
+      # Build pybind bindings with coverage instrumentation
+      cd mssql_python/pybind
+      ./build.sh codecov
+    displayName: 'Build pybind bindings with coverage'
+
+  - script: |
+      # Generate unified coverage (Python + C++)
+      chmod +x ./generate_codecov.sh
+      ./generate_codecov.sh
+
+      # Convert unified LCOV to Cobertura XML for ADO reporting
+      lcov_cobertura total.info --output unified-coverage/coverage.xml
+    displayName: 'Generate unified coverage (Python + C++)'
+    env:
+      DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFiles: '**/test-results.xml'
+      testRunTitle: 'Publish pytest results with unified coverage'
+
+  - task: PublishCodeCoverageResults@2
+    condition: succeededOrFailed()
+    inputs:
+      codeCoverageTool: Cobertura
+      summaryFileLocation: 'unified-coverage/coverage.xml'
+      reportDirectory: 'unified-coverage'
+      failIfCoverageEmpty: true
+    displayName: 'Publish unified code coverage results'
+
+  - task: PublishBuildArtifacts@1
+    condition: succeededOrFailed()
+    inputs:
+      PathtoPublish: 'unified-coverage'
+      ArtifactName: 'UnifiedCoverageHTML'
+      publishLocation: 'Container'
+    displayName: 'Publish unified coverage HTML report'
+
+  - task: PublishBuildArtifacts@1
+    condition: succeededOrFailed()
+    inputs:
+      PathtoPublish: 'total.info'
+      ArtifactName: 'UnifiedCoverageLCOV'
+      publishLocation: 'Container'
+    displayName: 'Publish unified coverage LCOV data'
+    continueOnError: true
