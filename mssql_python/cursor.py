@@ -613,12 +613,36 @@ class Cursor:
                     # Check if parameter length exceeds specified size (excluding "unlimited" sizes)
                     if column_size > 0 and len(parameter) > column_size:
                         warnings.warn(f"String parameter exceeds specified size ({len(parameter)} > {column_size}). "
-                                     "Data may be truncated.", Warning)
-                    # Fix for cross-platform compatibility: ensure column_size is always sufficient
-                    elif column_size == 0 or column_size < len(parameter):
-                        # If column_size is 0 or less than the actual string length, use the string length
-                        # This ensures strings won't be truncated on Unix/Mac platforms
-                        column_size = max(column_size, len(parameter) + 1)  # Add 1 for null terminator
+                                    "Data may be truncated.", Warning)
+                    
+                    # Cross-platform compatibility fix for string sizes
+                    import platform
+                    is_windows = platform.system() == 'Windows'
+                    
+                    # On non-Windows platforms, be more aggressive with buffer sizing
+                    if not is_windows:
+                        # For Unicode strings (WVARCHAR, WCHAR), double the buffer size on Unix/Mac
+                        if sql_type in (ddbc_sql_const.SQL_WVARCHAR.value, ddbc_sql_const.SQL_WCHAR.value, 
+                                    ddbc_sql_const.SQL_WLONGVARCHAR.value):
+                            # Ensure enough space for UTF-16 encoding + null terminator
+                            if column_size == 0:
+                                # For unlimited size, use double the string length plus padding
+                                column_size = len(parameter) * 2 + 10
+                            else:
+                                # For specified size, ensure it's at least double the string length plus padding
+                                column_size = max(column_size, len(parameter) * 2 + 10)
+                            
+                            log('debug', f"Adjusted column size for Unicode parameter {i} to {column_size} on {platform.system()}")
+                        else:
+                            # For regular strings, ensure enough space + padding
+                            if column_size == 0 or column_size < len(parameter) + 5:
+                                column_size = len(parameter) + 5
+                                log('debug', f"Adjusted column size for string parameter {i} to {column_size} on {platform.system()}")
+                    else:
+                        # On Windows, still ensure minimum size but less aggressively
+                        if column_size == 0 or column_size < len(parameter) + 1:
+                            column_size = len(parameter) + 1  # Add 1 for null terminator
+                            log('debug', f"Adjusted column size for string parameter {i} to {column_size} on Windows")
 
             # Sanitize precision/scale for numeric types
             if sql_type in (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value):
