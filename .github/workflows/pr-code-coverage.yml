@@ -70,18 +70,46 @@ jobs:
             if [[ -f "$INDEX_FILE" ]]; then
               echo "🔍 Parsing coverage data from $INDEX_FILE..."
               
-              # Extract coverage metrics using grep and sed
-              OVERALL_PERCENTAGE=$(grep -o 'card-header">Line coverage.*cardpercentagebar[0-9]*">[0-9]*%' "$INDEX_FILE" | grep -o '[0-9]*%' | head -1)
-              COVERED_LINES=$(grep -o 'Covered lines:.*title="[0-9]*"' "$INDEX_FILE" | grep -o '[0-9]*' | tail -1)
-              TOTAL_LINES=$(grep -o 'Coverable lines:.*title="[0-9]*"' "$INDEX_FILE" | grep -o '[0-9]*' | tail -1)
+              # Debug: Show relevant parts of the HTML
+              echo "Debug: Looking for coverage data..."
+              grep -n "cardpercentagebar\|Covered lines\|Coverable lines" "$INDEX_FILE" | head -10
+              
+              # Extract coverage metrics using simpler, more reliable patterns
+              OVERALL_PERCENTAGE=$(grep -o 'cardpercentagebar[0-9]*">[0-9]*%' "$INDEX_FILE" | head -1 | grep -o '[0-9]*%')
+              COVERED_LINES=$(grep -A1 "Covered lines:" "$INDEX_FILE" | grep -o 'title="[0-9]*"' | head -1 | grep -o '[0-9]*')
+              TOTAL_LINES=$(grep -A1 "Coverable lines:" "$INDEX_FILE" | grep -o 'title="[0-9]*"' | head -1 | grep -o '[0-9]*')
+              
+              # Fallback method if the above doesn't work
+              if [[ -z "$OVERALL_PERCENTAGE" ]]; then
+                echo "Trying alternative parsing method..."
+                OVERALL_PERCENTAGE=$(grep -o 'large.*">[0-9]*%' "$INDEX_FILE" | head -1 | grep -o '[0-9]*%')
+              fi
+              
+              echo "Extracted values:"
+              echo "OVERALL_PERCENTAGE=$OVERALL_PERCENTAGE"
+              echo "COVERED_LINES=$COVERED_LINES"
+              echo "TOTAL_LINES=$TOTAL_LINES"
               
               echo "COVERAGE_PERCENTAGE=$OVERALL_PERCENTAGE" >> $GITHUB_ENV
               echo "COVERED_LINES=$COVERED_LINES" >> $GITHUB_ENV
               echo "TOTAL_LINES=$TOTAL_LINES" >> $GITHUB_ENV
               
-              # Extract top files with low coverage
+              # Extract top files with low coverage - improved approach
               echo "📋 Extracting file-level coverage..."
-              LOW_COVERAGE_FILES=$(grep -o '<a href="[^"]*">[^<]*</a></td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td title="[^"]*" class="right">[0-9]*\.[0-9]*%' "$INDEX_FILE" | sed 's/<a href="[^"]*">\([^<]*\)<\/a><\/td><td class="right">[^<]*<\/td><td class="right">[^<]*<\/td><td class="right">[^<]*<\/td><td class="right">[^<]*<\/td><td title="[^"]*" class="right">\([0-9]*\.[0-9]*\)%/\1: \2%/' | sort -t: -k2 -n | head -5)
+              
+              # Extract file coverage data more reliably
+              LOW_COVERAGE_FILES=$(grep -o '<td><a href="[^"]*">[^<]*</a></td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td title="[^"]*" class="right">[0-9]*\.[0-9]*%' "$INDEX_FILE" | \
+                sed 's/<td><a href="[^"]*">\([^<]*\)<\/a><\/td>.*class="right">\([0-9]*\.[0-9]*\)%/\1: \2%/' | \
+                sort -t: -k2 -n | head -5)
+              
+              # Alternative method if above fails
+              if [[ -z "$LOW_COVERAGE_FILES" ]]; then
+                echo "Trying alternative file parsing..."
+                LOW_COVERAGE_FILES=$(grep -E "\.py.*[0-9]+\.[0-9]+%" "$INDEX_FILE" | \
+                  grep -o "[^>]*\.py[^<]*</a>.*[0-9]*\.[0-9]*%" | \
+                  sed 's/\([^<]*\)<\/a>.*\([0-9]*\.[0-9]*\)%/\1: \2%/' | \
+                  sort -t: -k2 -n | head -5)
+              fi
               
               echo "LOW_COVERAGE_FILES<<EOF" >> $GITHUB_ENV
               echo "$LOW_COVERAGE_FILES" >> $GITHUB_ENV
@@ -106,10 +134,7 @@ jobs:
             
             **Overall Coverage:** ${{ env.COVERAGE_PERCENTAGE }} (${{ env.COVERED_LINES }}/${{ env.TOTAL_LINES }} lines)
             
-            ### 📈 Coverage Status
-            ${{ env.COVERAGE_PERCENTAGE >= '80' && '🟢 **Good Coverage**' || env.COVERAGE_PERCENTAGE >= '60' && '🟡 **Moderate Coverage**' || '🔴 **Low Coverage**' }}
-            
-            ### 📋 Files Needing Attention
+            ###  Files Needing Attention
             <details>
             <summary>Files with lowest coverage (click to expand)</summary>
             
