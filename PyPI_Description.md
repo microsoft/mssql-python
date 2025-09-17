@@ -37,7 +37,7 @@ PyBind11 provides:
 
 ## Public Preview Release
 
-We are currently in **Public Preview**. The latest version is v0.10.0, released on September 8, 2025.
+We are currently in **Public Preview**.
 
 ## What's new in v0.10.0
 
