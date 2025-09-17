@@ -31,14 +31,14 @@ echo "[STEP 2] Running pytest with Python coverage"
 echo "==================================="
 
 # Cleanup old coverage
-rm -f .coverage coverage.xml python-coverage.info cpp-coverage.info total.info
+rm -f .coverage coverage.xml python-coverage.info cpp-coverage.info total.info total.cleaned.info
 rm -rf htmlcov unified-coverage
 
 # Run pytest with Python coverage (XML + HTML output)
 python -m pytest -v \
   --junitxml=test-results.xml \
   --cov=mssql_python \
-  --cov-report=xml \
+  --cov-report=xml:coverage.xml \
   --cov-report=html \
   --capture=tee-sys \
   --cache-clear
@@ -72,6 +72,7 @@ echo "[INFO] Using pybind module: $PYBIND_SO"
 llvm-cov export "$PYBIND_SO" \
   -instr-profile=default.profdata \
   -ignore-filename-regex='(python3\.[0-9]+|cpython|pybind11|/usr/include/|/usr/lib/)' \
+  --skip-functions \
   -format=lcov > cpp-coverage.info
 
 echo "==================================="
@@ -82,14 +83,9 @@ echo "==================================="
 lcov -a python-coverage.info -a cpp-coverage.info -o total.info \
   --ignore-errors inconsistent,corrupt
 
+# Normalize paths so everything starts from mssql_python/
+echo "[ACTION] Normalizing paths in LCOV report"
+lcov --path . --base-directory . --strip-path $(pwd) -o total.cleaned.info -a total.info
+
 # Generate full HTML report
-genhtml total.info --output-directory unified-coverage --quiet --title "Unified Coverage Report"
-
-# Generate plain-text summary for PR comment
-lcov --summary total.info > unified-coverage/summary.txt
-
-# Append link to artifact
-echo "" >> unified-coverage/summary.txt
-echo "👉 [Download full HTML report](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}#artifacts)" >> unified-coverage/summary.txt
-
-echo "[SUCCESS] Unified coverage report generated at unified-coverage/index.html"
+genhtml total.cleaned.info --output-directory unified-coverage --quiet --title "Unified Coverage Report"
