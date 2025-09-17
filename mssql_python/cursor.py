@@ -20,6 +20,10 @@ from .row import Row
 
 # Constants for string handling
 MAX_INLINE_CHAR = 4000  # NVARCHAR/VARCHAR inline limit; this triggers NVARCHAR(MAX)/VARCHAR(MAX) + DAE
+SMALLMONEY_MIN = decimal.Decimal('-214748.3648')
+SMALLMONEY_MAX = decimal.Decimal('214748.3647')
+MONEY_MIN = decimal.Decimal('-922337203685477.5808')
+MONEY_MAX = decimal.Decimal('922337203685477.5807')
 
 class Cursor:
     """
@@ -282,18 +286,39 @@ class Cursor:
                 0,
                 False,
             )
-
+        
         if isinstance(param, decimal.Decimal):
-            parameters_list[i] = self._get_numeric_data(
-                param
-            )  # Replace the parameter with the dictionary
-            return (
-                ddbc_sql_const.SQL_NUMERIC.value,
-                ddbc_sql_const.SQL_C_NUMERIC.value,
-                parameters_list[i].precision,
-                parameters_list[i].scale,
-                False,
-            )
+        # Detect MONEY / SMALLMONEY range
+            if SMALLMONEY_MIN  <= param <= SMALLMONEY_MAX:
+                # smallmoney
+                parameters_list[i] = str(param)
+                return (
+                    ddbc_sql_const.SQL_VARCHAR.value,
+                    ddbc_sql_const.SQL_C_CHAR.value,
+                    len(parameters_list[i]),
+                    0,
+                    False,
+                )
+            elif MONEY_MIN <= param <= MONEY_MAX:
+                # money
+                parameters_list[i] = str(param)
+                return (
+                    ddbc_sql_const.SQL_VARCHAR.value,
+                    ddbc_sql_const.SQL_C_CHAR.value,
+                    len(parameters_list[i]),
+                    0,
+                    False,
+                )
+            else:
+                # fallback to generic numeric binding
+                parameters_list[i] = self._get_numeric_data(param)
+                return (
+                    ddbc_sql_const.SQL_NUMERIC.value,
+                    ddbc_sql_const.SQL_C_NUMERIC.value,
+                    parameters_list[i].precision,
+                    parameters_list[i].scale,
+                    False,
+                )
 
         if isinstance(param, str):
             if (
@@ -316,16 +341,16 @@ class Cursor:
             if utf16_len > MAX_INLINE_CHAR:  # Long strings -> DAE
                 if is_unicode:
                     return (
-                        ddbc_sql_const.SQL_WLONGVARCHAR.value,
+                        ddbc_sql_const.SQL_WVARCHAR.value,
                         ddbc_sql_const.SQL_C_WCHAR.value,
-                        utf16_len,
+                        0,
                         0,
                         True,
                     )
                 return (
-                    ddbc_sql_const.SQL_LONGVARCHAR.value,
+                    ddbc_sql_const.SQL_VARCHAR.value,
                     ddbc_sql_const.SQL_C_CHAR.value,
-                    len(param),
+                    0,
                     0,
                     True,
                 )
@@ -347,27 +372,24 @@ class Cursor:
                 False,
             )
         
-        if isinstance(param, bytes):
-            # Use VARBINARY for Python bytes/bytearray since they are variable-length by nature.
-            # This avoids storage waste from BINARY's zero-padding and matches Python's semantics.
-            return (
-                ddbc_sql_const.SQL_VARBINARY.value,
-                ddbc_sql_const.SQL_C_BINARY.value,
-                len(param),
-                0,
-                False,
-            )
-
-        if isinstance(param, bytearray):
-            # Use VARBINARY for Python bytes/bytearray since they are variable-length by nature.
-            # This avoids storage waste from BINARY's zero-padding and matches Python's semantics.
-            return (
-                ddbc_sql_const.SQL_VARBINARY.value,
-                ddbc_sql_const.SQL_C_BINARY.value,
-                len(param),
-                0,
-                False,
-            )
+        if isinstance(param, (bytes, bytearray)):
+            length = len(param)
+            if length > 8000:  # Use VARBINARY(MAX) for large blobs
+                return (
+                    ddbc_sql_const.SQL_VARBINARY.value,
+                    ddbc_sql_const.SQL_C_BINARY.value,
+                    0,
+                    0,
+                    True
+                )
+            else:  # Small blobs → direct binding
+                return (
+                    ddbc_sql_const.SQL_VARBINARY.value,
+                    ddbc_sql_const.SQL_C_BINARY.value,
+                    max(length, 1),
+                    0,
+                    False
+                )
 
         if isinstance(param, datetime.datetime):
             return (
