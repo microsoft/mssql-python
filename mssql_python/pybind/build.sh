@@ -47,23 +47,28 @@ if [ -d "build" ]; then
     echo "Build directory removed."
 fi
 
-# Create build directory for universal binary
+# Create build directory
 BUILD_DIR="${SOURCE_DIR}/build"
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 echo "[DIAGNOSTIC] Changed to build directory: ${BUILD_DIR}"
 
-# Configure CMake (architecture settings handled in CMakeLists.txt)
+# Configure CMake (with Clang coverage instrumentation on Linux)
 echo "[DIAGNOSTIC] Running CMake configure"
-if [[ "$OS" == "macOS" ]]; then
+if [[ "$OS" == "Linux" ]]; then
+    echo "[ACTION] Configuring for Linux with Clang coverage instrumentation"
+    cmake -DARCHITECTURE="$DETECTED_ARCH" \
+          -DCMAKE_C_COMPILER=clang \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
+          -DCMAKE_C_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
+          "${SOURCE_DIR}"
+else
     echo "[ACTION] Configuring for macOS with Clang coverage instrumentation"
     cmake -DMACOS_STRING_FIX=ON \
           -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
           -DCMAKE_C_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
           "${SOURCE_DIR}"
-else
-    echo "[DIAGNOSTIC] Configuring for Linux with architecture: $DETECTED_ARCH"
-    cmake -DARCHITECTURE="$DETECTED_ARCH" "${SOURCE_DIR}"
 fi
 
 # Check if CMake configuration succeeded

@@ -1,17 +1,18 @@
-name: PR Validation (macOS with Unified Coverage)
-permissions:
-  contents: read
-  pull-requests: write
+name: PR Validation (Linux with Unified Coverage)
 
 on:
   pull_request:
     branches:
       - main
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
-  pytest-macos:
-    name: macOS Unified Coverage
-    runs-on: macos-latest
+  pytest-linux:
+    name: Ubuntu Unified Coverage
+    runs-on: ubuntu-latest
 
     env:
       DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
@@ -26,19 +27,10 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Install CMake
+      - name: Install build dependencies
         run: |
-          brew update
-          brew uninstall cmake --ignore-dependencies || echo "CMake not installed"
-          brew install cmake
-
-      - name: Install and start Colima-based Docker
-        run: |
-          brew install docker colima
-          colima start --cpu 4 --memory 8 --disk 50
-          docker context use colima >/dev/null || true
-          docker version
-          docker ps
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc g++ lcov unixodbc-dev
 
       - name: Start SQL Server container
         run: |
@@ -65,6 +57,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install coverage-lcov
 
       - name: Build pybind bindings
         run: |
@@ -73,13 +66,17 @@ jobs:
 
       - name: Run pytest (with raw coverage)
         run: |
-          echo "Running pytest..."
-          python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
+          python -m pytest -v \
+            --junitxml=test-results.xml \
+            --cov=. \
+            --cov-report=xml \
+            --capture=tee-sys \
+            --cache-clear
 
       - name: Generate unified coverage (Python + C++)
         run: |
-          chmod +x ./generate_codecov.sh
-          ./generate_codecov.sh
+          chmod +x ./generate_universal_codecoverage.sh
+          ./generate_universal_codecoverage.sh
           # Create summary text file from LCOV report
           genhtml total.info \
             --output-directory unified-coverage \
