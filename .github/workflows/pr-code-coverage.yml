@@ -77,9 +77,24 @@ jobs:
         run: |
           chmod +x ./generate_codecov.sh
           ./generate_codecov.sh
+          # Create summary text file from LCOV report
+          genhtml total.info \
+            --output-directory unified-coverage \
+            --quiet \
+            --title "Unified Coverage Report" \
+            --summary-only > unified-coverage/summary.txt
 
-      - name: Comment unified coverage on PR
+      - name: Upload full HTML coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnifiedCoverageHTML
+          path: unified-coverage
+
+      - name: Comment unified coverage summary on PR
         uses: marocchino/sticky-pull-request-comment@v2
         with:
-          path: unified-coverage/index.html
           header: Unified Coverage Report
+          message: |
+            $(cat unified-coverage/summary.txt)
+
+            👉 [Download full HTML report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts)
