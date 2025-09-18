@@ -2038,12 +2038,36 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 
                 if (SQL_SUCCEEDED(ret)) {
                     try {
-                        // Use the original string with period for Python's Decimal constructor
-                        std::string numStr(reinterpret_cast<const char*>(numericStr), indicator);
-                        
+                        // Validate 'indicator' to avoid buffer overflow and fallback to a safe
+                        // null-terminated read when length is unknown or out-of-range.
+                        const char* cnum = reinterpret_cast<const char*>(numericStr);
+                        size_t bufSize = sizeof(numericStr);
+                        size_t safeLen = 0;
+
+                        if (indicator > 0 && indicator <= static_cast<SQLLEN>(bufSize)) {
+                            // indicator appears valid and within the buffer size
+                            safeLen = static_cast<size_t>(indicator);
+                        } else {
+                            // indicator is unknown, zero, negative, or too large; determine length
+                            // by searching for a terminating null (safe bounded scan)
+                            for (size_t j = 0; j < bufSize; ++j) {
+                                if (cnum[j] == '\0') {
+                                    safeLen = j;
+                                    break;
+                                }
+                            }
+                            // if no null found, use the full buffer size as a conservative fallback
+                            if (safeLen == 0 && bufSize > 0 && cnum[0] != '\0') {
+                                safeLen = bufSize;
+                            }
+                        }
+
+                        // Use the validated length to construct the string for Decimal
+                        std::string numStr(cnum, safeLen);
+
                         // Create Python Decimal object
                         py::object decimalObj = py::module_::import("decimal").attr("Decimal")(numStr);
-                        
+
                         // Add to row
                         row.append(decimalObj);
                     } catch (const py::error_already_set& e) {

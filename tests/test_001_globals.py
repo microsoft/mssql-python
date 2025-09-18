@@ -11,11 +11,7 @@ import pytest
 import threading
 import time
 import mssql_python
-import threading
-import time
 import random
-import queue
-import decimal
 
 # Import global variables from the repository
 from mssql_python import apilevel, threadsafety, paramstyle, lowercase, getDecimalSeparator, setDecimalSeparator

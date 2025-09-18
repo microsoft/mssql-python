@@ -9,13 +9,9 @@ Note: The cursor function is not yet implemented, so related tests are commented
 """
 
 import pytest
-import sys
 from datetime import datetime, date, time
 import decimal
 from contextlib import closing
-from mssql_python import Connection, row
-import mssql_python
-from mssql_python.exceptions import InterfaceError
 import mssql_python
 
 # Setup test table
