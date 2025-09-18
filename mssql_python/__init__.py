@@ -180,3 +180,28 @@ def _custom_setattr(name, value):
 
 # Replace the module's __setattr__ with our custom version
 sys.modules[__name__].__setattr__ = _custom_setattr
+
+
+# Export SQL constants at module level
+SQL_CHAR = ConstantsDDBC.SQL_CHAR.value
+SQL_VARCHAR = ConstantsDDBC.SQL_VARCHAR.value
+SQL_LONGVARCHAR = ConstantsDDBC.SQL_LONGVARCHAR.value
+SQL_WCHAR = ConstantsDDBC.SQL_WCHAR.value
+SQL_WVARCHAR = ConstantsDDBC.SQL_WVARCHAR.value
+SQL_WLONGVARCHAR = ConstantsDDBC.SQL_WLONGVARCHAR.value
+SQL_DECIMAL = ConstantsDDBC.SQL_DECIMAL.value
+SQL_NUMERIC = ConstantsDDBC.SQL_NUMERIC.value
+SQL_BIT = ConstantsDDBC.SQL_BIT.value
+SQL_TINYINT = ConstantsDDBC.SQL_TINYINT.value
+SQL_SMALLINT = ConstantsDDBC.SQL_SMALLINT.value
+SQL_INTEGER = ConstantsDDBC.SQL_INTEGER.value
+SQL_BIGINT = ConstantsDDBC.SQL_BIGINT.value
+SQL_REAL = ConstantsDDBC.SQL_REAL.value
+SQL_FLOAT = ConstantsDDBC.SQL_FLOAT.value
+SQL_DOUBLE = ConstantsDDBC.SQL_DOUBLE.value
+SQL_BINARY = ConstantsDDBC.SQL_BINARY.value
+SQL_VARBINARY = ConstantsDDBC.SQL_VARBINARY.value
+SQL_LONGVARBINARY = ConstantsDDBC.SQL_LONGVARBINARY.value
+SQL_DATE = ConstantsDDBC.SQL_DATE.value
+SQL_TIME = ConstantsDDBC.SQL_TIME.value
+SQL_TIMESTAMP = ConstantsDDBC.SQL_TIMESTAMP.value

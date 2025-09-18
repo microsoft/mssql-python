@@ -208,7 +208,24 @@ typedef SQLRETURN (*SQLTablesFunc)(
     SQLWCHAR*      TableType,
     SQLSMALLINT    NameLength4
 );
-                                         
+                                         typedef SQLRETURN (SQL_API* SQLGetTypeInfoFunc)(SQLHSTMT, SQLSMALLINT);
+typedef SQLRETURN (SQL_API* SQLProceduresFunc)(SQLHSTMT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, 
+                                       SQLSMALLINT, SQLWCHAR*, SQLSMALLINT);
+typedef SQLRETURN (SQL_API* SQLForeignKeysFunc)(SQLHSTMT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, 
+                                       SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, 
+                                       SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT);
+typedef SQLRETURN (SQL_API* SQLPrimaryKeysFunc)(SQLHSTMT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, 
+                                       SQLSMALLINT, SQLWCHAR*, SQLSMALLINT);
+typedef SQLRETURN (SQL_API* SQLSpecialColumnsFunc)(SQLHSTMT, SQLUSMALLINT, SQLWCHAR*, SQLSMALLINT, 
+                                       SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, 
+                                       SQLUSMALLINT, SQLUSMALLINT);
+typedef SQLRETURN (SQL_API* SQLStatisticsFunc)(SQLHSTMT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, 
+                                      SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, 
+                                      SQLUSMALLINT, SQLUSMALLINT);
+typedef SQLRETURN (SQL_API* SQLColumnsFunc)(SQLHSTMT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, 
+                                           SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, 
+                                           SQLWCHAR*, SQLSMALLINT);
+
 // Transaction APIs
 typedef SQLRETURN (SQL_API* SQLEndTranFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT);
 
@@ -257,6 +274,13 @@ extern SQLDescribeColFunc SQLDescribeCol_ptr;
 extern SQLMoreResultsFunc SQLMoreResults_ptr;
 extern SQLColAttributeFunc SQLColAttribute_ptr;
 extern SQLTablesFunc SQLTables_ptr;
+extern SQLGetTypeInfoFunc SQLGetTypeInfo_ptr;
+extern SQLProceduresFunc SQLProcedures_ptr;
+extern SQLForeignKeysFunc SQLForeignKeys_ptr;
+extern SQLPrimaryKeysFunc SQLPrimaryKeys_ptr;
+extern SQLSpecialColumnsFunc SQLSpecialColumns_ptr;
+extern SQLStatisticsFunc SQLStatistics_ptr;
+extern SQLColumnsFunc SQLColumns_ptr;
 
 // Transaction APIs
 extern SQLEndTranFunc SQLEndTran_ptr;

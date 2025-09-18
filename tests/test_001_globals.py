@@ -58,6 +58,37 @@ def test_decimal_separator():
         setDecimalSeparator('.')
         assert getDecimalSeparator() == '.', "Decimal separator should be restored to '.'"
 
+
+def test_lowercase():
+    # Check if lowercase has the expected default value
+    assert lowercase is False, "lowercase should default to False"
+
+def test_decimal_separator():
+    """Test decimal separator functionality"""
+    
+    # Check default value
+    assert getDecimalSeparator() == '.', "Default decimal separator should be '.'"
+    
+    try:
+        # Test setting a new value
+        setDecimalSeparator(',')
+        assert getDecimalSeparator() == ',', "Decimal separator should be ',' after setting"
+        
+        # Test invalid input
+        with pytest.raises(ValueError):
+            setDecimalSeparator('too long')
+            
+        with pytest.raises(ValueError):
+            setDecimalSeparator('')
+            
+        with pytest.raises(ValueError):
+            setDecimalSeparator(123)  # Non-string input
+    
+    finally:
+        # Restore default value
+        setDecimalSeparator('.')
+        assert getDecimalSeparator() == '.', "Decimal separator should be restored to '.'"
+
 def test_lowercase_thread_safety_no_db():
     """
     Tests concurrent modifications to mssql_python.lowercase without database interaction.
@@ -174,9 +205,6 @@ def test_lowercase_concurrent_access_with_db(db_connection):
 
     # Assert that no errors occurred in the threads
     assert not errors, f"Thread safety test failed with errors: {errors}"
-def test_lowercase():
-    # Check if lowercase has the expected default value
-    assert lowercase is False, "lowercase should default to False"
 
 def test_decimal_separator_edge_cases():
     """Test decimal separator edge cases and boundary conditions"""
