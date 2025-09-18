@@ -1075,7 +1075,6 @@ class Cursor:
         
         # Define column names in ODBC standard order
         self._column_map = {}
-        self._column_map = {}
         for i, (name, *_) in enumerate(self.description):
             # Add standard name
             self._column_map[name] = i

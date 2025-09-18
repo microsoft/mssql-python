@@ -88,31 +88,6 @@ def handle_datetimeoffset(dto_value):
     )
 
 def custom_string_converter(value):
-    """
-        A simple converter that adds a prefix to string values.
-        Assumes SQL_WVARCHAR is UTF-16LE encoded by default, 
-        but this may vary depending on the database configuration.
-        You can specify a different encoding if needed.
-    """
-    if value is None:
-        return None
-    return "CONVERTED: " + value.decode('utf-16-le')  # SQL_WVARCHAR is UTF-16LE encoded
-
-# Add these helper functions after other helper functions
-def handle_datetimeoffset(dto_value):
-    """Converter function for SQL Server's DATETIMEOFFSET type"""
-    if dto_value is None:
-        return None
-        
-    # The format depends on the ODBC driver and how it returns binary data
-    # This matches SQL Server's format for DATETIMEOFFSET
-    tup = struct.unpack("<6hI2h", dto_value)  # e.g., (2017, 3, 16, 10, 35, 18, 500000000, -6, 0)
-    return datetime(
-        tup[0], tup[1], tup[2], tup[3], tup[4], tup[5], tup[6] // 1000,
-        timezone(timedelta(hours=tup[7], minutes=tup[8]))
-    )
-
-def custom_string_converter(value):
     """A simple converter that adds a prefix to string values"""
     if value is None:
         return None

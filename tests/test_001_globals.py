@@ -205,9 +205,6 @@ def test_lowercase_concurrent_access_with_db(db_connection):
 
     # Assert that no errors occurred in the threads
     assert not errors, f"Thread safety test failed with errors: {errors}"
-def test_lowercase():
-    # Check if lowercase has the expected default value
-    assert lowercase is False, "lowercase should default to False"
 
 def test_decimal_separator_edge_cases():
     """Test decimal separator edge cases and boundary conditions"""
