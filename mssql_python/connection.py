@@ -66,6 +66,7 @@ from mssql_python.exceptions import (
     ProgrammingError,
     NotSupportedError,
 )
+from mssql_python.constants import GetInfoConstants
 
 
 class Connection:
@@ -543,6 +544,30 @@ class Connection:
             )
         
         return self._decoding_settings[sqltype].copy()
+
+    @property
+    def searchescape(self):
+        """
+        The ODBC search pattern escape character, as returned by 
+        SQLGetInfo(SQL_SEARCH_PATTERN_ESCAPE), used to escape special characters 
+        such as '%' and '_' in LIKE clauses. These are driver specific.
+        
+        Returns:
+            str: The search pattern escape character (usually '\' or another character)
+        """
+        if not hasattr(self, '_searchescape'):
+            try:
+                escape_char = self.getinfo(GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value)
+                # Some drivers might return this as an integer memory address
+                # or other non-string format, so ensure we have a string
+                if not isinstance(escape_char, str):
+                    escape_char = '\\'  # Default to backslash if not a string
+                self._searchescape = escape_char
+            except Exception as e:
+                # Log the exception for debugging, but do not expose sensitive info
+                log('warning', f"Failed to retrieve search escape character, using default '\\'. Exception: {type(e).__name__}")
+                self._searchescape = '\\'
+        return self._searchescape
 
     def cursor(self) -> Cursor:
         """

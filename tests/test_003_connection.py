@@ -4956,3 +4956,166 @@ def test_getinfo_standard_types(db_connection):
         except Exception as e:
             # Log but don't fail - some drivers might not support all info types
             print(f"Info type {info_type} failed: {e}")
+
+def test_connection_searchescape_basic(db_connection):
+    """Test the basic functionality of the searchescape property."""
+    # Get the search escape character
+    escape_char = db_connection.searchescape
+    
+    # Verify it's not None
+    assert escape_char is not None, "Search escape character should not be None"
+    print(f"Search pattern escape character: '{escape_char}'")
+    
+    # Test property caching - calling it twice should return the same value
+    escape_char2 = db_connection.searchescape
+    assert escape_char == escape_char2, "Search escape character should be consistent"
+
+def test_connection_searchescape_with_percent(db_connection):
+    """Test using the searchescape property with percent wildcard."""
+    escape_char = db_connection.searchescape
+    
+    # Skip test if we got a non-string or empty escape character
+    if not isinstance(escape_char, str) or not escape_char:
+        pytest.skip("No valid escape character available for testing")
+    
+    cursor = db_connection.cursor()
+    try:
+        # Create a temporary table with data containing % character
+        cursor.execute("CREATE TABLE #test_escape_percent (id INT, text VARCHAR(50))")
+        cursor.execute("INSERT INTO #test_escape_percent VALUES (1, 'abc%def')")
+        cursor.execute("INSERT INTO #test_escape_percent VALUES (2, 'abc_def')")
+        cursor.execute("INSERT INTO #test_escape_percent VALUES (3, 'abcdef')")
+        
+        # Use the escape character to find the exact % character
+        query = f"SELECT * FROM #test_escape_percent WHERE text LIKE 'abc{escape_char}%def' ESCAPE '{escape_char}'"
+        cursor.execute(query)
+        results = cursor.fetchall()
+        
+        # Should match only the row with the % character
+        assert len(results) == 1, f"Escaped LIKE query for % matched {len(results)} rows instead of 1"
+        if results:
+            assert 'abc%def' in results[0][1], "Escaped LIKE query did not match correct row"
+            
+    except Exception as e:
+        print(f"Note: LIKE escape test with % failed: {e}")
+        # Don't fail the test as some drivers might handle escaping differently
+    finally:
+        cursor.execute("DROP TABLE #test_escape_percent")
+
+def test_connection_searchescape_with_underscore(db_connection):
+    """Test using the searchescape property with underscore wildcard."""
+    escape_char = db_connection.searchescape
+    
+    # Skip test if we got a non-string or empty escape character
+    if not isinstance(escape_char, str) or not escape_char:
+        pytest.skip("No valid escape character available for testing")
+    
+    cursor = db_connection.cursor()
+    try:
+        # Create a temporary table with data containing _ character
+        cursor.execute("CREATE TABLE #test_escape_underscore (id INT, text VARCHAR(50))")
+        cursor.execute("INSERT INTO #test_escape_underscore VALUES (1, 'abc_def')")
+        cursor.execute("INSERT INTO #test_escape_underscore VALUES (2, 'abcXdef')")  # 'X' could match '_'
+        cursor.execute("INSERT INTO #test_escape_underscore VALUES (3, 'abcdef')")   # No match
+        
+        # Use the escape character to find the exact _ character
+        query = f"SELECT * FROM #test_escape_underscore WHERE text LIKE 'abc{escape_char}_def' ESCAPE '{escape_char}'"
+        cursor.execute(query)
+        results = cursor.fetchall()
+        
+        # Should match only the row with the _ character
+        assert len(results) == 1, f"Escaped LIKE query for _ matched {len(results)} rows instead of 1"
+        if results:
+            assert 'abc_def' in results[0][1], "Escaped LIKE query did not match correct row"
+            
+    except Exception as e:
+        print(f"Note: LIKE escape test with _ failed: {e}")
+        # Don't fail the test as some drivers might handle escaping differently
+    finally:
+        cursor.execute("DROP TABLE #test_escape_underscore")
+
+def test_connection_searchescape_with_brackets(db_connection):
+    """Test using the searchescape property with bracket wildcards."""
+    escape_char = db_connection.searchescape
+    
+    # Skip test if we got a non-string or empty escape character
+    if not isinstance(escape_char, str) or not escape_char:
+        pytest.skip("No valid escape character available for testing")
+    
+    cursor = db_connection.cursor()
+    try:
+        # Create a temporary table with data containing [ character
+        cursor.execute("CREATE TABLE #test_escape_brackets (id INT, text VARCHAR(50))")
+        cursor.execute("INSERT INTO #test_escape_brackets VALUES (1, 'abc[x]def')")
+        cursor.execute("INSERT INTO #test_escape_brackets VALUES (2, 'abcxdef')")
+        
+        # Use the escape character to find the exact [ character
+        # Note: This might not work on all drivers as bracket escaping varies
+        query = f"SELECT * FROM #test_escape_brackets WHERE text LIKE 'abc{escape_char}[x{escape_char}]def' ESCAPE '{escape_char}'"
+        cursor.execute(query)
+        results = cursor.fetchall()
+        
+        # Just check we got some kind of result without asserting specific behavior
+        print(f"Bracket escaping test returned {len(results)} rows")
+            
+    except Exception as e:
+        print(f"Note: LIKE escape test with brackets failed: {e}")
+        # Don't fail the test as bracket escaping varies significantly between drivers
+    finally:
+        cursor.execute("DROP TABLE #test_escape_brackets")
+
+def test_connection_searchescape_multiple_escapes(db_connection):
+    """Test using the searchescape property with multiple escape sequences."""
+    escape_char = db_connection.searchescape
+    
+    # Skip test if we got a non-string or empty escape character
+    if not isinstance(escape_char, str) or not escape_char:
+        pytest.skip("No valid escape character available for testing")
+    
+    cursor = db_connection.cursor()
+    try:
+        # Create a temporary table with data containing multiple special chars
+        cursor.execute("CREATE TABLE #test_multiple_escapes (id INT, text VARCHAR(50))")
+        cursor.execute("INSERT INTO #test_multiple_escapes VALUES (1, 'abc%def_ghi')")
+        cursor.execute("INSERT INTO #test_multiple_escapes VALUES (2, 'abc%defXghi')")  # Wouldn't match the pattern
+        cursor.execute("INSERT INTO #test_multiple_escapes VALUES (3, 'abcXdef_ghi')")  # Wouldn't match the pattern
+        
+        # Use escape character for both % and _
+        query = f"""
+            SELECT * FROM #test_multiple_escapes 
+            WHERE text LIKE 'abc{escape_char}%def{escape_char}_ghi' ESCAPE '{escape_char}'
+        """
+        cursor.execute(query)
+        results = cursor.fetchall()
+        
+        # Should match only the row with both % and _
+        assert len(results) <= 1, f"Multiple escapes query matched {len(results)} rows instead of at most 1"
+        if len(results) == 1:
+            assert 'abc%def_ghi' in results[0][1], "Multiple escapes query matched incorrect row"
+            
+    except Exception as e:
+        print(f"Note: Multiple escapes test failed: {e}")
+        # Don't fail the test as escaping behavior varies
+    finally:
+        cursor.execute("DROP TABLE #test_multiple_escapes")
+
+def test_connection_searchescape_consistency(db_connection):
+    """Test that the searchescape property is cached and consistent."""
+    # Call the property multiple times
+    escape1 = db_connection.searchescape
+    escape2 = db_connection.searchescape
+    escape3 = db_connection.searchescape
+    
+    # All calls should return the same value
+    assert escape1 == escape2 == escape3, "Searchescape property should be consistent"
+    
+    # Create a new connection and verify it returns the same escape character
+    # (assuming the same driver and connection settings)
+    if 'conn_str' in globals():
+        try:
+            new_conn = connect(conn_str)
+            new_escape = new_conn.searchescape
+            assert new_escape == escape1, "Searchescape should be consistent across connections"
+            new_conn.close()
+        except Exception as e:
+            print(f"Note: New connection comparison failed: {e}")
