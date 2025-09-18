@@ -184,6 +184,107 @@ jobs:
             exit 1
           fi
 
+      # - name: Comment coverage summary on PR
+      #   uses: marocchino/sticky-pull-request-comment@v2
+      #   with:
+      #     header: Code Coverage Report
+      #     message: |
+      #       # 📊 Code Coverage Report
+            
+      #       <table>
+      #       <tr>
+      #       <td align="center" width="200">
+            
+      #       ### 🎯 Coverage
+      #       ### **${{ env.COVERAGE_PERCENTAGE }}**
+      #       <br>
+      #       </td>
+      #       <td>
+            
+      #       **📈 Lines Covered:** `${{ env.COVERED_LINES }}` out of `${{ env.TOTAL_LINES }}`  
+      #       **📁 Project:** `mssql-python`  
+            
+      #       </td>
+      #       </tr>
+      #       </table>
+            
+      #       ---
+            
+      #       ### 📋 Files Needing Attention
+      #       <details>
+      #       <summary>📉 <strong>Files with lowest coverage</strong> (click to expand)</summary>
+      #       <br>
+            
+      #       ```diff
+      #       ${{ env.LOW_COVERAGE_FILES }}
+      #       ```
+            
+      #       </details>
+            
+      #       ---
+      #       ### 🔗 Quick Links
+
+      #       <table>
+      #       <tr>
+      #       <td align="left" width="200">
+      #       <b>⚙️ Build Summary</b>
+      #       </td>
+      #       <td align="left">
+      #       <b>📋 Coverage Details</b>
+      #       </td>
+      #       </tr>
+      #       <tr>
+      #       <td align="left" width="200">
+
+      #       [View Azure DevOps Build](${{ env.ADO_URL }})
+
+      #       </td>
+      #       <td align="left">
+
+      #       [Browse Full Coverage Report](${{ env.ADO_URL }}&view=codecoverage-tab) 
+
+      #       </td>
+      #       </tr>
+      #       </table>
+
+      - name: Download coverage XML from ADO
+        run: |
+          # Download the Cobertura XML directly instead of HTML
+          BUILD_ID=${{ env.BUILD_ID }}
+          ARTIFACTS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID/artifacts?api-version=7.1-preview.5"
+          
+          # Find and download coverage.xml
+          ARTIFACTS_RESPONSE=$(curl -s "$ARTIFACTS_URL")
+          COVERAGE_XML_ARTIFACT=$(echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]? | select(.name | test("coverage")) | .resource.downloadUrl // empty' 2>/dev/null)
+          
+          if [[ -n "$COVERAGE_XML_ARTIFACT" ]]; then
+            curl -L "$COVERAGE_XML_ARTIFACT" -o coverage-artifacts.zip
+            unzip -q coverage-artifacts.zip
+            find . -name "coverage*.xml" -exec cp {} ./coverage.xml \;
+          fi
+
+      - name: Generate patch coverage report
+        run: |
+          # Install diff-cover and jq
+          pip install diff-cover jq
+          # Generate diff coverage report comparing against main
+          diff-cover coverage.xml \
+            --compare-branch=origin/main \
+            --html-report=patch-coverage.html \
+            --json-report=patch-coverage.json \
+            --markdown-report=patch-coverage.md
+          
+          # Extract patch coverage percentage
+          PATCH_COVERAGE=$(jq -r '.total_percent_covered // "N/A"' patch-coverage.json)
+          echo "PATCH_COVERAGE_PCT=${PATCH_COVERAGE}%" >> $GITHUB_ENV
+          
+          # Extract summary for comment
+          if [[ -f patch-coverage.md ]]; then
+            echo "PATCH_COVERAGE_SUMMARY<<EOF" >> $GITHUB_ENV
+            cat patch-coverage.md >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
+
       - name: Comment coverage summary on PR
         uses: marocchino/sticky-pull-request-comment@v2
         with:
@@ -195,8 +296,14 @@ jobs:
             <tr>
             <td align="center" width="200">
             
-            ### 🎯 Coverage
+            ### 🎯 Overall Coverage
             ### **${{ env.COVERAGE_PERCENTAGE }}**
+            <br>
+            </td>
+            <td align="center" width="200">
+            
+            ### 🔥 Patch Coverage
+            ### **${{ env.PATCH_COVERAGE_PCT }}**
             <br>
             </td>
             <td>
@@ -211,6 +318,17 @@ jobs:
             ---
             
             ### 📋 Files Needing Attention
+            
+            <details>
+            <summary>🎯 <strong>Patch Coverage Details</strong> (lines changed in this PR)</summary>
+            <br>
+            
+            > **Patch Coverage** shows the percentage of **newly added or modified lines** that are covered by tests.
+            
+            ${{ env.PATCH_COVERAGE_SUMMARY }}
+            
+            </details>
+            
             <details>
             <summary>📉 <strong>Files with lowest coverage</strong> (click to expand)</summary>
             <br>
