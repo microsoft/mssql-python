@@ -97,7 +97,6 @@ class ConstantsDDBC(Enum):
     SQL_ATTR_ROW_ARRAY_SIZE = 27
     SQL_ATTR_ROWS_FETCHED_PTR = 26
     SQL_ATTR_ROW_STATUS_PTR = 25
-    SQL_FETCH_NEXT = 1
     SQL_ROW_SUCCESS = 0
     SQL_ROW_SUCCESS_WITH_INFO = 1
     SQL_ROW_NOROW = 100
@@ -116,6 +115,24 @@ class ConstantsDDBC(Enum):
     SQL_C_WCHAR = -8
     SQL_NULLABLE = 1
     SQL_MAX_NUMERIC_LEN = 16
+    SQL_ATTR_QUERY_TIMEOUT = 2
+
+    SQL_FETCH_NEXT = 1
+    SQL_FETCH_FIRST = 2
+    SQL_FETCH_LAST = 3
+    SQL_FETCH_PRIOR = 4
+    SQL_FETCH_ABSOLUTE = 5
+    SQL_FETCH_RELATIVE = 6
+    SQL_FETCH_BOOKMARK = 8
+    SQL_SCOPE_CURROW = 0
+    SQL_BEST_ROWID = 1
+    SQL_ROWVER = 2
+    SQL_NO_NULLS = 0
+    SQL_NULLABLE_UNKNOWN = 2
+    SQL_INDEX_UNIQUE = 0
+    SQL_INDEX_ALL = 1
+    SQL_QUICK = 0
+    SQL_ENSURE = 1
 
 class GetInfoConstants(Enum):
     """
@@ -260,3 +277,48 @@ class AuthType(Enum):
     INTERACTIVE = "activedirectoryinteractive"
     DEVICE_CODE = "activedirectorydevicecode"
     DEFAULT = "activedirectorydefault"
+
+class SQLTypes:
+    """Constants for valid SQL data types to use with setinputsizes"""
+    
+    @classmethod
+    def get_valid_types(cls) -> set:
+        """Returns a set of all valid SQL type constants"""
+        
+        return {
+            ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_VARCHAR.value, 
+            ConstantsDDBC.SQL_LONGVARCHAR.value, ConstantsDDBC.SQL_WCHAR.value,
+            ConstantsDDBC.SQL_WVARCHAR.value, ConstantsDDBC.SQL_WLONGVARCHAR.value,
+            ConstantsDDBC.SQL_DECIMAL.value, ConstantsDDBC.SQL_NUMERIC.value, 
+            ConstantsDDBC.SQL_BIT.value, ConstantsDDBC.SQL_TINYINT.value,
+            ConstantsDDBC.SQL_SMALLINT.value, ConstantsDDBC.SQL_INTEGER.value, 
+            ConstantsDDBC.SQL_BIGINT.value, ConstantsDDBC.SQL_REAL.value,
+            ConstantsDDBC.SQL_FLOAT.value, ConstantsDDBC.SQL_DOUBLE.value, 
+            ConstantsDDBC.SQL_BINARY.value, ConstantsDDBC.SQL_VARBINARY.value,
+            ConstantsDDBC.SQL_LONGVARBINARY.value, ConstantsDDBC.SQL_DATE.value, 
+            ConstantsDDBC.SQL_TIME.value, ConstantsDDBC.SQL_TIMESTAMP.value,
+            ConstantsDDBC.SQL_GUID.value
+        }
+    
+    # Could also add category methods for convenience
+    @classmethod
+    def get_string_types(cls) -> set:
+        """Returns a set of string SQL type constants"""
+        
+        return {
+            ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_VARCHAR.value, 
+            ConstantsDDBC.SQL_LONGVARCHAR.value, ConstantsDDBC.SQL_WCHAR.value,
+            ConstantsDDBC.SQL_WVARCHAR.value, ConstantsDDBC.SQL_WLONGVARCHAR.value
+        }
+    
+    @classmethod
+    def get_numeric_types(cls) -> set:
+        """Returns a set of numeric SQL type constants"""
+        
+        return {
+            ConstantsDDBC.SQL_DECIMAL.value, ConstantsDDBC.SQL_NUMERIC.value,
+            ConstantsDDBC.SQL_BIT.value, ConstantsDDBC.SQL_TINYINT.value,
+            ConstantsDDBC.SQL_SMALLINT.value, ConstantsDDBC.SQL_INTEGER.value,
+            ConstantsDDBC.SQL_BIGINT.value, ConstantsDDBC.SQL_REAL.value,
+            ConstantsDDBC.SQL_FLOAT.value, ConstantsDDBC.SQL_DOUBLE.value
+        }
