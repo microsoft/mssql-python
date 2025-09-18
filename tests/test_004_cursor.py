@@ -523,60 +523,6 @@ def test_varbinary_full_capacity(cursor, db_connection):
         cursor.execute("DROP TABLE #pytest_varbinary_test")
         db_connection.commit()
 
-def test_varchar_max(cursor, db_connection):
-    """Test SQL_VARCHAR with MAX length"""
-    try:
-        cursor.execute("CREATE TABLE #pytest_varchar_test (varchar_column VARCHAR(MAX))")
-        db_connection.commit()
-        cursor.execute("INSERT INTO #pytest_varchar_test (varchar_column) VALUES (?), (?)", ["ABCDEFGHI", None])
-        db_connection.commit()
-        expectedRows = 2
-        # fetchone test
-        cursor.execute("SELECT varchar_column FROM #pytest_varchar_test")
-        rows = []
-        for i in range(0, expectedRows):
-            rows.append(cursor.fetchone())
-        assert cursor.fetchone() == None, "varchar_column is expected to have only {} rows".format(expectedRows)
-        assert rows[0] == ["ABCDEFGHI"], "SQL_VARCHAR parsing failed for fetchone - row 0"
-        assert rows[1] == [None], "SQL_VARCHAR parsing failed for fetchone - row 1"
-        # fetchall test
-        cursor.execute("SELECT varchar_column FROM #pytest_varchar_test")
-        rows = cursor.fetchall()
-        assert rows[0] == ["ABCDEFGHI"], "SQL_VARCHAR parsing failed for fetchall - row 0"
-        assert rows[1] == [None], "SQL_VARCHAR parsing failed for fetchall - row 1"
-    except Exception as e:
-        pytest.fail(f"SQL_VARCHAR parsing test failed: {e}")
-    finally:
-        cursor.execute("DROP TABLE #pytest_varchar_test")
-        db_connection.commit()
-
-def test_wvarchar_max(cursor, db_connection):
-    """Test SQL_WVARCHAR with MAX length"""
-    try:
-        cursor.execute("CREATE TABLE #pytest_wvarchar_test (wvarchar_column NVARCHAR(MAX))")
-        db_connection.commit()
-        cursor.execute("INSERT INTO #pytest_wvarchar_test (wvarchar_column) VALUES (?), (?)", ["!@#$%^&*()_+", None])
-        db_connection.commit()
-        expectedRows = 2
-        # fetchone test
-        cursor.execute("SELECT wvarchar_column FROM #pytest_wvarchar_test")
-        rows = []
-        for i in range(0, expectedRows):
-            rows.append(cursor.fetchone())
-        assert cursor.fetchone() == None, "wvarchar_column is expected to have only {} rows".format(expectedRows)
-        assert rows[0] == ["!@#$%^&*()_+"], "SQL_WVARCHAR parsing failed for fetchone - row 0"
-        assert rows[1] == [None], "SQL_WVARCHAR parsing failed for fetchone - row 1"
-        # fetchall test
-        cursor.execute("SELECT wvarchar_column FROM #pytest_wvarchar_test")
-        rows = cursor.fetchall()
-        assert rows[0] == ["!@#$%^&*()_+"], "SQL_WVARCHAR parsing failed for fetchall - row 0"
-        assert rows[1] == [None], "SQL_WVARCHAR parsing failed for fetchall - row 1"
-    except Exception as e:
-        pytest.fail(f"SQL_WVARCHAR parsing test failed: {e}")
-    finally:
-        cursor.execute("DROP TABLE #pytest_wvarchar_test")
-        db_connection.commit()
-
 def test_varbinary_max(cursor, db_connection):
     """Test SQL_VARBINARY with MAX length"""
     try:
@@ -5680,186 +5626,44 @@ def test_emoji_round_trip(cursor, db_connection):
         except Exception as e:
             pytest.fail(f"Error for input {repr(text)}: {e}")
 
-def test_varchar_max_insert_non_lob(cursor, db_connection):
-    """Test small VARCHAR(MAX) insert (non-LOB path)."""
+def test_varcharmax_transaction_rollback(cursor, db_connection):
+    """Test that inserting a large VARCHAR(MAX) within a transaction that is rolled back
+    does not persist the data, ensuring transactional integrity."""
     try:
-        cursor.execute("CREATE TABLE #pytest_varchar_nonlob (col VARCHAR(MAX))")
-        db_connection.commit()
-        
-        small_str = "Hello, world!"  # small, non-LOB
-        cursor.execute(
-            "INSERT INTO #pytest_varchar_nonlob (col) VALUES (?)", 
-            [small_str]
-        )
-        db_connection.commit()
-        
-        empty_str = ""
-        cursor.execute(
-            "INSERT INTO #pytest_varchar_nonlob (col) VALUES (?)", 
-            [empty_str]
-        )
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
         db_connection.commit()
 
-        # None value
-        cursor.execute(
-            "INSERT INTO #pytest_varchar_nonlob (col) VALUES (?)", 
-            [None]
-        )
-        db_connection.commit()
-        
-        # Fetch commented for now
-        # cursor.execute("SELECT col FROM #pytest_varchar_nonlob")
-        # rows = cursor.fetchall()
-        # assert rows == [[small_str], [empty_str], [None]]
-
+        db_connection.autocommit = False
+        rollback_str = "ROLLBACK" * 2000
+        cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [rollback_str])
+        db_connection.rollback()
+        cursor.execute("SELECT COUNT(*) FROM #pytest_varcharmax WHERE col = ?", [rollback_str])
+        assert cursor.fetchone()[0] == 0
     finally:
-        pass
+        db_connection.autocommit = True  # reset state
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        db_connection.commit()
 
-
-def test_varchar_max_insert_lob(cursor, db_connection):
-    """Test large VARCHAR(MAX) insert (LOB path)."""
+def test_nvarcharmax_transaction_rollback(cursor, db_connection):
+    """Test that inserting a large NVARCHAR(MAX) within a transaction that is rolled back
+    does not persist the data, ensuring transactional integrity."""
     try:
-        cursor.execute("CREATE TABLE #pytest_varchar_lob (col VARCHAR(MAX))")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
         db_connection.commit()
-        
-        large_str = "A" * 100_000  # > 8k to trigger LOB
-        cursor.execute(
-            "INSERT INTO #pytest_varchar_lob (col) VALUES (?)", 
-            [large_str]
-        )
-        db_connection.commit()
-        
-        # Fetch commented for now
-        # cursor.execute("SELECT col FROM #pytest_varchar_lob")
-        # rows = cursor.fetchall()
-        # assert rows == [[large_str]]
 
+        db_connection.autocommit = False
+        rollback_str = "ROLLBACK" * 2000
+        cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [rollback_str])
+        db_connection.rollback()
+        cursor.execute("SELECT COUNT(*) FROM #pytest_nvarcharmax WHERE col = ?", [rollback_str])
+        assert cursor.fetchone()[0] == 0
     finally:
-        pass
-
-
-def test_nvarchar_max_insert_non_lob(cursor, db_connection):
-    """Test small NVARCHAR(MAX) insert (non-LOB path)."""
-    try:
-        cursor.execute("CREATE TABLE #pytest_nvarchar_nonlob (col NVARCHAR(MAX))")
-        db_connection.commit()
-        
-        small_str = "Unicode ✨ test"
-        cursor.execute(
-            "INSERT INTO #pytest_nvarchar_nonlob (col) VALUES (?)",
-            [small_str]
-        )
-        db_connection.commit()
-        
-        empty_str = ""
-        cursor.execute(
-            "INSERT INTO #pytest_nvarchar_nonlob (col) VALUES (?)", 
-            [empty_str]
-        )
+        db_connection.autocommit = True
+        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarcharmax")
         db_connection.commit()
 
-        cursor.execute(
-            "INSERT INTO #pytest_nvarchar_nonlob (col) VALUES (?)", 
-            [None]
-        )
-        db_connection.commit()
-
-        # Fetch commented for now
-        # cursor.execute("SELECT col FROM #pytest_nvarchar_nonlob")
-        # rows = cursor.fetchall()
-        # assert rows == [[small_str], [empty_str], [None]]
-
-    finally:
-        pass
-
-
-def test_nvarchar_max_insert_lob(cursor, db_connection):
-    """Test large NVARCHAR(MAX) insert (LOB path)."""
-    try:
-        cursor.execute("CREATE TABLE #pytest_nvarchar_lob (col NVARCHAR(MAX))")
-        db_connection.commit()
-        
-        large_str = "📝" * 50_000  # each emoji = 2 UTF-16 code units, total > 100k bytes
-        cursor.execute(
-            "INSERT INTO #pytest_nvarchar_lob (col) VALUES (?)",
-            [large_str]
-        )
-        db_connection.commit()
-
-        # Fetch commented for now
-        # cursor.execute("SELECT col FROM #pytest_nvarchar_lob")
-        # rows = cursor.fetchall()
-        # assert rows == [[large_str]]
-
-    finally:
-        pass
-
-def test_nvarchar_max_boundary(cursor, db_connection):
-    """Test NVARCHAR(MAX) at LOB boundary sizes."""
-    try:
-        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarchar_boundary")
-        cursor.execute("CREATE TABLE #pytest_nvarchar_boundary (col NVARCHAR(MAX))")
-        db_connection.commit()
-        
-        # 4k BMP chars = 8k bytes
-        cursor.execute("INSERT INTO #pytest_nvarchar_boundary (col) VALUES (?)", ["A" * 4096])
-        # 4k emojis = 8k UTF-16 code units (16k bytes)
-        cursor.execute("INSERT INTO #pytest_nvarchar_boundary (col) VALUES (?)", ["📝" * 4096])
-        db_connection.commit()
-        
-        # Fetch commented for now
-        # cursor.execute("SELECT col FROM #pytest_nvarchar_boundary")
-        # rows = cursor.fetchall()
-        # assert rows == [["A" * 4096], ["📝" * 4096]]
-    finally:
-        pass
-
-
-def test_nvarchar_max_chunk_edge(cursor, db_connection):
-    """Test NVARCHAR(MAX) insert slightly larger than a chunk."""
-    try:
-        cursor.execute("DROP TABLE IF EXISTS #pytest_nvarchar_chunk")
-        cursor.execute("CREATE TABLE #pytest_nvarchar_chunk (col NVARCHAR(MAX))")
-        db_connection.commit()
-
-        chunk_size = 8192  # bytes
-        test_str = "📝" * ((chunk_size // 4) + 3)  # slightly > 1 chunk
-        cursor.execute("INSERT INTO #pytest_nvarchar_chunk (col) VALUES (?)", [test_str])
-        db_connection.commit()
-        
-        # Fetch commented for now
-        # cursor.execute("SELECT col FROM #pytest_nvarchar_chunk")
-        # row = cursor.fetchone()
-        # assert row[0] == test_str
-    finally:
-        pass
-
-def test_empty_string_chunk(cursor, db_connection):
-    """Test inserting empty strings into VARCHAR(MAX) and NVARCHAR(MAX)."""
-    try:
-        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_string")
-        cursor.execute("""
-            CREATE TABLE #pytest_empty_string (
-                varchar_col VARCHAR(MAX),
-                nvarchar_col NVARCHAR(MAX)
-            )
-        """)
-        db_connection.commit()
-
-        empty_varchar = ""
-        empty_nvarchar = ""
-        cursor.execute(
-            "INSERT INTO #pytest_empty_string (varchar_col, nvarchar_col) VALUES (?, ?)",
-            [empty_varchar, empty_nvarchar]
-        )
-        db_connection.commit()
-
-        cursor.execute("SELECT LEN(varchar_col), LEN(nvarchar_col) FROM #pytest_empty_string")
-        row = tuple(int(x) for x in cursor.fetchone())
-        assert row == (0, 0), f"Expected lengths (0,0), got {row}"
-    finally:
-        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_string")
-        db_connection.commit()
 
 def test_empty_char_single_and_batch_fetch(cursor, db_connection):
     """Test that empty CHAR data is handled correctly in both single and batch fetch"""
@@ -6275,40 +6079,25 @@ def test_binary_data_over_8000_bytes(cursor, db_connection):
     """Test binary data larger than 8000 bytes - document current driver limitations"""
     try:
         # Create test table with VARBINARY(MAX) to handle large data
-        drop_table_if_exists(cursor, "#pytest_large_binary")
+        drop_table_if_exists(cursor, "#pytest_small_binary")
         cursor.execute("""
-            CREATE TABLE #pytest_large_binary (
+            CREATE TABLE #pytest_small_binary (
                 id INT,
                 large_binary VARBINARY(MAX)
             )
         """)
-        
-        # Test the current driver limitations:
-        # 1. Parameters cannot be > 8192 bytes 
-        # 2. Fetch buffer is limited to 4096 bytes
-        
-        large_data = b'A' * 10000  # 10,000 bytes - exceeds parameter limit
-        
-        # This should fail with the current driver parameter limitation
-        try:
-            cursor.execute("INSERT INTO #pytest_large_binary VALUES (?, ?)", (1, large_data))
-            pytest.fail("Expected streaming parameter error for data > 8192 bytes")
-        except RuntimeError as e:
-            error_msg = str(e)
-            assert "Streaming parameters is not yet supported" in error_msg, f"Expected streaming parameter error, got: {e}"
-            assert "8192 bytes" in error_msg, f"Expected 8192 bytes limit mentioned, got: {e}"
         
         # Test data that fits within both parameter and fetch limits (< 4096 bytes)
         medium_data = b'B' * 3000  # 3,000 bytes - under both limits
         small_data = b'C' * 1000   # 1,000 bytes - well under limits
         
         # These should work fine
-        cursor.execute("INSERT INTO #pytest_large_binary VALUES (?, ?)", (1, medium_data))
-        cursor.execute("INSERT INTO #pytest_large_binary VALUES (?, ?)", (2, small_data))
+        cursor.execute("INSERT INTO #pytest_small_binary VALUES (?, ?)", (1, medium_data))
+        cursor.execute("INSERT INTO #pytest_small_binary VALUES (?, ?)", (2, small_data))
         db_connection.commit()
         
         # Verify the data was inserted correctly
-        cursor.execute("SELECT id, large_binary FROM #pytest_large_binary ORDER BY id")
+        cursor.execute("SELECT id, large_binary FROM #pytest_small_binary ORDER BY id")
         results = cursor.fetchall()
         
         assert len(results) == 2, f"Expected 2 rows, got {len(results)}"
@@ -6317,13 +6106,80 @@ def test_binary_data_over_8000_bytes(cursor, db_connection):
         assert results[0][1] == medium_data, "Medium binary data mismatch"
         assert results[1][1] == small_data, "Small binary data mismatch"
         
-        print("Note: Driver currently limits parameters to < 8192 bytes and fetch buffer to 4096 bytes.")
-        
+        print("Small/medium binary data inserted and verified successfully.")
     except Exception as e:
-        pytest.fail(f"Binary data over 8000 bytes test failed: {e}")
+        pytest.fail(f"Small binary data insertion test failed: {e}")
     finally:
-        drop_table_if_exists(cursor, "#pytest_large_binary")
+        drop_table_if_exists(cursor, "#pytest_small_binary")
         db_connection.commit()
+
+def test_varbinarymax_insert_fetch(cursor, db_connection):
+    """Test for VARBINARY(MAX) insert and fetch (streaming support) using execute per row"""
+    try:
+        # Create test table
+        drop_table_if_exists(cursor, "#pytest_varbinarymax")
+        cursor.execute("""
+            CREATE TABLE #pytest_varbinarymax (
+                id INT,
+                binary_data VARBINARY(MAX)
+            )
+        """)
+
+        # Prepare test data
+        test_data = [
+            (2, b''),                     # Empty bytes
+            (3, b'1234567890'),           # Small binary
+            (4, b'A' * 9000),             # Large binary > 8000 (streaming)
+            (5, b'B' * 20000),            # Large binary > 8000 (streaming)
+            (6, b'C' * 8000),             # Edge case: exactly 8000 bytes
+            (7, b'D' * 8001),             # Edge case: just over 8000 bytes
+        ]
+
+        # Insert each row using execute
+        for row_id, binary in test_data:
+            cursor.execute("INSERT INTO #pytest_varbinarymax VALUES (?, ?)", (row_id, binary))
+        db_connection.commit()
+
+        # ---------- FETCHONE TEST (multi-column) ----------
+        cursor.execute("SELECT id, binary_data FROM #pytest_varbinarymax ORDER BY id")
+        rows = []
+        while True:
+            row = cursor.fetchone()
+            if row is None:
+                break
+            rows.append(row)
+
+        assert len(rows) == len(test_data), f"Expected {len(test_data)} rows, got {len(rows)}"
+
+        # Validate each row
+        for i, (expected_id, expected_data) in enumerate(test_data):
+            fetched_id, fetched_data = rows[i]
+            assert fetched_id == expected_id, f"Row {i+1} ID mismatch: expected {expected_id}, got {fetched_id}"
+            assert isinstance(fetched_data, bytes), f"Row {i+1} expected bytes, got {type(fetched_data)}"
+            assert fetched_data == expected_data, f"Row {i+1} data mismatch"
+
+        # ---------- FETCHALL TEST ----------
+        cursor.execute("SELECT id, binary_data FROM #pytest_varbinarymax ORDER BY id")
+        all_rows = cursor.fetchall()
+        assert len(all_rows) == len(test_data)
+
+        # ---------- FETCHMANY TEST ----------
+        cursor.execute("SELECT id, binary_data FROM #pytest_varbinarymax ORDER BY id")
+        batch_size = 2
+        batches = []
+        while True:
+            batch = cursor.fetchmany(batch_size)
+            if not batch:
+                break
+            batches.extend(batch)
+        assert len(batches) == len(test_data)
+
+    except Exception as e:
+        pytest.fail(f"VARBINARY(MAX) insert/fetch test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_varbinarymax")
+        db_connection.commit()
+
 
 def test_all_empty_binaries(cursor, db_connection):
     """Test table with only empty binary values"""
@@ -6484,6 +6340,40 @@ def test_binary_mostly_small_one_large(cursor, db_connection):
         drop_table_if_exists(cursor, "#pytest_mixed_size_binary")
         db_connection.commit()
 
+def test_varbinarymax_insert_fetch_null(cursor, db_connection):
+    """Test insertion and retrieval of NULL value in VARBINARY(MAX) column."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_varbinarymax_null")
+        cursor.execute("""
+            CREATE TABLE #pytest_varbinarymax_null (
+                id INT,
+                binary_data VARBINARY(MAX)
+            )
+        """)
+
+        # Insert a row with NULL for binary_data
+        cursor.execute(
+            "INSERT INTO #pytest_varbinarymax_null VALUES (?, CAST(NULL AS VARBINARY(MAX)))",
+            (1,)
+        )
+        db_connection.commit()
+
+        # Fetch the row
+        cursor.execute("SELECT id, binary_data FROM #pytest_varbinarymax_null")
+        row = cursor.fetchone()
+
+        assert row is not None, "No row fetched"
+        fetched_id, fetched_data = row
+        assert fetched_id == 1, "ID mismatch"
+        assert fetched_data is None, "Expected NULL for binary_data"
+
+    except Exception as e:
+        pytest.fail(f"VARBINARY(MAX) NULL insert/fetch test failed: {e}")
+
+    finally:
+        drop_table_if_exists(cursor, "#pytest_varbinarymax_null")
+        db_connection.commit()
+
 def test_only_null_and_empty_binary(cursor, db_connection):
     """Test table with only NULL and empty binary values to ensure fallback doesn't produce size=0"""
     try:
@@ -6547,18 +6437,478 @@ def test_only_null_and_empty_binary(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, "#pytest_null_empty_binary")
         db_connection.commit()
+        
+# ---------------------- VARCHAR(MAX) ----------------------
 
-def test_close(db_connection):
-    """Test closing the cursor"""
+def test_varcharmax_short_fetch(cursor, db_connection):
+    """Small VARCHAR(MAX), fetchone/fetchall/fetchmany."""
     try:
-        cursor = db_connection.cursor()
-        cursor.close()
-        assert cursor.closed, "Cursor should be closed after calling close()"
-    except Exception as e:
-        pytest.fail(f"Cursor close test failed: {e}")
-    finally:
-        cursor = db_connection.cursor()
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
 
+        values = ["hello", "world"]
+        for val in values:
+            cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [val])
+        db_connection.commit()
+
+        # fetchone
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY col")
+        row1 = cursor.fetchone()[0]
+        row2 = cursor.fetchone()[0]
+        assert {row1, row2} == set(values)
+        assert cursor.fetchone() is None
+
+        # fetchall
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY col")
+        all_rows = [r[0] for r in cursor.fetchall()]
+        assert set(all_rows) == set(values)
+
+        # fetchmany
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY col")
+        many = [r[0] for r in cursor.fetchmany(1)]
+        assert many[0] in values
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varcharmax")
+        db_connection.commit()
+
+
+def test_varcharmax_empty_string(cursor, db_connection):
+    """Empty string in VARCHAR(MAX)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [""])
+        db_connection.commit()
+
+        cursor.execute("SELECT col FROM #pytest_varcharmax")
+        assert cursor.fetchone()[0] == ""
+    finally:
+        cursor.execute("DROP TABLE #pytest_varcharmax")
+        db_connection.commit()
+
+
+def test_varcharmax_null(cursor, db_connection):
+    """NULL in VARCHAR(MAX)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [None])
+        db_connection.commit()
+
+        cursor.execute("SELECT col FROM #pytest_varcharmax")
+        assert cursor.fetchone()[0] is None
+    finally:
+        cursor.execute("DROP TABLE #pytest_varcharmax")
+        db_connection.commit()
+
+
+def test_varcharmax_boundary(cursor, db_connection):
+    """Boundary at 8000 (inline limit)."""
+    try:
+        boundary_str = "X" * 8000
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [boundary_str])
+        db_connection.commit()
+
+        cursor.execute("SELECT col FROM #pytest_varcharmax")
+        assert cursor.fetchone()[0] == boundary_str
+    finally:
+        cursor.execute("DROP TABLE #pytest_varcharmax")
+        db_connection.commit()
+
+
+def test_varcharmax_streaming(cursor, db_connection):
+    """Streaming fetch > 8k with all fetch modes."""
+    try:
+        values = ["Y" * 8100, "Z" * 10000]
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+        for v in values:
+            cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [v])
+        db_connection.commit()
+
+        # --- fetchall ---
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY LEN(col)")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows == sorted(values, key=len)
+
+        # --- fetchone ---
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY LEN(col)")
+        r1 = cursor.fetchone()[0]
+        r2 = cursor.fetchone()[0]
+        assert {r1, r2} == set(values)
+        assert cursor.fetchone() is None
+
+        # --- fetchmany ---
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY LEN(col)")
+        batch = [r[0] for r in cursor.fetchmany(1)]
+        assert batch[0] in values
+    finally:
+        cursor.execute("DROP TABLE #pytest_varcharmax")
+        db_connection.commit()
+
+
+def test_varcharmax_large(cursor, db_connection):
+    """Very large VARCHAR(MAX)."""
+    try:
+        large_str = "L" * 100_000
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [large_str])
+        db_connection.commit()
+
+        cursor.execute("SELECT col FROM #pytest_varcharmax")
+        assert cursor.fetchone()[0] == large_str
+    finally:
+        cursor.execute("DROP TABLE #pytest_varcharmax")
+        db_connection.commit()
+
+
+# ---------------------- NVARCHAR(MAX) ----------------------
+
+def test_nvarcharmax_short_fetch(cursor, db_connection):
+    """Small NVARCHAR(MAX), unicode, fetch modes."""
+    try:
+        values = ["hello", "world_ß"]
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+        for v in values:
+            cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [v])
+        db_connection.commit()
+
+        # fetchone
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY col")
+        r1 = cursor.fetchone()[0]
+        r2 = cursor.fetchone()[0]
+        assert {r1, r2} == set(values)
+        assert cursor.fetchone() is None
+
+        # fetchall
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY col")
+        all_rows = [r[0] for r in cursor.fetchall()]
+        assert set(all_rows) == set(values)
+
+        # fetchmany
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY col")
+        many = [r[0] for r in cursor.fetchmany(1)]
+        assert many[0] in values
+    finally:
+        cursor.execute("DROP TABLE #pytest_nvarcharmax")
+        db_connection.commit()
+
+
+def test_nvarcharmax_empty_string(cursor, db_connection):
+    """Empty string in NVARCHAR(MAX)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [""])
+        db_connection.commit()
+
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax")
+        assert cursor.fetchone()[0] == ""
+    finally:
+        cursor.execute("DROP TABLE #pytest_nvarcharmax")
+        db_connection.commit()
+
+
+def test_nvarcharmax_null(cursor, db_connection):
+    """NULL in NVARCHAR(MAX)."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [None])
+        db_connection.commit()
+
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax")
+        assert cursor.fetchone()[0] is None
+    finally:
+        cursor.execute("DROP TABLE #pytest_nvarcharmax")
+        db_connection.commit()
+
+
+def test_nvarcharmax_boundary(cursor, db_connection):
+    """Boundary at 4000 characters (inline limit)."""
+    try:
+        boundary_str = "X" * 4000
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [boundary_str])
+        db_connection.commit()
+
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax")
+        assert cursor.fetchone()[0] == boundary_str
+    finally:
+        cursor.execute("DROP TABLE #pytest_nvarcharmax")
+        db_connection.commit()
+
+
+def test_nvarcharmax_streaming(cursor, db_connection):
+    """Streaming fetch > 4k unicode with all fetch modes."""
+    try:
+        values = ["Ω" * 4100, "漢" * 5000]
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+        for v in values:
+            cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [v])
+        db_connection.commit()
+
+        # --- fetchall ---
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY LEN(col)")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows == sorted(values, key=len)
+
+        # --- fetchone ---
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY LEN(col)")
+        r1 = cursor.fetchone()[0]
+        r2 = cursor.fetchone()[0]
+        assert {r1, r2} == set(values)
+        assert cursor.fetchone() is None
+
+        # --- fetchmany ---
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY LEN(col)")
+        batch = [r[0] for r in cursor.fetchmany(1)]
+        assert batch[0] in values
+    finally:
+        cursor.execute("DROP TABLE #pytest_nvarcharmax")
+        db_connection.commit()
+
+
+def test_nvarcharmax_large(cursor, db_connection):
+    """Very large NVARCHAR(MAX)."""
+    try:
+        large_str = "漢" * 50_000
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [large_str])
+        db_connection.commit()
+
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax")
+        assert cursor.fetchone()[0] == large_str
+    finally:
+        cursor.execute("DROP TABLE #pytest_nvarcharmax")
+        db_connection.commit()
+
+def test_money_smallmoney_insert_fetch(cursor, db_connection):
+    """Test inserting and retrieving valid MONEY and SMALLMONEY values including boundaries and typical data"""
+    try:
+        drop_table_if_exists(cursor, "dbo.money_test")
+        cursor.execute("""
+            CREATE TABLE dbo.money_test (
+                id INT IDENTITY PRIMARY KEY,
+                m MONEY,
+                sm SMALLMONEY,
+                d DECIMAL(19,4),
+                n NUMERIC(10,4)
+            )
+        """)
+        db_connection.commit()
+
+        # Max values
+        cursor.execute("INSERT INTO dbo.money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
+                       (decimal.Decimal("922337203685477.5807"), decimal.Decimal("214748.3647"),
+                        decimal.Decimal("9999999999999.9999"), decimal.Decimal("1234.5678")))
+
+        # Min values
+        cursor.execute("INSERT INTO dbo.money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
+                       (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648"),
+                        decimal.Decimal("-9999999999999.9999"), decimal.Decimal("-1234.5678")))
+
+        # Typical values
+        cursor.execute("INSERT INTO dbo.money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
+                       (decimal.Decimal("1234567.8901"), decimal.Decimal("12345.6789"),
+                        decimal.Decimal("42.4242"), decimal.Decimal("3.1415")))
+
+        # NULL values
+        cursor.execute("INSERT INTO dbo.money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
+                       (None, None, None, None))
+
+        db_connection.commit()
+
+        cursor.execute("SELECT m, sm, d, n FROM dbo.money_test ORDER BY id")
+        results = cursor.fetchall()
+        assert len(results) == 4, f"Expected 4 rows, got {len(results)}"
+
+        expected = [
+            (decimal.Decimal("922337203685477.5807"), decimal.Decimal("214748.3647"),
+             decimal.Decimal("9999999999999.9999"), decimal.Decimal("1234.5678")),
+            (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648"),
+             decimal.Decimal("-9999999999999.9999"), decimal.Decimal("-1234.5678")),
+            (decimal.Decimal("1234567.8901"), decimal.Decimal("12345.6789"),
+             decimal.Decimal("42.4242"), decimal.Decimal("3.1415")),
+            (None, None, None, None)
+        ]
+
+        for i, (row, exp) in enumerate(zip(results, expected)):
+            for j, (val, exp_val) in enumerate(zip(row, exp), 1):
+                if exp_val is None:
+                    assert val is None, f"Row {i+1} col{j}: expected None, got {val}"
+                else:
+                    assert val == exp_val, f"Row {i+1} col{j}: expected {exp_val}, got {val}"
+                    assert isinstance(val, decimal.Decimal), f"Row {i+1} col{j}: expected Decimal, got {type(val)}"
+
+    except Exception as e:
+        pytest.fail(f"MONEY and SMALLMONEY insert/fetch test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "dbo.money_test")
+        db_connection.commit()
+
+
+def test_money_smallmoney_null_handling(cursor, db_connection):
+    """Test that NULL values for MONEY and SMALLMONEY are stored and retrieved correctly"""
+    try:
+        drop_table_if_exists(cursor, "dbo.money_test")
+        cursor.execute("""
+            CREATE TABLE dbo.money_test (
+                id INT IDENTITY PRIMARY KEY,
+                m MONEY,
+                sm SMALLMONEY
+            )
+        """)
+        db_connection.commit()
+
+        # Row with both NULLs
+        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)", (None, None))
+
+        # Row with m filled, sm NULL
+        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)",
+                       (decimal.Decimal("123.4500"), None))
+
+        # Row with m NULL, sm filled
+        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)",
+                       (None, decimal.Decimal("67.8900")))
+
+        db_connection.commit()
+
+        cursor.execute("SELECT m, sm FROM dbo.money_test ORDER BY id")
+        results = cursor.fetchall()
+        assert len(results) == 3, f"Expected 3 rows, got {len(results)}"
+
+        expected = [
+            (None, None),
+            (decimal.Decimal("123.4500"), None),
+            (None, decimal.Decimal("67.8900"))
+        ]
+
+        for i, (row, exp) in enumerate(zip(results, expected)):
+            for j, (val, exp_val) in enumerate(zip(row, exp), 1):
+                if exp_val is None:
+                    assert val is None, f"Row {i+1} col{j}: expected None, got {val}"
+                else:
+                    assert val == exp_val, f"Row {i+1} col{j}: expected {exp_val}, got {val}"
+                    assert isinstance(val, decimal.Decimal), f"Row {i+1} col{j}: expected Decimal, got {type(val)}"
+
+    except Exception as e:
+        pytest.fail(f"MONEY and SMALLMONEY NULL handling test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "dbo.money_test")
+        db_connection.commit()
+
+
+def test_money_smallmoney_roundtrip(cursor, db_connection):
+    """Test inserting and retrieving MONEY and SMALLMONEY using decimal.Decimal roundtrip"""
+    try:
+        drop_table_if_exists(cursor, "dbo.money_test")
+        cursor.execute("""
+            CREATE TABLE dbo.money_test (
+                id INT IDENTITY PRIMARY KEY,
+                m MONEY,
+                sm SMALLMONEY
+            )
+        """)
+        db_connection.commit()
+
+        values = (decimal.Decimal("12345.6789"), decimal.Decimal("987.6543"))
+        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)", values)
+        db_connection.commit()
+
+        cursor.execute("SELECT m, sm FROM dbo.money_test ORDER BY id DESC")
+        row = cursor.fetchone()
+        for i, (val, exp_val) in enumerate(zip(row, values), 1):
+            assert val == exp_val, f"col{i} roundtrip mismatch, got {val}, expected {exp_val}"
+            assert isinstance(val, decimal.Decimal), f"col{i} should be Decimal, got {type(val)}"
+
+    except Exception as e:
+        pytest.fail(f"MONEY and SMALLMONEY roundtrip test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "dbo.money_test")
+        db_connection.commit()
+
+
+def test_money_smallmoney_boundaries(cursor, db_connection):
+    """Test boundary values for MONEY and SMALLMONEY types are handled correctly"""
+    try:
+        drop_table_if_exists(cursor, "dbo.money_test")
+        cursor.execute("""
+            CREATE TABLE dbo.money_test (
+                id INT IDENTITY PRIMARY KEY,
+                m MONEY,
+                sm SMALLMONEY
+            )
+        """)
+        db_connection.commit()
+
+        # Insert max boundary
+        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)",
+                       (decimal.Decimal("922337203685477.5807"), decimal.Decimal("214748.3647")))
+
+        # Insert min boundary
+        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)",
+                       (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648")))
+
+        db_connection.commit()
+
+        cursor.execute("SELECT m, sm FROM dbo.money_test ORDER BY id DESC")
+        results = cursor.fetchall()
+        expected = [
+            (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648")),
+            (decimal.Decimal("922337203685477.5807"), decimal.Decimal("214748.3647"))
+        ]
+        for i, (row, exp_row) in enumerate(zip(results, expected), 1):
+            for j, (val, exp_val) in enumerate(zip(row, exp_row), 1):
+                assert val == exp_val, f"Row {i} col{j} mismatch, got {val}, expected {exp_val}"
+                assert isinstance(val, decimal.Decimal), f"Row {i} col{j} should be Decimal, got {type(val)}"
+
+    except Exception as e:
+        pytest.fail(f"MONEY and SMALLMONEY boundary values test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "dbo.money_test")
+        db_connection.commit()
+
+
+def test_money_smallmoney_invalid_values(cursor, db_connection):
+    """Test that invalid or out-of-range MONEY and SMALLMONEY values raise errors"""
+    try:
+        drop_table_if_exists(cursor, "dbo.money_test")
+        cursor.execute("""
+            CREATE TABLE dbo.money_test (
+                id INT IDENTITY PRIMARY KEY,
+                m MONEY,
+                sm SMALLMONEY
+            )
+        """)
+        db_connection.commit()
+
+        # Out of range MONEY
+        with pytest.raises(Exception):
+            cursor.execute("INSERT INTO dbo.money_test (m) VALUES (?)", (decimal.Decimal("922337203685477.5808"),))
+
+        # Out of range SMALLMONEY
+        with pytest.raises(Exception):
+            cursor.execute("INSERT INTO dbo.money_test (sm) VALUES (?)", (decimal.Decimal("214748.3648"),))
+
+        # Invalid string
+        with pytest.raises(Exception):
+            cursor.execute("INSERT INTO dbo.money_test (m) VALUES (?)", ("invalid_string",))
+
+    except Exception as e:
+        pytest.fail(f"MONEY and SMALLMONEY invalid values test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "dbo.money_test")
+        db_connection.commit()
+        
 def test_multi_statement_query(cursor, db_connection):
     """Test multi-statement query with temp tables"""
     try:
@@ -6702,3 +7052,16 @@ def test_multi_statement_batch_final_non_select(cursor, db_connection):
             db_connection.commit()
         except:
             pass
+
+def test_close(db_connection):
+    """Test closing the cursor"""
+    try:
+        cursor = db_connection.cursor()
+        cursor.close()
+        assert cursor.closed, "Cursor should be closed after calling close()"
+    except Exception as e:
+        pytest.fail(f"Cursor close test failed: {e}")
+    finally:
+        cursor = db_connection.cursor()
+
+

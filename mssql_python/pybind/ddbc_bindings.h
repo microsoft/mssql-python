@@ -38,6 +38,18 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
     result.push_back(0);
     return result;
 }
+
+inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
+    if (!sqlwStr) return std::wstring();
+
+    if (length == SQL_NTS) {
+        size_t i = 0;
+        while (sqlwStr[i] != 0) ++i;
+        length = i;
+    }
+    return std::wstring(reinterpret_cast<const wchar_t*>(sqlwStr), length);
+}
+
 #endif
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -60,7 +72,6 @@ inline bool IsValidUnicodeScalar(uint32_t cp) {
 
 inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
     if (!sqlwStr) return std::wstring();
-
     if (length == SQL_NTS) {
         size_t i = 0;
         while (sqlwStr[i] != 0) ++i;
@@ -68,29 +79,28 @@ inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = S
     }
     std::wstring result;
     result.reserve(length);
-
     if constexpr (sizeof(SQLWCHAR) == 2) {
-        // Decode UTF-16 to UTF-32 (with surrogate pair handling)
-        for (size_t i = 0; i < length; ++i) {
+        for (size_t i = 0; i < length; ) { // Use a manual increment to handle skipping
             uint16_t wc = static_cast<uint16_t>(sqlwStr[i]);
-            // Check if this is a high surrogate (U+D800–U+DBFF)
-            if (wc >= UNICODE_SURROGATE_HIGH_START && wc <= UNICODE_SURROGATE_HIGH_END && i + 1 < length) {
+            // Check for high surrogate and valid low surrogate
+            if (wc >= UNICODE_SURROGATE_HIGH_START && wc <= UNICODE_SURROGATE_HIGH_END && (i + 1 < length)) {
                 uint16_t low = static_cast<uint16_t>(sqlwStr[i + 1]);
-                // Check if the next code unit is a low surrogate (U+DC00–U+DFFF)
                 if (low >= UNICODE_SURROGATE_LOW_START && low <= UNICODE_SURROGATE_LOW_END) {
-                    // Combine surrogate pair into a single code point
+                    // Combine into a single code point
                     uint32_t cp = (((wc - UNICODE_SURROGATE_HIGH_START) << 10) | (low - UNICODE_SURROGATE_LOW_START)) + 0x10000;
                     result.push_back(static_cast<wchar_t>(cp));
-                    ++i; // Skip the low surrogate
+                    i += 2; // Move past both surrogates
                     continue;
                 }
             }
-            // If valid scalar then append, else append replacement char (U+FFFD)
+            // If we reach here, it's not a valid surrogate pair or is a BMP character.
+            // Check if it's a valid scalar and append, otherwise append replacement char.
             if (IsValidUnicodeScalar(wc)) {
                 result.push_back(static_cast<wchar_t>(wc));
             } else {
                 result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
             }
+            ++i; // Move to the next code unit
         }
     } else {
         // SQLWCHAR is UTF-32, so just copy with validation
@@ -346,6 +356,7 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
 
 inline std::string WideToUTF8(const std::wstring& wstr) {
     if (wstr.empty()) return {};
+
 #if defined(_WIN32)
     int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
     if (size_needed == 0) return {};
@@ -354,8 +365,34 @@ inline std::string WideToUTF8(const std::wstring& wstr) {
     if (converted == 0) return {};
     return result;
 #else
-    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
-    return converter.to_bytes(wstr);
+    // Manual UTF-32 to UTF-8 conversion for macOS/Linux
+    std::string utf8_string;
+    utf8_string.reserve(wstr.size() * 4); // Reserve enough space for worst case (4 bytes per character)
+    
+    for (wchar_t wc : wstr) {
+        uint32_t code_point = static_cast<uint32_t>(wc);
+
+        if (code_point <= 0x7F) {
+            // 1-byte UTF-8 sequence for ASCII characters
+            utf8_string += static_cast<char>(code_point);
+        } else if (code_point <= 0x7FF) {
+            // 2-byte UTF-8 sequence
+            utf8_string += static_cast<char>(0xC0 | ((code_point >> 6) & 0x1F));
+            utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
+        } else if (code_point <= 0xFFFF) {
+            // 3-byte UTF-8 sequence
+            utf8_string += static_cast<char>(0xE0 | ((code_point >> 12) & 0x0F));
+            utf8_string += static_cast<char>(0x80 | ((code_point >> 6) & 0x3F));
+            utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
+        } else if (code_point <= 0x10FFFF) {
+            // 4-byte UTF-8 sequence for characters like emojis (e.g., U+1F604)
+            utf8_string += static_cast<char>(0xF0 | ((code_point >> 18) & 0x07));
+            utf8_string += static_cast<char>(0x80 | ((code_point >> 12) & 0x3F));
+            utf8_string += static_cast<char>(0x80 | ((code_point >> 6) & 0x3F));
+            utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
+        }
+    }
+    return utf8_string;
 #endif
 }
 
