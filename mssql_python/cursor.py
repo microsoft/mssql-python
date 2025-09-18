@@ -501,6 +501,13 @@ class Cursor:
         # Clear messages per DBAPI
         self.messages = []
         
+        # Remove this cursor from the connection's tracking
+        if hasattr(self, 'connection') and self.connection and hasattr(self.connection, '_cursors'):
+            try:
+                self.connection._cursors.discard(self)
+            except Exception as e:
+                log('warning', "Error removing cursor from connection tracking: %s", e)
+
         if self.hstmt:
             self.hstmt.free()
             self.hstmt = None
