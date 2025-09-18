@@ -2,16 +2,20 @@ class Row:
     """
     A row of data from a cursor fetch operation. Provides both tuple-like indexing
     and attribute access to column values.
-    
+
+    Column attribute access behavior depends on the global 'lowercase' setting:
+    - When enabled: Case-insensitive attribute access
+    - When disabled (default): Case-sensitive attribute access matching original column names
+
     Example:
         row = cursor.fetchone()
         print(row[0])           # Access by index
-        print(row.column_name)  # Access by column name
+        print(row.column_name)  # Access by column name (case sensitivity varies)
     """
     
     def __init__(self, cursor, description, values, column_map=None):
         """
-        Initialize a Row object with values and cursor description.
+        Initialize a Row object with values and description.
         
         Args:
             cursor: The cursor object
@@ -100,7 +104,15 @@ class Row:
         return self._values[index]
     
     def __getattr__(self, name):
-        """Allow accessing by column name as attribute: row.column_name"""
+        """
+        Allow accessing by column name as attribute: row.column_name
+        
+        Note: Case sensitivity depends on the global 'lowercase' setting:
+        - When lowercase=True: Column names are stored in lowercase, enabling
+          case-insensitive attribute access (e.g., row.NAME, row.name, row.Name all work).
+        - When lowercase=False (default): Column names preserve original casing,
+          requiring exact case matching for attribute access.
+        """
         # Handle lowercase attribute access - if lowercase is enabled,
         # try to match attribute names case-insensitively
         if name in self._column_map:

@@ -24,13 +24,19 @@ pip install mssql-python
 **Linux:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
 ```bash
 # For Alpine
-apk add libtool krb5-libs
+apk add libtool krb5-libs krb5-dev
 
-# For Debian/Ubuntu
-apt-get install -y libltdl7
+# For Debian/Ubuntu  
+apt-get install -y libltdl7 libkrb5-3 libgssapi-krb5-2
 
 # For RHEL
-dnf install -y libtool-ltdl
+dnf install -y libtool-ltdl krb5-libs
+
+# For SUSE
+zypper install -y libltdl7 libkrb5-3 libgssapi-krb5-2
+
+# For SUSE/openSUSE
+zypper install -y libltdl7
 
 pip install mssql-python
 ```
@@ -38,11 +44,10 @@ pip install mssql-python
 ## Key Features
 ### Supported Platforms
  
-Windows, MacOS and Linux (manylinux - Debian, Ubuntu, RHEL & musllinux - Alpine)
+Windows, MacOS and Linux (manylinux - Debian, Ubuntu, RHEL, SUSE (x64 only) & musllinux - Alpine)
 
 > **Note:**
-> Support for additional Linux OSs (SUSE Linux) will come soon
->
+> SUSE Linux ARM64 is not supported by Microsoft ODBC Driver. Use x64 architecture for SUSE deployments.
  
 ### DBAPI v2.0 Compliance
  
