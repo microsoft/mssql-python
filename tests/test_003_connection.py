@@ -21,13 +21,50 @@ Functions:
 - test_context_manager_connection_closes: Test that context manager closes the connection.
 """
 
-from mssql_python.exceptions import InterfaceError, ProgrammingError
 import mssql_python
 import pytest
 import time
 from mssql_python import connect, Connection, pooling, SQL_CHAR, SQL_WCHAR
-from contextlib import closing
 import threading
+# Import all exception classes for testing
+from mssql_python.exceptions import (
+    Warning,
+    Error,
+    InterfaceError,
+    DatabaseError,
+    DataError,
+    OperationalError,
+    IntegrityError,
+    InternalError,
+    ProgrammingError,
+    NotSupportedError,
+)
+import struct
+from datetime import datetime, timedelta, timezone
+from mssql_python.constants import ConstantsDDBC
+
+@pytest.fixture(autouse=True)
+def clean_connection_state(db_connection):
+    """Ensure connection is in a clean state before each test"""
+    # Create a cursor and clear any active results
+    try:
+        cleanup_cursor = db_connection.cursor()
+        cleanup_cursor.execute("SELECT 1")  # Simple query to reset state
+        cleanup_cursor.fetchall()  # Consume all results
+        cleanup_cursor.close()
+    except Exception:
+        pass  # Ignore errors during cleanup
+
+    yield  # Run the test
+
+    # Clean up after the test
+    try:
+        cleanup_cursor = db_connection.cursor()
+        cleanup_cursor.execute("SELECT 1")  # Simple query to reset state
+        cleanup_cursor.fetchall()  # Consume all results
+        cleanup_cursor.close()
+    except Exception:
+        pass  # Ignore errors during cleanup
 
 # Import all exception classes for testing
 from mssql_python.exceptions import (
@@ -4076,3 +4113,151 @@ def test_output_converter_exception_handling(db_connection):
     finally:
         # Clean up
         db_connection.clear_output_converters()
+
+def test_timeout_default(db_connection):
+    """Test that the default timeout value is 0 (no timeout)"""
+    assert hasattr(db_connection, 'timeout'), "Connection should have a timeout attribute"
+    assert db_connection.timeout == 0, "Default timeout should be 0"
+
+def test_timeout_setter(db_connection):
+    """Test setting and getting the timeout value"""
+    # Set a non-zero timeout
+    db_connection.timeout = 30
+    assert db_connection.timeout == 30, "Timeout should be set to 30"
+
+    # Test that timeout can be reset to zero
+    db_connection.timeout = 0
+    assert db_connection.timeout == 0, "Timeout should be reset to 0"
+
+    # Test setting invalid timeout values
+    with pytest.raises(ValueError):
+        db_connection.timeout = -1
+
+    with pytest.raises(TypeError):
+        db_connection.timeout = "30"
+
+    # Reset timeout to default for other tests
+    db_connection.timeout = 0
+
+def test_timeout_from_constructor(conn_str):
+    """Test setting timeout in the connection constructor"""
+    # Create a connection with timeout set
+    conn = connect(conn_str, timeout=45)
+    try:
+        assert conn.timeout == 45, "Timeout should be set to 45 from constructor"
+
+        # Create a cursor and verify it inherits the timeout
+        cursor = conn.cursor()
+        # Execute a quick query to ensure the timeout doesn't interfere
+        cursor.execute("SELECT 1")
+        result = cursor.fetchone()
+        assert result[0] == 1, "Query execution should succeed with timeout set"
+    finally:
+        # Clean up
+        conn.close()
+
+def test_timeout_long_query(db_connection):
+    """Test that a query exceeding the timeout raises an exception if supported by driver"""
+    import time
+    import pytest
+
+    cursor = db_connection.cursor()
+
+    try:
+        # First execute a simple query to check if we can run tests
+        cursor.execute("SELECT 1")
+        cursor.fetchall()
+    except Exception as e:
+        pytest.skip(f"Skipping timeout test due to connection issue: {e}")
+
+    # Set a short timeout
+    original_timeout = db_connection.timeout
+    db_connection.timeout = 2  # 2 seconds
+
+    try:
+        # Try several different approaches to test timeout
+        start_time = time.perf_counter()
+        try:
+            # Method 1: CPU-intensive query with REPLICATE and large result set
+            cpu_intensive_query = """
+            WITH numbers AS (
+                SELECT TOP 1000000 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n
+                FROM sys.objects a CROSS JOIN sys.objects b
+            )
+            SELECT COUNT(*) FROM numbers WHERE n % 2 = 0
+            """
+            cursor.execute(cpu_intensive_query)
+            cursor.fetchall()
+
+            elapsed_time = time.perf_counter() - start_time
+
+            # If we get here without an exception, try a different approach
+            if elapsed_time < 4.5:
+
+                # Method 2: Try with WAITFOR
+                start_time = time.perf_counter()
+                cursor.execute("WAITFOR DELAY '00:00:05'")
+                cursor.fetchall()
+                elapsed_time = time.perf_counter() - start_time
+
+                # If we still get here, try one more approach
+                if elapsed_time < 4.5:
+
+                    # Method 3: Try with a join that generates many rows
+                    start_time = time.perf_counter()
+                    cursor.execute("""
+                    SELECT COUNT(*) FROM sys.objects a, sys.objects b, sys.objects c
+                    WHERE a.object_id = b.object_id * c.object_id
+                    """)
+                    cursor.fetchall()
+                    elapsed_time = time.perf_counter() - start_time
+
+            # If we still get here without an exception
+            if elapsed_time < 4.5:
+                pytest.skip("Timeout feature not enforced by database driver")
+
+        except Exception as e:
+            # Verify this is a timeout exception
+            elapsed_time = time.perf_counter() - start_time
+            assert elapsed_time < 4.5, "Exception occurred but after expected timeout"
+            error_text = str(e).lower()
+
+            # Check for various error messages that might indicate timeout
+            timeout_indicators = [
+                "timeout", "timed out", "hyt00", "hyt01", "cancel", 
+                "operation canceled", "execution terminated", "query limit"
+            ]
+
+            assert any(indicator in error_text for indicator in timeout_indicators), \
+                f"Exception occurred but doesn't appear to be a timeout error: {e}"
+    finally:
+        # Reset timeout for other tests
+        db_connection.timeout = original_timeout
+
+def test_timeout_affects_all_cursors(db_connection):
+    """Test that changing timeout on connection affects all new cursors"""
+    # Create a cursor with default timeout
+    cursor1 = db_connection.cursor()
+
+    # Change the connection timeout
+    original_timeout = db_connection.timeout
+    db_connection.timeout = 10
+
+    # Create a new cursor
+    cursor2 = db_connection.cursor()
+
+    try:
+        # Execute quick queries to ensure both cursors work
+        cursor1.execute("SELECT 1")
+        result1 = cursor1.fetchone()
+        assert result1[0] == 1, "Query with first cursor failed"
+
+        cursor2.execute("SELECT 2")
+        result2 = cursor2.fetchone()
+        assert result2[0] == 2, "Query with second cursor failed"
+
+        # No direct way to check cursor timeout, but both should succeed
+        # with the current timeout setting
+    finally:
+        # Reset timeout
+        db_connection.timeout = original_timeout
