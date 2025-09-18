@@ -7362,46 +7362,36 @@ def test_datetimeoffset_read_write(cursor, db_connection):
     including timezone information.
     """
     try:
-        # Define the test cases for DATETIMEOFFSET.
-        # Each tuple contains the expected SQL string representation and the Python datetime object.
         datetimeoffset_test_cases = [
-            # Positive offset, no microseconds
             (
                 "2023-10-26 10:30:00.0000000 +05:30",
                 datetime(2023, 10, 26, 10, 30, 0, 0,
                         tzinfo=timezone(timedelta(hours=5, minutes=30)))
             ),
-            # Negative offset, with microseconds
             (
                 "2023-10-27 15:45:10.1234567 -08:00",
                 datetime(2023, 10, 27, 15, 45, 10, 123456,
                         tzinfo=timezone(timedelta(hours=-8)))
             ),
-            # Zero offset, with microseconds
             (
                 "2023-10-28 20:00:05.9876543 +00:00",
                 datetime(2023, 10, 28, 20, 0, 5, 987654,
                         tzinfo=timezone(timedelta(hours=0)))
             ),
-            # Naive datetime.datetime should be rejected as a parameter
             (
                 "invalid", # Placeholder for the SQL string
                 datetime(2023, 10, 29, 10, 0)
             )
         ]
-
         cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
         cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
         db_connection.commit()
-
         insert_statement = "INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);"
-
         for i, (sql_str, python_dt) in enumerate(datetimeoffset_test_cases):
             # Insert timezone-aware datetime objects
             cursor.execute(insert_statement, i, python_dt)
         db_connection.commit()
 
-        # Step 3: Fetch the data and verify
         cursor.execute("SELECT id, dto_column FROM #pytest_dto ORDER BY id;")
         
         for i, (sql_str, python_dt) in enumerate(datetimeoffset_test_cases):
@@ -7412,106 +7402,16 @@ def test_datetimeoffset_read_write(cursor, db_connection):
             assert row is not None, f"No row fetched for test case {i}."
             
             fetched_id, fetched_dto = row
-
-            # Validation 1: The fetched datetime object must be timezone-aware.
             assert fetched_dto.tzinfo is not None, "Fetched datetime object is naive."
-
-            # Validation 2: Compare the values by converting both to UTC.
             expected_utc = python_dt.astimezone(timezone.utc).replace(tzinfo=None)
             fetched_utc = fetched_dto.astimezone(timezone.utc).replace(tzinfo=None)
-            
-            # Since SQL Server's DATETIMEOFFSET has a scale up to 7, but Python's
-            # datetime only supports microseconds (6 digits), truncate the last digit.
             expected_utc = expected_utc.replace(microsecond=int(expected_utc.microsecond / 1000) * 1000)
             fetched_utc = fetched_utc.replace(microsecond=int(fetched_utc.microsecond / 1000) * 1000)
-
             assert fetched_utc == expected_utc, (
                 f"Value mismatch for test case {i}. "
                 f"Expected UTC: {expected_utc}, Got UTC: {fetched_utc}"
             )
-
     finally:
-        # Cleanup: Drop the temporary table
-        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
-        db_connection.commit()
-
-
-def test_datetimeoffset_read_write(cursor, db_connection):
-    """
-    Test the driver's ability to correctly read and write DATETIMEOFFSET data,
-    including timezone information.
-    """
-    try:
-        # Define the test cases for DATETIMEOFFSET.
-        # Each tuple contains the expected SQL string representation and the Python datetime object.
-        datetimeoffset_test_cases = [
-            # Positive offset, no microseconds
-            (
-                "2023-10-26 10:30:00.0000000 +05:30",
-                datetime(2023, 10, 26, 10, 30, 0, 0,
-                        tzinfo=timezone(timedelta(hours=5, minutes=30)))
-            ),
-            # Negative offset, with microseconds
-            (
-                "2023-10-27 15:45:10.1234567 -08:00",
-                datetime(2023, 10, 27, 15, 45, 10, 123456,
-                        tzinfo=timezone(timedelta(hours=-8)))
-            ),
-            # Zero offset, with microseconds
-            (
-                "2023-10-28 20:00:05.9876543 +00:00",
-                datetime(2023, 10, 28, 20, 0, 5, 987654,
-                        tzinfo=timezone(timedelta(hours=0)))
-            ),
-            # Naive datetime.datetime should be rejected as a parameter
-            (
-                "invalid", # Placeholder for the SQL string
-                datetime(2023, 10, 29, 10, 0)
-            )
-        ]
-
-        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
-        cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
-        db_connection.commit()
-
-        insert_statement = "INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);"
-
-        for i, (sql_str, python_dt) in enumerate(datetimeoffset_test_cases):
-            # Insert timezone-aware datetime objects
-            cursor.execute(insert_statement, i, python_dt)
-        db_connection.commit()
-
-        # Step 3: Fetch the data and verify
-        cursor.execute("SELECT id, dto_column FROM #pytest_dto ORDER BY id;")
-        
-        for i, (sql_str, python_dt) in enumerate(datetimeoffset_test_cases):
-            if sql_str == "invalid":
-                continue
-
-            row = cursor.fetchone()
-            assert row is not None, f"No row fetched for test case {i}."
-            
-            fetched_id, fetched_dto = row
-
-            # Validation 1: The fetched datetime object must be timezone-aware.
-            assert fetched_dto.tzinfo is not None, "Fetched datetime object is naive."
-
-            # Validation 2: Compare the values by converting both to UTC.
-            expected_utc = python_dt.astimezone(timezone.utc).replace(tzinfo=None)
-            fetched_utc = fetched_dto.astimezone(timezone.utc).replace(tzinfo=None)
-            
-            # Since SQL Server's DATETIMEOFFSET has a scale up to 7, but Python's
-            # datetime only supports microseconds (6 digits), truncate the last digit.
-            expected_utc = expected_utc.replace(microsecond=int(expected_utc.microsecond / 1000) * 1000)
-            fetched_utc = fetched_utc.replace(microsecond=int(fetched_utc.microsecond / 1000) * 1000)
-
-            assert fetched_utc == expected_utc, (
-                f"Value mismatch for test case {i}. "
-                f"Expected UTC: {expected_utc}, Got UTC: {fetched_utc}"
-            )
-
-    finally:
-        # Cleanup: Drop the temporary table
         cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
         db_connection.commit()
 
