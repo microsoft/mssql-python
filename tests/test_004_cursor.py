@@ -1816,75 +1816,6 @@ def test_row_column_mapping(cursor, db_connection):
         cursor.execute("DROP TABLE #pytest_row_test")
         db_connection.commit()
 
-def test_lowercase_attribute(cursor, db_connection):
-    """Test that the lowercase attribute properly converts column names to lowercase"""
-    
-    # Store original value to restore after test
-    original_lowercase = mssql_python.lowercase
-    drop_cursor = None
-    
-    try:
-        # Create a test table with mixed-case column names
-        cursor.execute("""
-        CREATE TABLE #pytest_lowercase_test (
-            ID INT PRIMARY KEY,
-            UserName VARCHAR(50),
-            EMAIL_ADDRESS VARCHAR(100),
-            PhoneNumber VARCHAR(20)
-        )
-        """)
-        db_connection.commit()
-        
-        # Insert test data
-        cursor.execute("""
-        INSERT INTO #pytest_lowercase_test (ID, UserName, EMAIL_ADDRESS, PhoneNumber)
-        VALUES (1, 'JohnDoe', 'john@example.com', '555-1234')
-        """)
-        db_connection.commit()
-        
-        # First test with lowercase=False (default)
-        mssql_python.lowercase = False
-        cursor1 = db_connection.cursor()
-        cursor1.execute("SELECT * FROM #pytest_lowercase_test")
-        
-        # Description column names should preserve original case
-        column_names1 = [desc[0] for desc in cursor1.description]
-        assert "ID" in column_names1, "Column 'ID' should be present with original case"
-        assert "UserName" in column_names1, "Column 'UserName' should be present with original case"  
-        
-        # Make sure to consume all results and close the cursor
-        cursor1.fetchall()
-        cursor1.close()
-        
-        # Now test with lowercase=True
-        mssql_python.lowercase = True
-        cursor2 = db_connection.cursor()
-        cursor2.execute("SELECT * FROM #pytest_lowercase_test")
-        
-        # Description column names should be lowercase
-        column_names2 = [desc[0] for desc in cursor2.description]
-        assert "id" in column_names2, "Column names should be lowercase when lowercase=True"
-        assert "username" in column_names2, "Column names should be lowercase when lowercase=True"
-        
-        # Make sure to consume all results and close the cursor
-        cursor2.fetchall()
-        cursor2.close()
-        
-        # Create a fresh cursor for cleanup
-        drop_cursor = db_connection.cursor()
-        
-    finally:
-        # Restore original setting
-        mssql_python.lowercase = original_lowercase
-        # Clean up the table
-        if drop_cursor:
-            try:
-                drop_cursor.execute("DROP TABLE #pytest_lowercase_test")
-                db_connection.commit()
-                drop_cursor.close()
-            except Exception:
-                pass  # Suppress errors during cleanup
-
 def test_lowercase_setting_after_cursor_creation(cursor, db_connection):
     """Test that changing lowercase setting after cursor creation doesn't affect existing cursor"""
     original_lowercase = mssql_python.lowercase
@@ -7010,83 +6941,6 @@ def test_money_smallmoney_invalid_values(cursor, db_connection):
         drop_table_if_exists(cursor, "dbo.money_test")
         db_connection.commit()
 
-def test_decimal_separator_function(cursor, db_connection):
-    """Test decimal separator functionality with database operations"""
-    # Store original value to restore after test
-    original_separator = mssql_python.getDecimalSeparator()
-
-    try:
-        # Create test table
-        cursor.execute("""
-        CREATE TABLE #pytest_decimal_separator_test (
-            id INT PRIMARY KEY,
-            decimal_value DECIMAL(10, 2)
-        )
-        """)
-        db_connection.commit()
-
-        # Insert test values with default separator (.)
-        test_value = decimal.Decimal('123.45')
-        cursor.execute("""
-        INSERT INTO #pytest_decimal_separator_test (id, decimal_value)
-        VALUES (1, ?)
-        """, [test_value])
-        db_connection.commit()
-
-        # First test with default decimal separator (.)
-        cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
-        row = cursor.fetchone()
-        default_str = str(row)
-        assert '123.45' in default_str, "Default separator not found in string representation"
-
-        # Now change to comma separator and test string representation
-        mssql_python.setDecimalSeparator(',')
-        cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
-        row = cursor.fetchone()
-        
-        # This should format the decimal with a comma in the string representation
-        comma_str = str(row)
-        assert '123,45' in comma_str, f"Expected comma in string representation but got: {comma_str}"
-        
-    finally:
-        # Restore original decimal separator
-        mssql_python.setDecimalSeparator(original_separator)
-        
-        # Cleanup
-        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_separator_test")
-        db_connection.commit()
-
-def test_decimal_separator_basic_functionality():
-    """Test basic decimal separator functionality without database operations"""
-    # Store original value to restore after test
-    original_separator = mssql_python.getDecimalSeparator()
-    
-    try:
-        # Test default value
-        assert mssql_python.getDecimalSeparator() == '.', "Default decimal separator should be '.'"
-        
-        # Test setting to comma
-        mssql_python.setDecimalSeparator(',')
-        assert mssql_python.getDecimalSeparator() == ',', "Decimal separator should be ',' after setting"
-        
-        # Test setting to other valid separators
-        mssql_python.setDecimalSeparator(':')
-        assert mssql_python.getDecimalSeparator() == ':', "Decimal separator should be ':' after setting"
-        
-        # Test invalid inputs
-        with pytest.raises(ValueError):
-            mssql_python.setDecimalSeparator('')  # Empty string
-        
-        with pytest.raises(ValueError):
-            mssql_python.setDecimalSeparator('too_long')  # More than one character
-        
-        with pytest.raises(ValueError):
-            mssql_python.setDecimalSeparator(123)  # Not a string
-            
-    finally:
-        # Restore original separator
-        mssql_python.setDecimalSeparator(original_separator)
-
 def test_decimal_separator_with_multiple_values(cursor, db_connection):
     """Test decimal separator with multiple different decimal values"""
     original_separator = mssql_python.getDecimalSeparator()
@@ -7181,6 +7035,83 @@ def test_decimal_separator_calculations(cursor, db_connection):
         # Cleanup
         cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
         db_connection.commit()
+
+def test_decimal_separator_function(cursor, db_connection):
+    """Test decimal separator functionality with database operations"""
+    # Store original value to restore after test
+    original_separator = mssql_python.getDecimalSeparator()
+
+    try:
+        # Create test table
+        cursor.execute("""
+        CREATE TABLE #pytest_decimal_separator_test (
+            id INT PRIMARY KEY,
+            decimal_value DECIMAL(10, 2)
+        )
+        """)
+        db_connection.commit()
+
+        # Insert test values with default separator (.)
+        test_value = decimal.Decimal('123.45')
+        cursor.execute("""
+        INSERT INTO #pytest_decimal_separator_test (id, decimal_value)
+        VALUES (1, ?)
+        """, [test_value])
+        db_connection.commit()
+
+        # First test with default decimal separator (.)
+        cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
+        row = cursor.fetchone()
+        default_str = str(row)
+        assert '123.45' in default_str, "Default separator not found in string representation"
+
+        # Now change to comma separator and test string representation
+        mssql_python.setDecimalSeparator(',')
+        cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
+        row = cursor.fetchone()
+        
+        # This should format the decimal with a comma in the string representation
+        comma_str = str(row)
+        assert '123,45' in comma_str, f"Expected comma in string representation but got: {comma_str}"
+        
+    finally:
+        # Restore original decimal separator
+        mssql_python.setDecimalSeparator(original_separator)
+        
+        # Cleanup
+        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_separator_test")
+        db_connection.commit()
+
+def test_decimal_separator_basic_functionality():
+    """Test basic decimal separator functionality without database operations"""
+    # Store original value to restore after test
+    original_separator = mssql_python.getDecimalSeparator()
+    
+    try:
+        # Test default value
+        assert mssql_python.getDecimalSeparator() == '.', "Default decimal separator should be '.'"
+        
+        # Test setting to comma
+        mssql_python.setDecimalSeparator(',')
+        assert mssql_python.getDecimalSeparator() == ',', "Decimal separator should be ',' after setting"
+        
+        # Test setting to other valid separators
+        mssql_python.setDecimalSeparator(':')
+        assert mssql_python.getDecimalSeparator() == ':', "Decimal separator should be ':' after setting"
+        
+        # Test invalid inputs
+        with pytest.raises(ValueError):
+            mssql_python.setDecimalSeparator('')  # Empty string
+        
+        with pytest.raises(ValueError):
+            mssql_python.setDecimalSeparator('too_long')  # More than one character
+        
+        with pytest.raises(ValueError):
+            mssql_python.setDecimalSeparator(123)  # Not a string
+            
+    finally:
+        # Restore original separator
+        mssql_python.setDecimalSeparator(original_separator)
 
 def test_close(db_connection):
     """Test closing the cursor"""
