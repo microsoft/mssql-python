@@ -3151,8 +3151,6 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchScroll", &SQLFetchScroll_wrap,
           "Scroll to a specific position in the result set and optionally fetch data");
     m.def("DDBCSetDecimalSeparator", &DDBCSetDecimalSeparator, "Set the decimal separator character");
-
-    m.def("DDBCSetDecimalSeparator", &DDBCSetDecimalSeparator, "Set the decimal separator character");
     m.def("DDBCSQLSetStmtAttr", [](SqlHandlePtr stmt, SQLINTEGER attr, SQLPOINTER value) {
         return SQLSetStmtAttr_ptr(stmt->get(), attr, value, 0);
     }, "Set statement attributes");
