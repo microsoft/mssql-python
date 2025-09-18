@@ -13,6 +13,8 @@ Resource Management:
 import weakref
 import re
 import codecs
+from typing import Any
+import threading
 from mssql_python.cursor import Cursor
 from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, sanitize_user_input, log
 from mssql_python import ddbc_bindings
@@ -185,6 +187,10 @@ class Connection:
         # It prevents memory leaks by ensuring that cursors are cleaned up when no longer in use without requiring explicit deletion.
         # TODO: Think and implement scenarios for multi-threaded access to cursors
         self._cursors = weakref.WeakSet()
+
+        # Initialize output converters dictionary and its lock for thread safety
+        self._output_converters = {}
+        self._converters_lock = threading.Lock()
 
         # Auto-enable pooling if user never called
         if not PoolingManager.is_initialized():
@@ -530,6 +536,260 @@ class Connection:
         cursor = Cursor(self)
         self._cursors.add(cursor)  # Track the cursor
         return cursor
+    
+    def add_output_converter(self, sqltype, func) -> None:
+        """
+        Register an output converter function that will be called whenever a value 
+        with the given SQL type is read from the database.
+        
+        Thread-safe implementation that protects the converters dictionary with a lock.
+        
+        ⚠️ WARNING: Registering an output converter will cause the supplied Python function 
+        to be executed on every matching database value. Do not register converters from 
+        untrusted sources, as this can result in arbitrary code execution and security 
+        vulnerabilities. This API should never be exposed to untrusted or external input.
+        
+        Args:
+            sqltype (int): The integer SQL type value to convert, which can be one of the 
+                          defined standard constants (e.g. SQL_VARCHAR) or a database-specific 
+                          value (e.g. -151 for the SQL Server 2008 geometry data type).
+            func (callable): The converter function which will be called with a single parameter,
+                            the value, and should return the converted value. If the value is NULL
+                            then the parameter passed to the function will be None, otherwise it 
+                            will be a bytes object.
+        
+        Returns:
+            None
+        """
+        with self._converters_lock:
+            self._output_converters[sqltype] = func
+            # Pass to the underlying connection if native implementation supports it
+            if hasattr(self._conn, 'add_output_converter'):
+                self._conn.add_output_converter(sqltype, func)
+        log('info', f"Added output converter for SQL type {sqltype}")
+    
+    def get_output_converter(self, sqltype):
+        """
+        Get the output converter function for the specified SQL type.
+        
+        Thread-safe implementation that protects the converters dictionary with a lock.
+        
+        Args:
+            sqltype (int or type): The SQL type value or Python type to get the converter for
+            
+        Returns:
+            callable or None: The converter function or None if no converter is registered
+    
+        Note:
+            ⚠️ The returned converter function will be executed on database values. Only use
+            converters from trusted sources.
+        """
+        with self._converters_lock:
+            return self._output_converters.get(sqltype)
+
+    def remove_output_converter(self, sqltype):
+        """
+        Remove the output converter function for the specified SQL type.
+        
+        Thread-safe implementation that protects the converters dictionary with a lock.
+        
+        Args:
+            sqltype (int or type): The SQL type value to remove the converter for
+            
+        Returns:
+            None
+        """
+        with self._converters_lock:
+            if sqltype in self._output_converters:
+                del self._output_converters[sqltype]
+                # Pass to the underlying connection if native implementation supports it
+                if hasattr(self._conn, 'remove_output_converter'):
+                    self._conn.remove_output_converter(sqltype)
+        log('info', f"Removed output converter for SQL type {sqltype}")
+    
+    def clear_output_converters(self) -> None:
+        """
+        Remove all output converter functions.
+        
+        Thread-safe implementation that protects the converters dictionary with a lock.
+        
+        Returns:
+            None
+        """
+        with self._converters_lock:
+            self._output_converters.clear()
+            # Pass to the underlying connection if native implementation supports it
+            if hasattr(self._conn, 'clear_output_converters'):
+                self._conn.clear_output_converters()
+        log('info', "Cleared all output converters")
+
+    def execute(self, sql: str, *args: Any) -> Cursor:
+        """
+        Creates a new Cursor object, calls its execute method, and returns the new cursor.
+        
+        This is a convenience method that is not part of the DB API. Since a new Cursor
+        is allocated by each call, this should not be used if more than one SQL statement
+        needs to be executed on the connection.
+        
+        Note on cursor lifecycle management:
+        - Each call creates a new cursor that is tracked by the connection's internal WeakSet
+        - Cursors are automatically dereferenced/closed when they go out of scope
+        - For long-running applications or loops, explicitly call cursor.close() when done
+          to release resources immediately rather than waiting for garbage collection
+        
+        Args:
+            sql (str): The SQL query to execute.
+            *args: Parameters to be passed to the query.
+            
+        Returns:
+            Cursor: A new cursor with the executed query.
+            
+        Raises:
+            DatabaseError: If there is an error executing the query.
+            InterfaceError: If the connection is closed.
+    
+        Example:
+            # Automatic cleanup (cursor goes out of scope after the operation)
+            row = connection.execute("SELECT name FROM users WHERE id = ?", 123).fetchone()
+            
+            # Manual cleanup for more explicit resource management
+            cursor = connection.execute("SELECT * FROM large_table")
+            try:
+                # Use cursor...
+                rows = cursor.fetchall()
+            finally:
+                cursor.close()  # Explicitly release resources
+        """
+        cursor = self.cursor()
+        try:
+            # Add the cursor to our tracking set BEFORE execution
+            # This ensures it's tracked even if execution fails
+            self._cursors.add(cursor)
+            
+            # Now execute the query
+            cursor.execute(sql, *args)
+            return cursor
+        except Exception:
+            # If execution fails, close the cursor to avoid leaking resources
+            cursor.close()
+            raise
+
+    def batch_execute(self, statements, params=None, reuse_cursor=None, auto_close=False):
+        """
+        Execute multiple SQL statements efficiently using a single cursor.
+        
+        This method allows executing multiple SQL statements in sequence using a single
+        cursor, which is more efficient than creating a new cursor for each statement.
+        
+        Args:
+            statements (list): List of SQL statements to execute
+            params (list, optional): List of parameter sets corresponding to statements.
+                Each item can be None, a single parameter, or a sequence of parameters.
+                If None, no parameters will be used for any statement.
+            reuse_cursor (Cursor, optional): Existing cursor to reuse instead of creating a new one.
+                If None, a new cursor will be created.
+            auto_close (bool): Whether to close the cursor after execution if a new one was created.
+                Defaults to False. Has no effect if reuse_cursor is provided.
+            
+        Returns:
+            tuple: (results, cursor) where:
+                - results is a list of execution results, one for each statement
+                - cursor is the cursor used for execution (useful if you want to keep using it)
+            
+        Raises:
+            TypeError: If statements is not a list or if params is provided but not a list
+            ValueError: If params is provided but has different length than statements
+            DatabaseError: If there is an error executing any of the statements
+            InterfaceError: If the connection is closed
+            
+        Example:
+            # Execute multiple statements with a single cursor
+            results, _ = conn.batch_execute([
+                "INSERT INTO users VALUES (?, ?)",
+                "UPDATE stats SET count = count + 1",
+                "SELECT * FROM users"
+            ], [
+                (1, "user1"),
+                None,
+                None
+            ])
+            
+            # Last result contains the SELECT results
+            for row in results[-1]:
+                print(row)
+                
+            # Reuse an existing cursor
+            my_cursor = conn.cursor()
+            results, _ = conn.batch_execute([
+                "SELECT * FROM table1",
+                "SELECT * FROM table2"
+            ], reuse_cursor=my_cursor)
+            
+            # Cursor remains open for further use
+            my_cursor.execute("SELECT * FROM table3")
+        """
+        # Validate inputs
+        if not isinstance(statements, list):
+            raise TypeError("statements must be a list of SQL statements")
+        
+        if params is not None:
+            if not isinstance(params, list):
+                raise TypeError("params must be a list of parameter sets")
+            if len(params) != len(statements):
+                raise ValueError("params list must have the same length as statements list")
+        else:
+            # Create a list of None values with the same length as statements
+            params = [None] * len(statements)
+        
+        # Determine which cursor to use
+        is_new_cursor = reuse_cursor is None
+        cursor = self.cursor() if is_new_cursor else reuse_cursor
+        
+        # Execute statements and collect results
+        results = []
+        try:
+            for i, (stmt, param) in enumerate(zip(statements, params)):
+                try:
+                    # Execute the statement with parameters if provided
+                    if param is not None:
+                        cursor.execute(stmt, param)
+                    else:
+                        cursor.execute(stmt)
+                    
+                    # For SELECT statements, fetch all rows
+                    # For other statements, get the row count
+                    if cursor.description is not None:
+                        # This is a SELECT statement or similar that returns rows
+                        results.append(cursor.fetchall())
+                    else:
+                        # This is an INSERT, UPDATE, DELETE or similar that doesn't return rows
+                        results.append(cursor.rowcount)
+                    
+                    log('debug', f"Executed batch statement {i+1}/{len(statements)}")
+                
+                except Exception as e:
+                    # If a statement fails, include statement context in the error
+                    log('error', f"Error executing statement {i+1}/{len(statements)}: {e}")
+                    raise
+                    
+        except Exception as e:
+            # If an error occurs and auto_close is True, close the cursor
+            if auto_close:
+                try:
+                    # Close the cursor regardless of whether it's reused or new
+                    cursor.close()
+                    log('debug', "Automatically closed cursor after batch execution error")
+                except Exception as close_err:
+                    log('warning', f"Error closing cursor after execution failure: {close_err}")
+            # Re-raise the original exception
+            raise
+        
+        # Close the cursor if requested and we created a new one
+        if is_new_cursor and auto_close:
+            cursor.close()
+            log('debug', "Automatically closed cursor after batch execution")
+        
+        return results, cursor
 
     def commit(self) -> None:
         """
@@ -541,8 +801,16 @@ class Connection:
         that the changes are saved.
 
         Raises:
+            InterfaceError: If the connection is closed.
             DatabaseError: If there is an error while committing the transaction.
         """
+        # Check if connection is closed
+        if self._closed or self._conn is None:
+            raise InterfaceError(
+                driver_error="Cannot commit on a closed connection",
+                ddbc_error="Cannot commit on a closed connection",
+            )
+    
         # Commit the current transaction
         self._conn.commit()
         log('info', "Transaction committed successfully.")
@@ -556,8 +824,16 @@ class Connection:
         transaction or if the changes should not be saved.
 
         Raises:
+            InterfaceError: If the connection is closed.
             DatabaseError: If there is an error while rolling back the transaction.
         """
+        # Check if connection is closed
+        if self._closed or self._conn is None:
+            raise InterfaceError(
+                driver_error="Cannot rollback on a closed connection",
+                ddbc_error="Cannot rollback on a closed connection",
+            )
+    
         # Roll back the current transaction
         self._conn.rollback()
         log('info', "Transaction rolled back successfully.")
@@ -623,6 +899,21 @@ class Connection:
             self._closed = True
         
         log('info', "Connection closed successfully.")
+    
+    def _remove_cursor(self, cursor):
+        """
+        Remove a cursor from the connection's tracking.
+        
+        This method is called when a cursor is closed to ensure proper cleanup.
+        
+        Args:
+            cursor: The cursor to remove from tracking.
+        """
+        if hasattr(self, '_cursors'):
+            try:
+                self._cursors.discard(cursor)
+            except Exception:
+                pass  # Ignore errors during cleanup
 
     def __enter__(self) -> 'Connection':
         """

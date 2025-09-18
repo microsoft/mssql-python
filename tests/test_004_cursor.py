@@ -9,11 +9,10 @@ Note: The cursor function is not yet implemented, so related tests are commented
 """
 
 import pytest
-import sys
 from datetime import datetime, date, time
 import decimal
 from contextlib import closing
-from mssql_python import Connection, row
+import mssql_python
 
 # Setup test table
 TEST_TABLE = """
@@ -1816,6 +1815,39 @@ def test_row_column_mapping(cursor, db_connection):
     finally:
         cursor.execute("DROP TABLE #pytest_row_test")
         db_connection.commit()
+
+def test_lowercase_setting_after_cursor_creation(cursor, db_connection):
+    """Test that changing lowercase setting after cursor creation doesn't affect existing cursor"""
+    original_lowercase = mssql_python.lowercase
+    try:
+        # Create table and execute with lowercase=False
+        mssql_python.lowercase = False
+        cursor.execute("CREATE TABLE #test_lowercase_after (UserName VARCHAR(50))")
+        db_connection.commit()
+        cursor.execute("SELECT * FROM #test_lowercase_after")
+        
+        # Change setting after cursor's description is initialized
+        mssql_python.lowercase = True
+        
+        # The existing cursor should still use the original casing
+        column_names = [desc[0] for desc in cursor.description]
+        assert "UserName" in column_names, "Column casing should not change after cursor creation"
+        assert "username" not in column_names, "Lowercase should not apply to existing cursor"
+        
+    finally:
+        mssql_python.lowercase = original_lowercase
+        try:
+            cursor.execute("DROP TABLE #test_lowercase_after")
+            db_connection.commit()
+        except Exception:
+            pass # Suppress cleanup errors
+
+@pytest.mark.skip(reason="Future work: relevant if per-cursor lowercase settings are implemented.")
+def test_concurrent_cursors_different_lowercase_settings():
+    """Test behavior when multiple cursors exist with different lowercase settings"""
+    # This test is a placeholder for when per-cursor settings might be supported.
+    # Currently, the global setting affects all new cursors uniformly.
+    pass
 
 def test_cursor_context_manager_basic(db_connection):
     """Test basic cursor context manager functionality"""
@@ -5264,7 +5296,7 @@ def test_tables_all(cursor, db_connection):
         test_tables_setup(cursor, db_connection)
         
         # Get all tables (no filters)
-        tables_list = cursor.tables()
+        tables_list = cursor.tables().fetchall()
         
         # Verify we got results
         assert tables_list is not None, "tables() should return results"
@@ -5304,7 +5336,7 @@ def test_tables_specific_table(cursor, db_connection):
         tables_list = cursor.tables(
             table='regular_table', 
             schema='pytest_tables_schema'
-        )
+        ).fetchall()
         
         # Verify we got the right result
         assert len(tables_list) == 1, "Should find exactly 1 table"
@@ -5326,7 +5358,7 @@ def test_tables_with_table_pattern(cursor, db_connection):
         tables_list = cursor.tables(
             table='%table',
             schema='pytest_tables_schema'
-        )
+        ).fetchall()
         
         # Should find both test tables 
         assert len(tables_list) == 2, "Should find 2 tables matching '%table'"
@@ -5350,7 +5382,7 @@ def test_tables_with_schema_pattern(cursor, db_connection):
         # Get tables with schema pattern
         tables_list = cursor.tables(
             schema='pytest_%'
-        )
+        ).fetchall()
         
         # Should find our test tables/view
         test_tables = []
@@ -5377,7 +5409,7 @@ def test_tables_with_type_filter(cursor, db_connection):
         tables_list = cursor.tables(
             schema='pytest_tables_schema',
             tableType='TABLE'
-        )
+        ).fetchall()
         
         # Verify only regular tables
         table_types = set()
@@ -5398,7 +5430,7 @@ def test_tables_with_type_filter(cursor, db_connection):
         views_list = cursor.tables(
             schema='pytest_tables_schema',
             tableType='VIEW'
-        )
+        ).fetchall()
         
         # Verify only views
         view_names = set()
@@ -5421,8 +5453,8 @@ def test_tables_with_multiple_types(cursor, db_connection):
         tables_list = cursor.tables(
             schema='pytest_tables_schema',
             tableType=['TABLE', 'VIEW']
-        )
-        
+        ).fetchall()
+
         # Verify both tables and views
         object_names = set()
         for obj in tables_list:
@@ -5449,8 +5481,8 @@ def test_tables_catalog_filter(cursor, db_connection):
         tables_list = cursor.tables(
             catalog=current_db,
             schema='pytest_tables_schema'
-        )
-        
+        ).fetchall()
+
         # Verify catalog filter worked
         assert len(tables_list) > 0, "Should find tables with correct catalog"
         
@@ -5464,7 +5496,7 @@ def test_tables_catalog_filter(cursor, db_connection):
         fake_tables = cursor.tables(
             catalog='nonexistent_db_xyz123',
             schema='pytest_tables_schema'
-        )
+        ).fetchall()
         assert len(fake_tables) == 0, "Should return empty list for non-existent catalog"
         
     finally:
@@ -5474,7 +5506,7 @@ def test_tables_catalog_filter(cursor, db_connection):
 def test_tables_nonexistent(cursor):
     """Test tables with non-existent objects"""
     # Test with non-existent table
-    tables_list = cursor.tables(table='nonexistent_table_xyz123')
+    tables_list = cursor.tables(table='nonexistent_table_xyz123').fetchall()
     
     # Should return empty list, not error
     assert isinstance(tables_list, list), "Should return a list for non-existent table"
@@ -5484,7 +5516,7 @@ def test_tables_nonexistent(cursor):
     tables_list = cursor.tables(
         table='regular_table', 
         schema='nonexistent_schema_xyz123'
-    )
+    ).fetchall()
     assert len(tables_list) == 0, "Should return empty list for non-existent schema"
 
 def test_tables_combined_filters(cursor, db_connection):
@@ -5494,8 +5526,8 @@ def test_tables_combined_filters(cursor, db_connection):
         tables_list = cursor.tables(
             schema='pytest_tables_schema',
             table='regular%'
-        )
-        
+        ).fetchall()
+
         # Should find only regular_table
         assert len(tables_list) == 1, "Should find 1 table with combined filters"
         assert tables_list[0].table_name.lower() == 'regular_table', "Should find regular_table"
@@ -5505,8 +5537,8 @@ def test_tables_combined_filters(cursor, db_connection):
             schema='pytest_tables_schema',
             table='%table',
             tableType='TABLE'
-        )
-        
+        ).fetchall()
+
         # Should find both tables but not view
         table_names = set()
         for table in tables_list:
@@ -5526,8 +5558,8 @@ def test_tables_result_processing(cursor, db_connection):
     """Test processing of tables result set for different client needs"""
     try:
         # Get all test objects
-        tables_list = cursor.tables(schema='pytest_tables_schema')
-        
+        tables_list = cursor.tables(schema='pytest_tables_schema').fetchall()
+
         # Test 1: Extract just table names
         table_names = [table.table_name for table in tables_list]
         assert len(table_names) == 3, "Should extract 3 table names"
@@ -5564,7 +5596,7 @@ def test_tables_method_chaining(cursor, db_connection):
         chained_result = cursor.tables(
             schema='pytest_tables_schema', 
             table='regular_table'
-        )
+        ).fetchall()
         
         # Verify chained result
         assert len(chained_result) == 1, "Chained result should find 1 table"
@@ -6908,6 +6940,178 @@ def test_money_smallmoney_invalid_values(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, "dbo.money_test")
         db_connection.commit()
+
+def test_decimal_separator_with_multiple_values(cursor, db_connection):
+    """Test decimal separator with multiple different decimal values"""
+    original_separator = mssql_python.getDecimalSeparator()
+
+    try:
+        # Create test table
+        cursor.execute("""
+        CREATE TABLE #pytest_decimal_multi_test (
+            id INT PRIMARY KEY,
+            positive_value DECIMAL(10, 2),
+            negative_value DECIMAL(10, 2),
+            zero_value DECIMAL(10, 2),
+            small_value DECIMAL(10, 4)
+        )
+        """)
+        db_connection.commit()
+        
+        # Insert test data
+        cursor.execute("""
+        INSERT INTO #pytest_decimal_multi_test VALUES (1, 123.45, -67.89, 0.00, 0.0001)
+        """)
+        db_connection.commit()
+        
+        # Test with default separator first
+        cursor.execute("SELECT * FROM #pytest_decimal_multi_test")
+        row = cursor.fetchone()
+        default_str = str(row)
+        assert '123.45' in default_str, "Default positive value formatting incorrect"
+        assert '-67.89' in default_str, "Default negative value formatting incorrect"
+        
+        # Change to comma separator
+        mssql_python.setDecimalSeparator(',')
+        cursor.execute("SELECT * FROM #pytest_decimal_multi_test")
+        row = cursor.fetchone()
+        comma_str = str(row)
+        
+        # Verify comma is used in all decimal values
+        assert '123,45' in comma_str, "Positive value not formatted with comma"
+        assert '-67,89' in comma_str, "Negative value not formatted with comma"
+        assert '0,00' in comma_str, "Zero value not formatted with comma"
+        assert '0,0001' in comma_str, "Small value not formatted with comma"
+        
+    finally:
+        # Restore original separator
+        mssql_python.setDecimalSeparator(original_separator)
+        
+        # Cleanup
+        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_multi_test")
+        db_connection.commit()
+
+def test_decimal_separator_calculations(cursor, db_connection):
+    """Test that decimal separator doesn't affect calculations"""
+    original_separator = mssql_python.getDecimalSeparator()
+
+    try:
+        # Create test table
+        cursor.execute("""
+        CREATE TABLE #pytest_decimal_calc_test (
+            id INT PRIMARY KEY,
+            value1 DECIMAL(10, 2),
+            value2 DECIMAL(10, 2)
+        )
+        """)
+        db_connection.commit()
+        
+        # Insert test data
+        cursor.execute("""
+        INSERT INTO #pytest_decimal_calc_test VALUES (1, 10.25, 5.75)
+        """)
+        db_connection.commit()
+        
+        # Test with default separator
+        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
+        row = cursor.fetchone()
+        assert row.sum_result == decimal.Decimal('16.00'), "Sum calculation incorrect with default separator"
+        
+        # Change to comma separator
+        mssql_python.setDecimalSeparator(',')
+        
+        # Calculations should still work correctly
+        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
+        row = cursor.fetchone()
+        assert row.sum_result == decimal.Decimal('16.00'), "Sum calculation affected by separator change"
+        
+        # But string representation should use comma
+        assert '16,00' in str(row), "Sum result not formatted with comma in string representation"
+        
+    finally:
+        # Restore original separator
+        mssql_python.setDecimalSeparator(original_separator)
+        
+        # Cleanup
+        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
+        db_connection.commit()
+
+def test_decimal_separator_function(cursor, db_connection):
+    """Test decimal separator functionality with database operations"""
+    # Store original value to restore after test
+    original_separator = mssql_python.getDecimalSeparator()
+
+    try:
+        # Create test table
+        cursor.execute("""
+        CREATE TABLE #pytest_decimal_separator_test (
+            id INT PRIMARY KEY,
+            decimal_value DECIMAL(10, 2)
+        )
+        """)
+        db_connection.commit()
+
+        # Insert test values with default separator (.)
+        test_value = decimal.Decimal('123.45')
+        cursor.execute("""
+        INSERT INTO #pytest_decimal_separator_test (id, decimal_value)
+        VALUES (1, ?)
+        """, [test_value])
+        db_connection.commit()
+
+        # First test with default decimal separator (.)
+        cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
+        row = cursor.fetchone()
+        default_str = str(row)
+        assert '123.45' in default_str, "Default separator not found in string representation"
+
+        # Now change to comma separator and test string representation
+        mssql_python.setDecimalSeparator(',')
+        cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
+        row = cursor.fetchone()
+        
+        # This should format the decimal with a comma in the string representation
+        comma_str = str(row)
+        assert '123,45' in comma_str, f"Expected comma in string representation but got: {comma_str}"
+        
+    finally:
+        # Restore original decimal separator
+        mssql_python.setDecimalSeparator(original_separator)
+        
+        # Cleanup
+        cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_separator_test")
+        db_connection.commit()
+
+def test_decimal_separator_basic_functionality():
+    """Test basic decimal separator functionality without database operations"""
+    # Store original value to restore after test
+    original_separator = mssql_python.getDecimalSeparator()
+    
+    try:
+        # Test default value
+        assert mssql_python.getDecimalSeparator() == '.', "Default decimal separator should be '.'"
+        
+        # Test setting to comma
+        mssql_python.setDecimalSeparator(',')
+        assert mssql_python.getDecimalSeparator() == ',', "Decimal separator should be ',' after setting"
+        
+        # Test setting to other valid separators
+        mssql_python.setDecimalSeparator(':')
+        assert mssql_python.getDecimalSeparator() == ':', "Decimal separator should be ':' after setting"
+        
+        # Test invalid inputs
+        with pytest.raises(ValueError):
+            mssql_python.setDecimalSeparator('')  # Empty string
+        
+        with pytest.raises(ValueError):
+            mssql_python.setDecimalSeparator('too_long')  # More than one character
+        
+        with pytest.raises(ValueError):
+            mssql_python.setDecimalSeparator(123)  # Not a string
+            
+    finally:
+        # Restore original separator
+        mssql_python.setDecimalSeparator(original_separator)
 
 def test_close(db_connection):
     """Test closing the cursor"""
