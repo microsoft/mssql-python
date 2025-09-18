@@ -91,7 +91,12 @@ def handle_datetimeoffset(dto_value):
     )
 
 def custom_string_converter(value):
-    """A simple converter that adds a prefix to string values"""
+    """
+        A simple converter that adds a prefix to string values.
+        Assumes SQL_WVARCHAR is UTF-16LE encoded by default, 
+        but this may vary depending on the database configuration.
+        You can specify a different encoding if needed.
+    """
     if value is None:
         return None
     return "CONVERTED: " + value.decode('utf-16-le')  # SQL_WVARCHAR is UTF-16LE encoded
