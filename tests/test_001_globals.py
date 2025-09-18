@@ -170,7 +170,7 @@ def test_decimal_separator():
         with pytest.raises(ValueError):
             setDecimalSeparator('')
             
-        with pytest.raises(TypeError):
+        with pytest.raises(ValueError):
             setDecimalSeparator(123)  # Non-string input
     
     finally:
