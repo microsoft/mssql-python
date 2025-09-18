@@ -26,6 +26,7 @@ SMALLMONEY_MAX = decimal.Decimal('214748.3647')
 MONEY_MIN = decimal.Decimal('-922337203685477.5808')
 MONEY_MAX = decimal.Decimal('922337203685477.5807')
 
+
 class Cursor:
     """
     Represents a database cursor, which is used to manage the context of a fetch operation.

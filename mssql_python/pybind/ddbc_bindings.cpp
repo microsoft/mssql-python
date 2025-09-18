@@ -2037,20 +2037,48 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, numericStr, sizeof(numericStr), &indicator);
 
                 if (SQL_SUCCEEDED(ret)) {
-                    if (indicator == SQL_NULL_DATA) {
-                        row.append(py::none());
-                    } else {
-                        try {
-                            std::string s(reinterpret_cast<const char*>(numericStr));
-                            auto Decimal = py::module_::import("decimal").attr("Decimal");
-                            row.append(Decimal(s));
-                        } catch (const py::error_already_set& e) {
-                            LOG("Error converting to Decimal: {}", e.what());
-                            row.append(py::none());
+                    try {
+                        // Validate 'indicator' to avoid buffer overflow and fallback to a safe
+                        // null-terminated read when length is unknown or out-of-range.
+                        const char* cnum = reinterpret_cast<const char*>(numericStr);
+                        size_t bufSize = sizeof(numericStr);
+                        size_t safeLen = 0;
+
+                        if (indicator > 0 && indicator <= static_cast<SQLLEN>(bufSize)) {
+                            // indicator appears valid and within the buffer size
+                            safeLen = static_cast<size_t>(indicator);
+                        } else {
+                            // indicator is unknown, zero, negative, or too large; determine length
+                            // by searching for a terminating null (safe bounded scan)
+                            for (size_t j = 0; j < bufSize; ++j) {
+                                if (cnum[j] == '\0') {
+                                    safeLen = j;
+                                    break;
+                                }
+                            }
+                            // if no null found, use the full buffer size as a conservative fallback
+                            if (safeLen == 0 && bufSize > 0 && cnum[0] != '\0') {
+                                safeLen = bufSize;
+                            }
                         }
+
+                        // Use the validated length to construct the string for Decimal
+                        std::string numStr(cnum, safeLen);
+
+                        // Create Python Decimal object
+                        py::object decimalObj = py::module_::import("decimal").attr("Decimal")(numStr);
+
+                        // Add to row
+                        row.append(decimalObj);
+                    } catch (const py::error_already_set& e) {
+                        // If conversion fails, append None
+                        LOG("Error converting to decimal: {}", e.what());
+                        row.append(py::none());
                     }
-                } else {
-                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData rc - {}",
+                }
+                else {
+                    LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+                        "code - {}. Returning NULL value instead",
                         i, dataType, ret);
                     row.append(py::none());
                 }
@@ -2560,11 +2588,24 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_DECIMAL:
                 case SQL_NUMERIC: {
                     try {
-                        // Convert numericStr to py::decimal.Decimal and append to row
-                        row.append(py::module_::import("decimal").attr("Decimal")(std::string(
-                            reinterpret_cast<const char*>(
-                                &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]),
-                            buffers.indicators[col - 1][i])));
+                        // Convert the string to use the current decimal separator
+                        std::string numStr(reinterpret_cast<const char*>(
+                            &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]),
+                            buffers.indicators[col - 1][i]);
+                        
+                        // Get the current separator in a thread-safe way
+                        std::string separator = GetDecimalSeparator();
+                        
+                        if (separator != ".") {
+                            // Replace the driver's decimal point with our configured separator
+                            size_t pos = numStr.find('.');
+                            if (pos != std::string::npos) {
+                                numStr.replace(pos, 1, separator);
+                            }
+                        }
+                        
+                        // Convert to Python decimal
+                        row.append(py::module_::import("decimal").attr("Decimal")(numStr));
                     } catch (const py::error_already_set& e) {
                         // Handle the exception, e.g., log the error and append py::none()
                         LOG("Error converting to decimal: {}", e.what());
@@ -3016,6 +3057,13 @@ void enable_pooling(int maxSize, int idleTimeout) {
     });
 }
 
+// Thread-safe decimal separator setting
+ThreadSafeDecimalSeparator g_decimalSeparator;
+
+void DDBCSetDecimalSeparator(const std::string& separator) {
+    SetDecimalSeparator(separator);
+}
+
 // Architecture-specific defines
 #ifndef ARCHITECTURE
 #define ARCHITECTURE "win64"  // Default to win64 if not defined during compilation
@@ -3102,6 +3150,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           py::arg("tableType") = std::wstring());
     m.def("DDBCSQLFetchScroll", &SQLFetchScroll_wrap,
           "Scroll to a specific position in the result set and optionally fetch data");
+    m.def("DDBCSetDecimalSeparator", &DDBCSetDecimalSeparator, "Set the decimal separator character");
+
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";

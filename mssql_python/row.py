@@ -91,7 +91,25 @@ class Row:
     
     def __str__(self):
         """Return string representation of the row"""
-        return str(tuple(self._values))
+        from decimal import Decimal
+        from mssql_python import getDecimalSeparator
+        
+        parts = []
+        for value in self:
+            if isinstance(value, Decimal):
+                # Apply custom decimal separator for display
+                sep = getDecimalSeparator()
+                if sep != '.' and value is not None:
+                    s = str(value)
+                    if '.' in s:
+                        s = s.replace('.', sep)
+                    parts.append(s)
+                else:
+                    parts.append(str(value))
+            else:
+                parts.append(repr(value))
+        
+        return "(" + ", ".join(parts) + ")"
 
     def __repr__(self):
         """Return a detailed string representation for debugging"""
