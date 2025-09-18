@@ -7150,7 +7150,7 @@ def test_decimal_separator_basic_functionality():
         with pytest.raises(ValueError):
             mssql_python.setDecimalSeparator('too_long')  # More than one character
         
-        with pytest.raises(TypeError):
+        with pytest.raises(ValueError):
             mssql_python.setDecimalSeparator(123)  # Not a string
             
     finally:

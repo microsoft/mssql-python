@@ -63,11 +63,10 @@ def setDecimalSeparator(separator):
         
     Raises:
         ValueError: If the separator is not a single character string
-        TypeError: If the separator is not a string
     """
     # Type validation
     if not isinstance(separator, str):
-        raise TypeError("Decimal separator must be a string")
+        raise ValueError("Decimal separator must be a string")
     
     # Length validation
     if len(separator) == 0:
