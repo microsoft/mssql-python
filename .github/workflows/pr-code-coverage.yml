@@ -154,7 +154,7 @@ jobs:
               # Extract file coverage data more reliably
               LOW_COVERAGE_FILES=$(grep -o '<td><a href="[^"]*">[^<]*</a></td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td title="[^"]*" class="right">[0-9]*\.[0-9]*%' "$INDEX_FILE" | \
                 sed 's/<td><a href="[^"]*">\([^<]*\)<\/a><\/td>.*class="right">\([0-9]*\.[0-9]*\)%/\1: \2%/' | \
-                sort -t: -k2 -n | head -5)
+                sort -t: -k2 -n | head -10)
               
               # Alternative method if above fails
               if [[ -z "$LOW_COVERAGE_FILES" ]]; then
@@ -162,7 +162,7 @@ jobs:
                 LOW_COVERAGE_FILES=$(grep -E "\.py.*[0-9]+\.[0-9]+%" "$INDEX_FILE" | \
                   grep -o "[^>]*\.py[^<]*</a>.*[0-9]*\.[0-9]*%" | \
                   sed 's/\([^<]*\)<\/a>.*\([0-9]*\.[0-9]*\)%/\1: \2%/' | \
-                  sort -t: -k2 -n | head -5)
+                  sort -t: -k2 -n | head -10)
               fi
               
               echo "LOW_COVERAGE_FILES<<EOF" >> $GITHUB_ENV
@@ -193,18 +193,16 @@ jobs:
             
             <table>
             <tr>
-            <td align="center" width="100">
+            <td align="center" width="200">
             
             ### 🎯 Coverage
-            ## **${{ env.COVERAGE_PERCENTAGE }}**
-            
+            ### **${{ env.COVERAGE_PERCENTAGE }}**
+            <br>
             </td>
-            <td width="20"></td>
             <td>
             
             **📈 Lines Covered:** `${{ env.COVERED_LINES }}` out of `${{ env.TOTAL_LINES }}`  
             **📁 Project:** `mssql-python`  
-            **🔍 Parser:** `Cobertura`  
             
             </td>
             </tr>
@@ -221,20 +219,30 @@ jobs:
             ${{ env.LOW_COVERAGE_FILES }}
             ```
             
-            > 💡 **Tip:** Focus on improving coverage for these files to boost overall project health
-            
             </details>
             
             ---
-            
-            <div align="center">
-            
             ### 🔗 Quick Links
-            
-            | � **Build Status** | 📊 **Coverage Details** |
-            |:---:|:---:|
-            | [View Azure DevOps Build](${{ env.ADO_URL }}) | [Browse Full Coverage Report](${{ env.ADO_URL }}&view=codecoverage-tab) |
-            
-            </div>
-            
-            <sub>🤖 This report was automatically generated from Azure DevOps build artifacts</sub>
+
+            <table>
+            <tr>
+            <td align="left" width="200">
+            <b>⚙️ Build Summary</b>
+            </td>
+            <td align="left">
+            <b>📋 Coverage Details</b>
+            </td>
+            </tr>
+            <tr>
+            <td align="left" width="200">
+
+            [View Azure DevOps Build](${{ env.ADO_URL }})
+
+            </td>
+            <td align="left">
+
+            [Browse Full Coverage Report](${{ env.ADO_URL }}&view=codecoverage-tab) 
+
+            </td>
+            </tr>
+            </table>
