@@ -92,6 +92,9 @@ jobs:
 
   - script: |
       brew update
+      # Uninstall existing CMake to avoid tap conflicts
+      brew uninstall cmake --ignore-dependencies || echo "CMake not installed or already removed"
+      # Install CMake from homebrew/core
       brew install cmake
     displayName: 'Install CMake'
 
@@ -149,7 +152,7 @@ jobs:
       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run pytest with coverage'
     env:
-      DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
       DB_PASSWORD: $(DB_PASSWORD)
 
   - task: PublishTestResults@2

@@ -1,6 +1,8 @@
 [run]
 omit =
-    mssql_python/testing_ddbc_bindings.py
+    main.py
+    setup.py
+    bcp_options.py
     tests/*
 
 [report]
