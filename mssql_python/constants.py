@@ -177,7 +177,7 @@ class GetInfoConstants(Enum):
     SQL_CATALOG_USAGE = 92
     SQL_SCHEMA_USAGE = 91
     SQL_COLUMN_ALIAS = 87
-    SQL_DESCRIBE_PARAMETER = 10002
+    SQL_DESCRIBE_PARAMETER = 10003
 
     # Transaction support
     SQL_TXN_CAPABLE = 46

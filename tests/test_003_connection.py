@@ -4831,7 +4831,7 @@ def test_getinfo_catalog_support(db_connection):
     try:
         # Catalog support for tables
         catalog_term = db_connection.getinfo(sql_const.SQL_CATALOG_TERM.value)
-        print("Catalof term = ",catalog_term)
+        print("Catalog term = ",catalog_term)
         assert catalog_term is not None, "Catalog term should not be None"
         
         # Catalog name separator

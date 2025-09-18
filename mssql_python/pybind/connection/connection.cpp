@@ -382,8 +382,7 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
         return py::str(buffer.data());
     }
     else {
-        // For numeric types, use memcpy to safely extract the values
-        // This avoids potential alignment issues with direct casting
+        // For numeric types, safely extract values
         
         // Ensure buffer has enough data for the expected type
         switch (infoType) {
@@ -392,15 +391,17 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
             case SQL_MAX_DRIVER_CONNECTIONS:
             case SQL_ODBC_API_CONFORMANCE:
             case SQL_ODBC_SQL_CONFORMANCE:
-            case SQL_TXN_CAPABLE:              // Add missing numeric types
+            case SQL_TXN_CAPABLE:
             case SQL_MULTIPLE_ACTIVE_TXN:
             case SQL_MAX_COLUMN_NAME_LEN:
             case SQL_MAX_TABLE_NAME_LEN:
             case SQL_PROCEDURES:
             {
-                if (actualLength >= sizeof(SQLUSMALLINT)) {
-                    SQLUSMALLINT value;
-                    std::memcpy(&value, buffer.data(), sizeof(SQLUSMALLINT));
+                if (actualLength >= sizeof(SQLUSMALLINT) && buffer.size() >= sizeof(SQLUSMALLINT)) {
+                    SQLUSMALLINT value = 0;
+                    // Safely copy data by using std::copy instead of memcpy
+                    std::copy(buffer.begin(), buffer.begin() + sizeof(SQLUSMALLINT), 
+                              reinterpret_cast<char*>(&value));
                     return py::int_(value);
                 }
                 break;
@@ -421,12 +422,14 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
             case SQL_STRING_FUNCTIONS:
             case SQL_SYSTEM_FUNCTIONS:
             case SQL_TIMEDATE_FUNCTIONS:
-            case SQL_DEFAULT_TXN_ISOLATION:    // Add missing numeric types
+            case SQL_DEFAULT_TXN_ISOLATION:
             case SQL_MAX_STATEMENT_LEN:
             {
-                if (actualLength >= sizeof(SQLUINTEGER)) {
-                    SQLUINTEGER value;
-                    std::memcpy(&value, buffer.data(), sizeof(SQLUINTEGER));
+                if (actualLength >= sizeof(SQLUINTEGER) && buffer.size() >= sizeof(SQLUINTEGER)) {
+                    SQLUINTEGER value = 0;
+                    // Safely copy data by using std::copy instead of memcpy
+                    std::copy(buffer.begin(), buffer.begin() + sizeof(SQLUINTEGER), 
+                              reinterpret_cast<char*>(&value));
                     return py::int_(value);
                 }
                 break;
@@ -449,9 +452,11 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
             case SQL_STATIC_CURSOR_ATTRIBUTES1:
             case SQL_STATIC_CURSOR_ATTRIBUTES2:
             {
-                if (actualLength >= sizeof(SQLUINTEGER)) {
-                    SQLUINTEGER value;
-                    std::memcpy(&value, buffer.data(), sizeof(SQLUINTEGER));
+                if (actualLength >= sizeof(SQLUINTEGER) && buffer.size() >= sizeof(SQLUINTEGER)) {
+                    SQLUINTEGER value = 0;
+                    // Safely copy data by using std::copy instead of memcpy
+                    std::copy(buffer.begin(), buffer.begin() + sizeof(SQLUINTEGER), 
+                              reinterpret_cast<char*>(&value));
                     return py::int_(value);
                 }
                 break;
@@ -459,21 +464,27 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
             
             // Handle any other types as integers, if enough data
             default:
-                if (actualLength >= sizeof(SQLUINTEGER)) {
-                    SQLUINTEGER value;
-                    std::memcpy(&value, buffer.data(), sizeof(SQLUINTEGER));
+                if (actualLength >= sizeof(SQLUINTEGER) && buffer.size() >= sizeof(SQLUINTEGER)) {
+                    SQLUINTEGER value = 0;
+                    // Safely copy data by using std::copy instead of memcpy
+                    std::copy(buffer.begin(), buffer.begin() + sizeof(SQLUINTEGER), 
+                              reinterpret_cast<char*>(&value));
                     return py::int_(value);
                 }
-                else if (actualLength >= sizeof(SQLUSMALLINT)) {
-                    SQLUSMALLINT value;
-                    std::memcpy(&value, buffer.data(), sizeof(SQLUSMALLINT));
+                else if (actualLength >= sizeof(SQLUSMALLINT) && buffer.size() >= sizeof(SQLUSMALLINT)) {
+                    SQLUSMALLINT value = 0;
+                    // Safely copy data by using std::copy instead of memcpy
+                    std::copy(buffer.begin(), buffer.begin() + sizeof(SQLUSMALLINT), 
+                              reinterpret_cast<char*>(&value));
                     return py::int_(value);
                 }
                 // For very small integers (like bytes/chars)
-                else if (actualLength > 0) {
+                else if (actualLength > 0 && buffer.size() >= sizeof(unsigned char)) {
                     // Try to interpret as a small integer
-                    unsigned char value;
-                    std::memcpy(&value, buffer.data(), sizeof(unsigned char));
+                    unsigned char value = 0;
+                    // Safely copy data by using std::copy instead of memcpy
+                    std::copy(buffer.begin(), buffer.begin() + sizeof(unsigned char), 
+                              reinterpret_cast<char*>(&value));
                     return py::int_(value);
                 }
                 break;
