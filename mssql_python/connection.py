@@ -12,12 +12,58 @@ Resource Management:
 """
 import weakref
 import re
+import codecs
 from mssql_python.cursor import Cursor
-from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, log
+from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, sanitize_user_input, log
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
-from mssql_python.exceptions import InterfaceError
+from mssql_python.exceptions import InterfaceError, ProgrammingError
 from mssql_python.auth import process_connection_string
+from mssql_python.constants import ConstantsDDBC
+
+# Add SQL_WMETADATA constant for metadata decoding configuration
+SQL_WMETADATA = -99  # Special flag for column name decoding
+
+# UTF-16 encoding variants that should use SQL_WCHAR by default
+UTF16_ENCODINGS = frozenset([
+    'utf-16',
+    'utf-16le', 
+    'utf-16be'
+])
+
+def _validate_encoding(encoding: str) -> bool:
+    """
+    Cached encoding validation using codecs.lookup().
+    
+    Args:
+        encoding (str): The encoding name to validate.
+        
+    Returns:
+        bool: True if encoding is valid, False otherwise.
+        
+    Note:
+        Uses LRU cache to avoid repeated expensive codecs.lookup() calls.
+        Cache size is limited to 128 entries which should cover most use cases.
+    """
+    try:
+        codecs.lookup(encoding)
+        return True
+    except LookupError:
+        return False
+
+# Import all DB-API 2.0 exception classes for Connection attributes
+from mssql_python.exceptions import (
+    Warning,
+    Error,
+    InterfaceError,
+    DatabaseError,
+    DataError,
+    OperationalError,
+    IntegrityError,
+    InternalError,
+    ProgrammingError,
+    NotSupportedError,
+)
 
 
 class Connection:
@@ -29,6 +75,23 @@ class Connection:
     to be used in a context where database operations are required, such as executing queries
     and fetching results.
 
+    The Connection class supports the Python context manager protocol (with statement).
+    When used as a context manager, it will automatically close the connection when
+    exiting the context, ensuring proper resource cleanup.
+
+    Example usage:
+        with connect(connection_string) as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO table VALUES (?)", [value])
+        # Connection is automatically closed when exiting the with block
+        
+    For long-lived connections, use without context manager:
+        conn = connect(connection_string)
+        try:
+            # Multiple operations...
+        finally:
+            conn.close()
+
     Methods:
         __init__(database: str) -> None:
         connect_to_db() -> None:
@@ -36,7 +99,25 @@ class Connection:
         commit() -> None:
         rollback() -> None:
         close() -> None:
+        __enter__() -> Connection:
+        __exit__() -> None:
+        setencoding(encoding=None, ctype=None) -> None:
+        setdecoding(sqltype, encoding=None, ctype=None) -> None:
+        getdecoding(sqltype) -> dict:
     """
+
+    # DB-API 2.0 Exception attributes
+    # These allow users to catch exceptions using connection.Error, connection.ProgrammingError, etc.
+    Warning = Warning
+    Error = Error
+    InterfaceError = InterfaceError
+    DatabaseError = DatabaseError
+    DataError = DataError
+    OperationalError = OperationalError
+    IntegrityError = IntegrityError
+    InternalError = InternalError
+    ProgrammingError = ProgrammingError
+    NotSupportedError = NotSupportedError
 
     def __init__(self, connection_str: str = "", autocommit: bool = False, attrs_before: dict = None, **kwargs) -> None:
         """
@@ -62,6 +143,29 @@ class Connection:
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
+
+        # Initialize encoding settings with defaults for Python 3
+        # Python 3 only has str (which is Unicode), so we use utf-16le by default
+        self._encoding_settings = {
+            'encoding': 'utf-16le',
+            'ctype': ConstantsDDBC.SQL_WCHAR.value
+        }
+
+        # Initialize decoding settings with Python 3 defaults
+        self._decoding_settings = {
+            ConstantsDDBC.SQL_CHAR.value: {
+                'encoding': 'utf-8',
+                'ctype': ConstantsDDBC.SQL_CHAR.value
+            },
+            ConstantsDDBC.SQL_WCHAR.value: {
+                'encoding': 'utf-16le',
+                'ctype': ConstantsDDBC.SQL_WCHAR.value
+            },
+            SQL_WMETADATA: {
+                'encoding': 'utf-16le',
+                'ctype': ConstantsDDBC.SQL_WCHAR.value
+            }
+        }
 
         # Check if the connection string contains authentication parameters
         # This is important for processing the connection string correctly.
@@ -158,6 +262,247 @@ class Connection:
             DatabaseError: If there is an error while setting the autocommit mode.
         """
         self._conn.set_autocommit(value)
+
+    def setencoding(self, encoding=None, ctype=None):
+        """
+        Sets the text encoding for SQL statements and text parameters.
+        
+        Since Python 3 only has str (which is Unicode), this method configures
+        how text is encoded when sending to the database.
+        
+        Args:
+            encoding (str, optional): The encoding to use. This must be a valid Python 
+                encoding that converts text to bytes. If None, defaults to 'utf-16le'.
+            ctype (int, optional): The C data type to use when passing data: 
+                SQL_CHAR or SQL_WCHAR. If not provided, SQL_WCHAR is used for 
+                UTF-16 variants (see UTF16_ENCODINGS constant). SQL_CHAR is used for all other encodings.
+        
+        Returns:
+            None
+            
+        Raises:
+            ProgrammingError: If the encoding is not valid or not supported.
+            InterfaceError: If the connection is closed.
+            
+        Example:
+            # For databases that only communicate with UTF-8
+            cnxn.setencoding(encoding='utf-8')
+            
+            # For explicitly using SQL_CHAR
+            cnxn.setencoding(encoding='utf-8', ctype=mssql_python.SQL_CHAR)
+        """
+        if self._closed:
+            raise InterfaceError(
+                driver_error="Connection is closed",
+                ddbc_error="Connection is closed",
+            )
+        
+        # Set default encoding if not provided
+        if encoding is None:
+            encoding = 'utf-16le'
+            
+        # Validate encoding using cached validation for better performance
+        if not _validate_encoding(encoding):
+            # Log the sanitized encoding for security
+            log('warning', "Invalid encoding attempted: %s", sanitize_user_input(str(encoding)))
+            raise ProgrammingError(
+                driver_error=f"Unsupported encoding: {encoding}",
+                ddbc_error=f"The encoding '{encoding}' is not supported by Python",
+            )
+        
+        # Normalize encoding to casefold for more robust Unicode handling
+        encoding = encoding.casefold()
+        
+        # Set default ctype based on encoding if not provided
+        if ctype is None:
+            if encoding in UTF16_ENCODINGS:
+                ctype = ConstantsDDBC.SQL_WCHAR.value
+            else:
+                ctype = ConstantsDDBC.SQL_CHAR.value
+        
+        # Validate ctype
+        valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
+        if ctype not in valid_ctypes:
+            # Log the sanitized ctype for security  
+            log('warning', "Invalid ctype attempted: %s", sanitize_user_input(str(ctype)))
+            raise ProgrammingError(
+                driver_error=f"Invalid ctype: {ctype}",
+                ddbc_error=f"ctype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) or SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value})",
+            )
+        
+        # Store the encoding settings
+        self._encoding_settings = {
+            'encoding': encoding,
+            'ctype': ctype
+        }
+        
+        # Log with sanitized values for security
+        log('info', "Text encoding set to %s with ctype %s", 
+            sanitize_user_input(encoding), sanitize_user_input(str(ctype)))
+
+    def getencoding(self):
+        """
+        Gets the current text encoding settings.
+        
+        Returns:
+            dict: A dictionary containing 'encoding' and 'ctype' keys.
+            
+        Raises:
+            InterfaceError: If the connection is closed.
+            
+        Example:
+            settings = cnxn.getencoding()
+            print(f"Current encoding: {settings['encoding']}")
+            print(f"Current ctype: {settings['ctype']}")
+        """
+        if self._closed:
+            raise InterfaceError(
+                driver_error="Connection is closed",
+                ddbc_error="Connection is closed",
+            )
+        
+        return self._encoding_settings.copy()
+
+    def setdecoding(self, sqltype, encoding=None, ctype=None):
+        """
+        Sets the text decoding used when reading SQL_CHAR and SQL_WCHAR from the database.
+        
+        This method configures how text data is decoded when reading from the database.
+        In Python 3, all text is Unicode (str), so this primarily affects the encoding
+        used to decode bytes from the database.
+        
+        Args:
+            sqltype (int): The SQL type being configured: SQL_CHAR, SQL_WCHAR, or SQL_WMETADATA.
+                SQL_WMETADATA is a special flag for configuring column name decoding.
+            encoding (str, optional): The Python encoding to use when decoding the data.
+                If None, uses default encoding based on sqltype.
+            ctype (int, optional): The C data type to request from SQLGetData: 
+                SQL_CHAR or SQL_WCHAR. If None, uses default based on encoding.
+        
+        Returns:
+            None
+            
+        Raises:
+            ProgrammingError: If the sqltype, encoding, or ctype is invalid.
+            InterfaceError: If the connection is closed.
+            
+        Example:
+            # Configure SQL_CHAR to use UTF-8 decoding
+            cnxn.setdecoding(mssql_python.SQL_CHAR, encoding='utf-8')
+            
+            # Configure column metadata decoding
+            cnxn.setdecoding(mssql_python.SQL_WMETADATA, encoding='utf-16le')
+            
+            # Use explicit ctype
+            cnxn.setdecoding(mssql_python.SQL_WCHAR, encoding='utf-16le', ctype=mssql_python.SQL_WCHAR)
+        """
+        if self._closed:
+            raise InterfaceError(
+                driver_error="Connection is closed",
+                ddbc_error="Connection is closed",
+            )
+        
+        # Validate sqltype
+        valid_sqltypes = [
+            ConstantsDDBC.SQL_CHAR.value,
+            ConstantsDDBC.SQL_WCHAR.value,
+            SQL_WMETADATA
+        ]
+        if sqltype not in valid_sqltypes:
+            log('warning', "Invalid sqltype attempted: %s", sanitize_user_input(str(sqltype)))
+            raise ProgrammingError(
+                driver_error=f"Invalid sqltype: {sqltype}",
+                ddbc_error=f"sqltype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}), SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value}), or SQL_WMETADATA ({SQL_WMETADATA})",
+            )
+        
+        # Set default encoding based on sqltype if not provided
+        if encoding is None:
+            if sqltype == ConstantsDDBC.SQL_CHAR.value:
+                encoding = 'utf-8'  # Default for SQL_CHAR in Python 3
+            else:  # SQL_WCHAR or SQL_WMETADATA
+                encoding = 'utf-16le'  # Default for SQL_WCHAR in Python 3
+        
+        # Validate encoding using cached validation for better performance
+        if not _validate_encoding(encoding):
+            log('warning', "Invalid encoding attempted: %s", sanitize_user_input(str(encoding)))
+            raise ProgrammingError(
+                driver_error=f"Unsupported encoding: {encoding}",
+                ddbc_error=f"The encoding '{encoding}' is not supported by Python",
+            )
+        
+        # Normalize encoding to lowercase for consistency
+        encoding = encoding.lower()
+        
+        # Set default ctype based on encoding if not provided
+        if ctype is None:
+            if encoding in UTF16_ENCODINGS:
+                ctype = ConstantsDDBC.SQL_WCHAR.value
+            else:
+                ctype = ConstantsDDBC.SQL_CHAR.value
+        
+        # Validate ctype
+        valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
+        if ctype not in valid_ctypes:
+            log('warning', "Invalid ctype attempted: %s", sanitize_user_input(str(ctype)))
+            raise ProgrammingError(
+                driver_error=f"Invalid ctype: {ctype}",
+                ddbc_error=f"ctype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) or SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value})",
+            )
+        
+        # Store the decoding settings for the specified sqltype
+        self._decoding_settings[sqltype] = {
+            'encoding': encoding,
+            'ctype': ctype
+        }
+        
+        # Log with sanitized values for security
+        sqltype_name = {
+            ConstantsDDBC.SQL_CHAR.value: "SQL_CHAR",
+            ConstantsDDBC.SQL_WCHAR.value: "SQL_WCHAR", 
+            SQL_WMETADATA: "SQL_WMETADATA"
+        }.get(sqltype, str(sqltype))
+        
+        log('info', "Text decoding set for %s to %s with ctype %s", 
+            sqltype_name, sanitize_user_input(encoding), sanitize_user_input(str(ctype)))
+
+    def getdecoding(self, sqltype):
+        """
+        Gets the current text decoding settings for the specified SQL type.
+        
+        Args:
+            sqltype (int): The SQL type to get settings for: SQL_CHAR, SQL_WCHAR, or SQL_WMETADATA.
+        
+        Returns:
+            dict: A dictionary containing 'encoding' and 'ctype' keys for the specified sqltype.
+            
+        Raises:
+            ProgrammingError: If the sqltype is invalid.
+            InterfaceError: If the connection is closed.
+            
+        Example:
+            settings = cnxn.getdecoding(mssql_python.SQL_CHAR)
+            print(f"SQL_CHAR encoding: {settings['encoding']}")
+            print(f"SQL_CHAR ctype: {settings['ctype']}")
+        """
+        if self._closed:
+            raise InterfaceError(
+                driver_error="Connection is closed",
+                ddbc_error="Connection is closed",
+            )
+        
+        # Validate sqltype
+        valid_sqltypes = [
+            ConstantsDDBC.SQL_CHAR.value,
+            ConstantsDDBC.SQL_WCHAR.value,
+            SQL_WMETADATA
+        ]
+        if sqltype not in valid_sqltypes:
+            raise ProgrammingError(
+                driver_error=f"Invalid sqltype: {sqltype}",
+                ddbc_error=f"sqltype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}), SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value}), or SQL_WMETADATA ({SQL_WMETADATA})",
+            )
+        
+        return self._decoding_settings[sqltype].copy()
 
     def cursor(self) -> Cursor:
         """
@@ -263,6 +608,7 @@ class Connection:
                     # If autocommit is disabled, rollback any uncommitted changes
                     # This is important to ensure no partial transactions remain
                     # For autocommit True, this is not necessary as each statement is committed immediately
+                    log('info', "Rolling back uncommitted changes before closing connection.")
                     self._conn.rollback()
                 # TODO: Check potential race conditions in case of multithreaded scenarios
                 # Close the connection
@@ -277,6 +623,35 @@ class Connection:
             self._closed = True
         
         log('info', "Connection closed successfully.")
+
+    def __enter__(self) -> 'Connection':
+        """
+        Enter the context manager.
+        
+        This method enables the Connection to be used with the 'with' statement.
+        When entering the context, it simply returns the connection object itself.
+        
+        Returns:
+            Connection: The connection object itself.
+            
+        Example:
+            with connect(connection_string) as conn:
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO table VALUES (?)", [value])
+                # Transaction will be committed automatically when exiting
+        """
+        log('info', "Entering connection context manager.")
+        return self
+
+    def __exit__(self, *args) -> None:
+        """
+        Exit the context manager.
+        
+        Closes the connection when exiting the context, ensuring proper resource cleanup.
+        This follows the modern standard used by most database libraries.
+        """
+        if not self._closed:
+            self.close()
 
     def __del__(self):
         """

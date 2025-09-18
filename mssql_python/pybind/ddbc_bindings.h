@@ -32,34 +32,126 @@ using namespace pybind11::literals;
 #include <sql.h>
 #include <sqlext.h>
 
+#if defined(_WIN32)
+inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
+    std::vector<SQLWCHAR> result(str.begin(), str.end());
+    result.push_back(0);
+    return result;
+}
+
+inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
+    if (!sqlwStr) return std::wstring();
+
+    if (length == SQL_NTS) {
+        size_t i = 0;
+        while (sqlwStr[i] != 0) ++i;
+        length = i;
+    }
+    return std::wstring(reinterpret_cast<const wchar_t*>(sqlwStr), length);
+}
+
+#endif
+
 #if defined(__APPLE__) || defined(__linux__)
-    // macOS-specific headers
-    #include <dlfcn.h>
+#include <dlfcn.h>
 
-    inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
-        if (!sqlwStr) return std::wstring();
+// Unicode constants for surrogate ranges and max scalar value
+constexpr uint32_t UNICODE_SURROGATE_HIGH_START = 0xD800;
+constexpr uint32_t UNICODE_SURROGATE_HIGH_END   = 0xDBFF;
+constexpr uint32_t UNICODE_SURROGATE_LOW_START  = 0xDC00;
+constexpr uint32_t UNICODE_SURROGATE_LOW_END    = 0xDFFF;
+constexpr uint32_t UNICODE_MAX_CODEPOINT        = 0x10FFFF;
+constexpr uint32_t UNICODE_REPLACEMENT_CHAR     = 0xFFFD;
 
-        if (length == SQL_NTS) {
-            size_t i = 0;
-            while (sqlwStr[i] != 0) ++i;
-            length = i;
+// Validate whether a code point is a legal Unicode scalar value
+// (excludes surrogate halves and values beyond U+10FFFF)
+inline bool IsValidUnicodeScalar(uint32_t cp) {
+    return cp <= UNICODE_MAX_CODEPOINT &&
+           !(cp >= UNICODE_SURROGATE_HIGH_START && cp <= UNICODE_SURROGATE_LOW_END);
+}
+
+inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
+    if (!sqlwStr) return std::wstring();
+    if (length == SQL_NTS) {
+        size_t i = 0;
+        while (sqlwStr[i] != 0) ++i;
+        length = i;
+    }
+    std::wstring result;
+    result.reserve(length);
+    if constexpr (sizeof(SQLWCHAR) == 2) {
+        for (size_t i = 0; i < length; ) { // Use a manual increment to handle skipping
+            uint16_t wc = static_cast<uint16_t>(sqlwStr[i]);
+            // Check for high surrogate and valid low surrogate
+            if (wc >= UNICODE_SURROGATE_HIGH_START && wc <= UNICODE_SURROGATE_HIGH_END && (i + 1 < length)) {
+                uint16_t low = static_cast<uint16_t>(sqlwStr[i + 1]);
+                if (low >= UNICODE_SURROGATE_LOW_START && low <= UNICODE_SURROGATE_LOW_END) {
+                    // Combine into a single code point
+                    uint32_t cp = (((wc - UNICODE_SURROGATE_HIGH_START) << 10) | (low - UNICODE_SURROGATE_LOW_START)) + 0x10000;
+                    result.push_back(static_cast<wchar_t>(cp));
+                    i += 2; // Move past both surrogates
+                    continue;
+                }
+            }
+            // If we reach here, it's not a valid surrogate pair or is a BMP character.
+            // Check if it's a valid scalar and append, otherwise append replacement char.
+            if (IsValidUnicodeScalar(wc)) {
+                result.push_back(static_cast<wchar_t>(wc));
+            } else {
+                result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
+            }
+            ++i; // Move to the next code unit
         }
-
-        std::wstring result;
-        result.reserve(length);
+    } else {
+        // SQLWCHAR is UTF-32, so just copy with validation
         for (size_t i = 0; i < length; ++i) {
-            result.push_back(static_cast<wchar_t>(sqlwStr[i]));
+            uint32_t cp = static_cast<uint32_t>(sqlwStr[i]);
+            if (IsValidUnicodeScalar(cp)) {
+                result.push_back(static_cast<wchar_t>(cp));
+            } else {
+                result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
+            }
         }
-        return result;
     }
+    return result;
+}
 
-    inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
-        std::vector<SQLWCHAR> result(str.size() + 1, 0);  // +1 for null terminator
-        for (size_t i = 0; i < str.size(); ++i) {
-            result[i] = static_cast<SQLWCHAR>(str[i]);
+inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
+    std::vector<SQLWCHAR> result;
+    result.reserve(str.size() + 2);
+    if constexpr (sizeof(SQLWCHAR) == 2) {
+        // Encode UTF-32 to UTF-16
+        for (wchar_t wc : str) {
+            uint32_t cp = static_cast<uint32_t>(wc);
+            if (!IsValidUnicodeScalar(cp)) {
+                cp = UNICODE_REPLACEMENT_CHAR;
+            }
+            if (cp <= 0xFFFF) {
+                // Fits in a single UTF-16 code unit
+                result.push_back(static_cast<SQLWCHAR>(cp));
+            } else {
+                // Encode as surrogate pair
+                cp -= 0x10000;
+                SQLWCHAR high = static_cast<SQLWCHAR>((cp >> 10) + UNICODE_SURROGATE_HIGH_START);
+                SQLWCHAR low  = static_cast<SQLWCHAR>((cp & 0x3FF) + UNICODE_SURROGATE_LOW_START);
+                result.push_back(high);
+                result.push_back(low);
+            }
         }
-        return result;
+    } else {
+        // Encode UTF-32 directly
+        for (wchar_t wc : str) {
+            uint32_t cp = static_cast<uint32_t>(wc);
+            if (IsValidUnicodeScalar(cp)) {
+                result.push_back(static_cast<SQLWCHAR>(cp));
+            } else {
+                result.push_back(static_cast<SQLWCHAR>(UNICODE_REPLACEMENT_CHAR));
+            }
+        }
     }
+    result.push_back(0); // null terminator
+    return result;
+}
 #endif
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -105,7 +197,18 @@ typedef SQLRETURN (SQL_API* SQLDescribeColFunc)(SQLHSTMT, SQLUSMALLINT, SQLWCHAR
 typedef SQLRETURN (SQL_API* SQLMoreResultsFunc)(SQLHSTMT);
 typedef SQLRETURN (SQL_API* SQLColAttributeFunc)(SQLHSTMT, SQLUSMALLINT, SQLUSMALLINT, SQLPOINTER,
                                          SQLSMALLINT, SQLSMALLINT*, SQLPOINTER);
-
+typedef SQLRETURN (*SQLTablesFunc)(
+    SQLHSTMT       StatementHandle,
+    SQLWCHAR*      CatalogName,
+    SQLSMALLINT    NameLength1,
+    SQLWCHAR*      SchemaName,
+    SQLSMALLINT    NameLength2,
+    SQLWCHAR*      TableName,
+    SQLSMALLINT    NameLength3,
+    SQLWCHAR*      TableType,
+    SQLSMALLINT    NameLength4
+);
+                                         
 // Transaction APIs
 typedef SQLRETURN (SQL_API* SQLEndTranFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT);
 
@@ -118,6 +221,11 @@ typedef SQLRETURN (SQL_API* SQLFreeStmtFunc)(SQLHSTMT, SQLUSMALLINT);
 typedef SQLRETURN (SQL_API* SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLWCHAR*, SQLINTEGER*,
                                        SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*);
 
+typedef SQLRETURN (SQL_API* SQLDescribeParamFunc)(SQLHSTMT, SQLUSMALLINT, SQLSMALLINT*, SQLULEN*, SQLSMALLINT*, SQLSMALLINT*);
+
+// DAE APIs
+typedef SQLRETURN (SQL_API* SQLParamDataFunc)(SQLHSTMT, SQLPOINTER*);
+typedef SQLRETURN (SQL_API* SQLPutDataFunc)(SQLHSTMT, SQLPOINTER, SQLLEN);
 //-------------------------------------------------------------------------------------------------
 // Extern function pointer declarations (defined in ddbc_bindings.cpp)
 //-------------------------------------------------------------------------------------------------
@@ -148,6 +256,7 @@ extern SQLBindColFunc SQLBindCol_ptr;
 extern SQLDescribeColFunc SQLDescribeCol_ptr;
 extern SQLMoreResultsFunc SQLMoreResults_ptr;
 extern SQLColAttributeFunc SQLColAttribute_ptr;
+extern SQLTablesFunc SQLTables_ptr;
 
 // Transaction APIs
 extern SQLEndTranFunc SQLEndTran_ptr;
@@ -159,6 +268,12 @@ extern SQLFreeStmtFunc SQLFreeStmt_ptr;
 
 // Diagnostic APIs
 extern SQLGetDiagRecFunc SQLGetDiagRec_ptr;
+
+extern SQLDescribeParamFunc SQLDescribeParam_ptr;
+
+// DAE APIs
+extern SQLParamDataFunc SQLParamData_ptr;
+extern SQLPutDataFunc SQLPutData_ptr;
 
 // Logging utility
 template <typename... Args>
@@ -241,6 +356,7 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
 
 inline std::string WideToUTF8(const std::wstring& wstr) {
     if (wstr.empty()) return {};
+
 #if defined(_WIN32)
     int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
     if (size_needed == 0) return {};
@@ -249,8 +365,34 @@ inline std::string WideToUTF8(const std::wstring& wstr) {
     if (converted == 0) return {};
     return result;
 #else
-    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
-    return converter.to_bytes(wstr);
+    // Manual UTF-32 to UTF-8 conversion for macOS/Linux
+    std::string utf8_string;
+    utf8_string.reserve(wstr.size() * 4); // Reserve enough space for worst case (4 bytes per character)
+    
+    for (wchar_t wc : wstr) {
+        uint32_t code_point = static_cast<uint32_t>(wc);
+
+        if (code_point <= 0x7F) {
+            // 1-byte UTF-8 sequence for ASCII characters
+            utf8_string += static_cast<char>(code_point);
+        } else if (code_point <= 0x7FF) {
+            // 2-byte UTF-8 sequence
+            utf8_string += static_cast<char>(0xC0 | ((code_point >> 6) & 0x1F));
+            utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
+        } else if (code_point <= 0xFFFF) {
+            // 3-byte UTF-8 sequence
+            utf8_string += static_cast<char>(0xE0 | ((code_point >> 12) & 0x0F));
+            utf8_string += static_cast<char>(0x80 | ((code_point >> 6) & 0x3F));
+            utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
+        } else if (code_point <= 0x10FFFF) {
+            // 4-byte UTF-8 sequence for characters like emojis (e.g., U+1F604)
+            utf8_string += static_cast<char>(0xF0 | ((code_point >> 18) & 0x07));
+            utf8_string += static_cast<char>(0x80 | ((code_point >> 12) & 0x3F));
+            utf8_string += static_cast<char>(0x80 | ((code_point >> 6) & 0x3F));
+            utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
+        }
+    }
+    return utf8_string;
 #endif
 }
 

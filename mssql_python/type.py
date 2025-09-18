@@ -104,7 +104,7 @@ def Binary(value) -> bytes:
     """
     Converts a string or bytes to bytes for use with binary database columns.
     
-    This function follows the DB-API 2.0 specification and pyodbc compatibility.
+    This function follows the DB-API 2.0 specification.
     It accepts only str and bytes/bytearray types to ensure type safety.
     
     Args:
