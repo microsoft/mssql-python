@@ -2,44 +2,73 @@ class Row:
     """
     A row of data from a cursor fetch operation. Provides both tuple-like indexing
     and attribute access to column values.
-    
+
+    Column attribute access behavior depends on the global 'lowercase' setting:
+    - When enabled: Case-insensitive attribute access
+    - When disabled (default): Case-sensitive attribute access matching original column names
+
     Example:
         row = cursor.fetchone()
         print(row[0])           # Access by index
-        print(row.column_name)  # Access by column name
+        print(row.column_name)  # Access by column name (case sensitivity varies)
     """
     
-    def __init__(self, values, description, column_map=None):
+    def __init__(self, cursor, description, values, column_map=None):
         """
         Initialize a Row object with values and description.
         
         Args:
-            values: List of values for this row.
-            description: Description of the columns (from cursor.description).
-            column_map: Optional mapping of column names to indices.
+            cursor: The cursor object
+            description: The cursor description containing column metadata
+            values: List of values for this row
+            column_map: Optional pre-built column map (for optimization)
         """
+        self._cursor = cursor
         self._values = values
-        self._description = description
         
-        # Build column map if not provided
+        # TODO: ADO task - Optimize memory usage by sharing column map across rows
+        # Instead of storing the full cursor_description in each Row object:
+        # 1. Build the column map once at the cursor level after setting description
+        # 2. Pass only this map to each Row instance
+        # 3. Remove cursor_description from Row objects entirely
+        
+        # Create mapping of column names to indices
+        # If column_map is not provided, build it from description
         if column_map is None:
-            self._column_map = {}
-            for i, desc in enumerate(description):
-                col_name = desc[0]
-                self._column_map[col_name] = i
-                self._column_map[col_name.lower()] = i  # Add lowercase for case-insensitivity
-        else:
-            self._column_map = column_map
+            column_map = {}
+            for i, col_desc in enumerate(description):
+                col_name = col_desc[0]  # Name is first item in description tuple
+                column_map[col_name] = i
+                
+        self._column_map = column_map
     
     def __getitem__(self, index):
         """Allow accessing by numeric index: row[0]"""
         return self._values[index]
     
     def __getattr__(self, name):
-        """Allow accessing by column name as attribute: row.column_name"""
+        """
+        Allow accessing by column name as attribute: row.column_name
+        
+        Note: Case sensitivity depends on the global 'lowercase' setting:
+        - When lowercase=True: Column names are stored in lowercase, enabling
+          case-insensitive attribute access (e.g., row.NAME, row.name, row.Name all work).
+        - When lowercase=False (default): Column names preserve original casing,
+          requiring exact case matching for attribute access.
+        """
+        # Handle lowercase attribute access - if lowercase is enabled,
+        # try to match attribute names case-insensitively
         if name in self._column_map:
             return self._values[self._column_map[name]]
-        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+        
+        # If lowercase is enabled on the cursor, try case-insensitive lookup
+        if hasattr(self._cursor, 'lowercase') and self._cursor.lowercase:
+            name_lower = name.lower()
+            for col_name in self._column_map:
+                if col_name.lower() == name_lower:
+                    return self._values[self._column_map[col_name]]
+        
+        raise AttributeError(f"Row has no attribute '{name}'")
     
     def __eq__(self, other):
         """

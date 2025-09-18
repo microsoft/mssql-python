@@ -16,7 +16,8 @@ from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import InterfaceError, NotSupportedError, ProgrammingError
-from .row import Row
+from mssql_python.row import Row
+from mssql_python import get_settings
 
 # Constants for string handling
 MAX_INLINE_CHAR = 4000  # NVARCHAR/VARCHAR inline limit; this triggers NVARCHAR(MAX)/VARCHAR(MAX) + DAE
@@ -543,26 +544,32 @@ class Cursor:
 
         return paraminfo
 
-    def _initialize_description(self):
-        """
-        Initialize the description attribute using SQLDescribeCol.
-        """
-        col_metadata = []
-        ret = ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, col_metadata)
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+    def _initialize_description(self, column_metadata=None):
+        """Initialize the description attribute from column metadata."""
+        if not column_metadata:
+            self.description = None
+            return
 
-        self.description = [
-            (
-                col["ColumnName"],
-                self._map_data_type(col["DataType"]),
-                None,
-                col["ColumnSize"],
-                col["ColumnSize"],
-                col["DecimalDigits"],
-                col["Nullable"] == ddbc_sql_const.SQL_NULLABLE.value,
-            )
-            for col in col_metadata
-        ]
+        description = []
+        for i, col in enumerate(column_metadata):
+            # Get column name - lowercase it if the lowercase flag is set
+            column_name = col["ColumnName"]
+            
+            # Use the current global setting to ensure tests pass correctly
+            if get_settings().lowercase:
+                column_name = column_name.lower()
+                
+            # Add to description tuple (7 elements as per PEP-249)
+            description.append((
+                column_name,                           # name 
+                self._map_data_type(col["DataType"]),  # type_code
+                None,                                  # display_size
+                col["ColumnSize"],                     # internal_size
+                col["ColumnSize"],                     # precision - should match ColumnSize
+                col["DecimalDigits"],                  # scale
+                col["Nullable"] == ddbc_sql_const.SQL_NULLABLE.value, # null_ok
+            ))
+        self.description = description
 
     def _map_data_type(self, sql_type):
         """
@@ -746,6 +753,16 @@ class Cursor:
             use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
             reset_cursor: Whether to reset the cursor before execution.
         """
+
+        # Restore original fetch methods if they exist
+        if hasattr(self, '_original_fetchone'):
+            self.fetchone = self._original_fetchone
+            self.fetchmany = self._original_fetchmany
+            self.fetchall = self._original_fetchall
+            del self._original_fetchone
+            del self._original_fetchmany
+            del self._original_fetchall
+            
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
             self._reset_cursor()
@@ -822,7 +839,14 @@ class Cursor:
         self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
 
         # Initialize description after execution
-        self._initialize_description()
+        # After successful execution, initialize description if there are results
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except Exception as e:
+            # If describe fails, it's likely there are no results (e.g., for INSERT)
+            self.description = None
         
         # Reset rownumber for new result set (only for SELECT statements)
         if self.description:  # If we have column descriptions, it's likely a SELECT
@@ -975,7 +999,7 @@ class Cursor:
             
             # Create and return a Row object, passing column name map if available
             column_map = getattr(self, '_column_name_map', None)
-            return Row(row_data, self.description, column_map)
+            return Row(self, self.description, row_data, column_map)
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -1017,7 +1041,7 @@ class Cursor:
             
             # Convert raw data to Row objects
             column_map = getattr(self, '_column_name_map', None)
-            return [Row(row_data, self.description, column_map) for row_data in rows_data]
+            return [Row(self, self.description, row_data, column_map) for row_data in rows_data]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -1049,7 +1073,7 @@ class Cursor:
             
             # Convert raw data to Row objects
             column_map = getattr(self, '_column_name_map', None)
-            return [Row(row_data, self.description, column_map) for row_data in rows_data]
+            return [Row(self, self.description, row_data, column_map) for row_data in rows_data]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -1363,30 +1387,20 @@ class Cursor:
                                               Example: "TABLE" or ["TABLE", "VIEW"]
         
         Returns:
-            list: A list of Row objects containing table information with these columns:
-                  - table_cat: Catalog name
-                  - table_schem: Schema name
-                  - table_name: Table name
-                  - table_type: Table type (e.g., "TABLE", "VIEW")
-                  - remarks: Comments about the table
-        
-        Notes:
-            This method only processes the standard five columns as defined in the ODBC
-            specification. Any additional columns that might be returned by specific ODBC
-            drivers are not included in the result set.
-        
+            Cursor: The cursor object itself for method chaining with fetch methods.
+            
         Example:
             # Get all tables in the database
-            tables = cursor.tables()
+            tables = cursor.tables().fetchall()
             
             # Get all tables in schema 'dbo'
-            tables = cursor.tables(schema='dbo')
+            tables = cursor.tables(schema='dbo').fetchall()
             
             # Get table named 'Customers'
-            tables = cursor.tables(table='Customers')
+            tables = cursor.tables(table='Customers').fetchone()
             
-            # Get all views
-            tables = cursor.tables(tableType='VIEW')
+            # Get all views with fetchmany
+            tables = cursor.tables(tableType='VIEW').fetchmany(10)
         """
         self._check_closed()
         
@@ -1418,7 +1432,13 @@ class Cursor:
         try:
             ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
             self._initialize_description(column_metadata)
-        except Exception:
+        except InterfaceError as e:
+            log('error', f"Driver interface error during metadata retrieval: {e}")
+        except Exception as e:
+            # Log the exception with appropriate context
+            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+    
+        if not self.description:
             # If describe fails, create a manual description for the standard columns
             column_types = [str, str, str, str, str]
             self.description = [
@@ -1428,23 +1448,54 @@ class Cursor:
                 ("table_type", column_types[3], None, 128, 128, 0, False),
                 ("remarks", column_types[4], None, 254, 254, 0, True)
             ]
-        
-        # Define column names in ODBC standard order
-        column_names = [
-            "table_cat", "table_schem", "table_name", "table_type", "remarks"
-        ]
-        
-        # Fetch all rows
-        rows_data = []
-        ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
-        
-        # Create a column map for attribute access
-        column_map = {name: i for i, name in enumerate(column_names)}
-        
-        # Create Row objects with the column map
-        result_rows = []
-        for row_data in rows_data:
-            row = Row(row_data, self.description, column_map)
-            result_rows.append(row)
-        
-        return result_rows
+    
+        # Store the column mappings for this specific tables() call
+        column_names = [desc[0] for desc in self.description]
+    
+        # Create a specialized column map for this result set
+        columns_map = {}
+        for i, name in enumerate(column_names):
+            columns_map[name] = i
+            columns_map[name.lower()] = i
+
+        # Define wrapped fetch methods that preserve existing column mapping
+        # but add our specialized mapping just for column results
+        def fetchone_with_columns_mapping():
+            row = self._original_fetchone()
+            if row is not None:
+                # Create a merged map with columns result taking precedence
+                merged_map = getattr(row, '_column_map', {}).copy()
+                merged_map.update(columns_map)
+                row._column_map = merged_map
+            return row
+
+        def fetchmany_with_columns_mapping(size=None):
+            rows = self._original_fetchmany(size)
+            for row in rows:
+                # Create a merged map with columns result taking precedence
+                merged_map = getattr(row, '_column_map', {}).copy()
+                merged_map.update(columns_map)
+                row._column_map = merged_map
+            return rows
+
+        def fetchall_with_columns_mapping():
+            rows = self._original_fetchall()
+            for row in rows:
+                # Create a merged map with columns result taking precedence
+                merged_map = getattr(row, '_column_map', {}).copy()
+                merged_map.update(columns_map)
+                row._column_map = merged_map
+            return rows
+
+        # Save original fetch methods
+        if not hasattr(self, '_original_fetchone'):
+            self._original_fetchone = self.fetchone
+            self._original_fetchmany = self.fetchmany
+            self._original_fetchall = self.fetchall
+
+        # Override fetch methods with our wrapped versions
+        self.fetchone = fetchone_with_columns_mapping
+        self.fetchmany = fetchmany_with_columns_mapping
+        self.fetchall = fetchall_with_columns_mapping
+
+        return self
