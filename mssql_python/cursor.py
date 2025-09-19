@@ -774,8 +774,6 @@ class Cursor:
 
         if parameters:
             for i, param in enumerate(parameters):
-                if isinstance(param, uuid.UUID):
-                    parameters[i] = param.bytes
                 paraminfo = self._create_parameter_types_list(
                     param, param_info, parameters, i
                 )
