@@ -39,20 +39,15 @@ PyBind11 provides:
 
 We are currently in **Public Preview**.
 
-## What's new in v0.10.0
+## What's new in v0.11.0
 
-- **SUSE Linux Support:** Added full support for SUSE and openSUSE distributions alongside existing other Linux distros support, broadening enterprise Linux compatibility.
-- **Context Manager Support:** Implemented Python `with` statement support for Connection and Cursor classes with automatic transaction management and resource cleanup.
-- **Large Text Streaming:** Added Data At Execution (DAE) support for streaming large text parameters (`NVARCHAR(MAX)`, `VARCHAR(MAX)`), eliminating memory constraints for bulk text `execute()` operations.
-  - `VARBINARY(MAX)` support to follow alongwith streaming support for fetch operations.
-- **Enhanced Unicode Handling:** Improved emoji and international character support with robust UTF-16 encoding for reliable multilingual data processing.
-- **PyODBC Compatibility:** Enhanced API compatibility with pyodbc including:
-  - DB-API 2.0 exception classes: `Warning`, `Error`, `InterfaceError`, `DatabaseError`, `DataError`, `OperationalError`, `IntegrityError`, `InternalError`, `ProgrammingError`, `NotSupportedError`
-  - Context manager support with `with` statements for Connection and Cursor
-  - Encoding configuration APIs: `setencoding()`, `getencoding()`, `setdecoding()`, `getdecoding()`
-  - Cursor navigation APIs: `next()`, `__iter__()`, `scroll()`, `skip()`, `fetchval()`
-  - Cursor attributes: `rownumber`, `messages`
-  - Additional methods: `cursor.commit()`, `cursor.rollback()`, `table()`
+- **Database Metadata & Introspection:** Added comprehensive `getInfo()` method and extensive catalog APIs (`SQLGetTypeInfo`, `SQLProcedures`, `SQLForeignKeys`, `SQLColumns`) for complete database schema discovery and introspection capabilities.
+- **Advanced Parameter Management:** Implemented `setinputsizes()` with SQL type constants and enhanced parameter validation through the `SQLTypes` class for precise type control in parameterized queries.
+- **Large Data Streaming Enhancements:** Extended streaming support to VARBINARY(MAX) and VARCHAR(MAX) across all fetch operations (`fetchone`, `fetchmany`, `fetchall`) with improved chunked retrieval for efficient memory usage.
+- **Output Data Conversion System:** Introduced flexible output converter framework with `add_output_converter()`, `remove_output_converter()`, and related methods for customizable data transformations during result fetching.
+- **Connection-Level Execute:** Added direct `execute()` method to Connection class for streamlined query execution without explicit cursor management.
+- **Financial Data Type Support:** Comprehensive support for SQL Server MONEY and SMALLMONEY types with proper boundary value handling and decimal precision.
+- **Enhanced Configuration APIs:** Added connection timeout control, decimal separator configuration (`getDecimalSeperator()`, `setDecimalSeperator()`), and improved global variable management.
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
 

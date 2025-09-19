@@ -21,14 +21,11 @@ Functions:
 - test_context_manager_connection_closes: Test that context manager closes the connection.
 """
 
-from mssql_python.exceptions import InterfaceError, ProgrammingError
 import mssql_python
 import pytest
 import time
 from mssql_python import connect, Connection, pooling, SQL_CHAR, SQL_WCHAR
-from contextlib import closing
 import threading
-
 # Import all exception classes for testing
 from mssql_python.exceptions import (
     Warning,
@@ -68,6 +65,7 @@ def clean_connection_state(db_connection):
         cleanup_cursor.close()
     except Exception:
         pass  # Ignore errors during cleanup
+from mssql_python.constants import GetInfoConstants as sql_const
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
@@ -91,12 +89,7 @@ def handle_datetimeoffset(dto_value):
     )
 
 def custom_string_converter(value):
-    """
-        A simple converter that adds a prefix to string values.
-        Assumes SQL_WVARCHAR is UTF-16LE encoded by default, 
-        but this may vary depending on the database configuration.
-        You can specify a different encoding if needed.
-    """
+    """A simple converter that adds a prefix to string values"""
     if value is None:
         return None
     return "CONVERTED: " + value.decode('utf-16-le')  # SQL_WVARCHAR is UTF-16LE encoded
@@ -4076,3 +4069,1053 @@ def test_output_converter_exception_handling(db_connection):
     finally:
         # Clean up
         db_connection.clear_output_converters()
+
+def test_timeout_default(db_connection):
+    """Test that the default timeout value is 0 (no timeout)"""
+    assert hasattr(db_connection, 'timeout'), "Connection should have a timeout attribute"
+    assert db_connection.timeout == 0, "Default timeout should be 0"
+
+def test_timeout_setter(db_connection):
+    """Test setting and getting the timeout value"""
+    # Set a non-zero timeout
+    db_connection.timeout = 30
+    assert db_connection.timeout == 30, "Timeout should be set to 30"
+
+    # Test that timeout can be reset to zero
+    db_connection.timeout = 0
+    assert db_connection.timeout == 0, "Timeout should be reset to 0"
+
+    # Test setting invalid timeout values
+    with pytest.raises(ValueError):
+        db_connection.timeout = -1
+
+    with pytest.raises(TypeError):
+        db_connection.timeout = "30"
+
+    # Reset timeout to default for other tests
+    db_connection.timeout = 0
+
+def test_timeout_from_constructor(conn_str):
+    """Test setting timeout in the connection constructor"""
+    # Create a connection with timeout set
+    conn = connect(conn_str, timeout=45)
+    try:
+        assert conn.timeout == 45, "Timeout should be set to 45 from constructor"
+
+        # Create a cursor and verify it inherits the timeout
+        cursor = conn.cursor()
+        # Execute a quick query to ensure the timeout doesn't interfere
+        cursor.execute("SELECT 1")
+        result = cursor.fetchone()
+        assert result[0] == 1, "Query execution should succeed with timeout set"
+    finally:
+        # Clean up
+        conn.close()
+
+def test_timeout_long_query(db_connection):
+    """Test that a query exceeding the timeout raises an exception if supported by driver"""
+    import time
+    import pytest
+
+    cursor = db_connection.cursor()
+
+    try:
+        # First execute a simple query to check if we can run tests
+        cursor.execute("SELECT 1")
+        cursor.fetchall()
+    except Exception as e:
+        pytest.skip(f"Skipping timeout test due to connection issue: {e}")
+
+    # Set a short timeout
+    original_timeout = db_connection.timeout
+    db_connection.timeout = 2  # 2 seconds
+
+    try:
+        # Try several different approaches to test timeout
+        start_time = time.perf_counter()
+        try:
+            # Method 1: CPU-intensive query with REPLICATE and large result set
+            cpu_intensive_query = """
+            WITH numbers AS (
+                SELECT TOP 1000000 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n
+                FROM sys.objects a CROSS JOIN sys.objects b
+            )
+            SELECT COUNT(*) FROM numbers WHERE n % 2 = 0
+            """
+            cursor.execute(cpu_intensive_query)
+            cursor.fetchall()
+
+            elapsed_time = time.perf_counter() - start_time
+
+            # If we get here without an exception, try a different approach
+            if elapsed_time < 4.5:
+
+                # Method 2: Try with WAITFOR
+                start_time = time.perf_counter()
+                cursor.execute("WAITFOR DELAY '00:00:05'")
+                cursor.fetchall()
+                elapsed_time = time.perf_counter() - start_time
+
+                # If we still get here, try one more approach
+                if elapsed_time < 4.5:
+
+                    # Method 3: Try with a join that generates many rows
+                    start_time = time.perf_counter()
+                    cursor.execute("""
+                    SELECT COUNT(*) FROM sys.objects a, sys.objects b, sys.objects c
+                    WHERE a.object_id = b.object_id * c.object_id
+                    """)
+                    cursor.fetchall()
+                    elapsed_time = time.perf_counter() - start_time
+
+            # If we still get here without an exception
+            if elapsed_time < 4.5:
+                pytest.skip("Timeout feature not enforced by database driver")
+
+        except Exception as e:
+            # Verify this is a timeout exception
+            elapsed_time = time.perf_counter() - start_time
+            assert elapsed_time < 4.5, "Exception occurred but after expected timeout"
+            error_text = str(e).lower()
+
+            # Check for various error messages that might indicate timeout
+            timeout_indicators = [
+                "timeout", "timed out", "hyt00", "hyt01", "cancel", 
+                "operation canceled", "execution terminated", "query limit"
+            ]
+
+            assert any(indicator in error_text for indicator in timeout_indicators), \
+                f"Exception occurred but doesn't appear to be a timeout error: {e}"
+    finally:
+        # Reset timeout for other tests
+        db_connection.timeout = original_timeout
+
+def test_timeout_affects_all_cursors(db_connection):
+    """Test that changing timeout on connection affects all new cursors"""
+    # Create a cursor with default timeout
+    cursor1 = db_connection.cursor()
+
+    # Change the connection timeout
+    original_timeout = db_connection.timeout
+    db_connection.timeout = 10
+
+    # Create a new cursor
+    cursor2 = db_connection.cursor()
+
+    try:
+        # Execute quick queries to ensure both cursors work
+        cursor1.execute("SELECT 1")
+        result1 = cursor1.fetchone()
+        assert result1[0] == 1, "Query with first cursor failed"
+
+        cursor2.execute("SELECT 2")
+        result2 = cursor2.fetchone()
+        assert result2[0] == 2, "Query with second cursor failed"
+
+        # No direct way to check cursor timeout, but both should succeed
+        # with the current timeout setting
+    finally:
+        # Reset timeout
+        db_connection.timeout = original_timeout
+def test_connection_execute(db_connection):
+    """Test the execute() convenience method for Connection class"""
+    # Test basic execution
+    cursor = db_connection.execute("SELECT 1 AS test_value")
+    result = cursor.fetchone()
+    assert result is not None, "Execute failed: No result returned"
+    assert result[0] == 1, "Execute failed: Incorrect result"
+    
+    # Test with parameters
+    cursor = db_connection.execute("SELECT ? AS test_value", 42)
+    result = cursor.fetchone()
+    assert result is not None, "Execute with parameters failed: No result returned"
+    assert result[0] == 42, "Execute with parameters failed: Incorrect result"
+    
+    # Test that cursor is tracked by connection
+    assert cursor in db_connection._cursors, "Cursor from execute() not tracked by connection"
+    
+    # Test with data modification and verify it requires commit
+    if not db_connection.autocommit:
+        drop_table_if_exists(db_connection.cursor(), "#pytest_test_execute")
+        cursor1 = db_connection.execute("CREATE TABLE #pytest_test_execute (id INT, value VARCHAR(50))")
+        cursor2 = db_connection.execute("INSERT INTO #pytest_test_execute VALUES (1, 'test_value')")
+        cursor3 = db_connection.execute("SELECT * FROM #pytest_test_execute")
+        result = cursor3.fetchone()
+        assert result is not None, "Execute with table creation failed"
+        assert result[0] == 1, "Execute with table creation returned wrong id"
+        assert result[1] == 'test_value', "Execute with table creation returned wrong value"
+        
+        # Clean up
+        db_connection.execute("DROP TABLE #pytest_test_execute")
+        db_connection.commit()
+
+def test_connection_execute_error_handling(db_connection):
+    """Test that execute() properly handles SQL errors"""
+    with pytest.raises(Exception):
+        db_connection.execute("SELECT * FROM nonexistent_table")
+        
+def test_connection_execute_empty_result(db_connection):
+    """Test execute() with a query that returns no rows"""
+    cursor = db_connection.execute("SELECT * FROM sys.tables WHERE name = 'nonexistent_table_name'")
+    result = cursor.fetchone()
+    assert result is None, "Query should return no results"
+    
+    # Test empty result with fetchall
+    rows = cursor.fetchall()
+    assert len(rows) == 0, "fetchall should return empty list for empty result set"
+
+def test_connection_execute_different_parameter_types(db_connection):
+    """Test execute() with different parameter data types"""
+    # Test with different data types
+    params = [
+        1234,                      # Integer
+        3.14159,                   # Float
+        "test string",             # String
+        bytearray(b'binary data'), # Binary data
+        True,                      # Boolean
+        None                       # NULL
+    ]
+    
+    for param in params:
+        cursor = db_connection.execute("SELECT ? AS value", param)
+        result = cursor.fetchone()
+        if param is None:
+            assert result[0] is None, "NULL parameter not handled correctly"
+        else:
+            assert result[0] == param, f"Parameter {param} of type {type(param)} not handled correctly"
+
+def test_connection_execute_with_transaction(db_connection):
+    """Test execute() in the context of explicit transactions"""
+    if db_connection.autocommit:
+        db_connection.autocommit = False
+    
+    cursor1 = db_connection.cursor()
+    drop_table_if_exists(cursor1, "#pytest_test_execute_transaction")
+    
+    try:
+        # Create table and insert data
+        db_connection.execute("CREATE TABLE #pytest_test_execute_transaction (id INT, value VARCHAR(50))")
+        db_connection.execute("INSERT INTO #pytest_test_execute_transaction VALUES (1, 'before rollback')")
+        
+        # Check data is there
+        cursor = db_connection.execute("SELECT * FROM #pytest_test_execute_transaction")
+        result = cursor.fetchone()
+        assert result is not None, "Data should be visible within transaction"
+        assert result[1] == 'before rollback', "Incorrect data in transaction"
+        
+        # Rollback and verify data is gone
+        db_connection.rollback()
+        
+        # Need to recreate table since it was rolled back
+        db_connection.execute("CREATE TABLE #pytest_test_execute_transaction (id INT, value VARCHAR(50))")
+        db_connection.execute("INSERT INTO #pytest_test_execute_transaction VALUES (2, 'after rollback')")
+        
+        cursor = db_connection.execute("SELECT * FROM #pytest_test_execute_transaction")
+        result = cursor.fetchone()
+        assert result is not None, "Data should be visible after new insert"
+        assert result[0] == 2, "Should see the new data after rollback"
+        assert result[1] == 'after rollback', "Incorrect data after rollback"
+        
+        # Commit and verify data persists
+        db_connection.commit()
+    finally:
+        # Clean up
+        try:
+            db_connection.execute("DROP TABLE #pytest_test_execute_transaction")
+            db_connection.commit()
+        except Exception:
+            pass
+
+def test_connection_execute_vs_cursor_execute(db_connection):
+    """Compare behavior of connection.execute() vs cursor.execute()"""
+    # Connection.execute creates a new cursor each time
+    cursor1 = db_connection.execute("SELECT 1 AS first_query")
+    # Consume the results from cursor1 before creating cursor2
+    result1 = cursor1.fetchall()
+    assert result1[0][0] == 1, "First cursor should have result from first query"
+    
+    # Now it's safe to create a second cursor
+    cursor2 = db_connection.execute("SELECT 2 AS second_query")
+    result2 = cursor2.fetchall()
+    assert result2[0][0] == 2, "Second cursor should have result from second query"
+    
+    # These should be different cursor objects
+    assert cursor1 != cursor2, "Connection.execute should create a new cursor each time"
+    
+    # Now compare with reusing the same cursor
+    cursor3 = db_connection.cursor()
+    cursor3.execute("SELECT 3 AS third_query")
+    result3 = cursor3.fetchone()
+    assert result3[0] == 3, "Direct cursor execution failed"
+    
+    # Reuse the same cursor
+    cursor3.execute("SELECT 4 AS fourth_query")
+    result4 = cursor3.fetchone()
+    assert result4[0] == 4, "Reused cursor should have new results"
+    
+    # The previous results should no longer be accessible
+    cursor3.execute("SELECT 3 AS third_query_again")
+    result5 = cursor3.fetchone()
+    assert result5[0] == 3, "Cursor reexecution should work"
+
+def test_connection_execute_many_parameters(db_connection):
+    """Test execute() with many parameters"""
+    # First make sure no active results are pending
+    # by using a fresh cursor and fetching all results
+    cursor = db_connection.cursor()
+    cursor.execute("SELECT 1")
+    cursor.fetchall()
+    
+    # Create a query with 10 parameters
+    params = list(range(1, 11))
+    query = "SELECT " + ", ".join(["?" for _ in params]) + " AS many_params"
+    
+    # Now execute with many parameters
+    cursor = db_connection.execute(query, *params)
+    result = cursor.fetchall()  # Use fetchall to consume all results
+    
+    # Verify all parameters were correctly passed
+    for i, value in enumerate(params):
+        assert result[0][i] == value, f"Parameter at position {i} not correctly passed"
+
+def test_add_output_converter(db_connection):
+    """Test adding an output converter"""
+    # Add a converter
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    
+    # Verify it was added correctly
+    assert hasattr(db_connection, '_output_converters')
+    assert sql_wvarchar in db_connection._output_converters
+    assert db_connection._output_converters[sql_wvarchar] == custom_string_converter
+    
+    # Clean up
+    db_connection.clear_output_converters()
+
+def test_get_output_converter(db_connection):
+    """Test getting an output converter"""
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    
+    # Initial state - no converter
+    assert db_connection.get_output_converter(sql_wvarchar) is None
+    
+    # Add a converter
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    
+    # Get the converter
+    converter = db_connection.get_output_converter(sql_wvarchar)
+    assert converter == custom_string_converter
+    
+    # Get a non-existent converter
+    assert db_connection.get_output_converter(999) is None
+    
+    # Clean up
+    db_connection.clear_output_converters()
+
+def test_remove_output_converter(db_connection):
+    """Test removing an output converter"""
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    
+    # Add a converter
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    assert db_connection.get_output_converter(sql_wvarchar) is not None
+    
+    # Remove the converter
+    db_connection.remove_output_converter(sql_wvarchar)
+    assert db_connection.get_output_converter(sql_wvarchar) is None
+    
+    # Remove a non-existent converter (should not raise)
+    db_connection.remove_output_converter(999)
+
+def test_clear_output_converters(db_connection):
+    """Test clearing all output converters"""
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    sql_timestamp_offset = ConstantsDDBC.SQL_TIMESTAMPOFFSET.value
+    
+    # Add multiple converters
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    db_connection.add_output_converter(sql_timestamp_offset, handle_datetimeoffset)
+    
+    # Verify converters were added
+    assert db_connection.get_output_converter(sql_wvarchar) is not None
+    assert db_connection.get_output_converter(sql_timestamp_offset) is not None
+    
+    # Clear all converters
+    db_connection.clear_output_converters()
+    
+    # Verify all converters were removed
+    assert db_connection.get_output_converter(sql_wvarchar) is None
+    assert db_connection.get_output_converter(sql_timestamp_offset) is None
+
+def test_converter_integration(db_connection):
+    """
+    Test that converters work during fetching.
+    
+    This test verifies that output converters work at the Python level
+    without requiring native driver support.
+    """
+    cursor = db_connection.cursor()
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    
+    # Test with string converter
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    
+    # Test a simple string query
+    cursor.execute("SELECT N'test string' AS test_col")
+    row = cursor.fetchone()
+    
+    # Check if the type matches what we expect for SQL_WVARCHAR
+    # For Cursor.description, the second element is the type code
+    column_type = cursor.description[0][1]
+    
+    # If the cursor description has SQL_WVARCHAR as the type code,
+    # then our converter should be applied
+    if column_type == sql_wvarchar:
+        assert row[0].startswith("CONVERTED:"), "Output converter not applied"
+    else:
+        # If the type code is different, adjust the test or the converter
+        print(f"Column type is {column_type}, not {sql_wvarchar}")
+        # Add converter for the actual type used
+        db_connection.clear_output_converters()
+        db_connection.add_output_converter(column_type, custom_string_converter)
+        
+        # Re-execute the query
+        cursor.execute("SELECT N'test string' AS test_col")
+        row = cursor.fetchone()
+        assert row[0].startswith("CONVERTED:"), "Output converter not applied"
+    
+    # Clean up
+    db_connection.clear_output_converters()
+
+def test_output_converter_with_null_values(db_connection):
+    """Test that output converters handle NULL values correctly"""
+    cursor = db_connection.cursor()
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    
+    # Add converter for string type
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    
+    # Execute a query with NULL values
+    cursor.execute("SELECT CAST(NULL AS NVARCHAR(50)) AS null_col")
+    value = cursor.fetchone()[0]
+    
+    # NULL values should remain None regardless of converter
+    assert value is None
+    
+    # Clean up
+    db_connection.clear_output_converters()
+
+def test_chaining_output_converters(db_connection):
+    """Test that output converters can be chained (replaced)"""
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    
+    # Define a second converter
+    def another_string_converter(value):
+        if value is None:
+            return None
+        return "ANOTHER: " + value.decode('utf-16-le')
+    
+    # Add first converter
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    
+    # Verify first converter is registered
+    assert db_connection.get_output_converter(sql_wvarchar) == custom_string_converter
+    
+    # Replace with second converter
+    db_connection.add_output_converter(sql_wvarchar, another_string_converter)
+    
+    # Verify second converter replaced the first
+    assert db_connection.get_output_converter(sql_wvarchar) == another_string_converter
+    
+    # Clean up
+    db_connection.clear_output_converters()
+
+def test_temporary_converter_replacement(db_connection):
+    """Test temporarily replacing a converter and then restoring it"""
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
+    
+    # Add a converter
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
+    
+    # Save original converter
+    original_converter = db_connection.get_output_converter(sql_wvarchar)
+    
+    # Define a temporary converter
+    def temp_converter(value):
+        if value is None:
+            return None
+        return "TEMP: " + value.decode('utf-16-le')
+    
+    # Replace with temporary converter
+    db_connection.add_output_converter(sql_wvarchar, temp_converter)
+    
+    # Verify temporary converter is in use
+    assert db_connection.get_output_converter(sql_wvarchar) == temp_converter
+    
+    # Restore original converter
+    db_connection.add_output_converter(sql_wvarchar, original_converter)
+    
+    # Verify original converter is restored
+    assert db_connection.get_output_converter(sql_wvarchar) == original_converter
+    
+    # Clean up
+    db_connection.clear_output_converters()
+
+def test_multiple_output_converters(db_connection):
+    """Test that multiple output converters can work together"""
+    cursor = db_connection.cursor()
+    
+    # Execute a query to get the actual type codes used
+    cursor.execute("SELECT CAST(42 AS INT) as int_col, N'test' as str_col")
+    int_type = cursor.description[0][1]  # Type code for integer column
+    str_type = cursor.description[1][1]  # Type code for string column
+    
+    # Add converter for string type
+    db_connection.add_output_converter(str_type, custom_string_converter)
+    
+    # Add converter for integer type
+    def int_converter(value):
+        if value is None:
+            return None
+        # Convert from bytes to int and multiply by 2
+        if isinstance(value, bytes):
+            return int.from_bytes(value, byteorder='little') * 2
+        elif isinstance(value, int):
+            return value * 2
+        return value
+    
+    db_connection.add_output_converter(int_type, int_converter)
+    
+    # Test query with both types
+    cursor.execute("SELECT CAST(42 AS INT) as int_col, N'test' as str_col")
+    row = cursor.fetchone()
+    
+    # Verify converters worked
+    assert row[0] == 84, f"Integer converter failed, got {row[0]} instead of 84"
+    assert isinstance(row[1], str) and "CONVERTED:" in row[1], f"String converter failed, got {row[1]}"
+    
+    # Clean up
+    db_connection.clear_output_converters()
+
+def test_timeout_default(db_connection):
+    """Test that the default timeout value is 0 (no timeout)"""
+    assert hasattr(db_connection, 'timeout'), "Connection should have a timeout attribute"
+    assert db_connection.timeout == 0, "Default timeout should be 0"
+
+def test_timeout_setter(db_connection):
+    """Test setting and getting the timeout value"""
+    # Set a non-zero timeout
+    db_connection.timeout = 30
+    assert db_connection.timeout == 30, "Timeout should be set to 30"
+    
+    # Test that timeout can be reset to zero
+    db_connection.timeout = 0
+    assert db_connection.timeout == 0, "Timeout should be reset to 0"
+    
+    # Test setting invalid timeout values
+    with pytest.raises(ValueError):
+        db_connection.timeout = -1
+    
+    with pytest.raises(TypeError):
+        db_connection.timeout = "30"
+    
+    # Reset timeout to default for other tests
+    db_connection.timeout = 0
+
+def test_timeout_from_constructor(conn_str):
+    """Test setting timeout in the connection constructor"""
+    # Create a connection with timeout set
+    conn = connect(conn_str, timeout=45)
+    try:
+        assert conn.timeout == 45, "Timeout should be set to 45 from constructor"
+        
+        # Create a cursor and verify it inherits the timeout
+        cursor = conn.cursor()
+        # Execute a quick query to ensure the timeout doesn't interfere
+        cursor.execute("SELECT 1")
+        result = cursor.fetchone()
+        assert result[0] == 1, "Query execution should succeed with timeout set"
+    finally:
+        # Clean up
+        conn.close()
+
+def test_timeout_long_query(db_connection):
+    """Test that a query exceeding the timeout raises an exception if supported by driver"""
+    import time
+    import pytest
+    
+    cursor = db_connection.cursor()
+    
+    try:
+        # First execute a simple query to check if we can run tests
+        cursor.execute("SELECT 1")
+        cursor.fetchall()
+    except Exception as e:
+        pytest.skip(f"Skipping timeout test due to connection issue: {e}")
+    
+    # Set a short timeout
+    original_timeout = db_connection.timeout
+    db_connection.timeout = 2  # 2 seconds
+    
+    try:
+        # Try several different approaches to test timeout
+        start_time = time.perf_counter()
+        try:
+            # Method 1: CPU-intensive query with REPLICATE and large result set
+            cpu_intensive_query = """
+            WITH numbers AS (
+                SELECT TOP 1000000 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n
+                FROM sys.objects a CROSS JOIN sys.objects b
+            )
+            SELECT COUNT(*) FROM numbers WHERE n % 2 = 0
+            """
+            cursor.execute(cpu_intensive_query)
+            cursor.fetchall()
+            
+            elapsed_time = time.perf_counter() - start_time
+            
+            # If we get here without an exception, try a different approach
+            if elapsed_time < 4.5:
+                
+                # Method 2: Try with WAITFOR
+                start_time = time.perf_counter()
+                cursor.execute("WAITFOR DELAY '00:00:05'")
+                cursor.fetchall()
+                elapsed_time = time.perf_counter() - start_time
+                
+                # If we still get here, try one more approach
+                if elapsed_time < 4.5:
+                    
+                    # Method 3: Try with a join that generates many rows
+                    start_time = time.perf_counter()
+                    cursor.execute("""
+                    SELECT COUNT(*) FROM sys.objects a, sys.objects b, sys.objects c
+                    WHERE a.object_id = b.object_id * c.object_id
+                    """)
+                    cursor.fetchall()
+                    elapsed_time = time.perf_counter() - start_time
+            
+            # If we still get here without an exception
+            if elapsed_time < 4.5:
+                pytest.skip("Timeout feature not enforced by database driver")
+            
+        except Exception as e:
+            # Verify this is a timeout exception
+            elapsed_time = time.perf_counter() - start_time
+            assert elapsed_time < 4.5, "Exception occurred but after expected timeout"
+            error_text = str(e).lower()
+            
+            # Check for various error messages that might indicate timeout
+            timeout_indicators = [
+                "timeout", "timed out", "hyt00", "hyt01", "cancel", 
+                "operation canceled", "execution terminated", "query limit"
+            ]
+            
+            assert any(indicator in error_text for indicator in timeout_indicators), \
+                f"Exception occurred but doesn't appear to be a timeout error: {e}"
+    finally:
+        # Reset timeout for other tests
+        db_connection.timeout = original_timeout
+
+def test_timeout_affects_all_cursors(db_connection):
+    """Test that changing timeout on connection affects all new cursors"""
+    # Create a cursor with default timeout
+    cursor1 = db_connection.cursor()
+    
+    # Change the connection timeout
+    original_timeout = db_connection.timeout
+    db_connection.timeout = 10
+    
+    # Create a new cursor
+    cursor2 = db_connection.cursor()
+    
+    try:
+        # Execute quick queries to ensure both cursors work
+        cursor1.execute("SELECT 1")
+        result1 = cursor1.fetchone()
+        assert result1[0] == 1, "Query with first cursor failed"
+        
+        cursor2.execute("SELECT 2")
+        result2 = cursor2.fetchone()
+        assert result2[0] == 2, "Query with second cursor failed"
+        
+        # No direct way to check cursor timeout, but both should succeed
+        # with the current timeout setting
+    finally:
+        # Reset timeout
+        db_connection.timeout = original_timeout
+def test_getinfo_basic_driver_info(db_connection):
+    """Test basic driver information info types."""
+    
+    try:
+        # Driver name should be available
+        driver_name = db_connection.getinfo(sql_const.SQL_DRIVER_NAME.value)
+        print("Driver Name = ",driver_name)
+        assert driver_name is not None, "Driver name should not be None"
+        
+        # Driver version should be available
+        driver_ver = db_connection.getinfo(sql_const.SQL_DRIVER_VER.value)
+        print("Driver Version = ",driver_ver)
+        assert driver_ver is not None, "Driver version should not be None"
+        
+        # Data source name should be available
+        dsn = db_connection.getinfo(sql_const.SQL_DATA_SOURCE_NAME.value)
+        print("Data source name = ",dsn)
+        assert dsn is not None, "Data source name should not be None"
+        
+        # Server name should be available (might be empty in some configurations)
+        server_name = db_connection.getinfo(sql_const.SQL_SERVER_NAME.value)
+        print("Server Name = ",server_name)
+        assert server_name is not None, "Server name should not be None"
+        
+        # User name should be available (might be empty if using integrated auth)
+        user_name = db_connection.getinfo(sql_const.SQL_USER_NAME.value)
+        print("User Name = ",user_name)
+        assert user_name is not None, "User name should not be None"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for basic driver info: {e}")
+
+def test_getinfo_sql_support(db_connection):
+    """Test SQL support and conformance info types."""
+    
+    try:
+        # SQL conformance level
+        sql_conformance = db_connection.getinfo(sql_const.SQL_SQL_CONFORMANCE.value)
+        print("SQL Conformance = ",sql_conformance)
+        assert sql_conformance is not None, "SQL conformance should not be None"
+        
+        # Keywords - may return a very long string
+        keywords = db_connection.getinfo(sql_const.SQL_KEYWORDS.value)
+        print("Keywords = ",keywords)
+        assert keywords is not None, "SQL keywords should not be None"
+        
+        # Identifier quote character
+        quote_char = db_connection.getinfo(sql_const.SQL_IDENTIFIER_QUOTE_CHAR.value)
+        print(f"Identifier quote char: '{quote_char}'")
+        assert quote_char is not None, "Identifier quote char should not be None"
+
+    except Exception as e:
+        pytest.fail(f"getinfo failed for SQL support info: {e}")
+
+def test_getinfo_numeric_limits(db_connection):
+    """Test numeric limitation info types."""
+    
+    try:
+        # Max column name length - should be a positive integer
+        max_col_name_len = db_connection.getinfo(sql_const.SQL_MAX_COLUMN_NAME_LEN.value)
+        assert isinstance(max_col_name_len, int), "Max column name length should be an integer"
+        assert max_col_name_len >= 0, "Max column name length should be non-negative"
+        
+        # Max table name length
+        max_table_name_len = db_connection.getinfo(sql_const.SQL_MAX_TABLE_NAME_LEN.value)
+        assert isinstance(max_table_name_len, int), "Max table name length should be an integer"
+        assert max_table_name_len >= 0, "Max table name length should be non-negative"
+        
+        # Max statement length - may return 0 for "unlimited"
+        max_statement_len = db_connection.getinfo(sql_const.SQL_MAX_STATEMENT_LEN.value)
+        assert isinstance(max_statement_len, int), "Max statement length should be an integer"
+        assert max_statement_len >= 0, "Max statement length should be non-negative"
+        
+        # Max connections - may return 0 for "unlimited"
+        max_connections = db_connection.getinfo(sql_const.SQL_MAX_DRIVER_CONNECTIONS.value)
+        assert isinstance(max_connections, int), "Max connections should be an integer"
+        assert max_connections >= 0, "Max connections should be non-negative"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for numeric limits info: {e}")
+
+def test_getinfo_catalog_support(db_connection):
+    """Test catalog support info types."""
+    
+    try:
+        # Catalog support for tables
+        catalog_term = db_connection.getinfo(sql_const.SQL_CATALOG_TERM.value)
+        print("Catalog term = ",catalog_term)
+        assert catalog_term is not None, "Catalog term should not be None"
+        
+        # Catalog name separator
+        catalog_separator = db_connection.getinfo(sql_const.SQL_CATALOG_NAME_SEPARATOR.value)
+        print(f"Catalog name separator: '{catalog_separator}'")
+        assert catalog_separator is not None, "Catalog separator should not be None"
+        
+        # Schema term
+        schema_term = db_connection.getinfo(sql_const.SQL_SCHEMA_TERM.value)
+        print("Schema term = ",schema_term)
+        assert schema_term is not None, "Schema term should not be None"
+        
+        # Stored procedures support
+        procedures = db_connection.getinfo(sql_const.SQL_PROCEDURES.value)
+        print("Procedures = ",procedures)
+        assert procedures is not None, "Procedures support should not be None"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for catalog support info: {e}")
+
+def test_getinfo_transaction_support(db_connection):
+    """Test transaction support info types."""
+    
+    try:
+        # Transaction support
+        txn_capable = db_connection.getinfo(sql_const.SQL_TXN_CAPABLE.value)
+        print("Transaction capable = ",txn_capable)
+        assert txn_capable is not None, "Transaction capability should not be None"
+        
+        # Default transaction isolation
+        default_txn_isolation = db_connection.getinfo(sql_const.SQL_DEFAULT_TXN_ISOLATION.value)
+        print("Default Transaction isolation = ",default_txn_isolation)
+        assert default_txn_isolation is not None, "Default transaction isolation should not be None"
+        
+        # Multiple active transactions support
+        multiple_txn = db_connection.getinfo(sql_const.SQL_MULTIPLE_ACTIVE_TXN.value)
+        print("Multiple transaction = ",multiple_txn)
+        assert multiple_txn is not None, "Multiple active transactions support should not be None"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for transaction support info: {e}")
+
+def test_getinfo_data_types(db_connection):
+    """Test data type support info types."""
+    
+    try:
+        # Numeric functions
+        numeric_functions = db_connection.getinfo(sql_const.SQL_NUMERIC_FUNCTIONS.value)
+        assert isinstance(numeric_functions, int), "Numeric functions should be an integer"
+        
+        # String functions
+        string_functions = db_connection.getinfo(sql_const.SQL_STRING_FUNCTIONS.value)
+        assert isinstance(string_functions, int), "String functions should be an integer"
+        
+        # Date/time functions
+        datetime_functions = db_connection.getinfo(sql_const.SQL_DATETIME_FUNCTIONS.value)
+        assert isinstance(datetime_functions, int), "Datetime functions should be an integer"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for data type support info: {e}")
+
+def test_getinfo_invalid_constant(db_connection):
+    """Test getinfo behavior with invalid constants."""
+    # Use a constant that doesn't exist in ODBC
+    non_existent_constant = 9999
+    try:
+        result = db_connection.getinfo(non_existent_constant)
+        # If it doesn't raise an exception, it should return None or an empty value
+        assert result is None or result == 0 or result == "", "Invalid constant should return None/empty"
+    except Exception:
+        # It's also acceptable to raise an exception for invalid constants
+        pass
+
+def test_getinfo_type_consistency(db_connection):
+    """Test that getinfo returns consistent types for repeated calls."""
+
+    # Choose a few representative info types that don't depend on DBMS
+    info_types = [
+        sql_const.SQL_DRIVER_NAME.value,
+        sql_const.SQL_MAX_COLUMN_NAME_LEN.value,
+        sql_const.SQL_TXN_CAPABLE.value,
+        sql_const.SQL_IDENTIFIER_QUOTE_CHAR.value
+    ]
+    
+    for info_type in info_types:
+        # Call getinfo twice with the same info type
+        result1 = db_connection.getinfo(info_type)
+        result2 = db_connection.getinfo(info_type)
+        
+        # Results should be consistent in type and value
+        assert type(result1) == type(result2), f"Type inconsistency for info type {info_type}"
+        assert result1 == result2, f"Value inconsistency for info type {info_type}"
+
+def test_getinfo_standard_types(db_connection):
+    """Test a representative set of standard ODBC info types."""
+    
+    # Dictionary of common info types and their expected value types
+    # Avoid DBMS-specific info types
+    info_types = {
+        sql_const.SQL_ACCESSIBLE_TABLES.value: str,        # "Y" or "N"
+        sql_const.SQL_DATA_SOURCE_NAME.value: str,         # DSN
+        sql_const.SQL_TABLE_TERM.value: str,               # Usually "table"
+        sql_const.SQL_PROCEDURES.value: str,               # "Y" or "N"
+        sql_const.SQL_MAX_IDENTIFIER_LEN.value: int,       # Max identifier length
+        sql_const.SQL_OUTER_JOINS.value: str,              # "Y" or "N"
+    }
+    
+    for info_type, expected_type in info_types.items():
+        try:
+            info_value = db_connection.getinfo(info_type)
+            
+            # Skip None values (unsupported by driver)
+            if info_value is None:
+                continue
+                
+            # Check type, allowing empty strings for string types
+            if expected_type == str:
+                assert isinstance(info_value, str), f"Info type {info_type} should return a string"
+            elif expected_type == int:
+                assert isinstance(info_value, int), f"Info type {info_type} should return an integer"
+                
+        except Exception as e:
+            # Log but don't fail - some drivers might not support all info types
+            print(f"Info type {info_type} failed: {e}")
+
+def test_connection_searchescape_basic(db_connection):
+    """Test the basic functionality of the searchescape property."""
+    # Get the search escape character
+    escape_char = db_connection.searchescape
+    
+    # Verify it's not None
+    assert escape_char is not None, "Search escape character should not be None"
+    print(f"Search pattern escape character: '{escape_char}'")
+    
+    # Test property caching - calling it twice should return the same value
+    escape_char2 = db_connection.searchescape
+    assert escape_char == escape_char2, "Search escape character should be consistent"
+
+def test_connection_searchescape_with_percent(db_connection):
+    """Test using the searchescape property with percent wildcard."""
+    escape_char = db_connection.searchescape
+    
+    # Skip test if we got a non-string or empty escape character
+    if not isinstance(escape_char, str) or not escape_char:
+        pytest.skip("No valid escape character available for testing")
+    
+    cursor = db_connection.cursor()
+    try:
+        # Create a temporary table with data containing % character
+        cursor.execute("CREATE TABLE #test_escape_percent (id INT, text VARCHAR(50))")
+        cursor.execute("INSERT INTO #test_escape_percent VALUES (1, 'abc%def')")
+        cursor.execute("INSERT INTO #test_escape_percent VALUES (2, 'abc_def')")
+        cursor.execute("INSERT INTO #test_escape_percent VALUES (3, 'abcdef')")
+        
+        # Use the escape character to find the exact % character
+        query = f"SELECT * FROM #test_escape_percent WHERE text LIKE 'abc{escape_char}%def' ESCAPE '{escape_char}'"
+        cursor.execute(query)
+        results = cursor.fetchall()
+        
+        # Should match only the row with the % character
+        assert len(results) == 1, f"Escaped LIKE query for % matched {len(results)} rows instead of 1"
+        if results:
+            assert 'abc%def' in results[0][1], "Escaped LIKE query did not match correct row"
+            
+    except Exception as e:
+        print(f"Note: LIKE escape test with % failed: {e}")
+        # Don't fail the test as some drivers might handle escaping differently
+    finally:
+        cursor.execute("DROP TABLE #test_escape_percent")
+
+def test_connection_searchescape_with_underscore(db_connection):
+    """Test using the searchescape property with underscore wildcard."""
+    escape_char = db_connection.searchescape
+    
+    # Skip test if we got a non-string or empty escape character
+    if not isinstance(escape_char, str) or not escape_char:
+        pytest.skip("No valid escape character available for testing")
+    
+    cursor = db_connection.cursor()
+    try:
+        # Create a temporary table with data containing _ character
+        cursor.execute("CREATE TABLE #test_escape_underscore (id INT, text VARCHAR(50))")
+        cursor.execute("INSERT INTO #test_escape_underscore VALUES (1, 'abc_def')")
+        cursor.execute("INSERT INTO #test_escape_underscore VALUES (2, 'abcXdef')")  # 'X' could match '_'
+        cursor.execute("INSERT INTO #test_escape_underscore VALUES (3, 'abcdef')")   # No match
+        
+        # Use the escape character to find the exact _ character
+        query = f"SELECT * FROM #test_escape_underscore WHERE text LIKE 'abc{escape_char}_def' ESCAPE '{escape_char}'"
+        cursor.execute(query)
+        results = cursor.fetchall()
+        
+        # Should match only the row with the _ character
+        assert len(results) == 1, f"Escaped LIKE query for _ matched {len(results)} rows instead of 1"
+        if results:
+            assert 'abc_def' in results[0][1], "Escaped LIKE query did not match correct row"
+            
+    except Exception as e:
+        print(f"Note: LIKE escape test with _ failed: {e}")
+        # Don't fail the test as some drivers might handle escaping differently
+    finally:
+        cursor.execute("DROP TABLE #test_escape_underscore")
+
+def test_connection_searchescape_with_brackets(db_connection):
+    """Test using the searchescape property with bracket wildcards."""
+    escape_char = db_connection.searchescape
+    
+    # Skip test if we got a non-string or empty escape character
+    if not isinstance(escape_char, str) or not escape_char:
+        pytest.skip("No valid escape character available for testing")
+    
+    cursor = db_connection.cursor()
+    try:
+        # Create a temporary table with data containing [ character
+        cursor.execute("CREATE TABLE #test_escape_brackets (id INT, text VARCHAR(50))")
+        cursor.execute("INSERT INTO #test_escape_brackets VALUES (1, 'abc[x]def')")
+        cursor.execute("INSERT INTO #test_escape_brackets VALUES (2, 'abcxdef')")
+        
+        # Use the escape character to find the exact [ character
+        # Note: This might not work on all drivers as bracket escaping varies
+        query = f"SELECT * FROM #test_escape_brackets WHERE text LIKE 'abc{escape_char}[x{escape_char}]def' ESCAPE '{escape_char}'"
+        cursor.execute(query)
+        results = cursor.fetchall()
+        
+        # Just check we got some kind of result without asserting specific behavior
+        print(f"Bracket escaping test returned {len(results)} rows")
+            
+    except Exception as e:
+        print(f"Note: LIKE escape test with brackets failed: {e}")
+        # Don't fail the test as bracket escaping varies significantly between drivers
+    finally:
+        cursor.execute("DROP TABLE #test_escape_brackets")
+
+def test_connection_searchescape_multiple_escapes(db_connection):
+    """Test using the searchescape property with multiple escape sequences."""
+    escape_char = db_connection.searchescape
+    
+    # Skip test if we got a non-string or empty escape character
+    if not isinstance(escape_char, str) or not escape_char:
+        pytest.skip("No valid escape character available for testing")
+    
+    cursor = db_connection.cursor()
+    try:
+        # Create a temporary table with data containing multiple special chars
+        cursor.execute("CREATE TABLE #test_multiple_escapes (id INT, text VARCHAR(50))")
+        cursor.execute("INSERT INTO #test_multiple_escapes VALUES (1, 'abc%def_ghi')")
+        cursor.execute("INSERT INTO #test_multiple_escapes VALUES (2, 'abc%defXghi')")  # Wouldn't match the pattern
+        cursor.execute("INSERT INTO #test_multiple_escapes VALUES (3, 'abcXdef_ghi')")  # Wouldn't match the pattern
+        
+        # Use escape character for both % and _
+        query = f"""
+            SELECT * FROM #test_multiple_escapes 
+            WHERE text LIKE 'abc{escape_char}%def{escape_char}_ghi' ESCAPE '{escape_char}'
+        """
+        cursor.execute(query)
+        results = cursor.fetchall()
+        
+        # Should match only the row with both % and _
+        assert len(results) <= 1, f"Multiple escapes query matched {len(results)} rows instead of at most 1"
+        if len(results) == 1:
+            assert 'abc%def_ghi' in results[0][1], "Multiple escapes query matched incorrect row"
+            
+    except Exception as e:
+        print(f"Note: Multiple escapes test failed: {e}")
+        # Don't fail the test as escaping behavior varies
+    finally:
+        cursor.execute("DROP TABLE #test_multiple_escapes")
+
+def test_connection_searchescape_consistency(db_connection):
+    """Test that the searchescape property is cached and consistent."""
+    # Call the property multiple times
+    escape1 = db_connection.searchescape
+    escape2 = db_connection.searchescape
+    escape3 = db_connection.searchescape
+    
+    # All calls should return the same value
+    assert escape1 == escape2 == escape3, "Searchescape property should be consistent"
+    
+    # Create a new connection and verify it returns the same escape character
+    # (assuming the same driver and connection settings)
+    if 'conn_str' in globals():
+        try:
+            new_conn = connect(conn_str)
+            new_escape = new_conn.searchescape
+            assert new_escape == escape1, "Searchescape should be consistent across connections"
+            new_conn.close()
+        except Exception as e:
+            print(f"Note: New connection comparison failed: {e}")

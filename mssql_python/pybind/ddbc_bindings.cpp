@@ -124,6 +124,14 @@ SQLBindColFunc SQLBindCol_ptr = nullptr;
 SQLDescribeColFunc SQLDescribeCol_ptr = nullptr;
 SQLMoreResultsFunc SQLMoreResults_ptr = nullptr;
 SQLColAttributeFunc SQLColAttribute_ptr = nullptr;
+SQLGetTypeInfoFunc SQLGetTypeInfo_ptr = nullptr;
+SQLProceduresFunc SQLProcedures_ptr = nullptr;
+SQLForeignKeysFunc SQLForeignKeys_ptr = nullptr;
+SQLPrimaryKeysFunc SQLPrimaryKeys_ptr = nullptr;
+SQLSpecialColumnsFunc SQLSpecialColumns_ptr = nullptr;
+SQLStatisticsFunc SQLStatistics_ptr = nullptr;
+SQLColumnsFunc SQLColumns_ptr = nullptr;
+SQLGetInfoFunc SQLGetInfo_ptr = nullptr;
 
 // Transaction APIs
 SQLEndTranFunc SQLEndTran_ptr = nullptr;
@@ -813,6 +821,14 @@ DriverHandle LoadDriverOrThrowException() {
     SQLDescribeCol_ptr = GetFunctionPointer<SQLDescribeColFunc>(handle, "SQLDescribeColW");
     SQLMoreResults_ptr = GetFunctionPointer<SQLMoreResultsFunc>(handle, "SQLMoreResults");
     SQLColAttribute_ptr = GetFunctionPointer<SQLColAttributeFunc>(handle, "SQLColAttributeW");
+    SQLGetTypeInfo_ptr = GetFunctionPointer<SQLGetTypeInfoFunc>(handle, "SQLGetTypeInfoW");
+    SQLProcedures_ptr = GetFunctionPointer<SQLProceduresFunc>(handle, "SQLProceduresW");
+    SQLForeignKeys_ptr = GetFunctionPointer<SQLForeignKeysFunc>(handle, "SQLForeignKeysW");
+    SQLPrimaryKeys_ptr = GetFunctionPointer<SQLPrimaryKeysFunc>(handle, "SQLPrimaryKeysW");
+    SQLSpecialColumns_ptr = GetFunctionPointer<SQLSpecialColumnsFunc>(handle, "SQLSpecialColumnsW");
+    SQLStatistics_ptr = GetFunctionPointer<SQLStatisticsFunc>(handle, "SQLStatisticsW");
+    SQLColumns_ptr = GetFunctionPointer<SQLColumnsFunc>(handle, "SQLColumnsW");
+    SQLGetInfo_ptr = GetFunctionPointer<SQLGetInfoFunc>(handle, "SQLGetInfoW");
 
     SQLEndTran_ptr = GetFunctionPointer<SQLEndTranFunc>(handle, "SQLEndTran");
     SQLDisconnect_ptr = GetFunctionPointer<SQLDisconnectFunc>(handle, "SQLDisconnect");
@@ -836,9 +852,12 @@ DriverHandle LoadDriverOrThrowException() {
         SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr &&
         SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr &&
         SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr &&
-        SQLFreeStmt_ptr && SQLGetDiagRec_ptr && SQLParamData_ptr &&
+        SQLFreeStmt_ptr && SQLGetDiagRec_ptr && SQLGetInfo_ptr && SQLParamData_ptr &&
         SQLPutData_ptr && SQLTables_ptr &&
-        SQLDescribeParam_ptr;
+        SQLDescribeParam_ptr &&
+        SQLGetTypeInfo_ptr && SQLProcedures_ptr && SQLForeignKeys_ptr &&
+        SQLPrimaryKeys_ptr && SQLSpecialColumns_ptr && SQLStatistics_ptr &&
+        SQLColumns_ptr;
 
     if (!success) {
         ThrowStdException("Failed to load required function pointers from driver.");
@@ -901,6 +920,244 @@ void SqlHandle::free() {
         _handle = nullptr;
         // Don't log during destruction - it can cause segfaults during Python shutdown
     }
+}
+
+SQLRETURN SQLGetTypeInfo_Wrapper(SqlHandlePtr StatementHandle, SQLSMALLINT DataType) {
+    if (!SQLGetTypeInfo_ptr) {
+        ThrowStdException("SQLGetTypeInfo function not loaded");
+    }
+
+    return SQLGetTypeInfo_ptr(StatementHandle->get(), DataType);
+}
+
+SQLRETURN SQLProcedures_wrap(SqlHandlePtr StatementHandle, 
+                            const py::object& catalogObj,
+                            const py::object& schemaObj,
+                            const py::object& procedureObj) {
+    if (!SQLProcedures_ptr) {
+        ThrowStdException("SQLProcedures function not loaded");
+    }
+
+    std::wstring catalog = py::isinstance<py::none>(catalogObj) ? L"" : catalogObj.cast<std::wstring>();
+    std::wstring schema = py::isinstance<py::none>(schemaObj) ? L"" : schemaObj.cast<std::wstring>();
+    std::wstring procedure = py::isinstance<py::none>(procedureObj) ? L"" : procedureObj.cast<std::wstring>();
+
+#if defined(__APPLE__) || defined(__linux__)
+    // Unix implementation
+    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalog);
+    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
+    std::vector<SQLWCHAR> procedureBuf = WStringToSQLWCHAR(procedure);
+    
+    return SQLProcedures_ptr(
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : catalogBuf.data(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : schemaBuf.data(), 
+        schema.empty() ? 0 : SQL_NTS,
+        procedure.empty() ? nullptr : procedureBuf.data(), 
+        procedure.empty() ? 0 : SQL_NTS);
+#else
+    // Windows implementation
+    return SQLProcedures_ptr(
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(), 
+        schema.empty() ? 0 : SQL_NTS,
+        procedure.empty() ? nullptr : (SQLWCHAR*)procedure.c_str(), 
+        procedure.empty() ? 0 : SQL_NTS);
+#endif
+}
+
+SQLRETURN SQLForeignKeys_wrap(SqlHandlePtr StatementHandle, 
+                             const py::object& pkCatalogObj,
+                             const py::object& pkSchemaObj,
+                             const py::object& pkTableObj,
+                             const py::object& fkCatalogObj,
+                             const py::object& fkSchemaObj,
+                             const py::object& fkTableObj) {
+    if (!SQLForeignKeys_ptr) {
+        ThrowStdException("SQLForeignKeys function not loaded");
+    }
+
+    std::wstring pkCatalog = py::isinstance<py::none>(pkCatalogObj) ? L"" : pkCatalogObj.cast<std::wstring>();
+    std::wstring pkSchema = py::isinstance<py::none>(pkSchemaObj) ? L"" : pkSchemaObj.cast<std::wstring>();
+    std::wstring pkTable = py::isinstance<py::none>(pkTableObj) ? L"" : pkTableObj.cast<std::wstring>();
+    std::wstring fkCatalog = py::isinstance<py::none>(fkCatalogObj) ? L"" : fkCatalogObj.cast<std::wstring>();
+    std::wstring fkSchema = py::isinstance<py::none>(fkSchemaObj) ? L"" : fkSchemaObj.cast<std::wstring>();
+    std::wstring fkTable = py::isinstance<py::none>(fkTableObj) ? L"" : fkTableObj.cast<std::wstring>();
+
+#if defined(__APPLE__) || defined(__linux__)
+    // Unix implementation
+    std::vector<SQLWCHAR> pkCatalogBuf = WStringToSQLWCHAR(pkCatalog);
+    std::vector<SQLWCHAR> pkSchemaBuf = WStringToSQLWCHAR(pkSchema);
+    std::vector<SQLWCHAR> pkTableBuf = WStringToSQLWCHAR(pkTable);
+    std::vector<SQLWCHAR> fkCatalogBuf = WStringToSQLWCHAR(fkCatalog);
+    std::vector<SQLWCHAR> fkSchemaBuf = WStringToSQLWCHAR(fkSchema);
+    std::vector<SQLWCHAR> fkTableBuf = WStringToSQLWCHAR(fkTable);
+    
+    return SQLForeignKeys_ptr(
+        StatementHandle->get(),
+        pkCatalog.empty() ? nullptr : pkCatalogBuf.data(), 
+        pkCatalog.empty() ? 0 : SQL_NTS,
+        pkSchema.empty() ? nullptr : pkSchemaBuf.data(), 
+        pkSchema.empty() ? 0 : SQL_NTS,
+        pkTable.empty() ? nullptr : pkTableBuf.data(), 
+        pkTable.empty() ? 0 : SQL_NTS,
+        fkCatalog.empty() ? nullptr : fkCatalogBuf.data(), 
+        fkCatalog.empty() ? 0 : SQL_NTS,
+        fkSchema.empty() ? nullptr : fkSchemaBuf.data(), 
+        fkSchema.empty() ? 0 : SQL_NTS,
+        fkTable.empty() ? nullptr : fkTableBuf.data(), 
+        fkTable.empty() ? 0 : SQL_NTS);
+#else
+    // Windows implementation
+    return SQLForeignKeys_ptr(
+        StatementHandle->get(),
+        pkCatalog.empty() ? nullptr : (SQLWCHAR*)pkCatalog.c_str(), 
+        pkCatalog.empty() ? 0 : SQL_NTS,
+        pkSchema.empty() ? nullptr : (SQLWCHAR*)pkSchema.c_str(), 
+        pkSchema.empty() ? 0 : SQL_NTS,
+        pkTable.empty() ? nullptr : (SQLWCHAR*)pkTable.c_str(), 
+        pkTable.empty() ? 0 : SQL_NTS,
+        fkCatalog.empty() ? nullptr : (SQLWCHAR*)fkCatalog.c_str(), 
+        fkCatalog.empty() ? 0 : SQL_NTS,
+        fkSchema.empty() ? nullptr : (SQLWCHAR*)fkSchema.c_str(), 
+        fkSchema.empty() ? 0 : SQL_NTS,
+        fkTable.empty() ? nullptr : (SQLWCHAR*)fkTable.c_str(), 
+        fkTable.empty() ? 0 : SQL_NTS);
+#endif
+}
+
+SQLRETURN SQLPrimaryKeys_wrap(SqlHandlePtr StatementHandle, 
+                             const py::object& catalogObj,
+                             const py::object& schemaObj,
+                             const std::wstring& table) {
+    if (!SQLPrimaryKeys_ptr) {
+        ThrowStdException("SQLPrimaryKeys function not loaded");
+    }
+
+    // Convert py::object to std::wstring, treating None as empty string
+    std::wstring catalog = catalogObj.is_none() ? L"" : catalogObj.cast<std::wstring>();
+    std::wstring schema = schemaObj.is_none() ? L"" : schemaObj.cast<std::wstring>();
+
+#if defined(__APPLE__) || defined(__linux__)
+    // Unix implementation
+    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalog);
+    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
+    std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
+    
+    return SQLPrimaryKeys_ptr(
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : catalogBuf.data(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : schemaBuf.data(), 
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : tableBuf.data(), 
+        table.empty() ? 0 : SQL_NTS);
+#else
+    // Windows implementation
+    return SQLPrimaryKeys_ptr(
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(), 
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : (SQLWCHAR*)table.c_str(), 
+        table.empty() ? 0 : SQL_NTS);
+#endif
+}
+
+SQLRETURN SQLStatistics_wrap(SqlHandlePtr StatementHandle, 
+                          const py::object& catalogObj,
+                          const py::object& schemaObj,
+                          const std::wstring& table,
+                          SQLUSMALLINT unique,
+                          SQLUSMALLINT reserved) {
+    if (!SQLStatistics_ptr) {
+        ThrowStdException("SQLStatistics function not loaded");
+    }
+
+     // Convert py::object to std::wstring, treating None as empty string
+    std::wstring catalog = catalogObj.is_none() ? L"" : catalogObj.cast<std::wstring>();
+    std::wstring schema = schemaObj.is_none() ? L"" : schemaObj.cast<std::wstring>();
+
+#if defined(__APPLE__) || defined(__linux__)
+    // Unix implementation
+    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalog);
+    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
+    std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
+    
+    return SQLStatistics_ptr(
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : catalogBuf.data(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : schemaBuf.data(), 
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : tableBuf.data(), 
+        table.empty() ? 0 : SQL_NTS,
+        unique,
+        reserved);
+#else
+    // Windows implementation
+    return SQLStatistics_ptr(
+        StatementHandle->get(),
+        catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(), 
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : (SQLWCHAR*)table.c_str(), 
+        table.empty() ? 0 : SQL_NTS,
+        unique,
+        reserved);
+#endif
+}
+
+SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle, 
+                          const py::object& catalogObj,
+                          const py::object& schemaObj,
+                          const py::object& tableObj,
+                          const py::object& columnObj) {
+    if (!SQLColumns_ptr) {
+        ThrowStdException("SQLColumns function not loaded");
+    }
+
+    // Convert py::object to std::wstring, treating None as empty string
+    std::wstring catalogStr = catalogObj.is_none() ? L"" : catalogObj.cast<std::wstring>();
+    std::wstring schemaStr = schemaObj.is_none() ? L"" : schemaObj.cast<std::wstring>();
+    std::wstring tableStr = tableObj.is_none() ? L"" : tableObj.cast<std::wstring>();
+    std::wstring columnStr = columnObj.is_none() ? L"" : columnObj.cast<std::wstring>();
+
+#if defined(__APPLE__) || defined(__linux__)
+    // Unix implementation
+    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalogStr);
+    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schemaStr);
+    std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(tableStr);
+    std::vector<SQLWCHAR> columnBuf = WStringToSQLWCHAR(columnStr);
+    
+    return SQLColumns_ptr(
+        StatementHandle->get(),
+        catalogStr.empty() ? nullptr : catalogBuf.data(), 
+        catalogStr.empty() ? 0 : SQL_NTS,
+        schemaStr.empty() ? nullptr : schemaBuf.data(), 
+        schemaStr.empty() ? 0 : SQL_NTS,
+        tableStr.empty() ? nullptr : tableBuf.data(), 
+        tableStr.empty() ? 0 : SQL_NTS,
+        columnStr.empty() ? nullptr : columnBuf.data(),
+        columnStr.empty() ? 0 : SQL_NTS);
+#else
+    // Windows implementation
+    return SQLColumns_ptr(
+        StatementHandle->get(),
+        catalogStr.empty() ? nullptr : (SQLWCHAR*)catalogStr.c_str(), 
+        catalogStr.empty() ? 0 : SQL_NTS,
+        schemaStr.empty() ? nullptr : (SQLWCHAR*)schemaStr.c_str(), 
+        schemaStr.empty() ? 0 : SQL_NTS,
+        tableStr.empty() ? nullptr : (SQLWCHAR*)tableStr.c_str(), 
+        tableStr.empty() ? 0 : SQL_NTS,
+        columnStr.empty() ? nullptr : (SQLWCHAR*)columnStr.c_str(),
+        columnStr.empty() ? 0 : SQL_NTS);
+#endif
 }
 
 // Helper function to check for driver errors
@@ -1736,6 +1993,54 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
         }
     }
     return SQL_SUCCESS;
+}
+
+SQLRETURN SQLSpecialColumns_wrap(SqlHandlePtr StatementHandle, 
+                              SQLSMALLINT identifierType,
+                              const py::object& catalogObj,
+                              const py::object& schemaObj,
+                              const std::wstring& table,
+                              SQLSMALLINT scope,
+                              SQLSMALLINT nullable) {
+    if (!SQLSpecialColumns_ptr) {
+        ThrowStdException("SQLSpecialColumns function not loaded");
+    }
+
+    // Convert py::object to std::wstring, treating None as empty string
+    std::wstring catalog = catalogObj.is_none() ? L"" : catalogObj.cast<std::wstring>();
+    std::wstring schema = schemaObj.is_none() ? L"" : schemaObj.cast<std::wstring>();
+
+#if defined(__APPLE__) || defined(__linux__)
+    // Unix implementation
+    std::vector<SQLWCHAR> catalogBuf = WStringToSQLWCHAR(catalog);
+    std::vector<SQLWCHAR> schemaBuf = WStringToSQLWCHAR(schema);
+    std::vector<SQLWCHAR> tableBuf = WStringToSQLWCHAR(table);
+    
+    return SQLSpecialColumns_ptr(
+        StatementHandle->get(),
+        identifierType,
+        catalog.empty() ? nullptr : catalogBuf.data(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : schemaBuf.data(), 
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : tableBuf.data(), 
+        table.empty() ? 0 : SQL_NTS,
+        scope,
+        nullable);
+#else
+    // Windows implementation
+    return SQLSpecialColumns_ptr(
+        StatementHandle->get(),
+        identifierType,
+        catalog.empty() ? nullptr : (SQLWCHAR*)catalog.c_str(), 
+        catalog.empty() ? 0 : SQL_NTS,
+        schema.empty() ? nullptr : (SQLWCHAR*)schema.c_str(), 
+        schema.empty() ? 0 : SQL_NTS,
+        table.empty() ? nullptr : (SQLWCHAR*)table.c_str(), 
+        table.empty() ? 0 : SQL_NTS,
+        scope,
+        nullable);
+#endif
 }
 
 // Wrap SQLFetch to retrieve rows
@@ -3119,7 +3424,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")
         .def("set_autocommit", &ConnectionHandle::setAutocommit)
         .def("get_autocommit", &ConnectionHandle::getAutocommit)
-        .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle);
+        .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle)
+        .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"));
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("close_pooling", []() {ConnectionPoolManager::getInstance().closePools();});
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
@@ -3151,6 +3457,61 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLFetchScroll", &SQLFetchScroll_wrap,
           "Scroll to a specific position in the result set and optionally fetch data");
     m.def("DDBCSetDecimalSeparator", &DDBCSetDecimalSeparator, "Set the decimal separator character");
+    m.def("DDBCSQLSetStmtAttr", [](SqlHandlePtr stmt, SQLINTEGER attr, SQLPOINTER value) {
+        return SQLSetStmtAttr_ptr(stmt->get(), attr, value, 0);
+    }, "Set statement attributes");
+    m.def("DDBCSQLGetTypeInfo", &SQLGetTypeInfo_Wrapper, "Returns information about the data types that are supported by the data source",
+      py::arg("StatementHandle"), py::arg("DataType"));
+    m.def("DDBCSQLProcedures", [](SqlHandlePtr StatementHandle,
+                             const py::object& catalog,
+                             const py::object& schema,
+                             const py::object& procedure) {
+        return SQLProcedures_wrap(StatementHandle, catalog, schema, procedure);
+    });
+
+        m.def("DDBCSQLForeignKeys", [](SqlHandlePtr StatementHandle, 
+                                 const py::object& pkCatalog,
+                                 const py::object& pkSchema,
+                                 const py::object& pkTable,
+                                 const py::object& fkCatalog,
+                                 const py::object& fkSchema,
+                                 const py::object& fkTable) {
+        return SQLForeignKeys_wrap(StatementHandle, 
+                                   pkCatalog, pkSchema, pkTable, 
+                                   fkCatalog, fkSchema, fkTable);
+    });
+    m.def("DDBCSQLPrimaryKeys", [](SqlHandlePtr StatementHandle, 
+                                const py::object& catalog,
+                                const py::object& schema,
+                                const std::wstring& table) {
+        return SQLPrimaryKeys_wrap(StatementHandle, catalog, schema, table);
+    });
+    m.def("DDBCSQLSpecialColumns", [](SqlHandlePtr StatementHandle, 
+                                SQLSMALLINT identifierType,
+                                const py::object& catalog,
+                                const py::object& schema,
+                                const std::wstring& table,
+                                SQLSMALLINT scope,
+                                SQLSMALLINT nullable) {
+        return SQLSpecialColumns_wrap(StatementHandle, 
+                                identifierType, catalog, schema, table, 
+                                scope, nullable);
+    });
+    m.def("DDBCSQLStatistics", [](SqlHandlePtr StatementHandle, 
+                            const py::object& catalog,
+                            const py::object& schema,
+                            const std::wstring& table,
+                            SQLUSMALLINT unique,
+                            SQLUSMALLINT reserved) {
+        return SQLStatistics_wrap(StatementHandle, catalog, schema, table, unique, reserved);
+    });
+    m.def("DDBCSQLColumns", [](SqlHandlePtr StatementHandle, 
+                            const py::object& catalog,
+                            const py::object& schema,
+                            const py::object& table,
+                            const py::object& column) {
+        return SQLColumns_wrap(StatementHandle, catalog, schema, table, column);
+    });
 
 
     // Add a version attribute
