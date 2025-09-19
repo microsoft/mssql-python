@@ -64,6 +64,20 @@ struct NumericData {
         : precision(precision), scale(scale), sign(sign), val(value) {}
 };
 
+// Struct to hold the DateTimeOffset structure
+struct DateTimeOffset
+{
+    SQLSMALLINT    year;
+    SQLUSMALLINT   month;
+    SQLUSMALLINT   day;
+    SQLUSMALLINT   hour;
+    SQLUSMALLINT   minute;
+    SQLUSMALLINT   second;
+    SQLUINTEGER    fraction;        // Nanoseconds
+    SQLSMALLINT    timezone_hour;   // Offset hours from UTC
+    SQLSMALLINT    timezone_minute; // Offset minutes from UTC
+};
+
 // Struct to hold data buffers and indicators for each column
 struct ColumnBuffers {
     std::vector<std::vector<SQLCHAR>> charBuffers;
@@ -78,6 +92,7 @@ struct ColumnBuffers {
     std::vector<std::vector<SQL_TIME_STRUCT>> timeBuffers;
     std::vector<std::vector<SQLGUID>> guidBuffers;
     std::vector<std::vector<SQLLEN>> indicators;
+    std::vector<std::vector<DateTimeOffset>> datetimeoffsetBuffers;
 
     ColumnBuffers(SQLSMALLINT numCols, int fetchSize)
         : charBuffers(numCols),
@@ -91,21 +106,8 @@ struct ColumnBuffers {
           dateBuffers(numCols),
           timeBuffers(numCols),
           guidBuffers(numCols),
+          datetimeoffsetBuffers(numCols),
           indicators(numCols, std::vector<SQLLEN>(fetchSize)) {}
-};
-
-// Struct to hold the DateTimeOffset structure
-struct DateTimeOffset
-{
-    SQLSMALLINT    year;
-    SQLUSMALLINT   month;
-    SQLUSMALLINT   day;
-    SQLUSMALLINT   hour;
-    SQLUSMALLINT   minute;
-    SQLUSMALLINT   second;
-    SQLUINTEGER    fraction;        // Nanoseconds
-    SQLSMALLINT    timezone_hour;   // Offset hours from UTC
-    SQLSMALLINT    timezone_minute; // Offset minutes from UTC
 };
 
 //-------------------------------------------------------------------------------------------------
@@ -1945,6 +1947,7 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                     break;
                 }
                 case SQL_C_TYPE_TIMESTAMP: {
+                    std::cout<<"Binding Timestamp param at index "<<paramIndex<<std::endl;
                     SQL_TIMESTAMP_STRUCT* tsArray = AllocateParamBufferArray<SQL_TIMESTAMP_STRUCT>(tempBuffers, paramSetSize);
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
                     for (size_t i = 0; i < paramSetSize; ++i) {
@@ -1965,6 +1968,67 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                     }
                     dataPtr = tsArray;
                     bufferLength = sizeof(SQL_TIMESTAMP_STRUCT);
+                    break;
+                }
+                case SQL_C_SS_TIMESTAMPOFFSET: {
+                    std::cout<<"Binding DateTimeOffset param at index "<<paramIndex<<std::endl;
+                    DateTimeOffset* dtoArray = AllocateParamBufferArray<DateTimeOffset>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+
+                    py::object datetimeType = py::module_::import("datetime").attr("datetime");
+
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        const py::handle& param = columnValues[i];
+
+                        if (param.is_none()) {
+                            std::memset(&dtoArray[i], 0, sizeof(DateTimeOffset));
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                        } else {
+                            if (!py::isinstance(param, datetimeType)) {
+                                ThrowStdException(MakeParamMismatchErrorStr(info.paramCType, paramIndex));
+                            }
+
+                            py::object tzinfo = param.attr("tzinfo");
+                            if (tzinfo.is_none()) {
+                                ThrowStdException("Datetime object must have tzinfo for SQL_C_SS_TIMESTAMPOFFSET at paramIndex " +
+                                    std::to_string(paramIndex));
+                            }
+
+                            // Convert the Python datetime object to UTC before binding.
+                            // This is the crucial step to ensure timezone normalization.
+                            py::object datetimeModule = py::module_::import("datetime");
+                            py::object utc_dt = param.attr("astimezone")(datetimeModule.attr("timezone").attr("utc"));
+                            std::cout<<"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"<<std::endl;
+                            // --- TEMPORARY DEBUGGING: LOG THE UTC VALUES ---
+                            LOG("Binding UTC values: {}-{}-{} {}:{}:{}.{} +00:00",
+                                utc_dt.attr("year").cast<int>(),
+                                utc_dt.attr("month").cast<int>(),
+                                utc_dt.attr("day").cast<int>(),
+                                utc_dt.attr("hour").cast<int>(),
+                                utc_dt.attr("minute").cast<int>(),
+                                utc_dt.attr("second").cast<int>(),
+                                utc_dt.attr("microsecond").cast<int>()
+                            );
+
+                            // Now, populate the C++ struct using the UTC-converted object.
+                            dtoArray[i].year = static_cast<SQLSMALLINT>(utc_dt.attr("year").cast<int>());
+                            dtoArray[i].month = static_cast<SQLUSMALLINT>(utc_dt.attr("month").cast<int>());
+                            dtoArray[i].day = static_cast<SQLUSMALLINT>(utc_dt.attr("day").cast<int>());
+                            dtoArray[i].hour = static_cast<SQLUSMALLINT>(utc_dt.attr("hour").cast<int>());
+                            dtoArray[i].minute = static_cast<SQLUSMALLINT>(utc_dt.attr("minute").cast<int>());
+                            dtoArray[i].second = static_cast<SQLUSMALLINT>(utc_dt.attr("second").cast<int>());
+                            dtoArray[i].fraction = static_cast<SQLUINTEGER>(utc_dt.attr("microsecond").cast<int>() * 1000);
+
+                            // Since we've converted to UTC, the timezone offset is always 0.
+                            dtoArray[i].timezone_hour = 0;
+                            dtoArray[i].timezone_minute = 0;
+
+                            strLenOrIndArray[i] = sizeof(DateTimeOffset);
+                        }
+                    }
+
+                    dataPtr = dtoArray;
+                    bufferLength = sizeof(DateTimeOffset);
                     break;
                 }
                 case SQL_C_NUMERIC: {
@@ -2642,6 +2706,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         microseconds,
                         tzinfo
                     );
+                    py_dt = py_dt.attr("astimezone")(datetime.attr("timezone").attr("utc"));
                     row.append(py_dt);
                 } else {
                     LOG("Error fetching DATETIMEOFFSET for column {}, ret={}", i, ret);
@@ -2912,6 +2977,13 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_BINARY, buffers.charBuffers[col - 1].data(),
                                      columnSize, buffers.indicators[col - 1].data());
                 break;
+            case SQL_SS_TIMESTAMPOFFSET:
+                buffers.datetimeoffsetBuffers[col - 1].resize(fetchSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_SS_TIMESTAMPOFFSET,
+                                    buffers.datetimeoffsetBuffers[col - 1].data(),
+                                    sizeof(DateTimeOffset) * fetchSize,
+                                    buffers.indicators[col - 1].data());
+                break;
             default:
                 std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                 std::ostringstream errorString;
@@ -3127,6 +3199,43 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                                                  buffers.timeBuffers[col - 1][i].second));
                     break;
                 }
+                case SQL_SS_TIMESTAMPOFFSET: {
+                    // i = current row index in outer loop
+                    SQLULEN rowIdx = i;
+                    const DateTimeOffset& dtoValue = buffers.datetimeoffsetBuffers[col - 1][rowIdx];
+                    SQLLEN indicator = buffers.indicators[col - 1][rowIdx];
+
+                    if (indicator != SQL_NULL_DATA) {
+                        // Compute total minutes offset
+                        int totalMinutes = dtoValue.timezone_hour * 60 + dtoValue.timezone_minute;
+
+                        // Import Python datetime module
+                        py::object datetime = py::module_::import("datetime");
+
+                        // Construct tzinfo object for the original offset
+                        py::object tzinfo = datetime.attr("timezone")(
+                            datetime.attr("timedelta")(py::arg("minutes") = totalMinutes)
+                        );
+
+                        // Construct Python datetime object with tzinfo
+                        py::object py_dt = datetime.attr("datetime")(
+                            dtoValue.year,
+                            dtoValue.month,
+                            dtoValue.day,
+                            dtoValue.hour,
+                            dtoValue.minute,
+                            dtoValue.second,
+                            dtoValue.fraction / 1000,  // ns → µs
+                            tzinfo
+                        );
+                        py_dt = py_dt.attr("astimezone")(datetime.attr("timezone").attr("utc"));
+                        // Append to row
+                        row.append(py_dt);
+                    } else {
+                        row.append(py::none());
+                    }
+                    break;
+                }
                 case SQL_GUID: {
                     SQLGUID* guidValue = &buffers.guidBuffers[col - 1][i];
                     uint8_t reordered[16];
@@ -3245,6 +3354,9 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY:
                 rowSize += columnSize;
+                break;
+            case SQL_SS_TIMESTAMPOFFSET:
+                rowSize += sizeof(DateTimeOffset); // your custom struct for SQL_C_SS_TIMESTAMPOFFSET
                 break;
             default:
                 std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();

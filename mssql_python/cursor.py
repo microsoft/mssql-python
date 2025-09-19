@@ -140,27 +140,26 @@ class Cursor:
 
     def _parse_datetime(self, param):
         """
-        Attempt to parse a string as a datetime, smalldatetime, datetime2, timestamp.
-
-        Args:
-            param: The string to parse.
-
-        Returns:
-            A datetime.datetime object if parsing is successful, else None.
+        Attempt to parse a string as a datetime, datetime2, timestamp, or smalldatetime.
+        Handles both naive and timezone-aware datetime strings.
         """
         formats = [
-            "%Y-%m-%dT%H:%M:%S.%f",  # ISO 8601 datetime with fractional seconds
-            "%Y-%m-%dT%H:%M:%S",  # ISO 8601 datetime
-            "%Y-%m-%d %H:%M:%S.%f",  # Datetime with fractional seconds
-            "%Y-%m-%d %H:%M:%S",  # Datetime without fractional seconds
+            "%Y-%m-%dT%H:%M:%S.%f%z",  # ISO 8601 with fractional seconds + timezone
+            "%Y-%m-%dT%H:%M:%S%z",     # ISO 8601 with timezone
+            "%Y-%m-%d %H:%M:%S.%f%z",  # Space-separated with fractional seconds + timezone
+            "%Y-%m-%d %H:%M:%S%z",     # Space-separated with timezone
+            "%Y-%m-%dT%H:%M:%S.%f",    # ISO 8601 without timezone
+            "%Y-%m-%dT%H:%M:%S",       # ISO 8601 without timezone
+            "%Y-%m-%d %H:%M:%S.%f",    # Space-separated without timezone
+            "%Y-%m-%d %H:%M:%S",       # Space-separated without timezone
         ]
         for fmt in formats:
             try:
-                return datetime.datetime.strptime(param, fmt)  # Valid datetime
+                dt = datetime.datetime.strptime(param, fmt)
+                return dt
             except ValueError:
-                continue  # Try next format
-
-        return None  # If all formats fail, return None
+                continue
+        return None  # parsing failed
 
     def _parse_time(self, param):
         """
@@ -1442,35 +1441,6 @@ class Cursor:
         # Use the helper method to prepare the result set
         return self._prepare_metadata_result_set(fallback_description=fallback_description)
 
-    @staticmethod
-    def _select_best_sample_value(column):
-        """
-        Selects the most representative non-null value from a column for type inference.
-
-        This is used during executemany() to infer SQL/C types based on actual data,
-        preferring a non-null value that is not the first row to avoid bias from placeholder defaults.
-
-        Args:
-            column: List of values in the column.
-        """
-        non_nulls = [v for v in column if v is not None]
-        if not non_nulls:
-            return None
-        if all(isinstance(v, int) for v in non_nulls):
-            # Pick the value with the widest range (min/max)
-            return max(non_nulls, key=lambda v: abs(v))
-        if all(isinstance(v, float) for v in non_nulls):
-            return 0.0
-        if all(isinstance(v, decimal.Decimal) for v in non_nulls):
-            return max(non_nulls, key=lambda d: len(d.as_tuple().digits))
-        if all(isinstance(v, str) for v in non_nulls):
-            return max(non_nulls, key=lambda s: len(str(s)))
-        if all(isinstance(v, datetime.datetime) for v in non_nulls):
-            return datetime.datetime.now()
-        if all(isinstance(v, datetime.date) for v in non_nulls):
-            return datetime.date.today()
-        return non_nulls[0]  # fallback
-
     def _transpose_rowwise_to_columnwise(self, seq_of_parameters: list) -> tuple[list, int]:
         """
         Convert sequence of rows (row-wise) into list of columns (column-wise),
@@ -1643,12 +1613,7 @@ class Cursor:
             else:
                 # Use auto-detection for columns without explicit types
                 column = [row[col_index] for row in seq_of_parameters] if hasattr(seq_of_parameters, '__getitem__') else []
-                if not column:
-                    # For generators, use the sample row for inference
-                    sample_value = sample_row[col_index]
-                else:
-                    sample_value = self._select_best_sample_value(column)
-                
+                sample_value, min_val, max_val = self._compute_column_type(column)
                 dummy_row = list(sample_row)
                 paraminfo = self._create_parameter_types_list(
                     sample_value, param_info, dummy_row, col_index, min_val=min_val, max_val=max_val
