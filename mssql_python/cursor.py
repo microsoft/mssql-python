@@ -1674,17 +1674,6 @@ class Cursor:
         # Process parameters into column-wise format with possible type conversions
         # First, convert any Decimal types as needed for NUMERIC/DECIMAL columns
         processed_parameters = []
-        # for row in seq_of_parameters:
-        #     processed_row = list(row)
-        #     for i, val in enumerate(processed_row):
-        #         if (parameters_type[i].paramSQLType in 
-        #             (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value) and
-        #             not isinstance(val, decimal.Decimal) and val is not None):
-        #             try:
-        #                 processed_row[i] = decimal.Decimal(str(val))
-        #             except:
-        #                 pass  # Keep original value if conversion fails
-        #     processed_parameters.append(processed_row)
         for row in seq_of_parameters:
             processed_row = list(row)
             for i, val in enumerate(processed_row):
