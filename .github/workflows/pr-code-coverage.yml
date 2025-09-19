@@ -252,7 +252,8 @@ jobs:
       - name: Download coverage XML from ADO
         run: |
           # Download the Cobertura XML directly from the CodeCoverageReport job
-          BUILD_ID=${{ env.BUILD_ID }}
+          # BUILD_ID=${{ env.BUILD_ID }}
+          BUILD_ID=125342
           ARTIFACTS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID/artifacts?api-version=7.1-preview.5"
           
           echo "📥 Fetching artifacts for build $BUILD_ID to find coverage files..."
