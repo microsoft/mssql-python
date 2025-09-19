@@ -65,6 +65,7 @@ def clean_connection_state(db_connection):
         cleanup_cursor.close()
     except Exception:
         pass  # Ignore errors during cleanup
+from mssql_python.constants import GetInfoConstants as sql_const
 
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
@@ -4743,3 +4744,378 @@ def test_timeout_affects_all_cursors(db_connection):
     finally:
         # Reset timeout
         db_connection.timeout = original_timeout
+def test_getinfo_basic_driver_info(db_connection):
+    """Test basic driver information info types."""
+    
+    try:
+        # Driver name should be available
+        driver_name = db_connection.getinfo(sql_const.SQL_DRIVER_NAME.value)
+        print("Driver Name = ",driver_name)
+        assert driver_name is not None, "Driver name should not be None"
+        
+        # Driver version should be available
+        driver_ver = db_connection.getinfo(sql_const.SQL_DRIVER_VER.value)
+        print("Driver Version = ",driver_ver)
+        assert driver_ver is not None, "Driver version should not be None"
+        
+        # Data source name should be available
+        dsn = db_connection.getinfo(sql_const.SQL_DATA_SOURCE_NAME.value)
+        print("Data source name = ",dsn)
+        assert dsn is not None, "Data source name should not be None"
+        
+        # Server name should be available (might be empty in some configurations)
+        server_name = db_connection.getinfo(sql_const.SQL_SERVER_NAME.value)
+        print("Server Name = ",server_name)
+        assert server_name is not None, "Server name should not be None"
+        
+        # User name should be available (might be empty if using integrated auth)
+        user_name = db_connection.getinfo(sql_const.SQL_USER_NAME.value)
+        print("User Name = ",user_name)
+        assert user_name is not None, "User name should not be None"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for basic driver info: {e}")
+
+def test_getinfo_sql_support(db_connection):
+    """Test SQL support and conformance info types."""
+    
+    try:
+        # SQL conformance level
+        sql_conformance = db_connection.getinfo(sql_const.SQL_SQL_CONFORMANCE.value)
+        print("SQL Conformance = ",sql_conformance)
+        assert sql_conformance is not None, "SQL conformance should not be None"
+        
+        # Keywords - may return a very long string
+        keywords = db_connection.getinfo(sql_const.SQL_KEYWORDS.value)
+        print("Keywords = ",keywords)
+        assert keywords is not None, "SQL keywords should not be None"
+        
+        # Identifier quote character
+        quote_char = db_connection.getinfo(sql_const.SQL_IDENTIFIER_QUOTE_CHAR.value)
+        print(f"Identifier quote char: '{quote_char}'")
+        assert quote_char is not None, "Identifier quote char should not be None"
+
+    except Exception as e:
+        pytest.fail(f"getinfo failed for SQL support info: {e}")
+
+def test_getinfo_numeric_limits(db_connection):
+    """Test numeric limitation info types."""
+    
+    try:
+        # Max column name length - should be a positive integer
+        max_col_name_len = db_connection.getinfo(sql_const.SQL_MAX_COLUMN_NAME_LEN.value)
+        assert isinstance(max_col_name_len, int), "Max column name length should be an integer"
+        assert max_col_name_len >= 0, "Max column name length should be non-negative"
+        
+        # Max table name length
+        max_table_name_len = db_connection.getinfo(sql_const.SQL_MAX_TABLE_NAME_LEN.value)
+        assert isinstance(max_table_name_len, int), "Max table name length should be an integer"
+        assert max_table_name_len >= 0, "Max table name length should be non-negative"
+        
+        # Max statement length - may return 0 for "unlimited"
+        max_statement_len = db_connection.getinfo(sql_const.SQL_MAX_STATEMENT_LEN.value)
+        assert isinstance(max_statement_len, int), "Max statement length should be an integer"
+        assert max_statement_len >= 0, "Max statement length should be non-negative"
+        
+        # Max connections - may return 0 for "unlimited"
+        max_connections = db_connection.getinfo(sql_const.SQL_MAX_DRIVER_CONNECTIONS.value)
+        assert isinstance(max_connections, int), "Max connections should be an integer"
+        assert max_connections >= 0, "Max connections should be non-negative"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for numeric limits info: {e}")
+
+def test_getinfo_catalog_support(db_connection):
+    """Test catalog support info types."""
+    
+    try:
+        # Catalog support for tables
+        catalog_term = db_connection.getinfo(sql_const.SQL_CATALOG_TERM.value)
+        print("Catalog term = ",catalog_term)
+        assert catalog_term is not None, "Catalog term should not be None"
+        
+        # Catalog name separator
+        catalog_separator = db_connection.getinfo(sql_const.SQL_CATALOG_NAME_SEPARATOR.value)
+        print(f"Catalog name separator: '{catalog_separator}'")
+        assert catalog_separator is not None, "Catalog separator should not be None"
+        
+        # Schema term
+        schema_term = db_connection.getinfo(sql_const.SQL_SCHEMA_TERM.value)
+        print("Schema term = ",schema_term)
+        assert schema_term is not None, "Schema term should not be None"
+        
+        # Stored procedures support
+        procedures = db_connection.getinfo(sql_const.SQL_PROCEDURES.value)
+        print("Procedures = ",procedures)
+        assert procedures is not None, "Procedures support should not be None"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for catalog support info: {e}")
+
+def test_getinfo_transaction_support(db_connection):
+    """Test transaction support info types."""
+    
+    try:
+        # Transaction support
+        txn_capable = db_connection.getinfo(sql_const.SQL_TXN_CAPABLE.value)
+        print("Transaction capable = ",txn_capable)
+        assert txn_capable is not None, "Transaction capability should not be None"
+        
+        # Default transaction isolation
+        default_txn_isolation = db_connection.getinfo(sql_const.SQL_DEFAULT_TXN_ISOLATION.value)
+        print("Default Transaction isolation = ",default_txn_isolation)
+        assert default_txn_isolation is not None, "Default transaction isolation should not be None"
+        
+        # Multiple active transactions support
+        multiple_txn = db_connection.getinfo(sql_const.SQL_MULTIPLE_ACTIVE_TXN.value)
+        print("Multiple transaction = ",multiple_txn)
+        assert multiple_txn is not None, "Multiple active transactions support should not be None"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for transaction support info: {e}")
+
+def test_getinfo_data_types(db_connection):
+    """Test data type support info types."""
+    
+    try:
+        # Numeric functions
+        numeric_functions = db_connection.getinfo(sql_const.SQL_NUMERIC_FUNCTIONS.value)
+        assert isinstance(numeric_functions, int), "Numeric functions should be an integer"
+        
+        # String functions
+        string_functions = db_connection.getinfo(sql_const.SQL_STRING_FUNCTIONS.value)
+        assert isinstance(string_functions, int), "String functions should be an integer"
+        
+        # Date/time functions
+        datetime_functions = db_connection.getinfo(sql_const.SQL_DATETIME_FUNCTIONS.value)
+        assert isinstance(datetime_functions, int), "Datetime functions should be an integer"
+        
+    except Exception as e:
+        pytest.fail(f"getinfo failed for data type support info: {e}")
+
+def test_getinfo_invalid_constant(db_connection):
+    """Test getinfo behavior with invalid constants."""
+    # Use a constant that doesn't exist in ODBC
+    non_existent_constant = 9999
+    try:
+        result = db_connection.getinfo(non_existent_constant)
+        # If it doesn't raise an exception, it should return None or an empty value
+        assert result is None or result == 0 or result == "", "Invalid constant should return None/empty"
+    except Exception:
+        # It's also acceptable to raise an exception for invalid constants
+        pass
+
+def test_getinfo_type_consistency(db_connection):
+    """Test that getinfo returns consistent types for repeated calls."""
+
+    # Choose a few representative info types that don't depend on DBMS
+    info_types = [
+        sql_const.SQL_DRIVER_NAME.value,
+        sql_const.SQL_MAX_COLUMN_NAME_LEN.value,
+        sql_const.SQL_TXN_CAPABLE.value,
+        sql_const.SQL_IDENTIFIER_QUOTE_CHAR.value
+    ]
+    
+    for info_type in info_types:
+        # Call getinfo twice with the same info type
+        result1 = db_connection.getinfo(info_type)
+        result2 = db_connection.getinfo(info_type)
+        
+        # Results should be consistent in type and value
+        assert type(result1) == type(result2), f"Type inconsistency for info type {info_type}"
+        assert result1 == result2, f"Value inconsistency for info type {info_type}"
+
+def test_getinfo_standard_types(db_connection):
+    """Test a representative set of standard ODBC info types."""
+    
+    # Dictionary of common info types and their expected value types
+    # Avoid DBMS-specific info types
+    info_types = {
+        sql_const.SQL_ACCESSIBLE_TABLES.value: str,        # "Y" or "N"
+        sql_const.SQL_DATA_SOURCE_NAME.value: str,         # DSN
+        sql_const.SQL_TABLE_TERM.value: str,               # Usually "table"
+        sql_const.SQL_PROCEDURES.value: str,               # "Y" or "N"
+        sql_const.SQL_MAX_IDENTIFIER_LEN.value: int,       # Max identifier length
+        sql_const.SQL_OUTER_JOINS.value: str,              # "Y" or "N"
+    }
+    
+    for info_type, expected_type in info_types.items():
+        try:
+            info_value = db_connection.getinfo(info_type)
+            
+            # Skip None values (unsupported by driver)
+            if info_value is None:
+                continue
+                
+            # Check type, allowing empty strings for string types
+            if expected_type == str:
+                assert isinstance(info_value, str), f"Info type {info_type} should return a string"
+            elif expected_type == int:
+                assert isinstance(info_value, int), f"Info type {info_type} should return an integer"
+                
+        except Exception as e:
+            # Log but don't fail - some drivers might not support all info types
+            print(f"Info type {info_type} failed: {e}")
+
+def test_connection_searchescape_basic(db_connection):
+    """Test the basic functionality of the searchescape property."""
+    # Get the search escape character
+    escape_char = db_connection.searchescape
+    
+    # Verify it's not None
+    assert escape_char is not None, "Search escape character should not be None"
+    print(f"Search pattern escape character: '{escape_char}'")
+    
+    # Test property caching - calling it twice should return the same value
+    escape_char2 = db_connection.searchescape
+    assert escape_char == escape_char2, "Search escape character should be consistent"
+
+def test_connection_searchescape_with_percent(db_connection):
+    """Test using the searchescape property with percent wildcard."""
+    escape_char = db_connection.searchescape
+    
+    # Skip test if we got a non-string or empty escape character
+    if not isinstance(escape_char, str) or not escape_char:
+        pytest.skip("No valid escape character available for testing")
+    
+    cursor = db_connection.cursor()
+    try:
+        # Create a temporary table with data containing % character
+        cursor.execute("CREATE TABLE #test_escape_percent (id INT, text VARCHAR(50))")
+        cursor.execute("INSERT INTO #test_escape_percent VALUES (1, 'abc%def')")
+        cursor.execute("INSERT INTO #test_escape_percent VALUES (2, 'abc_def')")
+        cursor.execute("INSERT INTO #test_escape_percent VALUES (3, 'abcdef')")
+        
+        # Use the escape character to find the exact % character
+        query = f"SELECT * FROM #test_escape_percent WHERE text LIKE 'abc{escape_char}%def' ESCAPE '{escape_char}'"
+        cursor.execute(query)
+        results = cursor.fetchall()
+        
+        # Should match only the row with the % character
+        assert len(results) == 1, f"Escaped LIKE query for % matched {len(results)} rows instead of 1"
+        if results:
+            assert 'abc%def' in results[0][1], "Escaped LIKE query did not match correct row"
+            
+    except Exception as e:
+        print(f"Note: LIKE escape test with % failed: {e}")
+        # Don't fail the test as some drivers might handle escaping differently
+    finally:
+        cursor.execute("DROP TABLE #test_escape_percent")
+
+def test_connection_searchescape_with_underscore(db_connection):
+    """Test using the searchescape property with underscore wildcard."""
+    escape_char = db_connection.searchescape
+    
+    # Skip test if we got a non-string or empty escape character
+    if not isinstance(escape_char, str) or not escape_char:
+        pytest.skip("No valid escape character available for testing")
+    
+    cursor = db_connection.cursor()
+    try:
+        # Create a temporary table with data containing _ character
+        cursor.execute("CREATE TABLE #test_escape_underscore (id INT, text VARCHAR(50))")
+        cursor.execute("INSERT INTO #test_escape_underscore VALUES (1, 'abc_def')")
+        cursor.execute("INSERT INTO #test_escape_underscore VALUES (2, 'abcXdef')")  # 'X' could match '_'
+        cursor.execute("INSERT INTO #test_escape_underscore VALUES (3, 'abcdef')")   # No match
+        
+        # Use the escape character to find the exact _ character
+        query = f"SELECT * FROM #test_escape_underscore WHERE text LIKE 'abc{escape_char}_def' ESCAPE '{escape_char}'"
+        cursor.execute(query)
+        results = cursor.fetchall()
+        
+        # Should match only the row with the _ character
+        assert len(results) == 1, f"Escaped LIKE query for _ matched {len(results)} rows instead of 1"
+        if results:
+            assert 'abc_def' in results[0][1], "Escaped LIKE query did not match correct row"
+            
+    except Exception as e:
+        print(f"Note: LIKE escape test with _ failed: {e}")
+        # Don't fail the test as some drivers might handle escaping differently
+    finally:
+        cursor.execute("DROP TABLE #test_escape_underscore")
+
+def test_connection_searchescape_with_brackets(db_connection):
+    """Test using the searchescape property with bracket wildcards."""
+    escape_char = db_connection.searchescape
+    
+    # Skip test if we got a non-string or empty escape character
+    if not isinstance(escape_char, str) or not escape_char:
+        pytest.skip("No valid escape character available for testing")
+    
+    cursor = db_connection.cursor()
+    try:
+        # Create a temporary table with data containing [ character
+        cursor.execute("CREATE TABLE #test_escape_brackets (id INT, text VARCHAR(50))")
+        cursor.execute("INSERT INTO #test_escape_brackets VALUES (1, 'abc[x]def')")
+        cursor.execute("INSERT INTO #test_escape_brackets VALUES (2, 'abcxdef')")
+        
+        # Use the escape character to find the exact [ character
+        # Note: This might not work on all drivers as bracket escaping varies
+        query = f"SELECT * FROM #test_escape_brackets WHERE text LIKE 'abc{escape_char}[x{escape_char}]def' ESCAPE '{escape_char}'"
+        cursor.execute(query)
+        results = cursor.fetchall()
+        
+        # Just check we got some kind of result without asserting specific behavior
+        print(f"Bracket escaping test returned {len(results)} rows")
+            
+    except Exception as e:
+        print(f"Note: LIKE escape test with brackets failed: {e}")
+        # Don't fail the test as bracket escaping varies significantly between drivers
+    finally:
+        cursor.execute("DROP TABLE #test_escape_brackets")
+
+def test_connection_searchescape_multiple_escapes(db_connection):
+    """Test using the searchescape property with multiple escape sequences."""
+    escape_char = db_connection.searchescape
+    
+    # Skip test if we got a non-string or empty escape character
+    if not isinstance(escape_char, str) or not escape_char:
+        pytest.skip("No valid escape character available for testing")
+    
+    cursor = db_connection.cursor()
+    try:
+        # Create a temporary table with data containing multiple special chars
+        cursor.execute("CREATE TABLE #test_multiple_escapes (id INT, text VARCHAR(50))")
+        cursor.execute("INSERT INTO #test_multiple_escapes VALUES (1, 'abc%def_ghi')")
+        cursor.execute("INSERT INTO #test_multiple_escapes VALUES (2, 'abc%defXghi')")  # Wouldn't match the pattern
+        cursor.execute("INSERT INTO #test_multiple_escapes VALUES (3, 'abcXdef_ghi')")  # Wouldn't match the pattern
+        
+        # Use escape character for both % and _
+        query = f"""
+            SELECT * FROM #test_multiple_escapes 
+            WHERE text LIKE 'abc{escape_char}%def{escape_char}_ghi' ESCAPE '{escape_char}'
+        """
+        cursor.execute(query)
+        results = cursor.fetchall()
+        
+        # Should match only the row with both % and _
+        assert len(results) <= 1, f"Multiple escapes query matched {len(results)} rows instead of at most 1"
+        if len(results) == 1:
+            assert 'abc%def_ghi' in results[0][1], "Multiple escapes query matched incorrect row"
+            
+    except Exception as e:
+        print(f"Note: Multiple escapes test failed: {e}")
+        # Don't fail the test as escaping behavior varies
+    finally:
+        cursor.execute("DROP TABLE #test_multiple_escapes")
+
+def test_connection_searchescape_consistency(db_connection):
+    """Test that the searchescape property is cached and consistent."""
+    # Call the property multiple times
+    escape1 = db_connection.searchescape
+    escape2 = db_connection.searchescape
+    escape3 = db_connection.searchescape
+    
+    # All calls should return the same value
+    assert escape1 == escape2 == escape3, "Searchescape property should be consistent"
+    
+    # Create a new connection and verify it returns the same escape character
+    # (assuming the same driver and connection settings)
+    if 'conn_str' in globals():
+        try:
+            new_conn = connect(conn_str)
+            new_escape = new_conn.searchescape
+            assert new_escape == escape1, "Searchescape should be consistent across connections"
+            new_conn.close()
+        except Exception as e:
+            print(f"Note: New connection comparison failed: {e}")

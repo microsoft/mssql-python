@@ -225,6 +225,7 @@ typedef SQLRETURN (SQL_API* SQLStatisticsFunc)(SQLHSTMT, SQLWCHAR*, SQLSMALLINT,
 typedef SQLRETURN (SQL_API* SQLColumnsFunc)(SQLHSTMT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, 
                                            SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, 
                                            SQLWCHAR*, SQLSMALLINT);
+typedef SQLRETURN (SQL_API* SQLGetInfoFunc)(SQLHDBC, SQLUSMALLINT, SQLPOINTER, SQLSMALLINT, SQLSMALLINT*);
 
 // Transaction APIs
 typedef SQLRETURN (SQL_API* SQLEndTranFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT);
@@ -281,6 +282,7 @@ extern SQLPrimaryKeysFunc SQLPrimaryKeys_ptr;
 extern SQLSpecialColumnsFunc SQLSpecialColumns_ptr;
 extern SQLStatisticsFunc SQLStatistics_ptr;
 extern SQLColumnsFunc SQLColumns_ptr;
+extern SQLGetInfoFunc SQLGetInfo_ptr;
 
 // Transaction APIs
 extern SQLEndTranFunc SQLEndTran_ptr;

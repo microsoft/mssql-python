@@ -131,6 +131,7 @@ SQLPrimaryKeysFunc SQLPrimaryKeys_ptr = nullptr;
 SQLSpecialColumnsFunc SQLSpecialColumns_ptr = nullptr;
 SQLStatisticsFunc SQLStatistics_ptr = nullptr;
 SQLColumnsFunc SQLColumns_ptr = nullptr;
+SQLGetInfoFunc SQLGetInfo_ptr = nullptr;
 
 // Transaction APIs
 SQLEndTranFunc SQLEndTran_ptr = nullptr;
@@ -827,6 +828,7 @@ DriverHandle LoadDriverOrThrowException() {
     SQLSpecialColumns_ptr = GetFunctionPointer<SQLSpecialColumnsFunc>(handle, "SQLSpecialColumnsW");
     SQLStatistics_ptr = GetFunctionPointer<SQLStatisticsFunc>(handle, "SQLStatisticsW");
     SQLColumns_ptr = GetFunctionPointer<SQLColumnsFunc>(handle, "SQLColumnsW");
+    SQLGetInfo_ptr = GetFunctionPointer<SQLGetInfoFunc>(handle, "SQLGetInfoW");
 
     SQLEndTran_ptr = GetFunctionPointer<SQLEndTranFunc>(handle, "SQLEndTran");
     SQLDisconnect_ptr = GetFunctionPointer<SQLDisconnectFunc>(handle, "SQLDisconnect");
@@ -850,7 +852,7 @@ DriverHandle LoadDriverOrThrowException() {
         SQLGetData_ptr && SQLNumResultCols_ptr && SQLBindCol_ptr &&
         SQLDescribeCol_ptr && SQLMoreResults_ptr && SQLColAttribute_ptr &&
         SQLEndTran_ptr && SQLDisconnect_ptr && SQLFreeHandle_ptr &&
-        SQLFreeStmt_ptr && SQLGetDiagRec_ptr && SQLParamData_ptr &&
+        SQLFreeStmt_ptr && SQLGetDiagRec_ptr && SQLGetInfo_ptr && SQLParamData_ptr &&
         SQLPutData_ptr && SQLTables_ptr &&
         SQLDescribeParam_ptr &&
         SQLGetTypeInfo_ptr && SQLProcedures_ptr && SQLForeignKeys_ptr &&
@@ -3422,7 +3424,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")
         .def("set_autocommit", &ConnectionHandle::setAutocommit)
         .def("get_autocommit", &ConnectionHandle::getAutocommit)
-        .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle);
+        .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle)
+        .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"));
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
     m.def("close_pooling", []() {ConnectionPoolManager::getInstance().closePools();});
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
