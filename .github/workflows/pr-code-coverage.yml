@@ -404,9 +404,9 @@ jobs:
           echo "🚀 Running diff-cover..."
           diff-cover coverage.xml \
             --compare-branch=main \
-            --format html:patch-coverage.html \
-            --format json:patch-coverage.json \
-            --format markdown:patch-coverage.md || {
+            --html-report patch-coverage.html \
+            --json-report patch-coverage.json \
+            --markdown-report patch-coverage.md || {
               echo "❌ diff-cover failed with exit code $?"
               echo "Checking if coverage.xml is valid XML..."
               if ! xmllint --noout coverage.xml 2>/dev/null; then
@@ -416,7 +416,7 @@ jobs:
               else
                 echo "✅ coverage.xml is valid XML"
                 echo "🔍 diff-cover verbose output:"
-                diff-cover coverage.xml --compare-branch=main --format markdown:debug-patch-coverage.md -v || echo "Verbose diff-cover also failed"
+                diff-cover coverage.xml --compare-branch=main --markdown-report debug-patch-coverage.md -v || echo "Verbose diff-cover also failed"
               fi
               # Don't exit here, let's see what files were created
             }
@@ -428,7 +428,7 @@ jobs:
           
           # Extract patch coverage percentage
           if [[ -f patch-coverage.json ]]; then
-            echo "🔍 Patch coverage analysis:"
+            echo "🔍 Patch coverage analysis from JSON:"
             echo "Raw JSON content:"
             cat patch-coverage.json | jq . || echo "Could not parse JSON"
             
@@ -443,32 +443,29 @@ jobs:
             echo "📁 Per-file coverage breakdown:"
             jq -r '.src_stats // {} | to_entries[] | "\(.key): \(.value.percent_covered)% (\(.value.num_lines) lines, \(.value.num_missing) missing)"' patch-coverage.json || echo "Could not extract per-file stats"
             
-            # Check if we actually have coverage data
-            if [[ "$PATCH_COVERAGE" == "null" || "$PATCH_COVERAGE" == "N/A" ]]; then
-              echo "⚠️ Patch coverage is null/N/A - checking why..."
-              if [[ "$TOTAL_STATEMENTS" == "0" || "$TOTAL_STATEMENTS" == "null" ]]; then
-                echo "🔍 No lines found in diff - this could mean:"
-                echo "  1. No Python files were changed"
-                echo "  2. Only non-executable lines were changed (comments, docstrings)"
-                echo "  3. File paths in coverage.xml don't match git diff paths"
-                echo "PATCH_COVERAGE_PCT=No changes detected" >> $GITHUB_ENV
-              else
-                echo "PATCH_COVERAGE_PCT=${PATCH_COVERAGE}%" >> $GITHUB_ENV
-              fi
-            else
+            echo "PATCH_COVERAGE_PCT=${PATCH_COVERAGE}%" >> $GITHUB_ENV
+          elif [[ -f patch-coverage.md ]]; then
+            echo "🔍 Extracting patch coverage from markdown file:"
+            echo "Markdown content:"
+            cat patch-coverage.md
+            
+            # Extract coverage percentage from markdown
+            PATCH_COVERAGE=$(grep -o "Coverage.*[0-9]*%" patch-coverage.md | grep -o "[0-9]*%" | head -1 | sed 's/%//')
+            TOTAL_LINES=$(grep -o "Total.*[0-9]* lines" patch-coverage.md | grep -o "[0-9]*" | head -1)
+            MISSING_LINES=$(grep -o "Missing.*[0-9]* lines" patch-coverage.md | grep -o "[0-9]*" | tail -1)
+            
+            if [[ -n "$PATCH_COVERAGE" ]]; then
+              echo "✅ Extracted patch coverage: ${PATCH_COVERAGE}%"
+              echo "📊 Total lines: $TOTAL_LINES, Missing: $MISSING_LINES"
               echo "PATCH_COVERAGE_PCT=${PATCH_COVERAGE}%" >> $GITHUB_ENV
+            else
+              echo "⚠️ Could not extract coverage percentage from markdown"
+              echo "PATCH_COVERAGE_PCT=Could not parse" >> $GITHUB_ENV
             fi
           else
-            echo "⚠️ patch-coverage.json not generated"
+            echo "⚠️ No patch coverage files generated"
             echo "🔍 Checking for other output files:"
-            if [[ -f patch-coverage.md ]]; then
-              echo "Found patch-coverage.md:"
-              cat patch-coverage.md
-            fi
-            if [[ -f debug-patch-coverage.md ]]; then
-              echo "Found debug output:"
-              cat debug-patch-coverage.md
-            fi
+            ls -la *coverage* || echo "No coverage files found"
             echo "PATCH_COVERAGE_PCT=Report not generated" >> $GITHUB_ENV
           fi
           
@@ -494,14 +491,14 @@ jobs:
             <tr>
             <td align="center" width="200">
             
-            ### 🎯 Overall Coverage
-            ### **${{ env.COVERAGE_PERCENTAGE }}**
+            ### 🔥 Patch Coverage
+            ### **${{ env.PATCH_COVERAGE_PCT }}**
             <br>
             </td>
             <td align="center" width="200">
             
-            ### 🔥 Patch Coverage
-            ### **${{ env.PATCH_COVERAGE_PCT }}**
+            ### 🎯 Overall Coverage
+            ### **${{ env.COVERAGE_PERCENTAGE }}**
             <br>
             </td>
             <td>
@@ -515,9 +512,8 @@ jobs:
             
             ---
             
-            ### 📋 Files Needing Attention
+            ## 📋 Patch Coverage Report
             
-            <details>
             <summary>🎯 <strong>Patch Coverage Details</strong> (lines changed in this PR)</summary>
             <br>
             
@@ -525,10 +521,11 @@ jobs:
             
             ${{ env.PATCH_COVERAGE_SUMMARY }}
             
-            </details>
+            ---
+            ### 📋 Files Needing Attention
             
             <details>
-            <summary>📉 <strong>Files with lowest coverage</strong> (click to expand)</summary>
+            <summary>📉 <strong>Files with overall lowest coverage</strong> (click to expand)</summary>
             <br>
             
             ```diff
