@@ -10618,6 +10618,52 @@ def test_decimal_separator_calculations(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
         db_connection.commit()
 
+def test_executemany_with_uuids(cursor, db_connection):
+    """Test inserting multiple rows with UUIDs and None using executemany."""
+    table_name = "#pytest_uuid_batch"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER,
+                description NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        # Prepare test data: mix of UUIDs and None
+        test_data = [
+            [uuid.uuid4(), "Item 1"],
+            [uuid.uuid4(), "Item 2"],
+            [None, "Item 3"],
+            [uuid.uuid4(), "Item 4"],
+            [None, "Item 5"]
+        ]
+
+        # Execute batch insert
+        cursor.executemany(f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", test_data)
+        cursor.connection.commit()
+
+        # Fetch and verify
+        cursor.execute(f"SELECT id, description FROM {table_name}")
+        rows = cursor.fetchall()
+
+        assert len(rows) == len(test_data), "Number of fetched rows does not match inserted rows."
+
+        for row in rows:
+            retrieved_uuid, retrieved_desc = row
+            for original_uuid, original_desc in test_data:
+                if original_desc == retrieved_desc:
+                    if original_uuid is None:
+                        assert retrieved_uuid is None, f"Expected None for '{retrieved_desc}', got {retrieved_uuid}"
+                    else:
+                        assert isinstance(retrieved_uuid, uuid.UUID), f"Expected UUID, got {type(retrieved_uuid)}"
+                        assert retrieved_uuid == original_uuid, f"UUID mismatch for '{retrieved_desc}'"
+                    break
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:

@@ -1963,6 +1963,82 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                     bufferLength = sizeof(SQL_NUMERIC_STRUCT);
                     break;
                 }
+//                 case SQL_C_GUID: {
+//     SQLGUID* guidArray = AllocateParamBufferArray<SQLGUID>(tempBuffers, paramSetSize);
+//     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+
+//     for (size_t i = 0; i < paramSetSize; ++i) {
+//         if (columnValues[i].is_none()) {
+//             std::memset(&guidArray[i], 0, sizeof(SQLGUID));
+//             strLenOrIndArray[i] = SQL_NULL_DATA;
+//         } else {
+//             if (!py::isinstance<py::bytes>(columnValues[i])) {
+//                 ThrowStdException(MakeParamMismatchErrorStr(info.paramCType, paramIndex));
+//             }
+//             py::bytes uuid_bytes = columnValues[i].cast<py::bytes>();
+//             const unsigned char* uuid_data = reinterpret_cast<const unsigned char*>(PyBytes_AS_STRING(uuid_bytes.ptr()));
+//             if (PyBytes_GET_SIZE(uuid_bytes.ptr()) != 16) {
+//                 ThrowStdException("UUID binary data must be exactly 16 bytes long.");
+//             }
+
+//             // Map bytes to SQLGUID fields
+//             guidArray[i].Data1 = (static_cast<uint32_t>(uuid_data[3]) << 24) |
+//                                  (static_cast<uint32_t>(uuid_data[2]) << 16) |
+//                                  (static_cast<uint32_t>(uuid_data[1]) << 8)  |
+//                                  (static_cast<uint32_t>(uuid_data[0]));
+//             guidArray[i].Data2 = (static_cast<uint16_t>(uuid_data[5]) << 8) |
+//                                  (static_cast<uint16_t>(uuid_data[4]));
+//             guidArray[i].Data3 = (static_cast<uint16_t>(uuid_data[7]) << 8) |
+//                                  (static_cast<uint16_t>(uuid_data[6]));
+//             std::memcpy(guidArray[i].Data4, &uuid_data[8], 8);
+
+//             strLenOrIndArray[i] = sizeof(SQLGUID);
+//         }
+//     }
+
+//     dataPtr = guidArray;
+//     bufferLength = sizeof(SQLGUID);
+//     break;
+// }
+case SQL_C_GUID: {
+    SQLGUID* guidArray = AllocateParamBufferArray<SQLGUID>(tempBuffers, paramSetSize);
+    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+
+    py::object uuid_type = py::module_::import("uuid").attr("UUID");
+
+    for (size_t i = 0; i < paramSetSize; ++i) {
+        if (columnValues[i].is_none()) {
+            std::memset(&guidArray[i], 0, sizeof(SQLGUID));
+            strLenOrIndArray[i] = SQL_NULL_DATA;
+        } else if (py::isinstance(columnValues[i], uuid_type)) {
+            py::bytes uuid_bytes = columnValues[i].attr("bytes");
+            const unsigned char* uuid_data = reinterpret_cast<const unsigned char*>(PyBytes_AS_STRING(uuid_bytes.ptr()));
+
+            if (PyBytes_GET_SIZE(uuid_bytes.ptr()) != 16) {
+                ThrowStdException("UUID binary data must be exactly 16 bytes long.");
+            }
+
+            guidArray[i].Data1 = (static_cast<uint32_t>(uuid_data[3]) << 24) |
+                                 (static_cast<uint32_t>(uuid_data[2]) << 16) |
+                                 (static_cast<uint32_t>(uuid_data[1]) << 8)  |
+                                 (static_cast<uint32_t>(uuid_data[0]));
+            guidArray[i].Data2 = (static_cast<uint16_t>(uuid_data[5]) << 8) |
+                                 (static_cast<uint16_t>(uuid_data[4]));
+            guidArray[i].Data3 = (static_cast<uint16_t>(uuid_data[7]) << 8) |
+                                 (static_cast<uint16_t>(uuid_data[6]));
+            std::memcpy(guidArray[i].Data4, &uuid_data[8], 8);
+
+            strLenOrIndArray[i] = sizeof(SQLGUID);
+        } else {
+            ThrowStdException(MakeParamMismatchErrorStr(info.paramCType, paramIndex));
+        }
+    }
+
+    dataPtr = guidArray;
+    bufferLength = sizeof(SQLGUID);
+    break;
+}
+
                 default: {
                     ThrowStdException("BindParameterArray: Unsupported C type: " + std::to_string(info.paramCType));
                 }
