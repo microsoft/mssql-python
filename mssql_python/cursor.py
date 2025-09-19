@@ -1501,7 +1501,7 @@ class Cursor:
         
         return columnwise, row_count
     
-    def test_non_covered_method(self):
+    def dummy_non_covered_method(self):
         """
         A test method to ensure code coverage for methods not covered by other tests.
         """
