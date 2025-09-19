@@ -422,7 +422,16 @@ class Cursor:
                 0,
                 False,
             )
-        
+                
+        if isinstance(param, uuid.UUID):
+            return (
+                ddbc_sql_const.SQL_GUID.value,
+                ddbc_sql_const.SQL_C_GUID.value,
+                16,
+                0,
+                False,
+            )
+
         if isinstance(param, (bytes, bytearray)):
             length = len(param)
             if length > 8000:  # Use VARBINARY(MAX) for large blobs
