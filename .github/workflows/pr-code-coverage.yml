@@ -249,40 +249,130 @@ jobs:
 
       - name: Download coverage XML from ADO
         run: |
-          # Download the Cobertura XML directly instead of HTML
+          # Download the Cobertura XML directly from the CodeCoverageReport job
           BUILD_ID=${{ env.BUILD_ID }}
           ARTIFACTS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID/artifacts?api-version=7.1-preview.5"
           
-          # Find and download coverage.xml
-          ARTIFACTS_RESPONSE=$(curl -s "$ARTIFACTS_URL")
-          COVERAGE_XML_ARTIFACT=$(echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]? | select(.name | test("coverage")) | .resource.downloadUrl // empty' 2>/dev/null)
+          echo "📥 Fetching artifacts for build $BUILD_ID to find coverage files..."
           
-          if [[ -n "$COVERAGE_XML_ARTIFACT" ]]; then
-            curl -L "$COVERAGE_XML_ARTIFACT" -o coverage-artifacts.zip
-            unzip -q coverage-artifacts.zip
-            find . -name "coverage*.xml" -exec cp {} ./coverage.xml \;
+          # Fetch artifacts with error handling
+          ARTIFACTS_RESPONSE=$(curl -s "$ARTIFACTS_URL")
+          
+          # Check if response is valid JSON
+          if ! echo "$ARTIFACTS_RESPONSE" | jq . >/dev/null 2>&1; then
+            echo "❌ Invalid JSON response from artifacts API"
+            echo "Response received: $ARTIFACTS_RESPONSE"
+            exit 1
+          fi
+          
+          echo "🔍 Available artifacts:"
+          echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]?.name // "No artifacts found"'
+          
+          # Look for the unified coverage artifact from CodeCoverageReport job
+          COVERAGE_XML_ARTIFACT=$(echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]? | select(.name | test("unified-coverage|Code Coverage Report|coverage")) | .resource.downloadUrl // empty' 2>/dev/null | head -1)
+          
+          if [[ -n "$COVERAGE_XML_ARTIFACT" && "$COVERAGE_XML_ARTIFACT" != "null" && "$COVERAGE_XML_ARTIFACT" != "empty" ]]; then
+            echo "📊 Downloading coverage artifact from: $COVERAGE_XML_ARTIFACT"
+            if ! curl -L "$COVERAGE_XML_ARTIFACT" -o coverage-artifacts.zip --fail --silent; then
+              echo "❌ Failed to download coverage artifacts"
+              exit 1
+            fi
+            
+            if ! unzip -q coverage-artifacts.zip; then
+              echo "❌ Failed to extract coverage artifacts"
+              exit 1
+            fi
+            
+            echo "🔍 Looking for coverage XML files in extracted artifacts..."
+            find . -name "*.xml" -type f | head -10
+            
+            # Look for the main coverage.xml file in unified-coverage directory or any coverage XML
+            if [[ -f "unified-coverage/coverage.xml" ]]; then
+              echo "✅ Found unified coverage file at unified-coverage/coverage.xml"
+              cp "unified-coverage/coverage.xml" ./coverage.xml
+            elif [[ -f "coverage.xml" ]]; then
+              echo "✅ Found coverage.xml in root directory"
+              # Already in the right place
+            else
+              # Try to find any coverage XML file
+              COVERAGE_FILE=$(find . -name "*coverage*.xml" -type f | head -1)
+              if [[ -n "$COVERAGE_FILE" ]]; then
+                echo "✅ Found coverage file: $COVERAGE_FILE"
+                cp "$COVERAGE_FILE" ./coverage.xml
+              else
+                echo "❌ No coverage XML file found in artifacts"
+                echo "Available files:"
+                find . -name "*.xml" -type f
+                exit 1
+              fi
+            fi
+            
+            echo "✅ Coverage XML file is ready at ./coverage.xml"
+            ls -la ./coverage.xml
+          else
+            echo "❌ Could not find coverage artifacts"
+            echo "This indicates the Azure DevOps CodeCoverageReport job may not have run successfully"
+            exit 1
           fi
 
       - name: Generate patch coverage report
         run: |
-          # Install diff-cover and jq
+          # Install dependencies
           pip install diff-cover jq
-          # Generate diff coverage report comparing against main
+          sudo apt-get update && sudo apt-get install -y libxml2-utils
+          
+          # Verify coverage.xml exists before proceeding
+          if [[ ! -f coverage.xml ]]; then
+            echo "❌ coverage.xml not found in current directory"
+            echo "Available files:"
+            ls -la | head -20
+            exit 1
+          fi
+          
+          echo "✅ coverage.xml found, size: $(wc -c < coverage.xml) bytes"
+          echo "🔍 Coverage file preview (first 10 lines):"
+          head -10 coverage.xml
+          
+          # Generate diff coverage report using the new command format
+          echo "🚀 Generating patch coverage report..."
+          
+          # Use the new format for diff-cover commands
           diff-cover coverage.xml \
             --compare-branch=origin/main \
-            --html-report=patch-coverage.html \
-            --json-report=patch-coverage.json \
-            --markdown-report=patch-coverage.md
+            --format html:patch-coverage.html \
+            --format json:patch-coverage.json \
+            --format markdown:patch-coverage.md || {
+              echo "❌ diff-cover failed with exit code $?"
+              echo "Checking if coverage.xml is valid XML..."
+              if ! xmllint --noout coverage.xml 2>/dev/null; then
+                echo "❌ coverage.xml is not valid XML"
+                echo "First 50 lines of coverage.xml:"
+                head -50 coverage.xml
+              else
+                echo "✅ coverage.xml is valid XML"
+              fi
+              exit 1
+            }
           
           # Extract patch coverage percentage
-          PATCH_COVERAGE=$(jq -r '.total_percent_covered // "N/A"' patch-coverage.json)
-          echo "PATCH_COVERAGE_PCT=${PATCH_COVERAGE}%" >> $GITHUB_ENV
+          if [[ -f patch-coverage.json ]]; then
+            PATCH_COVERAGE=$(jq -r '.total_percent_covered // "N/A"' patch-coverage.json)
+            echo "PATCH_COVERAGE_PCT=${PATCH_COVERAGE}%" >> $GITHUB_ENV
+            echo "✅ Patch coverage: ${PATCH_COVERAGE}%"
+          else
+            echo "⚠️ patch-coverage.json not generated, setting default"
+            echo "PATCH_COVERAGE_PCT=N/A" >> $GITHUB_ENV
+          fi
           
           # Extract summary for comment
           if [[ -f patch-coverage.md ]]; then
             echo "PATCH_COVERAGE_SUMMARY<<EOF" >> $GITHUB_ENV
             cat patch-coverage.md >> $GITHUB_ENV
             echo "EOF" >> $GITHUB_ENV
+            echo "✅ Patch coverage markdown summary ready"
+          else
+            echo "⚠️ patch-coverage.md not generated"
+            echo "PATCH_COVERAGE_SUMMARY=Patch coverage report could not be generated." >> $GITHUB_ENV
           fi
 
       - name: Comment coverage summary on PR

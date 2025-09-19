@@ -1,10 +1,10 @@
 name: pr-validation-pipeline
 
 # Trigger the pipeline on merge to main branch
-trigger:
-  branches:
-    include:
-      - main
+# trigger:
+#   branches:
+#     include:
+#       - main
 
 jobs:
 - job: PytestOnWindows
