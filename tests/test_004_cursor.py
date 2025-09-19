@@ -6942,6 +6942,87 @@ def test_money_smallmoney_invalid_values(cursor, db_connection):
         drop_table_if_exists(cursor, "dbo.money_test")
         db_connection.commit()
 
+def test_money_smallmoney_roundtrip_executemany(cursor, db_connection):
+    """Test inserting and retrieving MONEY and SMALLMONEY using executemany with decimal.Decimal"""
+    try:
+        drop_table_if_exists(cursor, "dbo.money_test")
+        cursor.execute("""
+            CREATE TABLE dbo.money_test (
+                id INT IDENTITY PRIMARY KEY,
+                m MONEY,
+                sm SMALLMONEY
+            )
+        """)
+        db_connection.commit()
+
+        test_data = [
+            (decimal.Decimal("12345.6789"), decimal.Decimal("987.6543")),
+            (decimal.Decimal("0.0001"), decimal.Decimal("0.01")),
+            (None, decimal.Decimal("42.42")),
+            (decimal.Decimal("-1000.99"), None),
+        ]
+
+        # Insert using executemany directly with Decimals
+        cursor.executemany(
+            "INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)",
+            test_data
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT m, sm FROM dbo.money_test ORDER BY id")
+        results = cursor.fetchall()
+        assert len(results) == len(test_data)
+
+        for i, (row, expected) in enumerate(zip(results, test_data), 1):
+            for j, (val, exp_val) in enumerate(zip(row, expected), 1):
+                if exp_val is None:
+                    assert val is None
+                else:
+                    assert val == exp_val
+                    assert isinstance(val, decimal.Decimal)
+
+    finally:
+        drop_table_if_exists(cursor, "dbo.money_test")
+        db_connection.commit()
+
+
+def test_money_smallmoney_executemany_null_handling(cursor, db_connection):
+    """Test inserting NULLs into MONEY and SMALLMONEY using executemany"""
+    try:
+        drop_table_if_exists(cursor, "dbo.money_test")
+        cursor.execute("""
+            CREATE TABLE dbo.money_test (
+                id INT IDENTITY PRIMARY KEY,
+                m MONEY,
+                sm SMALLMONEY
+            )
+        """)
+        db_connection.commit()
+
+        rows = [
+            (None, None),
+            (decimal.Decimal("123.4500"), None),
+            (None, decimal.Decimal("67.8900")),
+        ]
+        cursor.executemany("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)", rows)
+        db_connection.commit()
+
+        cursor.execute("SELECT m, sm FROM dbo.money_test ORDER BY id ASC")
+        results = cursor.fetchall()
+        assert len(results) == len(rows)
+
+        for row, expected in zip(results, rows):
+            for val, exp_val in zip(row, expected):
+                if exp_val is None:
+                    assert val is None
+                else:
+                    assert val == exp_val
+                    assert isinstance(val, decimal.Decimal)
+
+    finally:
+        drop_table_if_exists(cursor, "dbo.money_test")
+        db_connection.commit()
+
 def test_decimal_separator_with_multiple_values(cursor, db_connection):
     """Test decimal separator with multiple different decimal values"""
     original_separator = mssql_python.getDecimalSeparator()
