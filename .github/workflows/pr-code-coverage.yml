@@ -341,9 +341,18 @@ jobs:
           # Generate diff coverage report using the new command format
           echo "🚀 Generating patch coverage report..."
           
+          # Debug: Show git status and branches before running diff-cover
+          echo "🔍 Git status before diff-cover:"
+          git status --porcelain || echo "Git status failed"
+          echo "Current branch: $(git branch --show-current)"
+          echo "Available branches:"
+          git branch -a
+          echo "Checking if main branch is accessible:"
+          git log --oneline -n 5 main || echo "Could not access main branch"
+          
           # Use the new format for diff-cover commands
           diff-cover coverage.xml \
-            --compare-branch=origin/main \
+            --compare-branch=main \
             --format html:patch-coverage.html \
             --format json:patch-coverage.json \
             --format markdown:patch-coverage.md || {
