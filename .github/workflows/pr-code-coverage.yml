@@ -29,87 +29,111 @@ jobs:
           git show-ref --verify refs/heads/main || echo "Warning: main branch not found"
           git show-ref --verify refs/remotes/origin/main || echo "Warning: origin/main not found"
 
-      # - name: Wait for ADO build to succeed
-      #   run: |
-      #     PR_NUMBER=${{ github.event.pull_request.number }}
-      #     API_URL="https://dev.azure.com/sqlclientdrivers/public/_apis/build/builds?definitions=2128&queryOrder=queueTimeDescending&%24top=10&api-version=7.1-preview.7"
+      - name: Wait for ADO build to start
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          API_URL="https://dev.azure.com/sqlclientdrivers/public/_apis/build/builds?definitions=2128&queryOrder=queueTimeDescending&%24top=10&api-version=7.1-preview.7"
 
-      #     echo "Waiting for Azure DevOps build for PR #$PR_NUMBER ..."
+          echo "Waiting for Azure DevOps build to start for PR #$PR_NUMBER ..."
 
-      #     for i in {1..100}; do
-      #       echo "Attempt $i/100: Checking build status..."
+          for i in {1..30}; do
+            echo "Attempt $i/30: Checking if build has started..."
             
-      #       # Fetch API response with error handling
-      #       API_RESPONSE=$(curl -s "$API_URL")
+            # Fetch API response with error handling
+            API_RESPONSE=$(curl -s "$API_URL")
             
-      #       # Check if response is valid JSON
-      #       if ! echo "$API_RESPONSE" | jq . >/dev/null 2>&1; then
-      #         echo "❌ Invalid JSON response from Azure DevOps API"
-      #         echo "Response received: $API_RESPONSE"
-      #         echo "This usually indicates the Azure DevOps pipeline has failed or API is unavailable"
-      #         exit 1
-      #       fi
+            # Check if response is valid JSON
+            if ! echo "$API_RESPONSE" | jq . >/dev/null 2>&1; then
+              echo "❌ Invalid JSON response from Azure DevOps API"
+              echo "Response received: $API_RESPONSE"
+              echo "This usually indicates the Azure DevOps pipeline has failed or API is unavailable"
+              exit 1
+            fi
             
-      #       # Parse build info safely
-      #       BUILD_INFO=$(echo "$API_RESPONSE" | jq -c --arg PR "$PR_NUMBER" '[.value[]? | select(.triggerInfo["pr.number"]?==$PR)] | .[0] // empty' 2>/dev/null)
+            # Parse build info safely
+            BUILD_INFO=$(echo "$API_RESPONSE" | jq -c --arg PR "$PR_NUMBER" '[.value[]? | select(.triggerInfo["pr.number"]?==$PR)] | .[0] // empty' 2>/dev/null)
             
-      #       if [[ -n "$BUILD_INFO" && "$BUILD_INFO" != "null" && "$BUILD_INFO" != "empty" ]]; then
-      #         STATUS=$(echo "$BUILD_INFO" | jq -r '.status // "unknown"')
-      #         RESULT=$(echo "$BUILD_INFO" | jq -r '.result // "unknown"')
-      #         BUILD_ID=$(echo "$BUILD_INFO" | jq -r '.id // "unknown"')
-      #         WEB_URL=$(echo "$BUILD_INFO" | jq -r '._links.web.href // "unknown"')
+            if [[ -n "$BUILD_INFO" && "$BUILD_INFO" != "null" && "$BUILD_INFO" != "empty" ]]; then
+              STATUS=$(echo "$BUILD_INFO" | jq -r '.status // "unknown"')
+              RESULT=$(echo "$BUILD_INFO" | jq -r '.result // "unknown"')
+              BUILD_ID=$(echo "$BUILD_INFO" | jq -r '.id // "unknown"')
+              WEB_URL=$(echo "$BUILD_INFO" | jq -r '._links.web.href // "unknown"')
               
-      #         echo "Found build: ID=$BUILD_ID, Status=$STATUS, Result=$RESULT"
+              echo "✅ Found build: ID=$BUILD_ID, Status=$STATUS, Result=$RESULT"
+              echo "🔗 Build URL: $WEB_URL"
+              echo "ADO_URL=$WEB_URL" >> $GITHUB_ENV
+              echo "BUILD_ID=$BUILD_ID" >> $GITHUB_ENV
+              
+              # Check if build has failed early
+              if [[ "$STATUS" == "completed" && "$RESULT" == "failed" ]]; then
+                echo "❌ Azure DevOps build $BUILD_ID failed early"
+                echo "This coverage workflow cannot proceed when the main build fails."
+                exit 1
+              fi
+              
+              echo "🚀 Build has started, proceeding to poll for coverage artifacts..."
+              break
+            else
+              echo "⏳ No build found for PR #$PR_NUMBER yet... (attempt $i/30)"
+            fi
 
-      #         if [[ "$STATUS" == "completed" ]]; then
-      #           if [[ "$RESULT" == "succeeded" ]]; then
-      #             echo "✅ Build $BUILD_ID succeeded: $WEB_URL"
-      #             echo "ADO_URL=$WEB_URL" >> $GITHUB_ENV
-      #             echo "BUILD_ID=$BUILD_ID" >> $GITHUB_ENV
-      #             break
-      #           else
-      #             echo "❌ Azure DevOps build $BUILD_ID failed with result: $RESULT"
-      #             echo "🔗 Build URL: $WEB_URL"
-      #             echo "This coverage workflow cannot proceed when the main build fails."
-      #             exit 1
-      #           fi
-      #         else
-      #           echo "⏳ Build $BUILD_ID is still $STATUS..."
-      #         fi
-      #       else
-      #         echo "⏳ No build found for PR #$PR_NUMBER yet... (attempt $i/100)"
-      #       fi
+            if [[ $i -eq 30 ]]; then
+              echo "❌ Timeout: No build found for PR #$PR_NUMBER after 30 attempts"
+              echo "This may indicate the Azure DevOps pipeline was not triggered"
+              exit 1
+            fi
 
-      #       if [[ $i -eq 100 ]]; then
-      #         echo "❌ Timeout: No build found for PR #$PR_NUMBER after 100 attempts"
-      #         echo "This may indicate the Azure DevOps pipeline was not triggered or failed to start"
-      #         exit 1
-      #       fi
-
-      #       sleep 20
-      #     done
+            sleep 10
+          done
 
       - name: Download and parse coverage report
         run: |
-          # BUILD_ID=${{ env.BUILD_ID }}
-          BUILD_ID=125342
+          BUILD_ID=${{ env.BUILD_ID }}
           ARTIFACTS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID/artifacts?api-version=7.1-preview.5"
           
-          echo "📥 Fetching artifacts for build $BUILD_ID..."
+          echo "📥 Polling for coverage artifacts for build $BUILD_ID..."
           
-          # Fetch artifacts with error handling
-          ARTIFACTS_RESPONSE=$(curl -s "$ARTIFACTS_URL")
-          
-          # Check if response is valid JSON
-          if ! echo "$ARTIFACTS_RESPONSE" | jq . >/dev/null 2>&1; then
-            echo "❌ Invalid JSON response from artifacts API"
-            echo "Response received: $ARTIFACTS_RESPONSE"
-            echo "This indicates the Azure DevOps build may not have completed successfully or artifacts are not available"
-            exit 1
-          fi
-          
-          # Find the coverage report artifact
-          COVERAGE_ARTIFACT=$(echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]? | select(.name | test("Code Coverage Report")) | .resource.downloadUrl // empty' 2>/dev/null)
+          # Poll for coverage artifacts with retry logic
+          COVERAGE_ARTIFACT=""
+          for i in {1..60}; do
+            echo "Attempt $i/60: Checking for coverage artifacts..."
+            
+            # Fetch artifacts with error handling
+            ARTIFACTS_RESPONSE=$(curl -s "$ARTIFACTS_URL")
+            
+            # Check if response is valid JSON
+            if ! echo "$ARTIFACTS_RESPONSE" | jq . >/dev/null 2>&1; then
+              echo "⚠️ Invalid JSON response from artifacts API (attempt $i/60)"
+              if [[ $i -eq 60 ]]; then
+                echo "❌ Persistent API issues after 60 attempts"
+                echo "Response received: $ARTIFACTS_RESPONSE"
+                exit 1
+              fi
+              sleep 30
+              continue
+            fi
+            
+            # Show available artifacts for debugging
+            echo "🔍 Available artifacts:"
+            echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]?.name // "No artifacts found"'
+            
+            # Find the coverage report artifact
+            COVERAGE_ARTIFACT=$(echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]? | select(.name | test("Code Coverage Report")) | .resource.downloadUrl // empty' 2>/dev/null)
+            
+            if [[ -n "$COVERAGE_ARTIFACT" && "$COVERAGE_ARTIFACT" != "null" && "$COVERAGE_ARTIFACT" != "empty" ]]; then
+              echo "✅ Found coverage artifact on attempt $i!"
+              break
+            else
+              echo "⏳ Coverage report not ready yet (attempt $i/60)..."
+              if [[ $i -eq 60 ]]; then
+                echo "❌ Timeout: Coverage report artifact not found after 60 attempts"
+                echo "Available artifacts:"
+                echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]?.name // "No artifacts found"'
+                exit 1
+              fi
+              sleep 30
+            fi
+          done
           
           if [[ -n "$COVERAGE_ARTIFACT" && "$COVERAGE_ARTIFACT" != "null" && "$COVERAGE_ARTIFACT" != "empty" ]]; then
             echo "📊 Downloading coverage report..."
@@ -265,8 +289,7 @@ jobs:
       - name: Download coverage XML from ADO
         run: |
           # Download the Cobertura XML directly from the CodeCoverageReport job
-          # BUILD_ID=${{ env.BUILD_ID }}
-          BUILD_ID=125342
+          BUILD_ID=${{ env.BUILD_ID }}
           ARTIFACTS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID/artifacts?api-version=7.1-preview.5"
           
           echo "📥 Fetching artifacts for build $BUILD_ID to find coverage files..."
