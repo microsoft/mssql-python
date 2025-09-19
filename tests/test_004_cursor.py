@@ -13,7 +13,7 @@ import sys
 from datetime import datetime, date, time
 import decimal
 from contextlib import closing
-from mssql_python import Connection, row
+import mssql_python
 import uuid
 
 # Setup test table
