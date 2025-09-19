@@ -9,7 +9,7 @@ Note: The cursor function is not yet implemented, so related tests are commented
 """
 
 import pytest
-from datetime import datetime, date, time
+from datetime import datetime, date, time, timedelta, timezone
 import time as time_module
 import decimal
 from contextlib import closing
@@ -6470,7 +6470,7 @@ def test_only_null_and_empty_binary(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, "#pytest_null_empty_binary")
         db_connection.commit()
-        
+
 # ---------------------- VARCHAR(MAX) ----------------------
 
 def test_varcharmax_short_fetch(cursor, db_connection):
@@ -7354,6 +7354,65 @@ def test_decimal_separator_calculations(cursor, db_connection):
         
         # Cleanup
         cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
+        db_connection.commit()
+
+def test_datetimeoffset_read_write(cursor, db_connection):
+    """
+    Test the driver's ability to correctly read and write DATETIMEOFFSET data,
+    including timezone information.
+    """
+    try:
+        datetimeoffset_test_cases = [
+            (
+                "2023-10-26 10:30:00.0000000 +05:30",
+                datetime(2023, 10, 26, 10, 30, 0, 0,
+                        tzinfo=timezone(timedelta(hours=5, minutes=30)))
+            ),
+            (
+                "2023-10-27 15:45:10.1234567 -08:00",
+                datetime(2023, 10, 27, 15, 45, 10, 123456,
+                        tzinfo=timezone(timedelta(hours=-8)))
+            ),
+            (
+                "2023-10-28 20:00:05.9876543 +00:00",
+                datetime(2023, 10, 28, 20, 0, 5, 987654,
+                        tzinfo=timezone(timedelta(hours=0)))
+            ),
+            (
+                "invalid", # Placeholder for the SQL string
+                datetime(2023, 10, 29, 10, 0)
+            )
+        ]
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+        insert_statement = "INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);"
+        for i, (sql_str, python_dt) in enumerate(datetimeoffset_test_cases):
+            # Insert timezone-aware datetime objects
+            cursor.execute(insert_statement, i, python_dt)
+        db_connection.commit()
+
+        cursor.execute("SELECT id, dto_column FROM #pytest_dto ORDER BY id;")
+        
+        for i, (sql_str, python_dt) in enumerate(datetimeoffset_test_cases):
+            if sql_str == "invalid":
+                continue
+
+            row = cursor.fetchone()
+            assert row is not None, f"No row fetched for test case {i}."
+            
+            fetched_id, fetched_dto = row
+            assert fetched_dto.tzinfo is not None, "Fetched datetime object is naive."
+            expected_utc = python_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            fetched_utc = fetched_dto.astimezone(timezone.utc).replace(tzinfo=None)
+            expected_utc = expected_utc.replace(microsecond=int(expected_utc.microsecond / 1000) * 1000)
+            fetched_utc = fetched_utc.replace(microsecond=int(fetched_utc.microsecond / 1000) * 1000)
+            assert fetched_utc == expected_utc, (
+                f"Value mismatch for test case {i}. "
+                f"Expected UTC: {expected_utc}, Got UTC: {fetched_utc}"
+            )
+    finally:
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
         db_connection.commit()
 
 def test_lowercase_attribute(cursor, db_connection):
