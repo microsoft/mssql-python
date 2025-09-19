@@ -1508,6 +1508,21 @@ class Cursor:
         self._check_closed()
         self._reset_cursor()
         self._clear_rownumber()
+        self._check_closed()
+        self._reset_cursor()
+        self._clear_rownumber()
+        self._check_closed()
+        self._reset_cursor()
+        self._clear_rownumber()
+        self._check_closed()
+        self._reset_cursor()
+        self._clear_rownumber()
+        self._check_closed()
+        self._reset_cursor()
+        self._clear_rownumber()
+        self._check_closed()
+        self._reset_cursor()
+        self._clear_rownumber()
         return True
 
     def _compute_column_type(self, column):
