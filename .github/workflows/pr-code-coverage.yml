@@ -15,6 +15,19 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup git for diff-cover
+        run: |
+          # Fetch the main branch for comparison
+          git fetch origin main:main
+          # Show available branches for debugging
+          echo "Available branches:"
+          git branch -a
+          # Verify main branch exists
+          git show-ref --verify refs/heads/main || echo "Warning: main branch not found"
+          git show-ref --verify refs/remotes/origin/main || echo "Warning: origin/main not found"
 
       # - name: Wait for ADO build to succeed
       #   run: |
