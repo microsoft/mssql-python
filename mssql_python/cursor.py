@@ -11,8 +11,9 @@ Resource Management:
 import decimal
 import uuid
 import datetime
-from typing import List, Union
-from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
+import warnings
+from typing import List, Union, Any
+from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import InterfaceError, NotSupportedError, ProgrammingError
@@ -54,6 +55,16 @@ class Cursor:
         setoutputsize(size, column=None) -> None.
     """
 
+    # TODO(jathakkar): Thread safety considerations
+    # The cursor class contains methods that are not thread-safe due to:
+    #  1. Methods that mutate cursor state (_reset_cursor, self.description, etc.)
+    #  2. Methods that call ODBC functions with shared handles (self.hstmt)
+    # 
+    # These methods should be properly synchronized or redesigned when implementing 
+    # async functionality to prevent race conditions and data corruption.
+    # Consider using locks, redesigning for immutability, or ensuring 
+    # cursor objects are never shared across threads.
+
     def __init__(self, connection, timeout: int = 0) -> None:
         """
         Initialize the cursor with a database connection.
@@ -63,6 +74,7 @@ class Cursor:
         """
         self._connection = connection  # Store as private attribute
         self._timeout = timeout
+        self._inputsizes = None
         # self.connection.autocommit = False
         self.hstmt = None
         self._initialize_cursor()
@@ -540,6 +552,97 @@ class Cursor:
                 ddbc_error=""
             )
     
+    def setinputsizes(self, sizes: List[Union[int, tuple]]) -> None:
+        """
+        Sets the type information to be used for parameters in execute and executemany.
+        
+        This method can be used to explicitly declare the types and sizes of query parameters.
+        For example:
+        
+        sql = "INSERT INTO product (item, price) VALUES (?, ?)"
+        params = [('bicycle', 499.99), ('ham', 17.95)]
+        # specify that parameters are for NVARCHAR(50) and DECIMAL(18,4) columns
+        cursor.setinputsizes([(SQL_WVARCHAR, 50, 0), (SQL_DECIMAL, 18, 4)])
+        cursor.executemany(sql, params)
+        
+        Args:
+            sizes: A sequence of tuples, one for each parameter. Each tuple contains
+                (sql_type, size, decimal_digits) where size and decimal_digits are optional.
+        """
+        
+        # Get valid SQL types from centralized constants
+        valid_sql_types = SQLTypes.get_valid_types()
+        
+        self._inputsizes = []
+        
+        if sizes:
+            for size_info in sizes:
+                if isinstance(size_info, tuple):
+                    # Handle tuple format (sql_type, size, decimal_digits)
+                    if len(size_info) == 1:
+                        sql_type = size_info[0]
+                        column_size = 0
+                        decimal_digits = 0
+                    elif len(size_info) == 2:
+                        sql_type, column_size = size_info
+                        decimal_digits = 0
+                    elif len(size_info) >= 3:
+                        sql_type, column_size, decimal_digits = size_info
+                    
+                    # Validate SQL type
+                    if not isinstance(sql_type, int) or sql_type not in valid_sql_types:
+                        raise ValueError(f"Invalid SQL type: {sql_type}. Must be a valid SQL type constant.")
+                    
+                    # Validate size and precision
+                    if not isinstance(column_size, int) or column_size < 0:
+                        raise ValueError(f"Invalid column size: {column_size}. Must be a non-negative integer.")
+                    
+                    if not isinstance(decimal_digits, int) or decimal_digits < 0:
+                        raise ValueError(f"Invalid decimal digits: {decimal_digits}. Must be a non-negative integer.")
+                    
+                    self._inputsizes.append((sql_type, column_size, decimal_digits))
+                else:
+                    # Handle single value (just sql_type)
+                    sql_type = size_info
+                    
+                    # Validate SQL type
+                    if not isinstance(sql_type, int) or sql_type not in valid_sql_types:
+                        raise ValueError(f"Invalid SQL type: {sql_type}. Must be a valid SQL type constant.")
+                    
+                    self._inputsizes.append((sql_type, 0, 0))
+    
+    def _reset_inputsizes(self):
+        """Reset input sizes after execution"""
+        self._inputsizes = None
+
+    def _get_c_type_for_sql_type(self, sql_type: int) -> int:
+        """Map SQL type to appropriate C type for parameter binding"""
+        sql_to_c_type = {
+            ddbc_sql_const.SQL_CHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
+            ddbc_sql_const.SQL_VARCHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
+            ddbc_sql_const.SQL_LONGVARCHAR.value: ddbc_sql_const.SQL_C_CHAR.value,
+            ddbc_sql_const.SQL_WCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
+            ddbc_sql_const.SQL_WVARCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
+            ddbc_sql_const.SQL_WLONGVARCHAR.value: ddbc_sql_const.SQL_C_WCHAR.value,
+            ddbc_sql_const.SQL_DECIMAL.value: ddbc_sql_const.SQL_C_NUMERIC.value,
+            ddbc_sql_const.SQL_NUMERIC.value: ddbc_sql_const.SQL_C_NUMERIC.value,
+            ddbc_sql_const.SQL_BIT.value: ddbc_sql_const.SQL_C_BIT.value,
+            ddbc_sql_const.SQL_TINYINT.value: ddbc_sql_const.SQL_C_TINYINT.value,
+            ddbc_sql_const.SQL_SMALLINT.value: ddbc_sql_const.SQL_C_SHORT.value,
+            ddbc_sql_const.SQL_INTEGER.value: ddbc_sql_const.SQL_C_LONG.value,
+            ddbc_sql_const.SQL_BIGINT.value: ddbc_sql_const.SQL_C_SBIGINT.value,
+            ddbc_sql_const.SQL_REAL.value: ddbc_sql_const.SQL_C_FLOAT.value,
+            ddbc_sql_const.SQL_FLOAT.value: ddbc_sql_const.SQL_C_DOUBLE.value,
+            ddbc_sql_const.SQL_DOUBLE.value: ddbc_sql_const.SQL_C_DOUBLE.value,
+            ddbc_sql_const.SQL_BINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
+            ddbc_sql_const.SQL_VARBINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
+            ddbc_sql_const.SQL_LONGVARBINARY.value: ddbc_sql_const.SQL_C_BINARY.value,
+            ddbc_sql_const.SQL_DATE.value: ddbc_sql_const.SQL_C_TYPE_DATE.value,
+            ddbc_sql_const.SQL_TIME.value: ddbc_sql_const.SQL_C_TYPE_TIME.value,
+            ddbc_sql_const.SQL_TIMESTAMP.value: ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
+        }
+        return sql_to_c_type.get(sql_type, ddbc_sql_const.SQL_C_DEFAULT.value)
+
     def _create_parameter_types_list(self, parameter, param_info, parameters_list, i, min_val=None, max_val=None):
         """
         Maps parameter types for the given parameter.
@@ -549,19 +652,51 @@ class Cursor:
             paraminfo.
         """
         paraminfo = param_info()
-        sql_type, c_type, column_size, decimal_digits, is_dae = self._map_sql_type(
-            parameter, parameters_list, i, min_val=min_val, max_val=max_val
-        )
+        
+        # Check if we have explicit type information from setinputsizes
+        if self._inputsizes and i < len(self._inputsizes):
+            # Use explicit type information
+            sql_type, column_size, decimal_digits = self._inputsizes[i]
+            
+            # Default is_dae to False for explicit types, but set to True for large strings/binary
+            is_dae = False
+            
+            if parameter is None:
+                # For NULL parameters, always use SQL_C_DEFAULT regardless of SQL type
+                c_type = ddbc_sql_const.SQL_C_DEFAULT.value
+            else:
+                # For non-NULL parameters, determine the appropriate C type based on SQL type
+                c_type = self._get_c_type_for_sql_type(sql_type)
+                
+                # Check if this should be a DAE (data at execution) parameter
+                # For string types with large column sizes
+                if isinstance(parameter, str) and column_size > MAX_INLINE_CHAR:
+                    is_dae = True
+                # For binary types with large column sizes
+                elif isinstance(parameter, (bytes, bytearray)) and column_size > 8000:
+                    is_dae = True
+    
+            # Sanitize precision/scale for numeric types
+            if sql_type in (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value):
+                column_size = max(1, min(int(column_size) if column_size > 0 else 18, 38))
+                decimal_digits = min(max(0, decimal_digits), column_size)
+        
+        else:
+            # Fall back to automatic type inference
+            sql_type, c_type, column_size, decimal_digits, is_dae = self._map_sql_type(
+                parameter, parameters_list, i, min_val=min_val, max_val=max_val
+            )
+        
         paraminfo.paramCType = c_type
         paraminfo.paramSQLType = sql_type
         paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value
         paraminfo.columnSize = column_size
         paraminfo.decimalDigits = decimal_digits
         paraminfo.isDAE = is_dae
-
+    
         if is_dae:
             paraminfo.dataPtr = parameter  # Will be converted to py::object* in C++
-
+    
         return paraminfo
 
     def _initialize_description(self, column_metadata=None):
@@ -813,6 +948,16 @@ class Cursor:
 
         parameters = list(parameters)
 
+        # Validate that inputsizes matches parameter count if both are present
+        if parameters and self._inputsizes:
+            if len(self._inputsizes) != len(parameters):
+
+                warnings.warn(
+                    f"Number of input sizes ({len(self._inputsizes)}) does not match "
+                    f"number of parameters ({len(parameters)}). This may lead to unexpected behavior.",
+                    Warning
+                )
+
         if parameters:
             for i, param in enumerate(parameters):
                 paraminfo = self._create_parameter_types_list(
@@ -890,27 +1035,482 @@ class Cursor:
             self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
             self._clear_rownumber()
 
+        # After successful execution, initialize description if there are results
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except Exception as e:
+            # If describe fails, it's likely there are no results (e.g., for INSERT)
+            self.description = None
+        
+        self._reset_inputsizes()  # Reset input sizes after execution
         # Return self for method chaining
         return self
 
-    def _transpose_rowwise_to_columnwise(self, seq_of_parameters: list) -> list:
+    def _prepare_metadata_result_set(self, column_metadata=None, fallback_description=None, specialized_mapping=None):
         """
-        Convert list of rows (row-wise) into list of columns (column-wise),
-        for array binding via ODBC.
+        Prepares a metadata result set by:
+        1. Retrieving column metadata if not provided
+        2. Initializing the description attribute
+        3. Setting up column name mappings
+        4. Creating wrapper fetch methods with column mapping support
+        
+        Args:
+            column_metadata (list, optional): Pre-fetched column metadata. 
+                                             If None, it will be retrieved.
+            fallback_description (list, optional): Fallback description to use if 
+                                                  metadata retrieval fails.
+            specialized_mapping (dict, optional): Custom column mapping for special cases.
+        
+        Returns:
+            Cursor: Self, for method chaining
+        """
+        # Retrieve column metadata if not provided
+        if column_metadata is None:
+            column_metadata = []
+            try:
+                ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            except InterfaceError as e:
+                log('error', f"Driver interface error during metadata retrieval: {e}")
+            except Exception as e:
+                # Log the exception with appropriate context
+                log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
+    
+        # Initialize the description attribute with the column metadata
+        self._initialize_description(column_metadata)
+        
+        # Use fallback description if provided and current description is empty
+        if not self.description and fallback_description:
+            self.description = fallback_description
+        
+        # Define column names in ODBC standard order
+        self._column_map = {}
+        for i, (name, *_) in enumerate(self.description):
+            # Add standard name
+            self._column_map[name] = i
+            # Add lowercase alias
+            self._column_map[name.lower()] = i
+    
+        # If specialized mapping is provided, handle it differently
+        if specialized_mapping:
+            # Define specialized fetch methods that use the custom mapping
+            def fetchone_with_specialized_mapping():
+                row = self._original_fetchone()
+                if row is not None:
+                    merged_map = getattr(row, '_column_map', {}).copy()
+                    merged_map.update(specialized_mapping)
+                    row._column_map = merged_map
+                return row
+                
+            def fetchmany_with_specialized_mapping(size=None):
+                rows = self._original_fetchmany(size)
+                for row in rows:
+                    merged_map = getattr(row, '_column_map', {}).copy()
+                    merged_map.update(specialized_mapping)
+                    row._column_map = merged_map
+                return rows
+                
+            def fetchall_with_specialized_mapping():
+                rows = self._original_fetchall()
+                for row in rows:
+                    merged_map = getattr(row, '_column_map', {}).copy()
+                    merged_map.update(specialized_mapping)
+                    row._column_map = merged_map
+                return rows
+            
+            # Save original fetch methods
+            if not hasattr(self, '_original_fetchone'):
+                self._original_fetchone = self.fetchone
+                self._original_fetchmany = self.fetchmany
+                self._original_fetchall = self.fetchall
+    
+            # Use specialized mapping methods
+            self.fetchone = fetchone_with_specialized_mapping
+            self.fetchmany = fetchmany_with_specialized_mapping
+            self.fetchall = fetchall_with_specialized_mapping
+        else:
+            # Standard column mapping
+            # Remember original fetch methods (store only once)
+            if not hasattr(self, '_original_fetchone'):
+                self._original_fetchone = self.fetchone
+                self._original_fetchmany = self.fetchmany
+                self._original_fetchall = self.fetchall
+    
+                # Create wrapper fetch methods that add column mappings
+                def fetchone_with_mapping():
+                    row = self._original_fetchone()
+                    if row is not None:
+                        row._column_map = self._column_map
+                    return row
+    
+                def fetchmany_with_mapping(size=None):
+                    rows = self._original_fetchmany(size)
+                    for row in rows:
+                        row._column_map = self._column_map
+                    return rows
+    
+                def fetchall_with_mapping():
+                    rows = self._original_fetchall()
+                    for row in rows:
+                        row._column_map = self._column_map
+                    return rows
+    
+                # Replace fetch methods
+                self.fetchone = fetchone_with_mapping
+                self.fetchmany = fetchmany_with_mapping
+                self.fetchall = fetchall_with_mapping
+    
+        # Return the cursor itself for method chaining
+        return self
+
+    def getTypeInfo(self, sqlType=None):
+        """
+        Executes SQLGetTypeInfo and creates a result set with information about 
+        the specified data type or all data types supported by the ODBC driver if not specified.
+        """
+        self._check_closed()
+        self._reset_cursor()
+        
+        sql_all_types = 0  # SQL_ALL_TYPES = 0
+        
+        try:
+            # Get information about data types
+            ret = ddbc_bindings.DDBCSQLGetTypeInfo(
+                self.hstmt, 
+                sqlType if sqlType is not None else sql_all_types
+            )
+            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+            
+            # Use the helper method to prepare the result set
+            return self._prepare_metadata_result_set()
+        except Exception as e:
+            self._reset_cursor()
+            raise e
+
+    def procedures(self, procedure=None, catalog=None, schema=None):
+        """
+        Executes SQLProcedures and creates a result set of information about procedures in the data source.
+        
+        Args:
+            procedure (str, optional): Procedure name pattern. Default is None (all procedures).
+            catalog (str, optional): Catalog name pattern. Default is None (current catalog).
+            schema (str, optional): Schema name pattern. Default is None (all schemas).
+        """
+        self._check_closed()
+        self._reset_cursor()
+        
+        # Call the SQLProcedures function
+        retcode = ddbc_bindings.DDBCSQLProcedures(self.hstmt, catalog, schema, procedure)
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Define fallback description for procedures
+        fallback_description = [
+            ("procedure_cat", str, None, 128, 128, 0, True),
+            ("procedure_schem", str, None, 128, 128, 0, True),
+            ("procedure_name", str, None, 128, 128, 0, False),
+            ("num_input_params", int, None, 10, 10, 0, True),
+            ("num_output_params", int, None, 10, 10, 0, True),
+            ("num_result_sets", int, None, 10, 10, 0, True),
+            ("remarks", str, None, 254, 254, 0, True),
+            ("procedure_type", int, None, 10, 10, 0, False)
+        ]
+        
+        # Use the helper method to prepare the result set
+        return self._prepare_metadata_result_set(fallback_description=fallback_description)
+
+    def primaryKeys(self, table, catalog=None, schema=None):
+        """
+        Creates a result set of column names that make up the primary key for a table
+        by executing the SQLPrimaryKeys function.
+        
+        Args:
+            table (str): The name of the table
+            catalog (str, optional): The catalog name (database). Defaults to None.
+            schema (str, optional): The schema name. Defaults to None.
+        """
+        self._check_closed()
+        self._reset_cursor()
+        
+        if not table:
+            raise ProgrammingError("Table name must be specified", "HY000")
+        
+        # Call the SQLPrimaryKeys function
+        retcode = ddbc_bindings.DDBCSQLPrimaryKeys(self.hstmt, catalog, schema, table)
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Define fallback description for primary keys
+        fallback_description = [
+            ("table_cat", str, None, 128, 128, 0, True),
+            ("table_schem", str, None, 128, 128, 0, True),
+            ("table_name", str, None, 128, 128, 0, False),
+            ("column_name", str, None, 128, 128, 0, False),
+            ("key_seq", int, None, 10, 10, 0, False),
+            ("pk_name", str, None, 128, 128, 0, True)
+        ]
+        
+        # Use the helper method to prepare the result set
+        return self._prepare_metadata_result_set(fallback_description=fallback_description)
+
+    def foreignKeys(self, table=None, catalog=None, schema=None, foreignTable=None, foreignCatalog=None, foreignSchema=None):
+        """
+        Executes the SQLForeignKeys function and creates a result set of column names that are foreign keys.
+        
+        This function returns:
+        1. Foreign keys in the specified table that reference primary keys in other tables, OR
+        2. Foreign keys in other tables that reference the primary key in the specified table
+        """
+        self._check_closed()
+        self._reset_cursor()
+        
+        # Check if we have at least one table specified
+        if table is None and foreignTable is None:
+            raise ProgrammingError("Either table or foreignTable must be specified", "HY000")
+        
+        # Call the SQLForeignKeys function
+        retcode = ddbc_bindings.DDBCSQLForeignKeys(
+            self.hstmt, 
+            foreignCatalog, foreignSchema, foreignTable,
+            catalog, schema, table
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Define fallback description for foreign keys
+        fallback_description = [
+            ("pktable_cat", str, None, 128, 128, 0, True),
+            ("pktable_schem", str, None, 128, 128, 0, True),
+            ("pktable_name", str, None, 128, 128, 0, False),
+            ("pkcolumn_name", str, None, 128, 128, 0, False),
+            ("fktable_cat", str, None, 128, 128, 0, True),
+            ("fktable_schem", str, None, 128, 128, 0, True),
+            ("fktable_name", str, None, 128, 128, 0, False),
+            ("fkcolumn_name", str, None, 128, 128, 0, False),
+            ("key_seq", int, None, 10, 10, 0, False),
+            ("update_rule", int, None, 10, 10, 0, False),
+            ("delete_rule", int, None, 10, 10, 0, False),
+            ("fk_name", str, None, 128, 128, 0, True),
+            ("pk_name", str, None, 128, 128, 0, True),
+            ("deferrability", int, None, 10, 10, 0, False)
+        ]
+        
+        # Use the helper method to prepare the result set
+        return self._prepare_metadata_result_set(fallback_description=fallback_description)
+
+    def rowIdColumns(self, table, catalog=None, schema=None, nullable=True):
+        """
+        Executes SQLSpecialColumns with SQL_BEST_ROWID which creates a result set of 
+        columns that uniquely identify a row.
+        """
+        self._check_closed()
+        self._reset_cursor()
+        
+        if not table:
+            raise ProgrammingError("Table name must be specified", "HY000")
+        
+        # Set the identifier type and options
+        identifier_type = ddbc_sql_const.SQL_BEST_ROWID.value
+        scope = ddbc_sql_const.SQL_SCOPE_CURROW.value
+        nullable_flag = ddbc_sql_const.SQL_NULLABLE.value if nullable else ddbc_sql_const.SQL_NO_NULLS.value
+        
+        # Call the SQLSpecialColumns function
+        retcode = ddbc_bindings.DDBCSQLSpecialColumns(
+            self.hstmt, identifier_type, catalog, schema, table, scope, nullable_flag
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Define fallback description for special columns
+        fallback_description = [
+            ("scope", int, None, 10, 10, 0, False),
+            ("column_name", str, None, 128, 128, 0, False),
+            ("data_type", int, None, 10, 10, 0, False),
+            ("type_name", str, None, 128, 128, 0, False),
+            ("column_size", int, None, 10, 10, 0, False),
+            ("buffer_length", int, None, 10, 10, 0, False),
+            ("decimal_digits", int, None, 10, 10, 0, True),
+            ("pseudo_column", int, None, 10, 10, 0, False)
+        ]
+        
+        # Use the helper method to prepare the result set
+        return self._prepare_metadata_result_set(fallback_description=fallback_description)
+
+    def rowVerColumns(self, table, catalog=None, schema=None, nullable=True):
+        """
+        Executes SQLSpecialColumns with SQL_ROWVER which creates a result set of
+        columns that are automatically updated when any value in the row is updated.
+        """
+        self._check_closed()
+        self._reset_cursor()
+        
+        if not table:
+            raise ProgrammingError("Table name must be specified", "HY000")
+        
+        # Set the identifier type and options
+        identifier_type = ddbc_sql_const.SQL_ROWVER.value
+        scope = ddbc_sql_const.SQL_SCOPE_CURROW.value
+        nullable_flag = ddbc_sql_const.SQL_NULLABLE.value if nullable else ddbc_sql_const.SQL_NO_NULLS.value
+        
+        # Call the SQLSpecialColumns function
+        retcode = ddbc_bindings.DDBCSQLSpecialColumns(
+            self.hstmt, identifier_type, catalog, schema, table, scope, nullable_flag
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Same fallback description as rowIdColumns
+        fallback_description = [
+            ("scope", int, None, 10, 10, 0, False),
+            ("column_name", str, None, 128, 128, 0, False),
+            ("data_type", int, None, 10, 10, 0, False),
+            ("type_name", str, None, 128, 128, 0, False),
+            ("column_size", int, None, 10, 10, 0, False),
+            ("buffer_length", int, None, 10, 10, 0, False),
+            ("decimal_digits", int, None, 10, 10, 0, True),
+            ("pseudo_column", int, None, 10, 10, 0, False)
+        ]
+        
+        # Use the helper method to prepare the result set
+        return self._prepare_metadata_result_set(fallback_description=fallback_description)
+
+    def statistics(self, table: str, catalog: str = None, schema: str = None, unique: bool = False, quick: bool = True) -> 'Cursor':
+        """
+        Creates a result set of statistics about a single table and the indexes associated 
+        with the table by executing SQLStatistics.
+        """
+        self._check_closed()
+        self._reset_cursor()
+
+        if not table:
+            raise ProgrammingError("Table name is required", "HY000")
+        
+        # Set unique and quick flags
+        unique_option = ddbc_sql_const.SQL_INDEX_UNIQUE.value if unique else ddbc_sql_const.SQL_INDEX_ALL.value
+        reserved_option = ddbc_sql_const.SQL_QUICK.value if quick else ddbc_sql_const.SQL_ENSURE.value
+        
+        # Call the SQLStatistics function
+        retcode = ddbc_bindings.DDBCSQLStatistics(
+            self.hstmt, catalog, schema, table, unique_option, reserved_option
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Define fallback description for statistics
+        fallback_description = [
+            ("table_cat", str, None, 128, 128, 0, True),
+            ("table_schem", str, None, 128, 128, 0, True),
+            ("table_name", str, None, 128, 128, 0, False),
+            ("non_unique", bool, None, 1, 1, 0, False),
+            ("index_qualifier", str, None, 128, 128, 0, True),
+            ("index_name", str, None, 128, 128, 0, True),
+            ("type", int, None, 10, 10, 0, False),
+            ("ordinal_position", int, None, 10, 10, 0, False),
+            ("column_name", str, None, 128, 128, 0, True),
+            ("asc_or_desc", str, None, 1, 1, 0, True),
+            ("cardinality", int, None, 20, 20, 0, True),
+            ("pages", int, None, 20, 20, 0, True),
+            ("filter_condition", str, None, 128, 128, 0, True)
+        ]
+        
+        # Use the helper method to prepare the result set
+        return self._prepare_metadata_result_set(fallback_description=fallback_description)
+
+    def columns(self, table=None, catalog=None, schema=None, column=None):
+        """
+        Creates a result set of column information in the specified tables 
+        using the SQLColumns function.
+        """
+        self._check_closed()
+        self._reset_cursor()
+        
+        # Call the SQLColumns function
+        retcode = ddbc_bindings.DDBCSQLColumns(
+            self.hstmt, catalog, schema, table, column
+        )
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, retcode)
+        
+        # Define fallback description for columns
+        fallback_description = [
+            ("table_cat", str, None, 128, 128, 0, True),
+            ("table_schem", str, None, 128, 128, 0, True),
+            ("table_name", str, None, 128, 128, 0, False),
+            ("column_name", str, None, 128, 128, 0, False),
+            ("data_type", int, None, 10, 10, 0, False),
+            ("type_name", str, None, 128, 128, 0, False),
+            ("column_size", int, None, 10, 10, 0, True),
+            ("buffer_length", int, None, 10, 10, 0, True),
+            ("decimal_digits", int, None, 10, 10, 0, True),
+            ("num_prec_radix", int, None, 10, 10, 0, True),
+            ("nullable", int, None, 10, 10, 0, False),
+            ("remarks", str, None, 254, 254, 0, True),
+            ("column_def", str, None, 254, 254, 0, True),
+            ("sql_data_type", int, None, 10, 10, 0, False),
+            ("sql_datetime_sub", int, None, 10, 10, 0, True),
+            ("char_octet_length", int, None, 10, 10, 0, True),
+            ("ordinal_position", int, None, 10, 10, 0, False),
+            ("is_nullable", str, None, 254, 254, 0, True)
+        ]
+        
+        # Use the helper method to prepare the result set
+        return self._prepare_metadata_result_set(fallback_description=fallback_description)
+
+    @staticmethod
+    def _select_best_sample_value(column):
+        """
+        Selects the most representative non-null value from a column for type inference.
+
+        This is used during executemany() to infer SQL/C types based on actual data,
+        preferring a non-null value that is not the first row to avoid bias from placeholder defaults.
+
+        Args:
+            column: List of values in the column.
+        """
+        non_nulls = [v for v in column if v is not None]
+        if not non_nulls:
+            return None
+        if all(isinstance(v, int) for v in non_nulls):
+            # Pick the value with the widest range (min/max)
+            return max(non_nulls, key=lambda v: abs(v))
+        if all(isinstance(v, float) for v in non_nulls):
+            return 0.0
+        if all(isinstance(v, decimal.Decimal) for v in non_nulls):
+            return max(non_nulls, key=lambda d: len(d.as_tuple().digits))
+        if all(isinstance(v, str) for v in non_nulls):
+            return max(non_nulls, key=lambda s: len(str(s)))
+        if all(isinstance(v, datetime.datetime) for v in non_nulls):
+            return datetime.datetime.now()
+        if all(isinstance(v, datetime.date) for v in non_nulls):
+            return datetime.date.today()
+        return non_nulls[0]  # fallback
+
+    def _transpose_rowwise_to_columnwise(self, seq_of_parameters: list) -> tuple[list, int]:
+        """
+        Convert sequence of rows (row-wise) into list of columns (column-wise),
+        for array binding via ODBC. Works with both iterables and generators.
+        
         Args:
             seq_of_parameters: Sequence of sequences or mappings of parameters.
+            
+        Returns:
+            tuple: (columnwise_data, row_count)
         """
-        if not seq_of_parameters:
-            return []
-
-        num_params = len(seq_of_parameters[0])
-        columnwise = [[] for _ in range(num_params)]
+        columnwise = []
+        first_row = True
+        row_count = 0
+        
         for row in seq_of_parameters:
-            if len(row) != num_params:
-                raise ValueError("Inconsistent parameter row size in executemany()")
+            row_count += 1
+            if first_row:
+                # Initialize columnwise lists based on first row
+                num_params = len(row)
+                columnwise = [[] for _ in range(num_params)]
+                first_row = False
+            else:
+                # Validate row size consistency
+                if len(row) != num_params:
+                    raise ValueError("Inconsistent parameter row size in executemany()")
+        
+            # Add each value to its column list
             for i, val in enumerate(row):
                 columnwise[i].append(val)
-        return columnwise
+        
+        return columnwise, row_count
     
     def _compute_column_type(self, column):
         """
@@ -973,50 +1573,166 @@ class Cursor:
             except Exception as e:
                 log('warning', f"Failed to set query timeout: {e}")
 
+        # Get sample row for parameter type detection and validation
+        sample_row = seq_of_parameters[0] if hasattr(seq_of_parameters, '__getitem__') else next(iter(seq_of_parameters))
+        param_count = len(sample_row)
         param_info = ddbc_bindings.ParamInfo
-        param_count = len(seq_of_parameters[0])
         parameters_type = []
 
+        # Check if we have explicit input sizes set
+        if self._inputsizes:
+            # Validate input sizes match parameter count
+            if len(self._inputsizes) != param_count:
+                warnings.warn(
+                    f"Number of input sizes ({len(self._inputsizes)}) does not match "
+                    f"number of parameters ({param_count}). This may lead to unexpected behavior.",
+                    Warning
+                )
+
+        # Prepare parameter type information
         for col_index in range(param_count):
-            column = [row[col_index] for row in seq_of_parameters]
+            column = [row[col_index] for row in seq_of_parameters] if hasattr(seq_of_parameters, '__getitem__') else []
             sample_value, min_val, max_val = self._compute_column_type(column)
-            modified_row = list(seq_of_parameters[0])
-            modified_row[col_index] = sample_value
-            # sending original values for all rows here, we may change this if any inconsistent behavior is observed
-            paraminfo = self._create_parameter_types_list(
-                sample_value, param_info, modified_row, col_index, min_val=min_val, max_val=max_val
-            )
-            parameters_type.append(paraminfo) 
+            
+            if self._inputsizes and col_index < len(self._inputsizes):
+                # Use explicitly set input sizes
+                sql_type, column_size, decimal_digits = self._inputsizes[col_index]
+                
+                # Default is_dae to False
+                is_dae = False
+                
+                # Determine appropriate C type based on SQL type
+                c_type = self._get_c_type_for_sql_type(sql_type)
+                
+                # Check if this should be a DAE (data at execution) parameter based on column size
+                if sample_value is not None:
+                    if isinstance(sample_value, str) and column_size > MAX_INLINE_CHAR:
+                        is_dae = True
+                    elif isinstance(sample_value, (bytes, bytearray)) and column_size > 8000:
+                        is_dae = True
+                
+                # Sanitize precision/scale for numeric types
+                if sql_type in (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value):
+                    column_size = max(1, min(int(column_size) if column_size > 0 else 18, 38))
+                    decimal_digits = min(max(0, decimal_digits), column_size)
 
-        columnwise_params = self._transpose_rowwise_to_columnwise(seq_of_parameters)
+                # For binary data columns with mixed content, we need to find max size
+                if sql_type in (ddbc_sql_const.SQL_BINARY.value, ddbc_sql_const.SQL_VARBINARY.value,
+                            ddbc_sql_const.SQL_LONGVARBINARY.value):
+                    # Find the maximum size needed for any row's binary data
+                    max_binary_size = 0
+                    for row in seq_of_parameters:
+                        value = row[col_index]
+                        if value is not None and isinstance(value, (bytes, bytearray)):
+                            max_binary_size = max(max_binary_size, len(value))
+                    
+                    # For SQL Server VARBINARY(MAX), we need to use large object binding
+                    if column_size > 8000 or max_binary_size > 8000:
+                        sql_type = ddbc_sql_const.SQL_LONGVARBINARY.value
+                        is_dae = True
+                    
+                    # Update column_size to actual maximum size if it's larger
+                    # Always ensure at least a minimum size of 1 for empty strings
+                    column_size = max(max_binary_size, 1)
+                
+                paraminfo = param_info()
+                paraminfo.paramCType = c_type
+                paraminfo.paramSQLType = sql_type
+                paraminfo.inputOutputType = ddbc_sql_const.SQL_PARAM_INPUT.value
+                paraminfo.columnSize = column_size
+                paraminfo.decimalDigits = decimal_digits
+                paraminfo.isDAE = is_dae
+                
+                # Ensure we never have SQL_C_DEFAULT (0) for C-type
+                if paraminfo.paramCType == 0:
+                    paraminfo.paramCType = ddbc_sql_const.SQL_C_DEFAULT.value
+                    
+                parameters_type.append(paraminfo)
+            else:
+                # Use auto-detection for columns without explicit types
+                column = [row[col_index] for row in seq_of_parameters] if hasattr(seq_of_parameters, '__getitem__') else []
+                if not column:
+                    # For generators, use the sample row for inference
+                    sample_value = sample_row[col_index]
+                else:
+                    sample_value = self._select_best_sample_value(column)
+                
+                dummy_row = list(sample_row)
+                paraminfo = self._create_parameter_types_list(
+                    sample_value, param_info, dummy_row, col_index, min_val=min_val, max_val=max_val
+                )
+                # Special handling for binary data in auto-detected types
+                if paraminfo.paramSQLType in (ddbc_sql_const.SQL_BINARY.value, ddbc_sql_const.SQL_VARBINARY.value,
+                                        ddbc_sql_const.SQL_LONGVARBINARY.value):
+                    # Find the maximum size needed for any row's binary data
+                    max_binary_size = 0
+                    for row in seq_of_parameters:
+                        value = row[col_index]
+                        if value is not None and isinstance(value, (bytes, bytearray)):
+                            max_binary_size = max(max_binary_size, len(value))
+                    
+                    # For SQL Server VARBINARY(MAX), we need to use large object binding
+                    if max_binary_size > 8000:
+                        paraminfo.paramSQLType = ddbc_sql_const.SQL_LONGVARBINARY.value
+                        paraminfo.isDAE = True
+                    
+                    # Update column_size to actual maximum size
+                    # Always ensure at least a minimum size of 1 for empty strings
+                    paraminfo.columnSize = max(max_binary_size, 1)
+                
+                parameters_type.append(paraminfo)
+        
+        # Process parameters into column-wise format with possible type conversions
+        # First, convert any Decimal types as needed for NUMERIC/DECIMAL columns
+        processed_parameters = []
+        for row in seq_of_parameters:
+            processed_row = list(row)
+            for i, val in enumerate(processed_row):
+                if (parameters_type[i].paramSQLType in 
+                    (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value) and
+                    not isinstance(val, decimal.Decimal) and val is not None):
+                    try:
+                        processed_row[i] = decimal.Decimal(str(val))
+                    except:
+                        pass  # Keep original value if conversion fails
+            processed_parameters.append(processed_row)
+        
+        # Now transpose the processed parameters
+        columnwise_params, row_count = self._transpose_rowwise_to_columnwise(processed_parameters)
+        
+        # Add debug logging
         log('debug', "Executing batch query with %d parameter sets:\n%s",
-            len(seq_of_parameters), "\n".join(f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}" for i, p in enumerate(seq_of_parameters))
+            len(seq_of_parameters), "\n".join(f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}" for i, p in enumerate(seq_of_parameters[:5]))  # Limit to first 5 rows for large batches
         )
-
+        
         # Execute batched statement
         ret = ddbc_bindings.SQLExecuteMany(
             self.hstmt,
             operation,
             columnwise_params,
             parameters_type,
-            len(seq_of_parameters)
+            row_count
         )
-        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-
+        
         # Capture any diagnostic messages after execution
         if self.hstmt:
             self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
-
-        self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
-        self.last_executed_stmt = operation
-        self._initialize_description()
-
-        if self.description:
-            self.rowcount = -1
-            self._reset_rownumber()
-        else:
+        
+        try:
+            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
             self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
-            self._clear_rownumber()
+            self.last_executed_stmt = operation
+            self._initialize_description()
+            
+            if self.description:
+                self.rowcount = -1
+                self._reset_rownumber()
+            else:
+                self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
+                self._clear_rownumber()
+        finally:
+            # Reset input sizes after execution
+            self._reset_inputsizes()
 
     def fetchone(self) -> Union[None, Row]:
         """
@@ -1185,7 +1901,7 @@ class Cursor:
             
         Example:
             >>> count = cursor.execute('SELECT COUNT(*) FROM users').fetchval()
-            >>> max_id = cursor.execute('SELECT MAX(id) FROM products').fetchval()
+            >>> max_id = cursor.execute('SELECT MAX(id) FROM users').fetchval()
             >>> name = cursor.execute('SELECT name FROM users WHERE id = ?', user_id).fetchval()
             
         Note:
@@ -1436,26 +2152,8 @@ class Cursor:
         
         Returns:
             Cursor: The cursor object itself for method chaining with fetch methods.
-            
-        Example:
-            # Get all tables in the database
-            tables = cursor.tables().fetchall()
-            
-            # Get all tables in schema 'dbo'
-            tables = cursor.tables(schema='dbo').fetchall()
-            
-            # Get table named 'Customers'
-            tables = cursor.tables(table='Customers').fetchone()
-            
-            # Get all views with fetchmany
-            tables = cursor.tables(tableType='VIEW').fetchmany(10)
         """
         self._check_closed()
-        
-        # Clear messages
-        self.messages = []
-        
-        # Always reset the cursor first to ensure clean state
         self._reset_cursor()
         
         # Format table_type parameter - SQLTables expects comma-separated string
@@ -1466,84 +2164,29 @@ class Cursor:
             else:
                 table_type_str = str(tableType)
         
-        # Call SQLTables via the helper method
-        self._execute_tables(
-            self.hstmt,
-            catalog_name=catalog,
-            schema_name=schema,
-            table_name=table,
-            table_type=table_type_str
-        )
-        
-        # Initialize description from column metadata
-        column_metadata = []
         try:
-            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
-            self._initialize_description(column_metadata)
-        except InterfaceError as e:
-            log('error', f"Driver interface error during metadata retrieval: {e}")
-        except Exception as e:
-            # Log the exception with appropriate context
-            log('error', f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.")
-    
-        if not self.description:
-            # If describe fails, create a manual description for the standard columns
-            column_types = [str, str, str, str, str]
-            self.description = [
-                ("table_cat", column_types[0], None, 128, 128, 0, True),
-                ("table_schem", column_types[1], None, 128, 128, 0, True),
-                ("table_name", column_types[2], None, 128, 128, 0, False),
-                ("table_type", column_types[3], None, 128, 128, 0, False),
-                ("remarks", column_types[4], None, 254, 254, 0, True)
+            # Call SQLTables via the helper method
+            self._execute_tables(
+                self.hstmt,
+                catalog_name=catalog,
+                schema_name=schema,
+                table_name=table,
+                table_type=table_type_str
+            )
+            
+            # Define fallback description for tables
+            fallback_description = [
+                ("table_cat", str, None, 128, 128, 0, True),
+                ("table_schem", str, None, 128, 128, 0, True),
+                ("table_name", str, None, 128, 128, 0, False),
+                ("table_type", str, None, 128, 128, 0, False),
+                ("remarks", str, None, 254, 254, 0, True)
             ]
-    
-        # Store the column mappings for this specific tables() call
-        column_names = [desc[0] for desc in self.description]
-    
-        # Create a specialized column map for this result set
-        columns_map = {}
-        for i, name in enumerate(column_names):
-            columns_map[name] = i
-            columns_map[name.lower()] = i
-
-        # Define wrapped fetch methods that preserve existing column mapping
-        # but add our specialized mapping just for column results
-        def fetchone_with_columns_mapping():
-            row = self._original_fetchone()
-            if row is not None:
-                # Create a merged map with columns result taking precedence
-                merged_map = getattr(row, '_column_map', {}).copy()
-                merged_map.update(columns_map)
-                row._column_map = merged_map
-            return row
-
-        def fetchmany_with_columns_mapping(size=None):
-            rows = self._original_fetchmany(size)
-            for row in rows:
-                # Create a merged map with columns result taking precedence
-                merged_map = getattr(row, '_column_map', {}).copy()
-                merged_map.update(columns_map)
-                row._column_map = merged_map
-            return rows
-
-        def fetchall_with_columns_mapping():
-            rows = self._original_fetchall()
-            for row in rows:
-                # Create a merged map with columns result taking precedence
-                merged_map = getattr(row, '_column_map', {}).copy()
-                merged_map.update(columns_map)
-                row._column_map = merged_map
-            return rows
-
-        # Save original fetch methods
-        if not hasattr(self, '_original_fetchone'):
-            self._original_fetchone = self.fetchone
-            self._original_fetchmany = self.fetchmany
-            self._original_fetchall = self.fetchall
-
-        # Override fetch methods with our wrapped versions
-        self.fetchone = fetchone_with_columns_mapping
-        self.fetchmany = fetchmany_with_columns_mapping
-        self.fetchall = fetchall_with_columns_mapping
-
-        return self
+            
+            # Use the helper method to prepare the result set
+            return self._prepare_metadata_result_set(fallback_description=fallback_description)
+        
+        except Exception as e:
+            # Log the error and re-raise
+            log('error', f"Error executing tables query: {e}")
+            raise
