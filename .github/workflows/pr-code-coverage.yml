@@ -105,10 +105,11 @@ jobs:
               echo "This indicates the coverage artifacts may not be available or accessible"
               exit 1
             fi
-            
-            if ! unzip -q coverage-report.zip; then
-              echo "❌ Failed to extract coverage report zip file"
-              echo "The downloaded artifact may be corrupted"
+
+            if ! unzip -o -q coverage-report.zip; then
+              echo "❌ Failed to extract coverage artifacts"
+              echo "Trying to extract with verbose output for debugging..."
+              unzip -l coverage-report.zip || echo "Failed to list archive contents"
               exit 1
             fi
             
@@ -280,8 +281,10 @@ jobs:
               exit 1
             fi
             
-            if ! unzip -q coverage-artifacts.zip; then
+            if ! unzip -o -q coverage-artifacts.zip; then
               echo "❌ Failed to extract coverage artifacts"
+              echo "Trying to extract with verbose output for debugging..."
+              unzip -l coverage-artifacts.zip || echo "Failed to list archive contents"
               exit 1
             fi
             
