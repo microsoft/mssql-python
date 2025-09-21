@@ -872,7 +872,74 @@ class Connection:
                 ddbc_error="Cannot get info on closed connection",
             )
         
-        return self._conn.get_info(info_type)
+        # Get the raw result from the C++ layer
+        raw_result = self._conn.get_info(info_type)
+        
+        if raw_result is None:
+            return None
+        
+        # Check if the result is already a string or numeric type
+        if isinstance(raw_result, (str, int, bool)):
+            return raw_result
+        
+        # If it's a dictionary with data and metadata
+        if isinstance(raw_result, dict) and "data" in raw_result:
+            # Extract data and metadata from the raw result
+            data = raw_result["data"]
+            length = raw_result["length"]
+            
+            # Determine if this is a string type based on the info_type
+            is_string_type = (
+                info_type > 10000 or
+                info_type in (
+                    GetInfoConstants.SQL_DATA_SOURCE_NAME.value,
+                    GetInfoConstants.SQL_DRIVER_NAME.value,
+                    GetInfoConstants.SQL_DRIVER_VER.value,
+                    GetInfoConstants.SQL_SERVER_NAME.value,
+                    GetInfoConstants.SQL_USER_NAME.value,
+                    GetInfoConstants.SQL_DRIVER_ODBC_VER.value,
+                    GetInfoConstants.SQL_IDENTIFIER_QUOTE_CHAR.value,
+                    GetInfoConstants.SQL_CATALOG_NAME_SEPARATOR.value,
+                    GetInfoConstants.SQL_CATALOG_TERM.value,
+                    GetInfoConstants.SQL_SCHEMA_TERM.value,
+                    GetInfoConstants.SQL_TABLE_TERM.value,
+                    GetInfoConstants.SQL_KEYWORDS.value
+                )
+            )
+            
+            # Process the data based on type
+            if is_string_type:
+                # Convert bytes to string, assuming UTF-8 encoding
+                # The data already has null termination from C++
+                try:
+                    return data.decode('utf-8')
+                except UnicodeDecodeError:
+                    # Fall back to a different encoding if UTF-8 fails
+                    try:
+                        return data.decode('latin1')
+                    except Exception as e:
+                        log('warning', f"Failed to decode string in getinfo: {e}")
+                        return data  # Return raw bytes as fallback
+            else:
+                # Handle numeric types based on length
+                if length == 1:
+                    return int(data[0])
+                elif length == 2:
+                    # Convert 2-byte value (SQLSMALLINT)
+                    return int.from_bytes(data[:2], byteorder='little', signed=True)
+                elif length == 4:
+                    # Convert 4-byte value (SQLINTEGER)
+                    return int.from_bytes(data[:4], byteorder='little', signed=True)
+                else:
+                    # For unexpected lengths, try string conversion as fallback
+                    try:
+                        return data.decode('utf-8')
+                    except:
+                        return data  # Return raw bytes
+    
+        # If we get here, the result is in an unexpected format
+        log('warning', f"Unexpected result format from getInfo: {type(raw_result)}")
+        return raw_result  # Return as-is
 
     def commit(self) -> None:
         """
