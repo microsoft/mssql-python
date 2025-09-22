@@ -319,6 +319,16 @@ class Cursor:
                     parameters_list[i].scale,
                     False,
                 )
+            
+        if isinstance(param, uuid.UUID):
+            parameters_list[i] = param.bytes_le
+            return (
+                ddbc_sql_const.SQL_GUID.value,
+                ddbc_sql_const.SQL_C_GUID.value,
+                16,
+                0,
+                False,
+            )
 
         if isinstance(param, str):
             if (
@@ -333,6 +343,20 @@ class Cursor:
                     0,
                     False,
                 )
+            
+            try:
+                val = uuid.UUID(param)
+                parameters_list[i] = val.bytes_le
+                return (
+                    ddbc_sql_const.SQL_GUID.value,
+                    ddbc_sql_const.SQL_C_GUID.value,
+                    16,
+                    0,
+                    False
+                )
+            except ValueError:
+                pass
+
 
             # Attempt to parse as date, datetime, datetime2, timestamp, smalldatetime or time
             if self._parse_date(param):
@@ -426,15 +450,6 @@ class Cursor:
                 False,
             )
         
-        if isinstance(param, uuid.UUID):
-            return (
-                ddbc_sql_const.SQL_GUID.value,
-                ddbc_sql_const.SQL_C_GUID.value,
-                16,
-                0,
-                False,
-            )
-
         if isinstance(param, datetime.datetime):
             return (
                 ddbc_sql_const.SQL_TIMESTAMP.value,
