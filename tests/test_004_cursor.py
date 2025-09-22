@@ -6824,9 +6824,6 @@ def test_money_smallmoney_invalid_values(cursor, db_connection):
         drop_table_if_exists(cursor, "dbo.money_test")
         db_connection.commit()
 
-import uuid
-import pytest
-
 def test_uuid_insert_and_select_none(cursor, db_connection):
     """Test inserting and retrieving None in a nullable UUID column."""
     table_name = "#pytest_uuid_nullable"
