@@ -340,24 +340,30 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
         return result;
     }
     
-    // Allocate buffer with extra byte for null terminator
-    std::vector<char> buffer(requiredLen + 1, 0);
+    // Allocate buffer with extra space
+    std::vector<char> buffer(requiredLen + 10, 0);  // Extra padding for safety
     
-    // Get the actual data
-    ret = SQLGetInfo_ptr(_dbcHandle->get(), infoType, buffer.data(), requiredLen + 1, &requiredLen);
+    // Get the actual data - avoid using std::min
+    SQLSMALLINT bufferSize = requiredLen + 10;
+    if (bufferSize > SQL_MAX_SMALL_INT) {
+        bufferSize = SQL_MAX_SMALL_INT;
+    }
+    
+    SQLSMALLINT returnedLen = 0;
+    ret = SQLGetInfo_ptr(_dbcHandle->get(), infoType, buffer.data(), bufferSize, &returnedLen);
     
     if (!SQL_SUCCEEDED(ret)) {
         checkError(ret);
         return py::none();
     }
     
-    // Ensure null termination
-    buffer[requiredLen] = '\0';
-    
-    // Create a dictionary with the raw data and metadata to send to Python
+    // Create a dictionary with the raw data
     py::dict result;
-    result["data"] = py::bytes(buffer.data(), requiredLen);
-    result["length"] = requiredLen;
+    
+    // IMPORTANT: Pass exactly what SQLGetInfo returned
+    // No null-terminator manipulation, just pass the raw data
+    result["data"] = py::bytes(buffer.data(), returnedLen);
+    result["length"] = returnedLen;
     result["info_type"] = infoType;
     
     return result;

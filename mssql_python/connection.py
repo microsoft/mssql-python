@@ -878,7 +878,7 @@ class Connection:
         if raw_result is None:
             return None
         
-        # Check if the result is already a string or numeric type
+        # Check if the result is already a simple type
         if isinstance(raw_result, (str, int, bool)):
             return raw_result
         
@@ -888,54 +888,117 @@ class Connection:
             data = raw_result["data"]
             length = raw_result["length"]
             
-            # Determine if this is a string type based on the info_type
-            is_string_type = (
-                info_type > 10000 or
-                info_type in (
-                    GetInfoConstants.SQL_DATA_SOURCE_NAME.value,
-                    GetInfoConstants.SQL_DRIVER_NAME.value,
-                    GetInfoConstants.SQL_DRIVER_VER.value,
-                    GetInfoConstants.SQL_SERVER_NAME.value,
-                    GetInfoConstants.SQL_USER_NAME.value,
-                    GetInfoConstants.SQL_DRIVER_ODBC_VER.value,
-                    GetInfoConstants.SQL_IDENTIFIER_QUOTE_CHAR.value,
-                    GetInfoConstants.SQL_CATALOG_NAME_SEPARATOR.value,
-                    GetInfoConstants.SQL_CATALOG_TERM.value,
-                    GetInfoConstants.SQL_SCHEMA_TERM.value,
-                    GetInfoConstants.SQL_TABLE_TERM.value,
-                    GetInfoConstants.SQL_KEYWORDS.value
-                )
-            )
+            # Debug logging to understand the issue better
+            log('debug', f"getinfo: info_type={info_type}, length={length}, data_type={type(data)}")
+            
+            # Define constants for different return types
+            # String types - these return strings in pyodbc
+            string_type_constants = {
+                GetInfoConstants.SQL_DATA_SOURCE_NAME.value,
+                GetInfoConstants.SQL_DRIVER_NAME.value,
+                GetInfoConstants.SQL_DRIVER_VER.value,
+                GetInfoConstants.SQL_SERVER_NAME.value,
+                GetInfoConstants.SQL_USER_NAME.value,
+                GetInfoConstants.SQL_DRIVER_ODBC_VER.value,
+                GetInfoConstants.SQL_IDENTIFIER_QUOTE_CHAR.value,
+                GetInfoConstants.SQL_CATALOG_NAME_SEPARATOR.value,
+                GetInfoConstants.SQL_CATALOG_TERM.value,
+                GetInfoConstants.SQL_SCHEMA_TERM.value,
+                GetInfoConstants.SQL_TABLE_TERM.value,
+                GetInfoConstants.SQL_KEYWORDS.value,
+                GetInfoConstants.SQL_PROCEDURE_TERM.value,
+                GetInfoConstants.SQL_SPECIAL_CHARACTERS.value,
+                GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value
+            }
+            
+            # Boolean 'Y'/'N' types
+            yn_type_constants = {
+                GetInfoConstants.SQL_ACCESSIBLE_PROCEDURES.value,
+                GetInfoConstants.SQL_ACCESSIBLE_TABLES.value,
+                GetInfoConstants.SQL_DATA_SOURCE_READ_ONLY.value,
+                GetInfoConstants.SQL_EXPRESSIONS_IN_ORDERBY.value,
+                GetInfoConstants.SQL_LIKE_ESCAPE_CLAUSE.value,
+                GetInfoConstants.SQL_MULTIPLE_ACTIVE_TXN.value,
+                GetInfoConstants.SQL_NEED_LONG_DATA_LEN.value,
+                GetInfoConstants.SQL_PROCEDURES.value
+            }
+            
+            # Determine the type of information we're dealing with
+            is_string_type = info_type > 10000 or info_type in string_type_constants
+            is_yn_type = info_type in yn_type_constants
             
             # Process the data based on type
             if is_string_type:
-                # Convert bytes to string, assuming UTF-8 encoding
-                # The data already has null termination from C++
-                try:
-                    return data.decode('utf-8')
-                except UnicodeDecodeError:
-                    # Fall back to a different encoding if UTF-8 fails
+                # For string data, ensure we properly handle the byte array
+                if isinstance(data, bytes):
+                    # Make sure we use the correct amount of data based on length
+                    actual_data = data[:length]
+                    
+                    # Now decode the string data
                     try:
-                        return data.decode('latin1')
-                    except Exception as e:
-                        log('warning', f"Failed to decode string in getinfo: {e}")
-                        return data  # Return raw bytes as fallback
+                        return actual_data.decode('utf-8').rstrip('\0')
+                    except UnicodeDecodeError:
+                        # Fall back to a different encoding if UTF-8 fails
+                        try:
+                            return actual_data.decode('latin1').rstrip('\0')
+                        except Exception as e:
+                            log('warning', f"Failed to decode string in getinfo: {e}")
+                            # As last resort, strip nulls and convert remaining bytes
+                            cleaned_data = actual_data.replace(b'\x00', b'')
+                            return cleaned_data.decode('latin1', errors='replace')
+                else:
+                    # If it's not bytes, return as is
+                    return data
+            elif is_yn_type:
+                # For Y/N types, pyodbc returns a string 'Y' or 'N'
+                if isinstance(data, bytes) and length >= 1:
+                    byte_val = data[0]
+                    if byte_val in (b'Y'[0], b'y'[0], 1):
+                        return 'Y'
+                    else:
+                        return 'N'
+                else:
+                    # If it's not a byte or we can't determine, default to 'N'
+                    return 'Y' if data else 'N'
             else:
                 # Handle numeric types based on length
-                if length == 1:
-                    return int(data[0])
-                elif length == 2:
-                    # Convert 2-byte value (SQLSMALLINT)
-                    return int.from_bytes(data[:2], byteorder='little', signed=True)
-                elif length == 4:
-                    # Convert 4-byte value (SQLINTEGER)
-                    return int.from_bytes(data[:4], byteorder='little', signed=True)
+                if isinstance(data, bytes):
+                    if length == 1:
+                        # For 1-byte value
+                        return int(data[0])
+                    elif length == 2:
+                        # For 2-byte value (SQLSMALLINT)
+                        return int.from_bytes(data[:2], byteorder='little', signed=True)
+                    elif length == 4:
+                        # For 4-byte value (SQLINTEGER)
+                        return int.from_bytes(data[:4], byteorder='little', signed=True)
+                    elif length == 8:
+                        # For 8-byte value (SQLBIGINT)
+                        return int.from_bytes(data[:8], byteorder='little', signed=True)
+                    else:
+                        # For other lengths or if we can't determine the type:
+                        # Try to interpret as a numeric value if possible, fallback to string
+                        try:
+                            # First check if it's a simple ASCII numeric string
+                            if all(c in b'0123456789' for c in data[:length]):
+                                return int(data[:length])
+                            
+                            # If not, try to return as a string if it seems to be one
+                            if all(32 <= c <= 126 or c == 0 for c in data[:length]):
+                                str_val = data[:length].decode('utf-8', errors='replace').rstrip('\0')
+                                # If it looks like a number in string form, convert it
+                                if str_val.isdigit():
+                                    return int(str_val)
+                                return str_val
+                            
+                            # Otherwise return the raw bytes (uncommon)
+                            return data[:length]
+                        except Exception:
+                            # Default fallback
+                            return data[:length]
                 else:
-                    # For unexpected lengths, try string conversion as fallback
-                    try:
-                        return data.decode('utf-8')
-                    except:
-                        return data  # Return raw bytes
+                    # Return the data as-is if not bytes
+                    return data
     
         # If we get here, the result is in an unexpected format
         log('warning', f"Unexpected result format from getInfo: {type(raw_result)}")
