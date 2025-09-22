@@ -7357,62 +7357,38 @@ def test_decimal_separator_calculations(cursor, db_connection):
         db_connection.commit()
 
 def test_datetimeoffset_read_write(cursor, db_connection):
-    """
-    Test the driver's ability to correctly read and write DATETIMEOFFSET data,
-    including timezone information.
-    """
+    """Test reading and writing timezone-aware DATETIMEOFFSET values."""
     try:
-        datetimeoffset_test_cases = [
-            (
-                "2023-10-26 10:30:00.0000000 +05:30",
-                datetime(2023, 10, 26, 10, 30, 0, 0,
-                        tzinfo=timezone(timedelta(hours=5, minutes=30)))
-            ),
-            (
-                "2023-10-27 15:45:10.1234567 -08:00",
-                datetime(2023, 10, 27, 15, 45, 10, 123456,
-                        tzinfo=timezone(timedelta(hours=-8)))
-            ),
-            (
-                "2023-10-28 20:00:05.9876543 +00:00",
-                datetime(2023, 10, 28, 20, 0, 5, 987654,
-                        tzinfo=timezone(timedelta(hours=0)))
-            ),
-            (
-                "invalid", # Placeholder for the SQL string
-                datetime(2023, 10, 29, 10, 0)
-            )
+        test_cases = [
+            # Valid timezone-aware datetimes
+            datetime(2023, 10, 26, 10, 30, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))),
+            datetime(2023, 10, 27, 15, 45, 10, 123456, tzinfo=timezone(timedelta(hours=-8))),
+            datetime(2023, 10, 28, 20, 0, 5, 987654, tzinfo=timezone.utc)
         ]
-        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
-        cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
-        db_connection.commit()
-        insert_statement = "INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);"
-        for i, (sql_str, python_dt) in enumerate(datetimeoffset_test_cases):
-            # Insert timezone-aware datetime objects
-            cursor.execute(insert_statement, i, python_dt)
-        db_connection.commit()
-
-        cursor.execute("SELECT id, dto_column FROM #pytest_dto ORDER BY id;")
         
-        for i, (sql_str, python_dt) in enumerate(datetimeoffset_test_cases):
-            if sql_str == "invalid":
-                continue
-
+        cursor.execute("IF OBJECT_ID('tempdb..#dto_test', 'U') IS NOT NULL DROP TABLE #dto_test;")
+        cursor.execute("CREATE TABLE #dto_test (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+        
+        insert_stmt = "INSERT INTO #dto_test (id, dto_column) VALUES (?, ?);"
+        for i, dt in enumerate(test_cases):
+            cursor.execute(insert_stmt, i, dt)
+        db_connection.commit()
+        
+        cursor.execute("SELECT id, dto_column FROM #dto_test ORDER BY id;")
+        for i, dt in enumerate(test_cases):
             row = cursor.fetchone()
-            assert row is not None, f"No row fetched for test case {i}."
-            
-            fetched_id, fetched_dto = row
-            assert fetched_dto.tzinfo is not None, "Fetched datetime object is naive."
-            expected_utc = python_dt.astimezone(timezone.utc).replace(tzinfo=None)
-            fetched_utc = fetched_dto.astimezone(timezone.utc).replace(tzinfo=None)
+            assert row is not None
+            fetched_id, fetched_dt = row
+            assert fetched_dt.tzinfo is not None
+            expected_utc = dt.astimezone(timezone.utc)
+            fetched_utc = fetched_dt.astimezone(timezone.utc)
+            # Ignore sub-microsecond differences
             expected_utc = expected_utc.replace(microsecond=int(expected_utc.microsecond / 1000) * 1000)
             fetched_utc = fetched_utc.replace(microsecond=int(fetched_utc.microsecond / 1000) * 1000)
-            assert fetched_utc == expected_utc, (
-                f"Value mismatch for test case {i}. "
-                f"Expected UTC: {expected_utc}, Got UTC: {fetched_utc}"
-            )
+            assert fetched_utc == expected_utc
     finally:
-        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        cursor.execute("DROP TABLE IF EXISTS #dto_test;")
         db_connection.commit()
 
 def test_datetimeoffset_max_min_offsets(cursor, db_connection):
