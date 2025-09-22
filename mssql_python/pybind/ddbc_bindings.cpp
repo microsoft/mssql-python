@@ -499,7 +499,17 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 dtoPtr->fraction = static_cast<SQLUINTEGER>(param.attr("microsecond").cast<int>() * 1000);
 
                 py::object utcoffset = tzinfo.attr("utcoffset")(param);
+                if (utcoffset.is_none()) {
+                    ThrowStdException("Datetime object's tzinfo.utcoffset() returned None at paramIndex " + std::to_string(paramIndex));
+                }
+
                 int total_seconds = static_cast<int>(utcoffset.attr("total_seconds")().cast<double>());
+                const int MAX_OFFSET = 14 * 3600;
+                const int MIN_OFFSET = -14 * 3600;
+
+                if (total_seconds > MAX_OFFSET || total_seconds < MIN_OFFSET) {
+                    ThrowStdException("Datetimeoffset tz offset out of SQL Server range (-14h to +14h) at paramIndex " + std::to_string(paramIndex));
+                }
                 std::div_t div_result = std::div(total_seconds, 3600);
                 dtoPtr->timezone_hour = static_cast<SQLSMALLINT>(div_result.quot);
                 dtoPtr->timezone_minute = static_cast<SQLSMALLINT>(div(div_result.rem, 60).quot);

@@ -7415,6 +7415,137 @@ def test_datetimeoffset_read_write(cursor, db_connection):
         cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
         db_connection.commit()
 
+def test_datetimeoffset_max_min_offsets(cursor, db_connection):
+    """
+    Test inserting and retrieving DATETIMEOFFSET with maximum and minimum allowed offsets (+14:00 and -14:00).
+    Uses fetchone() for retrieval.
+    """
+    try:
+        cursor.execute("IF OBJECT_ID('tempdb..#dto_offsets', 'U') IS NOT NULL DROP TABLE #dto_offsets;")
+        cursor.execute("CREATE TABLE #dto_offsets (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+
+        test_cases = [
+            (1, datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone(timedelta(hours=14)))),  # max offset
+            (2, datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone(timedelta(hours=-14)))), # min offset
+        ]
+
+        insert_stmt = "INSERT INTO #dto_offsets (id, dto_column) VALUES (?, ?);"
+        for row_id, dt in test_cases:
+            cursor.execute(insert_stmt, row_id, dt)
+        db_connection.commit()
+
+        cursor.execute("SELECT id, dto_column FROM #dto_offsets ORDER BY id;")
+
+        for expected_id, expected_dt in test_cases:
+            row = cursor.fetchone()
+            assert row is not None, f"No row fetched for id {expected_id}."
+            fetched_id, fetched_dt = row
+
+            assert fetched_id == expected_id, f"ID mismatch: expected {expected_id}, got {fetched_id}"
+            assert fetched_dt.tzinfo is not None, f"Fetched datetime object is naive for id {fetched_id}"
+
+            # Compare in UTC to avoid offset differences
+            expected_utc = expected_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            fetched_utc = fetched_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            assert fetched_utc == expected_utc, (
+                f"Value mismatch for id {expected_id}: expected UTC {expected_utc}, got {fetched_utc}"
+            )
+
+    finally:
+        cursor.execute("IF OBJECT_ID('tempdb..#dto_offsets', 'U') IS NOT NULL DROP TABLE #dto_offsets;")
+        db_connection.commit()
+
+def test_datetimeoffset_invalid_offsets(cursor, db_connection):
+    """Verify driver rejects offsets beyond ±14 hours."""
+    try:
+        cursor.execute("CREATE TABLE #dto_invalid (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+        
+        with pytest.raises(Exception):
+            cursor.execute("INSERT INTO #dto_invalid (id, dto_column) VALUES (?, ?);",
+                           1, datetime(2025, 1, 1, 12, 0, tzinfo=timezone(timedelta(hours=15))))
+        
+        with pytest.raises(Exception):
+            cursor.execute("INSERT INTO #dto_invalid (id, dto_column) VALUES (?, ?);",
+                           2, datetime(2025, 1, 1, 12, 0, tzinfo=timezone(timedelta(hours=-15))))
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #dto_invalid;")
+        db_connection.commit()
+
+def test_datetimeoffset_dst_transitions(cursor, db_connection):
+    """
+    Test inserting and retrieving DATETIMEOFFSET values around DST transitions.
+    Ensures that driver handles DST correctly and does not crash.
+    """
+    try:
+        cursor.execute("IF OBJECT_ID('tempdb..#dto_dst', 'U') IS NOT NULL DROP TABLE #dto_dst;")
+        cursor.execute("CREATE TABLE #dto_dst (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+
+        # Example DST transition dates (replace with actual region offset if needed)
+        dst_test_cases = [
+            (1, datetime(2025, 3, 9, 1, 59, 59, tzinfo=timezone(timedelta(hours=-5)))),  # Just before spring forward
+            (2, datetime(2025, 3, 9, 3, 0, 0, tzinfo=timezone(timedelta(hours=-4)))),   # Just after spring forward
+            (3, datetime(2025, 11, 2, 1, 59, 59, tzinfo=timezone(timedelta(hours=-4)))), # Just before fall back
+            (4, datetime(2025, 11, 2, 1, 0, 0, tzinfo=timezone(timedelta(hours=-5)))),   # Just after fall back
+        ]
+
+        insert_stmt = "INSERT INTO #dto_dst (id, dto_column) VALUES (?, ?);"
+        for row_id, dt in dst_test_cases:
+            cursor.execute(insert_stmt, row_id, dt)
+        db_connection.commit()
+
+        cursor.execute("SELECT id, dto_column FROM #dto_dst ORDER BY id;")
+
+        for expected_id, expected_dt in dst_test_cases:
+            row = cursor.fetchone()
+            assert row is not None, f"No row fetched for id {expected_id}."
+            fetched_id, fetched_dt = row
+
+            assert fetched_id == expected_id, f"ID mismatch: expected {expected_id}, got {fetched_id}"
+            assert fetched_dt.tzinfo is not None, f"Fetched datetime object is naive for id {fetched_id}"
+
+            # Compare UTC time to avoid issues due to offsets changing in DST
+            expected_utc = expected_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            fetched_utc = fetched_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            assert fetched_utc == expected_utc, (
+                f"Value mismatch for id {expected_id}: expected UTC {expected_utc}, got {fetched_utc}"
+            )
+
+    finally:
+        cursor.execute("IF OBJECT_ID('tempdb..#dto_dst', 'U') IS NOT NULL DROP TABLE #dto_dst;")
+        db_connection.commit()
+
+def test_datetimeoffset_leap_second(cursor, db_connection):
+    """Ensure driver handles leap-second-like microsecond edge cases without crashing."""
+    try:
+        cursor.execute("CREATE TABLE #dto_leap (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+        
+        leap_second_sim = datetime(2023, 12, 31, 23, 59, 59, 999999, tzinfo=timezone.utc)
+        cursor.execute("INSERT INTO #dto_leap (id, dto_column) VALUES (?, ?);", 1, leap_second_sim)
+        db_connection.commit()
+        
+        row = cursor.execute("SELECT dto_column FROM #dto_leap;").fetchone()
+        assert row[0].tzinfo is not None
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #dto_leap;")
+        db_connection.commit()
+
+def test_datetimeoffset_malformed_input(cursor, db_connection):
+    """Verify driver raises error for invalid datetimeoffset strings."""
+    try:
+        cursor.execute("CREATE TABLE #dto_malformed (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+        
+        with pytest.raises(Exception):
+            cursor.execute("INSERT INTO #dto_malformed (id, dto_column) VALUES (?, ?);",
+                           1, "2023-13-45 25:61:00 +99:99")  # invalid string
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #dto_malformed;")
+        db_connection.commit()
+
 def test_lowercase_attribute(cursor, db_connection):
     """Test that the lowercase attribute properly converts column names to lowercase"""
     
