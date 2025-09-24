@@ -2613,10 +2613,6 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
     return ret;
 }
 
-// Add a dummy function to check if code coverage tools are working
-void DummyFunctionForCodeCoverage() {
-    LOG("This is a dummy function to ensure code coverage tools are working.");
-} 
 
 // For column in the result set, binds a buffer to retrieve column data
 // TODO: Move to anonymous namespace, since it is not used outside this file
