@@ -428,7 +428,7 @@ jobs:
             <tr>
             <td align="center" width="200">
             
-            ### 🔥 Patch Coverage
+            ### 🔥 Diff Coverage
             ### **${{ env.PATCH_COVERAGE_PCT }}**
             <br>
             </td>
@@ -440,7 +440,7 @@ jobs:
             </td>
             <td>
             
-            **📈 Lines Covered:** `${{ env.COVERED_LINES }}` out of `${{ env.TOTAL_LINES }}`  
+            **📈 Total Lines Covered:** `${{ env.COVERED_LINES }}` out of `${{ env.TOTAL_LINES }}`  
             **📁 Project:** `mssql-python`  
             
             </td>
@@ -448,13 +448,6 @@ jobs:
             </table>
             
             ---
-            
-            ## 📋 Patch Coverage Report
-            
-            <summary>🎯 <strong>Patch Coverage Details</strong> (lines changed in this PR)</summary>
-            <br>
-            
-            > **Patch Coverage** shows the percentage of **newly added or modified lines** that are covered by tests.
             
             ${{ env.PATCH_COVERAGE_SUMMARY }}
             
