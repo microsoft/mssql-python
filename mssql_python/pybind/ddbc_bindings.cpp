@@ -1967,8 +1967,8 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                     SQLGUID* guidArray = AllocateParamBufferArray<SQLGUID>(tempBuffers, paramSetSize);
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
 
-                    py::module_ uuid_mod = py::module_::import("uuid");
-                    py::object uuid_class = uuid_mod.attr("UUID");
+                    static py::module_ uuid_mod = py::module_::import("uuid");
+                    static py::object uuid_class = uuid_mod.attr("UUID");
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         const py::handle& element = columnValues[i];
                         std::array<unsigned char, 16> uuid_bytes;

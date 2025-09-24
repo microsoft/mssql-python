@@ -7162,13 +7162,7 @@ def test_executemany_uuid_insert_and_select(cursor, db_connection):
         db_connection.commit()
 
         # Generate data for insertion
-        data_to_insert = []
-        uuids_to_check = {}
-        for i in range(5):
-            new_uuid = uuid.uuid4()
-            description = f"Item {i}"
-            data_to_insert.append((new_uuid, description))
-            uuids_to_check[description] = new_uuid
+        data_to_insert = [(uuid.uuid4(), f"Item {i}") for i in range(5)]
 
         # Insert all data with a single call to executemany
         sql = f"INSERT INTO {table_name} (id, description) VALUES (?, ?)"
@@ -7179,23 +7173,23 @@ def test_executemany_uuid_insert_and_select(cursor, db_connection):
         assert cursor.rowcount == 5, f"Expected 5 rows inserted, but got {cursor.rowcount}"
 
         # Fetch all data from the table
-        cursor.execute(f"SELECT id, description FROM {table_name}")
+        cursor.execute(f"SELECT id, description FROM {table_name} ORDER BY description")
         rows = cursor.fetchall()
         
         # Verify the number of fetched rows
         assert len(rows) == len(data_to_insert), "Number of fetched rows does not match."
-        
-        # Verify each fetched row's data and type
-        for row in rows:
-            retrieved_uuid, retrieved_desc = row
-            
+
+        # Compare inserted and retrieved rows by index
+        for i, (retrieved_uuid, retrieved_desc) in enumerate(rows):
+            expected_uuid, expected_desc = data_to_insert[i]
+
             # Assert the type is correct
+            if isinstance(retrieved_uuid, str):
+                retrieved_uuid = uuid.UUID(retrieved_uuid)  # convert if driver returns str
+
             assert isinstance(retrieved_uuid, uuid.UUID), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
-            
-            # Assert the value matches the original data
-            expected_uuid = uuids_to_check.get(retrieved_desc)
-            assert expected_uuid is not None, f"Retrieved description '{retrieved_desc}' was not in the original data."
             assert retrieved_uuid == expected_uuid, f"UUID mismatch for '{retrieved_desc}': expected {expected_uuid}, got {retrieved_uuid}"
+            assert retrieved_desc == expected_desc, f"Description mismatch: expected {expected_desc}, got {retrieved_desc}"
 
     finally:
         # Clean up the temporary table
@@ -10640,6 +10634,9 @@ def test_executemany_with_uuids(cursor, db_connection):
             [None, "Item 5"]
         ]
 
+        # Map descriptions to original UUIDs for O(1) lookup
+        uuid_map = {desc: uid for uid, desc in test_data}
+
         # Execute batch insert
         cursor.executemany(f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", test_data)
         cursor.connection.commit()
@@ -10650,16 +10647,19 @@ def test_executemany_with_uuids(cursor, db_connection):
 
         assert len(rows) == len(test_data), "Number of fetched rows does not match inserted rows."
 
-        for row in rows:
-            retrieved_uuid, retrieved_desc = row
-            for original_uuid, original_desc in test_data:
-                if original_desc == retrieved_desc:
-                    if original_uuid is None:
-                        assert retrieved_uuid is None, f"Expected None for '{retrieved_desc}', got {retrieved_uuid}"
-                    else:
-                        assert isinstance(retrieved_uuid, uuid.UUID), f"Expected UUID, got {type(retrieved_uuid)}"
-                        assert retrieved_uuid == original_uuid, f"UUID mismatch for '{retrieved_desc}'"
-                    break
+        for retrieved_uuid, retrieved_desc in rows:
+            expected_uuid = uuid_map[retrieved_desc]
+            
+            if expected_uuid is None:
+                assert retrieved_uuid is None, f"Expected None for '{retrieved_desc}', got {retrieved_uuid}"
+            else:
+                # Convert string to UUID if needed
+                if isinstance(retrieved_uuid, str):
+                    retrieved_uuid = uuid.UUID(retrieved_uuid)
+
+                assert isinstance(retrieved_uuid, uuid.UUID), f"Expected UUID, got {type(retrieved_uuid)}"
+                assert retrieved_uuid == expected_uuid, f"UUID mismatch for '{retrieved_desc}'"
+
     finally:
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
