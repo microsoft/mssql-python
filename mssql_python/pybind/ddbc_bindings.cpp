@@ -1967,36 +1967,41 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                     SQLGUID* guidArray = AllocateParamBufferArray<SQLGUID>(tempBuffers, paramSetSize);
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
 
-                    py::object uuid_type = py::module_::import("uuid").attr("UUID");
-
+                    py::module_ uuid_mod = py::module_::import("uuid");
+                    py::object uuid_class = uuid_mod.attr("UUID");
                     for (size_t i = 0; i < paramSetSize; ++i) {
-                        if (columnValues[i].is_none()) {
+                        const py::handle& element = columnValues[i];
+                        std::array<unsigned char, 16> uuid_bytes;
+                        if (element.is_none()) {
                             std::memset(&guidArray[i], 0, sizeof(SQLGUID));
                             strLenOrIndArray[i] = SQL_NULL_DATA;
-                        } else if (py::isinstance(columnValues[i], uuid_type)) {
-                            py::bytes uuid_bytes = columnValues[i].attr("bytes");
-                            const unsigned char* uuid_data = reinterpret_cast<const unsigned char*>(PyBytes_AS_STRING(uuid_bytes.ptr()));
-
-                            if (PyBytes_GET_SIZE(uuid_bytes.ptr()) != 16) {
+                            continue;
+                        }
+                        else if (py::isinstance<py::bytes>(element)) {
+                            py::bytes b = element.cast<py::bytes>();
+                            if (PyBytes_GET_SIZE(b.ptr()) != 16) {
                                 ThrowStdException("UUID binary data must be exactly 16 bytes long.");
                             }
-
-                            guidArray[i].Data1 = (static_cast<uint32_t>(uuid_data[3]) << 24) |
-                                                (static_cast<uint32_t>(uuid_data[2]) << 16) |
-                                                (static_cast<uint32_t>(uuid_data[1]) << 8)  |
-                                                (static_cast<uint32_t>(uuid_data[0]));
-                            guidArray[i].Data2 = (static_cast<uint16_t>(uuid_data[5]) << 8) |
-                                                (static_cast<uint16_t>(uuid_data[4]));
-                            guidArray[i].Data3 = (static_cast<uint16_t>(uuid_data[7]) << 8) |
-                                                (static_cast<uint16_t>(uuid_data[6]));
-                            std::memcpy(guidArray[i].Data4, &uuid_data[8], 8);
-
-                            strLenOrIndArray[i] = sizeof(SQLGUID);
-                        } else {
+                            std::memcpy(uuid_bytes.data(), PyBytes_AS_STRING(b.ptr()), 16);
+                        }
+                        else if (py::isinstance(element, uuid_class)) {
+                            py::bytes b = element.attr("bytes_le").cast<py::bytes>();
+                            std::memcpy(uuid_bytes.data(), PyBytes_AS_STRING(b.ptr()), 16);
+                        }
+                        else {
                             ThrowStdException(MakeParamMismatchErrorStr(info.paramCType, paramIndex));
                         }
+                        guidArray[i].Data1 = (static_cast<uint32_t>(uuid_bytes[3]) << 24) |
+                                            (static_cast<uint32_t>(uuid_bytes[2]) << 16) |
+                                            (static_cast<uint32_t>(uuid_bytes[1]) << 8)  |
+                                            (static_cast<uint32_t>(uuid_bytes[0]));
+                        guidArray[i].Data2 = (static_cast<uint16_t>(uuid_bytes[5]) << 8) |
+                                            (static_cast<uint16_t>(uuid_bytes[4]));
+                        guidArray[i].Data3 = (static_cast<uint16_t>(uuid_bytes[7]) << 8) |
+                                            (static_cast<uint16_t>(uuid_bytes[6]));
+                        std::memcpy(guidArray[i].Data4, uuid_bytes.data() + 8, 8);
+                        strLenOrIndArray[i] = sizeof(SQLGUID);
                     }
-
                     dataPtr = guidArray;
                     bufferLength = sizeof(SQLGUID);
                     break;
@@ -3133,15 +3138,24 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
                 case SQL_GUID: {
+                    SQLLEN indicator = buffers.indicators[col - 1][i];
+                    if (indicator == SQL_NULL_DATA) {
+                        row.append(py::none());
+                        break;
+                    }
                     SQLGUID* guidValue = &buffers.guidBuffers[col - 1][i];
-                    // We already have the raw bytes from SQL Server in the SQLGUID struct.
-                    // We do not need to perform any additional reordering here, as the C++
-                    // SQLGUID struct is already laid out in the non-standard SQL Server byte order.
-                    std::vector<char> guid_bytes(16);
-                    std::memcpy(guid_bytes.data(), guidValue, sizeof(SQLGUID));
+                    uint8_t reordered[16];
+                    reordered[0] = ((char*)&guidValue->Data1)[3];
+                    reordered[1] = ((char*)&guidValue->Data1)[2];
+                    reordered[2] = ((char*)&guidValue->Data1)[1];
+                    reordered[3] = ((char*)&guidValue->Data1)[0];
+                    reordered[4] = ((char*)&guidValue->Data2)[1];
+                    reordered[5] = ((char*)&guidValue->Data2)[0];
+                    reordered[6] = ((char*)&guidValue->Data3)[1];
+                    reordered[7] = ((char*)&guidValue->Data3)[0];
+                    std::memcpy(reordered + 8, guidValue->Data4, 8);
 
-                    // Convert the raw C++ byte vector to a Python bytes object
-                    py::bytes py_guid_bytes(guid_bytes.data(), guid_bytes.size());
+                    py::bytes py_guid_bytes(reinterpret_cast<char*>(reordered), 16);
                     py::dict kwargs;
                     kwargs["bytes"] = py_guid_bytes;
                     py::object uuid_obj = py::module_::import("uuid").attr("UUID")(**kwargs);
