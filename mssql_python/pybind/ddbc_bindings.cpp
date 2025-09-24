@@ -665,21 +665,43 @@ void HandleZeroColumnSizeAtFetch(SQLULEN& columnSize) {
 // TODO: Revisit GIL considerations if we're using python's logger
 template <typename... Args>
 void LOG(const std::string& formatString, Args&&... args) {
-    py::gil_scoped_acquire gil;  // <---- this ensures safe Python API usage
-
-    py::object logger = py::module_::import("mssql_python.logging_config").attr("get_logger")();
-    if (py::isinstance<py::none>(logger)) return;
-
+    // Check if Python is shutting down to avoid crash during cleanup
     try {
-        std::string ddbcFormatString = "[DDBC Bindings log] " + formatString;
-        if constexpr (sizeof...(args) == 0) {
-            logger.attr("debug")(py::str(ddbcFormatString));
-        } else {
-            py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
-            logger.attr("debug")(message);
+        if (Py_IsInitialized() == 0) {
+            return; // Python is already shut down
         }
+        
+        py::gil_scoped_acquire gil;  // <---- this ensures safe Python API usage
+
+        // Check if sys module is available and not finalizing
+        py::object sys_module = py::module_::import("sys");
+        if (!sys_module.is_none()) {
+            py::object finalizing_func = sys_module.attr("_is_finalizing");
+            if (!finalizing_func.is_none() && finalizing_func().cast<bool>()) {
+                return; // Python is finalizing, don't log
+            }
+        }
+
+        py::object logger = py::module_::import("mssql_python.logging_config").attr("get_logger")();
+        if (py::isinstance<py::none>(logger)) return;
+
+        try {
+            std::string ddbcFormatString = "[DDBC Bindings log] " + formatString;
+            if constexpr (sizeof...(args) == 0) {
+                logger.attr("debug")(py::str(ddbcFormatString));
+            } else {
+                py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
+                logger.attr("debug")(message);
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Logging error: " << e.what() << std::endl;
+        }
+    } catch (const py::error_already_set& e) {
+        // Python is shutting down or in an inconsistent state, silently ignore
+        return;
     } catch (const std::exception& e) {
-        std::cerr << "Logging error: " << e.what() << std::endl;
+        // Any other error, ignore to prevent crash during cleanup
+        return;
     }
 }
 
@@ -990,6 +1012,32 @@ SQLSMALLINT SqlHandle::type() const {
  */
 void SqlHandle::free() {
     if (_handle && SQLFreeHandle_ptr) {
+        // Check if Python is shutting down - if so, don't call into ODBC driver
+        // as it may have already been unloaded or become invalid
+        try {
+            if (Py_IsInitialized() == 0) {
+                // Python is shut down, just clear our handle without calling driver
+                _handle = nullptr;
+                return;
+            }
+            
+            // Additional check for Python finalization state
+            py::gil_scoped_acquire gil;
+            py::object sys_module = py::module_::import("sys");
+            if (!sys_module.is_none()) {
+                py::object finalizing_func = sys_module.attr("_is_finalizing");
+                if (!finalizing_func.is_none() && finalizing_func().cast<bool>()) {
+                    // Python is finalizing, don't call driver
+                    _handle = nullptr;
+                    return;
+                }
+            }
+        } catch (...) {
+            // Any exception means Python is in bad state, don't call driver
+            _handle = nullptr;
+            return;
+        }
+        
         const char* type_str = nullptr;
         switch (_type) {
             case SQL_HANDLE_ENV:  type_str = "ENV"; break;

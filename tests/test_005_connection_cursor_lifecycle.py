@@ -475,3 +475,89 @@ print("All tests passed")
     assert "All tests passed" in result.stdout
     # Should not have error logs
     assert "Exception during cursor cleanup" not in result.stderr
+
+
+def test_sql_syntax_error_no_segfault_on_shutdown(conn_str):
+    """Test that SQL syntax errors don't cause segfault during Python shutdown"""
+    # This test reproduces the exact scenario that was causing segfaults
+    escaped_conn_str = conn_str.replace('\\', '\\\\').replace('"', '\\"')
+    code = f"""
+from mssql_python import connect
+
+try:
+    # Create connection
+    conn = connect("{escaped_conn_str}")
+    cursor = conn.cursor()
+    
+    # Execute invalid SQL that causes syntax error - this was causing segfault
+    cursor.execute("syntax error")
+    
+except Exception as e:
+    print(f"Caught expected SQL error: {{type(e).__name__}}")
+
+# Don't explicitly close connection/cursor - let Python shutdown handle cleanup
+# This is where the segfault was occurring before the fix
+print("Script completed, shutting down...")
+# Segfault would happen here during Python shutdown
+"""
+    
+    # Run in subprocess to catch segfaults
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True
+    )
+    
+    # Should not segfault (exit code 139 on Unix, 134 on macOS)
+    assert result.returncode == 0, f"Expected clean shutdown, but got exit code {result.returncode}. STDERR: {result.stderr}"
+    assert "Caught expected SQL error" in result.stdout
+    assert "Script completed, shutting down..." in result.stdout
+    # Should not have segfault indicators
+    assert "segmentation fault" not in result.stderr.lower()
+    assert "segfault" not in result.stderr.lower()
+
+
+def test_multiple_sql_syntax_errors_no_segfault(conn_str):
+    """Test multiple SQL syntax errors don't cause segfault during cleanup"""
+    escaped_conn_str = conn_str.replace('\\', '\\\\').replace('"', '\\"')
+    code = f"""
+from mssql_python import connect
+
+try:
+    conn = connect("{escaped_conn_str}")
+    
+    # Multiple cursors with syntax errors
+    cursors = []
+    for i in range(3):
+        cursor = conn.cursor()
+        cursors.append(cursor)
+        try:
+            cursor.execute(f"invalid sql syntax {{i}}")
+        except Exception as e:
+            print(f"Cursor {{i}} error: {{type(e).__name__}}")
+    
+    # Mix of syntax errors and valid queries
+    cursor_valid = conn.cursor()
+    cursor_valid.execute("SELECT 1")
+    cursor_valid.fetchall()
+    cursors.append(cursor_valid)
+    
+except Exception as e:
+    print(f"Connection error: {{type(e).__name__}}")
+
+# Don't close anything - test Python shutdown cleanup
+print("Multiple syntax errors handled, shutting down...")
+"""
+    
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True
+    )
+    
+    assert result.returncode == 0, f"Expected clean shutdown after multiple syntax errors, got exit code {result.returncode}. STDERR: {result.stderr}"
+    assert "Multiple syntax errors handled, shutting down..." in result.stdout
+    # Should handle multiple syntax errors without segfault
+    assert "Cursor 0 error:" in result.stdout
+    assert "Cursor 1 error:" in result.stdout
+    assert "Cursor 2 error:" in result.stdout
