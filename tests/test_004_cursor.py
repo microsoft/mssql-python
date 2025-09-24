@@ -7365,17 +7365,16 @@ def test_datetimeoffset_read_write(cursor, db_connection):
             datetime(2023, 10, 27, 15, 45, 10, 123456, tzinfo=timezone(timedelta(hours=-8))),
             datetime(2023, 10, 28, 20, 0, 5, 987654, tzinfo=timezone.utc)
         ]
-        
-        cursor.execute("IF OBJECT_ID('tempdb..#dto_test', 'U') IS NOT NULL DROP TABLE #dto_test;")
-        cursor.execute("CREATE TABLE #dto_test (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+
+        cursor.execute("CREATE TABLE #pytest_datetimeoffset_read_write (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
         db_connection.commit()
-        
-        insert_stmt = "INSERT INTO #dto_test (id, dto_column) VALUES (?, ?);"
+
+        insert_stmt = "INSERT INTO #pytest_datetimeoffset_read_write (id, dto_column) VALUES (?, ?);"
         for i, dt in enumerate(test_cases):
             cursor.execute(insert_stmt, i, dt)
         db_connection.commit()
-        
-        cursor.execute("SELECT id, dto_column FROM #dto_test ORDER BY id;")
+
+        cursor.execute("SELECT id, dto_column FROM #pytest_datetimeoffset_read_write ORDER BY id;")
         for i, dt in enumerate(test_cases):
             row = cursor.fetchone()
             assert row is not None
@@ -7388,7 +7387,7 @@ def test_datetimeoffset_read_write(cursor, db_connection):
             fetched_utc = fetched_utc.replace(microsecond=int(fetched_utc.microsecond / 1000) * 1000)
             assert fetched_utc == expected_utc
     finally:
-        cursor.execute("DROP TABLE IF EXISTS #dto_test;")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_read_write;")
         db_connection.commit()
 
 def test_datetimeoffset_max_min_offsets(cursor, db_connection):
@@ -7397,8 +7396,7 @@ def test_datetimeoffset_max_min_offsets(cursor, db_connection):
     Uses fetchone() for retrieval.
     """
     try:
-        cursor.execute("IF OBJECT_ID('tempdb..#dto_offsets', 'U') IS NOT NULL DROP TABLE #dto_offsets;")
-        cursor.execute("CREATE TABLE #dto_offsets (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        cursor.execute("CREATE TABLE #pytest_datetimeoffset_read_write (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
         db_connection.commit()
 
         test_cases = [
@@ -7406,12 +7404,12 @@ def test_datetimeoffset_max_min_offsets(cursor, db_connection):
             (2, datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone(timedelta(hours=-14)))), # min offset
         ]
 
-        insert_stmt = "INSERT INTO #dto_offsets (id, dto_column) VALUES (?, ?);"
+        insert_stmt = "INSERT INTO #pytest_datetimeoffset_read_write (id, dto_column) VALUES (?, ?);"
         for row_id, dt in test_cases:
             cursor.execute(insert_stmt, row_id, dt)
         db_connection.commit()
 
-        cursor.execute("SELECT id, dto_column FROM #dto_offsets ORDER BY id;")
+        cursor.execute("SELECT id, dto_column FROM #pytest_datetimeoffset_read_write ORDER BY id;")
 
         for expected_id, expected_dt in test_cases:
             row = cursor.fetchone()
@@ -7429,24 +7427,24 @@ def test_datetimeoffset_max_min_offsets(cursor, db_connection):
             )
 
     finally:
-        cursor.execute("IF OBJECT_ID('tempdb..#dto_offsets', 'U') IS NOT NULL DROP TABLE #dto_offsets;")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_read_write;")
         db_connection.commit()
 
 def test_datetimeoffset_invalid_offsets(cursor, db_connection):
     """Verify driver rejects offsets beyond ±14 hours."""
     try:
-        cursor.execute("CREATE TABLE #dto_invalid (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        cursor.execute("CREATE TABLE #pytest_datetimeoffset_invalid_offsets (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
         db_connection.commit()
         
         with pytest.raises(Exception):
-            cursor.execute("INSERT INTO #dto_invalid (id, dto_column) VALUES (?, ?);",
+            cursor.execute("INSERT INTO #pytest_datetimeoffset_invalid_offsets (id, dto_column) VALUES (?, ?);",
                            1, datetime(2025, 1, 1, 12, 0, tzinfo=timezone(timedelta(hours=15))))
         
         with pytest.raises(Exception):
-            cursor.execute("INSERT INTO #dto_invalid (id, dto_column) VALUES (?, ?);",
+            cursor.execute("INSERT INTO #pytest_datetimeoffset_invalid_offsets (id, dto_column) VALUES (?, ?);",
                            2, datetime(2025, 1, 1, 12, 0, tzinfo=timezone(timedelta(hours=-15))))
     finally:
-        cursor.execute("DROP TABLE IF EXISTS #dto_invalid;")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_invalid_offsets;")
         db_connection.commit()
 
 def test_datetimeoffset_dst_transitions(cursor, db_connection):
@@ -7455,8 +7453,7 @@ def test_datetimeoffset_dst_transitions(cursor, db_connection):
     Ensures that driver handles DST correctly and does not crash.
     """
     try:
-        cursor.execute("IF OBJECT_ID('tempdb..#dto_dst', 'U') IS NOT NULL DROP TABLE #dto_dst;")
-        cursor.execute("CREATE TABLE #dto_dst (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        cursor.execute("CREATE TABLE #pytest_datetimeoffset_dst_transitions (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
         db_connection.commit()
 
         # Example DST transition dates (replace with actual region offset if needed)
@@ -7467,12 +7464,12 @@ def test_datetimeoffset_dst_transitions(cursor, db_connection):
             (4, datetime(2025, 11, 2, 1, 0, 0, tzinfo=timezone(timedelta(hours=-5)))),   # Just after fall back
         ]
 
-        insert_stmt = "INSERT INTO #dto_dst (id, dto_column) VALUES (?, ?);"
+        insert_stmt = "INSERT INTO #pytest_datetimeoffset_dst_transitions (id, dto_column) VALUES (?, ?);"
         for row_id, dt in dst_test_cases:
             cursor.execute(insert_stmt, row_id, dt)
         db_connection.commit()
 
-        cursor.execute("SELECT id, dto_column FROM #dto_dst ORDER BY id;")
+        cursor.execute("SELECT id, dto_column FROM #pytest_datetimeoffset_dst_transitions ORDER BY id;")
 
         for expected_id, expected_dt in dst_test_cases:
             row = cursor.fetchone()
@@ -7490,36 +7487,36 @@ def test_datetimeoffset_dst_transitions(cursor, db_connection):
             )
 
     finally:
-        cursor.execute("IF OBJECT_ID('tempdb..#dto_dst', 'U') IS NOT NULL DROP TABLE #dto_dst;")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_dst_transitions;")
         db_connection.commit()
 
 def test_datetimeoffset_leap_second(cursor, db_connection):
     """Ensure driver handles leap-second-like microsecond edge cases without crashing."""
     try:
-        cursor.execute("CREATE TABLE #dto_leap (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        cursor.execute("CREATE TABLE #pytest_datetimeoffset_leap_second (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
         db_connection.commit()
         
         leap_second_sim = datetime(2023, 12, 31, 23, 59, 59, 999999, tzinfo=timezone.utc)
-        cursor.execute("INSERT INTO #dto_leap (id, dto_column) VALUES (?, ?);", 1, leap_second_sim)
+        cursor.execute("INSERT INTO #pytest_datetimeoffset_leap_second (id, dto_column) VALUES (?, ?);", 1, leap_second_sim)
         db_connection.commit()
-        
-        row = cursor.execute("SELECT dto_column FROM #dto_leap;").fetchone()
+
+        row = cursor.execute("SELECT dto_column FROM #pytest_datetimeoffset_leap_second;").fetchone()
         assert row[0].tzinfo is not None
     finally:
-        cursor.execute("DROP TABLE IF EXISTS #dto_leap;")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_leap_second;")
         db_connection.commit()
 
 def test_datetimeoffset_malformed_input(cursor, db_connection):
     """Verify driver raises error for invalid datetimeoffset strings."""
     try:
-        cursor.execute("CREATE TABLE #dto_malformed (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        cursor.execute("CREATE TABLE #pytest_datetimeoffset_malformed_input (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
         db_connection.commit()
         
         with pytest.raises(Exception):
-            cursor.execute("INSERT INTO #dto_malformed (id, dto_column) VALUES (?, ?);",
+            cursor.execute("INSERT INTO #pytest_datetimeoffset_malformed_input (id, dto_column) VALUES (?, ?);",
                            1, "2023-13-45 25:61:00 +99:99")  # invalid string
     finally:
-        cursor.execute("DROP TABLE IF EXISTS #dto_malformed;")
+        cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_malformed_input;")
         db_connection.commit()
 
 def test_lowercase_attribute(cursor, db_connection):
