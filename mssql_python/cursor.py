@@ -1564,8 +1564,13 @@ class Cursor:
     
     def executemany(self, operation: str, seq_of_parameters: list) -> None:
         """
-        Execute a database operation against all parameter sequences.
-        Automatically falls back to row-by-row execution if any parameter requires DAE/streaming.
+        Prepare a database operation and execute it against all parameter sequences.
+        This version uses column-wise parameter binding and a single batched SQLExecute().
+        Args:
+            operation: SQL query or command.
+            seq_of_parameters: Sequence of sequences or mappings of parameters.
+        Raises:
+            Error: If the operation fails.
         """
         self._check_closed()
         self._reset_cursor()
