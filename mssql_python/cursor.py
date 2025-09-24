@@ -998,19 +998,19 @@ class Cursor:
             self.is_stmt_prepared = [False]
 
         log('debug', "Executing query: %s", operation)
-        # for i, param in enumerate(parameters):
-            # log('debug',
-            #     """Parameter number: %s, Parameter: %s,
-            #     Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
-            #     i + 1,
-            #     param,
-            #     str(type(param)),
-            #         parameters_type[i].paramSQLType,
-            #         parameters_type[i].paramCType,
-            #         parameters_type[i].columnSize,
-            #         parameters_type[i].decimalDigits,
-            #         parameters_type[i].inputOutputType,
-            #     )
+        for i, param in enumerate(parameters):
+            log('debug',
+                """Parameter number: %s, Parameter: %s,
+                Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
+                i + 1,
+                param,
+                str(type(param)),
+                    parameters_type[i].paramSQLType,
+                    parameters_type[i].paramCType,
+                    parameters_type[i].columnSize,
+                    parameters_type[i].decimalDigits,
+                    parameters_type[i].inputOutputType,
+                )
 
         ret = ddbc_bindings.DDBCSQLExecute(
             self.hstmt,
@@ -1701,7 +1701,6 @@ class Cursor:
                 if paraminfo.isDAE:
                     any_dae = True
         
-        # If any DAE parameter exists, fall back to row-by-row execution
         if any_dae:
             log('debug', "DAE parameters detected. Falling back to row-by-row execution with streaming.")
             for row in seq_of_parameters:
@@ -1758,7 +1757,6 @@ class Cursor:
         finally:
             # Reset input sizes after execution
             self._reset_inputsizes()
-
 
     def fetchone(self) -> Union[None, Row]:
         """

@@ -1997,8 +1997,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
                               const std::wstring& query,
                               const py::list& columnwise_params,
                               const std::vector<ParamInfo>& paramInfos,
-                              size_t paramSetSize) 
-{
+                              size_t paramSetSize) {
     SQLHANDLE hStmt = statementHandle->get();
     SQLWCHAR* queryPtr;
 
@@ -2008,11 +2007,9 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
 #else
     queryPtr = const_cast<SQLWCHAR*>(query.c_str());
 #endif
-
     RETCODE rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
     if (!SQL_SUCCEEDED(rc)) return rc;
 
-    // Check if any param is DAE/streaming
     bool hasDAE = false;
     for (const auto& p : paramInfos) {
         if (p.isDAE) {
@@ -2020,10 +2017,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
             break;
         }
     }
-
     if (!hasDAE) {
-        LOG("No DAE parameters detected. Proceeding with fast array execution.");
-        // Fast path: no streaming, bind entire array
         std::vector<std::shared_ptr<void>> paramBuffers;
         rc = BindParameterArray(hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers);
         if (!SQL_SUCCEEDED(rc)) return rc;
@@ -2034,8 +2028,6 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
         rc = SQLExecute_ptr(hStmt);
         return rc;
     } else {
-        LOG("DAE parameters detected. Falling back to row-by-row execution with streaming.");
-        // Fallback: row-by-row execution with streaming
         size_t rowCount = columnwise_params.size();
         for (size_t rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
             py::list rowParams = columnwise_params[rowIndex];
@@ -2045,8 +2037,6 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
             if (!SQL_SUCCEEDED(rc)) return rc;
 
             rc = SQLExecute_ptr(hStmt);
-
-            // Handle DAE streaming
             while (rc == SQL_NEED_DATA) {
                 SQLPOINTER token;
                 rc = SQLParamData_ptr(hStmt, &token);
@@ -2055,7 +2045,6 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
                 py::object* py_obj_ptr = reinterpret_cast<py::object*>(token);
                 if (!py_obj_ptr) return SQL_ERROR;
 
-                // Support string/binary streaming
                 if (py::isinstance<py::str>(*py_obj_ptr)) {
                     std::string data = py_obj_ptr->cast<std::string>();
                     SQLLEN data_len = static_cast<SQLLEN>(data.size());
