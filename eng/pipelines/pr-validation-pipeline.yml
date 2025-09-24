@@ -1479,7 +1479,7 @@ jobs:
       testRunTitle: 'Publish pytest results on Alpine ARM64'
 
 - job: CodeCoverageReport
-  displayName: 'Full Stack Coverage Report using Ubuntu Linux'
+  displayName: 'Full Code Coverage Report in Ubuntu x86_64'
   pool:
     vmImage: 'ubuntu-latest'
 
