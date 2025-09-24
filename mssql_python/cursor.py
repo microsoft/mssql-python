@@ -467,13 +467,24 @@ class Cursor:
                 )
 
         if isinstance(param, datetime.datetime):
-            return (
-                ddbc_sql_const.SQL_TIMESTAMP.value,
-                ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
-                26,
-                6,
-                False,
-            )
+            if param.tzinfo is not None:
+                # Timezone-aware datetime -> DATETIMEOFFSET
+                return (
+                    ddbc_sql_const.SQL_DATETIMEOFFSET.value,
+                    ddbc_sql_const.SQL_C_SS_TIMESTAMPOFFSET.value,
+                    34,
+                    7,
+                    False,
+                )
+            else:
+                # Naive datetime -> TIMESTAMP
+                return (
+                    ddbc_sql_const.SQL_TIMESTAMP.value,
+                    ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
+                    26,
+                    6,
+                    False,
+                )
 
         if isinstance(param, datetime.date):
             return (
