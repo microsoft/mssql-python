@@ -1,15 +1,15 @@
 # 🤖 DockyBot
 
-<div align="center">
+<div align="left">
 
 ![DockyBot](https://img.shields.io/badge/DockyBot-🐳_Powered-blue?style=for-the-badge)
 ![Python](https://img.shields.io/badge/Python-3.10+-brightgreen?style=for-the-badge&logo=python)
 ![Docker](https://img.shields.io/badge/Docker-Required-2496ED?style=for-the-badge&logo=docker)
 ![Platform](https://img.shields.io/badge/Platforms-4_Supported-orange?style=for-the-badge)
 
-**🚀 DevOps-as-Code testing tool using Docker for cross-platform testing**
+**🐳 Docker-powered cross-platform orchestrator**
 
-*Test your mssql-python library across multiple Linux distributions with beautiful, interactive output*
+*Test your library across multiple Linux distributions with beautiful, interactive output*
 
 </div>
 
