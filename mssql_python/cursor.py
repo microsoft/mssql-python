@@ -1680,6 +1680,7 @@ class Cursor:
                     sample_value = sample_row[col_index]
                 else:
                     sample_value = self._select_best_sample_value(column)
+                    
                 dummy_row = list(sample_row)
                 paraminfo = self._create_parameter_types_list(
                     sample_value, param_info, dummy_row, col_index, min_val=min_val, max_val=max_val
