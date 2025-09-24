@@ -698,9 +698,11 @@ void LOG(const std::string& formatString, Args&&... args) {
         }
     } catch (const py::error_already_set& e) {
         // Python is shutting down or in an inconsistent state, silently ignore
+        (void)e; // Suppress unused variable warning
         return;
     } catch (const std::exception& e) {
         // Any other error, ignore to prevent crash during cleanup
+        (void)e; // Suppress unused variable warning
         return;
     }
 }
