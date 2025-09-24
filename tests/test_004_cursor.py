@@ -14,6 +14,8 @@ import time as time_module
 import decimal
 from contextlib import closing
 import mssql_python
+import uuid
+
 
 # Setup test table
 TEST_TABLE = """
@@ -6942,6 +6944,208 @@ def test_money_smallmoney_invalid_values(cursor, db_connection):
         drop_table_if_exists(cursor, "dbo.money_test")
         db_connection.commit()
 
+def test_uuid_insert_and_select_none(cursor, db_connection):
+    """Test inserting and retrieving None in a nullable UUID column."""
+    table_name = "#pytest_uuid_nullable"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER,
+                name NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        # Insert a row with None for the UUID
+        cursor.execute(f"INSERT INTO {table_name} (id, name) VALUES (?, ?)", [None, "Bob"])
+        db_connection.commit()
+
+        # Fetch the row
+        cursor.execute(f"SELECT id, name FROM {table_name}")
+        retrieved_uuid, retrieved_name = cursor.fetchone()
+
+        # Assert correct results
+        assert retrieved_uuid is None, f"Expected None, got {retrieved_uuid}"
+        assert retrieved_name == "Bob"
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_insert_multiple_uuids(cursor, db_connection):
+    """Test inserting multiple UUIDs and verifying retrieval."""
+    table_name = "#pytest_uuid_multiple"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER PRIMARY KEY,
+                description NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        # Prepare test data
+        uuids_to_insert = {f"Item {i}": uuid.uuid4() for i in range(5)}
+
+        # Insert UUIDs and descriptions
+        for desc, uid in uuids_to_insert.items():
+            cursor.execute(f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", [uid, desc])
+        db_connection.commit()
+
+        # Fetch all rows
+        cursor.execute(f"SELECT id, description FROM {table_name}")
+        rows = cursor.fetchall()
+
+        # Verify each fetched row
+        assert len(rows) == len(uuids_to_insert), "Fetched row count mismatch"
+
+        for retrieved_uuid, retrieved_desc in rows:
+            assert isinstance(retrieved_uuid, uuid.UUID), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
+            expected_uuid = uuids_to_insert[retrieved_desc]
+            assert retrieved_uuid == expected_uuid, f"UUID mismatch for '{retrieved_desc}': expected {expected_uuid}, got {retrieved_uuid}"
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_fetchmany_uuids(cursor, db_connection):
+    """Test fetching multiple UUID rows with fetchmany()."""
+    table_name = "#pytest_uuid_fetchmany"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER PRIMARY KEY,
+                description NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        uuids_to_insert = {f"Item {i}": uuid.uuid4() for i in range(10)}
+
+        for desc, uid in uuids_to_insert.items():
+            cursor.execute(f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", [uid, desc])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, description FROM {table_name}")
+
+        # Fetch in batches of 3
+        batch_size = 3
+        fetched_rows = []
+        while True:
+            batch = cursor.fetchmany(batch_size)
+            if not batch:
+                break
+            fetched_rows.extend(batch)
+
+        # Verify all rows
+        assert len(fetched_rows) == len(uuids_to_insert), "Fetched row count mismatch"
+        for retrieved_uuid, retrieved_desc in fetched_rows:
+            assert isinstance(retrieved_uuid, uuid.UUID)
+            expected_uuid = uuids_to_insert[retrieved_desc]
+            assert retrieved_uuid == expected_uuid
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_uuid_insert_with_none(cursor, db_connection):
+    """Test inserting None into a UUID column results in a NULL value."""
+    table_name = "#pytest_uuid_none"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER,
+                name NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        cursor.execute(f"INSERT INTO {table_name} (id, name) VALUES (?, ?)", [None, "Alice"])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, name FROM {table_name}")
+        retrieved_uuid, retrieved_name = cursor.fetchone()
+
+        assert retrieved_uuid is None, f"Expected NULL UUID, got {retrieved_uuid}"
+        assert retrieved_name == "Alice"
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+def test_invalid_uuid_inserts(cursor, db_connection):
+    """Test inserting invalid UUID values raises appropriate errors."""
+    table_name = "#pytest_uuid_invalid"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id UNIQUEIDENTIFIER)")
+        db_connection.commit()
+
+        invalid_values = [
+            "12345",          # Too short
+            "not-a-uuid",     # Not a UUID string
+            123456789,        # Integer
+            12.34,            # Float
+            object()          # Arbitrary object
+        ]
+
+        for val in invalid_values:
+            with pytest.raises(Exception):
+                cursor.execute(f"INSERT INTO {table_name} (id) VALUES (?)", [val])
+                db_connection.commit()
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+def test_duplicate_uuid_inserts(cursor, db_connection):
+    """Test that inserting duplicate UUIDs into a PK column raises an error."""
+    table_name = "#pytest_uuid_duplicate"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id UNIQUEIDENTIFIER PRIMARY KEY)")
+        db_connection.commit()
+
+        uid = uuid.uuid4()
+        cursor.execute(f"INSERT INTO {table_name} (id) VALUES (?)", [uid])
+        db_connection.commit()
+
+        with pytest.raises(Exception):
+            cursor.execute(f"INSERT INTO {table_name} (id) VALUES (?)", [uid])
+            db_connection.commit()
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+def test_extreme_uuids(cursor, db_connection):
+    """Test inserting extreme but valid UUIDs."""
+    table_name = "#pytest_uuid_extreme"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id UNIQUEIDENTIFIER)")
+        db_connection.commit()
+
+        extreme_uuids = [
+            uuid.UUID(int=0),                 # All zeros
+            uuid.UUID(int=(1 << 128) - 1),    # All ones
+        ]
+
+        for uid in extreme_uuids:
+            cursor.execute(f"INSERT INTO {table_name} (id) VALUES (?)", [uid])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id FROM {table_name}")
+        rows = cursor.fetchall()
+        fetched_uuids = [row[0] for row in rows]
+
+        for uid in extreme_uuids:
+            assert uid in fetched_uuids, f"Extreme UUID {uid} not retrieved correctly"
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
 def test_decimal_separator_with_multiple_values(cursor, db_connection):
     """Test decimal separator with multiple different decimal values"""
     original_separator = mssql_python.getDecimalSeparator()
@@ -10356,7 +10560,6 @@ def test_decimal_separator_calculations(cursor, db_connection):
         
         # Cleanup
         cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
-        db_connection.commit()
 
 def test_close(db_connection):
     """Test closing the cursor"""
