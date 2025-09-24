@@ -1712,14 +1712,23 @@ class Cursor:
         for row in seq_of_parameters:
             processed_row = list(row)
             for i, val in enumerate(processed_row):
-                if (parameters_type[i].paramSQLType in 
+                if val is None:
+                    continue
+                # Convert Decimals for money/smallmoney to string
+                if isinstance(val, decimal.Decimal) and parameters_type[i].paramSQLType == ddbc_sql_const.SQL_VARCHAR.value:
+                    processed_row[i] = str(val)
+                # Existing numeric conversion
+                elif (parameters_type[i].paramSQLType in 
                     (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value) and
-                    not isinstance(val, decimal.Decimal) and val is not None):
+                    not isinstance(val, decimal.Decimal)):
                     try:
                         processed_row[i] = decimal.Decimal(str(val))
-                    except:
-                        pass  # Keep original value if conversion fails
+                    except Exception as e:
+                        raise ValueError(
+                            f"Failed to convert parameter at row {row}, column {i} to Decimal: {e}"
+                        )
             processed_parameters.append(processed_row)
+
         
         # Now transpose the processed parameters
         columnwise_params, row_count = self._transpose_rowwise_to_columnwise(processed_parameters)
