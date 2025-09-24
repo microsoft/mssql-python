@@ -1688,8 +1688,10 @@ class Cursor:
                     not isinstance(val, decimal.Decimal)):
                     try:
                         processed_row[i] = decimal.Decimal(str(val))
-                    except:
-                        pass
+                    except Exception as e:
+                        raise ValueError(
+                            f"Failed to convert parameter at row {row}, column {i} to Decimal: {e}"
+                        )
             processed_parameters.append(processed_row)
 
         
