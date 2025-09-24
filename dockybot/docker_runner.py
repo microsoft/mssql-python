@@ -75,10 +75,6 @@ class DockerRunner:
                 'TZ': 'UTC'
             }
             
-            # Override with any environment variables from host if they exist
-            if 'DB_CONNECTION_STRING' in os.environ:
-                environment['DB_CONNECTION_STRING'] = os.environ['DB_CONNECTION_STRING']
-            
             # Run container
             container = self.client.containers.run(
                 platform_config['image'],
@@ -273,7 +269,7 @@ class DockerRunner:
         # Test results (highest priority - check these first)
         if " passed " in line_lower or line_lower.endswith(" passed"):
             console.print(f"[green]✅ {line}[/green]")
-        elif " failed " in line_lower or line_lower.endswith(" failed"):
+        elif " failed " in line_lower or line_lower.endswith(" failed") or " error " in line_lower or line_lower.endswith(" failed"):
             console.print(f"[red]❌ {line}[/red]")
         elif " skipped " in line_lower or line_lower.endswith(" skipped"):
             console.print(f"[yellow]⚠️  {line}[/yellow]")
@@ -285,16 +281,16 @@ class DockerRunner:
         # Installation success messages (check before error patterns)
         elif any(phrase in line_lower for phrase in [
             'successfully installed', 'successfully uninstalled', 'successfully',
-            'setting up', 'processing triggers', 'created symlink',
-            'collected packages', 'downloading', 'requirement already satisfied'
+            'created symlink',
+            'collected packages', 'requirement already satisfied'
         ]):
             console.print(f"[green]✅ {line}[/green]")
         
         # Package installation messages
         elif any(phrase in line_lower for phrase in [
             'installing collected packages', 'collecting', 'unpacking', 'preparing to unpack',
-            'selecting previously unselected', 'installing system dependencies',
-            'installing microsoft odbc', 'installing python packages'
+            'setting up', 'selecting previously unselected', 'installing system dependencies',
+            'installing microsoft odbc', 'installing python packages', 'downloading', 'processing triggers'
         ]):
             console.print(f"[cyan]📦 {line}[/cyan]")
         
@@ -405,6 +401,411 @@ class DockerRunner:
             console.print(f"[red]💥 Error running {platform} test: {e}[/red]")
             return False
 
+    def run_platform_bash(self, platform: str, verbose: bool = False) -> bool:
+        """Run interactive bash session in platform container with dependencies installed."""
+        self.verbose = verbose
+        
+        try:
+            # Check if we have a cached image, if not build it
+            image_name = f"dockybot/{platform}:latest"
+            
+            if not self._image_exists(image_name):
+                console.print(f"🏗️  [bold yellow]Building cached image for {platform}...[/bold yellow]")
+                console.print("⚙️  [dim]This will take a few minutes but only happens once![/dim]")
+                console.print(f"💾 [dim]Image will be saved as: {image_name}[/dim]")
+                
+                # Build the image with all dependencies
+                success = self._build_platform_image(platform, image_name)
+                if not success:
+                    return False
+                    
+                console.print(f"✅ [bold green]Image built and cached![/bold green]")
+                console.print(f"🔍 [dim]You can see it with: docker images | grep dockybot[/dim]")
+            else:
+                console.print(f"🚀 [bold green]Using cached image:[/bold green] {image_name}")
+                console.print(f"⚡ [dim]No rebuild needed - dependencies already installed![/dim]")
+            
+            # Run interactive session using the cached image
+            return self._run_interactive_session(platform, image_name)
+            
+        except Exception as e:
+            console.print(f"[red]💥 Error running {platform} bash session: {e}[/red]")
+            return False
+
+    def _image_exists(self, image_name: str) -> bool:
+        """Check if Docker image exists locally."""
+        try:
+            self.client.images.get(image_name)
+            return True
+        except:
+            return False
+
+    def _build_platform_image(self, platform: str, image_name: str) -> bool:
+        """Build a cached Docker image with all dependencies installed."""
+        try:
+            # Get the setup script
+            script_content = get_platform_script(platform)
+            setup_script = self._create_build_script(script_content)
+            
+            # Create Dockerfile
+            dockerfile_content = self._create_dockerfile(platform, setup_script)
+            
+            # Build image
+            console.print(f"📦 [cyan]Building image {image_name}...[/cyan]")
+            
+            # Create build context
+            import tempfile
+            import tarfile
+            import io
+            
+            # Create tar archive with Dockerfile and setup script
+            tar_buffer = io.BytesIO()
+            with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
+                # Add Dockerfile
+                dockerfile_info = tarfile.TarInfo(name='Dockerfile')
+                dockerfile_info.size = len(dockerfile_content.encode())
+                tar.addfile(dockerfile_info, io.BytesIO(dockerfile_content.encode()))
+                
+                # Add setup script
+                script_info = tarfile.TarInfo(name='setup.sh')
+                script_info.size = len(setup_script.encode())
+                script_info.mode = 0o755
+                tar.addfile(script_info, io.BytesIO(setup_script.encode()))
+            
+            tar_buffer.seek(0)
+            
+            # Build the image
+            self.client.images.build(
+                fileobj=tar_buffer,
+                tag=image_name,
+                custom_context=True,
+                rm=True
+            )
+            
+            console.print(f"✅ [bold green]Successfully built image:[/bold green] {image_name}")
+            return True
+            
+        except Exception as e:
+            console.print(f"[red]❌ Error building image: {e}[/red]")
+            return False
+
+    def _create_dockerfile(self, platform: str, setup_script: str) -> str:
+        """Create Dockerfile for the platform."""
+        platform_config = self._get_platform_config(platform)
+        base_image = platform_config['image']
+        
+        dockerfile = f"""FROM {base_image}
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+ENV PYTHONPATH=/workspace
+ENV DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=host.docker.internal,1433;Database=master;UID=sa;Pwd=Str0ng@Passw0rd123;Encrypt=no;TrustServerCertificate=yes;"
+
+# Copy and run setup script
+COPY setup.sh /tmp/setup.sh
+RUN chmod +x /tmp/setup.sh && /tmp/setup.sh
+
+# Set working directory
+WORKDIR /workspace
+
+# Default command
+CMD ["bash"]
+"""
+        return dockerfile
+
+    def _create_build_script(self, original_script: str) -> str:
+        """Create build script that installs dependencies but doesn't run tests."""
+        lines = original_script.split('\n')
+        build_lines = []
+        
+        for line in lines:
+            # Skip the shebang and set -euo pipefail for build
+            if line.startswith('#!') or 'set -euo pipefail' in line:
+                continue
+            # Stop before running tests
+            if any(test_indicator in line.lower() for test_indicator in 
+                   ['python -m pytest', 'pytest', 'running tests']):
+                break
+            build_lines.append(line)
+        
+        # Add final steps for image
+        build_lines.extend([
+            '',
+            'echo "🎉 DockyBot image build complete!"',
+            'echo "✅ All dependencies installed and ready to use"'
+        ])
+        
+        return '\n'.join(build_lines)
+
+    def _run_interactive_session(self, platform: str, image_name: str) -> bool:
+        """Run interactive bash session using cached image."""
+        
+        console.print(f"\n🚀 [bold green]Starting DockyBot Interactive Session[/bold green]")
+        console.print(f"🐳 [bold blue]Platform:[/bold blue] {platform.title()}")
+        console.print(f"🖼️  [bold cyan]Image:[/bold cyan] {image_name}")
+        console.print()
+        
+        try:
+            # Create or reuse named container
+            container_name = f"dockybot-{platform}-session"
+            
+            try:
+                # Try to remove existing container if it exists
+                existing = self.client.containers.get(container_name)
+                existing.remove(force=True)
+            except:
+                pass  # Container doesn't exist, which is fine
+            
+            console.print(f"🎯 [bold green]Starting container...[/bold green]")
+            console.print(f"📝 [dim]Type 'exit' to leave the container[/dim]")
+            console.print()
+            
+            # Run interactive container
+            import subprocess
+            import warnings
+            
+            # Suppress urllib3 warnings that occur during container cleanup
+            warnings.filterwarnings("ignore", category=ResourceWarning)
+            
+            try:
+                result = subprocess.run([
+                    'docker', 'run', '--rm', '-it',
+                    '--name', container_name,
+                    '-v', f'{str(self.workspace)}:/workspace',
+                    '-w', '/workspace',
+                    '--add-host', 'host.docker.internal:host-gateway',
+                    '-e', 'DB_CONNECTION_STRING=Driver=ODBC Driver 18 for SQL Server;Server=host.docker.internal,1433;Database=master;UID=sa;Pwd=Str0ng@Passw0rd123;Encrypt=no;TrustServerCertificate=yes;',
+                    image_name,
+                    'bash', '-c', 'source /opt/venv/bin/activate 2>/dev/null || true; exec bash'
+                ], cwd=str(self.workspace))
+                
+                console.print(f"\n👋 [dim]Session ended. Container cleaned up.[/dim]")
+                return result.returncode == 0
+                
+            except KeyboardInterrupt:
+                console.print(f"\n⚠️  [yellow]Session interrupted. Cleaning up...[/yellow]")
+                # Try to stop the container gracefully
+                try:
+                    running_container = self.client.containers.get(container_name)
+                    running_container.stop(timeout=5)
+                except:
+                    pass
+                return False
+            
+        except Exception as e:
+            console.print(f"[red]💥 Error running interactive session: {e}[/red]")
+            return False
+
+    def _create_setup_script(self, original_script: str) -> str:
+        """Create setup script that stops before running tests and keeps container alive."""
+        lines = original_script.split('\n')
+        setup_lines = []
+        
+        for line in lines:
+            # Stop before running tests
+            if any(test_indicator in line.lower() for test_indicator in 
+                   ['python -m pytest', 'pytest', 'running tests']):
+                break
+            setup_lines.append(line)
+        
+        # Add keeping container alive instead of exec bash
+        setup_lines.extend([
+            '',
+            'echo "🎉 Setup complete! Container ready for interactive session..."',
+            'echo "💡 You can now run tests manually with: python -m pytest tests/ -v"',
+            'echo "📁 Workspace is mounted at: /workspace"',
+            'echo "🐍 Python environment is activated"',
+            'echo "🔗 DB_CONNECTION_STRING is configured"',
+            'echo ""',
+            'cd /workspace',
+            'source /opt/venv/bin/activate',
+            '# Keep container running',
+            'tail -f /dev/null'
+        ])
+        
+        return '\n'.join(setup_lines)
+
+    def run_platform_interactive(self, platform_name: str, script_content: str) -> bool:
+        """Run platform in interactive mode."""
+        
+        # Print welcome message
+        console.print(f"\n🚀 [bold green]Starting DockyBot Interactive Session[/bold green]")
+        console.print(f"🐳 [bold blue]Platform:[/bold blue] {platform_name.title()}")
+        console.print(f"🔧 [bold yellow]Mode:[/bold yellow] Interactive Bash")
+        console.print()
+        
+        # Create temp script
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+            f.write(script_content)
+            script_path = f.name
+        
+        try:
+            os.chmod(script_path, 0o755)
+            
+            # Get platform config
+            platform_config = self._get_platform_config(platform_name)
+            
+            # Prepare environment variables
+            environment = {
+                'DB_CONNECTION_STRING': 'Driver=ODBC Driver 18 for SQL Server;Server=host.docker.internal,1433;Database=master;UID=sa;Pwd=Str0ng@Passw0rd123;Encrypt=no;TrustServerCertificate=yes;',
+                'PYTHONPATH': '/workspace',
+                'DEBIAN_FRONTEND': 'noninteractive',
+                'TZ': 'UTC'
+            }
+            
+            # Create or reuse named container
+            container_name = f"dockybot-{platform_name}"
+            
+            console.print(f"🏗️  [bold cyan]Setting up container:[/bold cyan] {container_name}")
+            console.print("⚙️  [dim]Installing dependencies... This may take a few minutes on first run.[/dim]")
+            console.print()
+            
+            try:
+                # Try to remove existing container if it exists
+                existing = self.client.containers.get(container_name)
+                existing.remove(force=True)
+            except:
+                pass  # Container doesn't exist, which is fine
+            
+            # Run container interactively
+            container = self.client.containers.run(
+                platform_config['image'],
+                command=platform_config['command'] + [f"/tmp/setup.sh"],
+                name=container_name,
+                volumes={
+                    str(self.workspace): {"bind": "/workspace", "mode": "rw"},
+                    script_path: {"bind": "/tmp/setup.sh", "mode": "ro"}
+                },
+                working_dir="/workspace",
+                environment=environment,
+                detach=True,
+                **platform_config.get('docker_options', {})
+            )
+            
+            # Wait for setup to complete
+            console.print("⏳ [yellow]Waiting for setup to complete...[/yellow]")
+            
+            # Stream setup logs to show progress
+            for log_line in container.logs(stream=True, follow=True):
+                line = log_line.decode('utf-8').strip()
+                if line:
+                    self._display_formatted_line(line)
+                    # Break when we see the completion message
+                    if "Setup complete! Container ready for interactive session" in line:
+                        break
+            
+            console.print(f"🎯 [bold green]Container ready![/bold green] Attaching to interactive session...")
+            console.print(f"📝 [dim]Type 'exit' to leave the container[/dim]")
+            console.print()
+            
+            # Attach to container for interactive session with proper environment
+            import subprocess
+            result = subprocess.run([
+                'docker', 'exec', '-it', '-e', 'DB_CONNECTION_STRING=' + environment['DB_CONNECTION_STRING'],
+                container_name, 'bash', '-c', 
+                'cd /workspace && source /opt/venv/bin/activate && exec bash'
+            ], cwd=str(self.workspace))
+            
+            # Clean up
+            try:
+                container.remove(force=True)
+            except:
+                pass
+                
+            return result.returncode == 0
+            
+        finally:
+            if os.path.exists(script_path):
+                os.unlink(script_path)
+
     def list_platforms(self) -> list:
         """List available platforms."""
         return ['ubuntu', 'alpine', 'centos', 'debian']
+    
+    def list_cached_images(self) -> None:
+        """List DockyBot cached images."""
+        console.print("\n🖼️  [bold blue]DockyBot Cached Images[/bold blue]")
+        console.print()
+        
+        images = self.client.images.list()
+        dockybot_images = [img for img in images if any('dockybot/' in tag for tag in img.tags)]
+        
+        if not dockybot_images:
+            console.print("📭 [dim]No cached images found[/dim]")
+            console.print("💡 [dim]Run 'python -m dockybot bash <platform>' to create one[/dim]")
+            return
+            
+        from rich.table import Table
+        table = Table()
+        table.add_column("Image", style="cyan")
+        table.add_column("Size", style="green")
+        table.add_column("Created", style="yellow")
+        
+        for image in dockybot_images:
+            for tag in image.tags:
+                if 'dockybot/' in tag:
+                    size_mb = round(image.attrs['Size'] / (1024 * 1024), 1)
+                    created = image.attrs['Created'][:19].replace('T', ' ')
+                    table.add_row(tag, f"{size_mb} MB", created)
+        
+        console.print(table)
+        console.print()
+        console.print("💡 [dim]Use 'python -m dockybot clean' to remove cached images[/dim]")
+    
+    def clean_cached_images(self, platform: str = None, force: bool = False) -> None:
+        """Clean DockyBot cached images."""
+        if platform:
+            image_name = f"dockybot/{platform}:latest"
+            if not self._image_exists(image_name):
+                console.print(f"📭 [yellow]No cached image found for {platform}[/yellow]")
+                return
+                
+            if not force:
+                import typer
+                confirm = typer.confirm(f"Remove cached image for {platform}?")
+                if not confirm:
+                    console.print("❌ [dim]Cancelled[/dim]")
+                    return
+            
+            try:
+                self.client.images.remove(image_name, force=True)
+                console.print(f"🗑️  [green]Removed cached image: {image_name}[/green]")
+            except Exception as e:
+                console.print(f"[red]Error removing image: {e}[/red]")
+        else:
+            # Clean all dockybot images
+            images = self.client.images.list()
+            dockybot_images = []
+            for img in images:
+                for tag in img.tags:
+                    if 'dockybot/' in tag:
+                        dockybot_images.append(tag)
+                        break
+            
+            if not dockybot_images:
+                console.print("📭 [dim]No cached images to clean[/dim]")
+                return
+            
+            if not force:
+                console.print(f"Found {len(dockybot_images)} cached images:")
+                for img in dockybot_images:
+                    console.print(f"  - {img}")
+                console.print()
+                    
+                import typer
+                confirm = typer.confirm("Remove all DockyBot cached images?")
+                if not confirm:
+                    console.print("❌ [dim]Cancelled[/dim]")
+                    return
+            
+            removed_count = 0
+            for img_tag in dockybot_images:
+                try:
+                    self.client.images.remove(img_tag, force=True)
+                    console.print(f"🗑️  [green]Removed: {img_tag}[/green]")
+                    removed_count += 1
+                except Exception as e:
+                    console.print(f"[red]Error removing {img_tag}: {e}[/red]")
+            
+            console.print(f"\n✅ [green]Cleaned {removed_count} cached images[/green]")

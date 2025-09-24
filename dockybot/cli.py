@@ -30,6 +30,38 @@ def test(
         raise typer.Exit(1)
 
 @app.command()
+def bash(
+    platform: str = typer.Argument(..., help="Platform to bash into"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed output")
+):
+    """Open interactive bash session in platform container with dependencies installed."""
+    if platform not in PLATFORMS:
+        console.print(f"[red]Error:[/red] Unknown platform '{platform}'")
+        console.print(f"Available platforms: {', '.join(PLATFORMS.keys())}")
+        raise typer.Exit(1)
+    
+    runner = DockerRunner()
+    success = runner.run_platform_bash(platform, verbose=verbose)
+    
+    if not success:
+        raise typer.Exit(1)
+
+@app.command()
+def images():
+    """List DockyBot cached images."""
+    runner = DockerRunner()
+    runner.list_cached_images()
+
+@app.command()  
+def clean(
+    platform: str = typer.Argument(None, help="Platform to clean (optional - cleans all if not specified)"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force removal without confirmation")
+):
+    """Clean DockyBot cached images."""
+    runner = DockerRunner()
+    runner.clean_cached_images(platform, force)
+
+@app.command()
 def platforms():
     """List available platforms."""
     table = Table(title="Available Platforms")
@@ -69,98 +101,3 @@ def test_all(
 
 if __name__ == "__main__":
     app()
-
-import typer
-from typing import Optional
-from rich.console import Console
-from rich.panel import Panel
-from pathlib import Path
-
-from .docker_client import DockerClient
-
-app = typer.Typer(
-    name="dockybot",
-    help="🤖 DockyBot - DevOps-as-Code testing tool using Docker",
-    no_args_is_help=True,
-    rich_markup_mode="rich"
-)
-
-console = Console()
-
-
-@app.command()
-def test(
-    cache: bool = typer.Option(
-        True,
-        "--cache/--no-cache", 
-        help="Enable/disable pip and build artifact caching"
-    ),
-    verbose: bool = typer.Option(
-        False,
-        "--verbose",
-        "-v",
-        help="Enable verbose output"
-    )
-):
-    """
-    Run tests on Ubuntu using Docker (replicates exact PR pipeline steps).
-    """
-    console.print(Panel.fit(
-        f"🚀 [bold blue]DockyBot Ubuntu Test Runner[/bold blue]\n"
-        f"Platform: Ubuntu 22.04\n"
-        f"Caching: {'✅ Enabled' if cache else '❌ Disabled'}",
-        border_style="blue"
-    ))
-    
-    console.print("🔄 [bold yellow]Testing on Ubuntu...[/bold yellow]")
-    
-    # Create Docker client and run tests
-    try:
-        client = DockerClient(verbose=verbose, cache_enabled=cache)
-        success = client.run_tests(platform="ubuntu")
-        
-        if success:
-            console.print("[bold green]✅ All tests passed![/bold green]")
-        else:
-            console.print("[bold red]❌ Tests failed![/bold red]")
-            raise typer.Exit(1)
-            
-    except Exception as e:
-        console.print(f"[red]❌ Error: {e}[/red]")
-        raise typer.Exit(1)
-
-
-@app.command()
-def clean():
-    """
-    Clean up Docker cache and containers.
-    """
-    console.print("🧹 [bold yellow]Cleaning Docker cache...[/bold yellow]")
-    
-    try:
-        client = DockerClient()
-        client.clean_cache()
-    except Exception as e:
-        console.print(f"[red]❌ Error cleaning cache: {e}[/red]")
-        raise typer.Exit(1)
-
-
-@app.command()
-def version():
-    """
-    Show DockyBot version information.
-    """
-    try:
-        from . import __version__
-        console.print(f"DockyBot v{__version__} (Docker-based)")
-    except ImportError:
-        console.print("DockyBot v1.0.0 (Docker-based)")
-
-
-def main():
-    """Entry point for the CLI."""
-    app()
-
-
-if __name__ == "__main__":
-    main()
