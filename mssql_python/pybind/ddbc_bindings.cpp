@@ -1014,43 +1014,35 @@ SQLSMALLINT SqlHandle::type() const {
  */
 void SqlHandle::free() {
     if (_handle && SQLFreeHandle_ptr) {
-        // Check if Python is shutting down - if so, don't call into ODBC driver
-        // as it may have already been unloaded or become invalid
+        // Check if Python is shutting down - if so, skip logging but still clean up ODBC resources
+        bool pythonShuttingDown = false;
         try {
             if (Py_IsInitialized() == 0) {
-                // Python is shut down, just clear our handle without calling driver
-                _handle = nullptr;
-                return;
-            }
-            
-            // Additional check for Python finalization state
-            py::gil_scoped_acquire gil;
-            py::object sys_module = py::module_::import("sys");
-            if (!sys_module.is_none()) {
-                py::object finalizing_func = sys_module.attr("_is_finalizing");
-                if (!finalizing_func.is_none() && finalizing_func().cast<bool>()) {
-                    // Python is finalizing, don't call driver
-                    _handle = nullptr;
-                    return;
+                pythonShuttingDown = true;
+            } else {
+                py::gil_scoped_acquire gil;
+                py::object sys_module = py::module_::import("sys");
+                if (!sys_module.is_none()) {
+                    py::object finalizing_func = sys_module.attr("_is_finalizing");
+                    if (!finalizing_func.is_none() && finalizing_func().cast<bool>()) {
+                        pythonShuttingDown = true;
+                    }
                 }
             }
         } catch (...) {
-            // Any exception means Python is in bad state, don't call driver
-            _handle = nullptr;
-            return;
+            // Any exception during Python state check means Python is likely shutting down
+            pythonShuttingDown = true;
         }
         
-        const char* type_str = nullptr;
-        switch (_type) {
-            case SQL_HANDLE_ENV:  type_str = "ENV"; break;
-            case SQL_HANDLE_DBC:  type_str = "DBC"; break;
-            case SQL_HANDLE_STMT: type_str = "STMT"; break;
-            case SQL_HANDLE_DESC: type_str = "DESC"; break;
-            default:              type_str = "UNKNOWN"; break;
-        }
+        // Always clean up ODBC resources, regardless of Python state
         SQLFreeHandle_ptr(_type, _handle);
         _handle = nullptr;
-        // Don't log during destruction - it can cause segfaults during Python shutdown
+        
+        // Only log if Python is not shutting down (to avoid segfault)
+        if (!pythonShuttingDown) {
+            // Don't log during destruction - even in normal cases it can be problematic
+            // If logging is needed, use explicit close() methods instead
+        }
     }
 }
 
