@@ -874,8 +874,22 @@ class Connection:
                 ddbc_error="Cannot get info on closed connection",
             )
         
+        # Check that info_type is an integer
+        if not isinstance(info_type, int):
+            raise ValueError(f"info_type must be an integer, got {type(info_type).__name__}")
+        
+        # Check for invalid info_type values
+        if info_type < 0:
+            log('warning', f"Invalid info_type: {info_type}. Must be a positive integer.")
+            return None
+        
         # Get the raw result from the C++ layer
-        raw_result = self._conn.get_info(info_type)
+        try:
+            raw_result = self._conn.get_info(info_type)
+        except Exception as e:
+            # Log the error and return None for invalid info types
+            log('warning', f"getinfo({info_type}) failed: {e}")
+            return None
         
         if raw_result is None:
             return None
@@ -924,10 +938,28 @@ class Connection:
                 GetInfoConstants.SQL_NEED_LONG_DATA_LEN.value,
                 GetInfoConstants.SQL_PROCEDURES.value
             }
-
+    
+            # Numeric type constants that return integers
+            numeric_type_constants = {
+                GetInfoConstants.SQL_MAX_COLUMN_NAME_LEN.value,
+                GetInfoConstants.SQL_MAX_TABLE_NAME_LEN.value,
+                GetInfoConstants.SQL_MAX_SCHEMA_NAME_LEN.value,
+                GetInfoConstants.SQL_MAX_CATALOG_NAME_LEN.value,
+                GetInfoConstants.SQL_MAX_IDENTIFIER_LEN.value,
+                GetInfoConstants.SQL_MAX_STATEMENT_LEN.value,
+                GetInfoConstants.SQL_MAX_DRIVER_CONNECTIONS.value,
+                GetInfoConstants.SQL_NUMERIC_FUNCTIONS.value,
+                GetInfoConstants.SQL_STRING_FUNCTIONS.value,
+                GetInfoConstants.SQL_DATETIME_FUNCTIONS.value,
+                GetInfoConstants.SQL_TXN_CAPABLE.value,
+                GetInfoConstants.SQL_DEFAULT_TXN_ISOLATION.value,
+                GetInfoConstants.SQL_CURSOR_COMMIT_BEHAVIOR.value
+            }
+    
             # Determine the type of information we're dealing with
             is_string_type = info_type > INFO_TYPE_STRING_THRESHOLD or info_type in string_type_constants
             is_yn_type = info_type in yn_type_constants
+            is_numeric_type = info_type in numeric_type_constants
             
             # Process the data based on type
             if is_string_type:
@@ -959,44 +991,96 @@ class Connection:
                         return 'N'
                 else:
                     # If it's not a byte or we can't determine, default to 'N'
-                    # Handle numeric types based on length
-                    if isinstance(data, bytes):
-                        # Map byte length → signed int size
-                        int_sizes = {
-                            1: lambda d: d[0],
-                            2: lambda d: int.from_bytes(d[:2], "little", signed=True),
-                            4: lambda d: int.from_bytes(d[:4], "little", signed=True),
-                            8: lambda d: int.from_bytes(d[:8], "little", signed=True),
-                        }
-
-                        # Direct numeric conversion if supported length
-                        if length in int_sizes:
-                            return int_sizes[length](data)
-
-                        # Helper: check if all chars are digits
-                        def is_digit_bytes(b: bytes) -> bool:
-                            return all(c in b"0123456789" for c in b)
-
-                        # Helper: check if bytes are ASCII-printable or NUL padded
-                        def is_printable_bytes(b: bytes) -> bool:
-                            return all(32 <= c <= 126 or c == 0 for c in b)
-
-                        chunk = data[:length]
-
-                        # Try interpret as integer string
-                        if is_digit_bytes(chunk):
-                            return int(chunk)
-
-                        # Try decode as ASCII/UTF-8 string
-                        if is_printable_bytes(chunk):
-                            str_val = chunk.decode("utf-8", errors="replace").rstrip("\0")
-                            return int(str_val) if str_val.isdigit() else str_val
-
-                        # Fallback: raw bytes
-                        return chunk
-                    else:
-                        # Return the data as-is if not bytes
-                        return data
+                    return 'N'
+            elif is_numeric_type:
+                # Handle numeric types based on length
+                if isinstance(data, bytes):
+                    # Map byte length → signed int size
+                    int_sizes = {
+                        1: lambda d: int(d[0]),
+                        2: lambda d: int.from_bytes(d[:2], "little", signed=True),
+                        4: lambda d: int.from_bytes(d[:4], "little", signed=True),
+                        8: lambda d: int.from_bytes(d[:8], "little", signed=True),
+                    }
+    
+                    # Direct numeric conversion if supported length
+                    if length in int_sizes:
+                        result = int_sizes[length](data)
+                        return int(result)
+    
+                    # Helper: check if all chars are digits
+                    def is_digit_bytes(b: bytes) -> bool:
+                        return all(c in b"0123456789" for c in b)
+    
+                    # Helper: check if bytes are ASCII-printable or NUL padded
+                    def is_printable_bytes(b: bytes) -> bool:
+                        return all(32 <= c <= 126 or c == 0 for c in b)
+    
+                    chunk = data[:length]
+    
+                    # Try interpret as integer string
+                    if is_digit_bytes(chunk):
+                        return int(chunk)
+    
+                    # Try decode as ASCII/UTF-8 string
+                    if is_printable_bytes(chunk):
+                        str_val = chunk.decode("utf-8", errors="replace").rstrip("\0")
+                        return int(str_val) if str_val.isdigit() else str_val
+    
+                    # For 16-bit values that might be returned for max lengths
+                    if length == 2:
+                        return int.from_bytes(data[:2], "little", signed=True)
+                    
+                    # For 32-bit values (common for bitwise flags)
+                    if length == 4:
+                        return int.from_bytes(data[:4], "little", signed=True)
+    
+                    # Fallback: try to convert to int if possible
+                    try:
+                        if length <= 8:
+                            return int.from_bytes(data[:length], "little", signed=True)
+                    except Exception:
+                        pass
+                    
+                    # Last resort: return as integer if all else fails
+                    try:
+                        return int.from_bytes(data[:min(length, 8)], "little", signed=True)
+                    except Exception:
+                        return 0
+                elif isinstance(data, (int, float)):
+                    # Already numeric
+                    return int(data)
+                else:
+                    # Try to convert to int if it's a string
+                    try:
+                        if isinstance(data, str) and data.isdigit():
+                            return int(data)
+                    except Exception:
+                        pass
+                    
+                    # Return as is if we can't convert
+                    return data
+            else:
+                # For other types, try to determine the most appropriate type
+                if isinstance(data, bytes):
+                    # Try to convert to string first
+                    try:
+                        return data[:length].decode('utf-8').rstrip('\0')
+                    except UnicodeDecodeError:
+                        pass
+                    
+                    # Try to convert to int for short binary data
+                    try:
+                        if length <= 8:
+                            return int.from_bytes(data[:length], "little", signed=True)
+                    except Exception:
+                        pass
+                    
+                    # Return as is if we can't determine
+                    return data
+                else:
+                    return data
+                    
         return raw_result  # Return as-is
 
     def commit(self) -> None:
