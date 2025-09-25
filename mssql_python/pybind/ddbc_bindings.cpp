@@ -662,25 +662,43 @@ void HandleZeroColumnSizeAtFetch(SQLULEN& columnSize) {
 
 }  // namespace
 
+// Helper function to check if Python is shutting down or finalizing
+// This centralizes the shutdown detection logic to avoid code duplication
+static bool is_python_finalizing() {
+    try {
+        if (Py_IsInitialized() == 0) {
+            return true; // Python is already shut down
+        }
+        
+        py::gil_scoped_acquire gil;
+        py::object sys_module = py::module_::import("sys");
+        if (!sys_module.is_none()) {
+            // Check if the attribute exists before accessing it (for Python version compatibility)
+            if (py::hasattr(sys_module, "_is_finalizing")) {
+                py::object finalizing_func = sys_module.attr("_is_finalizing");
+                if (!finalizing_func.is_none() && finalizing_func().cast<bool>()) {
+                    return true; // Python is finalizing
+                }
+            }
+        }
+        return false;
+    } catch (...) {
+        // Be conservative - don't assume shutdown on any exception
+        // Only return true if we're absolutely certain Python is shutting down
+        return false;
+    }
+}
+
 // TODO: Revisit GIL considerations if we're using python's logger
 template <typename... Args>
 void LOG(const std::string& formatString, Args&&... args) {
     // Check if Python is shutting down to avoid crash during cleanup
+    if (is_python_finalizing()) {
+        return; // Python is shutting down or finalizing, don't log
+    }
+    
     try {
-        if (Py_IsInitialized() == 0) {
-            return; // Python is already shut down
-        }
-        
         py::gil_scoped_acquire gil;  // <---- this ensures safe Python API usage
-
-        // Check if sys module is available and not finalizing
-        py::object sys_module = py::module_::import("sys");
-        if (!sys_module.is_none()) {
-            py::object finalizing_func = sys_module.attr("_is_finalizing");
-            if (!finalizing_func.is_none() && finalizing_func().cast<bool>()) {
-                return; // Python is finalizing, don't log
-            }
-        }
 
         py::object logger = py::module_::import("mssql_python.logging_config").attr("get_logger")();
         if (py::isinstance<py::none>(logger)) return;
@@ -1014,30 +1032,8 @@ SQLSMALLINT SqlHandle::type() const {
  */
 void SqlHandle::free() {
     if (_handle && SQLFreeHandle_ptr) {
-        // Check if Python is shutting down - if so, skip logging but still clean up ODBC resources
-        bool pythonShuttingDown = false;
-        
-        try {
-            if (Py_IsInitialized() == 0) {
-                pythonShuttingDown = true;
-            } else {
-                // Try to check sys._is_finalizing(), but don't fail if it doesn't exist
-                py::gil_scoped_acquire gil;
-                py::object sys_module = py::module_::import("sys");
-                if (!sys_module.is_none()) {
-                    // Check if the attribute exists before accessing it
-                    if (py::hasattr(sys_module, "_is_finalizing")) {
-                        py::object finalizing_func = sys_module.attr("_is_finalizing");
-                        if (!finalizing_func.is_none() && finalizing_func().cast<bool>()) {
-                            pythonShuttingDown = true;
-                        }
-                    }
-                }
-            }
-        } catch (...) {
-            // Only consider it shutdown if we absolutely can't check Python state
-            // Be more conservative - don't assume shutdown on any exception
-        }
+        // Check if Python is shutting down using centralized helper function
+        bool pythonShuttingDown = is_python_finalizing();
         
         // CRITICAL FIX: During Python shutdown, don't free STMT handles as their parent DBC may already be freed
         // This prevents segfault when handles are freed in wrong order during interpreter shutdown
