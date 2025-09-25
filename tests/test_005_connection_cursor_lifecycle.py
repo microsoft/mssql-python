@@ -504,7 +504,7 @@ print("Script completed, shutting down...") # This would NOT print anyways
     )
     
     # Should not segfault (exit code 139 on Unix, 134 on macOS)
-    assert result.returncode == 0, f"Expected clean shutdown, but got exit code {result.returncode}. STDERR: {result.stderr}"
+    assert result.returncode == 1, f"Expected exit code 1 due to syntax error, but got {result.returncode}. STDERR: {result.stderr}"
 
 def test_multiple_sql_syntax_errors_no_segfault(conn_str):
     """Test multiple SQL syntax errors don't cause segfault during cleanup"""
@@ -537,4 +537,4 @@ print("Multiple syntax errors handled, shutting down...")
         text=True
     )
     
-    assert result.returncode == 0, f"Expected clean shutdown, but got exit code {result.returncode}. STDERR: {result.stderr}"
+    assert result.returncode == 1, f"Expected exit code 1 due to syntax errors, but got {result.returncode}. STDERR: {result.stderr}"

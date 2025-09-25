@@ -1016,22 +1016,27 @@ void SqlHandle::free() {
     if (_handle && SQLFreeHandle_ptr) {
         // Check if Python is shutting down - if so, skip logging but still clean up ODBC resources
         bool pythonShuttingDown = false;
+        
         try {
             if (Py_IsInitialized() == 0) {
                 pythonShuttingDown = true;
             } else {
+                // Try to check sys._is_finalizing(), but don't fail if it doesn't exist
                 py::gil_scoped_acquire gil;
                 py::object sys_module = py::module_::import("sys");
                 if (!sys_module.is_none()) {
-                    py::object finalizing_func = sys_module.attr("_is_finalizing");
-                    if (!finalizing_func.is_none() && finalizing_func().cast<bool>()) {
-                        pythonShuttingDown = true;
+                    // Check if the attribute exists before accessing it
+                    if (py::hasattr(sys_module, "_is_finalizing")) {
+                        py::object finalizing_func = sys_module.attr("_is_finalizing");
+                        if (!finalizing_func.is_none() && finalizing_func().cast<bool>()) {
+                            pythonShuttingDown = true;
+                        }
                     }
                 }
             }
         } catch (...) {
-            // Any exception during Python state check means Python is likely shutting down
-            pythonShuttingDown = true;
+            // Only consider it shutdown if we absolutely can't check Python state
+            // Be more conservative - don't assume shutdown on any exception
         }
         
         // CRITICAL FIX: During Python shutdown, don't free STMT handles as their parent DBC may already be freed
