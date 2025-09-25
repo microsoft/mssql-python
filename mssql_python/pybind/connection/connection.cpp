@@ -340,8 +340,12 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
         return result;
     }
     
-    // Allocate buffer with extra space
-    std::vector<char> buffer(requiredLen + 10, 0);  // Extra padding for safety
+    // Cap buffer allocation to SQL_MAX_SMALL_INT to prevent excessive memory usage
+    SQLSMALLINT allocSize = requiredLen + 10;
+    if (allocSize > SQL_MAX_SMALL_INT) {
+        allocSize = SQL_MAX_SMALL_INT;
+    }
+    std::vector<char> buffer(allocSize, 0);  // Extra padding for safety
     
     // Get the actual data - avoid using std::min
     SQLSMALLINT bufferSize = requiredLen + 10;

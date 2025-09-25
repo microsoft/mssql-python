@@ -25,6 +25,8 @@ from mssql_python.constants import ConstantsDDBC
 
 # Add SQL_WMETADATA constant for metadata decoding configuration
 SQL_WMETADATA = -99  # Special flag for column name decoding
+# Threshold to determine if an info type is string-based
+INFO_TYPE_STRING_THRESHOLD = 10000
 
 # UTF-16 encoding variants that should use SQL_WCHAR by default
 UTF16_ENCODINGS = frozenset([
@@ -922,9 +924,9 @@ class Connection:
                 GetInfoConstants.SQL_NEED_LONG_DATA_LEN.value,
                 GetInfoConstants.SQL_PROCEDURES.value
             }
-            
+
             # Determine the type of information we're dealing with
-            is_string_type = info_type > 10000 or info_type in string_type_constants
+            is_string_type = info_type > INFO_TYPE_STRING_THRESHOLD or info_type in string_type_constants
             is_yn_type = info_type in yn_type_constants
             
             # Process the data based on type
@@ -938,14 +940,12 @@ class Connection:
                     try:
                         return actual_data.decode('utf-8').rstrip('\0')
                     except UnicodeDecodeError:
-                        # Fall back to a different encoding if UTF-8 fails
                         try:
                             return actual_data.decode('latin1').rstrip('\0')
                         except Exception as e:
-                            log('warning', f"Failed to decode string in getinfo: {e}")
-                            # As last resort, strip nulls and convert remaining bytes
-                            cleaned_data = actual_data.replace(b'\x00', b'')
-                            return cleaned_data.decode('latin1', errors='replace')
+                            log('error', f"Failed to decode string in getinfo: {e}. Returning None to avoid silent corruption.")
+                            # Explicitly return None to signal decoding failure
+                            return None
                 else:
                     # If it's not bytes, return as is
                     return data
@@ -959,49 +959,44 @@ class Connection:
                         return 'N'
                 else:
                     # If it's not a byte or we can't determine, default to 'N'
-                    return 'Y' if data else 'N'
-            else:
-                # Handle numeric types based on length
-                if isinstance(data, bytes):
-                    if length == 1:
-                        # For 1-byte value
-                        return int(data[0])
-                    elif length == 2:
-                        # For 2-byte value (SQLSMALLINT)
-                        return int.from_bytes(data[:2], byteorder='little', signed=True)
-                    elif length == 4:
-                        # For 4-byte value (SQLINTEGER)
-                        return int.from_bytes(data[:4], byteorder='little', signed=True)
-                    elif length == 8:
-                        # For 8-byte value (SQLBIGINT)
-                        return int.from_bytes(data[:8], byteorder='little', signed=True)
+                    # Handle numeric types based on length
+                    if isinstance(data, bytes):
+                        # Map byte length → signed int size
+                        int_sizes = {
+                            1: lambda d: d[0],
+                            2: lambda d: int.from_bytes(d[:2], "little", signed=True),
+                            4: lambda d: int.from_bytes(d[:4], "little", signed=True),
+                            8: lambda d: int.from_bytes(d[:8], "little", signed=True),
+                        }
+
+                        # Direct numeric conversion if supported length
+                        if length in int_sizes:
+                            return int_sizes[length](data)
+
+                        # Helper: check if all chars are digits
+                        def is_digit_bytes(b: bytes) -> bool:
+                            return all(c in b"0123456789" for c in b)
+
+                        # Helper: check if bytes are ASCII-printable or NUL padded
+                        def is_printable_bytes(b: bytes) -> bool:
+                            return all(32 <= c <= 126 or c == 0 for c in b)
+
+                        chunk = data[:length]
+
+                        # Try interpret as integer string
+                        if is_digit_bytes(chunk):
+                            return int(chunk)
+
+                        # Try decode as ASCII/UTF-8 string
+                        if is_printable_bytes(chunk):
+                            str_val = chunk.decode("utf-8", errors="replace").rstrip("\0")
+                            return int(str_val) if str_val.isdigit() else str_val
+
+                        # Fallback: raw bytes
+                        return chunk
                     else:
-                        # For other lengths or if we can't determine the type:
-                        # Try to interpret as a numeric value if possible, fallback to string
-                        try:
-                            # First check if it's a simple ASCII numeric string
-                            if all(c in b'0123456789' for c in data[:length]):
-                                return int(data[:length])
-                            
-                            # If not, try to return as a string if it seems to be one
-                            if all(32 <= c <= 126 or c == 0 for c in data[:length]):
-                                str_val = data[:length].decode('utf-8', errors='replace').rstrip('\0')
-                                # If it looks like a number in string form, convert it
-                                if str_val.isdigit():
-                                    return int(str_val)
-                                return str_val
-                            
-                            # Otherwise return the raw bytes (uncommon)
-                            return data[:length]
-                        except Exception:
-                            # Default fallback
-                            return data[:length]
-                else:
-                    # Return the data as-is if not bytes
-                    return data
-    
-        # If we get here, the result is in an unexpected format
-        log('warning', f"Unexpected result format from getInfo: {type(raw_result)}")
+                        # Return the data as-is if not bytes
+                        return data
         return raw_result  # Return as-is
 
     def commit(self) -> None:
