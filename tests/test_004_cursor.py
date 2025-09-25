@@ -9,11 +9,13 @@ Note: The cursor function is not yet implemented, so related tests are commented
 """
 
 import pytest
-from datetime import datetime, date, time
+from datetime import datetime, date, time, timedelta, timezone
 import time as time_module
 import decimal
 from contextlib import closing
 import mssql_python
+import uuid
+
 
 # Setup test table
 TEST_TABLE = """
@@ -6470,7 +6472,7 @@ def test_only_null_and_empty_binary(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, "#pytest_null_empty_binary")
         db_connection.commit()
-        
+
 # ---------------------- VARCHAR(MAX) ----------------------
 
 def test_varcharmax_short_fetch(cursor, db_connection):
@@ -6727,9 +6729,9 @@ def test_nvarcharmax_large(cursor, db_connection):
 def test_money_smallmoney_insert_fetch(cursor, db_connection):
     """Test inserting and retrieving valid MONEY and SMALLMONEY values including boundaries and typical data"""
     try:
-        drop_table_if_exists(cursor, "dbo.money_test")
+        drop_table_if_exists(cursor, "#pytest_money_test")
         cursor.execute("""
-            CREATE TABLE dbo.money_test (
+            CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY,
@@ -6740,27 +6742,27 @@ def test_money_smallmoney_insert_fetch(cursor, db_connection):
         db_connection.commit()
 
         # Max values
-        cursor.execute("INSERT INTO dbo.money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
                        (decimal.Decimal("922337203685477.5807"), decimal.Decimal("214748.3647"),
                         decimal.Decimal("9999999999999.9999"), decimal.Decimal("1234.5678")))
 
         # Min values
-        cursor.execute("INSERT INTO dbo.money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
                        (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648"),
                         decimal.Decimal("-9999999999999.9999"), decimal.Decimal("-1234.5678")))
 
         # Typical values
-        cursor.execute("INSERT INTO dbo.money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
                        (decimal.Decimal("1234567.8901"), decimal.Decimal("12345.6789"),
                         decimal.Decimal("42.4242"), decimal.Decimal("3.1415")))
 
         # NULL values
-        cursor.execute("INSERT INTO dbo.money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
                        (None, None, None, None))
 
         db_connection.commit()
 
-        cursor.execute("SELECT m, sm, d, n FROM dbo.money_test ORDER BY id")
+        cursor.execute("SELECT m, sm, d, n FROM #pytest_money_test ORDER BY id")
         results = cursor.fetchall()
         assert len(results) == 4, f"Expected 4 rows, got {len(results)}"
 
@@ -6785,16 +6787,15 @@ def test_money_smallmoney_insert_fetch(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"MONEY and SMALLMONEY insert/fetch test failed: {e}")
     finally:
-        drop_table_if_exists(cursor, "dbo.money_test")
+        drop_table_if_exists(cursor, "#pytest_money_test")
         db_connection.commit()
 
 
 def test_money_smallmoney_null_handling(cursor, db_connection):
     """Test that NULL values for MONEY and SMALLMONEY are stored and retrieved correctly"""
     try:
-        drop_table_if_exists(cursor, "dbo.money_test")
         cursor.execute("""
-            CREATE TABLE dbo.money_test (
+            CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
@@ -6803,19 +6804,19 @@ def test_money_smallmoney_null_handling(cursor, db_connection):
         db_connection.commit()
 
         # Row with both NULLs
-        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)", (None, None))
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", (None, None))
 
         # Row with m filled, sm NULL
-        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
                        (decimal.Decimal("123.4500"), None))
 
         # Row with m NULL, sm filled
-        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
                        (None, decimal.Decimal("67.8900")))
 
         db_connection.commit()
 
-        cursor.execute("SELECT m, sm FROM dbo.money_test ORDER BY id")
+        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id")
         results = cursor.fetchall()
         assert len(results) == 3, f"Expected 3 rows, got {len(results)}"
 
@@ -6836,16 +6837,15 @@ def test_money_smallmoney_null_handling(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"MONEY and SMALLMONEY NULL handling test failed: {e}")
     finally:
-        drop_table_if_exists(cursor, "dbo.money_test")
+        drop_table_if_exists(cursor, "#pytest_money_test")
         db_connection.commit()
 
 
 def test_money_smallmoney_roundtrip(cursor, db_connection):
     """Test inserting and retrieving MONEY and SMALLMONEY using decimal.Decimal roundtrip"""
     try:
-        drop_table_if_exists(cursor, "dbo.money_test")
         cursor.execute("""
-            CREATE TABLE dbo.money_test (
+            CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
@@ -6854,10 +6854,10 @@ def test_money_smallmoney_roundtrip(cursor, db_connection):
         db_connection.commit()
 
         values = (decimal.Decimal("12345.6789"), decimal.Decimal("987.6543"))
-        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)", values)
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", values)
         db_connection.commit()
 
-        cursor.execute("SELECT m, sm FROM dbo.money_test ORDER BY id DESC")
+        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id DESC")
         row = cursor.fetchone()
         for i, (val, exp_val) in enumerate(zip(row, values), 1):
             assert val == exp_val, f"col{i} roundtrip mismatch, got {val}, expected {exp_val}"
@@ -6866,16 +6866,16 @@ def test_money_smallmoney_roundtrip(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"MONEY and SMALLMONEY roundtrip test failed: {e}")
     finally:
-        drop_table_if_exists(cursor, "dbo.money_test")
+        drop_table_if_exists(cursor, "#pytest_money_test")
         db_connection.commit()
 
 
 def test_money_smallmoney_boundaries(cursor, db_connection):
     """Test boundary values for MONEY and SMALLMONEY types are handled correctly"""
     try:
-        drop_table_if_exists(cursor, "dbo.money_test")
+        drop_table_if_exists(cursor, "#pytest_money_test")
         cursor.execute("""
-            CREATE TABLE dbo.money_test (
+            CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
@@ -6884,16 +6884,16 @@ def test_money_smallmoney_boundaries(cursor, db_connection):
         db_connection.commit()
 
         # Insert max boundary
-        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
                        (decimal.Decimal("922337203685477.5807"), decimal.Decimal("214748.3647")))
 
         # Insert min boundary
-        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
                        (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648")))
 
         db_connection.commit()
 
-        cursor.execute("SELECT m, sm FROM dbo.money_test ORDER BY id DESC")
+        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id DESC")
         results = cursor.fetchall()
         expected = [
             (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648")),
@@ -6907,16 +6907,15 @@ def test_money_smallmoney_boundaries(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"MONEY and SMALLMONEY boundary values test failed: {e}")
     finally:
-        drop_table_if_exists(cursor, "dbo.money_test")
+        drop_table_if_exists(cursor, "#pytest_money_test")
         db_connection.commit()
 
 
 def test_money_smallmoney_invalid_values(cursor, db_connection):
     """Test that invalid or out-of-range MONEY and SMALLMONEY values raise errors"""
     try:
-        drop_table_if_exists(cursor, "dbo.money_test")
         cursor.execute("""
-            CREATE TABLE dbo.money_test (
+            CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
@@ -6926,20 +6925,325 @@ def test_money_smallmoney_invalid_values(cursor, db_connection):
 
         # Out of range MONEY
         with pytest.raises(Exception):
-            cursor.execute("INSERT INTO dbo.money_test (m) VALUES (?)", (decimal.Decimal("922337203685477.5808"),))
+            cursor.execute("INSERT INTO #pytest_money_test (m) VALUES (?)", (decimal.Decimal("922337203685477.5808"),))
 
         # Out of range SMALLMONEY
         with pytest.raises(Exception):
-            cursor.execute("INSERT INTO dbo.money_test (sm) VALUES (?)", (decimal.Decimal("214748.3648"),))
+            cursor.execute("INSERT INTO #pytest_money_test (sm) VALUES (?)", (decimal.Decimal("214748.3648"),))
 
         # Invalid string
         with pytest.raises(Exception):
-            cursor.execute("INSERT INTO dbo.money_test (m) VALUES (?)", ("invalid_string",))
+            cursor.execute("INSERT INTO #pytest_money_test (m) VALUES (?)", ("invalid_string",))
 
     except Exception as e:
         pytest.fail(f"MONEY and SMALLMONEY invalid values test failed: {e}")
     finally:
-        drop_table_if_exists(cursor, "dbo.money_test")
+        drop_table_if_exists(cursor, "#pytest_money_test")
+        db_connection.commit()
+
+def test_money_smallmoney_roundtrip_executemany(cursor, db_connection):
+    """Test inserting and retrieving MONEY and SMALLMONEY using executemany with decimal.Decimal"""
+    try:
+        cursor.execute("""
+            CREATE TABLE #pytest_money_test (
+                id INT IDENTITY PRIMARY KEY,
+                m MONEY,
+                sm SMALLMONEY
+            )
+        """)
+        db_connection.commit()
+
+        test_data = [
+            (decimal.Decimal("12345.6789"), decimal.Decimal("987.6543")),
+            (decimal.Decimal("0.0001"), decimal.Decimal("0.01")),
+            (None, decimal.Decimal("42.42")),
+            (decimal.Decimal("-1000.99"), None),
+        ]
+
+        # Insert using executemany directly with Decimals
+        cursor.executemany(
+            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
+            test_data
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id")
+        results = cursor.fetchall()
+        assert len(results) == len(test_data)
+
+        for i, (row, expected) in enumerate(zip(results, test_data), 1):
+            for j, (val, exp_val) in enumerate(zip(row, expected), 1):
+                if exp_val is None:
+                    assert val is None
+                else:
+                    assert val == exp_val
+                    assert isinstance(val, decimal.Decimal)
+
+    finally:
+        drop_table_if_exists(cursor, "#pytest_money_test")
+        db_connection.commit()
+
+
+def test_money_smallmoney_executemany_null_handling(cursor, db_connection):
+    """Test inserting NULLs into MONEY and SMALLMONEY using executemany"""
+    try:
+        cursor.execute("""
+            CREATE TABLE #pytest_money_test (
+                id INT IDENTITY PRIMARY KEY,
+                m MONEY,
+                sm SMALLMONEY
+            )
+        """)
+        db_connection.commit()
+
+        rows = [
+            (None, None),
+            (decimal.Decimal("123.4500"), None),
+            (None, decimal.Decimal("67.8900")),
+        ]
+        cursor.executemany("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", rows)
+        db_connection.commit()
+
+        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id ASC")
+        results = cursor.fetchall()
+        assert len(results) == len(rows)
+
+        for row, expected in zip(results, rows):
+            for val, exp_val in zip(row, expected):
+                if exp_val is None:
+                    assert val is None
+                else:
+                    assert val == exp_val
+                    assert isinstance(val, decimal.Decimal)
+
+    finally:
+        drop_table_if_exists(cursor, "#pytest_money_test")
+        db_connection.commit()
+
+def test_money_smallmoney_out_of_range_low(cursor, db_connection):
+    """Test inserting values just below the minimum MONEY/SMALLMONEY range raises error"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_money_test")
+        cursor.execute("CREATE TABLE #pytest_money_test (m MONEY, sm SMALLMONEY)")
+        db_connection.commit()
+
+        # Just below minimum MONEY
+        with pytest.raises(Exception):
+            cursor.execute(
+                "INSERT INTO #pytest_money_test (m) VALUES (?)",
+                (decimal.Decimal("-922337203685477.5809"),)
+            )
+
+        # Just below minimum SMALLMONEY
+        with pytest.raises(Exception):
+            cursor.execute(
+                "INSERT INTO #pytest_money_test (sm) VALUES (?)",
+                (decimal.Decimal("-214748.3649"),)
+            )
+    finally:
+        drop_table_if_exists(cursor, "#pytest_money_test")
+        db_connection.commit()
+
+def test_uuid_insert_and_select_none(cursor, db_connection):
+    """Test inserting and retrieving None in a nullable UUID column."""
+    table_name = "#pytest_uuid_nullable"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER,
+                name NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        # Insert a row with None for the UUID
+        cursor.execute(f"INSERT INTO {table_name} (id, name) VALUES (?, ?)", [None, "Bob"])
+        db_connection.commit()
+
+        # Fetch the row
+        cursor.execute(f"SELECT id, name FROM {table_name}")
+        retrieved_uuid, retrieved_name = cursor.fetchone()
+
+        # Assert correct results
+        assert retrieved_uuid is None, f"Expected None, got {retrieved_uuid}"
+        assert retrieved_name == "Bob"
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_insert_multiple_uuids(cursor, db_connection):
+    """Test inserting multiple UUIDs and verifying retrieval."""
+    table_name = "#pytest_uuid_multiple"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER PRIMARY KEY,
+                description NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        # Prepare test data
+        uuids_to_insert = {f"Item {i}": uuid.uuid4() for i in range(5)}
+
+        # Insert UUIDs and descriptions
+        for desc, uid in uuids_to_insert.items():
+            cursor.execute(f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", [uid, desc])
+        db_connection.commit()
+
+        # Fetch all rows
+        cursor.execute(f"SELECT id, description FROM {table_name}")
+        rows = cursor.fetchall()
+
+        # Verify each fetched row
+        assert len(rows) == len(uuids_to_insert), "Fetched row count mismatch"
+
+        for retrieved_uuid, retrieved_desc in rows:
+            assert isinstance(retrieved_uuid, uuid.UUID), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
+            expected_uuid = uuids_to_insert[retrieved_desc]
+            assert retrieved_uuid == expected_uuid, f"UUID mismatch for '{retrieved_desc}': expected {expected_uuid}, got {retrieved_uuid}"
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_fetchmany_uuids(cursor, db_connection):
+    """Test fetching multiple UUID rows with fetchmany()."""
+    table_name = "#pytest_uuid_fetchmany"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER PRIMARY KEY,
+                description NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        uuids_to_insert = {f"Item {i}": uuid.uuid4() for i in range(10)}
+
+        for desc, uid in uuids_to_insert.items():
+            cursor.execute(f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", [uid, desc])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, description FROM {table_name}")
+
+        # Fetch in batches of 3
+        batch_size = 3
+        fetched_rows = []
+        while True:
+            batch = cursor.fetchmany(batch_size)
+            if not batch:
+                break
+            fetched_rows.extend(batch)
+
+        # Verify all rows
+        assert len(fetched_rows) == len(uuids_to_insert), "Fetched row count mismatch"
+        for retrieved_uuid, retrieved_desc in fetched_rows:
+            assert isinstance(retrieved_uuid, uuid.UUID)
+            expected_uuid = uuids_to_insert[retrieved_desc]
+            assert retrieved_uuid == expected_uuid
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+
+def test_uuid_insert_with_none(cursor, db_connection):
+    """Test inserting None into a UUID column results in a NULL value."""
+    table_name = "#pytest_uuid_none"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER,
+                name NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        cursor.execute(f"INSERT INTO {table_name} (id, name) VALUES (?, ?)", [None, "Alice"])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id, name FROM {table_name}")
+        retrieved_uuid, retrieved_name = cursor.fetchone()
+
+        assert retrieved_uuid is None, f"Expected NULL UUID, got {retrieved_uuid}"
+        assert retrieved_name == "Alice"
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+def test_invalid_uuid_inserts(cursor, db_connection):
+    """Test inserting invalid UUID values raises appropriate errors."""
+    table_name = "#pytest_uuid_invalid"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id UNIQUEIDENTIFIER)")
+        db_connection.commit()
+
+        invalid_values = [
+            "12345",          # Too short
+            "not-a-uuid",     # Not a UUID string
+            123456789,        # Integer
+            12.34,            # Float
+            object()          # Arbitrary object
+        ]
+
+        for val in invalid_values:
+            with pytest.raises(Exception):
+                cursor.execute(f"INSERT INTO {table_name} (id) VALUES (?)", [val])
+                db_connection.commit()
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+def test_duplicate_uuid_inserts(cursor, db_connection):
+    """Test that inserting duplicate UUIDs into a PK column raises an error."""
+    table_name = "#pytest_uuid_duplicate"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id UNIQUEIDENTIFIER PRIMARY KEY)")
+        db_connection.commit()
+
+        uid = uuid.uuid4()
+        cursor.execute(f"INSERT INTO {table_name} (id) VALUES (?)", [uid])
+        db_connection.commit()
+
+        with pytest.raises(Exception):
+            cursor.execute(f"INSERT INTO {table_name} (id) VALUES (?)", [uid])
+            db_connection.commit()
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+def test_extreme_uuids(cursor, db_connection):
+    """Test inserting extreme but valid UUIDs."""
+    table_name = "#pytest_uuid_extreme"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"CREATE TABLE {table_name} (id UNIQUEIDENTIFIER)")
+        db_connection.commit()
+
+        extreme_uuids = [
+            uuid.UUID(int=0),                 # All zeros
+            uuid.UUID(int=(1 << 128) - 1),    # All ones
+        ]
+
+        for uid in extreme_uuids:
+            cursor.execute(f"INSERT INTO {table_name} (id) VALUES (?)", [uid])
+        db_connection.commit()
+
+        cursor.execute(f"SELECT id FROM {table_name}")
+        rows = cursor.fetchall()
+        fetched_uuids = [row[0] for row in rows]
+
+        for uid in extreme_uuids:
+            assert uid in fetched_uuids, f"Extreme UUID {uid} not retrieved correctly"
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
 
 def test_decimal_separator_with_multiple_values(cursor, db_connection):
@@ -7354,6 +7658,169 @@ def test_decimal_separator_calculations(cursor, db_connection):
         
         # Cleanup
         cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
+        db_connection.commit()
+
+def test_datetimeoffset_read_write(cursor, db_connection):
+    """Test reading and writing timezone-aware DATETIMEOFFSET values."""
+    try:
+        test_cases = [
+            # Valid timezone-aware datetimes
+            datetime(2023, 10, 26, 10, 30, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))),
+            datetime(2023, 10, 27, 15, 45, 10, 123456, tzinfo=timezone(timedelta(hours=-8))),
+            datetime(2023, 10, 28, 20, 0, 5, 987654, tzinfo=timezone.utc)
+        ]
+
+        cursor.execute("CREATE TABLE #pytest_datetimeoffset_read_write (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+
+        insert_stmt = "INSERT INTO #pytest_datetimeoffset_read_write (id, dto_column) VALUES (?, ?);"
+        for i, dt in enumerate(test_cases):
+            cursor.execute(insert_stmt, i, dt)
+        db_connection.commit()
+
+        cursor.execute("SELECT id, dto_column FROM #pytest_datetimeoffset_read_write ORDER BY id;")
+        for i, dt in enumerate(test_cases):
+            row = cursor.fetchone()
+            assert row is not None
+            fetched_id, fetched_dt = row
+            assert fetched_dt.tzinfo is not None
+            expected_utc = dt.astimezone(timezone.utc)
+            fetched_utc = fetched_dt.astimezone(timezone.utc)
+            # Ignore sub-microsecond differences
+            expected_utc = expected_utc.replace(microsecond=int(expected_utc.microsecond / 1000) * 1000)
+            fetched_utc = fetched_utc.replace(microsecond=int(fetched_utc.microsecond / 1000) * 1000)
+            assert fetched_utc == expected_utc
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_read_write;")
+        db_connection.commit()
+
+def test_datetimeoffset_max_min_offsets(cursor, db_connection):
+    """
+    Test inserting and retrieving DATETIMEOFFSET with maximum and minimum allowed offsets (+14:00 and -14:00).
+    Uses fetchone() for retrieval.
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_datetimeoffset_read_write (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+
+        test_cases = [
+            (1, datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone(timedelta(hours=14)))),  # max offset
+            (2, datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone(timedelta(hours=-14)))), # min offset
+        ]
+
+        insert_stmt = "INSERT INTO #pytest_datetimeoffset_read_write (id, dto_column) VALUES (?, ?);"
+        for row_id, dt in test_cases:
+            cursor.execute(insert_stmt, row_id, dt)
+        db_connection.commit()
+
+        cursor.execute("SELECT id, dto_column FROM #pytest_datetimeoffset_read_write ORDER BY id;")
+
+        for expected_id, expected_dt in test_cases:
+            row = cursor.fetchone()
+            assert row is not None, f"No row fetched for id {expected_id}."
+            fetched_id, fetched_dt = row
+
+            assert fetched_id == expected_id, f"ID mismatch: expected {expected_id}, got {fetched_id}"
+            assert fetched_dt.tzinfo is not None, f"Fetched datetime object is naive for id {fetched_id}"
+
+            # Compare in UTC to avoid offset differences
+            expected_utc = expected_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            fetched_utc = fetched_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            assert fetched_utc == expected_utc, (
+                f"Value mismatch for id {expected_id}: expected UTC {expected_utc}, got {fetched_utc}"
+            )
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_read_write;")
+        db_connection.commit()
+
+def test_datetimeoffset_invalid_offsets(cursor, db_connection):
+    """Verify driver rejects offsets beyond ±14 hours."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_datetimeoffset_invalid_offsets (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+        
+        with pytest.raises(Exception):
+            cursor.execute("INSERT INTO #pytest_datetimeoffset_invalid_offsets (id, dto_column) VALUES (?, ?);",
+                           1, datetime(2025, 1, 1, 12, 0, tzinfo=timezone(timedelta(hours=15))))
+        
+        with pytest.raises(Exception):
+            cursor.execute("INSERT INTO #pytest_datetimeoffset_invalid_offsets (id, dto_column) VALUES (?, ?);",
+                           2, datetime(2025, 1, 1, 12, 0, tzinfo=timezone(timedelta(hours=-15))))
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_invalid_offsets;")
+        db_connection.commit()
+
+def test_datetimeoffset_dst_transitions(cursor, db_connection):
+    """
+    Test inserting and retrieving DATETIMEOFFSET values around DST transitions.
+    Ensures that driver handles DST correctly and does not crash.
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_datetimeoffset_dst_transitions (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+
+        # Example DST transition dates (replace with actual region offset if needed)
+        dst_test_cases = [
+            (1, datetime(2025, 3, 9, 1, 59, 59, tzinfo=timezone(timedelta(hours=-5)))),  # Just before spring forward
+            (2, datetime(2025, 3, 9, 3, 0, 0, tzinfo=timezone(timedelta(hours=-4)))),   # Just after spring forward
+            (3, datetime(2025, 11, 2, 1, 59, 59, tzinfo=timezone(timedelta(hours=-4)))), # Just before fall back
+            (4, datetime(2025, 11, 2, 1, 0, 0, tzinfo=timezone(timedelta(hours=-5)))),   # Just after fall back
+        ]
+
+        insert_stmt = "INSERT INTO #pytest_datetimeoffset_dst_transitions (id, dto_column) VALUES (?, ?);"
+        for row_id, dt in dst_test_cases:
+            cursor.execute(insert_stmt, row_id, dt)
+        db_connection.commit()
+
+        cursor.execute("SELECT id, dto_column FROM #pytest_datetimeoffset_dst_transitions ORDER BY id;")
+
+        for expected_id, expected_dt in dst_test_cases:
+            row = cursor.fetchone()
+            assert row is not None, f"No row fetched for id {expected_id}."
+            fetched_id, fetched_dt = row
+
+            assert fetched_id == expected_id, f"ID mismatch: expected {expected_id}, got {fetched_id}"
+            assert fetched_dt.tzinfo is not None, f"Fetched datetime object is naive for id {fetched_id}"
+
+            # Compare UTC time to avoid issues due to offsets changing in DST
+            expected_utc = expected_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            fetched_utc = fetched_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            assert fetched_utc == expected_utc, (
+                f"Value mismatch for id {expected_id}: expected UTC {expected_utc}, got {fetched_utc}"
+            )
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_dst_transitions;")
+        db_connection.commit()
+
+def test_datetimeoffset_leap_second(cursor, db_connection):
+    """Ensure driver handles leap-second-like microsecond edge cases without crashing."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_datetimeoffset_leap_second (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+        
+        leap_second_sim = datetime(2023, 12, 31, 23, 59, 59, 999999, tzinfo=timezone.utc)
+        cursor.execute("INSERT INTO #pytest_datetimeoffset_leap_second (id, dto_column) VALUES (?, ?);", 1, leap_second_sim)
+        db_connection.commit()
+
+        row = cursor.execute("SELECT dto_column FROM #pytest_datetimeoffset_leap_second;").fetchone()
+        assert row[0].tzinfo is not None
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_leap_second;")
+        db_connection.commit()
+
+def test_datetimeoffset_malformed_input(cursor, db_connection):
+    """Verify driver raises error for invalid datetimeoffset strings."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_datetimeoffset_malformed_input (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+        
+        with pytest.raises(Exception):
+            cursor.execute("INSERT INTO #pytest_datetimeoffset_malformed_input (id, dto_column) VALUES (?, ?);",
+                           1, "2023-13-45 25:61:00 +99:99")  # invalid string
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_malformed_input;")
         db_connection.commit()
 
 def test_lowercase_attribute(cursor, db_connection):
@@ -10193,7 +10660,6 @@ def test_decimal_separator_calculations(cursor, db_connection):
         
         # Cleanup
         cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
-        db_connection.commit()
 
 def test_close(db_connection):
     """Test closing the cursor"""
