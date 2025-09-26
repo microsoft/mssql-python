@@ -42,8 +42,8 @@ We are currently in **Public Preview**.
 ## What's new in v0.12.0
 
 - **Complex Data Type Support:** Added native support for DATETIMEOFFSET and UNIQUEIDENTIFIER data types with full round-trip handling, enabling seamless integration with Python's timezone-aware `datetime` objects and `uuid.UUID` types.
-- **Enhanced Financial Data Operations:** Extended MONEY and SMALLMONEY support to `executemany` operations with proper NULL handling and decimal conversion for improved bulk financial data processing.
-- **Improved Database Metadata API:** Refactored `getinfo()` method with enhanced ODBC metadata retrieval, consistent type handling, and expanded constant exposure for more reliable database information access.
+- **Support for monetary or currency values data types:** Extended MONEY and SMALLMONEY support to `executemany` operations with proper NULL handling and decimal conversion for improved bulk financial data processing.
+- **Improved Database Metadata API:** Added `getinfo()` method with enhanced ODBC metadata retrieval, allowing users to query driver/data source information using ODBC info types.
 - **Data Processing Optimizations:** Removed aggressive datetime parsing to prevent incorrect type conversions and improve data integrity across diverse datetime formats and string data.
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
