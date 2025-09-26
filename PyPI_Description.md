@@ -43,7 +43,6 @@ We are currently in **Public Preview**.
 
 - **Complex Data Type Support:** Added native support for DATETIMEOFFSET and UNIQUEIDENTIFIER data types with full round-trip handling, enabling seamless integration with Python's timezone-aware `datetime` objects and `uuid.UUID` types.
 - **Enhanced Financial Data Operations:** Extended MONEY and SMALLMONEY support to `executemany` operations with proper NULL handling and decimal conversion for improved bulk financial data processing.
-- **Comprehensive Development Infrastructure:** Implemented unified Python and C++ code coverage reporting with automated build instrumentation, CodeQL security analysis, and enhanced PR automation workflows.
 - **Improved Database Metadata API:** Refactored `getinfo()` method with enhanced ODBC metadata retrieval, consistent type handling, and expanded constant exposure for more reliable database information access.
 - **Data Processing Optimizations:** Removed aggressive datetime parsing to prevent incorrect type conversions and improve data integrity across diverse datetime formats and string data.
 
