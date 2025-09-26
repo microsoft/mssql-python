@@ -362,7 +362,7 @@ class Cursor:
                     0,
                     False,
                 )
-            
+                
             try:
                 val = uuid.UUID(param)
                 parameters_list[i] = val.bytes_le
