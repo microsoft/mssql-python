@@ -12,14 +12,14 @@
 #include <iostream>
 #include <utility>  // std::forward
 #include <filesystem>
-
 //-------------------------------------------------------------------------------------------------
 // Macro definitions
 //-------------------------------------------------------------------------------------------------
 
 // This constant is not exposed via sql.h, hence define it here
 #define SQL_SS_TIME2 (-154)
-
+#define SQL_SS_TIMESTAMPOFFSET (-155)
+#define SQL_C_SS_TIMESTAMPOFFSET (0x4001)
 #define MAX_DIGITS_IN_NUMERIC 64
 
 #define STRINGIFY_FOR_CASE(x) \
@@ -92,6 +92,20 @@ struct ColumnBuffers {
           timeBuffers(numCols),
           guidBuffers(numCols),
           indicators(numCols, std::vector<SQLLEN>(fetchSize)) {}
+};
+
+// Struct to hold the DateTimeOffset structure
+struct DateTimeOffset
+{
+    SQLSMALLINT    year;
+    SQLUSMALLINT   month;
+    SQLUSMALLINT   day;
+    SQLUSMALLINT   hour;
+    SQLUSMALLINT   minute;
+    SQLUSMALLINT   second;
+    SQLUINTEGER    fraction;        // Nanoseconds
+    SQLSMALLINT    timezone_hour;   // Offset hours from UTC
+    SQLSMALLINT    timezone_minute; // Offset minutes from UTC
 };
 
 //-------------------------------------------------------------------------------------------------
@@ -463,6 +477,49 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 dataPtr = static_cast<void*>(sqlTimePtr);
                 break;
             }
+            case SQL_C_SS_TIMESTAMPOFFSET: {
+                py::object datetimeType = py::module_::import("datetime").attr("datetime");
+                if (!py::isinstance(param, datetimeType)) {
+                    ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
+                }
+                // Checking if the object has a timezone
+                py::object tzinfo = param.attr("tzinfo");
+                if (tzinfo.is_none()) {
+                    ThrowStdException("Datetime object must have tzinfo for SQL_C_SS_TIMESTAMPOFFSET at paramIndex " + std::to_string(paramIndex));
+                }
+
+                DateTimeOffset* dtoPtr = AllocateParamBuffer<DateTimeOffset>(paramBuffers);
+
+                dtoPtr->year = static_cast<SQLSMALLINT>(param.attr("year").cast<int>());
+                dtoPtr->month = static_cast<SQLUSMALLINT>(param.attr("month").cast<int>());
+                dtoPtr->day = static_cast<SQLUSMALLINT>(param.attr("day").cast<int>());
+                dtoPtr->hour = static_cast<SQLUSMALLINT>(param.attr("hour").cast<int>());
+                dtoPtr->minute = static_cast<SQLUSMALLINT>(param.attr("minute").cast<int>());
+                dtoPtr->second = static_cast<SQLUSMALLINT>(param.attr("second").cast<int>());
+                dtoPtr->fraction = static_cast<SQLUINTEGER>(param.attr("microsecond").cast<int>() * 1000);
+
+                py::object utcoffset = tzinfo.attr("utcoffset")(param);
+                if (utcoffset.is_none()) {
+                    ThrowStdException("Datetime object's tzinfo.utcoffset() returned None at paramIndex " + std::to_string(paramIndex));
+                }
+
+                int total_seconds = static_cast<int>(utcoffset.attr("total_seconds")().cast<double>());
+                const int MAX_OFFSET = 14 * 3600;
+                const int MIN_OFFSET = -14 * 3600;
+
+                if (total_seconds > MAX_OFFSET || total_seconds < MIN_OFFSET) {
+                    ThrowStdException("Datetimeoffset tz offset out of SQL Server range (-14h to +14h) at paramIndex " + std::to_string(paramIndex));
+                }
+                std::div_t div_result = std::div(total_seconds, 3600);
+                dtoPtr->timezone_hour = static_cast<SQLSMALLINT>(div_result.quot);
+                dtoPtr->timezone_minute = static_cast<SQLSMALLINT>(div(div_result.rem, 60).quot);
+                
+                dataPtr = static_cast<void*>(dtoPtr);
+                bufferLength = sizeof(DateTimeOffset);
+                strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
+                *strLenOrIndPtr = bufferLength;
+                break;
+            }
             case SQL_C_TYPE_TIMESTAMP: {
                 py::object datetimeType = py::module_::import("datetime").attr("datetime");
                 if (!py::isinstance(param, datetimeType)) {
@@ -540,7 +597,6 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
             }
         }
         assert(SQLBindParameter_ptr && SQLGetStmtAttr_ptr && SQLSetDescField_ptr);
-
         RETCODE rc = SQLBindParameter_ptr(
             hStmt,
             static_cast<SQLUSMALLINT>(paramIndex + 1),  /* 1-based indexing */
@@ -2507,6 +2563,55 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
                         "code - {}. Returning NULL value instead",
                         i, dataType, ret);
+                    row.append(py::none());
+                }
+                break;
+            }
+            case SQL_SS_TIMESTAMPOFFSET: {
+                DateTimeOffset dtoValue;
+                SQLLEN indicator;
+                ret = SQLGetData_ptr(
+                    hStmt,
+                    i, SQL_C_SS_TIMESTAMPOFFSET,
+                    &dtoValue,
+                    sizeof(dtoValue),
+                    &indicator
+                );
+                if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
+                    LOG("[Fetch] Retrieved DTO: {}-{}-{} {}:{}:{}, fraction(ns)={}, tz_hour={}, tz_minute={}",
+                        dtoValue.year, dtoValue.month, dtoValue.day,
+                        dtoValue.hour, dtoValue.minute, dtoValue.second,
+                        dtoValue.fraction,
+                        dtoValue.timezone_hour, dtoValue.timezone_minute
+                    );
+
+                    int totalMinutes = dtoValue.timezone_hour * 60 + dtoValue.timezone_minute;
+                    // Validating offset
+                    if (totalMinutes < -24 * 60 || totalMinutes > 24 * 60) {
+                        std::ostringstream oss;
+                        oss << "Invalid timezone offset from SQL_SS_TIMESTAMPOFFSET_STRUCT: "
+                            << totalMinutes << " minutes for column " << i;
+                        ThrowStdException(oss.str());
+                    }
+                    // Convert fraction from ns to µs
+                    int microseconds = dtoValue.fraction / 1000;
+                    py::object datetime = py::module_::import("datetime");
+                    py::object tzinfo = datetime.attr("timezone")(
+                        datetime.attr("timedelta")(py::arg("minutes") = totalMinutes)
+                    );
+                    py::object py_dt = datetime.attr("datetime")(
+                        dtoValue.year,
+                        dtoValue.month,
+                        dtoValue.day,
+                        dtoValue.hour,
+                        dtoValue.minute,
+                        dtoValue.second,
+                        microseconds,
+                        tzinfo
+                    );
+                    row.append(py_dt);
+                } else {
+                    LOG("Error fetching DATETIMEOFFSET for column {}, ret={}", i, ret);
                     row.append(py::none());
                 }
                 break;
