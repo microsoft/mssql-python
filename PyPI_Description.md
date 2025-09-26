@@ -39,15 +39,13 @@ PyBind11 provides:
 
 We are currently in **Public Preview**.
 
-## What's new in v0.11.0
+## What's new in v0.12.0
 
-- **Database Metadata & Introspection:** Added comprehensive `getInfo()` method and extensive catalog APIs (`SQLGetTypeInfo`, `SQLProcedures`, `SQLForeignKeys`, `SQLColumns`) for complete database schema discovery and introspection capabilities.
-- **Advanced Parameter Management:** Implemented `setinputsizes()` with SQL type constants and enhanced parameter validation through the `SQLTypes` class for precise type control in parameterized queries.
-- **Large Data Streaming Enhancements:** Extended streaming support to VARBINARY(MAX) and VARCHAR(MAX) across all fetch operations (`fetchone`, `fetchmany`, `fetchall`) with improved chunked retrieval for efficient memory usage.
-- **Output Data Conversion System:** Introduced flexible output converter framework with `add_output_converter()`, `remove_output_converter()`, and related methods for customizable data transformations during result fetching.
-- **Connection-Level Execute:** Added direct `execute()` method to Connection class for streamlined query execution without explicit cursor management.
-- **Financial Data Type Support:** Comprehensive support for SQL Server MONEY and SMALLMONEY types with proper boundary value handling and decimal precision.
-- **Enhanced Configuration APIs:** Added connection timeout control, decimal separator configuration (`getDecimalSeperator()`, `setDecimalSeperator()`), and improved global variable management.
+- **Complex Data Type Support:** Added native support for DATETIMEOFFSET and UNIQUEIDENTIFIER data types with full round-trip handling, enabling seamless integration with Python's timezone-aware `datetime` objects and `uuid.UUID` types.
+- **Enhanced Financial Data Operations:** Extended MONEY and SMALLMONEY support to `executemany` operations with proper NULL handling and decimal conversion for improved bulk financial data processing.
+- **Comprehensive Development Infrastructure:** Implemented unified Python and C++ code coverage reporting with automated build instrumentation, CodeQL security analysis, and enhanced PR automation workflows.
+- **Improved Database Metadata API:** Refactored `getinfo()` method with enhanced ODBC metadata retrieval, consistent type handling, and expanded constant exposure for more reliable database information access.
+- **Data Processing Optimizations:** Removed aggressive datetime parsing to prevent incorrect type conversions and improve data integrity across diverse datetime formats and string data.
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
 
