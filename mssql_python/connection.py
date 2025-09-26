@@ -25,6 +25,8 @@ from mssql_python.constants import ConstantsDDBC
 
 # Add SQL_WMETADATA constant for metadata decoding configuration
 SQL_WMETADATA = -99  # Special flag for column name decoding
+# Threshold to determine if an info type is string-based
+INFO_TYPE_STRING_THRESHOLD = 10000
 
 # UTF-16 encoding variants that should use SQL_WCHAR by default
 UTF16_ENCODINGS = frozenset([
@@ -872,7 +874,214 @@ class Connection:
                 ddbc_error="Cannot get info on closed connection",
             )
         
-        return self._conn.get_info(info_type)
+        # Check that info_type is an integer
+        if not isinstance(info_type, int):
+            raise ValueError(f"info_type must be an integer, got {type(info_type).__name__}")
+        
+        # Check for invalid info_type values
+        if info_type < 0:
+            log('warning', f"Invalid info_type: {info_type}. Must be a positive integer.")
+            return None
+        
+        # Get the raw result from the C++ layer
+        try:
+            raw_result = self._conn.get_info(info_type)
+        except Exception as e:
+            # Log the error and return None for invalid info types
+            log('warning', f"getinfo({info_type}) failed: {e}")
+            return None
+        
+        if raw_result is None:
+            return None
+        
+        # Check if the result is already a simple type
+        if isinstance(raw_result, (str, int, bool)):
+            return raw_result
+        
+        # If it's a dictionary with data and metadata
+        if isinstance(raw_result, dict) and "data" in raw_result:
+            # Extract data and metadata from the raw result
+            data = raw_result["data"]
+            length = raw_result["length"]
+            
+            # Debug logging to understand the issue better
+            log('debug', f"getinfo: info_type={info_type}, length={length}, data_type={type(data)}")
+            
+            # Define constants for different return types
+            # String types - these return strings in pyodbc
+            string_type_constants = {
+                GetInfoConstants.SQL_DATA_SOURCE_NAME.value,
+                GetInfoConstants.SQL_DRIVER_NAME.value,
+                GetInfoConstants.SQL_DRIVER_VER.value,
+                GetInfoConstants.SQL_SERVER_NAME.value,
+                GetInfoConstants.SQL_USER_NAME.value,
+                GetInfoConstants.SQL_DRIVER_ODBC_VER.value,
+                GetInfoConstants.SQL_IDENTIFIER_QUOTE_CHAR.value,
+                GetInfoConstants.SQL_CATALOG_NAME_SEPARATOR.value,
+                GetInfoConstants.SQL_CATALOG_TERM.value,
+                GetInfoConstants.SQL_SCHEMA_TERM.value,
+                GetInfoConstants.SQL_TABLE_TERM.value,
+                GetInfoConstants.SQL_KEYWORDS.value,
+                GetInfoConstants.SQL_PROCEDURE_TERM.value,
+                GetInfoConstants.SQL_SPECIAL_CHARACTERS.value,
+                GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value
+            }
+            
+            # Boolean 'Y'/'N' types
+            yn_type_constants = {
+                GetInfoConstants.SQL_ACCESSIBLE_PROCEDURES.value,
+                GetInfoConstants.SQL_ACCESSIBLE_TABLES.value,
+                GetInfoConstants.SQL_DATA_SOURCE_READ_ONLY.value,
+                GetInfoConstants.SQL_EXPRESSIONS_IN_ORDERBY.value,
+                GetInfoConstants.SQL_LIKE_ESCAPE_CLAUSE.value,
+                GetInfoConstants.SQL_MULTIPLE_ACTIVE_TXN.value,
+                GetInfoConstants.SQL_NEED_LONG_DATA_LEN.value,
+                GetInfoConstants.SQL_PROCEDURES.value
+            }
+    
+            # Numeric type constants that return integers
+            numeric_type_constants = {
+                GetInfoConstants.SQL_MAX_COLUMN_NAME_LEN.value,
+                GetInfoConstants.SQL_MAX_TABLE_NAME_LEN.value,
+                GetInfoConstants.SQL_MAX_SCHEMA_NAME_LEN.value,
+                GetInfoConstants.SQL_MAX_CATALOG_NAME_LEN.value,
+                GetInfoConstants.SQL_MAX_IDENTIFIER_LEN.value,
+                GetInfoConstants.SQL_MAX_STATEMENT_LEN.value,
+                GetInfoConstants.SQL_MAX_DRIVER_CONNECTIONS.value,
+                GetInfoConstants.SQL_NUMERIC_FUNCTIONS.value,
+                GetInfoConstants.SQL_STRING_FUNCTIONS.value,
+                GetInfoConstants.SQL_DATETIME_FUNCTIONS.value,
+                GetInfoConstants.SQL_TXN_CAPABLE.value,
+                GetInfoConstants.SQL_DEFAULT_TXN_ISOLATION.value,
+                GetInfoConstants.SQL_CURSOR_COMMIT_BEHAVIOR.value
+            }
+    
+            # Determine the type of information we're dealing with
+            is_string_type = info_type > INFO_TYPE_STRING_THRESHOLD or info_type in string_type_constants
+            is_yn_type = info_type in yn_type_constants
+            is_numeric_type = info_type in numeric_type_constants
+            
+            # Process the data based on type
+            if is_string_type:
+                # For string data, ensure we properly handle the byte array
+                if isinstance(data, bytes):
+                    # Make sure we use the correct amount of data based on length
+                    actual_data = data[:length]
+                    
+                    # Now decode the string data
+                    try:
+                        return actual_data.decode('utf-8').rstrip('\0')
+                    except UnicodeDecodeError:
+                        try:
+                            return actual_data.decode('latin1').rstrip('\0')
+                        except Exception as e:
+                            log('error', f"Failed to decode string in getinfo: {e}. Returning None to avoid silent corruption.")
+                            # Explicitly return None to signal decoding failure
+                            return None
+                else:
+                    # If it's not bytes, return as is
+                    return data
+            elif is_yn_type:
+                # For Y/N types, pyodbc returns a string 'Y' or 'N'
+                if isinstance(data, bytes) and length >= 1:
+                    byte_val = data[0]
+                    if byte_val in (b'Y'[0], b'y'[0], 1):
+                        return 'Y'
+                    else:
+                        return 'N'
+                else:
+                    # If it's not a byte or we can't determine, default to 'N'
+                    return 'N'
+            elif is_numeric_type:
+                # Handle numeric types based on length
+                if isinstance(data, bytes):
+                    # Map byte length → signed int size
+                    int_sizes = {
+                        1: lambda d: int(d[0]),
+                        2: lambda d: int.from_bytes(d[:2], "little", signed=True),
+                        4: lambda d: int.from_bytes(d[:4], "little", signed=True),
+                        8: lambda d: int.from_bytes(d[:8], "little", signed=True),
+                    }
+    
+                    # Direct numeric conversion if supported length
+                    if length in int_sizes:
+                        result = int_sizes[length](data)
+                        return int(result)
+    
+                    # Helper: check if all chars are digits
+                    def is_digit_bytes(b: bytes) -> bool:
+                        return all(c in b"0123456789" for c in b)
+    
+                    # Helper: check if bytes are ASCII-printable or NUL padded
+                    def is_printable_bytes(b: bytes) -> bool:
+                        return all(32 <= c <= 126 or c == 0 for c in b)
+    
+                    chunk = data[:length]
+    
+                    # Try interpret as integer string
+                    if is_digit_bytes(chunk):
+                        return int(chunk)
+    
+                    # Try decode as ASCII/UTF-8 string
+                    if is_printable_bytes(chunk):
+                        str_val = chunk.decode("utf-8", errors="replace").rstrip("\0")
+                        return int(str_val) if str_val.isdigit() else str_val
+    
+                    # For 16-bit values that might be returned for max lengths
+                    if length == 2:
+                        return int.from_bytes(data[:2], "little", signed=True)
+                    
+                    # For 32-bit values (common for bitwise flags)
+                    if length == 4:
+                        return int.from_bytes(data[:4], "little", signed=True)
+    
+                    # Fallback: try to convert to int if possible
+                    try:
+                        if length <= 8:
+                            return int.from_bytes(data[:length], "little", signed=True)
+                    except Exception:
+                        pass
+                    
+                    # Last resort: return as integer if all else fails
+                    try:
+                        return int.from_bytes(data[:min(length, 8)], "little", signed=True)
+                    except Exception:
+                        return 0
+                elif isinstance(data, (int, float)):
+                    # Already numeric
+                    return int(data)
+                else:
+                    # Try to convert to int if it's a string
+                    try:
+                        if isinstance(data, str) and data.isdigit():
+                            return int(data)
+                    except Exception:
+                        pass
+                    
+                    # Return as is if we can't convert
+                    return data
+            else:
+                # For other types, try to determine the most appropriate type
+                if isinstance(data, bytes):
+                    # Try to convert to string first
+                    try:
+                        return data[:length].decode('utf-8').rstrip('\0')
+                    except UnicodeDecodeError:
+                        pass
+                    
+                    # Try to convert to int for short binary data
+                    try:
+                        if length <= 8:
+                            return int.from_bytes(data[:length], "little", signed=True)
+                    except Exception:
+                        pass
+                    
+                    # Return as is if we can't determine
+                    return data
+                else:
+                    return data
+                    
+        return raw_result  # Return as-is
 
     def commit(self) -> None:
         """
