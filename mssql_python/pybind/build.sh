@@ -26,6 +26,13 @@ else
     exit 1
 fi
 
+# Check for coverage mode and set flags accordingly
+COVERAGE_MODE=false
+if [[ "${1:-}" == "codecov" || "${1:-}" == "--coverage" ]]; then
+    COVERAGE_MODE=true
+    echo "[MODE] Enabling Clang coverage instrumentation"
+fi
+
 # Get Python version from active interpreter
 PYTAG=$(python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')")
 
@@ -47,20 +54,30 @@ if [ -d "build" ]; then
     echo "Build directory removed."
 fi
 
-# Create build directory for universal binary
+# Create build directory
 BUILD_DIR="${SOURCE_DIR}/build"
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 echo "[DIAGNOSTIC] Changed to build directory: ${BUILD_DIR}"
 
-# Configure CMake (architecture settings handled in CMakeLists.txt)
+# Configure CMake (with Clang coverage instrumentation on Linux only - codecov is not supported for macOS)
 echo "[DIAGNOSTIC] Running CMake configure"
-if [[ "$OS" == "macOS" ]]; then
-    echo "[DIAGNOSTIC] Configuring for macOS (universal2 is set automatically)"
-    cmake -DMACOS_STRING_FIX=ON "${SOURCE_DIR}"
+if [[ "$COVERAGE_MODE" == "true" && "$OS" == "Linux" ]]; then
+    echo "[ACTION] Configuring for Linux with Clang coverage instrumentation"
+    cmake -DARCHITECTURE="$DETECTED_ARCH" \
+          -DCMAKE_C_COMPILER=clang \
+          -DCMAKE_CXX_COMPILER=clang++ \
+          -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
+          -DCMAKE_C_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
+          "${SOURCE_DIR}"
 else
-    echo "[DIAGNOSTIC] Configuring for Linux with architecture: $DETECTED_ARCH"
-    cmake -DARCHITECTURE="$DETECTED_ARCH" "${SOURCE_DIR}"
+    if [[ "$OS" == "macOS" ]]; then
+        echo "[ACTION] Configuring for macOS (default build)"
+        cmake -DMACOS_STRING_FIX=ON "${SOURCE_DIR}"
+    else
+        echo "[ACTION] Configuring for Linux with architecture: $DETECTED_ARCH"
+        cmake -DARCHITECTURE="$DETECTED_ARCH" "${SOURCE_DIR}"
+    fi
 fi
 
 # Check if CMake configuration succeeded

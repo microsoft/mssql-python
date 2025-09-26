@@ -247,6 +247,7 @@ class GetInfoConstants(Enum):
     SQL_BATCH_ROW_COUNT = 120
     SQL_PARAM_ARRAY_ROW_COUNTS = 153
     SQL_PARAM_ARRAY_SELECTS = 154
+    SQL_PROCEDURE_TERM = 40
 
     # Positioned statement support
     SQL_POSITIONED_STATEMENTS = 80
