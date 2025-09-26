@@ -884,6 +884,53 @@ class Cursor:
         """
         return self.__next__()
 
+    def _buffer_intermediate_results(self):
+        """
+        Buffer intermediate results automatically.
+        
+        This method skips "rows affected" messages and empty result sets,
+        positioning the cursor on the first meaningful result set that contains
+        actual data. This eliminates the need for SET NOCOUNT ON detection.
+        """
+        try:
+            # Keep advancing through result sets until we find one with actual data
+            # or reach the end
+            while True:
+                # Check if current result set has actual columns/data
+                if self.description and len(self.description) > 0:
+                    # We have a meaningful result set with columns, stop here
+                    break
+
+                # Try to advance to next result set
+                try:
+                    ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt)
+
+                    # If no more result sets, we're done
+                    if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                        break
+
+                    # Check for errors
+                    check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+
+                    # Update description for the new result set
+                    column_metadata = []
+                    try:
+                        ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+                        self._initialize_description(column_metadata)
+                    except Exception:
+                        # If describe fails, it's likely there are no results (e.g., for INSERT)
+                        self.description = None
+
+                except Exception:
+                    # If we can't advance further, stop
+                    break
+
+        except Exception as e:
+            log('warning', "Exception occurred during `_buffer_intermediate_results` %s", e)
+            # If anything goes wrong during buffering, continue with current state
+            # This ensures we don't break existing functionality
+            pass
+        
     def execute(
         self,
         operation: str,
@@ -1020,7 +1067,7 @@ class Cursor:
             # If describe fails, it's likely there are no results (e.g., for INSERT)
             self.description = None
         
-        # Buffer intermediate results automatically (pyODBC-style approach)
+        # Buffer intermediate results automatically
         self._buffer_intermediate_results()
         
         # Set final rowcount based on result type (preserve original rowcount for non-SELECT)

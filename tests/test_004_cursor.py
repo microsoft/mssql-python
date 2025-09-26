@@ -10744,55 +10744,48 @@ def test_datetime_string_parameter_binding(cursor, db_connection):
         drop_table_if_exists(cursor, table_name)
         db_connection.commit()
         
-def test_close(db_connection):
-    """Test closing the cursor"""
-    try:
-        cursor = db_connection.cursor()
-        cursor.close()
-        assert cursor.closed, "Cursor should be closed after calling close()"
-    except Exception as e:
-        pytest.fail(f"Cursor close test failed: {e}")
-    finally:
-        cursor = db_connection.cursor()
-
 def test_multi_statement_query(cursor, db_connection):
     """Test multi-statement query with temp tables"""
+    table_name = "#temp1"
     try:
+        drop_table_if_exists(cursor, table_name)
         # Single SQL with multiple statements - tests pyODBC-style buffering
-        multi_statement_sql = """
-        SELECT 1 as col1, 'test' as col2 INTO #temp1;
-        SELECT * FROM #temp1;
+        multi_statement_sql = f"""
+        SELECT 1 as col1, 'test' as col2 INTO {table_name};
+        SELECT * FROM {table_name};
         """
-        
+
         cursor.execute(multi_statement_sql)
         results = cursor.fetchall()
-        
+
         assert len(results) > 0, "Multi-statement query should return results"
-        assert results[0][1] == 'test', "Should return string- test"
-        
+        assert results[0][1] == 'test', "Should return string 'test'"
+
     except Exception as e:
         pytest.fail(f"Multi-statement query test failed: {e}")
     finally:
-        try:
-            cursor.execute("DROP TABLE #temp1")
-            db_connection.commit()
-        except:
-            pass
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
 def test_multiple_result_sets_with_nextset(cursor, db_connection):
     """Test multiple result sets with multiple select statements on temp tables with nextset()"""
+    table_name1 = "#TempData1"
+    table_name2 = "#TempData2"
     try:
+        drop_table_if_exists(cursor, table_name1)
+        drop_table_if_exists(cursor, table_name2)
+
         # Create temp tables and execute multiple SELECT statements
-        multi_select_sql = """
-        CREATE TABLE #TempData1 (id INT, name NVARCHAR(50));
-        INSERT INTO #TempData1 VALUES (1, 'First'), (2, 'Second');
+        multi_select_sql = f"""
+        CREATE TABLE {table_name1} (id INT, name NVARCHAR(50));
+        INSERT INTO {table_name1} VALUES (1, 'First'), (2, 'Second');
 
-        CREATE TABLE #TempData2 (id INT, value INT);
-        INSERT INTO #TempData2 VALUES (1, 100), (2, 200);
+        CREATE TABLE {table_name2} (id INT, value INT);
+        INSERT INTO {table_name2} VALUES (1, 100), (2, 200);
 
-        SELECT id, name FROM #TempData1 ORDER BY id;
-        SELECT id, value FROM #TempData2 ORDER BY id;
-        SELECT t1.name, t2.value FROM #TempData1 t1 JOIN #TempData2 t2 ON t1.id = t2.id ORDER BY t1.id;
+        SELECT id, name FROM {table_name1} ORDER BY id;
+        SELECT id, value FROM {table_name2} ORDER BY id;
+        SELECT t1.name, t2.value FROM {table_name1} t1 JOIN {table_name2} t2 ON t1.id = t2.id ORDER BY t1.id;
         """
 
         cursor.execute(multi_select_sql)
@@ -10825,25 +10818,24 @@ def test_multiple_result_sets_with_nextset(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Multiple result sets with nextset test failed: {e}")
     finally:
-        try:
-            cursor.execute("DROP TABLE #TempData1")
-            cursor.execute("DROP TABLE #TempData2")
-            db_connection.commit()
-        except:
-            pass
+        drop_table_if_exists(cursor, table_name1)
+        drop_table_if_exists(cursor, table_name2)
+        db_connection.commit()
 
 def test_semicolons_in_string_literals(cursor, db_connection):
     """Test semicolons in string literals to ensure no false positives in buffering logic"""
+    table_name = "#StringTest"
     try:
+        drop_table_if_exists(cursor, table_name)
         # SQL with semicolons inside string literals - should not be treated as statement separators
-        sql_with_semicolons = """
-        CREATE TABLE #StringTest (id INT, data NVARCHAR(200));
-        INSERT INTO #StringTest VALUES
+        sql_with_semicolons = f"""
+        CREATE TABLE {table_name} (id INT, data NVARCHAR(200));
+        INSERT INTO {table_name} VALUES
             (1, 'Value with; semicolon inside'),
             (2, 'Another; value; with; multiple; semicolons'),
             (3, 'Normal value');
         SELECT id, data, 'Status: OK; Processing: Complete' as status_message
-        FROM #StringTest
+        FROM {table_name}
         WHERE data LIKE '%semicolon%' OR data = 'Normal value'
         ORDER BY id;
         """
@@ -10859,21 +10851,20 @@ def test_semicolons_in_string_literals(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Semicolons in string literals test failed: {e}")
     finally:
-        try:
-            cursor.execute("DROP TABLE #StringTest")
-            db_connection.commit()
-        except:
-            pass
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
 
 def test_multi_statement_batch_final_non_select(cursor, db_connection):
     """Test multi-statement batch where the final statement is not a SELECT"""
+    table_name = "#BatchTest"
     try:
+        drop_table_if_exists(cursor, table_name)
         # Multi-statement batch ending with non-SELECT statement
-        multi_statement_non_select = """
-        CREATE TABLE #BatchTest (id INT, name NVARCHAR(50), created_at DATETIME);
-        INSERT INTO #BatchTest VALUES (1, 'Test1', GETDATE()), (2, 'Test2', GETDATE());
-        SELECT COUNT(*) as record_count FROM #BatchTest;
-        UPDATE #BatchTest SET name = name + '_updated' WHERE id IN (1, 2);
+        multi_statement_non_select = f"""
+        CREATE TABLE {table_name} (id INT, name NVARCHAR(50), created_at DATETIME);
+        INSERT INTO {table_name} VALUES (1, 'Test1', GETDATE()), (2, 'Test2', GETDATE());
+        SELECT COUNT(*) as record_count FROM {table_name};
+        UPDATE {table_name} SET name = name + '_updated' WHERE id IN (1, 2);
         """
 
         cursor.execute(multi_statement_non_select)
@@ -10884,7 +10875,7 @@ def test_multi_statement_batch_final_non_select(cursor, db_connection):
         assert results[0][0] == 2, "Should count 2 records"
 
         # Verify the UPDATE was executed by checking the updated records
-        cursor.execute("SELECT name FROM #BatchTest ORDER BY id")
+        cursor.execute(f"SELECT name FROM {table_name} ORDER BY id")
         updated_results = cursor.fetchall()
         assert len(updated_results) == 2, "Should have 2 updated records"
         assert updated_results[0][0] == 'Test1_updated', "First record should be updated"
@@ -10893,8 +10884,16 @@ def test_multi_statement_batch_final_non_select(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"Multi-statement batch with final non-SELECT test failed: {e}")
     finally:
-        try:
-            cursor.execute("DROP TABLE #BatchTest")
-            db_connection.commit()
-        except:
-            pass
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+def test_close(db_connection):
+    """Test closing the cursor"""
+    try:
+        cursor = db_connection.cursor()
+        cursor.close()
+        assert cursor.closed, "Cursor should be closed after calling close()"
+    except Exception as e:
+        pytest.fail(f"Cursor close test failed: {e}")
+    finally:
+        cursor = db_connection.cursor()
