@@ -7934,6 +7934,132 @@ def test_datetimeoffset_malformed_input(cursor, db_connection):
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_malformed_input;")
         db_connection.commit()
+        
+def test_datetimeoffset_executemany(cursor, db_connection):
+    """
+    Test the driver's ability to correctly read and write DATETIMEOFFSET data
+    using executemany, including timezone information.
+    """
+    try:
+        datetimeoffset_test_cases = [
+            (
+                "2023-10-26 10:30:00.0000000 +05:30",
+                datetime(2023, 10, 26, 10, 30, 0, 0,
+                        tzinfo=timezone(timedelta(hours=5, minutes=30)))
+            ),
+            (
+                "2023-10-27 15:45:10.1234567 -08:00",
+                datetime(2023, 10, 27, 15, 45, 10, 123456,
+                        tzinfo=timezone(timedelta(hours=-8)))
+            ),
+            (
+                "2023-10-28 20:00:05.9876543 +00:00",
+                datetime(2023, 10, 28, 20, 0, 5, 987654,
+                        tzinfo=timezone(timedelta(hours=0)))
+            )
+        ]
+
+        # Create temp table
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+
+        # Prepare data for executemany
+        param_list = [(i, python_dt) for i, (_, python_dt) in enumerate(datetimeoffset_test_cases)]
+        cursor.executemany("INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);", param_list)
+        db_connection.commit()
+
+        # Read back and validate
+        cursor.execute("SELECT id, dto_column FROM #pytest_dto ORDER BY id;")
+        rows = cursor.fetchall()
+
+        for i, (sql_str, python_dt) in enumerate(datetimeoffset_test_cases):
+            fetched_id, fetched_dto = rows[i]
+            assert fetched_dto.tzinfo is not None, "Fetched datetime object is naive."
+
+            expected_utc = python_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            fetched_utc = fetched_dto.astimezone(timezone.utc).replace(tzinfo=None)
+
+            # Round microseconds to nearest millisecond for comparison
+            expected_utc = expected_utc.replace(microsecond=int(expected_utc.microsecond / 1000) * 1000)
+            fetched_utc = fetched_utc.replace(microsecond=int(fetched_utc.microsecond / 1000) * 1000)
+
+            assert fetched_utc == expected_utc, (
+                f"Value mismatch for test case {i}. "
+                f"Expected UTC: {expected_utc}, Got UTC: {fetched_utc}"
+            )
+    finally:
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        db_connection.commit()
+
+def test_datetimeoffset_execute_vs_executemany_consistency(cursor, db_connection):
+    """
+    Check that execute() and executemany() produce the same stored DATETIMEOFFSET
+    for identical timezone-aware datetime objects.
+    """
+    try:
+        test_dt = datetime(2023, 10, 30, 12, 0, 0, microsecond=123456,
+                   tzinfo=timezone(timedelta(hours=5, minutes=30)))
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+
+        # Insert using execute()
+        cursor.execute("INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);", 1, test_dt)
+        db_connection.commit()
+
+        # Insert using executemany()
+        cursor.executemany(
+            "INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);",
+            [(2, test_dt)]
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT dto_column FROM #pytest_dto ORDER BY id;")
+        rows = cursor.fetchall()
+        assert len(rows) == 2
+
+        # Compare textual representation to ensure binding semantics match
+        cursor.execute("SELECT CONVERT(VARCHAR(35), dto_column, 127) FROM #pytest_dto ORDER BY id;")
+        textual_rows = [r[0] for r in cursor.fetchall()]
+        assert textual_rows[0] == textual_rows[1], "execute() and executemany() results differ"
+
+    finally:
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        db_connection.commit()
+
+
+def test_datetimeoffset_extreme_offsets(cursor, db_connection):
+    """
+    Test boundary offsets (+14:00 and -12:00) to ensure correct round-trip handling.
+    """
+    try:
+        extreme_offsets = [
+            datetime(2023, 10, 30, 0, 0, 0, 0, tzinfo=timezone(timedelta(hours=14))),
+            datetime(2023, 10, 30, 0, 0, 0, 0, tzinfo=timezone(timedelta(hours=-12))),
+        ]
+
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+
+        param_list = [(i, dt) for i, dt in enumerate(extreme_offsets)]
+        cursor.executemany("INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);", param_list)
+        db_connection.commit()
+
+        cursor.execute("SELECT id, dto_column FROM #pytest_dto ORDER BY id;")
+        rows = cursor.fetchall()
+
+        for i, dt in enumerate(extreme_offsets):
+            _, fetched = rows[i]
+            assert fetched.tzinfo is not None
+            # Round-trip comparison via UTC
+            expected_utc = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            fetched_utc = fetched.astimezone(timezone.utc).replace(tzinfo=None)
+            assert expected_utc == fetched_utc, f"Extreme offset round-trip failed for {dt.tzinfo}"
+    finally:
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        db_connection.commit()
 
 def test_lowercase_attribute(cursor, db_connection):
     """Test that the lowercase attribute properly converts column names to lowercase"""

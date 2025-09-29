@@ -137,7 +137,7 @@ class Cursor:
             except ValueError:
                 continue
         return None
-
+    
     def _parse_datetime(self, param):
         """
         Attempt to parse a string as a datetime, smalldatetime, datetime2, timestamp.
@@ -1613,7 +1613,7 @@ class Cursor:
                 # Use auto-detection for columns without explicit types
                 column = [row[col_index] for row in seq_of_parameters] if hasattr(seq_of_parameters, '__getitem__') else []
                 sample_value, min_val, max_val = self._compute_column_type(column)
-                
+
                 dummy_row = list(sample_row)
                 paraminfo = self._create_parameter_types_list(
                     sample_value, param_info, dummy_row, col_index, min_val=min_val, max_val=max_val
