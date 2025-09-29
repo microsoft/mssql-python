@@ -2000,6 +2000,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
                               size_t paramSetSize) {
     SQLHANDLE hStmt = statementHandle->get();
     SQLWCHAR* queryPtr;
+
 #if defined(__APPLE__) || defined(__linux__)
     std::vector<SQLWCHAR> queryBuffer = WStringToSQLWCHAR(query);
     queryPtr = queryBuffer.data();
@@ -2008,14 +2009,62 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
 #endif
     RETCODE rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
     if (!SQL_SUCCEEDED(rc)) return rc;
-    std::vector<std::shared_ptr<void>> paramBuffers;
-    rc = BindParameterArray(hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers);
-    if (!SQL_SUCCEEDED(rc)) return rc;
-    rc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)paramSetSize, 0);
-    if (!SQL_SUCCEEDED(rc)) return rc;
-    rc = SQLExecute_ptr(hStmt);
-    return rc;
+
+    bool hasDAE = false;
+    for (const auto& p : paramInfos) {
+        if (p.isDAE) {
+            hasDAE = true;
+            break;
+        }
+    }
+    if (!hasDAE) {
+        std::vector<std::shared_ptr<void>> paramBuffers;
+        rc = BindParameterArray(hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers);
+        if (!SQL_SUCCEEDED(rc)) return rc;
+
+        rc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)paramSetSize, 0);
+        if (!SQL_SUCCEEDED(rc)) return rc;
+
+        rc = SQLExecute_ptr(hStmt);
+        return rc;
+    } else {
+        size_t rowCount = columnwise_params.size();
+        for (size_t rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
+            py::list rowParams = columnwise_params[rowIndex];
+
+            std::vector<std::shared_ptr<void>> paramBuffers;
+            rc = BindParameters(hStmt, rowParams, const_cast<std::vector<ParamInfo>&>(paramInfos), paramBuffers);
+            if (!SQL_SUCCEEDED(rc)) return rc;
+
+            rc = SQLExecute_ptr(hStmt);
+            while (rc == SQL_NEED_DATA) {
+                SQLPOINTER token;
+                rc = SQLParamData_ptr(hStmt, &token);
+                if (!SQL_SUCCEEDED(rc) && rc != SQL_NEED_DATA) return rc;
+
+                py::object* py_obj_ptr = reinterpret_cast<py::object*>(token);
+                if (!py_obj_ptr) return SQL_ERROR;
+
+                if (py::isinstance<py::str>(*py_obj_ptr)) {
+                    std::string data = py_obj_ptr->cast<std::string>();
+                    SQLLEN data_len = static_cast<SQLLEN>(data.size());
+                    rc = SQLPutData_ptr(hStmt, (SQLPOINTER)data.c_str(), data_len);
+                } else if (py::isinstance<py::bytes>(*py_obj_ptr) || py::isinstance<py::bytearray>(*py_obj_ptr)) {
+                    std::string data = py_obj_ptr->cast<std::string>();
+                    SQLLEN data_len = static_cast<SQLLEN>(data.size());
+                    rc = SQLPutData_ptr(hStmt, (SQLPOINTER)data.c_str(), data_len);
+                } else {
+                    LOG("Unsupported DAE parameter type in row {}", rowIndex);
+                    return SQL_ERROR;
+                }
+            }
+
+            if (!SQL_SUCCEEDED(rc)) return rc;
+        }
+        return SQL_SUCCESS;
+    }
 }
+
 
 // Wrap SQLNumResultCols
 SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle) {
@@ -2213,7 +2262,7 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
             LOG("Loop {}: Appended {} bytes", loopCount, bytesRead);
         }
         if (ret == SQL_SUCCESS) {
-            LOG("Loop {}: SQL_SUCCESS → no more data", loopCount);
+            LOG("Loop {}: SQL_SUCCESS, no more data", loopCount);
             break;
         }
     }
@@ -3270,7 +3319,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 
     // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
     if (!lobColumns.empty()) {
-        LOG("LOB columns detected → using per-row SQLGetData path");
+        LOG("LOB columns detected, using per-row SQLGetData path");
         while (true) {
             ret = SQLFetch_ptr(hStmt);
             if (ret == SQL_NO_DATA) break;
@@ -3392,7 +3441,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
 
     // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
     if (!lobColumns.empty()) {
-        LOG("LOB columns detected → using per-row SQLGetData path");
+        LOG("LOB columns detected, using per-row SQLGetData path");
         while (true) {
             ret = SQLFetch_ptr(hStmt);
             if (ret == SQL_NO_DATA) break;

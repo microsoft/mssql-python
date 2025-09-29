@@ -94,24 +94,35 @@ jobs:
               labelToAdd = 'pr-size: large';
             }
 
-            // Remove existing size labels if any
+            // Get existing labels
             const existingLabels = pr.labels.map(l => l.name);
             const sizeLabels = ['pr-size: small', 'pr-size: medium', 'pr-size: large'];
-            for (const label of existingLabels) {
-              if (sizeLabels.includes(label)) {
+            
+            // Find current size label (if any)
+            const currentSizeLabel = existingLabels.find(label => sizeLabels.includes(label));
+            
+            // Only make changes if the label needs to be updated
+            if (currentSizeLabel !== labelToAdd) {
+              console.log(`Current size label: ${currentSizeLabel || 'none'}`);
+              console.log(`Required size label: ${labelToAdd} (Total changes: ${totalChanges})`);
+              
+              // Remove existing size label if different from required
+              if (currentSizeLabel) {
+                console.log(`Removing outdated label: ${currentSizeLabel}`);
                 await github.rest.issues.removeLabel({
                   ...context.repo,
                   issue_number: pr.number,
-                  name: label,
+                  name: currentSizeLabel,
                 });
               }
+
+              // Add new size label
+              console.log(`Adding new label: ${labelToAdd}`);
+              await github.rest.issues.addLabels({
+                ...context.repo,
+                issue_number: pr.number,
+                labels: [labelToAdd],
+              });
+            } else {
+              console.log(`Label already correct: ${labelToAdd} (Total changes: ${totalChanges}) - no changes needed`);
             }
-
-            // Add new size label
-            await github.rest.issues.addLabels({
-              ...context.repo,
-              issue_number: pr.number,
-              labels: [labelToAdd],
-            });
-
-            console.log(`Added label: ${labelToAdd} (Total changes: ${totalChanges})`);

@@ -362,7 +362,7 @@ class Cursor:
                     0,
                     False,
                 )
-            
+                
             try:
                 val = uuid.UUID(param)
                 parameters_list[i] = val.bytes_le
@@ -375,38 +375,6 @@ class Cursor:
                 )
             except ValueError:
                 pass
-
-
-            # Attempt to parse as date, datetime, datetime2, timestamp, smalldatetime or time
-            if self._parse_date(param):
-                parameters_list[i] = self._parse_date(
-                    param
-                )  # Replace the parameter with the date object
-                return (
-                    ddbc_sql_const.SQL_DATE.value,
-                    ddbc_sql_const.SQL_C_TYPE_DATE.value,
-                    10,
-                    0,
-                    False,
-                )
-            if self._parse_datetime(param):
-                parameters_list[i] = self._parse_datetime(param)
-                return (
-                    ddbc_sql_const.SQL_TIMESTAMP.value,
-                    ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
-                    26,
-                    6,
-                    False,
-                )
-            if self._parse_time(param):
-                parameters_list[i] = self._parse_time(param)
-                return (
-                    ddbc_sql_const.SQL_TIME.value,
-                    ddbc_sql_const.SQL_C_TYPE_TIME.value,
-                    8,
-                    0,
-                    False,
-                )
 
             # String mapping logic here
             is_unicode = self._is_unicode_string(param)
@@ -1532,7 +1500,7 @@ class Cursor:
                 sample_value = v
 
         return sample_value, None, None
-
+    
     def executemany(self, operation: str, seq_of_parameters: list) -> None:
         """
         Prepare a database operation and execute it against all parameter sequences.
@@ -1540,14 +1508,11 @@ class Cursor:
         Args:
             operation: SQL query or command.
             seq_of_parameters: Sequence of sequences or mappings of parameters.
-
         Raises:
             Error: If the operation fails.
         """
         self._check_closed()
         self._reset_cursor()
-
-        # Clear any previous messages
         self.messages = []
 
         if not seq_of_parameters:
@@ -1573,6 +1538,7 @@ class Cursor:
         param_count = len(sample_row)
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
+        any_dae = False
 
         # Check if we have explicit input sizes set
         if self._inputsizes:
@@ -1672,6 +1638,14 @@ class Cursor:
                     paraminfo.columnSize = max(max_binary_size, 1)
                 
                 parameters_type.append(paraminfo)
+                if paraminfo.isDAE:
+                    any_dae = True
+        
+        if any_dae:
+            log('debug', "DAE parameters detected. Falling back to row-by-row execution with streaming.")
+            for row in seq_of_parameters:
+                self.execute(operation, row)
+            return
         
         # Process parameters into column-wise format with possible type conversions
         # First, convert any Decimal types as needed for NUMERIC/DECIMAL columns
@@ -1679,14 +1653,23 @@ class Cursor:
         for row in seq_of_parameters:
             processed_row = list(row)
             for i, val in enumerate(processed_row):
-                if (parameters_type[i].paramSQLType in 
+                if val is None:
+                    continue
+                # Convert Decimals for money/smallmoney to string
+                if isinstance(val, decimal.Decimal) and parameters_type[i].paramSQLType == ddbc_sql_const.SQL_VARCHAR.value:
+                    processed_row[i] = str(val)
+                # Existing numeric conversion
+                elif (parameters_type[i].paramSQLType in 
                     (ddbc_sql_const.SQL_DECIMAL.value, ddbc_sql_const.SQL_NUMERIC.value) and
-                    not isinstance(val, decimal.Decimal) and val is not None):
+                    not isinstance(val, decimal.Decimal)):
                     try:
                         processed_row[i] = decimal.Decimal(str(val))
-                    except:
-                        pass  # Keep original value if conversion fails
+                    except Exception as e:
+                        raise ValueError(
+                            f"Failed to convert parameter at row {row}, column {i} to Decimal: {e}"
+                        )
             processed_parameters.append(processed_row)
+
         
         # Now transpose the processed parameters
         columnwise_params, row_count = self._transpose_rowwise_to_columnwise(processed_parameters)
@@ -1695,8 +1678,7 @@ class Cursor:
         log('debug', "Executing batch query with %d parameter sets:\n%s",
             len(seq_of_parameters), "\n".join(f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}" for i, p in enumerate(seq_of_parameters[:5]))  # Limit to first 5 rows for large batches
         )
-        
-        # Execute batched statement
+
         ret = ddbc_bindings.SQLExecuteMany(
             self.hstmt,
             operation,
