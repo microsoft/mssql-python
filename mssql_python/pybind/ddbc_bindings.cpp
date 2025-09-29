@@ -528,39 +528,6 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 if (!py::isinstance(param, datetimeType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
-                // Checking if the object has a timezone
-                py::object tzinfo = param.attr("tzinfo");
-                if (tzinfo.is_none()) {
-                    ThrowStdException("Datetime object must have tzinfo for SQL_C_SS_TIMESTAMPOFFSET at paramIndex " + std::to_string(paramIndex));
-                }
-
-                DateTimeOffset* dtoPtr = AllocateParamBuffer<DateTimeOffset>(paramBuffers);
-
-                dtoPtr->year = static_cast<SQLSMALLINT>(param.attr("year").cast<int>());
-                dtoPtr->month = static_cast<SQLUSMALLINT>(param.attr("month").cast<int>());
-                dtoPtr->day = static_cast<SQLUSMALLINT>(param.attr("day").cast<int>());
-                dtoPtr->hour = static_cast<SQLUSMALLINT>(param.attr("hour").cast<int>());
-                dtoPtr->minute = static_cast<SQLUSMALLINT>(param.attr("minute").cast<int>());
-                dtoPtr->second = static_cast<SQLUSMALLINT>(param.attr("second").cast<int>());
-                dtoPtr->fraction = static_cast<SQLUINTEGER>(param.attr("microsecond").cast<int>() * 1000);
-
-                py::object utcoffset = tzinfo.attr("utcoffset")(param);
-                int total_seconds = static_cast<int>(utcoffset.attr("total_seconds")().cast<double>());
-                std::div_t div_result = std::div(total_seconds, 3600);
-                dtoPtr->timezone_hour = static_cast<SQLSMALLINT>(div_result.quot);
-                dtoPtr->timezone_minute = static_cast<SQLSMALLINT>(div(div_result.rem, 60).quot);
-                
-                dataPtr = static_cast<void*>(dtoPtr);
-                bufferLength = sizeof(DateTimeOffset);
-                strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
-                *strLenOrIndPtr = bufferLength;
-                break;
-            }
-            case SQL_C_TYPE_TIMESTAMP: {
-                py::object datetimeType = py::module_::import("datetime").attr("datetime");
-                if (!py::isinstance(param, datetimeType)) {
-                    ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
-                }
                 SQL_TIMESTAMP_STRUCT* sqlTimestampPtr =
                     AllocateParamBuffer<SQL_TIMESTAMP_STRUCT>(paramBuffers);
                 sqlTimestampPtr->year = static_cast<SQLSMALLINT>(param.attr("year").cast<int>());
@@ -3186,24 +3153,15 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
                 case SQL_SS_TIMESTAMPOFFSET: {
-                    // i = current row index in outer loop
                     SQLULEN rowIdx = i;
                     const DateTimeOffset& dtoValue = buffers.datetimeoffsetBuffers[col - 1][rowIdx];
                     SQLLEN indicator = buffers.indicators[col - 1][rowIdx];
-
                     if (indicator != SQL_NULL_DATA) {
-                        // Compute total minutes offset
                         int totalMinutes = dtoValue.timezone_hour * 60 + dtoValue.timezone_minute;
-
-                        // Import Python datetime module
                         py::object datetime = py::module_::import("datetime");
-
-                        // Construct tzinfo object for the original offset
                         py::object tzinfo = datetime.attr("timezone")(
                             datetime.attr("timedelta")(py::arg("minutes") = totalMinutes)
                         );
-
-                        // Construct Python datetime object with tzinfo
                         py::object py_dt = datetime.attr("datetime")(
                             dtoValue.year,
                             dtoValue.month,
@@ -3215,7 +3173,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                             tzinfo
                         );
                         py_dt = py_dt.attr("astimezone")(datetime.attr("timezone").attr("utc"));
-                        // Append to row
                         row.append(py_dt);
                     } else {
                         row.append(py::none());
@@ -3342,7 +3299,7 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
                 rowSize += columnSize;
                 break;
             case SQL_SS_TIMESTAMPOFFSET:
-                rowSize += sizeof(DateTimeOffset); // your custom struct for SQL_C_SS_TIMESTAMPOFFSET
+                rowSize += sizeof(DateTimeOffset);
                 break;
             default:
                 std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
