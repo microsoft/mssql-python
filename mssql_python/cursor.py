@@ -1529,7 +1529,7 @@ class Cursor:
                 sample_value = v
 
         return sample_value, None, None
-
+    
     def executemany(self, operation: str, seq_of_parameters: list) -> None:
         """
         Prepare a database operation and execute it against all parameter sequences.
@@ -1537,14 +1537,11 @@ class Cursor:
         Args:
             operation: SQL query or command.
             seq_of_parameters: Sequence of sequences or mappings of parameters.
-
         Raises:
             Error: If the operation fails.
         """
         self._check_closed()
         self._reset_cursor()
-
-        # Clear any previous messages
         self.messages = []
 
         if not seq_of_parameters:
@@ -1570,6 +1567,7 @@ class Cursor:
         param_count = len(sample_row)
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
+        any_dae = False
 
         # Check if we have explicit input sizes set
         if self._inputsizes:
@@ -1673,6 +1671,14 @@ class Cursor:
                     paraminfo.columnSize = max(max_binary_size, 1)
                 
                 parameters_type.append(paraminfo)
+                if paraminfo.isDAE:
+                    any_dae = True
+        
+        if any_dae:
+            log('debug', "DAE parameters detected. Falling back to row-by-row execution with streaming.")
+            for row in seq_of_parameters:
+                self.execute(operation, row)
+            return
         
         # Process parameters into column-wise format with possible type conversions
         # First, convert any Decimal types as needed for NUMERIC/DECIMAL columns
@@ -1705,8 +1711,7 @@ class Cursor:
         log('debug', "Executing batch query with %d parameter sets:\n%s",
             len(seq_of_parameters), "\n".join(f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}" for i, p in enumerate(seq_of_parameters[:5]))  # Limit to first 5 rows for large batches
         )
-        
-        # Execute batched statement
+
         ret = ddbc_bindings.SQLExecuteMany(
             self.hstmt,
             operation,
