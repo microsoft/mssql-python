@@ -10754,6 +10754,89 @@ def test_varbinarymax_executemany_streaming(cursor, db_connection):
         cursor.execute("DROP TABLE #pytest_varbinarymax")
         db_connection.commit()
 
+def test_date_string_parameter_binding(cursor, db_connection):
+    """Verify that date-like strings are treated as strings in parameter binding"""
+    table_name = "#pytest_date_string"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                a_column VARCHAR(20)
+            )
+        """)
+        cursor.execute(f"INSERT INTO {table_name} (a_column) VALUES ('string1'), ('string2')")
+        db_connection.commit()
+
+        date_str = "2025-08-12"
+
+        # Should fail to match anything, since binding may treat it as DATE not VARCHAR
+        cursor.execute(f"SELECT a_column FROM {table_name} WHERE RIGHT(a_column, 10) = ?", (date_str,))
+        rows = cursor.fetchall()
+
+        assert rows == [], f"Expected no match for date-like string, got {rows}"
+
+    except Exception as e:
+        pytest.fail(f"Date string parameter binding test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+def test_time_string_parameter_binding(cursor, db_connection):
+    """Verify that time-like strings are treated as strings in parameter binding"""
+    table_name = "#pytest_time_string"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                time_col VARCHAR(22)
+            )
+        """)
+        cursor.execute(f"INSERT INTO {table_name} (time_col) VALUES ('prefix_14:30:45_suffix')")
+        db_connection.commit()
+
+        time_str = "14:30:45"
+
+        # This should fail because '14:30:45' gets converted to TIME type
+        # and SQL Server can't compare TIME against VARCHAR with prefix/suffix
+        cursor.execute(f"SELECT time_col FROM {table_name} WHERE time_col = ?", (time_str,))
+        rows = cursor.fetchall()
+
+        assert rows == [], f"Expected no match for time-like string, got {rows}"
+
+    except Exception as e:
+        pytest.fail(f"Time string parameter binding test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+def test_datetime_string_parameter_binding(cursor, db_connection):
+    """Verify that datetime-like strings are treated as strings in parameter binding"""
+    table_name = "#pytest_datetime_string"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                datetime_col VARCHAR(33)
+            )
+        """)
+        cursor.execute(f"INSERT INTO {table_name} (datetime_col) VALUES ('prefix_2025-08-12T14:30:45_suffix')")
+        db_connection.commit()
+
+        datetime_str = "2025-08-12T14:30:45"
+
+        # This should fail because '2025-08-12T14:30:45' gets converted to TIMESTAMP type
+        # and SQL Server can't compare TIMESTAMP against VARCHAR with prefix/suffix
+        cursor.execute(f"SELECT datetime_col FROM {table_name} WHERE datetime_col = ?", (datetime_str,))
+        rows = cursor.fetchall()
+
+        assert rows == [], f"Expected no match for datetime-like string, got {rows}"
+
+    except Exception as e:
+        pytest.fail(f"Datetime string parameter binding test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+        
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
