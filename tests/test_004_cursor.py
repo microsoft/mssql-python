@@ -10787,6 +10787,99 @@ def test_decimal_separator_calculations(cursor, db_connection):
         # Cleanup
         cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
 
+def test_nvarcharmax_executemany_streaming(cursor, db_connection):
+    """Streaming insert + fetch > 4k NVARCHAR(MAX) using executemany with all fetch modes."""
+    try:
+        values = ["Ω" * 4100, "漢" * 5000]
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+
+        # --- executemany insert ---
+        cursor.executemany("INSERT INTO #pytest_nvarcharmax VALUES (?)", [(v,) for v in values])
+        db_connection.commit()
+
+        # --- fetchall ---
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY LEN(col)")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows == sorted(values, key=len)
+
+        # --- fetchone ---
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY LEN(col)")
+        r1 = cursor.fetchone()[0]
+        r2 = cursor.fetchone()[0]
+        assert {r1, r2} == set(values)
+        assert cursor.fetchone() is None
+
+        # --- fetchmany ---
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY LEN(col)")
+        batch = [r[0] for r in cursor.fetchmany(1)]
+        assert batch[0] in values
+    finally:
+        cursor.execute("DROP TABLE #pytest_nvarcharmax")
+        db_connection.commit()
+
+def test_varcharmax_executemany_streaming(cursor, db_connection):
+    """Streaming insert + fetch > 4k VARCHAR(MAX) using executemany with all fetch modes."""
+    try:
+        values = ["A" * 4100, "B" * 5000]
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+
+        # --- executemany insert ---
+        cursor.executemany("INSERT INTO #pytest_varcharmax VALUES (?)", [(v,) for v in values])
+        db_connection.commit()
+
+        # --- fetchall ---
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY LEN(col)")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows == sorted(values, key=len)
+
+        # --- fetchone ---
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY LEN(col)")
+        r1 = cursor.fetchone()[0]
+        r2 = cursor.fetchone()[0]
+        assert {r1, r2} == set(values)
+        assert cursor.fetchone() is None
+
+        # --- fetchmany ---
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY LEN(col)")
+        batch = [r[0] for r in cursor.fetchmany(1)]
+        assert batch[0] in values
+    finally:
+        cursor.execute("DROP TABLE #pytest_varcharmax")
+        db_connection.commit()
+
+def test_varbinarymax_executemany_streaming(cursor, db_connection):
+    """Streaming insert + fetch > 4k VARBINARY(MAX) using executemany with all fetch modes."""
+    try:
+        values = [b"\x01" * 4100, b"\x02" * 5000]
+        cursor.execute("CREATE TABLE #pytest_varbinarymax (col VARBINARY(MAX))")
+        db_connection.commit()
+
+        # --- executemany insert ---
+        cursor.executemany("INSERT INTO #pytest_varbinarymax VALUES (?)", [(v,) for v in values])
+        db_connection.commit()
+
+        # --- fetchall ---
+        cursor.execute("SELECT col FROM #pytest_varbinarymax ORDER BY DATALENGTH(col)")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows == sorted(values, key=len)
+
+        # --- fetchone ---
+        cursor.execute("SELECT col FROM #pytest_varbinarymax ORDER BY DATALENGTH(col)")
+        r1 = cursor.fetchone()[0]
+        r2 = cursor.fetchone()[0]
+        assert {r1, r2} == set(values)
+        assert cursor.fetchone() is None
+
+        # --- fetchmany ---
+        cursor.execute("SELECT col FROM #pytest_varbinarymax ORDER BY DATALENGTH(col)")
+        batch = [r[0] for r in cursor.fetchmany(1)]
+        assert batch[0] in values
+    finally:
+        cursor.execute("DROP TABLE #pytest_varbinarymax")
+        db_connection.commit()
+
 def test_date_string_parameter_binding(cursor, db_connection):
     """Verify that date-like strings are treated as strings in parameter binding"""
     table_name = "#pytest_date_string"
