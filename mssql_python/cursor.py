@@ -1815,12 +1815,11 @@ class Cursor:
                 self._next_row_index += len(rows_data)
                 self._rownumber = self._next_row_index - 1
 
-                self.rowcount = self._next_row_index
-
-            # Special case for empty result sets:
-            # If no rows were fetched and we're at the beginning, set rowcount to 0 
+            # Centralize rowcount assignment after fetch
             if len(rows_data) == 0 and self._next_row_index == 0:
                 self.rowcount = 0
+            else:
+                self.rowcount = self._next_row_index
             
             # Convert raw data to Row objects
             column_map = getattr(self, '_column_name_map', None)
@@ -1854,12 +1853,11 @@ class Cursor:
                 self._next_row_index += len(rows_data)
                 self._rownumber = self._next_row_index - 1
 
-                self.rowcount = self._next_row_index
-
-            # Special case for empty result sets:
-            # If no rows were fetched and we're at the beginning, set rowcount to 0 
+            # Centralize rowcount assignment after fetch
             if len(rows_data) == 0 and self._next_row_index == 0:
                 self.rowcount = 0
+            else:
+                self.rowcount = self._next_row_index
             
             # Convert raw data to Row objects
             column_map = getattr(self, '_column_name_map', None)
