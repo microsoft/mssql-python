@@ -1758,6 +1758,10 @@ class Cursor:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
             
             if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                # No more data available
+                if self._next_row_index == 0 and self.description is not None:
+                    # This is an empty result set, set rowcount to 0
+                    self.rowcount = 0
                 return None
             
             # Update internal position after successful fetch
@@ -1766,6 +1770,8 @@ class Cursor:
                 self._next_row_index += 1
             else:
                 self._increment_rownumber()
+
+            self.rowcount = self._next_row_index
             
             # Create and return a Row object, passing column name map if available
             column_map = getattr(self, '_column_name_map', None)
@@ -1808,6 +1814,13 @@ class Cursor:
                 # advance counters by number of rows actually returned
                 self._next_row_index += len(rows_data)
                 self._rownumber = self._next_row_index - 1
+
+                self.rowcount = self._next_row_index
+
+            # Special case for empty result sets:
+            # If no rows were fetched and we're at the beginning, set rowcount to 0 
+            if len(rows_data) == 0 and self._next_row_index == 0:
+                self.rowcount = 0
             
             # Convert raw data to Row objects
             column_map = getattr(self, '_column_name_map', None)
@@ -1840,6 +1853,13 @@ class Cursor:
             if rows_data and self._has_result_set:
                 self._next_row_index += len(rows_data)
                 self._rownumber = self._next_row_index - 1
+
+                self.rowcount = self._next_row_index
+
+            # Special case for empty result sets:
+            # If no rows were fetched and we're at the beginning, set rowcount to 0 
+            if len(rows_data) == 0 and self._next_row_index == 0:
+                self.rowcount = 0
             
             # Convert raw data to Row objects
             column_map = getattr(self, '_column_name_map', None)
