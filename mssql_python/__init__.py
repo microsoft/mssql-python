@@ -140,7 +140,7 @@ from .cursor import Cursor
 from .logging_config import setup_logging, get_logger
 
 # Constants
-from .constants import ConstantsDDBC
+from .constants import ConstantsDDBC, GetInfoConstants
 
 # Export specific constants for setencoding()
 SQL_CHAR = ConstantsDDBC.SQL_CHAR.value
@@ -205,3 +205,55 @@ SQL_LONGVARBINARY = ConstantsDDBC.SQL_LONGVARBINARY.value
 SQL_DATE = ConstantsDDBC.SQL_DATE.value
 SQL_TIME = ConstantsDDBC.SQL_TIME.value
 SQL_TIMESTAMP = ConstantsDDBC.SQL_TIMESTAMP.value
+
+# Export GetInfo constants at module level
+# Driver and database information
+SQL_DRIVER_NAME = GetInfoConstants.SQL_DRIVER_NAME.value
+SQL_DRIVER_VER = GetInfoConstants.SQL_DRIVER_VER.value
+SQL_DRIVER_ODBC_VER = GetInfoConstants.SQL_DRIVER_ODBC_VER.value
+SQL_DATA_SOURCE_NAME = GetInfoConstants.SQL_DATA_SOURCE_NAME.value
+SQL_DATABASE_NAME = GetInfoConstants.SQL_DATABASE_NAME.value
+SQL_SERVER_NAME = GetInfoConstants.SQL_SERVER_NAME.value
+SQL_USER_NAME = GetInfoConstants.SQL_USER_NAME.value
+
+# SQL conformance and support
+SQL_SQL_CONFORMANCE = GetInfoConstants.SQL_SQL_CONFORMANCE.value
+SQL_KEYWORDS = GetInfoConstants.SQL_KEYWORDS.value
+SQL_IDENTIFIER_QUOTE_CHAR = GetInfoConstants.SQL_IDENTIFIER_QUOTE_CHAR.value
+SQL_SEARCH_PATTERN_ESCAPE = GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value
+
+# Catalog and schema support
+SQL_CATALOG_TERM = GetInfoConstants.SQL_CATALOG_TERM.value
+SQL_SCHEMA_TERM = GetInfoConstants.SQL_SCHEMA_TERM.value
+SQL_TABLE_TERM = GetInfoConstants.SQL_TABLE_TERM.value
+SQL_PROCEDURE_TERM = GetInfoConstants.SQL_PROCEDURE_TERM.value
+
+# Transaction support
+SQL_TXN_CAPABLE = GetInfoConstants.SQL_TXN_CAPABLE.value
+SQL_DEFAULT_TXN_ISOLATION = GetInfoConstants.SQL_DEFAULT_TXN_ISOLATION.value
+
+# Data type support
+SQL_NUMERIC_FUNCTIONS = GetInfoConstants.SQL_NUMERIC_FUNCTIONS.value
+SQL_STRING_FUNCTIONS = GetInfoConstants.SQL_STRING_FUNCTIONS.value
+SQL_DATETIME_FUNCTIONS = GetInfoConstants.SQL_DATETIME_FUNCTIONS.value
+
+# Limits
+SQL_MAX_COLUMN_NAME_LEN = GetInfoConstants.SQL_MAX_COLUMN_NAME_LEN.value
+SQL_MAX_TABLE_NAME_LEN = GetInfoConstants.SQL_MAX_TABLE_NAME_LEN.value
+SQL_MAX_SCHEMA_NAME_LEN = GetInfoConstants.SQL_MAX_SCHEMA_NAME_LEN.value
+SQL_MAX_CATALOG_NAME_LEN = GetInfoConstants.SQL_MAX_CATALOG_NAME_LEN.value
+SQL_MAX_IDENTIFIER_LEN = GetInfoConstants.SQL_MAX_IDENTIFIER_LEN.value
+
+# Also provide a function to get all constants
+def get_info_constants():
+    """
+    Returns a dictionary of all available GetInfo constants.
+    
+    This provides all SQLGetInfo constants that can be used with the Connection.getinfo() method
+    to retrieve metadata about the database server and driver.
+    
+    Returns:
+        dict: Dictionary mapping constant names to their integer values
+    """
+    return {name: member.value for name, member in GetInfoConstants.__members__.items()}
+

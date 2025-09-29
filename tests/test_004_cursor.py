@@ -6729,9 +6729,9 @@ def test_nvarcharmax_large(cursor, db_connection):
 def test_money_smallmoney_insert_fetch(cursor, db_connection):
     """Test inserting and retrieving valid MONEY and SMALLMONEY values including boundaries and typical data"""
     try:
-        drop_table_if_exists(cursor, "dbo.money_test")
+        drop_table_if_exists(cursor, "#pytest_money_test")
         cursor.execute("""
-            CREATE TABLE dbo.money_test (
+            CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY,
@@ -6742,27 +6742,27 @@ def test_money_smallmoney_insert_fetch(cursor, db_connection):
         db_connection.commit()
 
         # Max values
-        cursor.execute("INSERT INTO dbo.money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
                        (decimal.Decimal("922337203685477.5807"), decimal.Decimal("214748.3647"),
                         decimal.Decimal("9999999999999.9999"), decimal.Decimal("1234.5678")))
 
         # Min values
-        cursor.execute("INSERT INTO dbo.money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
                        (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648"),
                         decimal.Decimal("-9999999999999.9999"), decimal.Decimal("-1234.5678")))
 
         # Typical values
-        cursor.execute("INSERT INTO dbo.money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
                        (decimal.Decimal("1234567.8901"), decimal.Decimal("12345.6789"),
                         decimal.Decimal("42.4242"), decimal.Decimal("3.1415")))
 
         # NULL values
-        cursor.execute("INSERT INTO dbo.money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm, d, n) VALUES (?, ?, ?, ?)",
                        (None, None, None, None))
 
         db_connection.commit()
 
-        cursor.execute("SELECT m, sm, d, n FROM dbo.money_test ORDER BY id")
+        cursor.execute("SELECT m, sm, d, n FROM #pytest_money_test ORDER BY id")
         results = cursor.fetchall()
         assert len(results) == 4, f"Expected 4 rows, got {len(results)}"
 
@@ -6787,16 +6787,15 @@ def test_money_smallmoney_insert_fetch(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"MONEY and SMALLMONEY insert/fetch test failed: {e}")
     finally:
-        drop_table_if_exists(cursor, "dbo.money_test")
+        drop_table_if_exists(cursor, "#pytest_money_test")
         db_connection.commit()
 
 
 def test_money_smallmoney_null_handling(cursor, db_connection):
     """Test that NULL values for MONEY and SMALLMONEY are stored and retrieved correctly"""
     try:
-        drop_table_if_exists(cursor, "dbo.money_test")
         cursor.execute("""
-            CREATE TABLE dbo.money_test (
+            CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
@@ -6805,19 +6804,19 @@ def test_money_smallmoney_null_handling(cursor, db_connection):
         db_connection.commit()
 
         # Row with both NULLs
-        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)", (None, None))
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", (None, None))
 
         # Row with m filled, sm NULL
-        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
                        (decimal.Decimal("123.4500"), None))
 
         # Row with m NULL, sm filled
-        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
                        (None, decimal.Decimal("67.8900")))
 
         db_connection.commit()
 
-        cursor.execute("SELECT m, sm FROM dbo.money_test ORDER BY id")
+        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id")
         results = cursor.fetchall()
         assert len(results) == 3, f"Expected 3 rows, got {len(results)}"
 
@@ -6838,16 +6837,15 @@ def test_money_smallmoney_null_handling(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"MONEY and SMALLMONEY NULL handling test failed: {e}")
     finally:
-        drop_table_if_exists(cursor, "dbo.money_test")
+        drop_table_if_exists(cursor, "#pytest_money_test")
         db_connection.commit()
 
 
 def test_money_smallmoney_roundtrip(cursor, db_connection):
     """Test inserting and retrieving MONEY and SMALLMONEY using decimal.Decimal roundtrip"""
     try:
-        drop_table_if_exists(cursor, "dbo.money_test")
         cursor.execute("""
-            CREATE TABLE dbo.money_test (
+            CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
@@ -6856,10 +6854,10 @@ def test_money_smallmoney_roundtrip(cursor, db_connection):
         db_connection.commit()
 
         values = (decimal.Decimal("12345.6789"), decimal.Decimal("987.6543"))
-        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)", values)
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", values)
         db_connection.commit()
 
-        cursor.execute("SELECT m, sm FROM dbo.money_test ORDER BY id DESC")
+        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id DESC")
         row = cursor.fetchone()
         for i, (val, exp_val) in enumerate(zip(row, values), 1):
             assert val == exp_val, f"col{i} roundtrip mismatch, got {val}, expected {exp_val}"
@@ -6868,16 +6866,16 @@ def test_money_smallmoney_roundtrip(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"MONEY and SMALLMONEY roundtrip test failed: {e}")
     finally:
-        drop_table_if_exists(cursor, "dbo.money_test")
+        drop_table_if_exists(cursor, "#pytest_money_test")
         db_connection.commit()
 
 
 def test_money_smallmoney_boundaries(cursor, db_connection):
     """Test boundary values for MONEY and SMALLMONEY types are handled correctly"""
     try:
-        drop_table_if_exists(cursor, "dbo.money_test")
+        drop_table_if_exists(cursor, "#pytest_money_test")
         cursor.execute("""
-            CREATE TABLE dbo.money_test (
+            CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
@@ -6886,16 +6884,16 @@ def test_money_smallmoney_boundaries(cursor, db_connection):
         db_connection.commit()
 
         # Insert max boundary
-        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
                        (decimal.Decimal("922337203685477.5807"), decimal.Decimal("214748.3647")))
 
         # Insert min boundary
-        cursor.execute("INSERT INTO dbo.money_test (m, sm) VALUES (?, ?)",
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
                        (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648")))
 
         db_connection.commit()
 
-        cursor.execute("SELECT m, sm FROM dbo.money_test ORDER BY id DESC")
+        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id DESC")
         results = cursor.fetchall()
         expected = [
             (decimal.Decimal("-922337203685477.5808"), decimal.Decimal("-214748.3648")),
@@ -6909,16 +6907,15 @@ def test_money_smallmoney_boundaries(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"MONEY and SMALLMONEY boundary values test failed: {e}")
     finally:
-        drop_table_if_exists(cursor, "dbo.money_test")
+        drop_table_if_exists(cursor, "#pytest_money_test")
         db_connection.commit()
 
 
 def test_money_smallmoney_invalid_values(cursor, db_connection):
     """Test that invalid or out-of-range MONEY and SMALLMONEY values raise errors"""
     try:
-        drop_table_if_exists(cursor, "dbo.money_test")
         cursor.execute("""
-            CREATE TABLE dbo.money_test (
+            CREATE TABLE #pytest_money_test (
                 id INT IDENTITY PRIMARY KEY,
                 m MONEY,
                 sm SMALLMONEY
@@ -6928,20 +6925,123 @@ def test_money_smallmoney_invalid_values(cursor, db_connection):
 
         # Out of range MONEY
         with pytest.raises(Exception):
-            cursor.execute("INSERT INTO dbo.money_test (m) VALUES (?)", (decimal.Decimal("922337203685477.5808"),))
+            cursor.execute("INSERT INTO #pytest_money_test (m) VALUES (?)", (decimal.Decimal("922337203685477.5808"),))
 
         # Out of range SMALLMONEY
         with pytest.raises(Exception):
-            cursor.execute("INSERT INTO dbo.money_test (sm) VALUES (?)", (decimal.Decimal("214748.3648"),))
+            cursor.execute("INSERT INTO #pytest_money_test (sm) VALUES (?)", (decimal.Decimal("214748.3648"),))
 
         # Invalid string
         with pytest.raises(Exception):
-            cursor.execute("INSERT INTO dbo.money_test (m) VALUES (?)", ("invalid_string",))
+            cursor.execute("INSERT INTO #pytest_money_test (m) VALUES (?)", ("invalid_string",))
 
     except Exception as e:
         pytest.fail(f"MONEY and SMALLMONEY invalid values test failed: {e}")
     finally:
-        drop_table_if_exists(cursor, "dbo.money_test")
+        drop_table_if_exists(cursor, "#pytest_money_test")
+        db_connection.commit()
+
+def test_money_smallmoney_roundtrip_executemany(cursor, db_connection):
+    """Test inserting and retrieving MONEY and SMALLMONEY using executemany with decimal.Decimal"""
+    try:
+        cursor.execute("""
+            CREATE TABLE #pytest_money_test (
+                id INT IDENTITY PRIMARY KEY,
+                m MONEY,
+                sm SMALLMONEY
+            )
+        """)
+        db_connection.commit()
+
+        test_data = [
+            (decimal.Decimal("12345.6789"), decimal.Decimal("987.6543")),
+            (decimal.Decimal("0.0001"), decimal.Decimal("0.01")),
+            (None, decimal.Decimal("42.42")),
+            (decimal.Decimal("-1000.99"), None),
+        ]
+
+        # Insert using executemany directly with Decimals
+        cursor.executemany(
+            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)",
+            test_data
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id")
+        results = cursor.fetchall()
+        assert len(results) == len(test_data)
+
+        for i, (row, expected) in enumerate(zip(results, test_data), 1):
+            for j, (val, exp_val) in enumerate(zip(row, expected), 1):
+                if exp_val is None:
+                    assert val is None
+                else:
+                    assert val == exp_val
+                    assert isinstance(val, decimal.Decimal)
+
+    finally:
+        drop_table_if_exists(cursor, "#pytest_money_test")
+        db_connection.commit()
+
+
+def test_money_smallmoney_executemany_null_handling(cursor, db_connection):
+    """Test inserting NULLs into MONEY and SMALLMONEY using executemany"""
+    try:
+        cursor.execute("""
+            CREATE TABLE #pytest_money_test (
+                id INT IDENTITY PRIMARY KEY,
+                m MONEY,
+                sm SMALLMONEY
+            )
+        """)
+        db_connection.commit()
+
+        rows = [
+            (None, None),
+            (decimal.Decimal("123.4500"), None),
+            (None, decimal.Decimal("67.8900")),
+        ]
+        cursor.executemany("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", rows)
+        db_connection.commit()
+
+        cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id ASC")
+        results = cursor.fetchall()
+        assert len(results) == len(rows)
+
+        for row, expected in zip(results, rows):
+            for val, exp_val in zip(row, expected):
+                if exp_val is None:
+                    assert val is None
+                else:
+                    assert val == exp_val
+                    assert isinstance(val, decimal.Decimal)
+
+    finally:
+        drop_table_if_exists(cursor, "#pytest_money_test")
+        db_connection.commit()
+
+def test_money_smallmoney_out_of_range_low(cursor, db_connection):
+    """Test inserting values just below the minimum MONEY/SMALLMONEY range raises error"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_money_test")
+        cursor.execute("CREATE TABLE #pytest_money_test (m MONEY, sm SMALLMONEY)")
+        db_connection.commit()
+
+        # Just below minimum MONEY
+        with pytest.raises(Exception):
+            cursor.execute(
+                "INSERT INTO #pytest_money_test (m) VALUES (?)",
+                (decimal.Decimal("-922337203685477.5809"),)
+            )
+
+        # Just below minimum SMALLMONEY
+        with pytest.raises(Exception):
+            cursor.execute(
+                "INSERT INTO #pytest_money_test (sm) VALUES (?)",
+                (decimal.Decimal("-214748.3649"),)
+            )
+    finally:
+        drop_table_if_exists(cursor, "#pytest_money_test")
         db_connection.commit()
 
 def test_uuid_insert_and_select_none(cursor, db_connection):
@@ -10705,6 +10805,182 @@ def test_executemany_with_uuids(cursor, db_connection):
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
 
+def test_nvarcharmax_executemany_streaming(cursor, db_connection):
+    """Streaming insert + fetch > 4k NVARCHAR(MAX) using executemany with all fetch modes."""
+    try:
+        values = ["Ω" * 4100, "漢" * 5000]
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+
+        # --- executemany insert ---
+        cursor.executemany("INSERT INTO #pytest_nvarcharmax VALUES (?)", [(v,) for v in values])
+        db_connection.commit()
+
+        # --- fetchall ---
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY LEN(col)")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows == sorted(values, key=len)
+
+        # --- fetchone ---
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY LEN(col)")
+        r1 = cursor.fetchone()[0]
+        r2 = cursor.fetchone()[0]
+        assert {r1, r2} == set(values)
+        assert cursor.fetchone() is None
+
+        # --- fetchmany ---
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY LEN(col)")
+        batch = [r[0] for r in cursor.fetchmany(1)]
+        assert batch[0] in values
+    finally:
+        cursor.execute("DROP TABLE #pytest_nvarcharmax")
+        db_connection.commit()
+
+def test_varcharmax_executemany_streaming(cursor, db_connection):
+    """Streaming insert + fetch > 4k VARCHAR(MAX) using executemany with all fetch modes."""
+    try:
+        values = ["A" * 4100, "B" * 5000]
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+
+        # --- executemany insert ---
+        cursor.executemany("INSERT INTO #pytest_varcharmax VALUES (?)", [(v,) for v in values])
+        db_connection.commit()
+
+        # --- fetchall ---
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY LEN(col)")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows == sorted(values, key=len)
+
+        # --- fetchone ---
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY LEN(col)")
+        r1 = cursor.fetchone()[0]
+        r2 = cursor.fetchone()[0]
+        assert {r1, r2} == set(values)
+        assert cursor.fetchone() is None
+
+        # --- fetchmany ---
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY LEN(col)")
+        batch = [r[0] for r in cursor.fetchmany(1)]
+        assert batch[0] in values
+    finally:
+        cursor.execute("DROP TABLE #pytest_varcharmax")
+        db_connection.commit()
+
+def test_varbinarymax_executemany_streaming(cursor, db_connection):
+    """Streaming insert + fetch > 4k VARBINARY(MAX) using executemany with all fetch modes."""
+    try:
+        values = [b"\x01" * 4100, b"\x02" * 5000]
+        cursor.execute("CREATE TABLE #pytest_varbinarymax (col VARBINARY(MAX))")
+        db_connection.commit()
+
+        # --- executemany insert ---
+        cursor.executemany("INSERT INTO #pytest_varbinarymax VALUES (?)", [(v,) for v in values])
+        db_connection.commit()
+
+        # --- fetchall ---
+        cursor.execute("SELECT col FROM #pytest_varbinarymax ORDER BY DATALENGTH(col)")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows == sorted(values, key=len)
+
+        # --- fetchone ---
+        cursor.execute("SELECT col FROM #pytest_varbinarymax ORDER BY DATALENGTH(col)")
+        r1 = cursor.fetchone()[0]
+        r2 = cursor.fetchone()[0]
+        assert {r1, r2} == set(values)
+        assert cursor.fetchone() is None
+
+        # --- fetchmany ---
+        cursor.execute("SELECT col FROM #pytest_varbinarymax ORDER BY DATALENGTH(col)")
+        batch = [r[0] for r in cursor.fetchmany(1)]
+        assert batch[0] in values
+    finally:
+        cursor.execute("DROP TABLE #pytest_varbinarymax")
+        db_connection.commit()
+
+def test_date_string_parameter_binding(cursor, db_connection):
+    """Verify that date-like strings are treated as strings in parameter binding"""
+    table_name = "#pytest_date_string"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                a_column VARCHAR(20)
+            )
+        """)
+        cursor.execute(f"INSERT INTO {table_name} (a_column) VALUES ('string1'), ('string2')")
+        db_connection.commit()
+
+        date_str = "2025-08-12"
+
+        # Should fail to match anything, since binding may treat it as DATE not VARCHAR
+        cursor.execute(f"SELECT a_column FROM {table_name} WHERE RIGHT(a_column, 10) = ?", (date_str,))
+        rows = cursor.fetchall()
+
+        assert rows == [], f"Expected no match for date-like string, got {rows}"
+
+    except Exception as e:
+        pytest.fail(f"Date string parameter binding test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+def test_time_string_parameter_binding(cursor, db_connection):
+    """Verify that time-like strings are treated as strings in parameter binding"""
+    table_name = "#pytest_time_string"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                time_col VARCHAR(22)
+            )
+        """)
+        cursor.execute(f"INSERT INTO {table_name} (time_col) VALUES ('prefix_14:30:45_suffix')")
+        db_connection.commit()
+
+        time_str = "14:30:45"
+
+        # This should fail because '14:30:45' gets converted to TIME type
+        # and SQL Server can't compare TIME against VARCHAR with prefix/suffix
+        cursor.execute(f"SELECT time_col FROM {table_name} WHERE time_col = ?", (time_str,))
+        rows = cursor.fetchall()
+
+        assert rows == [], f"Expected no match for time-like string, got {rows}"
+
+    except Exception as e:
+        pytest.fail(f"Time string parameter binding test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+
+def test_datetime_string_parameter_binding(cursor, db_connection):
+    """Verify that datetime-like strings are treated as strings in parameter binding"""
+    table_name = "#pytest_datetime_string"
+    try:
+        drop_table_if_exists(cursor, table_name)
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                datetime_col VARCHAR(33)
+            )
+        """)
+        cursor.execute(f"INSERT INTO {table_name} (datetime_col) VALUES ('prefix_2025-08-12T14:30:45_suffix')")
+        db_connection.commit()
+
+        datetime_str = "2025-08-12T14:30:45"
+
+        # This should fail because '2025-08-12T14:30:45' gets converted to TIMESTAMP type
+        # and SQL Server can't compare TIMESTAMP against VARCHAR with prefix/suffix
+        cursor.execute(f"SELECT datetime_col FROM {table_name} WHERE datetime_col = ?", (datetime_str,))
+        rows = cursor.fetchall()
+
+        assert rows == [], f"Expected no match for datetime-like string, got {rows}"
+
+    except Exception as e:
+        pytest.fail(f"Datetime string parameter binding test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, table_name)
+        db_connection.commit()
+        
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
