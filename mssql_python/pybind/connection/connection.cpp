@@ -181,7 +181,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         length = SQL_IS_INTEGER;
     } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
         buffer = value.cast<std::string>();  // stack buffer
-        ptr = const_cast<char*>(buffer.c_str());
+        ptr = buffer.data();
         length = static_cast<SQLINTEGER>(buffer.size());
     } else {
         LOG("Unsupported attribute value type");
