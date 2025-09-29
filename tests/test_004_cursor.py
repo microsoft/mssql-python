@@ -7880,6 +7880,75 @@ def test_datetimeoffset_executemany(cursor, db_connection):
         cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
         db_connection.commit()
 
+def test_datetimeoffset_execute_vs_executemany_consistency(cursor, db_connection):
+    """
+    Check that execute() and executemany() produce the same stored DATETIMEOFFSET
+    for identical timezone-aware datetime objects.
+    """
+    try:
+        test_dt = datetime(2023, 10, 30, 12, 0, 0, microsecond=123456,
+                   tzinfo=timezone(timedelta(hours=5, minutes=30)))
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+
+        # Insert using execute()
+        cursor.execute("INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);", 1, test_dt)
+        db_connection.commit()
+
+        # Insert using executemany()
+        cursor.executemany(
+            "INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);",
+            [(2, test_dt)]
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT dto_column FROM #pytest_dto ORDER BY id;")
+        rows = cursor.fetchall()
+        assert len(rows) == 2
+
+        # Compare textual representation to ensure binding semantics match
+        cursor.execute("SELECT CONVERT(VARCHAR(35), dto_column, 127) FROM #pytest_dto ORDER BY id;")
+        textual_rows = [r[0] for r in cursor.fetchall()]
+        assert textual_rows[0] == textual_rows[1], "execute() and executemany() results differ"
+
+    finally:
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        db_connection.commit()
+
+
+def test_datetimeoffset_extreme_offsets(cursor, db_connection):
+    """
+    Test boundary offsets (+14:00 and -12:00) to ensure correct round-trip handling.
+    """
+    try:
+        extreme_offsets = [
+            datetime(2023, 10, 30, 0, 0, 0, 0, tzinfo=timezone(timedelta(hours=14))),
+            datetime(2023, 10, 30, 0, 0, 0, 0, tzinfo=timezone(timedelta(hours=-12))),
+        ]
+
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+
+        param_list = [(i, dt) for i, dt in enumerate(extreme_offsets)]
+        cursor.executemany("INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);", param_list)
+        db_connection.commit()
+
+        cursor.execute("SELECT id, dto_column FROM #pytest_dto ORDER BY id;")
+        rows = cursor.fetchall()
+
+        for i, dt in enumerate(extreme_offsets):
+            _, fetched = rows[i]
+            assert fetched.tzinfo is not None
+            # Round-trip comparison via UTC
+            expected_utc = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            fetched_utc = fetched.astimezone(timezone.utc).replace(tzinfo=None)
+            assert expected_utc == fetched_utc, f"Extreme offset round-trip failed for {dt.tzinfo}"
+    finally:
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        db_connection.commit()
+
 def test_lowercase_attribute(cursor, db_connection):
     """Test that the lowercase attribute properly converts column names to lowercase"""
     
