@@ -7196,6 +7196,47 @@ def test_executemany_uuid_insert_and_select(cursor, db_connection):
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
 
+def test_executemany_uuid_roundtrip_fixed_value(cursor, db_connection):
+    """Ensure a fixed canonical UUID round-trips exactly."""
+    table_name = "#pytest_uuid_fixed"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER,
+                description NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        fixed_uuid = uuid.UUID("12345678-1234-5678-1234-567812345678")
+        description = "FixedUUID"
+
+        # Insert via executemany
+        cursor.executemany(
+            f"INSERT INTO {table_name} (id, description) VALUES (?, ?)",
+            [(fixed_uuid, description)]
+        )
+        db_connection.commit()
+
+        # Fetch back
+        cursor.execute(f"SELECT id, description FROM {table_name} WHERE description = ?", description)
+        row = cursor.fetchone()
+        retrieved_uuid, retrieved_desc = row
+
+        # Ensure type and value are correct
+        if isinstance(retrieved_uuid, str):
+            retrieved_uuid = uuid.UUID(retrieved_uuid)
+
+        assert isinstance(retrieved_uuid, uuid.UUID)
+        assert retrieved_uuid == fixed_uuid
+        assert str(retrieved_uuid) == str(fixed_uuid)
+        assert retrieved_desc == description
+
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
 def test_decimal_separator_with_multiple_values(cursor, db_connection):
     """Test decimal separator with multiple different decimal values"""
     original_separator = mssql_python.getDecimalSeparator()
