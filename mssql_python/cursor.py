@@ -137,29 +137,30 @@ class Cursor:
             except ValueError:
                 continue
         return None
-
+    
     def _parse_datetime(self, param):
         """
-        Attempt to parse a string as a datetime, datetime2, timestamp, or smalldatetime.
-        Handles both naive and timezone-aware datetime strings.
+        Attempt to parse a string as a datetime, smalldatetime, datetime2, timestamp.
+
+        Args:
+            param: The string to parse.
+
+        Returns:
+            A datetime.datetime object if parsing is successful, else None.
         """
         formats = [
-            "%Y-%m-%dT%H:%M:%S.%f%z",  # ISO 8601 with fractional seconds + timezone
-            "%Y-%m-%dT%H:%M:%S%z",     # ISO 8601 with timezone
-            "%Y-%m-%d %H:%M:%S.%f%z",  # Space-separated with fractional seconds + timezone
-            "%Y-%m-%d %H:%M:%S%z",     # Space-separated with timezone
-            "%Y-%m-%dT%H:%M:%S.%f",    # ISO 8601 without timezone
-            "%Y-%m-%dT%H:%M:%S",       # ISO 8601 without timezone
-            "%Y-%m-%d %H:%M:%S.%f",    # Space-separated without timezone
-            "%Y-%m-%d %H:%M:%S",       # Space-separated without timezone
+            "%Y-%m-%dT%H:%M:%S.%f",  # ISO 8601 datetime with fractional seconds
+            "%Y-%m-%dT%H:%M:%S",  # ISO 8601 datetime
+            "%Y-%m-%d %H:%M:%S.%f",  # Datetime with fractional seconds
+            "%Y-%m-%d %H:%M:%S",  # Datetime without fractional seconds
         ]
         for fmt in formats:
             try:
-                dt = datetime.datetime.strptime(param, fmt)
-                return dt
+                return datetime.datetime.strptime(param, fmt)  # Valid datetime
             except ValueError:
-                continue
-        return None  # parsing failed
+                continue  # Try next format
+
+        return None  # If all formats fail, return None
 
     def _parse_time(self, param):
         """
