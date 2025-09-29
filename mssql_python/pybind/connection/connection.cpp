@@ -173,16 +173,16 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     LOG("Setting SQL attribute");
     SQLPOINTER ptr = nullptr;
     SQLINTEGER length = 0;
+    std::string buffer; // to hold sensitive data temporarily
 
     if (py::isinstance<py::int_>(value)) {
         int intValue = value.cast<int>();
         ptr = reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(intValue));
         length = SQL_IS_INTEGER;
     } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
-        static std::vector<std::string> buffers;
-        buffers.emplace_back(value.cast<std::string>());
-        ptr = const_cast<char*>(buffers.back().c_str());
-        length = static_cast<SQLINTEGER>(buffers.back().size());
+        buffer = value.cast<std::string>();  // stack buffer
+        ptr = const_cast<char*>(buffer.c_str());
+        length = static_cast<SQLINTEGER>(buffer.size());
     } else {
         LOG("Unsupported attribute value type");
         return SQL_ERROR;
@@ -194,6 +194,11 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     }
     else {
         LOG("Set attribute successfully");
+    }
+    
+    // Zero out sensitive data if used
+    if (!buffer.empty()) {
+        std::fill(buffer.begin(), buffer.end(), static_cast<char>(0));
     }
     return ret;
 }
