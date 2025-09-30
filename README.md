@@ -17,22 +17,37 @@ pip install mssql-python
 ```
 **MacOS:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
 ```bash
+# For Mac, OpenSSL is a pre-requisite - skip if already present
 brew install openssl
 pip install mssql-python
 ```
 **Linux:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
 ```bash
+# For Alpine
+apk add libtool krb5-libs krb5-dev
+
+# For Debian/Ubuntu  
+apt-get install -y libltdl7 libkrb5-3 libgssapi-krb5-2
+
+# For RHEL
+dnf install -y libtool-ltdl krb5-libs
+
+# For SUSE
+zypper install -y libltdl7 libkrb5-3 libgssapi-krb5-2
+
+# For SUSE/openSUSE
+zypper install -y libltdl7
+
 pip install mssql-python
 ```
 
 ## Key Features
 ### Supported Platforms
  
-Windows, MacOS and Linux (manylinux2014 - Debian, Ubuntu & RHEL)
+Windows, MacOS and Linux (manylinux - Debian, Ubuntu, RHEL, SUSE (x64 only) & musllinux - Alpine)
 
 > **Note:**
-> Support for additional Linux OSs (Alpine, SUSE Linux) will come soon
->
+> SUSE Linux ARM64 is not supported by Microsoft ODBC Driver. Use x64 architecture for SUSE deployments.
  
 ### DBAPI v2.0 Compliance
  
@@ -62,10 +77,7 @@ EntraID authentication is now fully supported on MacOS and Linux but with certai
 | ActiveDirectoryDeviceCode | ✅ Yes | ✅ Yes | Device code flow for authentication; suitable for environments without browser access |
 | ActiveDirectoryDefault | ✅ Yes | ✅ Yes | Uses default authentication method based on environment and configuration |
 
-**NOTE**: 
- - **Access Token**: the connection string **must not** contain `UID`, `PWD`, `Authentication`, or `Trusted_Connection` keywords.
- - **Device Code**: make sure to specify a `Connect Timeout` that provides enough time to go through the device code flow authentication process.
- - **Default**: Ensure you're authenticated via az login, or running within a managed identity-enabled environment.
+> For more information on Entra ID please refer this [document](https://github.com/microsoft/mssql-python/wiki/Microsoft-Entra-ID-support)
 
 ### Enhanced Pythonic Features
  

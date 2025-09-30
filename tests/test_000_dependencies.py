@@ -9,6 +9,8 @@ import os
 import sys
 from pathlib import Path
 
+from mssql_python.ddbc_bindings import normalize_architecture
+
 
 class DependencyTester:
     """Helper class to test platform-specific dependencies."""
@@ -57,23 +59,30 @@ class DependencyTester:
     def _detect_linux_distro(self):
         """Detect Linux distribution for driver path selection."""
         distro_name = "debian_ubuntu"  # default
-        
+        '''
+        #ifdef __linux__
+        if (fs::exists("/etc/alpine-release")) {
+            platform = "alpine";
+        } else if (fs::exists("/etc/redhat-release") || fs::exists("/etc/centos-release")) {
+            platform = "rhel";
+        } else if (fs::exists("/etc/SuSE-release") || fs::exists("/etc/SUSE-brand")) {
+            platform = "suse";
+        } else {
+            platform = "debian_ubuntu";
+        }
+
+        fs::path driverPath = basePath / "libs" / "linux" / platform / arch / "lib" / "libmsodbcsql-18.5.so.1.1";
+        return driverPath.string();
+        '''
         try:
-            if os.path.exists("/etc/os-release"):
-                with open("/etc/os-release", "r") as f:
-                    content = f.read()
-                for line in content.split("\n"):
-                    if line.startswith("ID="):
-                        distro_id = line.split("=", 1)[1].strip('"\'')
-                        if distro_id in ["ubuntu", "debian"]:
-                            distro_name = "debian_ubuntu"
-                        elif distro_id in ["rhel", "centos", "fedora"]:
-                            distro_name = "rhel"
-                        elif distro_id == "alpine":
-                            distro_name = "alpine"
-                        else:
-                            distro_name = distro_id
-                        break
+            if (Path("/etc/alpine-release").exists()):
+                distro_name = "alpine"
+            elif (Path("/etc/redhat-release").exists() or Path("/etc/centos-release").exists()):
+                distro_name = "rhel"
+            elif (Path("/etc/SuSE-release").exists() or Path("/etc/SUSE-brand").exists()):
+                distro_name = "suse"
+            else:
+                distro_name = "debian_ubuntu"
         except Exception:
             pass  # use default
         
@@ -164,6 +173,30 @@ class DependencyTester:
         
         return self.module_dir / extension_name
 
+    def get_expected_driver_path(self):
+        platform_name = platform.system().lower()
+        normalized_arch = normalize_architecture(platform_name, self.normalized_arch)
+
+        if platform_name == "windows":
+            driver_path = Path(self.module_dir) / "libs" / "windows" / normalized_arch / "msodbcsql18.dll"
+
+        elif platform_name == "darwin":
+            driver_path = Path(self.module_dir) / "libs" / "macos" / normalized_arch / "lib" / "libmsodbcsql.18.dylib"
+
+        elif platform_name == "linux":
+            distro_name = self._detect_linux_distro()
+            driver_path = Path(self.module_dir) / "libs" / "linux" / distro_name / normalized_arch / "lib" / "libmsodbcsql-18.5.so.1.1"
+
+        else:
+            raise RuntimeError(f"Unsupported platform: {platform_name}")
+
+        driver_path_str = str(driver_path)
+
+        # Check if file exists
+        if not driver_path.exists():
+            raise RuntimeError(f"ODBC driver not found at: {driver_path_str}")
+
+        return driver_path_str
 
 # Create global instance for use in tests
 dependency_tester = DependencyTester()
@@ -314,21 +347,6 @@ class TestRuntimeCompatibility:
             
         except Exception as e:
             pytest.fail(f"Failed to import or use ddbc_bindings: {e}")
-    
-    def test_helper_functions_work(self):
-        """Test that helper functions can detect platform correctly."""
-        try:
-            from mssql_python.helpers import get_driver_path
-            
-            # Test that get_driver_path works for current platform
-            driver_path = get_driver_path(str(dependency_tester.module_dir), dependency_tester.normalized_arch)
-            
-            assert Path(driver_path).exists(), \
-                f"Driver path returned by get_driver_path does not exist: {driver_path}"
-            
-        except Exception as e:
-            pytest.fail(f"Failed to use helper functions: {e}")
-
 
 # Print platform information when tests are collected
 def pytest_runtest_setup(item):
@@ -350,3 +368,20 @@ def test_ddbc_bindings_import():
         assert True, "ddbc_bindings module imported successfully."
     except ImportError as e:
         pytest.fail(f"Failed to import ddbc_bindings: {e}")
+
+
+
+def test_get_driver_path_from_ddbc_bindings():
+    """Test the GetDriverPathCpp function from ddbc_bindings."""
+    try:
+        import mssql_python.ddbc_bindings as ddbc
+        module_dir = dependency_tester.module_dir
+
+        driver_path = ddbc.GetDriverPathCpp(str(module_dir))
+
+        # The driver path should be same as one returned by the Python function
+        expected_path = dependency_tester.get_expected_driver_path()
+        assert driver_path == str(expected_path), \
+            f"Driver path mismatch: expected {expected_path}, got {driver_path}"
+    except Exception as e:
+        pytest.fail(f"Failed to call GetDriverPathCpp: {e}")

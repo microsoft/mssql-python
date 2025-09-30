@@ -114,78 +114,6 @@ def add_driver_name_to_app_parameter(connection_string):
     return ";".join(modified_parameters) + ";"
 
 
-def detect_linux_distro():
-    """
-    Detect Linux distribution for driver path selection.
-
-    Returns:
-        str: Distribution name ('debian_ubuntu', 'rhel', 'alpine', etc.)
-    """
-    import os
-
-    distro_name = "debian_ubuntu"  # default
-
-    try:
-        if os.path.exists("/etc/os-release"):
-            with open("/etc/os-release", "r") as f:
-                content = f.read()
-            for line in content.split("\n"):
-                if line.startswith("ID="):
-                    distro_id = line.split("=", 1)[1].strip('"\'')
-                    if distro_id in ["ubuntu", "debian"]:
-                        distro_name = "debian_ubuntu"
-                    elif distro_id in ["rhel", "centos", "fedora"]:
-                        distro_name = "rhel"
-                    elif distro_id == "alpine":
-                        distro_name = "alpine"
-                    else:
-                        distro_name = distro_id  # use as-is
-                    break
-    except Exception:
-        pass  # use default
-
-    return distro_name
-
-def get_driver_path(module_dir, architecture):
-    """
-    Get the platform-specific ODBC driver path.
-
-    Args:
-        module_dir (str): Base module directory
-        architecture (str): Target architecture (x64, arm64, x86, etc.)
-
-    Returns:
-        str: Full path to the ODBC driver file
-
-    Raises:
-        RuntimeError: If driver not found or unsupported platform
-    """
-
-    platform_name = platform.system().lower()
-    normalized_arch = normalize_architecture(platform_name, architecture)
-
-    if platform_name == "windows":
-        driver_path = Path(module_dir) / "libs" / "windows" / normalized_arch / "msodbcsql18.dll"
-
-    elif platform_name == "darwin":
-        driver_path = Path(module_dir) / "libs" / "macos" / normalized_arch / "lib" / "libmsodbcsql.18.dylib"
-
-    elif platform_name == "linux":
-        distro_name = detect_linux_distro()
-        driver_path = Path(module_dir) / "libs" / "linux" / distro_name / normalized_arch / "lib" / "libmsodbcsql-18.5.so.1.1"
-
-    else:
-        raise RuntimeError(f"Unsupported platform: {platform_name}")
-
-    driver_path_str = str(driver_path)
-
-    # Check if file exists
-    if not driver_path.exists():
-        raise RuntimeError(f"ODBC driver not found at: {driver_path_str}")
-
-    return driver_path_str
-
-
 def sanitize_connection_string(conn_str: str) -> str:
     """
     Sanitize the connection string by removing sensitive information.
@@ -198,6 +126,34 @@ def sanitize_connection_string(conn_str: str) -> str:
     # Replace Pwd=...; or Pwd=... (end of string) with Pwd=***;
     import re
     return re.sub(r"(Pwd\s*=\s*)[^;]*", r"\1***", conn_str, flags=re.IGNORECASE)
+
+
+def sanitize_user_input(user_input: str, max_length: int = 50) -> str:
+    """
+    Sanitize user input for safe logging by removing control characters,
+    limiting length, and ensuring safe characters only.
+    
+    Args:
+        user_input (str): The user input to sanitize.
+        max_length (int): Maximum length of the sanitized output.
+    
+    Returns:
+        str: The sanitized string safe for logging.
+    """
+    if not isinstance(user_input, str):
+        return "<non-string>"
+    
+    # Remove control characters and non-printable characters
+    import re
+    # Allow alphanumeric, dash, underscore, and dot (common in encoding names)
+    sanitized = re.sub(r'[^\w\-\.]', '', user_input)
+    
+    # Limit length to prevent log flooding
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length] + "..."
+    
+    # Return placeholder if nothing remains after sanitization
+    return sanitized if sanitized else "<invalid>"
 
 
 def log(level: str, message: str, *args) -> None:
