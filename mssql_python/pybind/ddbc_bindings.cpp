@@ -683,6 +683,7 @@ static bool is_python_finalizing() {
         }
         return false;
     } catch (...) {
+        std::cerr << "Error occurred while checking Python finalization state." << std::endl;
         // Be conservative - don't assume shutdown on any exception
         // Only return true if we're absolutely certain Python is shutting down
         return false;
