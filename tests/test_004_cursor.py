@@ -7246,6 +7246,97 @@ def test_extreme_uuids(cursor, db_connection):
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
 
+def test_executemany_uuid_insert_and_select(cursor, db_connection):
+    """Test inserting multiple UUIDs using executemany and verifying retrieval."""
+    table_name = "#pytest_uuid_executemany"
+    
+    try:
+        # Drop and create a temporary table for the test
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER PRIMARY KEY,
+                description NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        # Generate data for insertion
+        data_to_insert = [(uuid.uuid4(), f"Item {i}") for i in range(5)]
+
+        # Insert all data with a single call to executemany
+        sql = f"INSERT INTO {table_name} (id, description) VALUES (?, ?)"
+        cursor.executemany(sql, data_to_insert)
+        db_connection.commit()
+
+        # Verify the number of rows inserted
+        assert cursor.rowcount == 5, f"Expected 5 rows inserted, but got {cursor.rowcount}"
+
+        # Fetch all data from the table
+        cursor.execute(f"SELECT id, description FROM {table_name} ORDER BY description")
+        rows = cursor.fetchall()
+        
+        # Verify the number of fetched rows
+        assert len(rows) == len(data_to_insert), "Number of fetched rows does not match."
+
+        # Compare inserted and retrieved rows by index
+        for i, (retrieved_uuid, retrieved_desc) in enumerate(rows):
+            expected_uuid, expected_desc = data_to_insert[i]
+
+            # Assert the type is correct
+            if isinstance(retrieved_uuid, str):
+                retrieved_uuid = uuid.UUID(retrieved_uuid)  # convert if driver returns str
+
+            assert isinstance(retrieved_uuid, uuid.UUID), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
+            assert retrieved_uuid == expected_uuid, f"UUID mismatch for '{retrieved_desc}': expected {expected_uuid}, got {retrieved_uuid}"
+            assert retrieved_desc == expected_desc, f"Description mismatch: expected {expected_desc}, got {retrieved_desc}"
+
+    finally:
+        # Clean up the temporary table
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+def test_executemany_uuid_roundtrip_fixed_value(cursor, db_connection):
+    """Ensure a fixed canonical UUID round-trips exactly."""
+    table_name = "#pytest_uuid_fixed"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER,
+                description NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        fixed_uuid = uuid.UUID("12345678-1234-5678-1234-567812345678")
+        description = "FixedUUID"
+
+        # Insert via executemany
+        cursor.executemany(
+            f"INSERT INTO {table_name} (id, description) VALUES (?, ?)",
+            [(fixed_uuid, description)]
+        )
+        db_connection.commit()
+
+        # Fetch back
+        cursor.execute(f"SELECT id, description FROM {table_name} WHERE description = ?", description)
+        row = cursor.fetchone()
+        retrieved_uuid, retrieved_desc = row
+
+        # Ensure type and value are correct
+        if isinstance(retrieved_uuid, str):
+            retrieved_uuid = uuid.UUID(retrieved_uuid)
+
+        assert isinstance(retrieved_uuid, uuid.UUID)
+        assert retrieved_uuid == fixed_uuid
+        assert str(retrieved_uuid) == str(fixed_uuid)
+        assert retrieved_desc == description
+
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
 def test_decimal_separator_with_multiple_values(cursor, db_connection):
     """Test decimal separator with multiple different decimal values"""
     original_separator = mssql_python.getDecimalSeparator()
@@ -10970,6 +11061,59 @@ def test_decimal_separator_calculations(cursor, db_connection):
         
         # Cleanup
         cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
+        db_connection.commit()
+
+def test_executemany_with_uuids(cursor, db_connection):
+    """Test inserting multiple rows with UUIDs and None using executemany."""
+    table_name = "#pytest_uuid_batch"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER,
+                description NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        # Prepare test data: mix of UUIDs and None
+        test_data = [
+            [uuid.uuid4(), "Item 1"],
+            [uuid.uuid4(), "Item 2"],
+            [None, "Item 3"],
+            [uuid.uuid4(), "Item 4"],
+            [None, "Item 5"]
+        ]
+
+        # Map descriptions to original UUIDs for O(1) lookup
+        uuid_map = {desc: uid for uid, desc in test_data}
+
+        # Execute batch insert
+        cursor.executemany(f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", test_data)
+        cursor.connection.commit()
+
+        # Fetch and verify
+        cursor.execute(f"SELECT id, description FROM {table_name}")
+        rows = cursor.fetchall()
+
+        assert len(rows) == len(test_data), "Number of fetched rows does not match inserted rows."
+
+        for retrieved_uuid, retrieved_desc in rows:
+            expected_uuid = uuid_map[retrieved_desc]
+            
+            if expected_uuid is None:
+                assert retrieved_uuid is None, f"Expected None for '{retrieved_desc}', got {retrieved_uuid}"
+            else:
+                # Convert string to UUID if needed
+                if isinstance(retrieved_uuid, str):
+                    retrieved_uuid = uuid.UUID(retrieved_uuid)
+
+                assert isinstance(retrieved_uuid, uuid.UUID), f"Expected UUID, got {type(retrieved_uuid)}"
+                assert retrieved_uuid == expected_uuid, f"UUID mismatch for '{retrieved_desc}'"
+
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
 
 def test_nvarcharmax_executemany_streaming(cursor, db_connection):
     """Streaming insert + fetch > 4k NVARCHAR(MAX) using executemany with all fetch modes."""

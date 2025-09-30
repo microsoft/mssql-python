@@ -2013,6 +2013,49 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                     bufferLength = sizeof(SQL_NUMERIC_STRUCT);
                     break;
                 }
+                case SQL_C_GUID: {
+                    SQLGUID* guidArray = AllocateParamBufferArray<SQLGUID>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+
+                    static py::module_ uuid_mod = py::module_::import("uuid");
+                    static py::object uuid_class = uuid_mod.attr("UUID");
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        const py::handle& element = columnValues[i];
+                        std::array<unsigned char, 16> uuid_bytes;
+                        if (element.is_none()) {
+                            std::memset(&guidArray[i], 0, sizeof(SQLGUID));
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                            continue;
+                        }
+                        else if (py::isinstance<py::bytes>(element)) {
+                            py::bytes b = element.cast<py::bytes>();
+                            if (PyBytes_GET_SIZE(b.ptr()) != 16) {
+                                ThrowStdException("UUID binary data must be exactly 16 bytes long.");
+                            }
+                            std::memcpy(uuid_bytes.data(), PyBytes_AS_STRING(b.ptr()), 16);
+                        }
+                        else if (py::isinstance(element, uuid_class)) {
+                            py::bytes b = element.attr("bytes_le").cast<py::bytes>();
+                            std::memcpy(uuid_bytes.data(), PyBytes_AS_STRING(b.ptr()), 16);
+                        }
+                        else {
+                            ThrowStdException(MakeParamMismatchErrorStr(info.paramCType, paramIndex));
+                        }
+                        guidArray[i].Data1 = (static_cast<uint32_t>(uuid_bytes[3]) << 24) |
+                                            (static_cast<uint32_t>(uuid_bytes[2]) << 16) |
+                                            (static_cast<uint32_t>(uuid_bytes[1]) << 8)  |
+                                            (static_cast<uint32_t>(uuid_bytes[0]));
+                        guidArray[i].Data2 = (static_cast<uint16_t>(uuid_bytes[5]) << 8) |
+                                            (static_cast<uint16_t>(uuid_bytes[4]));
+                        guidArray[i].Data3 = (static_cast<uint16_t>(uuid_bytes[7]) << 8) |
+                                            (static_cast<uint16_t>(uuid_bytes[6]));
+                        std::memcpy(guidArray[i].Data4, uuid_bytes.data() + 8, 8);
+                        strLenOrIndArray[i] = sizeof(SQLGUID);
+                    }
+                    dataPtr = guidArray;
+                    bufferLength = sizeof(SQLGUID);
+                    break;
+                }
                 default: {
                     ThrowStdException("BindParameterArray: Unsupported C type: " + std::to_string(info.paramCType));
                 }
@@ -3229,6 +3272,11 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
                 case SQL_GUID: {
+                    SQLLEN indicator = buffers.indicators[col - 1][i];
+                    if (indicator == SQL_NULL_DATA) {
+                        row.append(py::none());
+                        break;
+                    }
                     SQLGUID* guidValue = &buffers.guidBuffers[col - 1][i];
                     uint8_t reordered[16];
                     reordered[0] = ((char*)&guidValue->Data1)[3];
