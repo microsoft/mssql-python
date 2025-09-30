@@ -167,6 +167,151 @@ SQLTablesFunc SQLTables_ptr = nullptr;
 
 SQLDescribeParamFunc SQLDescribeParam_ptr = nullptr;
 
+py::object DecodeString(const void* data, SQLLEN dataLen, const std::string& encoding, bool isWideChar) {
+    if (data == nullptr || dataLen <= 0) {
+        return py::none();
+    }
+    
+    // Create a bytes object with the raw binary data
+    py::bytes bytes_obj(static_cast<const char*>(data), dataLen);
+    
+    try {
+        // Import the codecs module
+        py::module_ codecs = py::module_::import("codecs");
+        
+        // For wide character data from SQL Server (always UTF-16LE)
+        if (isWideChar) {
+            return codecs.attr("decode")(bytes_obj, py::str("utf-16le"), py::str("strict"));
+        }
+        // For regular character data, use the specified encoding
+        else {
+            return codecs.attr("decode")(bytes_obj, py::str(encoding), py::str("strict"));
+        }
+    }
+    catch (const std::exception& e) {
+        // Log the error
+        LOG("DecodeString error: {}", e.what());
+        
+        // Try with replace error handler
+        try {
+            py::module_ codecs = py::module_::import("codecs");
+            if (isWideChar) {
+                return codecs.attr("decode")(bytes_obj, py::str("utf-16le"), py::str("replace"));
+            } else {
+                return codecs.attr("decode")(bytes_obj, py::str(encoding), py::str("replace"));
+            }
+        }
+        catch (const std::exception&) {
+            // Last resort: return error message
+            return py::str("[Decoding Error]");
+        }
+    }
+}
+
+py::bytes EncodeString(const std::string& text, const std::string& encoding, bool toWideChar) {
+    // Import Python's codecs module
+    py::module_ codecs = py::module_::import("codecs");
+    
+    // Detailed logging for debugging
+    std::cout << "========== EncodeString DEBUG ==========" << std::endl;
+    std::cout << "Input text: '" << text << "'" << std::endl;
+    std::cout << "Requested encoding: " << encoding << std::endl;
+    std::cout << "toWideChar flag: " << (toWideChar ? "true" : "false") << std::endl;
+    
+    try {
+        py::bytes result;
+        
+        if (toWideChar) {
+            std::cout << "Processing for SQL_C_WCHAR (wide character)" << std::endl;
+            
+            // For East Asian encodings that need special handling
+            if (encoding == "gbk" || encoding == "gb2312" || encoding == "gb18030" || 
+                encoding == "cp936" || encoding == "big5" || encoding == "cp950" || 
+                encoding == "shift_jis" || encoding == "cp932" || encoding == "euc_kr" ||
+                encoding == "cp949" || encoding == "euc_jp") {
+                
+                std::cout << "Using East Asian encoding: " << encoding << std::endl;
+                
+                // First decode the string using the specified encoding to get Unicode
+                py::object unicode_str = codecs.attr("decode")(
+                    py::bytes(text.data(), text.size()), 
+                    py::str(encoding),
+                    py::str("strict")
+                );
+                
+                std::cout << "Successfully decoded with " << encoding << std::endl;
+                
+                // Now encode as UTF-16LE for SQL Server
+                result = codecs.attr("encode")(unicode_str, py::str("utf-16le"), py::str("strict"));
+                std::cout << "Re-encoded to UTF-16LE for SQL Server" << std::endl;
+            } 
+            else {
+                // For all other encodings with wide chars, use UTF-16LE
+                std::cout << "Using UTF-16LE for wide character data" << std::endl;
+                result = codecs.attr("encode")(py::str(text), py::str("utf-16le"), py::str("strict"));
+            }
+        }
+        else {
+            // For SQL_C_CHAR, use the specified encoding directly
+            std::cout << "Processing for SQL_C_CHAR (narrow character)" << std::endl;
+            std::cout << "Using specified encoding: " << encoding << std::endl;
+            result = codecs.attr("encode")(py::str(text), py::str(encoding), py::str("strict"));
+        }
+        
+        // Log the result size
+        size_t result_size = PyBytes_Size(result.ptr());
+        std::cout << "Encoded result size: " << result_size << " bytes" << std::endl;
+        
+        // Debug first few bytes of the result
+        const char* data = PyBytes_AsString(result.ptr());
+        std::cout << "First bytes (hex): ";
+        for (size_t i = 0; i < std::min(result_size, size_t(16)); ++i) {
+            std::cout << std::hex << std::setw(2) << std::setfill('0') 
+                      << (static_cast<int>(data[i]) & 0xFF) << " ";
+        }
+        std::cout << std::dec << std::endl;
+        
+        std::cout << "EncodeString completed successfully" << std::endl;
+        std::cout << "=======================================" << std::endl;
+        return result;
+    } 
+    catch (const std::exception& e) {
+        // Log the error
+        std::cout << "ERROR in EncodeString: " << e.what() << std::endl;
+        LOG("EncodeString error: {}", e.what());
+        
+        try {
+            // Fallback with replace error handler
+            std::cout << "Attempting fallback encoding..." << std::endl;
+            py::bytes result;
+            
+            if (toWideChar) {
+                result = codecs.attr("encode")(py::str(text), py::str("utf-16le"), py::str("replace"));
+                std::cout << "Fallback: Encoded with utf-16le and replace error handler" << std::endl;
+            } 
+            else {
+                result = codecs.attr("encode")(py::str(text), py::str(encoding), py::str("replace"));
+                std::cout << "Fallback: Encoded with " << encoding << " and replace error handler" << std::endl;
+            }
+            
+            std::cout << "Fallback encoding successful" << std::endl;
+            std::cout << "=======================================" << std::endl;
+            return result;
+        } 
+        catch (const std::exception& e2) {
+            // Ultimate fallback
+            std::cout << "ERROR in fallback encoding: " << e2.what() << std::endl;
+            std::cout << "Using ultimate fallback to UTF-8" << std::endl;
+            LOG("Fallback encoding error: {}", e2.what());
+            
+            py::bytes result = codecs.attr("encode")(py::str(text), py::str("utf-8"), py::str("replace"));
+            std::cout << "Ultimate fallback completed" << std::endl;
+            std::cout << "=======================================" << std::endl;
+            return result;
+        }
+    }
+}
+
 namespace {
 
 const char* GetSqlCTypeAsString(const SQLSMALLINT cType) {
@@ -240,7 +385,9 @@ std::string DescribeChar(unsigned char ch) {
 // appropriate arguments
 SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                          std::vector<ParamInfo>& paramInfos,
-                         std::vector<std::shared_ptr<void>>& paramBuffers) {
+                         std::vector<std::shared_ptr<void>>& paramBuffers,
+                         const std::string& encoding = "utf-16le",
+                         int /* ctype */ = SQL_WCHAR) {
     LOG("Starting parameter binding. Number of parameters: {}", params.size());
     for (int paramIndex = 0; paramIndex < params.size(); paramIndex++) {
         const auto& param = params[paramIndex];
@@ -257,15 +404,62 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     !py::isinstance<py::bytes>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
+
+                std::cout << "  Type: SQL_C_CHAR" << std::endl;
+                std::cout << "  Python type: ";
+                if (py::isinstance<py::str>(param)) std::cout << "str";
+                else if (py::isinstance<py::bytes>(param)) std::cout << "bytes";
+                else if (py::isinstance<py::bytearray>(param)) std::cout << "bytearray";
+                std::cout << std::endl;
+                
                 if (paramInfo.isDAE) {
                     LOG("Parameter[{}] is marked for DAE streaming", paramIndex);
+                    std::cout << "  Is DAE streaming" << std::endl;
                     dataPtr = const_cast<void*>(reinterpret_cast<const void*>(&paramInfos[paramIndex]));
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                     *strLenOrIndPtr = SQL_LEN_DATA_AT_EXEC(0);
                     bufferLength = 0;
                 } else {
-                    std::string* strParam =
-                        AllocateParamBuffer<std::string>(paramBuffers, param.cast<std::string>());
+                    // Use the specified encoding when converting to string
+                    std::string* strParam = nullptr;
+                    if (py::isinstance<py::str>(param)) {
+                        // Use the EncodeString function to handle encoding properly
+                        std::string text_to_encode = param.cast<std::string>();
+                        std::cout << "  Original string: '" << text_to_encode << "'" << std::endl;
+                        std::cout << "  String length: " << text_to_encode.size() << " bytes" << std::endl;
+                        
+                        // Print raw bytes of the original string
+                        std::cout << "  Raw bytes: ";
+                        for (size_t i = 0; i < text_to_encode.size(); ++i) {
+                            std::cout << std::hex << std::setw(2) << std::setfill('0') 
+                                      << (static_cast<int>(text_to_encode[i]) & 0xFF) << " ";
+                        }
+                        std::cout << std::dec << std::endl;
+                        
+                        py::bytes encoded = EncodeString(text_to_encode, encoding, false);
+                        std::string encoded_str = encoded.cast<std::string>();
+                        strParam = AllocateParamBuffer<std::string>(paramBuffers, encoded_str);
+                        
+                        std::cout << "  Encoded length: " << encoded_str.size() << " bytes" << std::endl;
+                        std::cout << "  Encoded bytes: ";
+                        for (size_t i = 0; i < std::min(encoded_str.size(), size_t(32)); ++i) {
+                            std::cout << std::hex << std::setw(2) << std::setfill('0') 
+                                      << (static_cast<int>(encoded_str[i]) & 0xFF) << " ";
+                        }
+                        std::cout << std::dec << std::endl;
+                        LOG("SQL_C_CHAR Parameter[{}]: Encoding={}, Length={}", paramIndex, encoding, strParam->size());
+                    } else {
+                        // For bytes/bytearray, use as-is
+                        std::string raw_bytes = param.cast<std::string>();
+                        std::cout << "  Raw bytes length: " << raw_bytes.size() << " bytes" << std::endl;
+                        std::cout << "  Raw bytes: ";
+                        for (size_t i = 0; i < std::min(raw_bytes.size(), size_t(32)); ++i) {
+                            std::cout << std::hex << std::setw(2) << std::setfill('0') 
+                                      << (static_cast<int>(raw_bytes[i]) & 0xFF) << " ";
+                        }
+                        std::cout << std::dec << std::endl;
+                        strParam = AllocateParamBuffer<std::string>(paramBuffers, param.cast<std::string>());
+                    }
                     dataPtr = const_cast<void*>(static_cast<const void*>(strParam->c_str()));
                     bufferLength = strParam->size() + 1;
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
@@ -308,25 +502,125 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     !py::isinstance<py::bytes>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
+
+                std::cout << "  Type: SQL_C_WCHAR" << std::endl;
+                std::cout << "  Python type: ";
+                if (py::isinstance<py::str>(param)) std::cout << "str";
+                else if (py::isinstance<py::bytes>(param)) std::cout << "bytes";
+                else if (py::isinstance<py::bytearray>(param)) std::cout << "bytearray";
+                std::cout << std::endl;
+                
                 if (paramInfo.isDAE) {
                     // deferred execution
                     LOG("Parameter[{}] is marked for DAE streaming", paramIndex);
+                    std::cout << "  Is DAE streaming" << std::endl;
                     dataPtr = const_cast<void*>(reinterpret_cast<const void*>(&paramInfos[paramIndex]));
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                     *strLenOrIndPtr = SQL_LEN_DATA_AT_EXEC(0);
                     bufferLength = 0;
                 } else {
                     // Normal small-string case
-                    std::wstring* strParam =
-                        AllocateParamBuffer<std::wstring>(paramBuffers, param.cast<std::wstring>());
-                    LOG("SQL_C_WCHAR Parameter[{}]: Length={}, isDAE={}", paramIndex, strParam->size(), paramInfo.isDAE);
+                    std::wstring* strParam = nullptr;
+                    
+                    if (py::isinstance<py::str>(param)) {
+                        // For Python strings, convert to wstring using EncodeString
+                        std::string text_to_encode = param.cast<std::string>();
+                        
+                        std::cout << "  Original string: '" << text_to_encode << "'" << std::endl;
+                        std::cout << "  String length: " << text_to_encode.size() << " bytes" << std::endl;
+                        std::cout << "  Using encoding: " << encoding << std::endl;
+                        
+                        // Print raw bytes of the original string
+                        std::cout << "  Raw bytes: ";
+                        for (size_t i = 0; i < text_to_encode.size(); ++i) {
+                            std::cout << std::hex << std::setw(2) << std::setfill('0') 
+                                      << (static_cast<int>(text_to_encode[i]) & 0xFF) << " ";
+                        }
+                        std::cout << std::dec << std::endl;
+                        
+                        // Try to show the string as Unicode codepoints
+                        try {
+                            py::object unicode_obj = py::reinterpret_steal<py::object>(
+                                PyUnicode_DecodeUTF8(text_to_encode.c_str(), text_to_encode.length(), "strict")
+                            );
+                            std::cout << "  UTF-8 decoded as: " << unicode_obj.cast<std::string>() << std::endl;
+                        } catch (const std::exception& e) {
+                            std::cout << "  Could not decode as UTF-8: " << e.what() << std::endl;
+                        }
+
+                        py::bytes encoded = EncodeString(text_to_encode, encoding, true); // true for wide character
+                        // Print the encoded bytes
+                        std::string encoded_str = encoded.cast<std::string>();
+                        std::cout << "  Encoded length: " << encoded_str.size() << " bytes" << std::endl;
+                        std::cout << "  Encoded bytes: ";
+                        for (size_t i = 0; i < std::min(encoded_str.size(), size_t(32)); ++i) {
+                            std::cout << std::hex << std::setw(2) << std::setfill('0') 
+                                      << (static_cast<int>(encoded_str[i]) & 0xFF) << " ";
+                        }
+                        std::cout << std::dec << std::endl;
+                        
+                        // Convert bytes to wstring
+                        py::object decoded = py::module_::import("codecs").attr("decode")(encoded, py::str("utf-16le"), py::str("strict"));
+                        std::wstring wstr = decoded.cast<std::wstring>();
+                        
+                        std::cout << "  Decoded wstring length: " << wstr.length() << " characters" << std::endl;
+                        
+                        // Try to show the decoded string representation
+                        try {
+                            std::string repr = decoded.cast<std::string>();
+                            std::cout << "  Decoded as: " << repr << std::endl;
+                        } catch (const std::exception& e) {
+                            std::cout << "  Could not represent decoded string: " << e.what() << std::endl;
+                        }
+                        strParam = AllocateParamBuffer<std::wstring>(paramBuffers, decoded.cast<std::wstring>());
+                    } else {
+                        // For bytes/bytearray, first decode using the specified encoding
+                        try {
+                            // Use EncodeString for consistent encoding behavior
+                            std::string raw_bytes = param.cast<std::string>();
+                            
+                            std::cout << "  Raw bytes length: " << raw_bytes.size() << " bytes" << std::endl;
+                            std::cout << "  Raw bytes: ";
+                            for (size_t i = 0; i < std::min(raw_bytes.size(), size_t(32)); ++i) {
+                                std::cout << std::hex << std::setw(2) << std::setfill('0') 
+                                          << (static_cast<int>(raw_bytes[i]) & 0xFF) << " ";
+                            }
+                            std::cout << std::dec << std::endl;
+                            
+                            py::bytes encoded = EncodeString(raw_bytes, encoding, true); // true for wide character
+                            py::object decoded = py::module_::import("codecs").attr("decode")(encoded, py::str("utf-16le"), py::str("strict"));
+                            std::wstring wstr = decoded.cast<std::wstring>();
+                            
+                            std::cout << "  Decoded wstring length: " << wstr.length() << " characters" << std::endl;
+                            
+                            strParam = AllocateParamBuffer<std::wstring>(paramBuffers, wstr);
+                        } catch (const std::exception& e) {
+                            LOG("Error encoding bytes to wstring: {}", e.what());
+                            std::cout << "  ERROR encoding bytes: " << e.what() << std::endl;
+                            std::cout << "  Falling back to PyUnicode_DecodeLocaleAndSize" << std::endl;
+                            
+                            // Fall back to the original method
+                            py::object decoded = py::reinterpret_steal<py::object>(
+                                PyUnicode_DecodeLocaleAndSize(
+                                    PyBytes_AsString(param.ptr()), 
+                                    PyBytes_Size(param.ptr()), 
+                                    encoding.c_str()
+                                ));
+                            std::wstring wstr = decoded.cast<std::wstring>();
+                            std::cout << "  Fallback wstring length: " << wstr.length() << " characters" << std::endl;
+                            strParam = AllocateParamBuffer<std::wstring>(paramBuffers, wstr);
+                        }
+                    }
+                    
+                    LOG("SQL_C_WCHAR Parameter[{}]: Encoding={}, Length={}, isDAE={}", 
+                        paramIndex, encoding, strParam->size(), paramInfo.isDAE);
+                    
                     std::vector<SQLWCHAR>* sqlwcharBuffer =
                         AllocateParamBuffer<std::vector<SQLWCHAR>>(paramBuffers, WStringToSQLWCHAR(*strParam));
                     dataPtr = sqlwcharBuffer->data();
                     bufferLength = sqlwcharBuffer->size() * sizeof(SQLWCHAR);
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                     *strLenOrIndPtr = SQL_NTS;
-
                 }
                 break;
             }
@@ -1476,7 +1770,9 @@ SQLRETURN SQLTables_wrap(SqlHandlePtr StatementHandle,
 SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                           const std::wstring& query /* TODO: Use SQLTCHAR? */,
                           const py::list& params, std::vector<ParamInfo>& paramInfos,
-                          py::list& isStmtPrepared, const bool usePrepare = true) {
+                          py::list& isStmtPrepared, const bool usePrepare = true,
+                          const std::string& encoding = "utf-16le",
+                          int ctype = SQL_WCHAR) {
     LOG("Execute SQL Query - {}", query.c_str());
     if (!SQLPrepare_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -1548,7 +1844,20 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         // This vector manages the heap memory allocated for parameter buffers.
         // It must be in scope until SQLExecute is done.
         std::vector<std::shared_ptr<void>> paramBuffers;
-        rc = BindParameters(hStmt, params, paramInfos, paramBuffers);
+        std::cout << "Binding parameters..." << std::endl;
+        // Debug: Print the Python params list and its types
+        std::cout << "DEBUG: Python params list:" << std::endl;
+        for (size_t i = 0; i < params.size(); ++i) {
+            const py::object& param = params[i];
+            std::cout << "  Param[" << i << "]: type=" << std::string(py::str(param.get_type()).cast<std::string>());
+            try {
+            std::cout << ", repr=" << std::string(py::repr(param).cast<std::string>());
+            } catch (...) {
+            std::cout << ", repr=<error>";
+            }
+            std::cout << std::endl;
+        }
+        rc = BindParameters(hStmt, params, paramInfos, paramBuffers, encoding, ctype);
         if (!SQL_SUCCEEDED(rc)) {
             return rc;
         }
@@ -1661,7 +1970,9 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                              const py::list& columnwise_params,
                              const std::vector<ParamInfo>& paramInfos,
                              size_t paramSetSize,
-                             std::vector<std::shared_ptr<void>>& paramBuffers) {
+                             std::vector<std::shared_ptr<void>>& paramBuffers,
+                             const std::string& encoding = "utf-16le",
+                             int /* ctype */ = SQL_WCHAR) {
     LOG("Starting column-wise parameter array binding. paramSetSize: {}, paramCount: {}", paramSetSize, columnwise_params.size());
 
     std::vector<std::shared_ptr<void>> tempBuffers;
@@ -1712,37 +2023,51 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                 case SQL_C_WCHAR: {
                     SQLWCHAR* wcharArray = AllocateParamBufferArray<SQLWCHAR>(tempBuffers, paramSetSize * (info.columnSize + 1));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                    
                     for (size_t i = 0; i < paramSetSize; ++i) {
-                        if (columnValues[i].is_none()) {
+                        py::object value = columnValues[i];
+                        if (py::isinstance<py::none>(value)) {
                             strLenOrIndArray[i] = SQL_NULL_DATA;
-                            std::memset(wcharArray + i * (info.columnSize + 1), 0, (info.columnSize + 1) * sizeof(SQLWCHAR));
-                        } else {
-                            std::wstring wstr = columnValues[i].cast<std::wstring>();
-#if defined(__APPLE__) || defined(__linux__)
-                            // Convert to UTF-16 first, then check the actual UTF-16 length
-                            auto utf16Buf = WStringToSQLWCHAR(wstr);
-                            // Check UTF-16 length (excluding null terminator) against column size
-                            if (utf16Buf.size() > 0 && (utf16Buf.size() - 1) > info.columnSize) {
-                                std::string offending = WideToUTF8(wstr);
-                                ThrowStdException("Input string UTF-16 length exceeds allowed column size at parameter index " + std::to_string(paramIndex) + 
-                                    ". UTF-16 length: " + std::to_string(utf16Buf.size() - 1) + ", Column size: " + std::to_string(info.columnSize));
-                            }
-                            // If we reach here, the UTF-16 string fits - copy it completely
-                            std::memcpy(wcharArray + i * (info.columnSize + 1), utf16Buf.data(), utf16Buf.size() * sizeof(SQLWCHAR));
-#else
-                            // On Windows, wchar_t is already UTF-16, so the original check is sufficient
-                            if (wstr.length() > info.columnSize) {
-                                std::string offending = WideToUTF8(wstr);
-                                ThrowStdException("Input string exceeds allowed column size at parameter index " + std::to_string(paramIndex));
-                            }
-                            std::memcpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(), (wstr.length() + 1) * sizeof(SQLWCHAR));
-#endif
-                            strLenOrIndArray[i] = SQL_NTS;
+                            continue;
                         }
+                        
+                        std::wstring wstr;
+                        
+                        // For strings, convert directly to wstring
+                        if (py::isinstance<py::str>(value)) {
+                            wstr = value.cast<std::wstring>();
+                        } 
+                        // For bytes/bytearray, decode using EncodeString function with true for toWideChar
+                        else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
+                            // First convert bytes to string for proper handling
+                            std::string bytesStr = value.cast<std::string>();
+                            // Use Python's str() to get a string representation
+                            py::object pyStr = py::str(bytesStr);
+                            // Use EncodeString to properly handle the encoding to UTF-16LE
+                            py::bytes encoded = EncodeString(pyStr.cast<std::string>(), encoding, true);
+                            // Convert to wstring
+                            wstr = py::str(encoded).cast<std::wstring>();
+                        }
+                        
+                        size_t copySize = std::min(wstr.size(), info.columnSize);
+                #if defined(_WIN32)
+                        // Windows: direct copy
+                        wmemcpy(&wcharArray[i * (info.columnSize + 1)], wstr.c_str(), copySize);
+                        wcharArray[i * (info.columnSize + 1) + copySize] = 0; // Null-terminate
+                        strLenOrIndArray[i] = copySize * sizeof(SQLWCHAR);
+                #else
+                        // Unix: convert wchar_t to SQLWCHAR (uint16_t)
+                        std::vector<SQLWCHAR> sqlwchars = WStringToSQLWCHAR(wstr);
+                        size_t sqlwcharsCopySize = std::min(sqlwchars.size(), info.columnSize);
+                        memcpy(&wcharArray[i * (info.columnSize + 1)], sqlwchars.data(), 
+                            sqlwcharsCopySize * sizeof(SQLWCHAR));
+                        wcharArray[i * (info.columnSize + 1) + sqlwcharsCopySize] = 0;
+                        strLenOrIndArray[i] = sqlwcharsCopySize * sizeof(SQLWCHAR);
+                #endif
                     }
                     dataPtr = wcharArray;
                     bufferLength = (info.columnSize + 1) * sizeof(SQLWCHAR);
-                    break;
+                    break;  
                 }
                 case SQL_C_TINYINT:
                 case SQL_C_UTINYINT: {
@@ -1792,17 +2117,29 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                 case SQL_C_BINARY: {
                     char* charArray = AllocateParamBufferArray<char>(tempBuffers, paramSetSize * (info.columnSize + 1));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                    
                     for (size_t i = 0; i < paramSetSize; ++i) {
-                        if (columnValues[i].is_none()) {
+                        py::object value = columnValues[i];
+                        if (py::isinstance<py::none>(value)) {
                             strLenOrIndArray[i] = SQL_NULL_DATA;
-                            std::memset(charArray + i * (info.columnSize + 1), 0, info.columnSize + 1);
-                        } else {
-                            std::string str = columnValues[i].cast<std::string>();
-                            if (str.size() > info.columnSize)
-                                ThrowStdException("Input exceeds column size at index " + std::to_string(i));
-                            std::memcpy(charArray + i * (info.columnSize + 1), str.c_str(), str.size());
-                            strLenOrIndArray[i] = static_cast<SQLLEN>(str.size());
+                            continue;
                         }
+                        
+                        std::string str;
+                        
+                        if (py::isinstance<py::str>(value)) {
+                            // Use EncodeString function with false for toWideChar (not wide char)
+                            py::bytes encoded = EncodeString(value.cast<std::string>(), encoding, false);
+                            str = encoded.cast<std::string>();
+                        } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
+                            // For bytes/bytearray, use as-is
+                            str = value.cast<std::string>();
+                        }
+                        
+                        size_t copySize = std::min(str.size(), info.columnSize);
+                        memcpy(&charArray[i * (info.columnSize + 1)], str.c_str(), copySize);
+                        charArray[i * (info.columnSize + 1) + copySize] = 0; // Null-terminate
+                        strLenOrIndArray[i] = copySize;
                     }
                     dataPtr = charArray;
                     bufferLength = info.columnSize + 1;
@@ -2047,7 +2384,9 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
                               const std::wstring& query,
                               const py::list& columnwise_params,
                               const std::vector<ParamInfo>& paramInfos,
-                              size_t paramSetSize) {
+                              size_t paramSetSize,
+                              const std::string& encoding = "utf-16le",
+                              int /* ctype */ = SQL_WCHAR) {
     SQLHANDLE hStmt = statementHandle->get();
     SQLWCHAR* queryPtr;
 
@@ -2069,7 +2408,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
     }
     if (!hasDAE) {
         std::vector<std::shared_ptr<void>> paramBuffers;
-        rc = BindParameterArray(hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers);
+        rc = BindParameterArray(hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers, encoding);
         if (!SQL_SUCCEEDED(rc)) return rc;
 
         rc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)paramSetSize, 0);
@@ -2083,7 +2422,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
             py::list rowParams = columnwise_params[rowIndex];
 
             std::vector<std::shared_ptr<void>> paramBuffers;
-            rc = BindParameters(hStmt, rowParams, const_cast<std::vector<ParamInfo>&>(paramInfos), paramBuffers);
+            rc = BindParameters(hStmt, rowParams, const_cast<std::vector<ParamInfo>&>(paramInfos), paramBuffers, encoding);
             if (!SQL_SUCCEEDED(rc)) return rc;
 
             rc = SQLExecute_ptr(hStmt);
@@ -2096,7 +2435,9 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
                 if (!py_obj_ptr) return SQL_ERROR;
 
                 if (py::isinstance<py::str>(*py_obj_ptr)) {
-                    std::string data = py_obj_ptr->cast<std::string>();
+                    // Use EncodeString function with false for non-wide characters
+                    py::bytes encoded = EncodeString(py_obj_ptr->cast<std::string>(), encoding, false);
+                    std::string data = encoded.cast<std::string>();
                     SQLLEN data_len = static_cast<SQLLEN>(data.size());
                     rc = SQLPutData_ptr(hStmt, (SQLPOINTER)data.c_str(), data_len);
                 } else if (py::isinstance<py::bytes>(*py_obj_ptr) || py::isinstance<py::bytearray>(*py_obj_ptr)) {
@@ -2236,10 +2577,12 @@ SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
 }
 
 static py::object FetchLobColumnData(SQLHSTMT hStmt,
-                                     SQLUSMALLINT colIndex,
-                                     SQLSMALLINT cType,
-                                     bool isWideChar,
-                                     bool isBinary)
+                                   SQLUSMALLINT colIndex,
+                                   SQLSMALLINT cType,
+                                   bool isWideChar,
+                                   bool isBinary,
+                                   const std::string& charEncoding = "utf-8",
+                                   const std::string& wcharEncoding = "utf-16le")
 {
     std::vector<char> buffer;
     SQLRETURN ret = SQL_SUCCESS_WITH_INFO;
@@ -2324,31 +2667,20 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
         }
         return py::str("");
     }
-    if (isWideChar) {
-#if defined(_WIN32)
-        std::wstring wstr(reinterpret_cast<const wchar_t*>(buffer.data()), buffer.size() / sizeof(wchar_t));
-        std::string utf8str = WideToUTF8(wstr);
-        return py::str(utf8str);
-#else
-        // Linux/macOS handling
-        size_t wcharCount = buffer.size() / sizeof(SQLWCHAR);
-        const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(buffer.data());
-        std::wstring wstr = SQLWCHARToWString(sqlwBuf, wcharCount);
-        std::string utf8str = WideToUTF8(wstr);
-        return py::str(utf8str);
-#endif
-    }
+    
     if (isBinary) {
         LOG("FetchLobColumnData: Returning binary of {} bytes", buffer.size());
         return py::bytes(buffer.data(), buffer.size());
     }
-    std::string str(buffer.data(), buffer.size());
-    LOG("FetchLobColumnData: Returning narrow string of length {}", str.length());
-    return py::str(str);
+
+    // Use DecodeString function with the proper encoding based on character type
+    const std::string& encoding = isWideChar ? wcharEncoding : charEncoding;
+    LOG("FetchLobColumnData: Using DecodeString with encoding {}", encoding);
+    return DecodeString(buffer.data(), buffer.size(), encoding, isWideChar);
 }
 
 // Helper function to retrieve column data
-SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, py::list& row) {
+SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, py::list& row, const std::string& charEncoding = "utf-8", const std::string& wcharEncoding = "utf-16le") {
     LOG("Get data from columns");
     if (!SQLGetData_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -2379,7 +2711,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_LONGVARCHAR: {
                 if (columnSize == SQL_NO_TOTAL || columnSize == 0 || columnSize > SQL_MAX_LOB_SIZE) {
                     LOG("Streaming LOB for column {}", i);
-                    row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false));
+                    row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false, charEncoding, wcharEncoding));
                 } else {
                     uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
                     std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
@@ -2391,18 +2723,13 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         if (dataLen > 0) {
                             uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
                             if (numCharsInData < dataBuffer.size()) {
-                                // SQLGetData will null-terminate the data
-    #if defined(__APPLE__) || defined(__linux__)
-                                std::string fullStr(reinterpret_cast<char*>(dataBuffer.data()));
-                                row.append(fullStr);
-                                LOG("macOS/Linux: Appended CHAR string of length {} to result row", fullStr.length());
-    #else
-                                row.append(std::string(reinterpret_cast<char*>(dataBuffer.data())));
-    #endif
+                                // Use the common decoding function
+                                row.append(DecodeString(dataBuffer.data(), dataLen, charEncoding, false));
+                                LOG("Appended CHAR string using encoding {} to result row", charEncoding);
                             } else {
                                 // Buffer too small, fallback to streaming
                                 LOG("CHAR column {} data truncated, using streaming LOB", i);
-                                row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false));
+                                row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false, charEncoding, wcharEncoding));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             LOG("Column {} is NULL (CHAR)", i);
@@ -2425,7 +2752,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             i, dataType, ret);
                         row.append(py::none());
                     }
-				}
+                }
                 break;
             }
             case SQL_WCHAR:
@@ -2433,7 +2760,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_WLONGVARCHAR: {
                 if (columnSize == SQL_NO_TOTAL || columnSize > 4000) {
                     LOG("Streaming LOB for column {} (NVARCHAR)", i);
-                    row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false));
+                    row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, charEncoding, wcharEncoding));
                 } else {
                     uint64_t fetchBufferSize = (columnSize + 1) * sizeof(SQLWCHAR);  // +1 for null terminator
                     std::vector<SQLWCHAR> dataBuffer(columnSize + 1);
@@ -2443,37 +2770,29 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         if (dataLen > 0) {
                             uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
                             if (numCharsInData < dataBuffer.size()) {
-#if defined(__APPLE__) || defined(__linux__)
-                                const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(dataBuffer.data());
-                                std::wstring wstr = SQLWCHARToWString(sqlwBuf, numCharsInData);
-                                std::string utf8str = WideToUTF8(wstr);
-                                row.append(py::str(utf8str));
-#else
-                                std::wstring wstr(reinterpret_cast<wchar_t*>(dataBuffer.data()));
-                                row.append(py::cast(wstr));
-#endif
-                                LOG("Appended NVARCHAR string of length {} to result row", numCharsInData);
-                            }  else {
+                                // Use the common decoding function
+                                row.append(DecodeString(dataBuffer.data(), dataLen, wcharEncoding, true));
+                                LOG("Appended WCHAR string using encoding {} to result row", wcharEncoding);
+                            } else {
                                 // Buffer too small, fallback to streaming
-                                LOG("NVARCHAR column {} data truncated, using streaming LOB", i);
-                                row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false));
+                                LOG("WCHAR column {} data truncated, using streaming LOB", i);
+                                row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, charEncoding, wcharEncoding));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
-                            LOG("Column {} is NULL (CHAR)", i);
+                            LOG("Column {} is NULL (WCHAR)", i);
                             row.append(py::none());
                         } else if (dataLen == 0) {
                             row.append(py::str(""));
-                        } else if (dataLen == SQL_NO_TOTAL) {
-                            LOG("SQLGetData couldn't determine the length of the NVARCHAR data. Returning NULL. Column ID - {}", i);
-                            row.append(py::none());
-                        } else if (dataLen < 0) {
-                            LOG("SQLGetData returned an unexpected negative data length. "
-                                "Raising exception. Column ID - {}, Data Type - {}, Data Length - {}",
+                        } else {
+                            LOG("Error retrieving data for column - {}, data type - {}, data length - {}. "
+                                "Returning NULL value instead",
                                 i, dataType, dataLen);
-                            ThrowStdException("SQLGetData returned an unexpected negative data length");
+                            row.append(py::none());
                         }
                     } else {
-                        LOG("Error retrieving data for column {} (NVARCHAR), SQLGetData return code {}", i, ret);
+                        LOG("Error retrieving data for column - {}, data type - {}, SQLGetData return "
+                            "code - {}. Returning NULL value instead",
+                            i, dataType, ret);
                         row.append(py::none());
                     }
                 }
@@ -2722,7 +3041,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 // Use streaming for large VARBINARY (columnSize unknown or > 8000)
                 if (columnSize == SQL_NO_TOTAL || columnSize == 0 || columnSize > 8000) {
                     LOG("Streaming LOB for column {} (VARBINARY)", i);
-                    row.append(FetchLobColumnData(hStmt, i, SQL_C_BINARY, false, true));
+                    row.append(FetchLobColumnData(hStmt, i, SQL_C_BINARY, false, true, charEncoding, wcharEncoding));
                 } else {
                     // Small VARBINARY, fetch directly
                     std::vector<SQLCHAR> dataBuffer(columnSize);
@@ -2735,7 +3054,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 row.append(py::bytes(reinterpret_cast<const char*>(dataBuffer.data()), dataLen));
                             } else {
                                 LOG("VARBINARY column {} data truncated, using streaming LOB", i);
-                                row.append(FetchLobColumnData(hStmt, i, SQL_C_BINARY, false, true));
+                                row.append(FetchLobColumnData(hStmt, i, SQL_C_BINARY, false, true, charEncoding, wcharEncoding));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             row.append(py::none());
@@ -3011,7 +3330,8 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
 // Fetch rows in batches
 // TODO: Move to anonymous namespace, since it is not used outside this file
 SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
-                         py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched, const std::vector<SQLUSMALLINT>& lobColumns) {
+                         py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched, const std::vector<SQLUSMALLINT>& lobColumns,
+                         const std::string& charEncoding = "utf-8", const std::string& wcharEncoding = "utf-16le") {
     LOG("Fetching data in batches");
     SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
     if (ret == SQL_NO_DATA) {
@@ -3078,12 +3398,13 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     bool isLob = std::find(lobColumns.begin(), lobColumns.end(), col) != lobColumns.end();
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
-                        // SQLFetch will nullterminate the data
-                        row.append(std::string(
-                            reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * fetchBufferSize]),
-                            numCharsInData));
+                        // Use a DecodeString function to handle encoding
+                        const char* data = reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * fetchBufferSize]);
+                        py::object decodedStr = DecodeString(data, numCharsInData, charEncoding, false);
+                        row.append(decodedStr);
                     } else {
-                        row.append(FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false));
+                        // Pass encoding parameters to FetchLobColumnData
+                        row.append(FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false, charEncoding, wcharEncoding));
                     }
                     break;
                 }
@@ -3098,20 +3419,21 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     bool isLob = std::find(lobColumns.begin(), lobColumns.end(), col) != lobColumns.end();
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
-                        // SQLFetch will nullterminate the data
-#if defined(__APPLE__) || defined(__linux__)
-                        // Use unix-specific conversion to handle the wchar_t/SQLWCHAR size difference
-                        SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
-                        std::wstring wstr = SQLWCHARToWString(wcharData, numCharsInData);
-                        row.append(wstr);
-#else
-                        // On Windows, wchar_t and SQLWCHAR are both 2 bytes, so direct cast works
-                        row.append(std::wstring(
-                            reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]),
-                            numCharsInData));
-#endif
+                        #if defined(__APPLE__) || defined(__linux__)
+                            // Use unix-specific conversion to handle the wchar_t/SQLWCHAR size difference
+                            SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
+                            // Use DecodeString directly with the raw data
+                            py::object decodedStr = DecodeString(wcharData, numCharsInData * sizeof(SQLWCHAR), wcharEncoding, true);
+                            row.append(decodedStr);
+                        #else
+                            // On Windows, wchar_t and SQLWCHAR are both 2 bytes, so direct cast works
+                            wchar_t* wcharData = reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]);
+                            py::object decodedStr = DecodeString(wcharData, numCharsInData * sizeof(wchar_t), wcharEncoding, true);
+                            row.append(decodedStr);
+                        #endif
                     } else {
-                        row.append(FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false));
+                        // Pass encoding parameters to FetchLobColumnData
+                        row.append(FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false, charEncoding, wcharEncoding));
                     }
                     break;
                 }
@@ -3259,7 +3581,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                                                  &buffers.charBuffers[col - 1][i * columnSize]),
                                              dataLen));
                     } else {
-                        row.append(FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true));
+                        row.append(FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true, charEncoding, wcharEncoding));
                     }
                     break;
                 }
@@ -3377,7 +3699,7 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
 // executed. It fetches the specified number of rows from the result set and populates the provided
 // Python list with the row data. If there are no more rows to fetch, it returns SQL_NO_DATA. If an
 // error occurs during fetching, it throws a runtime error.
-SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetchSize = 1) {
+SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetchSize = 1, const std::string& charEncoding = "utf-8", const std::string& wcharEncoding = "utf-16le") {
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
@@ -3414,7 +3736,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
             if (!SQL_SUCCEEDED(ret)) return ret;
 
             py::list row;
-            SQLGetData_wrap(StatementHandle, numCols, row);  // <-- streams LOBs correctly
+            SQLGetData_wrap(StatementHandle, numCols, row, charEncoding, wcharEncoding);  // <-- streams LOBs correctly
             rows.append(row);
         }
         return SQL_SUCCESS;
@@ -3460,7 +3782,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 // executed. It fetches all rows from the result set and populates the provided Python list with the
 // row data. If there are no more rows to fetch, it returns SQL_NO_DATA. If an error occurs during
 // fetching, it throws a runtime error.
-SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
+SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows, const std::string& charEncoding = "utf-8", const std::string& wcharEncoding = "utf-16le") {
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
@@ -3536,7 +3858,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
             if (!SQL_SUCCEEDED(ret)) return ret;
 
             py::list row;
-            SQLGetData_wrap(StatementHandle, numCols, row);  // <-- streams LOBs correctly
+            SQLGetData_wrap(StatementHandle, numCols, row, charEncoding, wcharEncoding);  // <-- streams LOBs correctly
             rows.append(row);
         }
         return SQL_SUCCESS;
@@ -3583,7 +3905,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
 // executed. It fetches the next row of data from the result set and populates the provided Python
 // list with the row data. If there are no more rows to fetch, it returns SQL_NO_DATA. If an error
 // occurs during fetching, it throws a runtime error.
-SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row) {
+SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row, const std::string& charEncoding = "utf-8", const std::string& wcharEncoding = "utf-16le") {
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
 
@@ -3592,7 +3914,7 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row) {
     if (SQL_SUCCEEDED(ret)) {
         // Retrieve column count
         SQLSMALLINT colCount = SQLNumResultCols_wrap(StatementHandle);
-        ret = SQLGetData_wrap(StatementHandle, colCount, row);
+        ret = SQLGetData_wrap(StatementHandle, colCount, row, charEncoding, wcharEncoding);
     } else if (ret != SQL_NO_DATA) {
         LOG("Error when fetching data");
     }
@@ -3731,7 +4053,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLMoreResults", &SQLMoreResults_wrap, "Check for more results in the result set");
     m.def("DDBCSQLFetchOne", &FetchOne_wrap, "Fetch one row from the result set");
     m.def("DDBCSQLFetchMany", &FetchMany_wrap, py::arg("StatementHandle"), py::arg("rows"),
-          py::arg("fetchSize") = 1, "Fetch many rows from the result set");
+          py::arg("fetchSize") = 1, py::arg("charEncoding") = "utf-8", py::arg("wcharEncoding") = "utf-16le",
+        "Fetch many rows from the result set");
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
