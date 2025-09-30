@@ -5291,23 +5291,24 @@ def test_attrs_before_access_token_attribute(conn_str):
     passing an Azure AD access token for authentication instead of username/password.
     This is the ONLY attribute currently processed by Connection::applyAttrsBefore().
     
-    Expected behavior: Should fail because ODBC driver correctly rejects mixing
-    access tokens with traditional UID/Pwd authentication. This is proper security.
+    Expected behavior: When both access token and UID/Pwd are provided, ODBC driver
+    enforces security by rejecting the combination with a specific error message.
     This tests:
-    1. Binary data handling in setAttribute() (no crashes/memory errors)
-    2. Proper ODBC driver security enforcement
+    1. Binary data handling in setAttribute() (no crashes/memory errors)  
+    2. ODBC security enforcement for conflicting authentication methods
     """
     # Create a fake access token (binary data) to test the code path
     fake_token = b"fake_access_token_for_testing_purposes_only"
     attrs_before = {1256: fake_token}  # SQL_COPT_SS_ACCESS_TOKEN = 1256
     
-    # Should fail - ODBC driver rejects access token + UID/Pwd combination
+    # Should fail: ODBC driver rejects access token + UID/Pwd combination
     with pytest.raises(Exception) as exc_info:
         connect(conn_str, attrs_before=attrs_before)
     
     # Verify it's the expected ODBC security error
     error_msg = str(exc_info.value)
-    assert "Cannot use Access Token with any of the following options" in error_msg
+    assert "Cannot use Access Token with any of the following options" in error_msg, \
+        f"Expected ODBC token+auth error, got: {error_msg}"
 
 def test_attrs_before_integer_valued_attribute_unsupported(conn_str):
     """
@@ -5359,20 +5360,21 @@ def test_attrs_before_bytearray_instead_of_bytes(conn_str):
     The C++ setAttribute() method should handle both types correctly by converting
     them to std::string and passing to SQLSetConnectAttr.
     
-    Expected: Should fail because ODBC driver rejects Access Token + UID/Pwd combination.
-    This is correct behavior - access tokens and traditional auth are mutually exclusive.
+    Expected behavior: When both access token and UID/Pwd are provided, ODBC driver
+    enforces security by rejecting the combination with a specific error message.
     """
     # Test with bytearray instead of bytes
     fake_data = bytearray(b"test_bytearray_data_for_coverage")
     attrs_before = {1256: fake_data}  # SQL_COPT_SS_ACCESS_TOKEN = 1256
     
-    # Should fail because ODBC driver rejects token + UID/Pwd combination
+    # Should fail: ODBC driver rejects access token + UID/Pwd combination
     with pytest.raises(Exception) as exc_info:
         connect(conn_str, attrs_before=attrs_before)
     
-    # Verify it's the expected ODBC error about token + auth combination
+    # Verify it's the expected ODBC security error
     error_msg = str(exc_info.value)
-    assert "Cannot use Access Token with any of the following options" in error_msg
+    assert "Cannot use Access Token with any of the following options" in error_msg, \
+        f"Expected ODBC token+auth error, got: {error_msg}"
 
 def test_attrs_before_unsupported_value_type(conn_str):
     """

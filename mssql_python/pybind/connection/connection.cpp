@@ -187,7 +187,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         // Real access tokens are typically 100+ bytes, so reject anything under 32 bytes
         if (attribute == SQL_COPT_SS_ACCESS_TOKEN && buffer.size() < 32) {
             LOG("Access token too short (< 32 bytes) - protecting against ODBC driver crash");
-            return SQL_ERROR;  // Return error instead of letting ODBC crash
+            ThrowStdException("Access token must be at least 32 bytes to prevent ODBC driver crash");
         }
         
         ptr = buffer.data();
