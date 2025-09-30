@@ -7246,6 +7246,97 @@ def test_extreme_uuids(cursor, db_connection):
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
 
+def test_executemany_uuid_insert_and_select(cursor, db_connection):
+    """Test inserting multiple UUIDs using executemany and verifying retrieval."""
+    table_name = "#pytest_uuid_executemany"
+    
+    try:
+        # Drop and create a temporary table for the test
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER PRIMARY KEY,
+                description NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        # Generate data for insertion
+        data_to_insert = [(uuid.uuid4(), f"Item {i}") for i in range(5)]
+
+        # Insert all data with a single call to executemany
+        sql = f"INSERT INTO {table_name} (id, description) VALUES (?, ?)"
+        cursor.executemany(sql, data_to_insert)
+        db_connection.commit()
+
+        # Verify the number of rows inserted
+        assert cursor.rowcount == 5, f"Expected 5 rows inserted, but got {cursor.rowcount}"
+
+        # Fetch all data from the table
+        cursor.execute(f"SELECT id, description FROM {table_name} ORDER BY description")
+        rows = cursor.fetchall()
+        
+        # Verify the number of fetched rows
+        assert len(rows) == len(data_to_insert), "Number of fetched rows does not match."
+
+        # Compare inserted and retrieved rows by index
+        for i, (retrieved_uuid, retrieved_desc) in enumerate(rows):
+            expected_uuid, expected_desc = data_to_insert[i]
+
+            # Assert the type is correct
+            if isinstance(retrieved_uuid, str):
+                retrieved_uuid = uuid.UUID(retrieved_uuid)  # convert if driver returns str
+
+            assert isinstance(retrieved_uuid, uuid.UUID), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
+            assert retrieved_uuid == expected_uuid, f"UUID mismatch for '{retrieved_desc}': expected {expected_uuid}, got {retrieved_uuid}"
+            assert retrieved_desc == expected_desc, f"Description mismatch: expected {expected_desc}, got {retrieved_desc}"
+
+    finally:
+        # Clean up the temporary table
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+def test_executemany_uuid_roundtrip_fixed_value(cursor, db_connection):
+    """Ensure a fixed canonical UUID round-trips exactly."""
+    table_name = "#pytest_uuid_fixed"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER,
+                description NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        fixed_uuid = uuid.UUID("12345678-1234-5678-1234-567812345678")
+        description = "FixedUUID"
+
+        # Insert via executemany
+        cursor.executemany(
+            f"INSERT INTO {table_name} (id, description) VALUES (?, ?)",
+            [(fixed_uuid, description)]
+        )
+        db_connection.commit()
+
+        # Fetch back
+        cursor.execute(f"SELECT id, description FROM {table_name} WHERE description = ?", description)
+        row = cursor.fetchone()
+        retrieved_uuid, retrieved_desc = row
+
+        # Ensure type and value are correct
+        if isinstance(retrieved_uuid, str):
+            retrieved_uuid = uuid.UUID(retrieved_uuid)
+
+        assert isinstance(retrieved_uuid, uuid.UUID)
+        assert retrieved_uuid == fixed_uuid
+        assert str(retrieved_uuid) == str(fixed_uuid)
+        assert retrieved_desc == description
+
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
 def test_decimal_separator_with_multiple_values(cursor, db_connection):
     """Test decimal separator with multiple different decimal values"""
     original_separator = mssql_python.getDecimalSeparator()
@@ -7821,6 +7912,132 @@ def test_datetimeoffset_malformed_input(cursor, db_connection):
                            1, "2023-13-45 25:61:00 +99:99")  # invalid string
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_malformed_input;")
+        db_connection.commit()
+        
+def test_datetimeoffset_executemany(cursor, db_connection):
+    """
+    Test the driver's ability to correctly read and write DATETIMEOFFSET data
+    using executemany, including timezone information.
+    """
+    try:
+        datetimeoffset_test_cases = [
+            (
+                "2023-10-26 10:30:00.0000000 +05:30",
+                datetime(2023, 10, 26, 10, 30, 0, 0,
+                        tzinfo=timezone(timedelta(hours=5, minutes=30)))
+            ),
+            (
+                "2023-10-27 15:45:10.1234567 -08:00",
+                datetime(2023, 10, 27, 15, 45, 10, 123456,
+                        tzinfo=timezone(timedelta(hours=-8)))
+            ),
+            (
+                "2023-10-28 20:00:05.9876543 +00:00",
+                datetime(2023, 10, 28, 20, 0, 5, 987654,
+                        tzinfo=timezone(timedelta(hours=0)))
+            )
+        ]
+
+        # Create temp table
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+
+        # Prepare data for executemany
+        param_list = [(i, python_dt) for i, (_, python_dt) in enumerate(datetimeoffset_test_cases)]
+        cursor.executemany("INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);", param_list)
+        db_connection.commit()
+
+        # Read back and validate
+        cursor.execute("SELECT id, dto_column FROM #pytest_dto ORDER BY id;")
+        rows = cursor.fetchall()
+
+        for i, (sql_str, python_dt) in enumerate(datetimeoffset_test_cases):
+            fetched_id, fetched_dto = rows[i]
+            assert fetched_dto.tzinfo is not None, "Fetched datetime object is naive."
+
+            expected_utc = python_dt.astimezone(timezone.utc).replace(tzinfo=None)
+            fetched_utc = fetched_dto.astimezone(timezone.utc).replace(tzinfo=None)
+
+            # Round microseconds to nearest millisecond for comparison
+            expected_utc = expected_utc.replace(microsecond=int(expected_utc.microsecond / 1000) * 1000)
+            fetched_utc = fetched_utc.replace(microsecond=int(fetched_utc.microsecond / 1000) * 1000)
+
+            assert fetched_utc == expected_utc, (
+                f"Value mismatch for test case {i}. "
+                f"Expected UTC: {expected_utc}, Got UTC: {fetched_utc}"
+            )
+    finally:
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        db_connection.commit()
+
+def test_datetimeoffset_execute_vs_executemany_consistency(cursor, db_connection):
+    """
+    Check that execute() and executemany() produce the same stored DATETIMEOFFSET
+    for identical timezone-aware datetime objects.
+    """
+    try:
+        test_dt = datetime(2023, 10, 30, 12, 0, 0, microsecond=123456,
+                   tzinfo=timezone(timedelta(hours=5, minutes=30)))
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+
+        # Insert using execute()
+        cursor.execute("INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);", 1, test_dt)
+        db_connection.commit()
+
+        # Insert using executemany()
+        cursor.executemany(
+            "INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);",
+            [(2, test_dt)]
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT dto_column FROM #pytest_dto ORDER BY id;")
+        rows = cursor.fetchall()
+        assert len(rows) == 2
+
+        # Compare textual representation to ensure binding semantics match
+        cursor.execute("SELECT CONVERT(VARCHAR(35), dto_column, 127) FROM #pytest_dto ORDER BY id;")
+        textual_rows = [r[0] for r in cursor.fetchall()]
+        assert textual_rows[0] == textual_rows[1], "execute() and executemany() results differ"
+
+    finally:
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        db_connection.commit()
+
+
+def test_datetimeoffset_extreme_offsets(cursor, db_connection):
+    """
+    Test boundary offsets (+14:00 and -12:00) to ensure correct round-trip handling.
+    """
+    try:
+        extreme_offsets = [
+            datetime(2023, 10, 30, 0, 0, 0, 0, tzinfo=timezone(timedelta(hours=14))),
+            datetime(2023, 10, 30, 0, 0, 0, 0, tzinfo=timezone(timedelta(hours=-12))),
+        ]
+
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
+        cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
+        db_connection.commit()
+
+        param_list = [(i, dt) for i, dt in enumerate(extreme_offsets)]
+        cursor.executemany("INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);", param_list)
+        db_connection.commit()
+
+        cursor.execute("SELECT id, dto_column FROM #pytest_dto ORDER BY id;")
+        rows = cursor.fetchall()
+
+        for i, dt in enumerate(extreme_offsets):
+            _, fetched = rows[i]
+            assert fetched.tzinfo is not None
+            # Round-trip comparison via UTC
+            expected_utc = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            fetched_utc = fetched.astimezone(timezone.utc).replace(tzinfo=None)
+            assert expected_utc == fetched_utc, f"Extreme offset round-trip failed for {dt.tzinfo}"
+    finally:
+        cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
         db_connection.commit()
 
 def test_lowercase_attribute(cursor, db_connection):
@@ -10660,6 +10877,152 @@ def test_decimal_separator_calculations(cursor, db_connection):
         
         # Cleanup
         cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
+        db_connection.commit()
+
+def test_executemany_with_uuids(cursor, db_connection):
+    """Test inserting multiple rows with UUIDs and None using executemany."""
+    table_name = "#pytest_uuid_batch"
+    try:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                id UNIQUEIDENTIFIER,
+                description NVARCHAR(50)
+            )
+        """)
+        db_connection.commit()
+
+        # Prepare test data: mix of UUIDs and None
+        test_data = [
+            [uuid.uuid4(), "Item 1"],
+            [uuid.uuid4(), "Item 2"],
+            [None, "Item 3"],
+            [uuid.uuid4(), "Item 4"],
+            [None, "Item 5"]
+        ]
+
+        # Map descriptions to original UUIDs for O(1) lookup
+        uuid_map = {desc: uid for uid, desc in test_data}
+
+        # Execute batch insert
+        cursor.executemany(f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", test_data)
+        cursor.connection.commit()
+
+        # Fetch and verify
+        cursor.execute(f"SELECT id, description FROM {table_name}")
+        rows = cursor.fetchall()
+
+        assert len(rows) == len(test_data), "Number of fetched rows does not match inserted rows."
+
+        for retrieved_uuid, retrieved_desc in rows:
+            expected_uuid = uuid_map[retrieved_desc]
+            
+            if expected_uuid is None:
+                assert retrieved_uuid is None, f"Expected None for '{retrieved_desc}', got {retrieved_uuid}"
+            else:
+                # Convert string to UUID if needed
+                if isinstance(retrieved_uuid, str):
+                    retrieved_uuid = uuid.UUID(retrieved_uuid)
+
+                assert isinstance(retrieved_uuid, uuid.UUID), f"Expected UUID, got {type(retrieved_uuid)}"
+                assert retrieved_uuid == expected_uuid, f"UUID mismatch for '{retrieved_desc}'"
+
+    finally:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
+
+def test_nvarcharmax_executemany_streaming(cursor, db_connection):
+    """Streaming insert + fetch > 4k NVARCHAR(MAX) using executemany with all fetch modes."""
+    try:
+        values = ["Ω" * 4100, "漢" * 5000]
+        cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
+        db_connection.commit()
+
+        # --- executemany insert ---
+        cursor.executemany("INSERT INTO #pytest_nvarcharmax VALUES (?)", [(v,) for v in values])
+        db_connection.commit()
+
+        # --- fetchall ---
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY LEN(col)")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows == sorted(values, key=len)
+
+        # --- fetchone ---
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY LEN(col)")
+        r1 = cursor.fetchone()[0]
+        r2 = cursor.fetchone()[0]
+        assert {r1, r2} == set(values)
+        assert cursor.fetchone() is None
+
+        # --- fetchmany ---
+        cursor.execute("SELECT col FROM #pytest_nvarcharmax ORDER BY LEN(col)")
+        batch = [r[0] for r in cursor.fetchmany(1)]
+        assert batch[0] in values
+    finally:
+        cursor.execute("DROP TABLE #pytest_nvarcharmax")
+        db_connection.commit()
+
+def test_varcharmax_executemany_streaming(cursor, db_connection):
+    """Streaming insert + fetch > 4k VARCHAR(MAX) using executemany with all fetch modes."""
+    try:
+        values = ["A" * 4100, "B" * 5000]
+        cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
+        db_connection.commit()
+
+        # --- executemany insert ---
+        cursor.executemany("INSERT INTO #pytest_varcharmax VALUES (?)", [(v,) for v in values])
+        db_connection.commit()
+
+        # --- fetchall ---
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY LEN(col)")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows == sorted(values, key=len)
+
+        # --- fetchone ---
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY LEN(col)")
+        r1 = cursor.fetchone()[0]
+        r2 = cursor.fetchone()[0]
+        assert {r1, r2} == set(values)
+        assert cursor.fetchone() is None
+
+        # --- fetchmany ---
+        cursor.execute("SELECT col FROM #pytest_varcharmax ORDER BY LEN(col)")
+        batch = [r[0] for r in cursor.fetchmany(1)]
+        assert batch[0] in values
+    finally:
+        cursor.execute("DROP TABLE #pytest_varcharmax")
+        db_connection.commit()
+
+def test_varbinarymax_executemany_streaming(cursor, db_connection):
+    """Streaming insert + fetch > 4k VARBINARY(MAX) using executemany with all fetch modes."""
+    try:
+        values = [b"\x01" * 4100, b"\x02" * 5000]
+        cursor.execute("CREATE TABLE #pytest_varbinarymax (col VARBINARY(MAX))")
+        db_connection.commit()
+
+        # --- executemany insert ---
+        cursor.executemany("INSERT INTO #pytest_varbinarymax VALUES (?)", [(v,) for v in values])
+        db_connection.commit()
+
+        # --- fetchall ---
+        cursor.execute("SELECT col FROM #pytest_varbinarymax ORDER BY DATALENGTH(col)")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows == sorted(values, key=len)
+
+        # --- fetchone ---
+        cursor.execute("SELECT col FROM #pytest_varbinarymax ORDER BY DATALENGTH(col)")
+        r1 = cursor.fetchone()[0]
+        r2 = cursor.fetchone()[0]
+        assert {r1, r2} == set(values)
+        assert cursor.fetchone() is None
+
+        # --- fetchmany ---
+        cursor.execute("SELECT col FROM #pytest_varbinarymax ORDER BY DATALENGTH(col)")
+        batch = [r[0] for r in cursor.fetchmany(1)]
+        assert batch[0] in values
+    finally:
+        cursor.execute("DROP TABLE #pytest_varbinarymax")
+        db_connection.commit()
 
 def test_date_string_parameter_binding(cursor, db_connection):
     """Verify that date-like strings are treated as strings in parameter binding"""

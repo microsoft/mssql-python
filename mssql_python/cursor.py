@@ -137,7 +137,7 @@ class Cursor:
             except ValueError:
                 continue
         return None
-
+    
     def _parse_datetime(self, param):
         """
         Attempt to parse a string as a datetime, smalldatetime, datetime2, timestamp.
@@ -1442,35 +1442,6 @@ class Cursor:
         # Use the helper method to prepare the result set
         return self._prepare_metadata_result_set(fallback_description=fallback_description)
 
-    @staticmethod
-    def _select_best_sample_value(column):
-        """
-        Selects the most representative non-null value from a column for type inference.
-
-        This is used during executemany() to infer SQL/C types based on actual data,
-        preferring a non-null value that is not the first row to avoid bias from placeholder defaults.
-
-        Args:
-            column: List of values in the column.
-        """
-        non_nulls = [v for v in column if v is not None]
-        if not non_nulls:
-            return None
-        if all(isinstance(v, int) for v in non_nulls):
-            # Pick the value with the widest range (min/max)
-            return max(non_nulls, key=lambda v: abs(v))
-        if all(isinstance(v, float) for v in non_nulls):
-            return 0.0
-        if all(isinstance(v, decimal.Decimal) for v in non_nulls):
-            return max(non_nulls, key=lambda d: len(d.as_tuple().digits))
-        if all(isinstance(v, str) for v in non_nulls):
-            return max(non_nulls, key=lambda s: len(str(s)))
-        if all(isinstance(v, datetime.datetime) for v in non_nulls):
-            return datetime.datetime.now()
-        if all(isinstance(v, datetime.date) for v in non_nulls):
-            return datetime.date.today()
-        return non_nulls[0]  # fallback
-
     def _transpose_rowwise_to_columnwise(self, seq_of_parameters: list) -> tuple[list, int]:
         """
         Convert sequence of rows (row-wise) into list of columns (column-wise),
@@ -1529,7 +1500,7 @@ class Cursor:
                 sample_value = v
 
         return sample_value, None, None
-
+    
     def executemany(self, operation: str, seq_of_parameters: list) -> None:
         """
         Prepare a database operation and execute it against all parameter sequences.
@@ -1537,14 +1508,11 @@ class Cursor:
         Args:
             operation: SQL query or command.
             seq_of_parameters: Sequence of sequences or mappings of parameters.
-
         Raises:
             Error: If the operation fails.
         """
         self._check_closed()
         self._reset_cursor()
-
-        # Clear any previous messages
         self.messages = []
 
         if not seq_of_parameters:
@@ -1570,6 +1538,7 @@ class Cursor:
         param_count = len(sample_row)
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
+        any_dae = False
 
         # Check if we have explicit input sizes set
         if self._inputsizes:
@@ -1643,12 +1612,7 @@ class Cursor:
             else:
                 # Use auto-detection for columns without explicit types
                 column = [row[col_index] for row in seq_of_parameters] if hasattr(seq_of_parameters, '__getitem__') else []
-                if not column:
-                    # For generators, use the sample row for inference
-                    sample_value = sample_row[col_index]
-                else:
-                    sample_value = self._select_best_sample_value(column)
-                
+                sample_value, min_val, max_val = self._compute_column_type(column)
                 dummy_row = list(sample_row)
                 paraminfo = self._create_parameter_types_list(
                     sample_value, param_info, dummy_row, col_index, min_val=min_val, max_val=max_val
@@ -1673,6 +1637,14 @@ class Cursor:
                     paraminfo.columnSize = max(max_binary_size, 1)
                 
                 parameters_type.append(paraminfo)
+                if paraminfo.isDAE:
+                    any_dae = True
+        
+        if any_dae:
+            log('debug', "DAE parameters detected. Falling back to row-by-row execution with streaming.")
+            for row in seq_of_parameters:
+                self.execute(operation, row)
+            return
         
         # Process parameters into column-wise format with possible type conversions
         # First, convert any Decimal types as needed for NUMERIC/DECIMAL columns
@@ -1705,8 +1677,7 @@ class Cursor:
         log('debug', "Executing batch query with %d parameter sets:\n%s",
             len(seq_of_parameters), "\n".join(f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}" for i, p in enumerate(seq_of_parameters[:5]))  # Limit to first 5 rows for large batches
         )
-        
-        # Execute batched statement
+
         ret = ddbc_bindings.SQLExecuteMany(
             self.hstmt,
             operation,

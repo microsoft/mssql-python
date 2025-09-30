@@ -64,6 +64,20 @@ struct NumericData {
         : precision(precision), scale(scale), sign(sign), val(value) {}
 };
 
+// Struct to hold the DateTimeOffset structure
+struct DateTimeOffset
+{
+    SQLSMALLINT    year;
+    SQLUSMALLINT   month;
+    SQLUSMALLINT   day;
+    SQLUSMALLINT   hour;
+    SQLUSMALLINT   minute;
+    SQLUSMALLINT   second;
+    SQLUINTEGER    fraction;        // Nanoseconds
+    SQLSMALLINT    timezone_hour;   // Offset hours from UTC
+    SQLSMALLINT    timezone_minute; // Offset minutes from UTC
+};
+
 // Struct to hold data buffers and indicators for each column
 struct ColumnBuffers {
     std::vector<std::vector<SQLCHAR>> charBuffers;
@@ -78,6 +92,7 @@ struct ColumnBuffers {
     std::vector<std::vector<SQL_TIME_STRUCT>> timeBuffers;
     std::vector<std::vector<SQLGUID>> guidBuffers;
     std::vector<std::vector<SQLLEN>> indicators;
+    std::vector<std::vector<DateTimeOffset>> datetimeoffsetBuffers;
 
     ColumnBuffers(SQLSMALLINT numCols, int fetchSize)
         : charBuffers(numCols),
@@ -91,21 +106,8 @@ struct ColumnBuffers {
           dateBuffers(numCols),
           timeBuffers(numCols),
           guidBuffers(numCols),
+          datetimeoffsetBuffers(numCols),
           indicators(numCols, std::vector<SQLLEN>(fetchSize)) {}
-};
-
-// Struct to hold the DateTimeOffset structure
-struct DateTimeOffset
-{
-    SQLSMALLINT    year;
-    SQLUSMALLINT   month;
-    SQLUSMALLINT   day;
-    SQLUSMALLINT   hour;
-    SQLUSMALLINT   minute;
-    SQLUSMALLINT   second;
-    SQLUINTEGER    fraction;        // Nanoseconds
-    SQLSMALLINT    timezone_hour;   // Offset hours from UTC
-    SQLSMALLINT    timezone_minute; // Offset minutes from UTC
 };
 
 //-------------------------------------------------------------------------------------------------
@@ -496,6 +498,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 dtoPtr->hour = static_cast<SQLUSMALLINT>(param.attr("hour").cast<int>());
                 dtoPtr->minute = static_cast<SQLUSMALLINT>(param.attr("minute").cast<int>());
                 dtoPtr->second = static_cast<SQLUSMALLINT>(param.attr("second").cast<int>());
+                // SQL server supports in ns, but python datetime supports in µs
                 dtoPtr->fraction = static_cast<SQLUINTEGER>(param.attr("microsecond").cast<int>() * 1000);
 
                 py::object utcoffset = tzinfo.attr("utcoffset")(param);
@@ -1986,6 +1989,53 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                     bufferLength = sizeof(SQL_TIMESTAMP_STRUCT);
                     break;
                 }
+                case SQL_C_SS_TIMESTAMPOFFSET: {
+                    DateTimeOffset* dtoArray = AllocateParamBufferArray<DateTimeOffset>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+
+                    py::object datetimeType = py::module_::import("datetime").attr("datetime");
+
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        const py::handle& param = columnValues[i];
+
+                        if (param.is_none()) {
+                            std::memset(&dtoArray[i], 0, sizeof(DateTimeOffset));
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                        } else {
+                            if (!py::isinstance(param, datetimeType)) {
+                                ThrowStdException(MakeParamMismatchErrorStr(info.paramCType, paramIndex));
+                            }
+
+                            py::object tzinfo = param.attr("tzinfo");
+                            if (tzinfo.is_none()) {
+                                ThrowStdException("Datetime object must have tzinfo for SQL_C_SS_TIMESTAMPOFFSET at paramIndex " +
+                                    std::to_string(paramIndex));
+                            }
+
+                            // Populate the C++ struct directly from the Python datetime object.
+                            dtoArray[i].year   = static_cast<SQLSMALLINT>(param.attr("year").cast<int>());
+                            dtoArray[i].month  = static_cast<SQLUSMALLINT>(param.attr("month").cast<int>());
+                            dtoArray[i].day    = static_cast<SQLUSMALLINT>(param.attr("day").cast<int>());
+                            dtoArray[i].hour   = static_cast<SQLUSMALLINT>(param.attr("hour").cast<int>());
+                            dtoArray[i].minute = static_cast<SQLUSMALLINT>(param.attr("minute").cast<int>());
+                            dtoArray[i].second = static_cast<SQLUSMALLINT>(param.attr("second").cast<int>());
+                            // SQL server supports in ns, but python datetime supports in µs
+                            dtoArray[i].fraction = static_cast<SQLUINTEGER>(param.attr("microsecond").cast<int>() * 1000);
+
+                            // Compute and preserve the original UTC offset.
+                            py::object utcoffset = tzinfo.attr("utcoffset")(param);
+                            int total_seconds = static_cast<int>(utcoffset.attr("total_seconds")().cast<double>());
+                            std::div_t div_result = std::div(total_seconds, 3600);
+                            dtoArray[i].timezone_hour = static_cast<SQLSMALLINT>(div_result.quot);
+                            dtoArray[i].timezone_minute = static_cast<SQLSMALLINT>(div(div_result.rem, 60).quot);
+
+                            strLenOrIndArray[i] = sizeof(DateTimeOffset);
+                        }
+                    }
+                    dataPtr = dtoArray;
+                    bufferLength = sizeof(DateTimeOffset);
+                    break;
+                }
                 case SQL_C_NUMERIC: {
                     SQL_NUMERIC_STRUCT* numericArray = AllocateParamBufferArray<SQL_NUMERIC_STRUCT>(tempBuffers, paramSetSize);
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
@@ -2013,6 +2063,49 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                     }
                     dataPtr = numericArray;
                     bufferLength = sizeof(SQL_NUMERIC_STRUCT);
+                    break;
+                }
+                case SQL_C_GUID: {
+                    SQLGUID* guidArray = AllocateParamBufferArray<SQLGUID>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+
+                    static py::module_ uuid_mod = py::module_::import("uuid");
+                    static py::object uuid_class = uuid_mod.attr("UUID");
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        const py::handle& element = columnValues[i];
+                        std::array<unsigned char, 16> uuid_bytes;
+                        if (element.is_none()) {
+                            std::memset(&guidArray[i], 0, sizeof(SQLGUID));
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                            continue;
+                        }
+                        else if (py::isinstance<py::bytes>(element)) {
+                            py::bytes b = element.cast<py::bytes>();
+                            if (PyBytes_GET_SIZE(b.ptr()) != 16) {
+                                ThrowStdException("UUID binary data must be exactly 16 bytes long.");
+                            }
+                            std::memcpy(uuid_bytes.data(), PyBytes_AS_STRING(b.ptr()), 16);
+                        }
+                        else if (py::isinstance(element, uuid_class)) {
+                            py::bytes b = element.attr("bytes_le").cast<py::bytes>();
+                            std::memcpy(uuid_bytes.data(), PyBytes_AS_STRING(b.ptr()), 16);
+                        }
+                        else {
+                            ThrowStdException(MakeParamMismatchErrorStr(info.paramCType, paramIndex));
+                        }
+                        guidArray[i].Data1 = (static_cast<uint32_t>(uuid_bytes[3]) << 24) |
+                                            (static_cast<uint32_t>(uuid_bytes[2]) << 16) |
+                                            (static_cast<uint32_t>(uuid_bytes[1]) << 8)  |
+                                            (static_cast<uint32_t>(uuid_bytes[0]));
+                        guidArray[i].Data2 = (static_cast<uint16_t>(uuid_bytes[5]) << 8) |
+                                            (static_cast<uint16_t>(uuid_bytes[4]));
+                        guidArray[i].Data3 = (static_cast<uint16_t>(uuid_bytes[7]) << 8) |
+                                            (static_cast<uint16_t>(uuid_bytes[6]));
+                        std::memcpy(guidArray[i].Data4, uuid_bytes.data() + 8, 8);
+                        strLenOrIndArray[i] = sizeof(SQLGUID);
+                    }
+                    dataPtr = guidArray;
+                    bufferLength = sizeof(SQLGUID);
                     break;
                 }
                 default: {
@@ -2052,6 +2145,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
                               size_t paramSetSize) {
     SQLHANDLE hStmt = statementHandle->get();
     SQLWCHAR* queryPtr;
+
 #if defined(__APPLE__) || defined(__linux__)
     std::vector<SQLWCHAR> queryBuffer = WStringToSQLWCHAR(query);
     queryPtr = queryBuffer.data();
@@ -2060,14 +2154,62 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
 #endif
     RETCODE rc = SQLPrepare_ptr(hStmt, queryPtr, SQL_NTS);
     if (!SQL_SUCCEEDED(rc)) return rc;
-    std::vector<std::shared_ptr<void>> paramBuffers;
-    rc = BindParameterArray(hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers);
-    if (!SQL_SUCCEEDED(rc)) return rc;
-    rc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)paramSetSize, 0);
-    if (!SQL_SUCCEEDED(rc)) return rc;
-    rc = SQLExecute_ptr(hStmt);
-    return rc;
+
+    bool hasDAE = false;
+    for (const auto& p : paramInfos) {
+        if (p.isDAE) {
+            hasDAE = true;
+            break;
+        }
+    }
+    if (!hasDAE) {
+        std::vector<std::shared_ptr<void>> paramBuffers;
+        rc = BindParameterArray(hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers);
+        if (!SQL_SUCCEEDED(rc)) return rc;
+
+        rc = SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)paramSetSize, 0);
+        if (!SQL_SUCCEEDED(rc)) return rc;
+
+        rc = SQLExecute_ptr(hStmt);
+        return rc;
+    } else {
+        size_t rowCount = columnwise_params.size();
+        for (size_t rowIndex = 0; rowIndex < rowCount; ++rowIndex) {
+            py::list rowParams = columnwise_params[rowIndex];
+
+            std::vector<std::shared_ptr<void>> paramBuffers;
+            rc = BindParameters(hStmt, rowParams, const_cast<std::vector<ParamInfo>&>(paramInfos), paramBuffers);
+            if (!SQL_SUCCEEDED(rc)) return rc;
+
+            rc = SQLExecute_ptr(hStmt);
+            while (rc == SQL_NEED_DATA) {
+                SQLPOINTER token;
+                rc = SQLParamData_ptr(hStmt, &token);
+                if (!SQL_SUCCEEDED(rc) && rc != SQL_NEED_DATA) return rc;
+
+                py::object* py_obj_ptr = reinterpret_cast<py::object*>(token);
+                if (!py_obj_ptr) return SQL_ERROR;
+
+                if (py::isinstance<py::str>(*py_obj_ptr)) {
+                    std::string data = py_obj_ptr->cast<std::string>();
+                    SQLLEN data_len = static_cast<SQLLEN>(data.size());
+                    rc = SQLPutData_ptr(hStmt, (SQLPOINTER)data.c_str(), data_len);
+                } else if (py::isinstance<py::bytes>(*py_obj_ptr) || py::isinstance<py::bytearray>(*py_obj_ptr)) {
+                    std::string data = py_obj_ptr->cast<std::string>();
+                    SQLLEN data_len = static_cast<SQLLEN>(data.size());
+                    rc = SQLPutData_ptr(hStmt, (SQLPOINTER)data.c_str(), data_len);
+                } else {
+                    LOG("Unsupported DAE parameter type in row {}", rowIndex);
+                    return SQL_ERROR;
+                }
+            }
+
+            if (!SQL_SUCCEEDED(rc)) return rc;
+        }
+        return SQL_SUCCESS;
+    }
 }
+
 
 // Wrap SQLNumResultCols
 SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle) {
@@ -2265,7 +2407,7 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
             LOG("Loop {}: Appended {} bytes", loopCount, bytesRead);
         }
         if (ret == SQL_SUCCESS) {
-            LOG("Loop {}: SQL_SUCCESS → no more data", loopCount);
+            LOG("Loop {}: SQL_SUCCESS, no more data", loopCount);
             break;
         }
     }
@@ -2661,6 +2803,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         microseconds,
                         tzinfo
                     );
+                    py_dt = py_dt.attr("astimezone")(datetime.attr("timezone").attr("utc"));
                     row.append(py_dt);
                 } else {
                     LOG("Error fetching DATETIMEOFFSET for column {}, ret={}", i, ret);
@@ -2931,6 +3074,13 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 ret = SQLBindCol_ptr(hStmt, col, SQL_C_BINARY, buffers.charBuffers[col - 1].data(),
                                      columnSize, buffers.indicators[col - 1].data());
                 break;
+            case SQL_SS_TIMESTAMPOFFSET:
+                buffers.datetimeoffsetBuffers[col - 1].resize(fetchSize);
+                ret = SQLBindCol_ptr(hStmt, col, SQL_C_SS_TIMESTAMPOFFSET,
+                                    buffers.datetimeoffsetBuffers[col - 1].data(),
+                                    sizeof(DateTimeOffset) * fetchSize,
+                                    buffers.indicators[col - 1].data());
+                break;
             default:
                 std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                 std::ostringstream errorString;
@@ -3146,7 +3296,39 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                                                  buffers.timeBuffers[col - 1][i].second));
                     break;
                 }
+                case SQL_SS_TIMESTAMPOFFSET: {
+                    SQLULEN rowIdx = i;
+                    const DateTimeOffset& dtoValue = buffers.datetimeoffsetBuffers[col - 1][rowIdx];
+                    SQLLEN indicator = buffers.indicators[col - 1][rowIdx];
+                    if (indicator != SQL_NULL_DATA) {
+                        int totalMinutes = dtoValue.timezone_hour * 60 + dtoValue.timezone_minute;
+                        py::object datetime = py::module_::import("datetime");
+                        py::object tzinfo = datetime.attr("timezone")(
+                            datetime.attr("timedelta")(py::arg("minutes") = totalMinutes)
+                        );
+                        py::object py_dt = datetime.attr("datetime")(
+                            dtoValue.year,
+                            dtoValue.month,
+                            dtoValue.day,
+                            dtoValue.hour,
+                            dtoValue.minute,
+                            dtoValue.second,
+                            dtoValue.fraction / 1000,  // ns → µs
+                            tzinfo
+                        );
+                        py_dt = py_dt.attr("astimezone")(datetime.attr("timezone").attr("utc"));
+                        row.append(py_dt);
+                    } else {
+                        row.append(py::none());
+                    }
+                    break;
+                }
                 case SQL_GUID: {
+                    SQLLEN indicator = buffers.indicators[col - 1][i];
+                    if (indicator == SQL_NULL_DATA) {
+                        row.append(py::none());
+                        break;
+                    }
                     SQLGUID* guidValue = &buffers.guidBuffers[col - 1][i];
                     uint8_t reordered[16];
                     reordered[0] = ((char*)&guidValue->Data1)[3];
@@ -3265,6 +3447,9 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
             case SQL_LONGVARBINARY:
                 rowSize += columnSize;
                 break;
+            case SQL_SS_TIMESTAMPOFFSET:
+                rowSize += sizeof(DateTimeOffset);
+                break;
             default:
                 std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                 std::ostringstream errorString;
@@ -3322,7 +3507,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 
     // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
     if (!lobColumns.empty()) {
-        LOG("LOB columns detected → using per-row SQLGetData path");
+        LOG("LOB columns detected, using per-row SQLGetData path");
         while (true) {
             ret = SQLFetch_ptr(hStmt);
             if (ret == SQL_NO_DATA) break;
@@ -3444,7 +3629,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
 
     // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
     if (!lobColumns.empty()) {
-        LOG("LOB columns detected → using per-row SQLGetData path");
+        LOG("LOB columns detected, using per-row SQLGetData path");
         while (true) {
             ret = SQLFetch_ptr(hStmt);
             if (ret == SQL_NO_DATA) break;

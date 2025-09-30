@@ -3099,7 +3099,6 @@ def test_execute_with_large_parameters(db_connection):
     - Working with parameters near but under the size limit
     - Processing large result sets
     """
-    import time
     
     # Test with a temporary table for large data
     cursor = db_connection.execute("""
@@ -4114,8 +4113,6 @@ def test_timeout_from_constructor(conn_str):
 
 def test_timeout_long_query(db_connection):
     """Test that a query exceeding the timeout raises an exception if supported by driver"""
-    import time
-    import pytest
 
     cursor = db_connection.cursor()
 
