@@ -220,3 +220,61 @@ def test_error_handling():
     # Test non-string input
     with pytest.raises(ValueError, match="Connection string must be a string"):
         process_connection_string(None)
+
+
+def test_short_access_token_protection():
+    """
+    Test protection against ODBC driver segfault with short access tokens.
+    
+    Microsoft ODBC Driver 18 has a bug where it crashes (segfaults) when given
+    access tokens shorter than 32 bytes. This test verifies that our defensive
+    fix properly rejects such tokens before they reach the ODBC driver.
+    
+    The fix is implemented in Connection::setAttribute() in connection.cpp.
+    """
+    from mssql_python import connect
+    import os
+    
+    # Get connection string and remove UID/Pwd to force token-only mode
+    conn_str = os.getenv("DB_CONNECTION_STRING")
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING environment variable not set")
+    
+    # Remove authentication to force pure token mode
+    conn_str_no_auth = conn_str
+    for remove_param in ["UID=", "Pwd=", "uid=", "pwd="]:
+        if remove_param in conn_str_no_auth:
+            parts = conn_str_no_auth.split(";")
+            parts = [p for p in parts if not p.lower().startswith(remove_param.lower())]
+            conn_str_no_auth = ";".join(parts)
+    
+    # Test cases for problematic token lengths (0-31 bytes)
+    problematic_lengths = [0, 1, 4, 8, 16, 31]
+    
+    for length in problematic_lengths:
+        fake_token = b"x" * length
+        attrs_before = {1256: fake_token}  # SQL_COPT_SS_ACCESS_TOKEN = 1256
+        
+        # Should raise an exception instead of segfaulting
+        with pytest.raises(Exception) as exc_info:
+            connect(conn_str_no_auth, attrs_before=attrs_before)
+        
+        # Verify it's our protective error, not a segfault
+        error_msg = str(exc_info.value)
+        assert "Failed to set access token before connect" in error_msg, \
+            f"Expected protective error for length {length}, got: {error_msg}"
+    
+    # Test that legitimate-sized tokens don't get blocked (but will fail auth)
+    legitimate_token = b"x" * 64  # 64 bytes - larger than minimum
+    attrs_before = {1256: legitimate_token}
+    
+    # Should NOT be blocked by our fix (but will fail authentication)
+    with pytest.raises(Exception) as exc_info:
+        connect(conn_str_no_auth, attrs_before=attrs_before)
+    
+    # Should get an authentication error, not our protective error
+    error_msg = str(exc_info.value)
+    assert "Failed to set access token before connect" not in error_msg, \
+        f"Legitimate token should not be blocked, got: {error_msg}"
+    assert any(keyword in error_msg.lower() for keyword in ["login", "auth", "tcp"]), \
+        f"Expected authentication error for legitimate token, got: {error_msg}"

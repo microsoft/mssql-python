@@ -665,24 +665,67 @@ void HandleZeroColumnSizeAtFetch(SQLULEN& columnSize) {
 
 }  // namespace
 
+// Helper function to check if Python is shutting down or finalizing
+// This centralizes the shutdown detection logic to avoid code duplication
+static bool is_python_finalizing() {
+    try {
+        if (Py_IsInitialized() == 0) {
+            return true; // Python is already shut down
+        }
+        
+        py::gil_scoped_acquire gil;
+        py::object sys_module = py::module_::import("sys");
+        if (!sys_module.is_none()) {
+            // Check if the attribute exists before accessing it (for Python version compatibility)
+            if (py::hasattr(sys_module, "_is_finalizing")) {
+                py::object finalizing_func = sys_module.attr("_is_finalizing");
+                if (!finalizing_func.is_none() && finalizing_func().cast<bool>()) {
+                    return true; // Python is finalizing
+                }
+            }
+        }
+        return false;
+    } catch (...) {
+        std::cerr << "Error occurred while checking Python finalization state." << std::endl;
+        // Be conservative - don't assume shutdown on any exception
+        // Only return true if we're absolutely certain Python is shutting down
+        return false;
+    }
+}
+
 // TODO: Revisit GIL considerations if we're using python's logger
 template <typename... Args>
 void LOG(const std::string& formatString, Args&&... args) {
-    py::gil_scoped_acquire gil;  // <---- this ensures safe Python API usage
-
-    py::object logger = py::module_::import("mssql_python.logging_config").attr("get_logger")();
-    if (py::isinstance<py::none>(logger)) return;
-
+    // Check if Python is shutting down to avoid crash during cleanup
+    if (is_python_finalizing()) {
+        return; // Python is shutting down or finalizing, don't log
+    }
+    
     try {
-        std::string ddbcFormatString = "[DDBC Bindings log] " + formatString;
-        if constexpr (sizeof...(args) == 0) {
-            logger.attr("debug")(py::str(ddbcFormatString));
-        } else {
-            py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
-            logger.attr("debug")(message);
+        py::gil_scoped_acquire gil;  // <---- this ensures safe Python API usage
+
+        py::object logger = py::module_::import("mssql_python.logging_config").attr("get_logger")();
+        if (py::isinstance<py::none>(logger)) return;
+
+        try {
+            std::string ddbcFormatString = "[DDBC Bindings log] " + formatString;
+            if constexpr (sizeof...(args) == 0) {
+                logger.attr("debug")(py::str(ddbcFormatString));
+            } else {
+                py::str message = py::str(ddbcFormatString).format(std::forward<Args>(args)...);
+                logger.attr("debug")(message);
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Logging error: " << e.what() << std::endl;
         }
+    } catch (const py::error_already_set& e) {
+        // Python is shutting down or in an inconsistent state, silently ignore
+        (void)e; // Suppress unused variable warning
+        return;
     } catch (const std::exception& e) {
-        std::cerr << "Logging error: " << e.what() << std::endl;
+        // Any other error, ignore to prevent crash during cleanup
+        (void)e; // Suppress unused variable warning
+        return;
     }
 }
 
@@ -993,17 +1036,26 @@ SQLSMALLINT SqlHandle::type() const {
  */
 void SqlHandle::free() {
     if (_handle && SQLFreeHandle_ptr) {
-        const char* type_str = nullptr;
-        switch (_type) {
-            case SQL_HANDLE_ENV:  type_str = "ENV"; break;
-            case SQL_HANDLE_DBC:  type_str = "DBC"; break;
-            case SQL_HANDLE_STMT: type_str = "STMT"; break;
-            case SQL_HANDLE_DESC: type_str = "DESC"; break;
-            default:              type_str = "UNKNOWN"; break;
+        // Check if Python is shutting down using centralized helper function
+        bool pythonShuttingDown = is_python_finalizing();
+        
+        // CRITICAL FIX: During Python shutdown, don't free STMT handles as their parent DBC may already be freed
+        // This prevents segfault when handles are freed in wrong order during interpreter shutdown
+        // Type 3 = SQL_HANDLE_STMT, Type 2 = SQL_HANDLE_DBC, Type 1 = SQL_HANDLE_ENV
+        if (pythonShuttingDown && _type == 3) {
+            _handle = nullptr; // Mark as freed to prevent double-free attempts
+            return;
         }
+        
+        // Always clean up ODBC resources, regardless of Python state
         SQLFreeHandle_ptr(_type, _handle);
         _handle = nullptr;
-        // Don't log during destruction - it can cause segfaults during Python shutdown
+        
+        // Only log if Python is not shutting down (to avoid segfault)
+        if (!pythonShuttingDown) {
+            // Don't log during destruction - even in normal cases it can be problematic
+            // If logging is needed, use explicit close() methods instead
+        }
     }
 }
 
