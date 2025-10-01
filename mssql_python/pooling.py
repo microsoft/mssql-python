@@ -6,6 +6,7 @@ import threading
 class PoolingManager:
     _enabled = False
     _initialized = False 
+    _pools_closed = False  # Track if pools have been closed
     _lock = threading.Lock()
     _config = {
         "max_size": 100,
@@ -30,6 +31,9 @@ class PoolingManager:
     @classmethod
     def disable(cls):
         with cls._lock:
+            if cls._enabled and not cls._pools_closed:  # Only cleanup if enabled and not already closed
+                ddbc_bindings.close_pooling()
+                cls._pools_closed = True
             cls._enabled = False
             cls._initialized = True
 
@@ -40,8 +44,18 @@ class PoolingManager:
     @classmethod
     def is_initialized(cls):
         return cls._initialized
+
+    @classmethod
+    def _reset_for_testing(cls):
+        """Reset pooling state - for testing purposes only"""
+        with cls._lock:
+            cls._enabled = False
+            cls._initialized = False
+            cls._pools_closed = False
     
 @atexit.register
 def shutdown_pooling():
-    if PoolingManager.is_enabled():
-        ddbc_bindings.close_pooling()
+    with PoolingManager._lock:
+        if not PoolingManager._pools_closed:
+            ddbc_bindings.close_pooling()
+            PoolingManager._pools_closed = True
