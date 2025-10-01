@@ -33,7 +33,7 @@ class PoolingManager:
         with cls._lock:
             if cls._enabled and not cls._pools_closed:  # Only cleanup if enabled and not already closed
                 ddbc_bindings.close_pooling()
-                cls._pools_closed = True
+            cls._pools_closed = True
             cls._enabled = False
             cls._initialized = True
 
@@ -56,6 +56,6 @@ class PoolingManager:
 @atexit.register
 def shutdown_pooling():
     with PoolingManager._lock:
-        if not PoolingManager._pools_closed:
+        if PoolingManager._enabled and not PoolingManager._pools_closed:
             ddbc_bindings.close_pooling()
             PoolingManager._pools_closed = True
