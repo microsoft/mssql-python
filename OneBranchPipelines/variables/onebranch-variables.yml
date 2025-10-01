@@ -1,0 +1,28 @@
+#################################################################################
+# Licensed to the .NET Foundation under one or more agreements.
+# The .NET Foundation licenses this file to you under the MIT license.
+# See the LICENSE file in the project root for more information.
+#################################################################################
+
+# OneBranch-specific variables
+variables:
+  # OneBranch output directory for automatic artifact publishing
+  # All artifacts placed here are automatically published by OneBranch
+  - name: ob_outputDirectory
+    value: '$(ARTIFACT_PATH)'
+  
+  # OneBranch SDL configuration
+  - name: ob_sdl_enabled
+    value: true
+  
+  # OneBranch symbol publishing
+  - name: ob_symbolsPublishing_enabled
+    value: true
+  
+  # OneBranch TSA (Threat and Security Assessment) enabled for Official builds only
+  - name: ob_tsa_enabled
+    value: true
+  
+  # Windows host version for OneBranch
+  - name: ob_windows_host_version
+    value: '2022'

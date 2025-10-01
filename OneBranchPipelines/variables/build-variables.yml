@@ -1,0 +1,41 @@
+#################################################################################
+# Licensed to the .NET Foundation under one or more agreements.
+# The .NET Foundation licenses this file to you under the MIT license.
+# See the LICENSE file in the project root for more information.
+#################################################################################
+
+# Build-specific variables
+variables:
+  # Build output directories
+  - name: DIST_PATH
+    value: '$(Build.SourcesDirectory)/dist'
+  
+  - name: BINDINGS_PATH
+    value: '$(Build.SourcesDirectory)/mssql_python/pybind'
+  
+  # Artifact output paths for OneBranch
+  - name: WHEELS_OUTPUT_PATH
+    value: '$(ob_outputDirectory)/wheels'
+  
+  - name: BINDINGS_OUTPUT_PATH
+    value: '$(ob_outputDirectory)/bindings'
+  
+  - name: SYMBOLS_OUTPUT_PATH
+    value: '$(ob_outputDirectory)/symbols'
+  
+  # Build tools
+  - name: CMAKE_VERSION
+    value: 'latest'
+  
+  - name: PYBIND11_VERSION
+    value: 'latest'
+  
+  # Architecture support
+  - name: WINDOWS_ARCHITECTURES
+    value: 'x64,arm64'
+  
+  - name: MACOS_ARCHITECTURES
+    value: 'universal2'
+  
+  - name: LINUX_ARCHITECTURES
+    value: 'x86_64,aarch64'

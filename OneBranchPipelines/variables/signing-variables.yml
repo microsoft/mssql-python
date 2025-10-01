@@ -1,0 +1,40 @@
+#################################################################################
+# Licensed to the .NET Foundation under one or more agreements.
+# The .NET Foundation licenses this file to you under the MIT license.
+# See the LICENSE file in the project root for more information.
+#################################################################################
+
+# ESRP Code Signing Variables
+# These variables reference secrets stored in Azure DevOps variable groups
+# Required variable group: 'esrp-variables-v2' or 'build-secrets'
+variables:
+  # ESRP App Registration for authentication
+  # These should be defined in your Azure DevOps variable group as secret variables
+  - name: SigningAppRegistrationClientId
+    value: $(SigningAppRegistrationClientId)
+  
+  - name: SigningAppRegistrationTenantId
+    value: $(SigningAppRegistrationTenantId)
+  
+  # Azure Key Vault for signing certificates
+  - name: SigningAuthAkvName
+    value: $(SigningAuthAkvName)
+  
+  - name: SigningAuthSignCertName
+    value: $(SigningAuthSignCertName)
+  
+  # ESRP client configuration
+  - name: SigningEsrpClientId
+    value: $(SigningEsrpClientId)
+  
+  - name: SigningEsrpConnectedServiceName
+    value: $(SigningEsrpConnectedServiceName)
+  
+  # Signing operation codes
+  # dll/so/dylib/pyd files
+  - name: SIGNING_OPERATION_DLL
+    value: 'SigntoolSign'
+  
+  # .whl/.nupkg package files
+  - name: SIGNING_OPERATION_PKG
+    value: 'NuGetSign'

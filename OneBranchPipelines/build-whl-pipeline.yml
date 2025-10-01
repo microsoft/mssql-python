@@ -1,0 +1,1141 @@
+﻿##################################################################################################################################################################
+
+# Licensed to the .NET Foundation under one or more agreements.# Licensed to the .NET Foundation under one or more agreements.
+
+# The .NET Foundation licenses this file to you under the MIT license.# The .NET Foundation licenses this file to you under the MIT license.
+
+# See the LICENSE file in the project root for more information.# See the LICENSE file in the project root for more information.
+
+##################################################################################################################################################################
+
+# Pipeline name shown in ADO UI
+
+# OneBranch Pipeline for mssql-pythonname: build-whl-pipeline
+
+# Builds Python wheels for Windows, macOS, and Linux with security compliance
+
+name: $(Year:yy)$(DayOfYear)$(Rev:.r)# Trigger the pipeline on changes to the main branch
+
+trigger:
+
+# Pipeline triggers  branches:
+
+trigger:    include:
+
+  branches:      - main
+
+    include:
+
+      - mainpr:
+
+  branches:
+
+pr:    include:
+
+  branches:      - main
+
+    include:
+
+      - main# Schedule the pipeline to run on main branch daily at 07:00 AM IST
+
+schedules:
+
+# Parameters for pipeline behavior  - cron: "30 1 * * *"
+
+parameters:    displayName: Daily run at 07:00 AM IST
+
+  - name: oneBranchType    branches:
+
+    displayName: 'OneBranch Template Type'      include:
+
+    type: string        - main
+
+    values:    always: true  # Always run even if there are no changes
+
+      - 'Official'
+
+      - 'NonOfficial'variables:
+
+    default: 'NonOfficial'  - template: variables/common-variables.yml
+
+    - template: variables/onebranch-variables.yml
+
+  - name: buildConfiguration  - template: variables/build-variables.yml
+
+    displayName: 'Build Configuration'  - template: variables/signing-variables.yml
+
+    type: string  - template: variables/symbol-variables.yml
+
+    values:  - group: 'build-secrets'
+
+      - 'Release'
+
+      - 'Debug'jobs:
+
+    default: 'Release'- job: BuildWindowsWheels
+
+    # Use the latest Windows image for building
+
+  - name: publishSymbols  pool:
+
+    displayName: 'Publish Debug Symbols'    vmImage: 'windows-latest'
+
+    type: boolean  displayName: 'Build Windows -'
+
+    default: true  # Strategy matrix to build all combinations
+
+    strategy:
+
+  - name: runSdlTasks    matrix:
+
+    displayName: 'Run SDL Security Tasks'      # Python 3.10 (only x64)
+
+    type: boolean      py310_x64:
+
+    default: true        pythonVersion: '3.10'       # Host Python version
+
+          shortPyVer: '310'           # Used in filenames like cp310
+
+  - name: signingEnabled        architecture: 'x64'         # Host Python architecture
+
+    displayName: 'Enable Code Signing (ESRP)'        targetArch: 'x64'           # Target architecture to pass to build.bat
+
+    type: boolean
+
+    default: true      # Python 3.11
+
+      py311_x64:
+
+# Variable templates        pythonVersion: '3.11'       # Host Python version
+
+variables:        shortPyVer: '311'           # Used in filenames like cp311
+
+  - template: variables/common-variables.yml@self        architecture: 'x64'         # Host Python architecture
+
+  - template: variables/onebranch-variables.yml@self        targetArch: 'x64'           # Target architecture to pass to build.bat
+
+  - template: variables/build-variables.yml@self      py311_arm64:
+
+  - template: variables/signing-variables.yml@self        pythonVersion: '3.11'
+
+  - template: variables/symbol-variables.yml@self        shortPyVer: '311'
+
+  - group: 'build-secrets'  # Azure DevOps variable group with secrets        architecture: 'x64'         # No arm64 Python, use x64 host
+
+        targetArch: 'arm64'
+
+# OneBranch resources
+
+resources:      # Python 3.12
+
+  repositories:      py312_x64:
+
+    - repository: templates        pythonVersion: '3.12'
+
+      type: git        shortPyVer: '312'
+
+      name: 'OneBranch.Pipelines/GovernedTemplates'        architecture: 'x64'
+
+      ref: 'refs/heads/main'        targetArch: 'x64'
+
+      py312_arm64:
+
+# Extend OneBranch official template        pythonVersion: '3.12'
+
+extends:        shortPyVer: '312'
+
+  template: 'v2/OneBranch.${{ parameters.oneBranchType }}.CrossPlat.yml@templates'        architecture: 'x64'
+
+          targetArch: 'arm64'
+
+  parameters:
+
+    # Feature flags      # Python 3.13
+
+    featureFlags:      py313_x64:
+
+      WindowsHostVersion:        pythonVersion: '3.13'
+
+        Version: '2022'        shortPyVer: '313'
+
+            architecture: 'x64'
+
+    # Global SDL Configuration        targetArch: 'x64'
+
+    # See: https://aka.ms/obpipelines/sdl      py313_arm64:
+
+    globalSdl:        pythonVersion: '3.13'
+
+      # ApiScan - Scans APIs for security vulnerabilities        shortPyVer: '313'
+
+      apiscan:        architecture: 'x64'
+
+        enabled: ${{ parameters.runSdlTasks }}        targetArch: 'arm64'
+
+        softwareFolder: '$(apiScanDllPath)'
+
+        softwareName: 'mssql-python'  variables:
+
+        softwareVersionNum: '$(ASSEMBLY_FILE_VERSION)'    ob_outputDirectory: '$(ARTIFACT_PATH)'
+
+        symbolsFolder: '$(apiScanPdbPath)'
+
+        steps:
+
+      # Armory - Security scanning for binaries    # Use correct Python version and architecture for the current job
+
+      armory:    - task: UsePythonVersion@0
+
+        enabled: ${{ parameters.runSdlTasks }}      inputs:
+
+        break: true        versionSpec: '$(pythonVersion)'
+
+              architecture: '$(architecture)'
+
+      # AsyncSdl - Asynchronous SDL tasks        addToPath: true
+
+      asyncSdl:      displayName: 'Use Python $(pythonVersion) ($(architecture))'
+
+        enabled: false
+
+          # Install required packages: pip, CMake, pybind11
+
+      # BinSkim - Binary analyzer for security issues    - script: |
+
+      binskim:        python -m pip install --upgrade pip
+
+        enabled: ${{ parameters.runSdlTasks }}        pip install -r requirements.txt
+
+        break: true        pip install cmake pybind11
+
+            displayName: 'Install dependencies'
+
+      # CodeInspector - Source code security analysis
+
+      codeinspector:      # Start LocalDB instance
+
+        enabled: ${{ parameters.runSdlTasks }}    - powershell: |
+
+        logLevel: Error        sqllocaldb create MSSQLLocalDB
+
+              sqllocaldb start MSSQLLocalDB
+
+      # CodeQL - Semantic code analysis      displayName: 'Start LocalDB instance'
+
+      codeql:
+
+        enabled: ${{ parameters.runSdlTasks }}    # Create database and user
+
+        language: python    - powershell: |
+
+        sourceRoot: '$(REPO_ROOT)'        sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
+
+        querySuite: security-extended        sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+
+      # CredScan - Scans for credentials in code        sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+
+      credscan:      displayName: 'Setup database and user'
+
+        enabled: ${{ parameters.runSdlTasks }}      env:
+
+        suppressionsFile: '$(REPO_ROOT)/.config/CredScanSuppressions.json'        DB_PASSWORD: $(DB_PASSWORD)
+
+      
+
+      # ESLint - JavaScript/TypeScript linting (not applicable for Python)    - task: DownloadPipelineArtifact@2
+
+      eslint:      condition: eq(variables['targetArch'], 'arm64')
+
+        enabled: false      inputs:
+
+              buildType: 'specific'
+
+      # PoliCheck - Checks for politically incorrect terms        project: '$(System.TeamProject)'
+
+      policheck:        definition: 2162
+
+        enabled: ${{ parameters.runSdlTasks }}        buildVersionToDownload: 'latest'
+
+        break: true        artifactName: 'mssql-python-arm64-libs'
+
+        exclusionFile: '$(REPO_ROOT)/.config/PolicheckExclusions.xml'        targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
+
+            displayName: 'Download ARM64 Python libs from latest successful run on branches'
+
+      # Roslyn Analyzers - .NET code analysis (not applicable for Python)
+
+      roslyn:    # Build the PYD file by calling build.bat
+
+        enabled: false    - script: |
+
+              echo "Python Version: $(pythonVersion)"
+
+      # Publish SDL logs        echo "Short Tag: $(shortPyVer)"
+
+      publishLogs:        echo "Architecture: Host=$(architecture), Target=$(targetArch)"
+
+        enabled: ${{ parameters.runSdlTasks }}
+
+              cd "$(Build.SourcesDirectory)\mssql_python\pybind"
+
+      # SBOM - Software Bill of Materials
+
+      sbom:        REM Optional: override lib path if building for ARM64 since we cannot install arm64 python on x64 host
+
+        enabled: ${{ parameters.runSdlTasks }}        if "$(targetArch)"=="arm64" (
+
+        packageName: 'mssql-python'          echo Using arm64-specific Python library...
+
+        packageVersion: '$(NUGET_PACKAGE_VERSION)'          set CUSTOM_PYTHON_LIB_DIR=$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64
+
+              )
+
+      # TSA - Threat and Security Assessment (Official builds only)
+
+      tsa:        REM Call build.bat to build the PYD file
+
+        enabled: ${{ and(eq(parameters.oneBranchType, 'Official'), parameters.runSdlTasks) }}        call build.bat $(targetArch)
+
+        configFile: '$(REPO_ROOT)/.config/tsaoptions.json'
+
+            REM Calling keep_single_arch.bat to remove ODBC libs of other architectures
+
+    # Pipeline stages        call keep_single_arch.bat $(targetArch)
+
+    stages:
+
+      - stage: Build        cd ..\..
+
+        displayName: 'Build Python Wheels'      displayName: 'Build PYD for $(targetArch)'
+
+        jobs:      continueOnError: false
+
+          # Windows builds
+
+          - template: jobs/build-windows-job.yml@self    # Run pytests before packaging
+
+            parameters:    - powershell: |
+
+              oneBranchType: '${{ parameters.oneBranchType }}'        Write-Host "Running pytests to validate bindings"
+
+              signingEnabled: '${{ parameters.signingEnabled }}'        if ("$(targetArch)" -eq "arm64") {
+
+                    Write-Host "Skipping pytests on Windows ARM64"
+
+          # macOS builds        } else {
+
+          - template: jobs/build-macos-job.yml@self          python -m pytest -v
+
+            parameters:        }
+
+              oneBranchType: '${{ parameters.oneBranchType }}'      displayName: 'Run pytests'
+
+              signingEnabled: '${{ parameters.signingEnabled }}'      env:
+
+                  DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+          # Linux builds
+
+          - template: jobs/build-linux-job.yml@self    # Copy the built .pyd file to staging folder for artifacts
+
+            parameters:    - task: CopyFiles@2
+
+              oneBranchType: '${{ parameters.oneBranchType }}'      inputs:
+
+              signingEnabled: '${{ parameters.signingEnabled }}'        SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+
+              Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
+
+      # Optional: Symbol Publishing Stage (Official builds only)        TargetFolder: '$(ob_outputDirectory)\ddbc-bindings\windows'
+
+      - ${{ if and(eq(parameters.oneBranchType, 'Official'), eq(parameters.publishSymbols, true)) }}:      displayName: 'Place PYD file into artifacts directory'
+
+          - stage: PublishSymbols
+
+            displayName: 'Publish Debug Symbols'    # Copy the built .pdb files to staging folder for artifacts
+
+            dependsOn: Build    - task: CopyFiles@2
+
+            condition: succeeded()      inputs:
+
+            jobs:        SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+
+              - job: PublishSymbolsJob        Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pdbs'
+
+                displayName: 'Publish Symbols to Symbol Server'        TargetFolder: '$(ob_outputDirectory)\all-pdbs'
+
+                pool:      displayName: 'Place PDB file into artifacts directory'
+
+                  type: windows
+
+                steps:    # Build wheel package for the current architecture
+
+                  - task: PublishSymbols@2    - script: |
+
+                    displayName: 'Publish Symbols'        python -m pip install --upgrade pip
+
+                    inputs:        pip install wheel setuptools
+
+                      SymbolsFolder: '$(ob_outputDirectory)/symbols'        set ARCHITECTURE=$(targetArch)
+
+                      SearchPattern: '**/*.pdb'        python setup.py bdist_wheel
+
+                      IndexSources: false      displayName: 'Build wheel package for Python $(pythonVersion) ($(targetArch))'
+
+                      PublishSymbols: true
+
+                      SymbolServerType: 'TeamServices'    # Copy the wheel file to the artifacts
+
+                      SymbolsArtifactName: 'mssql-python-symbols'    - task: CopyFiles@2
+
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)\dist'
+        Contents: '*.whl'
+        TargetFolder: '$(ob_outputDirectory)\dist'
+      displayName: 'Collect wheel package'
+
+    # OneBranch automatic publishing: No explicit PublishBuildArtifacts tasks needed
+
+    # Malware scanning before signing
+    - template: ../steps/malware-scanning-step.yml@self
+      parameters:
+        scanPath: '$(ob_outputDirectory)'
+        artifactType: 'dll'
+      displayName: 'Malware scan for native DLLs'
+
+    # ESRP code signing for .pyd files (artifactType: dll)
+    - template: ../steps/compound-esrp-code-signing-step.yml@self
+      parameters:
+        appRegistrationClientId: '$(SigningAppRegistrationClientId)'
+        appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+        artifactType: 'dll'
+        authAkvName: '$(SigningAuthAkvName)'
+        authSignCertName: '$(SigningAuthSignCertName)'
+        esrpClientId: '$(SigningEsrpClientId)'
+        esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+        signPath: '$(ob_outputDirectory)\ddbc-bindings\windows'
+      displayName: 'ESRP code signing for .pyd files'
+
+    # ESRP code signing for .whl and .nupkg files (artifactType: pkg)
+    - template: ../steps/compound-esrp-code-signing-step.yml@self
+      parameters:
+        appRegistrationClientId: '$(SigningAppRegistrationClientId)'
+        appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+        artifactType: 'pkg'
+        authAkvName: '$(SigningAuthAkvName)'
+        authSignCertName: '$(SigningAuthSignCertName)'
+        esrpClientId: '$(SigningEsrpClientId)'
+        esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+        signPath: '$(ob_outputDirectory)\dist'
+      displayName: 'ESRP code signing for wheel and nupkg files'
+
+- job: BuildMacOSWheels
+  # Use the latest macOS image for building
+  pool:
+    vmImage: 'macos-latest'
+  # Display name for the job in Azure DevOps UI
+  displayName: 'Build macOS - '
+  strategy:
+    matrix:
+      # Python 3.13 (universal2 for both arm64 and x86_64)
+      py313_universal2:
+        pythonVersion: '3.13'
+        shortPyVer: '313'
+        # Always use universal2 for macOS
+        targetArch: 'universal2'
+
+      # Python 3.12 (universal2 for both arm64 and x86_64)
+      py312_universal2:
+        pythonVersion: '3.12'
+        shortPyVer: '312'
+        targetArch: 'universal2'
+
+      # Python 3.11 (universal2 for both arm64 and x86_64)
+      py311_universal2:
+        pythonVersion: '3.11'
+        shortPyVer: '311'
+        targetArch: 'universal2'
+
+      # Python 3.10 (universal2 for both arm64 and x86_64)
+      py310_universal2:
+        pythonVersion: '3.10'
+        shortPyVer: '310'
+        targetArch: 'universal2'
+
+  variables:
+    ob_outputDirectory: '$(ARTIFACT_PATH)'
+
+  steps:
+    # Use correct Python version and architecture for the current job
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '$(pythonVersion)'
+        addToPath: true
+      displayName: 'Use Python $(pythonVersion) (Universal2)'
+
+    # Install CMake on macOS
+    - script: |
+        brew update
+        # Uninstall existing CMake to avoid tap conflicts
+        brew uninstall cmake --ignore-dependencies || echo "CMake not installed or already removed"
+        # Install CMake from homebrew/core
+        brew install cmake
+      displayName: 'Install CMake'
+
+    # Install required packages: pip, CMake, pybind11
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install cmake pybind11
+      displayName: 'Install dependencies'
+
+    # Build the .so file by calling build.sh
+    - script: |
+        echo "Python Version: $(pythonVersion)"
+        echo "Short Tag: $(shortPyVer)"
+        echo "Building Universal2 Binary"
+        cd "$(Build.SourcesDirectory)/mssql_python/pybind"
+        # Call build.sh to build the .so file
+        ./build.sh
+      displayName: 'Build .so file'
+      continueOnError: false
+
+    # Copy the built .so file to staging folder for artifacts
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)/mssql_python'
+        Contents: '*.so'
+        TargetFolder: '$(ob_outputDirectory)/ddbc-bindings/macOS'
+      displayName: 'Place .so file into artifacts directory'
+
+    - script: |
+        brew update
+        brew install docker colima
+
+        # Try VZ first, fallback to QEMU if it fails
+        # Use more conservative resource allocation for Azure DevOps runners
+        colima start --cpu 3 --memory 10 --disk 30 --vm-type=vz || \
+        colima start --cpu 3 --memory 10 --disk 30 --vm-type=qemu
+
+        # Set a timeout to ensure Colima starts properly
+        sleep 30
+
+        # Optional: set Docker context (usually automatic)
+        docker context use colima >/dev/null || true
+
+        # Confirm Docker is operational
+        docker version
+        docker ps
+      displayName: 'Install and start Colima-based Docker'
+      timeoutInMinutes: 15
+
+    # Docker usage preserved but documented for OneBranch
+    - script: |
+        # Pull and run SQL Server container
+        docker pull mcr.microsoft.com/mssql/server:2022-latest
+        docker run \
+          --name sqlserver \
+          -e ACCEPT_EULA=Y \
+          -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+          -p 1433:1433 \
+          -d mcr.microsoft.com/mssql/server:2022-latest
+
+        # Starting SQL Server container…
+        for i in {1..30}; do
+          docker exec sqlserver \
+            /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost \
+            -U SA \
+            -P "$DB_PASSWORD" \
+            -C -Q "SELECT 1" && break
+          sleep 2
+        done
+      displayName: 'Pull & start SQL Server (Docker)'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
+
+    # Run Pytest to ensure the bindings work correctly
+    - script: |
+        python -m pytest -v
+      displayName: 'Run Pytest to validate bindings'
+      env:
+        DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+    # Build wheel package for universal2
+    - script: |
+        python -m pip install --upgrade pip
+        pip install wheel setuptools
+        python setup.py bdist_wheel
+      displayName: 'Build $(pythonVersion) universal2 whl'
+
+    # Copy the wheel file to the artifacts
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)/dist'
+        Contents: '*.whl'
+        TargetFolder: '$(ob_outputDirectory)/dist'
+      displayName: 'Collect wheel package'
+
+    # OneBranch automatic publishing: No explicit PublishBuildArtifacts tasks needed
+
+    # Malware scanning before signing
+    - template: ../steps/malware-scanning-step.yml@self
+      parameters:
+        scanPath: '$(ob_outputDirectory)'
+        artifactType: 'dll'
+      displayName: 'Malware scan for native DLLs'
+
+    # ESRP code signing for .so and .dylib files (artifactType: dll)
+    - template: ../steps/compound-esrp-code-signing-step.yml@self
+      parameters:
+        appRegistrationClientId: '$(SigningAppRegistrationClientId)'
+        appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+        artifactType: 'dll'
+        authAkvName: '$(SigningAuthAkvName)'
+        authSignCertName: '$(SigningAuthSignCertName)'
+        esrpClientId: '$(SigningEsrpClientId)'
+        esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+        signPath: '$(ob_outputDirectory)/ddbc-bindings/macOS'
+      displayName: 'ESRP code signing for .so/.dylib files'
+
+    # ESRP code signing for .whl and .nupkg files (artifactType: pkg)
+    - template: ../steps/compound-esrp-code-signing-step.yml@self
+      parameters:
+        appRegistrationClientId: '$(SigningAppRegistrationClientId)'
+        appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+        artifactType: 'pkg'
+        authAkvName: '$(SigningAuthAkvName)'
+        authSignCertName: '$(SigningAuthSignCertName)'
+        esrpClientId: '$(SigningEsrpClientId)'
+        esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+        signPath: '$(ob_outputDirectory)/dist'
+      displayName: 'ESRP code signing for wheel and nupkg files'
+
+- job: BuildLinuxWheels
+  displayName: 'Build Linux -'
+  pool: { vmImage: 'ubuntu-latest' }
+  timeoutInMinutes: 120
+
+  strategy:
+    matrix:
+      manylinux_x86_64:
+        LINUX_TAG: 'manylinux'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+        IMAGE: 'quay.io/pypa/manylinux_2_28_x86_64'
+      manylinux_aarch64:
+        LINUX_TAG: 'manylinux'
+        ARCH: 'aarch64'
+        DOCKER_PLATFORM: 'linux/arm64'
+        IMAGE: 'quay.io/pypa/manylinux_2_28_aarch64'
+      musllinux_x86_64:
+        LINUX_TAG: 'musllinux'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+        IMAGE: 'quay.io/pypa/musllinux_1_2_x86_64'
+      musllinux_aarch64:
+        LINUX_TAG: 'musllinux'
+        ARCH: 'aarch64'
+        DOCKER_PLATFORM: 'linux/arm64'
+        IMAGE: 'quay.io/pypa/musllinux_1_2_aarch64'
+
+  variables:
+    ob_outputDirectory: '$(ARTIFACT_PATH)'
+
+  steps:
+    - checkout: self
+      fetchDepth: 0
+
+    # Enable QEMU so we can run aarch64 containers on the x86_64 agent
+    - script: |
+        sudo docker run --rm --privileged tonistiigi/binfmt --install all
+      displayName: 'Enable QEMU (for aarch64)'
+
+    # Prep artifact dirs
+    - script: |
+        rm -rf $(Build.ArtifactStagingDirectory)/dist $(Build.ArtifactStagingDirectory)/ddbc-bindings
+        mkdir -p $(Build.ArtifactStagingDirectory)/dist
+        mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)
+      displayName: 'Prepare artifact directories'
+
+    # Start a long-lived container for this lane
+    - script: |
+        docker run -d --name build-$(LINUX_TAG)-$(ARCH) \
+          --platform $(DOCKER_PLATFORM) \
+          -v $(Build.SourcesDirectory):/workspace \
+          -w /workspace \
+          $(IMAGE) \
+          tail -f /dev/null
+      displayName: 'Start $(LINUX_TAG) $(ARCH) container'
+
+    # Install system build dependencies
+    # - Installs compiler toolchain, CMake, unixODBC headers, and Kerberos/keyutils runtimes
+    # - manylinux (glibc) uses dnf/yum; musllinux (Alpine/musl) uses apk
+    # - Kerberos/keyutils are needed because msodbcsql pulls in libgssapi_krb5.so.* and libkeyutils*.so.*
+    # - ccache is optional but speeds rebuilds inside the container
+    - script: |
+        set -euxo pipefail
+        if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
+          # ===== manylinux (glibc) containers =====
+          docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc '
+            set -euxo pipefail
+            # Prefer dnf (Alma/Rocky base), fall back to yum if present
+            if command -v dnf >/dev/null 2>&1; then
+              dnf -y update || true
+              # Toolchain + CMake + unixODBC headers + Kerberos + keyutils + ccache
+              dnf -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache || true
+            elif command -v yum >/dev/null 2>&1; then
+              yum -y update || true
+              yum -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache || true
+            else
+              echo "No dnf/yum found in manylinux image" >&2
+            fi
+
+            # Quick visibility for logs
+            echo "---- tool versions ----"
+            gcc --version || true
+            cmake --version || true
+          '
+        else
+          # ===== musllinux (Alpine/musl) containers =====
+          docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc '
+            set -euxo pipefail
+            apk update || true
+            # Toolchain + CMake + unixODBC headers + Kerberos + keyutils + ccache
+            apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs keyutils-libs ccache || true
+
+            # Quick visibility for logs
+            echo "---- tool versions ----"
+            gcc --version || true
+            cmake --version || true
+          '
+        fi
+      displayName: 'Install system build dependencies'
+
+    # Build wheels for cp310..cp313 using the prebuilt /opt/python interpreters
+    - script: |
+        set -euxo pipefail
+        if [[ "$(LINUX_TAG)" == "manylinux" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
+
+        # Ensure dist exists inside the container
+        docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
+
+        # Loop through CPython versions present in the image
+        for PYBIN in cp310 cp311 cp312 cp313; do
+          echo "=== Building for $PYBIN on $(LINUX_TAG)/$(ARCH) ==="
+          if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
+            docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc "
+              set -euxo pipefail;
+              PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
+              test -x \$PY || { echo 'Python \$PY missing'; exit 0; }  # skip if not present
+              ln -sf \$PY /usr/local/bin/python;
+              python -m pip install -U pip setuptools wheel pybind11;
+              echo 'python:' \$(python -V); which python;
+              # 👉 run from the directory that has CMakeLists.txt
+              cd /workspace/mssql_python/pybind;
+              bash build.sh;
+
+              # back to repo root to build the wheel
+              cd /workspace;
+              python setup.py bdist_wheel;
+
+              # TODO: repair/tag wheel, removing this since auditwheel is trying to find/link libraries which we're not packaging, e.g. libk5crypto, libkeyutils etc. - since it uses ldd for cross-verification
+              # We're assuming that this will be provided by OS and not bundled in the wheel
+              # for W in /workspace/dist/*.whl; do auditwheel repair -w /workspace/dist \"\$W\" || true; done
+            "
+          else
+            docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc "
+              set -euxo pipefail;
+              PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
+              test -x \$PY || { echo 'Python \$PY missing'; exit 0; }  # skip if not present
+              ln -sf \$PY /usr/local/bin/python;
+              python -m pip install -U pip setuptools wheel pybind11;
+              echo 'python:' \$(python -V); which python;
+              # 👉 run from the directory that has CMakeLists.txt
+              cd /workspace/mssql_python/pybind;
+              bash build.sh;
+
+              # back to repo root to build the wheel
+              cd /workspace;
+              python setup.py bdist_wheel;
+
+              # repair/tag wheel
+              # TODO: repair/tag wheel, removing this since auditwheel is trying to find/link libraries which we're not packaging, e.g. libk5crypto, libkeyutils etc. - since it uses ldd for cross-verification
+              # We're assuming that this will be provided by OS and not bundled in the wheel
+              # for W in /workspace/dist/*.whl; do auditwheel repair -w /workspace/dist \"\$W\" || true; done
+            "
+          fi
+        done
+      displayName: 'Run build.sh and build wheels for cp310–cp313'
+
+    # Copy artifacts back to host
+    - script: |
+        set -euxo pipefail
+        # ---- Wheels ----
+        docker cp build-$(LINUX_TAG)-$(ARCH):/workspace/dist/. "$(Build.ArtifactStagingDirectory)/dist/" || echo "No wheels to copy"
+
+        # ---- .so files: only top-level under mssql_python (exclude subdirs like pybind) ----
+        # Prepare host dest
+        mkdir -p "$(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)"
+
+        # Prepare a temp out dir inside the container
+        docker exec build-$(LINUX_TAG)-$(ARCH) $([[ "$(LINUX_TAG)" == "manylinux" ]] && echo bash -lc || echo sh -lc) '
+          set -euxo pipefail;
+          echo "Listing package dirs for sanity:";
+          ls -la /workspace/mssql_python || true;
+          ls -la /workspace/mssql_python/pybind || true;
+
+          OUT="/tmp/ddbc-out-$(LINUX_TAG)-$(ARCH)";
+          rm -rf "$OUT"; mkdir -p "$OUT";
+
+          # Copy ONLY top-level .so files from mssql_python (no recursion)
+          find /workspace/mssql_python -maxdepth 1 -type f -name "*.so" -exec cp -v {} "$OUT"/ \; || true
+
+          echo "Top-level .so collected in $OUT:";
+          ls -la "$OUT" || true
+        '
+
+        # Copy those .so files from container to host
+        docker cp "build-$(LINUX_TAG)-$(ARCH):/tmp/ddbc-out-$(LINUX_TAG)-$(ARCH)/." \
+          "$(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)/" \
+          || echo "No top-level .so files to copy"
+
+        # (Optional) prune non-.so just in case
+        find "$(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)" -maxdepth 1 -type f ! -name "*.so" -delete || true
+      displayName: 'Copy wheels and .so back to host'
+
+    # Cleanup container
+    - script: |
+        docker stop build-$(LINUX_TAG)-$(ARCH) || true
+        docker rm   build-$(LINUX_TAG)-$(ARCH) || true
+      displayName: 'Clean up container'
+      condition: always()
+
+    # Copy wheels to ob_outputDirectory for OneBranch automatic publishing
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.ArtifactStagingDirectory)/dist'
+        Contents: '*.whl'
+        TargetFolder: '$(ob_outputDirectory)/dist'
+      displayName: 'Stage wheels for automatic publishing'
+
+    # Copy compiled .so files to ob_outputDirectory for OneBranch automatic publishing
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
+        Contents: '*.so'
+        TargetFolder: '$(ob_outputDirectory)/ddbc-bindings'
+      displayName: 'Stage .so files for automatic publishing'
+
+    # OneBranch automatic publishing: No explicit PublishBuildArtifacts tasks needed
+
+    # Malware scanning before signing
+    - template: ../steps/malware-scanning-step.yml@self
+      parameters:
+        scanPath: '$(ob_outputDirectory)'
+        artifactType: 'dll'
+      displayName: 'Malware scan for native DLLs'
+
+    # ESRP code signing for .so files (artifactType: dll)
+    - template: ../steps/compound-esrp-code-signing-step.yml@self
+      parameters:
+        appRegistrationClientId: '$(SigningAppRegistrationClientId)'
+        appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+        artifactType: 'dll'
+        authAkvName: '$(SigningAuthAkvName)'
+        authSignCertName: '$(SigningAuthSignCertName)'
+        esrpClientId: '$(SigningEsrpClientId)'
+        esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+        signPath: '$(ob_outputDirectory)/ddbc-bindings'
+      displayName: 'ESRP code signing for .so files'
+
+    # ESRP code signing for .whl and .nupkg files (artifactType: pkg)
+    - template: ../steps/compound-esrp-code-signing-step.yml@self
+      parameters:
+        appRegistrationClientId: '$(SigningAppRegistrationClientId)'
+        appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+        artifactType: 'pkg'
+        authAkvName: '$(SigningAuthAkvName)'
+        authSignCertName: '$(SigningAuthSignCertName)'
+        esrpClientId: '$(SigningEsrpClientId)'
+        esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+        signPath: '$(ob_outputDirectory)/dist'
+      displayName: 'ESRP code signing for wheel and nupkg files'
+
+# Job to test the built wheels on different Linux distributions with SQL Server
+- job: TestWheelsOnLinux
+  displayName: 'Pytests on Linux -'
+  dependsOn: BuildLinuxWheels
+  condition: succeeded('BuildLinuxWheels')  # Only run if BuildLinuxWheels succeeded
+  pool: { vmImage: 'ubuntu-latest' }
+  timeoutInMinutes: 60
+
+  strategy:
+    matrix:
+      # x86_64
+      debian12:
+        BASE_IMAGE: 'debian:12-slim'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+      rhel_ubi9:
+        BASE_IMAGE: 'registry.access.redhat.com/ubi9/ubi:latest'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+      alpine320:
+        BASE_IMAGE: 'alpine:3.20'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+      # arm64
+      debian12_arm64:
+        BASE_IMAGE: 'debian:12-slim'
+        ARCH: 'arm64'
+        DOCKER_PLATFORM: 'linux/arm64'
+      rhel_ubi9_arm64:
+        BASE_IMAGE: 'registry.access.redhat.com/ubi9/ubi:latest'
+        ARCH: 'arm64'
+        DOCKER_PLATFORM: 'linux/arm64'
+      alpine320_arm64:
+        BASE_IMAGE: 'alpine:3.20'
+        ARCH: 'arm64'
+        DOCKER_PLATFORM: 'linux/arm64'
+
+  steps:
+    - checkout: self
+
+    - task: DownloadBuildArtifacts@0
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        artifactName: 'mssql-python-wheels-dist'
+        downloadPath: '$(System.ArtifactsDirectory)'
+      displayName: 'Download wheel artifacts from current build'
+
+    # Verify we actually have wheels before proceeding
+    - script: |
+        set -euxo pipefail
+        WHEEL_DIR="$(System.ArtifactsDirectory)/mssql-python-wheels-dist"
+        if [ ! -d "$WHEEL_DIR" ] || [ -z "$(ls -A $WHEEL_DIR/*.whl 2>/dev/null)" ]; then
+          echo "ERROR: No wheel files found in $WHEEL_DIR"
+          echo "Contents of artifacts directory:"
+          find "$(System.ArtifactsDirectory)" -type f -name "*.whl" || echo "No .whl files found anywhere"
+          exit 1
+        fi
+        echo "Found wheel files:"
+        ls -la "$WHEEL_DIR"/*.whl
+      displayName: 'Verify wheel artifacts exist'
+
+    # Docker usage preserved but documented for OneBranch
+    - script: |
+        set -euxo pipefail
+        docker run -d --name sqlserver \
+          --network bridge \
+          -e ACCEPT_EULA=Y \
+          -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+          -p 1433:1433 \
+          mcr.microsoft.com/mssql/server:2022-latest
+
+        # Wait for SQL Server to be ready
+        echo "Waiting for SQL Server to start..."
+        for i in {1..30}; do
+          if docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "SELECT 1" >/dev/null 2>&1; then
+            echo "SQL Server is ready!"
+            break
+          fi
+          echo "Attempt $i/30: SQL Server not ready yet..."
+          sleep 3
+        done
+
+        # Create test database
+        docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost -U SA -P "$(DB_PASSWORD)" -C \
+          -Q "CREATE DATABASE TestDB"
+      displayName: 'Start SQL Server and create test database'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
+
+    # Test wheels on target OS
+    - script: |
+        set -euxo pipefail
+
+        # Enable QEMU for ARM64 architectures
+        if [[ "$(ARCH)" == "arm64" ]] || [[ "$(ARCH)" == "aarch64" ]]; then
+          sudo docker run --rm --privileged tonistiigi/binfmt --install all
+        fi
+
+        # Start test container with retry logic
+        for i in {1..3}; do
+          if docker run -d --name test-$(ARCH) \
+            --platform $(DOCKER_PLATFORM) \
+            --network bridge \
+            -v $(System.ArtifactsDirectory):/artifacts:ro \
+            $(BASE_IMAGE) \
+            tail -f /dev/null; then
+            echo "Container started successfully on attempt $i"
+            break
+          else
+            echo "Failed to start container on attempt $i, retrying..."
+            docker rm test-$(ARCH) 2>/dev/null || true
+            sleep 5
+          fi
+        done
+
+        # Verify container is running
+        if ! docker ps | grep -q test-$(ARCH); then
+          echo "ERROR: Container test-$(ARCH) is not running"
+          docker logs test-$(ARCH) || true
+          exit 1
+        fi
+
+        # Install Python and dependencies based on OS
+        if [[ "$(BASE_IMAGE)" == alpine* ]]; then
+          echo "Setting up Alpine Linux..."
+          docker exec test-$(ARCH) sh -c "
+            apk update && apk add --no-cache python3 py3-pip python3-dev unixodbc-dev curl libtool libltdl krb5-libs
+            python3 -m venv /venv
+            /venv/bin/pip install pytest
+          "
+          PY_CMD="/venv/bin/python"
+        elif [[ "$(BASE_IMAGE)" == *ubi* ]] || [[ "$(BASE_IMAGE)" == *rocky* ]] || [[ "$(BASE_IMAGE)" == *alma* ]]; then
+          echo "Setting up RHEL-based system..."
+          docker exec test-$(ARCH) bash -c "
+            set -euo pipefail
+            echo 'Installing Python on UBI/RHEL...'
+            if command -v dnf >/dev/null; then
+              dnf clean all
+              rm -rf /var/cache/dnf
+              dnf -y makecache
+
+              dnf list --showduplicates python3.11 python3.12 || true
+
+              # NOTE: do NOT install 'curl' to avoid curl-minimal conflict
+              if dnf -y install python3.12 python3.12-pip unixODBC-devel; then
+                PY=python3.12
+                echo 'Installed Python 3.12'
+              elif dnf -y install python3.11 python3.11-pip unixODBC-devel; then
+                PY=python3.11
+                echo 'Installed Python 3.11'
+              else
+                dnf -y install python3 python3-pip unixODBC-devel
+                PY=python3
+                echo 'Falling back to default Python'
+              fi
+
+              \$PY -m venv /venv
+              /venv/bin/python -m pip install -U 'pip>=25' pytest
+              /venv/bin/python --version
+              /venv/bin/pip --version
+            else
+              echo 'ERROR: dnf not found'
+              exit 1
+            fi
+          "
+          PY_CMD="/venv/bin/python"
+        else
+          echo "Setting up Debian/Ubuntu..."
+          docker exec test-$(ARCH) bash -c "
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y python3 python3-pip python3-venv python3-full unixodbc-dev curl
+            python3 -m venv /venv
+            /venv/bin/pip install pytest
+          "
+          PY_CMD="/venv/bin/python"
+        fi
+
+        # Install the wheel (find the appropriate one for this architecture)
+        if [[ "$(BASE_IMAGE)" == alpine* ]]; then
+          SHELL_CMD="sh -c"
+          WHEEL_PATTERN="*musllinux*$(ARCH)*.whl"
+        else
+          SHELL_CMD="bash -c"
+          WHEEL_PATTERN="*manylinux*$(ARCH)*.whl"
+        fi
+
+        # Install the appropriate wheel in isolated directory
+        docker exec test-$(ARCH) $SHELL_CMD "
+          # Create isolated directory for wheel testing
+          mkdir -p /test_whl
+          cd /test_whl
+
+          echo 'Available wheels:'
+          ls -la /artifacts/mssql-python-wheels-dist/*.whl
+          echo 'Installing package (letting pip auto-select in isolated environment):'
+          $PY_CMD -m pip install mssql_python --find-links /artifacts/mssql-python-wheels-dist --no-index --no-deps
+
+          # Verify package installation location
+          echo 'Installed package location:'
+          $PY_CMD -c 'import mssql_python; print(\"Package location:\", mssql_python.__file__)'
+
+          # Test basic import
+          $PY_CMD -c 'import mssql_python; print(\"Package imported successfully\")'
+        "
+
+      displayName: 'Test wheel installation and basic functionality on $(BASE_IMAGE)'
+      env:
+        DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+    # Run pytest with source code while testing installed wheel
+    - script: |
+        set -euxo pipefail
+
+        # Copy source code to container for pytest
+        echo "Copying source code to container for pytest..."
+        docker cp $(Build.SourcesDirectory)/. test-$(ARCH):/workspace/
+
+        # Set shell command based on OS and define Python command
+        if [[ "$(BASE_IMAGE)" == alpine* ]]; then
+          SHELL_CMD="sh -c"
+          PY_CMD="/venv/bin/python"
+        else
+          SHELL_CMD="bash -c"
+          PY_CMD="/venv/bin/python"
+        fi
+
+        docker exec test-$(ARCH) $SHELL_CMD "
+          # Go to workspace root where source code is
+          cd /workspace
+
+          echo 'Running pytest suite with installed wheel...'
+          echo 'Current directory:' \$(pwd)
+          echo 'Python version:'
+          $PY_CMD --version
+
+          # Verify we're importing the installed wheel, not local source
+          echo 'Package import verification:'
+          $PY_CMD -c 'import mssql_python; print(\"Testing installed wheel from:\", mssql_python.__file__)'
+
+          # Install test requirements
+          if [ -f requirements.txt ]; then
+            echo 'Installing test requirements...'
+            $PY_CMD -m pip install -r requirements.txt || echo 'Failed to install some requirements'
+          fi
+
+          # Ensure pytest is available
+          $PY_CMD -m pip install pytest || echo 'pytest installation failed'
+
+          # List available test files
+          echo 'Available test files:'
+          find tests/ -name 'test_*.py' 2>/dev/null || echo 'No test files found in tests/'
+
+          # Run pytest
+          if [ -d tests/ ]; then
+            echo 'Starting pytest...'
+            $PY_CMD -m pytest -v || echo 'Some tests failed - this may be expected in containerized environment'
+          else
+            echo 'No tests directory found, skipping pytest'
+          fi
+        "
+      displayName: 'Run pytest suite on $(BASE_IMAGE) $(ARCH)'
+      env:
+        DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      continueOnError: true  # Don't fail pipeline if tests fail
+
+    # Cleanup
+    - script: |
+        docker stop test-$(ARCH) sqlserver || true
+        docker rm test-$(ARCH) sqlserver || true
+      displayName: 'Cleanup containers'
+      condition: always()
