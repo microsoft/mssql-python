@@ -217,7 +217,7 @@ jobs:
 - job: BuildMacOSWheels
   # Use the latest macOS image for building
   pool:
-    vmImage: 'macos-latest'
+    vmImage: 'macos-14'
   # Display name for the job in Azure DevOps UI
   displayName: 'Build macOS - '
   strategy:
