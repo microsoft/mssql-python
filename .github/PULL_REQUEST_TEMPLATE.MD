@@ -7,10 +7,10 @@ Only one reference is required - either GitHub issue OR ADO Work Item.
 -->
 
 <!-- mssql-python maintainers: ADO Work Item -->
-> Closed AB#<WORK_ITEM_ID>
+> ADO Work Item: Closed AB#<WORK_ITEM_ID>
 
 <!-- External contributors: GitHub Issue -->
-> Closes GitHub Issue: #<ISSUE_NUMBER>
+> GitHub Issue: Closes #<ISSUE_NUMBER>
 
 -------------------------------------------------------------------
 ### Summary   
