@@ -7,7 +7,6 @@
 #include "connection.h"
 #include "connection_pool.h"
 #include <vector>
-#include <cstdint>
 #include <pybind11/pybind11.h>
 
 #define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
@@ -181,7 +180,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         ptr = reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(intValue));
         length = SQL_IS_INTEGER;
     } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
-        buffer = value.cast<std::string>();  // local string object (data is heap-allocated)
+        buffer = value.cast<std::string>();  // stack buffer
         ptr = buffer.data();
         length = static_cast<SQLINTEGER>(buffer.size());
     } else {

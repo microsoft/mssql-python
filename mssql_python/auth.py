@@ -77,12 +77,7 @@ class AADAuth:
     def get_token_struct(token: str) -> bytes:
         """Convert token to SQL Server compatible format"""
         token_bytes = token.encode("UTF-16-LE")
-        token_struct = struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
-        
-        # Validate before returning to catch any encoding issues early
-        validate_access_token_struct(token_struct)
-        
-        return token_struct
+        return struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
 
     @staticmethod
     def get_token(auth_type: str) -> bytes:
