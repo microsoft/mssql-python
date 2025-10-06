@@ -39,12 +39,12 @@ PyBind11 provides:
 
 We are currently in **Public Preview**.
 
-## What's new in v0.12.0
+## What's new in v0.13.0
 
-- **Complex Data Type Support:** Added native support for DATETIMEOFFSET and UNIQUEIDENTIFIER data types with full round-trip handling, enabling seamless integration with Python's timezone-aware `datetime` objects and `uuid.UUID` types.
-- **Support for monetary or currency values data types:** Extended MONEY and SMALLMONEY support to `executemany` operations with proper NULL handling and decimal conversion for improved bulk financial data processing.
-- **Improved Database Metadata API:** Added `getinfo()` method with enhanced ODBC metadata retrieval, allowing users to query driver/data source information using ODBC info types.
-- **Data Processing Optimizations:** Removed aggressive datetime parsing to prevent incorrect type conversions and improve data integrity across diverse datetime formats and string data.
+- **Enhanced Batch Operations:** Complete support for UNIQUEIDENTIFIER and DATETIMEOFFSET in `executemany()` operations with automatic type inference, enabling efficient bulk inserts of complex data types including UUIDs and timezone-aware datetimes.
+- **Streaming Large Values:** Robust handling of large objects (NVARCHAR/VARCHAR/VARBINARY(MAX)) in `executemany()` with automatic Data-At-Execution detection and fallback, supporting streaming inserts and fetches for massive datasets.
+- **Improved Cursor Reliability:** Enhanced `cursor.rowcount` accuracy across all fetch operations, including proper handling of empty result sets and consistent behavior for SELECT, INSERT, and UPDATE operations.
+- **Critical Stability Fixes:** Resolved memory leaks with secure token buffer handling, fixed resource cleanup to prevent segmentation faults during Python shutdown, and corrected type inference bugs in batch operations.
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
 
