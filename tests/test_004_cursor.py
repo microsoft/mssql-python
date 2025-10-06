@@ -1262,6 +1262,118 @@ def test_executemany_binary_data_edge_cases(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS #pytest_binary_test")
         db_connection.commit()
 
+def test_executemany_mixed_ints(cursor, db_connection):
+    """Test executemany with mixed positive and negative integers."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_mixed_ints (val INT)")
+        data = [(1,), (-5,), (3,)]
+        cursor.executemany("INSERT INTO #pytest_mixed_ints VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #pytest_mixed_ints ORDER BY val")
+        results = [row[0] for row in cursor.fetchall()]
+        assert sorted(results) == [-5, 1, 3]
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_mixed_ints")
+        db_connection.commit()
+
+
+def test_executemany_int_edge_cases(cursor, db_connection):
+    """Test executemany with very large and very small integers."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_int_edges (val BIGINT)")
+        data = [(0,), (2**31-1,), (-2**31,), (2**63-1,), (-2**63,)]
+        cursor.executemany("INSERT INTO #pytest_int_edges VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #pytest_int_edges ORDER BY val")
+        results = [row[0] for row in cursor.fetchall()]
+        assert results == sorted([0, 2**31-1, -2**31, 2**63-1, -2**63])
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_int_edges")
+        db_connection.commit()
+
+
+def test_executemany_bools_and_ints(cursor, db_connection):
+    """Test executemany with mix of booleans and integers."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_bool_int (val INT)")
+        data = [(True,), (False,), (2,)]
+        cursor.executemany("INSERT INTO #pytest_bool_int VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #pytest_bool_int ORDER BY val")
+        results = [row[0] for row in cursor.fetchall()]
+        # True -> 1, False -> 0
+        assert results == [0, 1, 2]
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_bool_int")
+        db_connection.commit()
+
+
+def test_executemany_ints_with_none(cursor, db_connection):
+    """Test executemany with integers and None values."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_int_none (val INT)")
+        data = [(1,), (None,), (3,)]
+        cursor.executemany("INSERT INTO #pytest_int_none VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #pytest_int_none ORDER BY val")
+        results = [row[0] for row in cursor.fetchall()]
+        assert results.count(None) == 1
+        assert results.count(1) == 1
+        assert results.count(3) == 1
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_int_none")
+        db_connection.commit()
+
+
+def test_executemany_strings_of_various_lengths(cursor, db_connection):
+    """Test executemany with strings of different lengths."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_varied_strings (val NVARCHAR(50))")
+        data = [("a",), ("abcd",), ("abc",)]
+        cursor.executemany("INSERT INTO #pytest_varied_strings VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #pytest_varied_strings ORDER BY val")
+        results = [row[0] for row in cursor.fetchall()]
+        assert sorted(results) == ["a", "abc", "abcd"]
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_varied_strings")
+        db_connection.commit()
+
+
+def test_executemany_bytes_values(cursor, db_connection):
+    """Test executemany with bytes values."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_bytes (val VARBINARY(50))")
+        data = [(b"a",), (b"abcdef",)]
+        cursor.executemany("INSERT INTO #pytest_bytes VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT val FROM #pytest_bytes ORDER BY val")
+        results = [row[0] for row in cursor.fetchall()]
+        assert results == [b"a", b"abcdef"]
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_bytes")
+        db_connection.commit()
+
+def test_executemany_empty_parameter_list(cursor, db_connection):
+    """Test executemany with an empty parameter list."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_empty_params (val INT)")
+        data = []
+        cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params")
+        count = cursor.fetchone()[0]
+        assert count == 0
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_params")
+        db_connection.commit()
 
 def test_nextset(cursor):
     """Test nextset"""
@@ -9534,6 +9646,190 @@ def test_primarykeys_cleanup(cursor, db_connection):
         db_connection.commit()
     except Exception as e:
         pytest.fail(f"Test cleanup failed: {e}")
+
+def test_rowcount_after_fetch_operations(cursor, db_connection):
+    """Test that rowcount is updated correctly after various fetch operations."""
+    try:
+        # Create a test table
+        cursor.execute("CREATE TABLE #rowcount_fetch_test (id INT PRIMARY KEY, name NVARCHAR(100))")
+        
+        # Insert some test data
+        cursor.execute("INSERT INTO #rowcount_fetch_test VALUES (1, 'Row 1')")
+        cursor.execute("INSERT INTO #rowcount_fetch_test VALUES (2, 'Row 2')")
+        cursor.execute("INSERT INTO #rowcount_fetch_test VALUES (3, 'Row 3')")
+        cursor.execute("INSERT INTO #rowcount_fetch_test VALUES (4, 'Row 4')")
+        cursor.execute("INSERT INTO #rowcount_fetch_test VALUES (5, 'Row 5')")
+        db_connection.commit()
+        
+        # Test fetchone
+        cursor.execute("SELECT * FROM #rowcount_fetch_test ORDER BY id")
+        # Initially, rowcount should be -1 after a SELECT statement
+        assert cursor.rowcount == -1, "rowcount should be -1 right after SELECT statement"
+        
+        # After fetchone, rowcount should be 1
+        row = cursor.fetchone()
+        assert row is not None, "Should fetch one row"
+        assert cursor.rowcount == 1, "rowcount should be 1 after fetchone"
+        
+        # After another fetchone, rowcount should be 2
+        row = cursor.fetchone()
+        assert row is not None, "Should fetch second row"
+        assert cursor.rowcount == 2, "rowcount should be 2 after second fetchone"
+        
+        # Test fetchmany
+        cursor.execute("SELECT * FROM #rowcount_fetch_test ORDER BY id")
+        assert cursor.rowcount == -1, "rowcount should be -1 right after SELECT statement"
+        
+        # After fetchmany(2), rowcount should be 2
+        rows = cursor.fetchmany(2)
+        assert len(rows) == 2, "Should fetch two rows"
+        assert cursor.rowcount == 2, "rowcount should be 2 after fetchmany(2)"
+        
+        # After another fetchmany(2), rowcount should be 4
+        rows = cursor.fetchmany(2)
+        assert len(rows) == 2, "Should fetch two more rows"
+        assert cursor.rowcount == 4, "rowcount should be 4 after second fetchmany(2)"
+        
+        # Test fetchall
+        cursor.execute("SELECT * FROM #rowcount_fetch_test ORDER BY id")
+        assert cursor.rowcount == -1, "rowcount should be -1 right after SELECT statement"
+        
+        # After fetchall, rowcount should be the total number of rows fetched (5)
+        rows = cursor.fetchall()
+        assert len(rows) == 5, "Should fetch all rows"
+        assert cursor.rowcount == 5, "rowcount should be 5 after fetchall"
+        
+        # Test mixed fetch operations
+        cursor.execute("SELECT * FROM #rowcount_fetch_test ORDER BY id")
+        
+        # Fetch one row
+        row = cursor.fetchone()
+        assert row is not None, "Should fetch one row"
+        assert cursor.rowcount == 1, "rowcount should be 1 after fetchone"
+        
+        # Fetch two more rows with fetchmany
+        rows = cursor.fetchmany(2)
+        assert len(rows) == 2, "Should fetch two more rows"
+        assert cursor.rowcount == 3, "rowcount should be 3 after fetchone + fetchmany(2)"
+        
+        # Fetch remaining rows with fetchall
+        rows = cursor.fetchall()
+        assert len(rows) == 2, "Should fetch remaining two rows"
+        assert cursor.rowcount == 5, "rowcount should be 5 after fetchone + fetchmany(2) + fetchall"
+        
+        # Test fetchall on an empty result
+        cursor.execute("SELECT * FROM #rowcount_fetch_test WHERE id > 100")
+        rows = cursor.fetchall()
+        assert len(rows) == 0, "Should fetch zero rows"
+        assert cursor.rowcount == 0, "rowcount should be 0 after fetchall on empty result"
+        
+    finally:
+        # Clean up
+        try:
+            cursor.execute("DROP TABLE #rowcount_fetch_test")
+            db_connection.commit()
+        except:
+            pass
+
+def test_rowcount_guid_table(cursor, db_connection):
+    """Test rowcount with GUID/uniqueidentifier columns to match the GitHub issue scenario."""
+    try:
+        # Create a test table similar to the one in the GitHub issue
+        cursor.execute("CREATE TABLE #test_log (id uniqueidentifier PRIMARY KEY DEFAULT NEWID(), message VARCHAR(100))")
+        
+        # Insert test data
+        cursor.execute("INSERT INTO #test_log (message) VALUES ('Log 1')")
+        cursor.execute("INSERT INTO #test_log (message) VALUES ('Log 2')")
+        cursor.execute("INSERT INTO #test_log (message) VALUES ('Log 3')")
+        db_connection.commit()
+        
+        # Execute SELECT query
+        cursor.execute("SELECT * FROM #test_log")
+        assert cursor.rowcount == -1, "Rowcount should be -1 after a SELECT statement (before fetch)"
+        
+        # Test fetchall
+        rows = cursor.fetchall()
+        assert len(rows) == 3, "Should fetch 3 rows"
+        assert cursor.rowcount == 3, "Rowcount should be 3 after fetchall"
+        
+        # Execute SELECT again
+        cursor.execute("SELECT * FROM #test_log")
+        
+        # Test fetchmany
+        rows = cursor.fetchmany(2)
+        assert len(rows) == 2, "Should fetch 2 rows"
+        assert cursor.rowcount == 2, "Rowcount should be 2 after fetchmany(2)"
+        
+        # Fetch remaining row
+        rows = cursor.fetchall()
+        assert len(rows) == 1, "Should fetch 1 remaining row"
+        assert cursor.rowcount == 3, "Rowcount should be 3 after fetchmany(2) + fetchall"
+        
+        # Execute SELECT again
+        cursor.execute("SELECT * FROM #test_log")
+        
+        # Test individual fetchone calls
+        row1 = cursor.fetchone()
+        assert row1 is not None, "First row should not be None"
+        assert cursor.rowcount == 1, "Rowcount should be 1 after first fetchone"
+        
+        row2 = cursor.fetchone()
+        assert row2 is not None, "Second row should not be None"
+        assert cursor.rowcount == 2, "Rowcount should be 2 after second fetchone"
+        
+        row3 = cursor.fetchone()
+        assert row3 is not None, "Third row should not be None"
+        assert cursor.rowcount == 3, "Rowcount should be 3 after third fetchone"
+        
+        row4 = cursor.fetchone()
+        assert row4 is None, "Fourth row should be None (no more rows)"
+        assert cursor.rowcount == 3, "Rowcount should remain 3 when fetchone returns None"
+        
+    finally:
+        # Clean up
+        try:
+            cursor.execute("DROP TABLE #test_log")
+            db_connection.commit()
+        except:
+            pass
+
+def test_rowcount(cursor, db_connection):
+    """Test rowcount after various operations"""
+    try:
+        cursor.execute("CREATE TABLE #pytest_test_rowcount (id INT IDENTITY(1,1) PRIMARY KEY, name NVARCHAR(100))")
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_test_rowcount (name) VALUES ('JohnDoe1');")
+        assert cursor.rowcount == 1, "Rowcount should be 1 after first insert"
+
+        cursor.execute("INSERT INTO #pytest_test_rowcount (name) VALUES ('JohnDoe2');")
+        assert cursor.rowcount == 1, "Rowcount should be 1 after second insert"
+
+        cursor.execute("INSERT INTO #pytest_test_rowcount (name) VALUES ('JohnDoe3');")
+        assert cursor.rowcount == 1, "Rowcount should be 1 after third insert"
+
+        cursor.execute("""
+            INSERT INTO #pytest_test_rowcount (name) 
+            VALUES 
+            ('JohnDoe4'), 
+            ('JohnDoe5'), 
+            ('JohnDoe6');
+        """)
+        assert cursor.rowcount == 3, "Rowcount should be 3 after inserting multiple rows"
+
+        cursor.execute("SELECT * FROM #pytest_test_rowcount;")
+        assert cursor.rowcount == -1, "Rowcount should be -1 after a SELECT statement (before fetch)"
+        
+        # After fetchall, rowcount should be updated to match the number of rows fetched
+        rows = cursor.fetchall()
+        assert len(rows) == 6, "Should have fetched 6 rows"
+        assert cursor.rowcount == 6, "Rowcount should be updated to 6 after fetchall"
+
+        db_connection.commit()
+    except Exception as e:
+        pytest.fail(f"Rowcount test failed: {e}")
+    finally:
+        cursor.execute("DROP TABLE #pytest_test_rowcount")
 
 def test_specialcolumns_setup(cursor, db_connection):
     """Create test tables for testing rowIdColumns and rowVerColumns"""
