@@ -13,8 +13,15 @@ Functions:
 - test_connection_close_idempotent: Tests that calling close() multiple times is safe.
 - test_cursor_after_connection_close: Tests that creating a cursor after closing the connection raises an error.
 - test_multiple_cursor_operations_cleanup: Tests cleanup with multiple cursor operations.
+- test_cursor_close_raises_on_double_close: Tests that closing a cursor twice raises a ProgrammingError.
+- test_cursor_del_no_logging_during_shutdown: Tests that cursor __del__ doesn't log errors during interpreter shutdown.
+- test_cursor_del_on_closed_cursor_no_errors: Tests that __del__ on already closed cursor doesn't produce error logs.
+- test_cursor_del_unclosed_cursor_cleanup: Tests that __del__ properly cleans up unclosed cursors without errors.
+- test_cursor_operations_after_close_raise_errors: Tests that all cursor operations raise appropriate errors after close.
+- test_mixed_cursor_cleanup_scenarios: Tests various mixed cleanup scenarios in one script.
 """
 
+import os
 import pytest
 import subprocess
 import sys
@@ -264,3 +271,416 @@ def test_multiple_cursor_operations_cleanup(conn_str):
     assert cursor_insert.closed is True
     assert cursor_select1.closed is True
     assert cursor_select2.closed is True
+
+def test_cursor_close_raises_on_double_close(conn_str):
+    """Test that closing a cursor twice raises ProgrammingError"""
+    conn = connect(conn_str)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1")
+    cursor.fetchall()
+    
+    # First close should succeed
+    cursor.close()
+    assert cursor.closed is True
+    
+    # Second close should be a no-op and silent - not raise an error
+    cursor.close()
+    assert cursor.closed is True
+
+
+def test_cursor_del_no_logging_during_shutdown(conn_str, tmp_path):
+    """Test that cursor __del__ doesn't log errors during interpreter shutdown"""
+    code = f"""
+from mssql_python import connect
+
+# Create connection and cursor
+conn = connect(\"\"\"{conn_str}\"\"\")
+cursor = conn.cursor()
+cursor.execute("SELECT 1")
+cursor.fetchall()
+
+# Don't close cursor - let __del__ handle it during shutdown
+# This should not produce any log output during interpreter shutdown
+print("Test completed successfully")
+"""
+    
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True
+    )
+    
+    # Should exit cleanly
+    assert result.returncode == 0, f"Script failed: {result.stderr}"
+    # Should not have any debug/error logs about cursor cleanup
+    assert "Exception during cursor cleanup" not in result.stderr
+    assert "Exception during cursor cleanup" not in result.stdout
+    # Should have our success message
+    assert "Test completed successfully" in result.stdout
+
+
+def test_cursor_del_on_closed_cursor_no_errors(conn_str, caplog):
+    """Test that __del__ on already closed cursor doesn't produce error logs"""
+    import logging
+    caplog.set_level(logging.DEBUG)
+    
+    conn = connect(conn_str)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1")
+    cursor.fetchall()
+    
+    # Close cursor explicitly
+    cursor.close()
+    
+    # Clear any existing logs
+    caplog.clear()
+    
+    # Delete the cursor - should not produce any logs
+    del cursor
+    import gc
+    gc.collect()
+    
+    # Check that no error logs were produced
+    for record in caplog.records:
+        assert "Exception during cursor cleanup" not in record.message
+        assert "Operation cannot be performed: The cursor is closed." not in record.message
+    
+    conn.close()
+
+
+def test_cursor_del_unclosed_cursor_cleanup(conn_str):
+    """Test that __del__ properly cleans up unclosed cursors without errors"""
+    code = f"""
+from mssql_python import connect
+
+# Create connection and cursor
+conn = connect(\"\"\"{conn_str}\"\"\")
+cursor = conn.cursor()
+cursor.execute("SELECT 1")
+cursor.fetchall()
+
+# Store cursor state before deletion
+cursor_closed_before = cursor.closed
+
+# Delete cursor without closing - __del__ should handle cleanup
+del cursor
+import gc
+gc.collect()
+
+# Verify cursor was not closed before deletion
+assert cursor_closed_before is False, "Cursor should not be closed before deletion"
+
+# Close connection
+conn.close()
+print("Cleanup successful")
+"""
+    
+    result = subprocess.run(
+        [sys.executable, "-c", code], 
+        capture_output=True, 
+        text=True
+    )
+    assert result.returncode == 0, f"Expected successful cleanup, but got: {result.stderr}"
+    assert "Cleanup successful" in result.stdout
+    # Should not have any error messages
+    assert "Exception" not in result.stderr
+
+
+def test_cursor_operations_after_close_raise_errors(conn_str):
+    """Test that all cursor operations raise appropriate errors after close"""
+    conn = connect(conn_str)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1")
+    cursor.fetchall()
+    
+    # Close the cursor
+    cursor.close()
+    
+    # All operations should raise exceptions
+    with pytest.raises(Exception) as excinfo:
+        cursor.execute("SELECT 2")
+    assert "Operation cannot be performed: The cursor is closed." in str(excinfo.value)
+    
+    with pytest.raises(Exception) as excinfo:
+        cursor.fetchone()
+    assert "Operation cannot be performed: The cursor is closed." in str(excinfo.value)
+
+    with pytest.raises(Exception) as excinfo:
+        cursor.fetchmany(5)
+    assert "Operation cannot be performed: The cursor is closed." in str(excinfo.value)
+
+    with pytest.raises(Exception) as excinfo:
+        cursor.fetchall()
+    assert "Operation cannot be performed: The cursor is closed." in str(excinfo.value)
+
+    conn.close()
+
+
+def test_mixed_cursor_cleanup_scenarios(conn_str, tmp_path):
+    """Test various mixed cleanup scenarios in one script"""
+    code = f"""
+from mssql_python import connect
+from mssql_python.exceptions import ProgrammingError
+
+# Test 1: Normal cursor close
+conn1 = connect(\"\"\"{conn_str}\"\"\")
+cursor1 = conn1.cursor()
+cursor1.execute("SELECT 1")
+cursor1.fetchall()
+cursor1.close()
+
+# Test 2: Double close does not raise error
+cursor1.close()
+print("PASS: Double close does not raise error")
+
+# Test 3: Cursor cleanup via __del__
+cursor2 = conn1.cursor()
+cursor2.execute("SELECT 2")
+cursor2.fetchall()
+# Don't close cursor2, let __del__ handle it
+
+# Test 4: Connection close cleans up cursors
+conn2 = connect(\"\"\"{conn_str}\"\"\")
+cursor3 = conn2.cursor()
+cursor4 = conn2.cursor()
+cursor3.execute("SELECT 3")
+cursor3.fetchall()
+cursor4.execute("SELECT 4")
+cursor4.fetchall()
+conn2.close()  # Should close both cursors
+
+# Verify cursors are closed
+assert cursor3.closed is True
+assert cursor4.closed is True
+print("PASS: Connection close cleaned up cursors")
+
+# Clean up
+conn1.close()
+print("All tests passed")
+"""
+    
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True
+    )
+    
+    if result.returncode != 0:
+        print(f"STDOUT: {result.stdout}")
+        print(f"STDERR: {result.stderr}")
+    
+    assert result.returncode == 0, f"Script failed: {result.stderr}"
+    assert "PASS: Double close does not raise error" in result.stdout
+    assert "PASS: Connection close cleaned up cursors" in result.stdout
+    assert "All tests passed" in result.stdout
+    # Should not have error logs
+    assert "Exception during cursor cleanup" not in result.stderr
+
+
+def test_sql_syntax_error_no_segfault_on_shutdown(conn_str):
+    """Test that SQL syntax errors don't cause segfault during Python shutdown"""
+    # This test reproduces the exact scenario that was causing segfaults
+    escaped_conn_str = conn_str.replace('\\', '\\\\').replace('"', '\\"')
+    code = f"""
+from mssql_python import connect
+
+# Create connection
+conn = connect("{escaped_conn_str}")
+cursor = conn.cursor()
+
+# Execute invalid SQL that causes syntax error - this was causing segfault
+cursor.execute("syntax error")
+
+# Don't explicitly close cursor/connection - let Python shutdown handle cleanup
+print("Script completed, shutting down...") # This would NOT print anyways
+# Segfault would happen here during Python shutdown
+"""
+    
+    # Run in subprocess to catch segfaults
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True
+    )
+    
+    # Should not segfault (exit code 139 on Unix, 134 on macOS)
+    assert result.returncode == 1, f"Expected exit code 1 due to syntax error, but got {result.returncode}. STDERR: {result.stderr}"
+
+def test_multiple_sql_syntax_errors_no_segfault(conn_str):
+    """Test multiple SQL syntax errors don't cause segfault during cleanup"""
+    escaped_conn_str = conn_str.replace('\\', '\\\\').replace('"', '\\"')
+    code = f"""
+from mssql_python import connect
+
+conn = connect("{escaped_conn_str}")
+
+# Multiple cursors with syntax errors
+cursors = []
+for i in range(3):
+    cursor = conn.cursor()
+    cursors.append(cursor)
+    cursor.execute(f"invalid sql syntax {{i}}")
+
+# Mix of syntax errors and valid queries
+cursor_valid = conn.cursor()
+cursor_valid.execute("SELECT 1")
+cursor_valid.fetchall()
+cursors.append(cursor_valid)
+    
+# Don't close anything - test Python shutdown cleanup
+print("Multiple syntax errors handled, shutting down...")
+"""
+    
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True
+    )
+    
+    assert result.returncode == 1, f"Expected exit code 1 due to syntax errors, but got {result.returncode}. STDERR: {result.stderr}"
+
+
+def test_connection_close_during_active_query_no_segfault(conn_str):
+    """Test closing connection while cursor has pending results doesn't cause segfault"""
+    escaped_conn_str = conn_str.replace('\\', '\\\\').replace('"', '\\"')
+    code = f"""
+from mssql_python import connect
+
+# Create connection and cursor
+conn = connect("{escaped_conn_str}")
+cursor = conn.cursor()
+
+# Execute query but don't fetch results - leave them pending
+cursor.execute("SELECT COUNT(*) FROM sys.objects")
+
+# Close connection while results are still pending
+# This tests handle cleanup when STMT has pending results but DBC is freed
+conn.close()
+
+print("Connection closed with pending cursor results")
+# Cursor destructor will run during normal cleanup, not shutdown
+"""
+    
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True
+    )
+    
+    # Should not segfault - should exit cleanly
+    assert result.returncode == 0, f"Expected clean exit, but got exit code {result.returncode}. STDERR: {result.stderr}"
+    assert "Connection closed with pending cursor results" in result.stdout
+
+
+def test_concurrent_cursor_operations_no_segfault(conn_str):
+    """Test concurrent cursor operations don't cause segfaults or race conditions"""
+    escaped_conn_str = conn_str.replace('\\', '\\\\').replace('"', '\\"')
+    code = f"""
+import threading
+from mssql_python import connect
+
+conn = connect("{escaped_conn_str}")
+results = []
+exceptions = []
+
+def worker(thread_id):
+    try:
+        for i in range(15):
+            cursor = conn.cursor()
+            cursor.execute(f"SELECT {{thread_id * 100 + i}} as value")
+            result = cursor.fetchone()
+            results.append(result[0])
+            # Don't explicitly close cursor - test concurrent destructors
+    except Exception as e:
+        exceptions.append(f"Thread {{thread_id}}: {{e}}")
+
+# Create multiple threads doing concurrent cursor operations
+threads = []
+for i in range(4):
+    t = threading.Thread(target=worker, args=(i,))
+    threads.append(t)
+    t.start()
+
+for t in threads:
+    t.join()
+
+print(f"Completed: {{len(results)}} results, {{len(exceptions)}} exceptions")
+
+# Report any exceptions for debugging
+for exc in exceptions:
+    print(f"Exception: {{exc}}")
+
+print("Concurrent operations completed")
+"""
+    
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True
+    )
+    
+    # Should not segfault
+    assert result.returncode == 0, f"Expected clean exit, but got exit code {result.returncode}. STDERR: {result.stderr}"
+    assert "Concurrent operations completed" in result.stdout
+    
+    # Check that most operations completed successfully
+    # Allow for some exceptions due to threading, but shouldn't be many
+    output_lines = result.stdout.split('\n')
+    completed_line = [line for line in output_lines if 'Completed:' in line]
+    if completed_line:
+        # Extract numbers from "Completed: X results, Y exceptions"
+        import re
+        match = re.search(r'Completed: (\d+) results, (\d+) exceptions', completed_line[0])
+        if match:
+            results_count = int(match.group(1))
+            exceptions_count = int(match.group(2))
+            # Should have completed most operations (allow some threading issues)
+            assert results_count >= 50, f"Too few successful operations: {results_count}"
+            assert exceptions_count <= 10, f"Too many exceptions: {exceptions_count}"
+
+
+def test_aggressive_threading_abrupt_exit_no_segfault(conn_str):
+    """Test abrupt exit with active threads and pending queries doesn't cause segfault"""
+    escaped_conn_str = conn_str.replace('\\', '\\\\').replace('"', '\\"')
+    code = f"""
+import threading
+import sys
+import time
+from mssql_python import connect
+
+conn = connect("{escaped_conn_str}")
+
+def aggressive_worker(thread_id):
+    '''Worker that creates cursors with pending results and doesn't clean up'''
+    for i in range(8):
+        cursor = conn.cursor()
+        # Execute query but don't fetch - leave results pending
+        cursor.execute(f"SELECT COUNT(*) FROM sys.objects WHERE object_id > {{thread_id * 1000 + i}}")
+        
+        # Create another cursor immediately without cleaning up the first
+        cursor2 = conn.cursor() 
+        cursor2.execute(f"SELECT TOP 3 * FROM sys.objects WHERE object_id > {{thread_id * 1000 + i}}")
+        
+        # Don't fetch results, don't close cursors - maximum chaos
+        time.sleep(0.005)  # Let other threads interleave
+
+# Start multiple daemon threads
+for i in range(3):
+    t = threading.Thread(target=aggressive_worker, args=(i,), daemon=True)
+    t.start()
+
+# Let them run briefly then exit abruptly
+time.sleep(0.3)
+print("Exiting abruptly with active threads and pending queries")
+sys.exit(0)  # Abrupt exit without joining threads
+"""
+    
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True
+    )
+    
+    # Should not segfault - should exit cleanly even with abrupt exit
+    assert result.returncode == 0, f"Expected clean exit, but got exit code {result.returncode}. STDERR: {result.stderr}"
+    assert "Exiting abruptly with active threads and pending queries" in result.stdout

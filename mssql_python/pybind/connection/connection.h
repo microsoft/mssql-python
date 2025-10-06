@@ -42,6 +42,9 @@ public:
     // Allocate a new statement handle on this connection.
     SqlHandlePtr allocStatementHandle();
 
+    // Get information about the driver and data source
+    py::object getInfo(SQLUSMALLINT infoType) const;
+
     SQLRETURN setAttribute(SQLINTEGER attribute, py::object value);
 
     // Add getter for DBC handle for error reporting
@@ -71,6 +74,9 @@ public:
     bool getAutocommit() const;
     SqlHandlePtr allocStatementHandle();
     void setAttr(int attribute, py::object value);
+
+    // Get information about the driver and data source
+    py::object getInfo(SQLUSMALLINT infoType) const;
 
 private:
     std::shared_ptr<Connection> _conn;

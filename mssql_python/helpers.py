@@ -155,7 +155,7 @@ def sanitize_user_input(user_input: str, max_length: int = 50) -> str:
     # Return placeholder if nothing remains after sanitization
     return sanitized if sanitized else "<invalid>"
 
-def validate_attribute_value(attribute, value, sanitize_logs=True, max_log_length=50):
+def validate_attribute_value(attribute, value, is_connected=True, sanitize_logs=True, max_log_length=50):
     """
     Validates attribute and value pairs for connection attributes.
     
@@ -164,6 +164,7 @@ def validate_attribute_value(attribute, value, sanitize_logs=True, max_log_lengt
     Args:
         attribute (int): The connection attribute to validate (SQL_ATTR_*)
         value: The value to set for the attribute (int, str, bytes, or bytearray)
+        is_connected (bool): Whether the connection is already established
         sanitize_logs (bool): Whether to include sanitized versions for logging
         max_log_length (int): Maximum length of sanitized output for logging
         
@@ -198,7 +199,6 @@ def validate_attribute_value(attribute, value, sanitize_logs=True, max_log_lengt
     # Define driver-level attributes that are supported
     SUPPORTED_ATTRIBUTES = [
         ConstantsDDBC.SQL_ATTR_ACCESS_MODE.value,
-        ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value,
         ConstantsDDBC.SQL_ATTR_CONNECTION_TIMEOUT.value,
         ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value,
         ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value,
@@ -210,10 +210,21 @@ def validate_attribute_value(attribute, value, sanitize_logs=True, max_log_lengt
     if attribute not in SUPPORTED_ATTRIBUTES:
         return False, f"Unsupported attribute: {attribute}", sanitized_attr, sanitized_val
     
+    # Check timing constraints for these specific attributes
+    BEFORE_ONLY_ATTRIBUTES = [
+        ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value,
+        ConstantsDDBC.SQL_ATTR_PACKET_SIZE.value
+    ]
+    
+    # Check if attribute can be set at the current connection state
+    if is_connected and attribute in BEFORE_ONLY_ATTRIBUTES:
+        return False, (f"Attribute {attribute} must be set before connection establishment. "
+                      "Use the attrs_before parameter when creating the connection."), sanitized_attr, sanitized_val
+    
     # Basic value type validation
     if isinstance(value, int):
-        # For integer values, check if negative
-        if value < 0:
+        # For integer values, check if negative (login timeout can be -1 for default)
+        if value < 0 and attribute != ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value:
             return False, f"Integer value cannot be negative: {value}", sanitized_attr, sanitized_val
     
     elif isinstance(value, str):
@@ -234,7 +245,6 @@ def validate_attribute_value(attribute, value, sanitize_logs=True, max_log_lengt
     
     # All basic validations passed
     return True, None, sanitized_attr, sanitized_val
-
 
 def log(level: str, message: str, *args) -> None:
     """
