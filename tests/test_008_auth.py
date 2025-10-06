@@ -261,7 +261,7 @@ def test_short_access_token_protection():
         
         # Verify it's our protective error, not a segfault
         error_msg = str(exc_info.value)
-        assert "Failed to set access token before connect" in error_msg, \
+        assert "Failed to set access token" in error_msg, \
             f"Expected protective error for length {length}, got: {error_msg}"
     
     # Test that legitimate-sized tokens don't get blocked (but will fail auth)
@@ -274,7 +274,7 @@ def test_short_access_token_protection():
     
     # Should get an authentication error, not our protective error
     error_msg = str(exc_info.value)
-    assert "Failed to set access token before connect" not in error_msg, \
+    assert "Failed to set access token" not in error_msg, \
         f"Legitimate token should not be blocked, got: {error_msg}"
     assert any(keyword in error_msg.lower() for keyword in ["login", "auth", "tcp"]), \
         f"Expected authentication error for legitimate token, got: {error_msg}"

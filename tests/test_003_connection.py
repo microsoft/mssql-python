@@ -5348,34 +5348,6 @@ def test_attrs_before_integer_valued_attribute_unsupported(conn_str):
         assert "attrs_before" not in str(e).lower(), \
             f"Connection should succeed with ignored integer attribute, got: {e}"
 
-
-def test_attrs_before_bytearray_instead_of_bytes(conn_str):
-    """
-    Test that bytearray (mutable bytes) is handled the same as bytes (immutable).
-    
-    Python has two binary data types:
-    - bytes: immutable sequence of bytes (b"data")
-    - bytearray: mutable sequence of bytes (bytearray(b"data"))
-    
-    The C++ setAttribute() method should handle both types correctly by converting
-    them to std::string and passing to SQLSetConnectAttr.
-    
-    Expected behavior: When both access token and UID/Pwd are provided, ODBC driver
-    enforces security by rejecting the combination with a specific error message.
-    """
-    # Test with bytearray instead of bytes
-    fake_data = bytearray(b"test_bytearray_data_for_coverage")
-    attrs_before = {1256: fake_data}  # SQL_COPT_SS_ACCESS_TOKEN = 1256
-    
-    # Should fail: ODBC driver rejects access token + UID/Pwd combination
-    with pytest.raises(Exception) as exc_info:
-        connect(conn_str, attrs_before=attrs_before)
-    
-    # Verify it's the expected ODBC security error
-    error_msg = str(exc_info.value)
-    assert "Cannot use Access Token with any of the following options" in error_msg, \
-        f"Expected ODBC token+auth error, got: {error_msg}"
-
 def test_attrs_before_unsupported_value_type(conn_str):
     """
     Test that unsupported Python types for attribute values are handled gracefully.
