@@ -7,6 +7,44 @@ trigger:
       - main
 
 jobs:
+- job: CodeQLAnalysis
+  displayName: 'CodeQL Security Analysis'
+  pool:
+    vmImage: 'ubuntu-latest'
+  
+  steps:
+  - script: |
+      sudo apt-get update
+      sudo apt-get install -y build-essential cmake curl git python3 python3-pip python3-dev python3-venv unixodbc-dev
+    displayName: 'Install build dependencies for CodeQL'
+
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.13'
+      addToPath: true
+    displayName: 'Use Python 3.13 for CodeQL'
+
+  - script: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+    displayName: 'Install Python dependencies for CodeQL'
+
+  - task: CodeQL3000Init@0
+    inputs:
+      Enabled: true
+    displayName: 'Initialize CodeQL'
+
+  # Build the C++ extension for CodeQL analysis
+  - script: |
+      cd mssql_python/pybind
+      chmod +x build.sh
+      ./build.sh
+    displayName: 'Build C++ extension for CodeQL analysis'
+
+  - task: CodeQL3000Finalize@0
+    condition: always()
+    displayName: 'Finalize CodeQL'
+
 - job: PytestOnWindows
   displayName: 'Windows x64'
   pool:
@@ -72,11 +110,11 @@ jobs:
       testResultsFiles: '**/test-results.xml'
       testRunTitle: 'Publish test results'
 
-  - task: PublishCodeCoverageResults@1
-    inputs:
-      codeCoverageTool: 'Cobertura'
-      summaryFileLocation: 'coverage.xml'
-    displayName: 'Publish code coverage results'
+  # - task: PublishCodeCoverageResults@1
+  #   inputs:
+  #     codeCoverageTool: 'Cobertura'
+  #     summaryFileLocation: 'coverage.xml'
+  #   displayName: 'Publish code coverage results'
 
 - job: PytestOnMacOS
   displayName: 'macOS x86_64'
@@ -92,6 +130,9 @@ jobs:
 
   - script: |
       brew update
+      # Uninstall existing CMake to avoid tap conflicts
+      brew uninstall cmake --ignore-dependencies || echo "CMake not installed or already removed"
+      # Install CMake from homebrew/core
       brew install cmake
     displayName: 'Install CMake'
 
@@ -149,7 +190,7 @@ jobs:
       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run pytest with coverage'
     env:
-      DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
       DB_PASSWORD: $(DB_PASSWORD)
 
   - task: PublishTestResults@2
@@ -1474,3 +1515,79 @@ jobs:
     inputs:
       testResultsFiles: '**/test-results-alpine-arm64.xml'
       testRunTitle: 'Publish pytest results on Alpine ARM64'
+
+- job: CodeCoverageReport
+  displayName: 'Full Code Coverage Report in Ubuntu x86_64'
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  steps:
+  - script: |
+      # Install build dependencies
+      sudo apt-get update
+      sudo apt-get install -y cmake gcc g++ lcov unixodbc-dev llvm clang
+    displayName: 'Install build dependencies'
+
+  - script: |
+      # Start SQL Server container
+      docker pull mcr.microsoft.com/mssql/server:2022-latest
+      docker run \
+        --name sqlserver \
+        -e ACCEPT_EULA=Y \
+        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+        -p 1433:1433 \
+        -d mcr.microsoft.com/mssql/server:2022-latest
+
+      # Wait until SQL Server is ready
+      for i in {1..30}; do
+        docker exec sqlserver \
+          /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -P "$(DB_PASSWORD)" \
+          -C -Q "SELECT 1" && break
+        sleep 2
+      done
+    displayName: 'Start SQL Server container'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Install Python dependencies
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+      pip install coverage-lcov lcov-cobertura
+    displayName: 'Install Python dependencies'
+
+  - script: |
+      # Build pybind bindings with coverage instrumentation
+      cd mssql_python/pybind
+      ./build.sh codecov
+    displayName: 'Build pybind bindings with coverage'
+
+  - script: |
+      # Generate unified coverage (Python + C++)
+      chmod +x ./generate_codecov.sh
+      ./generate_codecov.sh
+
+      # Convert unified LCOV to Cobertura XML for ADO reporting
+      lcov_cobertura total.info --output unified-coverage/coverage.xml
+    displayName: 'Generate unified coverage (Python + C++)'
+    env:
+      DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFiles: '**/test-results.xml'
+      testRunTitle: 'Publish pytest results with unified coverage'
+
+  - task: PublishCodeCoverageResults@2
+    condition: succeededOrFailed()
+    inputs:
+      codeCoverageTool: Cobertura
+      summaryFileLocation: 'unified-coverage/coverage.xml'
+      reportDirectory: 'unified-coverage'
+      failIfCoverageEmpty: true
+    displayName: 'Publish unified code coverage results'

@@ -10,6 +10,7 @@
 #include <pybind11/pybind11.h>
 
 #define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
+#define SQL_MAX_SMALL_INT 32767  // Maximum value for SQLSMALLINT
 
 static SqlHandlePtr getEnvHandle() {
     static SqlHandlePtr envHandle = []() -> SqlHandlePtr {
@@ -172,16 +173,16 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     LOG("Setting SQL attribute");
     SQLPOINTER ptr = nullptr;
     SQLINTEGER length = 0;
+    std::string buffer; // to hold sensitive data temporarily
 
     if (py::isinstance<py::int_>(value)) {
         int intValue = value.cast<int>();
         ptr = reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(intValue));
         length = SQL_IS_INTEGER;
     } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
-        static std::vector<std::string> buffers;
-        buffers.emplace_back(value.cast<std::string>());
-        ptr = const_cast<char*>(buffers.back().c_str());
-        length = static_cast<SQLINTEGER>(buffers.back().size());
+        buffer = value.cast<std::string>();  // stack buffer
+        ptr = buffer.data();
+        length = static_cast<SQLINTEGER>(buffer.size());
     } else {
         LOG("Unsupported attribute value type");
         return SQL_ERROR;
@@ -193,6 +194,11 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     }
     else {
         LOG("Set attribute successfully");
+    }
+    
+    // Zero out sensitive data if used
+    if (!buffer.empty()) {
+        std::fill(buffer.begin(), buffer.end(), static_cast<char>(0));
     }
     return ret;
 }
@@ -314,4 +320,67 @@ SqlHandlePtr ConnectionHandle::allocStatementHandle() {
         ThrowStdException("Connection object is not initialized");
     }
     return _conn->allocStatementHandle();
+}
+
+py::object Connection::getInfo(SQLUSMALLINT infoType) const {
+    if (!_dbcHandle) {
+        ThrowStdException("Connection handle not allocated");
+    }
+    
+    // First call with NULL buffer to get required length
+    SQLSMALLINT requiredLen = 0;
+    SQLRETURN ret = SQLGetInfo_ptr(_dbcHandle->get(), infoType, NULL, 0, &requiredLen);
+    
+    if (!SQL_SUCCEEDED(ret)) {
+        checkError(ret);
+        return py::none();
+    }
+    
+    // For zero-length results
+    if (requiredLen == 0) {
+        py::dict result;
+        result["data"] = py::bytes("", 0);
+        result["length"] = 0;
+        result["info_type"] = infoType;
+        return result;
+    }
+    
+    // Cap buffer allocation to SQL_MAX_SMALL_INT to prevent excessive memory usage
+    SQLSMALLINT allocSize = requiredLen + 10;
+    if (allocSize > SQL_MAX_SMALL_INT) {
+        allocSize = SQL_MAX_SMALL_INT;
+    }
+    std::vector<char> buffer(allocSize, 0);  // Extra padding for safety
+    
+    // Get the actual data - avoid using std::min
+    SQLSMALLINT bufferSize = requiredLen + 10;
+    if (bufferSize > SQL_MAX_SMALL_INT) {
+        bufferSize = SQL_MAX_SMALL_INT;
+    }
+    
+    SQLSMALLINT returnedLen = 0;
+    ret = SQLGetInfo_ptr(_dbcHandle->get(), infoType, buffer.data(), bufferSize, &returnedLen);
+    
+    if (!SQL_SUCCEEDED(ret)) {
+        checkError(ret);
+        return py::none();
+    }
+    
+    // Create a dictionary with the raw data
+    py::dict result;
+    
+    // IMPORTANT: Pass exactly what SQLGetInfo returned
+    // No null-terminator manipulation, just pass the raw data
+    result["data"] = py::bytes(buffer.data(), returnedLen);
+    result["length"] = returnedLen;
+    result["info_type"] = infoType;
+    
+    return result;
+}
+
+py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {
+    if (!_conn) {
+        ThrowStdException("Connection object is not initialized");
+    }
+    return _conn->getInfo(infoType);
 }
