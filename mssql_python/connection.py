@@ -148,6 +148,16 @@ class Connection:
             connection_str, **kwargs
         )
         self._attrs_before = attrs_before or {}
+        
+        # Validate access token if provided directly via attrs_before
+        if ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in self._attrs_before:
+            from mssql_python.auth import validate_access_token_struct
+            token_struct = self._attrs_before[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value]
+            if isinstance(token_struct, (bytes, bytearray)):
+                try:
+                    validate_access_token_struct(bytes(token_struct))
+                except ValueError as e:
+                    raise ValueError(f"Invalid access token in attrs_before: {e}") from e
 
         # Initialize encoding settings with defaults for Python 3
         # Python 3 only has str (which is Unicode), so we use utf-16le by default

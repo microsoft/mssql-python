@@ -136,6 +136,9 @@ class ConstantsDDBC(Enum):
     SQL_QUICK = 0
     SQL_ENSURE = 1
 
+    # Connection Attributes
+    SQL_COPT_SS_ACCESS_TOKEN = 1256
+
 class GetInfoConstants(Enum):
     """
     These constants are used with various methods like getinfo().

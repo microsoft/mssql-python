@@ -7,6 +7,7 @@
 #include "connection.h"
 #include "connection_pool.h"
 #include <vector>
+#include <cstdint>
 #include <pybind11/pybind11.h>
 
 #define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
@@ -181,15 +182,6 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         length = SQL_IS_INTEGER;
     } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
         buffer = value.cast<std::string>();  // local string object (data is heap-allocated)
-        
-        // DEFENSIVE FIX: Protect against ODBC driver bug with short access tokens
-        // Microsoft ODBC Driver 18 crashes when given access tokens shorter than 32 bytes
-        // Real access tokens are typically 100+ bytes, so reject anything under 32 bytes
-        if (attribute == SQL_COPT_SS_ACCESS_TOKEN && buffer.size() < 32) {
-            LOG("Access token too short (< 32 bytes) - protecting against ODBC driver crash");
-            ThrowStdException("Failed to set access token: Access token must be at least 32 bytes long");
-        }
-        
         ptr = buffer.data();
         length = static_cast<SQLINTEGER>(buffer.size());
     } else {

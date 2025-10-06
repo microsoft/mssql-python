@@ -9,6 +9,67 @@ import struct
 from typing import Tuple, Dict, Optional, Union
 from mssql_python.constants import AuthType
 
+def validate_access_token_struct(token_struct: bytes) -> None:
+    """
+    Validate ACCESSTOKEN structure to prevent ODBC driver crashes.
+    
+    The ODBC driver crashes (segfault on macOS/Linux, access violation on Windows)
+    when given malformed access tokens. This function validates the structure
+    before passing to the driver.
+    
+    ACCESSTOKEN structure: typedef struct { DWORD dataSize; BYTE data[]; } ACCESSTOKEN;
+    
+    Args:
+        token_struct (bytes): The ACCESSTOKEN structure to validate
+        
+    Raises:
+        ValueError: If the token structure is invalid
+    """
+    # Check minimum size (4-byte header + data)
+    if len(token_struct) < 4:
+        raise ValueError(
+            f"Invalid access token: minimum 4 bytes required for ACCESSTOKEN structure, got {len(token_struct)} bytes"
+        )
+    
+    # Extract declared size from first 4 bytes
+    declared_size = struct.unpack('<I', token_struct[:4])[0]
+    
+    # Validate structure integrity
+    total_size = len(token_struct)
+    expected_size = declared_size + 4
+    if expected_size != total_size:
+        raise ValueError(
+            f"Invalid access token: size mismatch in ACCESSTOKEN structure. "
+            f"Header declares {declared_size} bytes, but structure has {total_size - 4} bytes of data"
+        )
+    
+    # Validate token data is not empty/all zeros
+    token_data = token_struct[4:]
+    if not any(token_data):
+        raise ValueError("Invalid access token: token data is empty or all zeros")
+    
+    # Validate UTF-16LE encoding (ODBC driver requirement)
+    # JWT tokens in UTF-16LE have null bytes interleaved with ASCII characters
+    if declared_size % 2 != 0:
+        raise ValueError(
+            f"Invalid access token: must be UTF-16LE encoded (got odd byte length {declared_size})"
+        )
+    
+    # Check for UTF-16LE pattern: ASCII characters with interleaved null bytes
+    # Real JWTs start with "eyJ" in UTF-16LE: 65 00 79 00 4A 00
+    if declared_size >= 6:
+        has_utf16_pattern = all([
+            0x20 <= token_data[0] <= 0x7E and token_data[1] == 0,  # First char
+            0x20 <= token_data[2] <= 0x7E and token_data[3] == 0,  # Second char
+            0x20 <= token_data[4] <= 0x7E and token_data[5] == 0   # Third char
+        ])
+        
+        if not has_utf16_pattern:
+            raise ValueError(
+                "Invalid access token: must be UTF-16LE encoded JWT. "
+                "Expected alternating ASCII and null bytes (e.g., 'e\\x00y\\x00J\\x00' for 'eyJ')"
+            )
+
 class AADAuth:
     """Handles Azure Active Directory authentication"""
     
@@ -16,7 +77,12 @@ class AADAuth:
     def get_token_struct(token: str) -> bytes:
         """Convert token to SQL Server compatible format"""
         token_bytes = token.encode("UTF-16-LE")
-        return struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
+        token_struct = struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
+        
+        # Validate before returning to catch any encoding issues early
+        validate_access_token_struct(token_struct)
+        
+        return token_struct
 
     @staticmethod
     def get_token(auth_type: str) -> bytes:
