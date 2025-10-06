@@ -220,3 +220,153 @@ def test_error_handling():
     # Test non-string input
     with pytest.raises(ValueError, match="Connection string must be a string"):
         process_connection_string(None)
+
+
+def test_short_access_token_protection_blocks_short_tokens():
+    """
+    Test protection against ODBC driver segfault with short access tokens.
+    
+    Microsoft ODBC Driver 18 has a bug where it crashes (segfaults) when given
+    access tokens shorter than 32 bytes. This test verifies that our defensive
+    fix properly rejects such tokens before they reach the ODBC driver.
+    
+    The fix is implemented in Connection::setAttribute() in connection.cpp.
+    
+    This test runs in a subprocess to isolate potential segfaults.
+    """
+    import os
+    import subprocess
+    
+    # Get connection string and remove UID/Pwd to force token-only mode
+    conn_str = os.getenv("DB_CONNECTION_STRING")
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING environment variable not set")
+    
+    # Remove authentication to force pure token mode
+    conn_str_no_auth = conn_str
+    for remove_param in ["UID=", "Pwd=", "uid=", "pwd="]:
+        if remove_param in conn_str_no_auth:
+            parts = conn_str_no_auth.split(";")
+            parts = [p for p in parts if not p.lower().startswith(remove_param.lower())]
+            conn_str_no_auth = ";".join(parts)
+    
+    # Escape connection string for embedding in subprocess code
+    escaped_conn_str = conn_str_no_auth.replace('\\', '\\\\').replace('"', '\\"')
+    
+    # Test cases for problematic token lengths (0-31 bytes)
+    problematic_lengths = [0, 1, 4, 8, 16, 31]
+    
+    for length in problematic_lengths:
+        code = f"""
+import sys
+from mssql_python import connect
+
+conn_str = "{escaped_conn_str}"
+fake_token = b"x" * {length}
+attrs_before = {{1256: fake_token}}  # SQL_COPT_SS_ACCESS_TOKEN = 1256
+
+try:
+    connect(conn_str, attrs_before=attrs_before)
+    print("ERROR: Should have raised exception for length {length}")
+    sys.exit(1)
+except Exception as e:
+    error_msg = str(e)
+    if "Access token must be at least 32 bytes" in error_msg:
+        print(f"PASS: Got expected protective error for length {length}")
+        sys.exit(0)
+    else:
+        print(f"ERROR: Got unexpected error for length {length}: {{error_msg}}")
+        sys.exit(1)
+"""
+        
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True
+        )
+        
+        # Should not segfault (exit code 139 on Linux, 134 on macOS, -11 on some systems)
+        assert result.returncode not in [134, 139, -11], \
+            f"Segfault detected for token length {length}! STDERR: {result.stderr}"
+        
+        # Should exit cleanly with our protective error
+        assert result.returncode == 0, \
+            f"Expected protective error for length {length}. Exit code: {result.returncode}\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+        
+        assert "PASS" in result.stdout, \
+            f"Expected PASS message for length {length}, got: {result.stdout}"
+
+
+def test_short_access_token_protection_allows_valid_tokens():
+    """
+    Test that legitimate-sized access tokens (== 32 bytes) are NOT blocked by protection.
+    
+    This verifies that our defensive fix only blocks dangerously short tokens,
+    and allows legitimate tokens to proceed (even though they may fail authentication
+    if they're invalid, which is expected and proper behavior).
+    
+    Runs in separate subprocess to avoid ODBC driver state pollution from earlier tests.
+    """
+    import os
+    import subprocess
+    
+    # Get connection string and remove UID/Pwd to force token-only mode
+    conn_str = os.getenv("DB_CONNECTION_STRING")
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING environment variable not set")
+    
+    # Remove authentication to force pure token mode
+    conn_str_no_auth = conn_str
+    for remove_param in ["UID=", "Pwd=", "uid=", "pwd="]:
+        if remove_param in conn_str_no_auth:
+            parts = conn_str_no_auth.split(";")
+            parts = [p for p in parts if not p.lower().startswith(remove_param.lower())]
+            conn_str_no_auth = ";".join(parts)
+    
+    # Escape connection string for embedding in subprocess code
+    escaped_conn_str = conn_str_no_auth.replace('\\', '\\\\').replace('"', '\\"')
+    
+    # Test that legitimate-sized tokens don't get blocked (but will fail auth)
+    code = f"""
+import sys
+from mssql_python import connect
+
+conn_str = "{escaped_conn_str}"
+legitimate_token = b"x" * 32  # 32 bytes - exactly the minimum
+attrs_before = {{1256: legitimate_token}}
+
+try:
+    connect(conn_str, attrs_before=attrs_before)
+    print("ERROR: Should have failed authentication")
+    sys.exit(1)
+except Exception as e:
+    error_msg = str(e)
+    # Should NOT get our protective error
+    if "Access token must be at least 32 bytes" in error_msg:
+        print(f"ERROR: Legitimate token was incorrectly blocked: {{error_msg}}")
+        sys.exit(1)
+    # Should get an authentication/connection error instead
+    elif any(keyword in error_msg.lower() for keyword in ["login", "auth", "tcp", "connect"]):
+        print(f"PASS: Legitimate token not blocked, got expected auth error")
+        sys.exit(0)
+    else:
+        print(f"ERROR: Unexpected error for legitimate token: {{error_msg}}")
+        sys.exit(1)
+"""
+    
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True
+    )
+    
+    # Should not segfault
+    assert result.returncode not in [134, 139, -11], \
+        f"Segfault detected for legitimate token! STDERR: {result.stderr}"
+    
+    # Should pass the test
+    assert result.returncode == 0, \
+        f"Legitimate token test failed. Exit code: {result.returncode}\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    
+    assert "PASS" in result.stdout, \
+        f"Expected PASS message for legitimate token, got: {result.stdout}"
