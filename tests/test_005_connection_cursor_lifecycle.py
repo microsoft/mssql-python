@@ -637,3 +637,46 @@ print("Concurrent operations completed")
             # Should have completed most operations (allow some threading issues)
             assert results_count >= 50, f"Too few successful operations: {results_count}"
             assert exceptions_count <= 10, f"Too many exceptions: {exceptions_count}"
+
+
+def test_aggressive_threading_abrupt_exit_no_segfault(conn_str):
+    """Test abrupt exit with active threads and pending queries doesn't cause segfault"""
+    escaped_conn_str = conn_str.replace('\\', '\\\\').replace('"', '\\"')
+    code = f"""
+import threading
+import sys
+import time
+from mssql_python import connect
+conn = connect("{escaped_conn_str}")
+def aggressive_worker(thread_id):
+    '''Worker that creates cursors with pending results and doesn't clean up'''
+    for i in range(8):
+        cursor = conn.cursor()
+        # Execute query but don't fetch - leave results pending
+        cursor.execute(f"SELECT COUNT(*) FROM sys.objects WHERE object_id > {{thread_id * 1000 + i}}")
+        
+        # Create another cursor immediately without cleaning up the first
+        cursor2 = conn.cursor() 
+        cursor2.execute(f"SELECT TOP 3 * FROM sys.objects WHERE object_id > {{thread_id * 1000 + i}}")
+        
+        # Don't fetch results, don't close cursors - maximum chaos
+        time.sleep(0.005)  # Let other threads interleave
+# Start multiple daemon threads
+for i in range(3):
+    t = threading.Thread(target=aggressive_worker, args=(i,), daemon=True)
+    t.start()
+# Let them run briefly then exit abruptly
+time.sleep(0.3)
+print("Exiting abruptly with active threads and pending queries")
+sys.exit(0)  # Abrupt exit without joining threads
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True
+    )
+
+    # Should not segfault - should exit cleanly even with abrupt exit
+    assert result.returncode == 0, f"Expected clean exit, but got exit code {result.returncode}. STDERR: {result.stderr}"
+    assert "Exiting abruptly with active threads and pending queries" in result.stdout
