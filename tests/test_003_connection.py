@@ -5296,19 +5296,53 @@ def test_attrs_before_access_token_attribute(conn_str):
     This tests:
     1. Binary data handling in setAttribute() (no crashes/memory errors)  
     2. ODBC security enforcement for conflicting authentication methods
+    
+    Runs in subprocess to avoid state pollution from earlier tests.
     """
-    # Create a fake access token (binary data) to test the code path
-    fake_token = b"fake_access_token_for_testing_purposes_only"
-    attrs_before = {1256: fake_token}  # SQL_COPT_SS_ACCESS_TOKEN = 1256
+    import subprocess
+    import sys
     
-    # Should fail: ODBC driver rejects access token + UID/Pwd combination
-    with pytest.raises(Exception) as exc_info:
-        connect(conn_str, attrs_before=attrs_before)
+    # Escape connection string for subprocess
+    escaped_conn_str = conn_str.replace('\\', '\\\\').replace('"', '\\"')
     
-    # Verify it's the expected ODBC security error
-    error_msg = str(exc_info.value)
-    assert "Cannot use Access Token with any of the following options" in error_msg, \
-        f"Expected ODBC token+auth error, got: {error_msg}"
+    code = f"""
+import sys
+from mssql_python import connect
+
+conn_str = "{escaped_conn_str}"
+fake_token = b"fake_access_token_for_testing_purposes_only"
+attrs_before = {{1256: fake_token}}  # SQL_COPT_SS_ACCESS_TOKEN = 1256
+
+try:
+    connect(conn_str, attrs_before=attrs_before)
+    print("ERROR: Should have raised exception for token+UID/Pwd combination")
+    sys.exit(1)
+except Exception as e:
+    error_msg = str(e)
+    if "Cannot use Access Token with any of the following options" in error_msg:
+        print("PASS: Got expected ODBC token+auth error")
+        sys.exit(0)
+    else:
+        print(f"ERROR: Got unexpected error: {{error_msg}}")
+        sys.exit(1)
+"""
+    
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True
+    )
+    
+    # Should not segfault
+    assert result.returncode not in [134, 139, -11], \
+        f"Segfault detected! STDERR: {result.stderr}"
+    
+    # Should exit with expected error
+    assert result.returncode == 0, \
+        f"Test failed. Exit code: {result.returncode}\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    
+    assert "PASS" in result.stdout, \
+        f"Expected PASS message, got: {result.stdout}"
 
 def test_attrs_before_integer_valued_attribute_unsupported(conn_str):
     """

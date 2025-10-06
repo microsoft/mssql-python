@@ -222,7 +222,7 @@ def test_error_handling():
         process_connection_string(None)
 
 
-def test_short_access_token_protection():
+def test_short_access_token_protection_blocks_short_tokens():
     """
     Test protection against ODBC driver segfault with short access tokens.
     
@@ -295,6 +295,36 @@ except Exception as e:
         
         assert "PASS" in result.stdout, \
             f"Expected PASS message for length {length}, got: {result.stdout}"
+
+
+def test_short_access_token_protection_allows_valid_tokens():
+    """
+    Test that legitimate-sized access tokens (>= 32 bytes) are NOT blocked by protection.
+    
+    This verifies that our defensive fix only blocks dangerously short tokens,
+    and allows legitimate tokens to proceed (even though they may fail authentication
+    if they're invalid, which is expected and proper behavior).
+    
+    Runs in separate subprocess to avoid ODBC driver state pollution from earlier tests.
+    """
+    import os
+    import subprocess
+    
+    # Get connection string and remove UID/Pwd to force token-only mode
+    conn_str = os.getenv("DB_CONNECTION_STRING")
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING environment variable not set")
+    
+    # Remove authentication to force pure token mode
+    conn_str_no_auth = conn_str
+    for remove_param in ["UID=", "Pwd=", "uid=", "pwd="]:
+        if remove_param in conn_str_no_auth:
+            parts = conn_str_no_auth.split(";")
+            parts = [p for p in parts if not p.lower().startswith(remove_param.lower())]
+            conn_str_no_auth = ";".join(parts)
+    
+    # Escape connection string for embedding in subprocess code
+    escaped_conn_str = conn_str_no_auth.replace('\\', '\\\\').replace('"', '\\"')
     
     # Test that legitimate-sized tokens don't get blocked (but will fail auth)
     code = f"""
