@@ -299,7 +299,7 @@ except Exception as e:
 
 def test_short_access_token_protection_allows_valid_tokens():
     """
-    Test that legitimate-sized access tokens (>= 32 bytes) are NOT blocked by protection.
+    Test that legitimate-sized access tokens (== 32 bytes) are NOT blocked by protection.
     
     This verifies that our defensive fix only blocks dangerously short tokens,
     and allows legitimate tokens to proceed (even though they may fail authentication
@@ -332,7 +332,7 @@ import sys
 from mssql_python import connect
 
 conn_str = "{escaped_conn_str}"
-legitimate_token = b"x" * 64  # 64 bytes - larger than minimum
+legitimate_token = b"x" * 32  # 32 bytes - exactly the minimum
 attrs_before = {{1256: legitimate_token}}
 
 try:
