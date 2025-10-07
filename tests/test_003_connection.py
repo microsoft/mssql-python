@@ -21,8 +21,9 @@ Functions:
 - test_context_manager_connection_closes: Test that context manager closes the connection.
 """
 
-from mssql_python.exceptions import InterfaceError, ProgrammingError
+from mssql_python.exceptions import InterfaceError, ProgrammingError, DatabaseError
 import mssql_python
+import sys
 import pytest
 import time
 from mssql_python import connect, Connection, pooling, SQL_CHAR, SQL_WCHAR
@@ -6380,8 +6381,8 @@ def test_set_attr_edge_cases(db_connection):
 
 def test_set_attr_txn_isolation_effect(db_connection):
     """Test that setting transaction isolation level actually affects transactions."""
-    from mssql_python.exceptions import DatabaseError
-    conn_str = "Server=tcp:DESKTOP-1A982SC,1433;Database=master;TrustServerCertificate=yes;Trusted_Connection=yes;"
+    import os
+    conn_str = os.getenv('DB_CONNECTION_STRING')
 
     # Create a temporary table for the test
     cursor = db_connection.cursor()
@@ -6463,8 +6464,6 @@ def test_set_attr_txn_isolation_effect(db_connection):
 
 def test_set_attr_connection_timeout_effect(db_connection):
     """Test that setting connection timeout actually affects query timeout."""
-    import time
-    from mssql_python.exceptions import OperationalError
     
     cursor = db_connection.cursor()
     try:
@@ -6505,8 +6504,6 @@ def test_set_attr_connection_timeout_effect(db_connection):
 
 def test_set_attr_login_timeout_effect(conn_str):
     """Test that setting login timeout affects connection time to invalid server."""
-    import time
-    from mssql_python.exceptions import OperationalError
     
     # Testing with a non-existent server to trigger a timeout
     conn_parts = conn_str.split(';')
@@ -6544,7 +6541,6 @@ def test_set_attr_login_timeout_effect(conn_str):
 
 def test_set_attr_packet_size_effect(conn_str):
     """Test that setting packet size affects network packet size."""
-    import sys
     
     # Some drivers don't support changing packet size after connection
     # Try with explicit packet size in connection string for the first size
@@ -6771,7 +6767,7 @@ def test_attrs_before_connection_types(conn_str):
     cursor = conn.cursor()
     cursor.execute("SELECT DB_NAME()")
     result = cursor.fetchone()[0]
-    assert result.lower() == "master"
+    assert result.lower() == "testdb"
     conn.close()
 
 def test_set_attr_unsupported_attribute(db_connection):
