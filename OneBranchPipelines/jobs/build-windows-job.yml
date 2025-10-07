@@ -73,19 +73,6 @@ jobs:
       WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022:latest'
     
     steps:
-      # Create pip.ini to trust PyPI hosts (before Python installation)
-      - powershell: |
-          $pipDir = "$env:APPDATA\pip"
-          New-Item -ItemType Directory -Force -Path $pipDir
-          @"
-          [global]
-          trusted-host = pypi.org
-                         pypi.python.org
-                         files.pythonhosted.org
-          "@ | Out-File -FilePath "$pipDir\pip.ini" -Encoding utf8
-          Get-Content "$pipDir\pip.ini"
-        displayName: 'Configure pip trusted hosts'
-      
       - task: UsePythonVersion@0
         inputs:
           versionSpec: '$(pythonVersion)'
@@ -97,9 +84,9 @@ jobs:
       - script: |
           python --version
           python -m pip --version
-          python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --upgrade pip || echo "Pip upgrade failed, continuing with existing pip"
-          python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
-          python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org cmake pybind11
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install cmake pybind11
         displayName: 'Install dependencies'
       
       - powershell: |
