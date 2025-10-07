@@ -44,12 +44,22 @@ jobs:
       MacOSContainerImage: 'onebranch.azurecr.io/macos/monterey:latest'
     
     steps:
+      # Create pip.conf to trust PyPI hosts (before Python installation)
+      - script: |
+          mkdir -p ~/.config/pip
+          cat > ~/.config/pip/pip.conf <<EOF
+          [global]
+          trusted-host = pypi.org
+                         pypi.python.org
+                         files.pythonhosted.org
+          EOF
+          cat ~/.config/pip/pip.conf
+        displayName: 'Configure pip trusted hosts'
+      
       - task: UsePythonVersion@0
         inputs:
           versionSpec: '$(pythonVersion)'
           addToPath: true
-          disableDownloadFromRegistry: false
-          disableAutomaticUpgrade: true
         displayName: 'Use Python $(pythonVersion) (Universal2)'
         continueOnError: false
       
