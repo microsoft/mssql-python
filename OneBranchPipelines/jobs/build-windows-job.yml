@@ -67,7 +67,7 @@ jobs:
     variables:
       ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
       # OneBranch requires a container image - using standard Windows LTSC2025 with VS2022
-      WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2025/vse2022:latest'
+      WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022:latest'
     
     steps:
       - task: UsePythonVersion@0
