@@ -17,7 +17,8 @@ jobs:
   - job: BuildMacOSWheels
     displayName: 'Build macOS Wheels'
     pool:
-      type: macOS
+      vmImage: 'macOS-14'
+    timeoutInMinutes: 120
     
     strategy:
       matrix:

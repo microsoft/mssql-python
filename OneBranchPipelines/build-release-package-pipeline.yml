@@ -98,12 +98,11 @@ extends:
   template: 'v2/OneBranch.${{ parameters.oneBranchType }}.CrossPlat.yml@templates'
 
   parameters:
-    # Container definitions for all platforms
-    containers:
-    - container: macos_build_container
-      image: onebranch.azurecr.io/macos/monterey:latest
-      type: macOS
-    # Note: Windows and Linux jobs use custom 1ES pool instead of OneBranch containers
+    # Container definitions
+    # Note: All jobs use custom 1ES pools or Microsoft-hosted agents
+    # Windows: Django-1ES-pool + WIN22-SQL22 (custom 1ES)
+    # Linux: Django-1ES-pool + ADO-UB22-SQL22 (custom 1ES) 
+    # macOS: Azure Pipelines + macOS-14 (Microsoft-hosted)
     
     # Feature flags
     featureFlags:
