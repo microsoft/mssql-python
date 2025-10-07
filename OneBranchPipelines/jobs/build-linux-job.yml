@@ -45,8 +45,8 @@ jobs:
     
     variables:
       ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
-      # Disable OneBranch automatic container initialization - we manage Docker manually
-      LinuxContainerImage: ''
+      # OneBranch requires a container image - using standard Linux container
+      LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2004:latest'
     
     steps:
       - checkout: self

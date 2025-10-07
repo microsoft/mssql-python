@@ -66,8 +66,8 @@ jobs:
     
     variables:
       ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
-      # Disable OneBranch automatic container initialization - we run directly on Windows host
-      WindowsContainerImage: ''
+      # OneBranch requires a container image - using standard Windows LTSC2022 with VS2022
+      WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022:latest'
     
     steps:
       - task: UsePythonVersion@0

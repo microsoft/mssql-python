@@ -40,8 +40,8 @@ jobs:
     
     variables:
       ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
-      # Disable OneBranch automatic container initialization - we run directly on macOS host
-      MacOSContainerImage: ''
+      # OneBranch requires a container image - using standard macOS container
+      MacOSContainerImage: 'onebranch.azurecr.io/macos/monterey:latest'
     
     steps:
       - task: UsePythonVersion@0
