@@ -2069,8 +2069,10 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                     SQLGUID* guidArray = AllocateParamBufferArray<SQLGUID>(tempBuffers, paramSetSize);
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
 
-                    static py::module_ uuid_mod = py::module_::import("uuid");
-                    static py::object uuid_class = uuid_mod.attr("UUID");
+                    // Get cached UUID class from module-level helper
+                    // This avoids static object destruction issues during Python finalization
+                    py::object uuid_class = py::module_::import("mssql_python.ddbc_bindings").attr("_get_uuid_class")();
+                    
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         const py::handle& element = columnValues[i];
                         std::array<unsigned char, 16> uuid_bytes;
@@ -3902,6 +3904,14 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         return SQLColumns_wrap(StatementHandle, catalog, schema, table, column);
     });
 
+
+    // Module-level UUID class cache
+    // This caches the uuid.UUID class at module initialization time and keeps it alive
+    // for the entire module lifetime, avoiding static destructor issues during Python finalization
+    m.def("_get_uuid_class", []() -> py::object {
+        static py::object uuid_class = py::module_::import("uuid").attr("UUID");
+        return uuid_class;
+    }, "Internal helper to get cached UUID class");
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
