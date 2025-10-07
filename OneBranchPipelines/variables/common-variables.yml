@@ -1,0 +1,35 @@
+#################################################################################
+# Licensed to the .NET Foundation under one or more agreements.
+# The .NET Foundation licenses this file to you under the MIT license.
+# See the LICENSE file in the project root for more information.
+#################################################################################
+
+# Common variables used across all pipelines
+variables:
+  # Repository root path
+  - name: REPO_ROOT
+    value: $(Build.SourcesDirectory)
+  
+  # Artifact staging paths
+  - name: ARTIFACT_PATH
+    value: $(Build.ArtifactStagingDirectory)
+  
+  # Build configuration
+  - name: BUILD_CONFIGURATION
+    value: 'Release'
+  
+  # Python versions to build
+  - name: PYTHON_VERSIONS
+    value: '3.10,3.11,3.12,3.13'
+  
+  # Package name
+  - name: PACKAGE_NAME
+    value: 'mssql-python'
+  
+  # Assembly file version (update this for each release)
+  - name: ASSEMBLY_FILE_VERSION
+    value: '1.0.0'
+  
+  # NuGet package version
+  - name: NUGET_PACKAGE_VERSION
+    value: '1.0.0'
