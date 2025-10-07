@@ -8,6 +8,10 @@ parameters:
   - name: signingEnabled
     type: boolean
     default: true
+  
+  - name: buildConfiguration
+    type: string
+    default: 'Release'
 
 jobs:
   - job: BuildLinuxWheels
