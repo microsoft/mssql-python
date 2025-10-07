@@ -73,32 +73,20 @@ jobs:
           ls -l docker
           export PATH=$PATH:`pwd`/docker
           echo "================================="
-          
-          # For Azure Linux, use tdnf instead of apt-get
-          # Install dependencies for cgroups
-          sudo tdnf install -y libcgroup || echo "libcgroup already installed or not available"
-          
-          # Mount cgroups manually if cgroupfs-mount is not available
-          sudo mount -t tmpfs cgroup_root /sys/fs/cgroup || echo "cgroup_root already mounted"
-          for subsys in $(cat /proc/cgroups | tail -n +2 | cut -f 1); do
-            sudo mkdir -p /sys/fs/cgroup/$subsys
-            sudo mount -t cgroup -o $subsys none /sys/fs/cgroup/$subsys || echo "$subsys already mounted"
-          done
-          
           pwd
           
-          # Start dockerd in background
-          sudo sh -c 'export PATH=$PATH:'"$(pwd)/docker"'; nohup dockerd -H unix:///var/run/docker.sock > docker.log 2>&1' &
+          # Start dockerd in background - use absolute path
+          DOCKER_PATH=$(pwd)/docker
+          sudo sh -c "export PATH=\$PATH:$DOCKER_PATH; nohup $DOCKER_PATH/dockerd -H unix:///var/run/docker.sock > docker.log 2>&1" &
           sleep 15
           
-          # Make socket accessible
           ls -l /var/run/docker.sock
           sudo chmod 666 /var/run/docker.sock
           ls -l /var/run/docker.sock
           
           # Verify Docker works
-          docker --version
-          docker info
+          $DOCKER_PATH/docker --version
+          $DOCKER_PATH/docker info
           
           echo "==========================================="
         displayName: 'Setup and start Docker daemon'
