@@ -61,7 +61,15 @@ jobs:
           dockerVersion: '17.09.0-ce'
         displayName: 'Install Docker'
       
-      - script: |
+      - bash: |
+          set -e
+          echo "Verifying we're on Linux..."
+          if [[ "$(uname -s)" != "Linux" ]]; then
+            echo "ERROR: This job requires a Linux agent but got: $(uname -s)"
+            echo "Agent info: $(uname -a)"
+            exit 1
+          fi
+          
           uname -a
           if [[ "$(uname -m)" == "aarch64" ]]; then
             docarch=aarch64
