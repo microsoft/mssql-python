@@ -98,6 +98,12 @@ extends:
   template: 'v2/OneBranch.${{ parameters.oneBranchType }}.CrossPlat.yml@templates'
 
   parameters:
+    # Container definitions for Linux builds
+    containers:
+    - container: linux_build_container
+      image: mcr.microsoft.com/onebranch/azurelinux/build:3.0
+      type: Linux
+    
     # Feature flags
     featureFlags:
       WindowsHostVersion:
