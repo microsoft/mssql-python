@@ -53,11 +53,30 @@ jobs:
         fetchDepth: 0
       
       - script: |
+          # Check if Docker is already available
+          if command -v docker &> /dev/null; then
+            echo "Docker is already installed"
+            docker --version
+            exit 0
+          fi
+          
+          # Install Docker manually without systemd
+          echo "Installing Docker..."
           curl -fsSL https://get.docker.com -o get-docker.sh
-          sudo sh get-docker.sh
-          sudo systemctl start docker
-          sudo usermod -aG docker $USER
-        displayName: 'Install Docker'
+          sudo sh get-docker.sh || true
+          
+          # Try to start dockerd manually in background if systemctl is not available
+          if ! command -v systemctl &> /dev/null; then
+            echo "systemd not available, starting dockerd manually"
+            sudo dockerd > /tmp/dockerd.log 2>&1 &
+            sleep 5
+          else
+            sudo systemctl start docker || true
+          fi
+          
+          # Verify Docker is running
+          docker --version
+        displayName: 'Install/Verify Docker'
       
       - script: |
           sudo docker run --rm --privileged tonistiigi/binfmt --install all
