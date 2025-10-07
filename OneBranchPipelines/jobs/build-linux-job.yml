@@ -13,12 +13,11 @@ parameters:
     type: string
     default: 'Release'
 
-jobs:
-  - job: BuildLinuxWheels
-    displayName: 'Build Linux Wheels'
-    pool:
-      vmImage: 'ubuntu-22.04'
-    timeoutInMinutes: 120
+- job: BuildLinuxWheels
+  displayName: 'Build Linux Wheels'
+  pool:
+    vmImage: 'ubuntu-22.04'
+  timeoutInMinutes: 120
     
     strategy:
       matrix:

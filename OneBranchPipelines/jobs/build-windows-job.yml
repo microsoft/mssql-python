@@ -13,11 +13,10 @@ parameters:
     type: string
     default: 'Release'
 
-jobs:
-  - job: BuildWindowsWheels
-    displayName: 'Build Windows Wheels'
-    pool:
-      vmImage: 'windows-2022'
+- job: BuildWindowsWheels
+  displayName: 'Build Windows Wheels'
+  pool:
+    vmImage: 'windows-2022'
     
     strategy:
       matrix:
