@@ -1,11 +1,6 @@
-#################################################################################
-# Licensed to the .NET Foundation under one or more agreements.
-# The .NET Foundation licenses this file to you under the MIT license.
-# See the LICENSE file in the project root for more information.
-#################################################################################
-
 # ESRP Code Signing Step Template
 # Signs binary artifacts using Microsoft's Enterprise Signing Service
+# Based on SqlClient ESRP signing implementation
 parameters:
   - name: appRegistrationClientId
     type: string
@@ -19,8 +14,8 @@ parameters:
     type: string
     displayName: 'Artifact type to sign'
     values:
-      - 'dll'   # For .pyd, .so, .dylib files
-      - 'pkg'   # For .whl, .nupkg files
+      - 'dll'   # For .pyd, .so, .dylib files (native binaries)
+      - 'whl'   # For .whl files (Python wheels)
   
   - name: authAkvName
     type: string
@@ -43,56 +38,125 @@ parameters:
     displayName: 'Path containing files to sign'
 
 steps:
-  # Configure ESRP signing operation based on artifact type
-  - pwsh: |
-      $artifactType = "${{ parameters.artifactType }}"
-      if ($artifactType -eq "dll") {
-        Write-Host "##vso[task.setvariable variable=ESRP_OPERATION]SigntoolSign"
-        Write-Host "##vso[task.setvariable variable=ESRP_SESSION_CONFIG]session-authenticode"
-        Write-Host "Signing native binaries (.pyd, .so, .dylib)"
-      } elseif ($artifactType -eq "pkg") {
-        Write-Host "##vso[task.setvariable variable=ESRP_OPERATION]NuGetSign"
-        Write-Host "##vso[task.setvariable variable=ESRP_SESSION_CONFIG]session-nuget"
-        Write-Host "Signing package files (.whl, .nupkg)"
-      }
-    displayName: 'Configure ESRP Signing Operation'
+  # Sign native binary files (.pyd, .so, .dylib)
+  - ${{ if eq(parameters.artifactType, 'dll') }}:
+      - task: EsrpMalwareScanning@5
+        displayName: 'ESRP MalwareScanning - Native Binaries'
+        inputs:
+          ConnectedServiceName: '${{ parameters.esrpConnectedServiceName }}'
+          AppRegistrationClientId: '${{ parameters.appRegistrationClientId }}'
+          AppRegistrationTenantId: '${{ parameters.appRegistrationTenantId }}'
+          EsrpClientId: '${{ parameters.esrpClientId }}'
+          UseMSIAuthentication: true
+          FolderPath: '${{ parameters.signPath }}'
+          Pattern: '*.pyd,*.dll,*.so,*.dylib'
+          CleanupTempStorage: 1
+          VerboseLogin: 1
+      
+      - task: EsrpCodeSigning@5
+        displayName: 'ESRP CodeSigning - Native Binaries'
+        inputs:
+          ConnectedServiceName: '${{ parameters.esrpConnectedServiceName }}'
+          AppRegistrationClientId: '${{ parameters.appRegistrationClientId }}'
+          AppRegistrationTenantId: '${{ parameters.appRegistrationTenantId }}'
+          EsrpClientId: '${{ parameters.esrpClientId }}'
+          UseMSIAuthentication: true
+          AuthAKVName: '${{ parameters.authAkvName }}'
+          AuthSignCertName: '${{ parameters.authSignCertName }}'
+          FolderPath: '${{ parameters.signPath }}'
+          Pattern: '*.pyd,*.dll,*.so,*.dylib'
+          signConfigType: inlineSignParams
+          inlineOperation: |
+            [
+              {
+                "keyCode": "CP-230012",
+                "operationSetCode": "SigntoolSign",
+                "parameters": [
+                  {
+                    "parameterName": "OpusName",
+                    "parameterValue": "mssql-python"
+                  },
+                  {
+                    "parameterName": "OpusInfo",
+                    "parameterValue": "http://www.microsoft.com"
+                  },
+                  {
+                    "parameterName": "FileDigest",
+                    "parameterValue": "/fd \"SHA256\""
+                  },
+                  {
+                    "parameterName": "PageHash",
+                    "parameterValue": "/NPH"
+                  },
+                  {
+                    "parameterName": "TimeStamp",
+                    "parameterValue": "/tr \"http://rfc3161.gtm.corp.microsoft.com/TSS/HttpTspServer\" /td sha256"
+                  }
+                ],
+                "toolName": "sign",
+                "toolVersion": "1.0"
+              },
+              {
+                "keyCode": "CP-230012",
+                "operationSetCode": "SigntoolVerify",
+                "parameters": [],
+                "toolName": "sign",
+                "toolVersion": "1.0"
+              }
+            ]
   
-  # Actual ESRP signing task
-  # NOTE: Replace 'EsrpSigning@x.x.x' with the actual ESRP task from your organization
-  - task: EsrpCodeSigning@2
-    displayName: 'ESRP Code Signing - ${{ parameters.artifactType }}'
-    inputs:
-      ConnectedServiceName: '${{ parameters.esrpConnectedServiceName }}'
-      FolderPath: '${{ parameters.signPath }}'
-      Pattern: |
-        ${{ if eq(parameters.artifactType, 'dll') }}:
-          **/*.pyd
-          **/*.so
-          **/*.dylib
-        ${{ if eq(parameters.artifactType, 'pkg') }}:
-          **/*.whl
-          **/*.nupkg
-      signConfigType: 'inlineSignParams'
-      inlineOperation: |
-        [
-          {
-            "KeyCode": "${{ parameters.authSignCertName }}",
-            "OperationCode": "$(ESRP_OPERATION)",
-            "Parameters": {},
-            "ToolName": "sign",
-            "ToolVersion": "1.0"
-          }
-        ]
-      SessionTimeout: '60'
-      MaxConcurrency: '50'
-      MaxRetryAttempts: '5'
-    env:
-      AZURE_CLIENT_ID: ${{ parameters.appRegistrationClientId }}
-      AZURE_TENANT_ID: ${{ parameters.appRegistrationTenantId }}
-      AZURE_KEYVAULT_NAME: ${{ parameters.authAkvName }}
+  # Sign Python wheel files (.whl)
+  - ${{ if eq(parameters.artifactType, 'whl') }}:
+      - task: EsrpMalwareScanning@5
+        displayName: 'ESRP MalwareScanning - Python Wheels'
+        inputs:
+          ConnectedServiceName: '${{ parameters.esrpConnectedServiceName }}'
+          AppRegistrationClientId: '${{ parameters.appRegistrationClientId }}'
+          AppRegistrationTenantId: '${{ parameters.appRegistrationTenantId }}'
+          EsrpClientId: '${{ parameters.esrpClientId }}'
+          UseMSIAuthentication: true
+          FolderPath: '${{ parameters.signPath }}'
+          Pattern: '*.whl'
+          CleanupTempStorage: 1
+          VerboseLogin: 1
+      
+      - task: EsrpCodeSigning@5
+        displayName: 'ESRP CodeSigning - Python Wheels'
+        inputs:
+          ConnectedServiceName: '${{ parameters.esrpConnectedServiceName }}'
+          AppRegistrationClientId: '${{ parameters.appRegistrationClientId }}'
+          AppRegistrationTenantId: '${{ parameters.appRegistrationTenantId }}'
+          EsrpClientId: '${{ parameters.esrpClientId }}'
+          UseMSIAuthentication: true
+          AuthAKVName: '${{ parameters.authAkvName }}'
+          AuthSignCertName: '${{ parameters.authSignCertName }}'
+          FolderPath: '${{ parameters.signPath }}'
+          Pattern: '*.whl'
+          signConfigType: inlineSignParams
+          inlineOperation: |
+            [
+              {
+                "keyCode": "CP-401405",
+                "operationSetCode": "NuGetSign",
+                "parameters": [],
+                "toolName": "sign",
+                "toolVersion": "1.0"
+              },
+              {
+                "keyCode": "CP-401405",
+                "operationSetCode": "NuGetVerify",
+                "parameters": [],
+                "toolName": "sign",
+                "toolVersion": "1.0"
+              }
+            ]
   
   - script: |
       echo "Signed files in: ${{ parameters.signPath }}"
-      ls -R "${{ parameters.signPath }}" || dir /s "${{ parameters.signPath }}"
+      if [ -d "${{ parameters.signPath }}" ]; then
+        find "${{ parameters.signPath }}" -type f \( -name "*.whl" -o -name "*.pyd" -o -name "*.dll" -o -name "*.so" -o -name "*.dylib" \) -ls
+      else
+        dir /s "${{ parameters.signPath }}"
+      fi
     displayName: 'List signed files'
     condition: succeededOrFailed()

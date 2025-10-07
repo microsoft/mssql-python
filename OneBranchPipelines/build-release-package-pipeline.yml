@@ -1,0 +1,229 @@
+################################################################################
+# Licensed to the .NET Foundation under one or more agreements.
+# The .NET Foundation licenses this file to you under the MIT license.
+# See the LICENSE file in the project root for more information.
+################################################################################
+
+# OneBranch Pipeline for mssql-python
+# Builds Python wheels for Windows, macOS, and Linux with security compliance
+
+name: $(Year:YY)$(DayOfYear)$(Rev:.r)
+
+# Pipeline triggers
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+
+# Schedule the pipeline to run on main branch daily at 07:00 AM IST
+schedules:
+  - cron: "30 1 * * *"
+    displayName: Daily run at 07:00 AM IST
+    branches:
+      include:
+        - main
+    always: true
+
+# Parameters for pipeline behavior
+parameters:
+  - name: oneBranchType
+    displayName: 'OneBranch Template Type'
+    type: string
+    values:
+      - 'Official'
+      - 'NonOfficial'
+    default: 'NonOfficial'
+
+  - name: buildConfiguration
+    displayName: 'Build Configuration'
+    type: string
+    values:
+      - 'Release'
+      - 'Debug'
+    default: 'Release'
+
+  - name: publishSymbols
+    displayName: 'Publish Debug Symbols'
+    type: boolean
+    default: true
+
+  - name: runSdlTasks
+    displayName: 'Run SDL Security Tasks'
+    type: boolean
+    default: true
+
+  - name: signingEnabled
+    displayName: 'Enable Code Signing (ESRP)'
+    type: boolean
+    default: true
+
+  - name: packageVersion
+    displayName: 'Package Version (e.g., 0.13.0)'
+    type: string
+    default: '0.13.0'
+
+# Variable templates
+variables:
+  # Set package version from parameter
+  - name: PACKAGE_VERSION
+    value: '${{ parameters.packageVersion }}'
+    readonly: true
+  # Set package version from parameter
+  - name: PACKAGE_VERSION
+    value: '${{ parameters.packageVersion }}'
+    readonly: true
+  
+  # Alias for SDL tools (compile-time)
+  - name: packageVersion
+    value: '${{ parameters.packageVersion }}'
+    readonly: true
+  
+  - template: /OneBranchPipelines/variables/common-variables.yml@self
+  - template: /OneBranchPipelines/variables/onebranch-variables.yml@self
+  - template: /OneBranchPipelines/variables/build-variables.yml@self
+  - template: /OneBranchPipelines/variables/signing-variables.yml@self
+  - template: /OneBranchPipelines/variables/symbol-variables.yml@self
+    # Variable groups
+  - group: 'ESRP Federated Creds (AME)'  # Contains ESRP signing credentials
+
+# OneBranch resources
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: 'OneBranch.Pipelines/GovernedTemplates'
+      ref: 'refs/heads/main'
+
+# Extend OneBranch official template
+extends:
+  template: 'v2/OneBranch.${{ parameters.oneBranchType }}.CrossPlat.yml@templates'
+
+  parameters:
+    # Feature flags
+    featureFlags:
+      WindowsHostVersion:
+        Version: '2022'
+
+    # Global SDL Configuration
+    # See: https://aka.ms/obpipelines/sdl
+    globalSdl:
+      # ApiScan - Scans APIs for security vulnerabilities
+      apiscan:
+        enabled: ${{ parameters.runSdlTasks }}
+        softwareFolder: '${{ variables.apiScanDllPath }}'
+        softwareName: 'mssql-python'
+        softwareVersionNum: '${{ variables.packageVersion }}'
+        symbolsFolder: '${{ variables.apiScanPdbPath }}'
+
+      # Armory - Security scanning for binaries
+      armory:
+        enabled: ${{ parameters.runSdlTasks }}
+        break: true
+
+      # AsyncSdl - Asynchronous SDL tasks
+      asyncSdl:
+        enabled: false
+
+      # BinSkim - Binary analyzer for security issues
+      binskim:
+        enabled: ${{ parameters.runSdlTasks }}
+        break: true
+
+      # CodeInspector - Source code security analysis
+      codeinspector:
+        enabled: ${{ parameters.runSdlTasks }}
+        logLevel: Error
+
+      # CodeQL - Semantic code analysis
+      codeql:
+        enabled: ${{ parameters.runSdlTasks }}
+        language: 'python,cpp'
+        sourceRoot: '$(REPO_ROOT)'
+        querySuite: security-extended
+
+      # CredScan - Scans for credentials in code
+      credscan:
+        enabled: ${{ parameters.runSdlTasks }}
+        suppressionsFile: '$(REPO_ROOT)/.config/CredScanSuppressions.json'
+      
+      # ESLint - JavaScript/TypeScript specific, not applicable for Python
+      eslint:
+        enabled: false
+
+      # PoliCheck - Checks for politically incorrect terms
+      policheck:
+        enabled: ${{ parameters.runSdlTasks }}
+        break: true
+        exclusionFile: '$(REPO_ROOT)/.config/PolicheckExclusions.xml'
+
+      # Roslyn Analyzers - .NET-specific, not applicable for Python
+      roslyn:
+        enabled: false
+
+      # Publish SDL logs
+      publishLogs:
+        enabled: ${{ parameters.runSdlTasks }}
+
+      # SBOM - Software Bill of Materials
+      sbom:
+        enabled: ${{ parameters.runSdlTasks }}
+        packageName: 'mssql-python'
+        packageVersion: '${{ variables.packageVersion }}'
+
+      # TSA - Threat and Security Assessment (Official builds only)
+      tsa:
+        enabled: ${{ and(eq(parameters.oneBranchType, 'Official'), parameters.runSdlTasks) }}
+        configFile: '$(REPO_ROOT)/.config/tsaoptions.json'
+
+    # Pipeline stages
+    stages:
+      - stage: Build
+        displayName: 'Build Python Wheels'
+        jobs:
+          # Windows builds
+          - template: /OneBranchPipelines/jobs/build-windows-job.yml@self
+            parameters:
+              oneBranchType: '${{ parameters.oneBranchType }}'
+              signingEnabled: '${{ parameters.signingEnabled }}'
+              buildConfiguration: '${{ parameters.buildConfiguration }}'
+
+          # macOS builds
+          - template: /OneBranchPipelines/jobs/build-macos-job.yml@self
+            parameters:
+              oneBranchType: '${{ parameters.oneBranchType }}'
+              signingEnabled: '${{ parameters.signingEnabled }}'
+              buildConfiguration: '${{ parameters.buildConfiguration }}'
+
+          # Linux builds
+          - template: /OneBranchPipelines/jobs/build-linux-job.yml@self
+            parameters:
+              oneBranchType: '${{ parameters.oneBranchType }}'
+              signingEnabled: '${{ parameters.signingEnabled }}'
+              buildConfiguration: '${{ parameters.buildConfiguration }}'
+
+      # Optional: Symbol Publishing Stage (Official builds only)
+      - ${{ if and(eq(parameters.oneBranchType, 'Official'), eq(parameters.publishSymbols, true)) }}:
+          - stage: PublishSymbols
+            displayName: 'Publish Debug Symbols'
+            dependsOn: Build
+            condition: succeeded()
+            jobs:
+              - job: PublishSymbolsJob
+                displayName: 'Publish Symbols to Symbol Server'
+                pool:
+                  type: windows
+                steps:
+                  - task: PublishSymbols@2
+                    displayName: 'Publish Symbols'
+                    inputs:
+                      SymbolsFolder: '$(ob_outputDirectory)/symbols'
+                      SearchPattern: '**/*.pdb'
+                      IndexSources: false
+                      PublishSymbols: true
+                      SymbolServerType: 'TeamServices'
+                      SymbolsArtifactName: 'mssql-python-symbols'
