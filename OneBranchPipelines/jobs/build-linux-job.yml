@@ -17,7 +17,9 @@ jobs:
   - job: BuildLinuxWheels
     displayName: 'Build Linux Wheels'
     pool:
-      type: linux
+      name: ODBC-1ES-LINUX-TEST
+      demands:
+      - imageOverride -equals ODBC-1ES-AP-UB2204
     timeoutInMinutes: 120
     
     strategy:
@@ -73,32 +75,24 @@ jobs:
           ls -l docker
           export PATH=$PATH:`pwd`/docker
           echo "================================="
+          sudo apt install cgroupfs-mount
+          sudo cgroupfs-mount
           pwd
           
-          # Start dockerd in background - use absolute path
-          DOCKER_PATH=$(pwd)/docker
-          sudo sh -c "export PATH=\$PATH:$DOCKER_PATH; nohup $DOCKER_PATH/dockerd -H unix:///var/run/docker.sock > docker.log 2>&1" &
+          sudo sh -c 'export PATH=$PATH:`pwd`/docker;nohup dockerd -H unix:///var/run/docker.sock > docker.log 2>&1' &
           sleep 15
-          
           ls -l /var/run/docker.sock
           sudo chmod 666 /var/run/docker.sock
           ls -l /var/run/docker.sock
           
-          # Verify Docker works
-          $DOCKER_PATH/docker --version
-          $DOCKER_PATH/docker info
-          
+          echo "----------- Docker version and info ---------------"
+          docker/docker --version
+          docker/docker info
           echo "==========================================="
         displayName: 'Setup and start Docker daemon'
       
-      # Verify Docker is available via service
       - script: |
-          echo "Checking Docker availability..."
-          docker --version
-          docker info
-        displayName: 'Verify Docker availability'
-      
-      - script: |
+          export PATH=$PATH:`pwd`/docker
           docker run --rm --privileged tonistiigi/binfmt --install all
         displayName: 'Enable QEMU (for aarch64)'
       
@@ -109,6 +103,7 @@ jobs:
         displayName: 'Prepare artifact directories'
       
       - script: |
+          export PATH=$PATH:`pwd`/docker
           docker run -d --name build-$(LINUX_TAG)-$(ARCH) \
             --platform $(DOCKER_PLATFORM) \
             -v $(Build.SourcesDirectory):/workspace \
@@ -119,6 +114,7 @@ jobs:
       
       - script: |
           set -euxo pipefail
+          export PATH=$PATH:`pwd`/docker
           if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
             docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc '
               set -euxo pipefail
@@ -145,6 +141,7 @@ jobs:
       
       - script: |
           set -euxo pipefail
+          export PATH=$PATH:`pwd`/docker
           if [[ "$(LINUX_TAG)" == "manylinux" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
           docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
           
@@ -180,6 +177,7 @@ jobs:
       
       - script: |
           set -euxo pipefail
+          export PATH=$PATH:`pwd`/docker
           docker cp build-$(LINUX_TAG)-$(ARCH):/workspace/dist/. "$(ob_outputDirectory)/wheels/" || echo "No wheels"
           
           mkdir -p "$(ob_outputDirectory)/bindings/$(LINUX_TAG)-$(ARCH)"
@@ -194,6 +192,7 @@ jobs:
         displayName: 'Copy artifacts to host'
       
       - script: |
+          export PATH=$PATH:`pwd`/docker
           docker stop build-$(LINUX_TAG)-$(ARCH) || true
           docker rm build-$(LINUX_TAG)-$(ARCH) || true
         displayName: 'Cleanup container'
