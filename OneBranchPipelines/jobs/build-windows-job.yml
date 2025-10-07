@@ -76,6 +76,7 @@ jobs:
           architecture: '$(architecture)'
           addToPath: true
           disableDownloadFromRegistry: false
+          disableAutomaticUpgrade: true
         displayName: 'Use Python $(pythonVersion) ($(architecture))'
         continueOnError: false
       

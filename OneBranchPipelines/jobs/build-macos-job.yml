@@ -49,6 +49,7 @@ jobs:
           versionSpec: '$(pythonVersion)'
           addToPath: true
           disableDownloadFromRegistry: false
+          disableAutomaticUpgrade: true
         displayName: 'Use Python $(pythonVersion) (Universal2)'
         continueOnError: false
       
