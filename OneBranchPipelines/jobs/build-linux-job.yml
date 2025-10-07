@@ -17,9 +17,9 @@ jobs:
   - job: BuildLinuxWheels
     displayName: 'Build Linux Wheels'
     pool:
-      name: ODBC-1ES-LINUX-TEST
+      name: ADO-1ES-Pool
       demands:
-      - imageOverride -equals ODBC-1ES-AP-UB2204
+      - imageOverride -equals ADO-UB22-SQL22
     timeoutInMinutes: 120
     
     strategy:
