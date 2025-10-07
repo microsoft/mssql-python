@@ -406,19 +406,6 @@ class Cursor:
                     False,
                 )
                 
-            try:
-                val = uuid.UUID(param)
-                parameters_list[i] = val.bytes_le
-                return (
-                    ddbc_sql_const.SQL_GUID.value,
-                    ddbc_sql_const.SQL_C_GUID.value,
-                    16,
-                    0,
-                    False
-                )
-            except ValueError:
-                pass
-
             # String mapping logic here
             is_unicode = self._is_unicode_string(param)
 
@@ -1660,6 +1647,7 @@ class Cursor:
                 # Use auto-detection for columns without explicit types
                 column = [row[col_index] for row in seq_of_parameters] if hasattr(seq_of_parameters, '__getitem__') else []
                 sample_value, min_val, max_val = self._compute_column_type(column)
+
                 dummy_row = list(sample_row)
                 paraminfo = self._create_parameter_types_list(
                     sample_value, param_info, dummy_row, col_index, min_val=min_val, max_val=max_val
@@ -1779,6 +1767,10 @@ class Cursor:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
             
             if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                # No more data available
+                if self._next_row_index == 0 and self.description is not None:
+                    # This is an empty result set, set rowcount to 0
+                    self.rowcount = 0
                 return None
             
             # Update internal position after successful fetch
@@ -1787,6 +1779,8 @@ class Cursor:
                 self._next_row_index += 1
             else:
                 self._increment_rownumber()
+
+            self.rowcount = self._next_row_index
             
             # Create and return a Row object, passing column name map if available
             column_map = getattr(self, '_column_name_map', None)
@@ -1834,6 +1828,12 @@ class Cursor:
                 # advance counters by number of rows actually returned
                 self._next_row_index += len(rows_data)
                 self._rownumber = self._next_row_index - 1
+
+            # Centralize rowcount assignment after fetch
+            if len(rows_data) == 0 and self._next_row_index == 0:
+                self.rowcount = 0
+            else:
+                self.rowcount = self._next_row_index
             
             # Convert raw data to Row objects
             column_map = getattr(self, '_column_name_map', None)
@@ -1870,6 +1870,12 @@ class Cursor:
             if rows_data and self._has_result_set:
                 self._next_row_index += len(rows_data)
                 self._rownumber = self._next_row_index - 1
+
+            # Centralize rowcount assignment after fetch
+            if len(rows_data) == 0 and self._next_row_index == 0:
+                self.rowcount = 0
+            else:
+                self.rowcount = self._next_row_index
             
             # Convert raw data to Row objects
             column_map = getattr(self, '_column_name_map', None)
