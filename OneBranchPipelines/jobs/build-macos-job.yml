@@ -17,7 +17,7 @@ jobs:
   - job: BuildMacOSWheels
     displayName: 'Build macOS Wheels'
     pool:
-      vmImage: 'macOS-14'
+      type: macOS
     
     strategy:
       matrix:
@@ -40,6 +40,8 @@ jobs:
     
     variables:
       ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+      # OneBranch requires a container image - using standard macOS container
+      MacOSContainerImage: 'onebranch.azurecr.io/macos/monterey:latest'
     
     steps:
       - task: UsePythonVersion@0
