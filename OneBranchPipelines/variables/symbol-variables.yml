@@ -1,12 +1,6 @@
-#################################################################################
-# Licensed to the .NET Foundation under one or more agreements.
-# The .NET Foundation licenses this file to you under the MIT license.
-# See the LICENSE file in the project root for more information.
-#################################################################################
-
 # Symbol Publishing Variables
 # These variables configure where debug symbols (.pdb files) are published
-# Required variable group: 'symbol-publishing-variables' or 'build-secrets'
+# Required variable group: 'build-secrets'
 variables:
   # Azure subscription for symbol publishing
   - name: SymbolsAzureSubscription

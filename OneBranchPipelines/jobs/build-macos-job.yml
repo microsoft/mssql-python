@@ -1,9 +1,3 @@
-#################################################################################
-# Licensed to the .NET Foundation under one or more agreements.
-# The .NET Foundation licenses this file to you under the MIT license.
-# See the LICENSE file in the project root for more information.
-#################################################################################
-
 # macOS Build Job Template
 # Builds Python wheels and native bindings for macOS (universal2: x86_64 + ARM64)
 parameters:
@@ -131,7 +125,7 @@ jobs:
       
       # ESRP Code Signing (Official builds only)
       - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
-          - template: ../steps/compound-esrp-code-signing-step.yml@self
+          - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
             parameters:
               appRegistrationClientId: '$(SigningAppRegistrationClientId)'
               appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
@@ -142,11 +136,11 @@ jobs:
               esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
               signPath: '$(ob_outputDirectory)/bindings/macOS'
           
-          - template: ../steps/compound-esrp-code-signing-step.yml@self
+          - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
             parameters:
               appRegistrationClientId: '$(SigningAppRegistrationClientId)'
               appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
-              artifactType: 'pkg'
+              artifactType: 'whl'
               authAkvName: '$(SigningAuthAkvName)'
               authSignCertName: '$(SigningAuthSignCertName)'
               esrpClientId: '$(SigningEsrpClientId)'
