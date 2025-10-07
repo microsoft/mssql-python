@@ -18,6 +18,9 @@ jobs:
     displayName: 'Build Windows Wheels'
     pool:
       type: windows
+      isCustom: true
+      name: Django-1ES-pool
+      vmImage: WIN22-SQL22
     
     strategy:
       matrix:
