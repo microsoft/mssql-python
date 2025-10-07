@@ -130,43 +130,41 @@ jobs:
       
       - script: |
           set -euxo pipefail
-          export PATH=$PATH:`pwd`/docker
           if [[ "$(LINUX_TAG)" == "manylinux" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
           docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
           
           for PYBIN in cp310 cp311 cp312 cp313; do
             echo "=== Building for $PYBIN on $(LINUX_TAG)/$(ARCH) ==="
             if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
-              docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc "
+              docker exec -e PYBIN=$PYBIN build-$(LINUX_TAG)-$(ARCH) bash -lc '
                 set -euxo pipefail;
-                PY=/opt/python/\${PYBIN}-\${PYBIN}/bin/python;
-                test -x \$PY || { echo 'Python \$PY missing'; exit 0; };
-                ln -sf \$PY /usr/local/bin/python;
-                python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -U pip setuptools wheel pybind11 || python -m pip install -U pip setuptools wheel pybind11;
+                PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
+                test -x $PY || { echo "Python $PY missing"; exit 0; };
+                ln -sf $PY /usr/local/bin/python;
+                python -m pip install -U pip setuptools wheel pybind11;
                 cd /workspace/mssql_python/pybind;
                 bash build.sh;
                 cd /workspace;
                 python setup.py bdist_wheel;
-              "
+              '
             else
-              docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc "
+              docker exec -e PYBIN=$PYBIN build-$(LINUX_TAG)-$(ARCH) sh -lc '
                 set -euxo pipefail;
-                PY=/opt/python/\${PYBIN}-\${PYBIN}/bin/python;
-                test -x \$PY || { echo 'Python \$PY missing'; exit 0; };
-                ln -sf \$PY /usr/local/bin/python;
-                python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -U pip setuptools wheel pybind11 || python -m pip install -U pip setuptools wheel pybind11;
+                PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
+                test -x $PY || { echo "Python $PY missing"; exit 0; };
+                ln -sf $PY /usr/local/bin/python;
+                python -m pip install -U pip setuptools wheel pybind11;
                 cd /workspace/mssql_python/pybind;
                 bash build.sh;
                 cd /workspace;
                 python setup.py bdist_wheel;
-              "
+              '
             fi
           done
         displayName: 'Build wheels for Python 3.10-3.13'
       
       - script: |
           set -euxo pipefail
-          export PATH=$PATH:`pwd`/docker
           docker cp build-$(LINUX_TAG)-$(ARCH):/workspace/dist/. "$(ob_outputDirectory)/wheels/" || echo "No wheels"
           
           mkdir -p "$(ob_outputDirectory)/bindings/$(LINUX_TAG)-$(ARCH)"
@@ -181,7 +179,6 @@ jobs:
         displayName: 'Copy artifacts to host'
       
       - script: |
-          export PATH=$PATH:`pwd`/docker
           docker stop build-$(LINUX_TAG)-$(ARCH) || true
           docker rm build-$(LINUX_TAG)-$(ARCH) || true
         displayName: 'Cleanup container'
