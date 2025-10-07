@@ -40,6 +40,8 @@ jobs:
     
     variables:
       ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+      # Disable OneBranch automatic container initialization - we run directly on macOS host
+      MacOSContainerImage: ''
     
     steps:
       - task: UsePythonVersion@0

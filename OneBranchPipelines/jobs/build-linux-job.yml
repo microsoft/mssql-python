@@ -45,6 +45,8 @@ jobs:
     
     variables:
       ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+      # Disable OneBranch automatic container initialization - we manage Docker manually
+      LinuxContainerImage: ''
     
     steps:
       - checkout: self
