@@ -57,25 +57,45 @@ jobs:
           if command -v docker &> /dev/null; then
             echo "Docker is already installed"
             docker --version
-            exit 0
-          fi
-          
-          # Install Docker manually without systemd
-          echo "Installing Docker..."
-          curl -fsSL https://get.docker.com -o get-docker.sh
-          sudo sh get-docker.sh || true
-          
-          # Try to start dockerd manually in background if systemctl is not available
-          if ! command -v systemctl &> /dev/null; then
-            echo "systemd not available, starting dockerd manually"
-            sudo dockerd > /tmp/dockerd.log 2>&1 &
-            sleep 5
           else
-            sudo systemctl start docker || true
+            # Install Docker manually without systemd
+            echo "Installing Docker..."
+            curl -fsSL https://get.docker.com -o get-docker.sh
+            sudo sh get-docker.sh || true
           fi
           
-          # Verify Docker is running
-          docker --version
+          # Check if dockerd is running
+          if ! sudo docker info &> /dev/null; then
+            echo "Docker daemon not running, starting it..."
+            
+            # Start dockerd in background
+            sudo dockerd --host=unix:///var/run/docker.sock > /tmp/dockerd.log 2>&1 &
+            DOCKERD_PID=$!
+            echo "Started dockerd with PID $DOCKERD_PID"
+            
+            # Wait for Docker daemon to be ready (up to 30 seconds)
+            for i in {1..30}; do
+              if sudo docker info &> /dev/null; then
+                echo "Docker daemon is ready!"
+                break
+              fi
+              echo "Waiting for Docker daemon... ($i/30)"
+              sleep 1
+            done
+            
+            # Final check
+            if ! sudo docker info &> /dev/null; then
+              echo "Docker daemon failed to start. Logs:"
+              cat /tmp/dockerd.log || true
+              exit 1
+            fi
+          else
+            echo "Docker daemon is already running"
+          fi
+          
+          # Verify Docker is working
+          sudo docker --version
+          sudo docker info
         displayName: 'Install/Verify Docker'
       
       - script: |
@@ -89,7 +109,7 @@ jobs:
         displayName: 'Prepare artifact directories'
       
       - script: |
-          docker run -d --name build-$(LINUX_TAG)-$(ARCH) \
+          sudo docker run -d --name build-$(LINUX_TAG)-$(ARCH) \
             --platform $(DOCKER_PLATFORM) \
             -v $(Build.SourcesDirectory):/workspace \
             -w /workspace \
@@ -100,7 +120,7 @@ jobs:
       - script: |
           set -euxo pipefail
           if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
-            docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc '
+            sudo docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc '
               set -euxo pipefail
               if command -v dnf >/dev/null 2>&1; then
                 dnf -y update || true
@@ -113,7 +133,7 @@ jobs:
               cmake --version || true
             '
           else
-            docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc '
+            sudo docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc '
               set -euxo pipefail
               apk update || true
               apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs keyutils-libs ccache || true
@@ -126,12 +146,12 @@ jobs:
       - script: |
           set -euxo pipefail
           if [[ "$(LINUX_TAG)" == "manylinux" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
-          docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
+          sudo docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
           
           for PYBIN in cp310 cp311 cp312 cp313; do
             echo "=== Building for $PYBIN on $(LINUX_TAG)/$(ARCH) ==="
             if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
-              docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc "
+              sudo docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc "
                 set -euxo pipefail;
                 PY=/opt/python/\${PYBIN}-\${PYBIN}/bin/python;
                 test -x \$PY || { echo 'Python \$PY missing'; exit 0; };
@@ -143,7 +163,7 @@ jobs:
                 python setup.py bdist_wheel;
               "
             else
-              docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc "
+              sudo docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc "
                 set -euxo pipefail;
                 PY=/opt/python/\${PYBIN}-\${PYBIN}/bin/python;
                 test -x \$PY || { echo 'Python \$PY missing'; exit 0; };
@@ -160,22 +180,22 @@ jobs:
       
       - script: |
           set -euxo pipefail
-          docker cp build-$(LINUX_TAG)-$(ARCH):/workspace/dist/. "$(ob_outputDirectory)/wheels/" || echo "No wheels"
+          sudo docker cp build-$(LINUX_TAG)-$(ARCH):/workspace/dist/. "$(ob_outputDirectory)/wheels/" || echo "No wheels"
           
           mkdir -p "$(ob_outputDirectory)/bindings/$(LINUX_TAG)-$(ARCH)"
-          docker exec build-$(LINUX_TAG)-$(ARCH) $([[ "$(LINUX_TAG)" == "manylinux" ]] && echo bash -lc || echo sh -lc) '
+          sudo docker exec build-$(LINUX_TAG)-$(ARCH) $([[ "$(LINUX_TAG)" == "manylinux" ]] && echo bash -lc || echo sh -lc) '
             OUT="/tmp/ddbc-out";
             rm -rf "$OUT"; mkdir -p "$OUT";
             find /workspace/mssql_python -maxdepth 1 -type f -name "*.so" -exec cp -v {} "$OUT"/ \; || true
           '
           
-          docker cp "build-$(LINUX_TAG)-$(ARCH):/tmp/ddbc-out/." \
+          sudo docker cp "build-$(LINUX_TAG)-$(ARCH):/tmp/ddbc-out/." \
             "$(ob_outputDirectory)/bindings/$(LINUX_TAG)-$(ARCH)/" || echo "No .so files"
         displayName: 'Copy artifacts to host'
       
       - script: |
-          docker stop build-$(LINUX_TAG)-$(ARCH) || true
-          docker rm build-$(LINUX_TAG)-$(ARCH) || true
+          sudo docker stop build-$(LINUX_TAG)-$(ARCH) || true
+          sudo docker rm build-$(LINUX_TAG)-$(ARCH) || true
         displayName: 'Cleanup container'
         condition: always()
       
