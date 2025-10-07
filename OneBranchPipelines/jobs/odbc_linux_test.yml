@@ -1,0 +1,948 @@
+schedules:
+- cron: "0 7 */1 * *"
+  displayName: Run every 24 hours
+  always: true
+  branches:
+    include:
+    - master
+trigger:
+  enabled: false
+resources:
+  containers:
+  - container: windows_build_container
+    image: $(WindowsContainerImage)
+    localImage: false
+    mapDockerSocket: false
+    mountReadOnly:
+      externals: true
+    volumes:
+    - c:\obtools_host:c:\obtools_container:ro
+    env:
+      Use_Isolation: true
+  - container: windows_build_container2
+    image: $(WindowsContainerImage2)
+    localImage: false
+    mapDockerSocket: false
+    mountReadOnly:
+      externals: true
+    volumes:
+    - c:\obtools_host:c:\obtools_container:ro
+    env:
+      Use_Isolation: true
+  - container: linux_build_container
+    image: $(LinuxContainerImage)
+    localImage: false
+    mapDockerSocket: false
+    mountReadOnly:
+      externals: true
+    volumes:
+    - $(Agent.WorkFolder)/telemetry:/__w/telemetry:rw
+    - /cache/obtools_host:/cache/obtools_container:ro
+  - container: linux_build_container2
+    image: $(LinuxContainerImage2)
+    localImage: false
+    mapDockerSocket: false
+    mountReadOnly:
+      externals: true
+    volumes:
+    - $(Agent.WorkFolder)/telemetry:/__w/telemetry:rw
+    - /cache/obtools_host:/cache/obtools_container:ro
+  - container: windows_onebranch_container
+    image: 'onebranch.azurecr.io/windows/ltsc/sdl:latest'
+    volumes:
+    - c:\obtools_host:c:\obtools_container:rw
+    - c:\ob_dotnet:c:\__t\dotnet:rw
+    - c:\ob_gdn\gdn:c:\__w\_gdn\gdn:rw
+    - c:\ob_gdn\packages:c:\__w\_gdn\packages:rw
+    env:
+      Use_Isolation: true
+  - container: windows_onebranch_container_signing
+    image: 'onebranch.azurecr.io/windows/ltsc/sdl:latest'
+    volumes:
+    - c:\obtools_host:c:\obtools_container:rw
+    - c:\ob_dotnet:c:\__t\dotnet:rw
+    - c:\ob_gdn\gdn:c:\__w\_gdn\gdn:rw
+    - c:\ob_gdn\packages:c:\__w\_gdn\packages:rw
+    env:
+      Use_Isolation: true
+  - container: linux_onebranch_container
+    image: 'mcr.microsoft.com/onebranch/azurelinux/build:3.0'
+    volumes:
+    - $(Agent.WorkFolder)/telemetry:/__w/telemetry:rw
+    - /cache/obtools_host:/cache/obtools_container:rw
+  - container: linux_onebranch_signing_container
+    image: 'mcr.microsoft.com/onebranch/azurelinux/build:3.0'
+    volumes:
+    - $(Agent.WorkFolder)/telemetry:/__w/telemetry:rw
+    - /cache/obtools_host:/cache/obtools_container:rw
+  - container: linux_arm64_onebranch_container
+    image: 'mcr.microsoft.com/onebranch/azurelinux/build:3.0'
+    volumes:
+    - $(Agent.WorkFolder)/telemetry:/__w/telemetry:rw
+    - /cache/obtools_host:/cache/obtools_container:rw
+  - container: linux_arm64_onebranch_signing_container
+    image: 'mcr.microsoft.com/onebranch/azurelinux/build:3.0'
+    volumes:
+    - $(Agent.WorkFolder)/telemetry:/__w/telemetry:rw
+    - /cache/obtools_host:/cache/obtools_container:rw
+  repositories:
+  - repository: 1escoretemplates
+    type: git
+    name: '1ESPipelineTemplates/1ESPipelineTemplates'
+    ref: 'refs/tags/stable'
+  - repository: obcoretemplates
+    type: git
+    name: 'OneBranch.Pipelines/GovernedTemplates'
+    ref: 'refs/heads/main'
+  - repository: templates
+    type: git
+    name: OneBranch.Pipelines/GovernedTemplates
+    ref: refs/heads/main
+stages:
+- stage: TestPMCConnections
+  displayName: Test PMC Connections
+  dependsOn: []
+  jobs:
+  - job: ReleaseTest
+    displayName: ODBC-Release Test
+    dependsOn: []
+    timeoutInMinutes: 1440
+    pool:
+      name: OneBranchPipelinesV2
+      LinuxHostVersion:
+        SKU: D8
+      Host: linux
+      OS: linux
+    variables:
+    - name: OneESPT
+      value: true
+      readonly: true
+    - name: OneESPT.BuildType
+      value: Unofficial
+      readonly: true
+    - name: OneESPT.OS
+      value: linux
+      readonly: true
+    - name: Codeql.SkipTaskAutoInjection
+      value: true
+    - name: skipComponentGovernanceDetection
+      value: true
+    - name: NUGET_PLUGIN_HANDSHAKE_TIMEOUT_IN_SECONDS
+      value: 60
+    - name: NUGET_PLUGIN_REQUEST_TIMEOUT_IN_SECONDS
+      value: 300
+    - name: LinuxContainerImage
+      value: mcr.microsoft.com/pmc/pmc-cli:latest
+    - name: ob_outputDirectory
+      value: $(Build.ArtifactStagingDirectory)
+    - name: ob_git_checkout
+      value: false
+    - name: CDP_MANAGED_HOST
+      value: true
+      readonly: true
+    - name: CDP_BUILD_TYPE
+      value: Buddy
+      readonly: true
+    - name: IsOfficialBuild
+      value: false
+      readonly: true
+    - name: CDP_DOCKER_HOST_PATH
+      value: /usr/bin/docker
+    - name: CDP_CACHE_OBTOOLS_CONTAINER_PATH
+      value: /cache/obtools_container
+      readonly: true
+    - name: CDP_CACHE_OBTOOLS_HOST_PATH
+      value: /cache/obtools_host
+      readonly: true
+    - name: CDP_SKIP_OFFICIAL_VALIDATION
+      value: false
+      readonly: true
+    - name: ONEBRANCH_PIPELINES
+      value: true
+    - name: AGENT_SKIP_POST_EXECUTION_IF_CONTAINER_STOPPED
+      value: true
+    - name: Codeql.SkipTaskAutoInjection
+      value: true
+    - name: OBBuildType
+      value: Buddy
+    - name: OBSkipOfficialValidation
+      value: false
+    - name: OBValidationSkipServiceTreeVariable
+      value: False
+    - name: OBValidationSkipReddogValidation
+      value: true
+    - name: OBCustomTags
+      value: ''
+    - name: OBValidationServiceEnvironment
+      value: prod
+    - name: PIPELINE_TYPE
+      value: onebranchbuild
+    - name: policy_service.yaml_stage_classification
+      value: nonproduction
+    - name: skipComponentGovernanceDetection
+      value: true
+    - name: enableContainerSecurityByDefault
+      value: true
+    - name: OB_BUILD_CONTAINER_IMAGES
+      value: $(WindowsContainerImage);$(WindowsContainerImage2);$(LinuxContainerImage);$(LinuxContainerImage2)
+    - name: ob_restore_phase_steps
+      value: False
+    - name: ob_after_openssl_signing_steps
+      value: False
+    - name: OneES_PublishLogsArtifactName
+      value: drop_TestPMCConnections_ReleaseTest_sdl_analysis
+    - name: OneES_targetName
+      value: host
+    steps:
+    - task: 1ESGPTRunTask@3.0.501
+      displayName: Validate Hosted Pool Information (1ES PT)
+      continueOnError: false
+      target:
+        container: host
+      env:
+        HOST_ARCHITECTURE: amd64
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+        SYSTEM_DEFINITIONID: $(System.DefinitionId)
+        SYSTEM_COLLECTIONURI: $(System.CollectionUri)
+        SYSTEM_TEAMPROJECT: $(System.TeamProject)
+        SYSTEM_TEAMPROJECTID: $(System.TeamProjectId)
+        BUILD_REPOSITORY_ID: $(Build.Repository.ID)
+        BUILD_REPOSITORY_URI: $(Build.Repository.Uri)
+        OneES_PipelineWorkspace: $(Pipeline.Workspace)
+        PIPELINEGOVERNANCESTATUS_AUDITED: variables['PipelineGovernanceStatus_Audited']
+        PIPELINECLASSIFICATION_AUDITED: variables['PipelineClassification_Audited']
+      inputs:
+        repoId: 6ab471f0-c641-43b7-be8a-9c91fd72b365
+        path: validateHostedPool.ps1
+        useScriptViaFeed: false
+        arguments: -TargetName $(OneES_targetName) -StepTargets ["linux_build_container","host","host","linux_build_container","linux_build_container","host"] -StepsLength 20 -SkipStatelessValidation False -OS linux  -IgnoreProductionPoolCheck  -IsOneBranchPipeline
+    - task: PowerShell@2
+      continueOnError: true
+      env:
+        OBJECTNAME: Job property
+      inputs:
+        targetType: inline
+        script: >
+          foreach ($envVar in [System.Environment]::GetEnvironmentVariables().GetEnumerator()) {
+              if ($envVar.Value -eq "2EAA89F7-029C-43EE-A198-A07C102F73DE") {
+                  Write-Host "##vso[task.logissue type=error] $($env:OBJECTNAME) '$($envVar.Key)' is not allowed, please remove this."
+              }
+          }
+      target:
+        container: host
+      displayName: "\U0001F512 Validating properties"
+    - task: 6d15af64-176c-496d-b583-fd2ae21d4df4@1
+      condition: false
+      inputs:
+        repository: none
+        persistCredentials: False
+      target:
+        container: host
+    - task: onebranch.pipeline.prebuildvalidation@1
+      inputs:
+        cdpBuildType: Buddy
+        skipOfficialValidation: false
+        tagsList: ''
+        skipPoliciesValidation: ''
+      target:
+        container: host
+      displayName: "\U0001F512 PreBuild Validation"
+    - task: onebranch.pipeline.containertelemetry@1
+      continueOnError: false
+      target:
+        container: host
+      displayName: "\U0001F512 Container Telemetry"
+    - task: NuGetAuthenticate@1
+      target:
+        container: host
+      displayName: "\U0001F512 Setup Packages Auth (Host)"
+    - task: NuGetAuthenticate@1
+      target:
+        container: linux_build_container
+      displayName: "\U0001F512 Setup Packages Auth (linux_build_container)"
+    - task: PowerShell@2
+      env:
+        TOKEN: $(system.AccessToken)
+      inputs:
+        targetType: inline
+        script: >
+          Write-Host "##vso[task.setvariable variable=CDP-DEFAULT-CLIENT-PAT;issecret=false]$env:TOKEN"
+
+          break
+      target:
+        container: host
+      displayName: "\U0001F512 Setup Pipeline Secrets"
+    - task: PowerShell@2
+      env:
+        CDP_DEFAULT_CLIENT_PAT: $(CDP-DEFAULT-CLIENT-PAT)
+      inputs:
+        targetType: inline
+        script: >
+          echo "##vso[build.addbuildtag]onebranch_build_os_linux"
+
+          echo "##vso[build.addbuildtag]onebranch_build_template_v2"
+
+          echo "##vso[task.setvariable variable=CDP_DEFAULT_CLIENT_PACKAGE_PAT_MASK;issecret=true]${env:CDP_DEFAULT_CLIENT_PAT}"
+
+          echo "##vso[task.setvariable variable=CDP_DEFAULT_CLIENT_PACKAGE_PAT;issecret=false]${env:CDP_DEFAULT_CLIENT_PAT}"
+
+          echo "##vso[task.setvariable variable=VSS_NUGET_ACCESSTOKEN_MASK;issecret=true]${env:CDP_DEFAULT_CLIENT_PAT}"
+
+          echo "##vso[task.setvariable variable=VSS_NUGET_ACCESSTOKEN;issecret=false]${env:CDP_DEFAULT_CLIENT_PAT}"
+
+          echo "##vso[task.setvariable variable=VSS_NUGET_URI_PREFIXES;issecret=false]${env:VSS_NUGET_URI_PREFIXES};https://pkgs.dev.azure.com/;https://dev.azure.com/;https://msazure.pkgs.visualstudio.com/;https://ossmsft.pkgs.visualstudio.com/;https://microsoft.pkgs.visualstudio.com/;https://devdiv.pkgs.visualstudio.com/;https://msdata.pkgs.visualstudio.com/;https://onebranch.pkgs.visualstudio.com/;https://cloudbuild.pkgs.visualstudio.com/;https://securitytools.pkgs.visualstudio.com/;https://msasg.pkgs.visualstudio.com/;https://msblox.pkgs.visualstudio.com/;https://onebranch.pkgs.visualstudio.com/"
+      target:
+        container: host
+      displayName: "\U0001F512 Setup Pipeline Variables"
+    - task: onebranch.pipeline.toolsinstaller@1
+      inputs:
+        dialtone: false
+        clear_cache: $(ob_toolset_clear_cache)
+      target:
+        container: host
+      displayName: "\U0001F512 Install Pipeline Tools"
+    - task: CmdLine@2
+      inputs:
+        script: >
+          mkdir -p $AGENT_WORKFOLDER/_temp/opensslsigning/signing
+
+          for container in `docker ps -q --filter "name=linux_build_container"`
+
+          do
+            echo "Add well known folders to container: $container"
+            docker exec -t $container ln -s /__w/_temp/opensslsigning/signing /signing || (echo "Failed to add signing symlink" && exit 1)
+            docker exec -t $container ln -s /__w/1/s /source || (echo "Failed to add source symlink" && exit 1)
+          done
+      target:
+        container: host
+      displayName: "\U0001F512 Setup Compatibility"
+    - task: onebranch.pipeline.toolsinstaller@1
+      continueOnError: true
+      inputs:
+        override_tools_only: true
+        overrides: "{\n  \"Tools\": {\n    \"dependencyanalyzer\": {\n      \"windows\": {\n          \"Package\": \"Dependency.Analyzer\",\n          \"Version\": \"1.2.58\",\n          \"PreRelease\": false,\n          \"SubFolder\": \"windows\"\n      },\n      \"linux\": {\n          \"Package\": \"Dependency.Analyzer\",\n          \"Version\": \"1.2.58\",\n          \"PreRelease\": false,\n          \"SubFolder\": \"x64\"\n      },\n      \"linux-arm64\": {\n          \"Package\": \"Dependency.Analyzer\",\n          \"Version\": \"1.2.58\",\n          \"PreRelease\": false,\n          \"SubFolder\": \"arm64\"\n      }\n    }\n  }\n}  \n"
+      target:
+        container: host
+      displayName: "\U0001F512 Setup Dependency Analyzer"
+    - task: Bash@3
+      continueOnError: true
+      inputs:
+        filePath: $(CDP_TOOL_DEPENDENCYANALYZER_PATH)/start.sh
+      target:
+        container: host
+      displayName: "\U0001F512 Start Dependency Analyzer"
+    - task: Bash@3
+      inputs:
+        targetType: inline
+        script: >
+          echo "Linux version..."
+
+          echo "##[command]uname -a"
+
+          uname -a
+
+          echo "##[command]cat /etc/os-release"
+
+          cat /etc/os-release || true
+
+          echo "##[command]cat /etc/issue"
+
+          cat /etc/issue || true
+
+          echo "##[command]env"
+
+          env
+      target:
+        container: linux_build_container
+        commands: restricted
+      displayName: Linux Version (linux_build_container)
+    - task: AzureCLI@2
+      inputs:
+        addSpnToEnvironment: true
+        azureSubscription: ESRP Managed Identity federated auth - AME tenant-msodbcsql
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: >
+          echo "##[command]pmc --base-url https://pmc-ingest.trafficmanager.net/api/v4 --auth-type wif --retries 10 repo list --limit 5"
+
+          pmc --base-url "https://pmc-ingest.trafficmanager.net/api/v4" --auth-type wif --retries 10 repo list --limit 5
+      target:
+        container: linux_build_container
+        commands: restricted
+      displayName: PMC Test (linux_build_container)
+    - task: Bash@3
+      condition: always()
+      continueOnError: true
+      timeoutInMinutes: 5
+      env:
+        I_ENABLE_HASHING: True
+        I_PRINT_CLEAN_FMUSAGE_FILE: False
+      inputs:
+        filePath: $(CDP_TOOL_DEPENDENCYANALYZER_PATH)/stop.sh
+      target:
+        container: host
+      displayName: "\U0001F512 Stop Dependency Analyzer"
+    - task: PowerShell@2
+      condition: always()
+      env:
+        TARGETS_GENERIC: host
+      inputs:
+        targetType: inline
+        script: >
+          try {
+            Write-Host "Inspect Build Containers"
+            & docker ps -q --filter "name=linux_build_container" | foreach { & docker logs --details $_ ; & docker inspect $_  }
+            Write-Host "Inspect Sign Containers"
+            & docker ps -q --filter "name=sign" | foreach { & docker logs --details $_ ; & docker inspect $_  }
+            Write-Host "Inspect Utility Containers"
+            & docker ps -q --filter "name=${env:TARGETS_GENERIC}" | foreach { & docker logs --details $_ ; & docker inspect $_  }
+          } catch {
+            Write-Host "Error happened during docker inspect"
+          }
+
+          & docker ps -q --filter "name=linux_build_container" | foreach { & docker stop $_ }
+
+          & docker ps -q --filter "name=sign" | foreach { & docker stop $_ ; & docker rm $_ }
+
+          & docker ps -q --filter "name=${env:TARGETS_GENERIC}" | foreach { & docker restart $_ }
+      target:
+        container: host
+      displayName: "\U0001F512 Stop Containers"
+    - task: PowerShell@2
+      condition: always()
+      continueOnError: true
+      env:
+        ArtifactsDirPath: $(Build.ArtifactStagingDirectory)
+      inputs:
+        targetType: inline
+        script: >
+          if (-not (Test-Path $env:ArtifactsDirPath)) {
+              Write-Host "Artifacts folder does not exist '$($env:ArtifactsDirPath)'. Creating it..."
+              New-Item -ItemType Directory -Force -Path $env:ArtifactsDirPath | Out-Null
+          }
+      target:
+        container: host
+      displayName: "\U0001F512 Ensure Artifacts Folder exists"
+    - task: onebranch.pipeline.tsaoptions@1
+      continueOnError: true
+      inputs:
+        silentMode: true
+        tsaConfigFilePath: $(Build.SourcesDirectory)/.config/tsaoptions.json
+        tools: ''
+        useProd: true
+        appendSourceBranchName: False
+        useDynamicRouting: False
+      target:
+        container: host
+      displayName: "\U0001F512 OneBranch TSAOptions"
+    - task: onebranch.pipeline.signing@1
+      condition: always()
+      continueOnError: true
+      inputs:
+        command: processlogs
+        copy_logs_destination: $(Agent.TempDirectory)/sign-logs
+      target:
+        container: host
+      displayName: "\U0001F512 Prepare Signing Logs"
+    - task: PowerShell@2
+      condition: not(succeeded())
+      continueOnError: true
+      env:
+        root: $(Build.ArtifactStagingDirectory)
+      inputs:
+        targetType: inline
+        script: >
+          $path = $($env:root).Replace("/", "\")
+
+          New-Item -Path $path -Force -ItemType Directory
+
+          if (-not (Test-Path -Path "$path\.artifactignore")) {
+              "**/*.exe`n**/*.dll`n**/*.sys`n**/*.nupkg`n**/*.zip`n**/*.pdb`n**/*.cat`n**/*.vhd`n**/*.vhdx`n**/*.cspkg" | Out-File -FilePath "$path\.artifactignore" -Encoding ascii
+          }
+      target:
+        container: host
+      displayName: "\U0001F512 Generate artifactignore file"
+    - task: 1ESGPTRunTask@3.0.501
+      displayName: Stop Golang Module Proxy Credential Provider (If Running) (1ES PT)
+      continueOnError: true
+      target:
+        container: host
+      condition: eq(variables['TERRAPIN_GOLANG_CRED_PROVIDER_STARTED'], 'true')
+      env:
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      inputs:
+        repoId: 6ab471f0-c641-43b7-be8a-9c91fd72b365
+        path: golangModuleProxyStartStop.ps1
+        useScriptViaFeed: false
+        arguments: >
+          -action stopIfRunning
+    - task: Cache@2
+      displayName: "Cache Binary Analysis Scan Optimization (1ES PT)"
+      continueOnError: true
+      inputs:
+        key: 1es_pt_binary_analysis | "default" | "version0.0.4" | "$(System.JobId)" | "$(System.PullRequest.PullRequestId)" | "$(Build.BuildId)"
+        restoreKeys: >
+          1es_pt_binary_analysis | "default" | "version0.0.4" | "$(System.JobId)" | "$(System.PullRequest.PullRequestId)"
+
+          1es_pt_binary_analysis | "default" | "version0.0.4" | "$(System.JobId)"
+        path: $(Pipeline.Workspace)/1es_pt_binary_analysis_cache
+        cacheHitVar: 1ESPT_BINARY_ANALYSIS_CACHE_RESTORED
+    - task: 1ESGPTRunTask@3.0.501
+      displayName: SDL Binary Analysis Checks (1ES PT)
+      continueOnError: false
+      target:
+        container: host
+      condition: succeeded()
+      env:
+        SCAN_DIRECTORY: $(Build.ArtifactStagingDirectory)
+        OneES_IncrementalSDLBinaryAnalysis: True
+      inputs:
+        repoId: 6ab471f0-c641-43b7-be8a-9c91fd72b365
+        path: sdlBinaryAnalysisChecks.ps1
+        useScriptViaFeed: false
+        arguments: '-PublishLogsArtifactName drop_TestPMCConnections_ReleaseTest_sdl_analysis  '
+    - task: 1ESGPTRunTask@3.0.501
+      displayName: Run Binary Analysis Scan Optimization (Expand Archives) (1ES PT)
+      continueOnError: false
+      target:
+        container: host
+      condition: and(succeeded(), eq(variables['skipScanDir'], false))
+      env:
+        OneES_ScanDirectory: $(Build.ArtifactStagingDirectory)
+        OneES_SuppressionFile: ''
+        ONEES_EXPANDARCHIVES: True
+      inputs:
+        repoId: 6ab471f0-c641-43b7-be8a-9c91fd72b365
+        path: sdl_scan_optimization/run_sdl_scan_optimization.py
+        useScriptViaFeed: false
+        arguments: >
+          --cache-dir $(Pipeline.Workspace)/1es_pt_binary_analysis_cache --scanning-type binary --tools anti_malware spmi --enable-credscan False --enable-antimalware True --enable-spmi True --enable-defender-for-linux False
+    - task: CmdLine@2
+      displayName: "\U0001F6E1 1ES PT: AntiMalware Linux Scanner (Binary)"
+      env:
+        OneES_AntiMalware_DirectoryToScan: $(OneES_anti_malware_directory)
+      target:
+        container: host
+      condition: and(succeeded(), eq(variables['skipScanDir'], false))
+      inputs:
+        script: >
+          if command -v sudo; then
+            sudo service clamav-freshclam stop
+            sudo freshclam -v --stdout
+          else
+            service clamav-freshclam stop
+            freshclam -v --stdout
+          fi
+
+          EX=$?
+
+          if [ $EX -gt 1 ] ; then
+            echo "##vso[task.logissue type=error;]1ES PT Internal Error: ClamAV anti-malware database update failed per freshclam exit code '$EX'"
+          fi
+
+          if command -v sudo; then
+            sudo service clamav-freshclam start
+          else
+            service clamav-freshclam start
+          fi
+
+
+          mkdir -p $OneES_AntiMalware_DirectoryToScan
+
+          mkdir -p $(Pipeline.Workspace)/_sdt/logs
+
+
+          clamscan --stdout -i --official-db-only=yes -l "$(Pipeline.Workspace)/_sdt/logs/clamscan.log" -r -z --cross-fs=yes --follow-dir-symlinks=2 --follow-file-symlinks=2 --detect-pua=no --phishing-sigs=yes --phishing-scan-urls=yes --heuristic-scan-precedence=yes --phishing-ssl=yes --phishing-cloak=yes --partition-intersection=yes --algorithmic-detection=yes --scan-pe=yes --scan-elf=yes --scan-ole2=yes --scan-pdf=yes --scan-swf=yes --scan-html=yes --scan-xmldocs=yes --scan-hwp3=yes --scan-archive=yes --detect-broken=no --block-encrypted=yes --block-macros=yes --max-filesize=100m --max-scansize=1024m --max-files=10000 --max-recursion=64 --max-dir-recursion=64 --max-embeddedpe=100m --max-htmlnormalize=100m --max-htmlnotags=100m --max-scriptnormalize=100m --max-ziptypercg=10m --max-partitions=64 --max-iconspe=256 --max-rechwp3=32 --pcre-max-filesize=100m --pcre-match-limit=16000 "$(OneES_anti_malware_directory)"
+
+          EX=$?
+
+          if [ $EX != 0 ] ; then
+            echo "##vso[task.logissue type=warning;]1ES PT Warning: Malware scan reported malware was found in '$OneES_AntiMalware_DirectoryToScan' with exit code '$EX'."
+            exit 0
+          fi
+
+          clamscan --stdout -i --official-db-only=yes -l "$(Pipeline.Workspace)/_sdt/logs/clamscan-sdt.log" -r -z --cross-fs=yes --follow-dir-symlinks=2 --follow-file-symlinks=2 --detect-pua=no --phishing-sigs=yes --phishing-scan-urls=yes --heuristic-scan-precedence=yes --phishing-ssl=yes --phishing-cloak=yes --partition-intersection=yes --algorithmic-detection=yes --scan-pe=yes --scan-elf=yes --scan-ole2=yes --scan-pdf=yes --scan-swf=yes --scan-html=yes --scan-xmldocs=yes --scan-hwp3=yes --scan-archive=yes --detect-broken=no --block-encrypted=yes --block-macros=yes --max-filesize=100m --max-scansize=1024m --max-files=10000 --max-recursion=64 --max-dir-recursion=64 --max-embeddedpe=100m --max-htmlnormalize=100m --max-htmlnotags=100m --max-scriptnormalize=100m --max-ziptypercg=10m --max-partitions=64 --max-iconspe=256 --max-rechwp3=32 --pcre-max-filesize=100m --pcre-match-limit=16000 "$(Pipeline.Workspace)/_sdt"
+
+          EX=$?
+
+          if [ $EX != 0 ] ; then
+            echo "##vso[task.logissue type=warning;]1ES PT Warning: Malware scan reported malware was found in '$(Pipeline.Workspace)/_sdt' with exit code '$EX'."
+            exit 0
+          fi
+    - task: PowerShell@2
+      displayName: "\U0001F6E1 Guardian: Check if the path to run Secret Scanning is a directory (1ES PT)"
+      target:
+        container: host
+      condition: and( succeeded(), and(succeeded(), eq(variables['skipScanDir'], false)) )
+      env:
+        OneES_OutputDirectory: $(Build.ArtifactStagingDirectory)
+      inputs:
+        targetType: inline
+        script: |
+          $destination = "$env:OneES_OutputDirectory".Replace("/", "\")
+          if (-not (Test-Path -Path $destination)) {
+            New-Item -Path $destination -Force -ItemType Directory -ErrorAction SilentlyContinue
+          }
+
+          if ((Get-Item $env:OneES_OutputDirectory -Force) -is [System.IO.DirectoryInfo]) {
+            Write-Host "$env:OneES_OutputDirectory is a directory"
+            Write-Host "##vso[task.setvariable variable=OneES_DirectoryToRunScan;issecret=false]$Env:OneES_OutputDirectory"
+          } else {
+            $directory = [System.IO.Path]::GetDirectoryName("$env:OneES_OutputDirectory")
+            Write-Host "$env:OneES_OutputDirectory is a file, will scan the directory $directory instead because CredScan doesn't support scanning single file"
+            Write-Host "##vso[task.setvariable variable=OneES_DirectoryToRunScan;issecret=false]$directory"
+          }
+    - task: 1ESSecretScanning@1
+      displayName: "\U0001F6E1 Guardian: 1ES Secret Scanning on Linux (SPMI)"
+      condition: and( succeeded(), and(succeeded(), eq(variables['skipScanDir'], false)) )
+      continueOnError: true
+      target:
+        container: host
+      inputs:
+        Action: 'analyze'
+        Target: '$(OneES_spmi_directory)/*'
+        TimeoutInSeconds: 300
+        exactToolVersion: 1.2.0
+    - task: PowerShell@2
+      displayName: "\U0001F512 Set Artifacts name suffix"
+      condition: and(succeeded(), eq(variables['skipScanDir'], false))
+      target:
+        container: host
+      continueOnError: true
+      inputs:
+        targetType: inline
+        script: |
+          # Check if logs folder exists
+          $isPresent = Test-Path -Path $(Pipeline.Workspace)/_sdt/logs
+          Write-Host "##vso[task.setvariable variable=IsGuardianLogsPresent]$isPresent"
+          Write-Host "Guardian logs present: $isPresent"
+
+          if ($env:SYSTEM_JOBATTEMPT -gt 1) {
+            Write-Host "##vso[task.setvariable variable=GuardianArtifactNameJobAttemptSuffix]_jobAttempt$($env:SYSTEM_JOBATTEMPT)"
+          } else {
+            Write-Host "##vso[task.setvariable variable=GuardianArtifactNameJobAttemptSuffix]"
+          }
+    - task: PublishPipelineArtifact@1
+      displayName: "\U0001F6E1 Guardian: Publish SDL Logs to Artifacts"
+      target:
+        container: host
+      continueOnError: true
+      inputs:
+        artifactName: $(OneES_PublishLogsArtifactName)$(GuardianArtifactNameJobAttemptSuffix)
+        targetPath: $(Pipeline.Workspace)/_sdt/logs
+      condition: and(and(succeeded(), eq(variables['skipScanDir'], false)), eq(variables['IsGuardianLogsPresent'], 'True'))
+    - task: securedevelopmentteam.vss-secure-development-tools.build-task-postanalysis.PostAnalysis@2
+      displayName: "\U0001F6E1 Guardian: Post Analysis"
+      condition: and(succeeded(), eq(variables['skipScanDir'], false))
+      target:
+        container: host
+      env:
+        GDN_ALLOW_SHADOW_RC_FILES: true
+      inputs:
+        GdnBreakAllTools: false
+        GdnBreakPolicy: OneBranch-Retail
+        GdnBreakPolicyMinSev: Error
+        GdnBreakDisableFlighting: False
+        GdnBreakGdnToolCredScanSeverity: Default
+        GdnBreakGdnToolBinSkimSeverity: Default
+        GdnBreakGdnToolBinSkim: False
+        GdnBreakGdnToolCredScan: False
+        GdnBreakGdnToolFxCop: True
+        GdnBreakBaselineFiles: ''
+        GdnBreakBaselines: default
+        GdnBreakSuppressionFiles: ''
+        GdnBreakSuppressionSets: default
+    - task: AdvancedSecurity-Publish@1
+      displayName: "\U0001F6E1 Publish SDL Results to Advanced Security (1ES PT)"
+      condition: and( succeededOrFailed(), and(succeeded(), eq(variables['skipScanDir'], false)) )
+      continueOnError: true
+      target:
+        container: host
+      timeoutInMinutes: 5
+      inputs:
+        SarifsInputDirectory: $(Pipeline.Workspace)/.gdn/a
+    - task: PublishPipelineArtifact@1
+      displayName: "\U0001F512 Publish Build Artifacts"
+      target:
+        container: host
+      condition: succeeded()
+      inputs:
+        artifactName: drop_TestPMCConnections_ReleaseTest
+        targetPath: $(Build.ArtifactStagingDirectory)
+    - task: PublishPipelineArtifact@1
+      displayName: "\U0001F512 Publish Signing Logs"
+      target:
+        container: host
+      condition: eq(variables.OB_ARTIFACTS_SIGNING_LOGS_EXIST, true)
+      inputs:
+        artifactName: drop_TestPMCConnections_ReleaseTest_signingLogs$(System.JobAttempt)
+        targetPath: $(Agent.TempDirectory)/sign-logs
+    - task: PublishPipelineArtifact@1
+      displayName: "\U0001F512 Publish Logs On Failure"
+      target:
+        container: host
+      condition: not(succeeded())
+      inputs:
+        artifactName: drop_TestPMCConnections_ReleaseTest_failed_$(System.JobAttempt)
+        targetPath: $(Build.ArtifactStagingDirectory)
+- stage: SDLSources
+  displayName: "\U0001F512 SDLSources"
+  isSkippable: false
+  dependsOn: []
+  pool:
+    name: OneBranchPipelinesV2
+    Host: windows
+    SDLHostVersion:
+      Version: 2019
+      SKU: D4
+  jobs:
+  - job: SDLSources_self
+    displayName: SDL Sources Analysis (self)
+    continueOnError: false
+    timeoutInMinutes: 120
+    variables:
+    - name: OneES_SkipSDLSourcesAnalysis
+      value: false
+    - name: runCodesignValidationInjection
+      value: false
+    - name: Codeql.SkipTaskAutoInjection
+      value: true
+    - name: skipComponentGovernanceDetection
+      value: true
+    - name: skipNugetSecurityAnalysis
+      value: true
+    - name: OneESPT
+      value: true
+      readonly: true
+    - name: OneESPT.BuildType
+      value: Unofficial
+      readonly: true
+    - name: OneESPT.OS
+      value: windows
+      readonly: true
+    steps:
+    - task: 1ESGPTRunTask@3.0.501
+      displayName: Validate Hosted Pool Information (1ES PT)
+      continueOnError: false
+      target:
+        container: host
+      env:
+        HOST_ARCHITECTURE: amd64
+        SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+        SYSTEM_DEFINITIONID: $(System.DefinitionId)
+        SYSTEM_COLLECTIONURI: $(System.CollectionUri)
+        SYSTEM_TEAMPROJECT: $(System.TeamProject)
+        SYSTEM_TEAMPROJECTID: $(System.TeamProjectId)
+        BUILD_REPOSITORY_ID: $(Build.Repository.ID)
+        BUILD_REPOSITORY_URI: $(Build.Repository.Uri)
+        PIPELINEGOVERNANCESTATUS_AUDITED: variables['PipelineGovernanceStatus_Audited']
+        PIPELINECLASSIFICATION_AUDITED: variables['PipelineClassification_Audited']
+        GOLANG_INTERNAL_MODULE_PROXY_CONFIG_JSON: >-
+          {
+            "isSDLSourcesAnalysisJob": "True"
+          }
+      inputs:
+        repoId: 6ab471f0-c641-43b7-be8a-9c91fd72b365
+        path: validateHostedPool.ps1
+        useScriptViaFeed: false
+        arguments: -TargetName '' -StepTargets '' -StepsLength 0 -SkipStatelessValidation True -OS windows -IgnoreProductionPoolCheck  -IsOneBranchPipeline
+    - task: 1ESGPTRunTask@3.0.501
+      displayName: Tag build and log custom issues (1ES PT)
+      continueOnError: false
+      target:
+        container: host
+      env:
+        OneES_BuildTags: >-
+          [
+            "1ES.PT.Unofficial",
+            "1ES.PT.Build"
+          ]
+        OneES_LogIssues: '[]'
+        OneES_SkipBuildTagsForGitHubPullRequests: ''
+      inputs:
+        repoId: 6ab471f0-c641-43b7-be8a-9c91fd72b365
+        path: tagBuild.ps1
+        useScriptViaFeed: false
+    - task: 6d15af64-176c-496d-b583-fd2ae21d4df4@1
+      condition: and(succeeded(), ne(variables['OneES_SkipSDLSourcesAnalysis'], true))
+      inputs:
+        repository: self
+        submodules: True
+        lfs: True
+        fetchDepth: 1
+        fetchTags: False
+        fetchFilter: ''
+        persistCredentials: True
+        path: s
+    - task: onebranch.pipeline.tsaoptions@1
+      displayName: "\U0001F512 OneBranch TSAOptions"
+      target:
+        container: host
+      continueOnError: true
+      inputs:
+        tsaConfigFilePath: $(Build.SourcesDirectory)\.config\tsaoptions.json
+        tools: ''
+        useProd: true
+        appendSourceBranchName: False
+        useDynamicRouting: False
+    - task: 1ESGPTRunTask@3.0.501
+      displayName: "\U0001F512 Setup AntiMalware (1ES PT)"
+      continueOnError: true
+      target:
+        container: host
+      condition: and(succeeded(), ne(variables['OneES_SkipSDLSourcesAnalysis'], true))
+      env:
+        OneES_AntiMalware_DirectoryToScan: $(Build.SourcesDirectory)
+        OneES_PipelineWorkspace: $(Pipeline.Workspace)
+      inputs:
+        repoId: 6ab471f0-c641-43b7-be8a-9c91fd72b365
+        path: setupAntiMalware.ps1
+        useScriptViaFeed: false
+    - task: securedevelopmentteam.vss-secure-development-tools.build-task-antimalware.AntiMalware@4
+      displayName: "\U0001F6E1 Guardian: AntiMalware Scanner (Source)"
+      target:
+        container: host
+      condition: and(succeeded(), ne(variables['OneES_SkipSDLSourcesAnalysis'], true))
+      inputs:
+        InputType: 'Basic'
+        ScanType: 'CustomScan'
+        FileDirPath: $(Build.SourcesDirectory)
+        EnableServices: true
+        SupportLogOnError: true
+        TreatSignatureUpdateFailureAs: 'Warning'
+        SignatureFreshness: 'OneDay'
+        TreatStaleSignatureAs: 'Warning'
+        AcceptableOutdatedSignatureInHours: 72
+        TreatAcceptableOutdatedSignatureAs: 'Warning'
+    - task: 1ESGPTRunTask@3.0.501
+      displayName: "\U0001F6E1 Guardian: Check if enable ESLint (1ES PT)"
+      continueOnError: false
+      target:
+        container: host
+      condition: and(succeeded(), ne(variables['OneES_SkipSDLSourcesAnalysis'], true))
+      env:
+        OneES_ScanAllEslintScriptExtensions: ''
+        OneES_EslintExclusionPatterns: '*.d.ts\n*.spec.js\n*.spec.jsx\n*.spec.ts\n*.spec.tsx'
+        OneES_EslintExclusionsFilePath: ''
+        OneES_ScanDirectory: $(Build.SourcesDirectory)
+      inputs:
+        repoId: 6ab471f0-c641-43b7-be8a-9c91fd72b365
+        path: checkIfEnableEslint.ps1
+        useScriptViaFeed: false
+    - task: securedevelopmentteam.vss-secure-development-tools.build-task-eslint.ESLint@1
+      displayName: "\U0001F6E1 Guardian: ESLint (JavaScript)"
+      target:
+        container: host
+      condition: and(and(succeeded(), ne(variables['OneES_SkipSDLSourcesAnalysis'], true)), eq(variables['SDL_INTERNAL_ESLINT_JS_ENABLED'], 'true'))
+      continueOnError: True
+      inputs:
+        Configuration: recommended
+        TargetType: 'eslint'
+        TargetsESLint: >
+          $(Build.SourcesDirectory)/**/*.js
+        ErrorLevel: 'warn'
+    - task: securedevelopmentteam.vss-secure-development-tools.build-task-eslint.ESLint@1
+      displayName: "\U0001F6E1 Guardian: ESLint (TypeScript)"
+      target:
+        container: host
+      condition: and(and(succeeded(), ne(variables['OneES_SkipSDLSourcesAnalysis'], true)), eq(variables['SDL_INTERNAL_ESLINT_TS_ENABLED'], 'true'))
+      continueOnError: True
+      inputs:
+        Configuration: recommended
+        TargetType: 'eslint'
+        TargetsESLint: >
+          $(Build.SourcesDirectory)/**/*.ts
+        ErrorLevel: 'warn'
+    - task: securedevelopmentteam.vss-secure-development-tools.build-task-armory.Armory@2
+      displayName: "\U0001F6E1 Guardian: ARMory"
+      condition: and(succeeded(), ne(variables['OneES_SkipSDLSourcesAnalysis'], true))
+      target:
+        container: host
+      continueOnError: True
+      inputs:
+        targetDirectory: $(Build.SourcesDirectory)
+        targetFiles: f|**\*.json;-|.gdn\**;
+        excludePassesFromLog: true
+    - task: securedevelopmentteam.vss-secure-development-tools.build-task-report.SdtReport@2
+      displayName: "\U0001F6E1 Guardian: Security Analysis Report"
+      target:
+        container: host
+      continueOnError: true
+      condition: and(succeeded(), ne(variables['OneES_SkipSDLSourcesAnalysis'], true))
+      env:
+        GDN_ALLOW_SHADOW_RC_FILES: true
+      inputs:
+        GdnExportPolicy: OneBranch-Retail
+        GdnExportVstsConsole: false
+        GdnExportSarifFile: true
+        GdnExportTsvFile: false
+        GdnExportHtmlFile: true
+        GdnExportAllTools: true
+        GdnExportOutputBaselineFile: $(Pipeline.Workspace)\.gdn\r\.gdnbaselines
+        GdnExportOutputBaseline: default
+        GdnExportOutputSuppressionFile: $(Pipeline.Workspace)\.gdn\r\.gdnsuppress
+        GdnExportOutputSuppressionSet: default
+        GdnExportBaselineFiles: ''
+        GdnExportBaselines: default
+        GdnExportSuppressionFiles: ''
+        GdnExportSuppressionSets: default
+    - task: securedevelopmentteam.vss-secure-development-tools.build-task-publishsecurityanalysislogs.PublishSecurityAnalysisLogs@3
+      displayName: "\U0001F6E1 Guardian: Publish SDL Logs to Artifacts"
+      target:
+        container: host
+      continueOnError: true
+      inputs:
+        AllTools: true
+        ArtifactName: drop_sdl_sources
+        ArtifactType: Container
+      condition: and(succeeded(), ne(variables['OneES_SkipSDLSourcesAnalysis'], true))
+    - task: securedevelopmentteam.vss-secure-development-tools.build-task-postanalysis.PostAnalysis@2
+      displayName: "\U0001F6E1 Guardian: Post Analysis"
+      condition: and(succeeded(), ne(variables['OneES_SkipSDLSourcesAnalysis'], true))
+      target:
+        container: host
+      env:
+        GDN_ALLOW_SHADOW_RC_FILES: true
+      inputs:
+        GdnBreakAllTools: false
+        GdnBreakPolicy: OneBranch-Retail
+        GdnBreakPolicyMinSev: Error
+        GdnBreakDisableFlighting: False
+        GdnBreakGdnToolCredScan: True
+        GdnBreakGdnToolCredScanSeverity: Default
+        GdnBreakGdnToolPoliCheckSeverity: Default
+        GdnBreakGdnToolArmorySeverity: Default
+        GdnBreakGdnToolESLintSeverity: Default
+        GdnBreakGdnToolBanditSeverity: Default
+        GdnBreakGdnToolCSRFSeverity: Default
+        GdnBreakGdnToolSemmleSeverity: Default
+        GdnBreakGdnToolPSScriptAnalyzerSeverity: Default
+        GdnBreakGdnToolModernCop: True
+        GdnBreakGdnToolPoliCheck: True
+        GdnBreakGdnToolArmory: False
+        GdnBreakGdnToolESLint: True
+        GdnBreakGdnToolApiScan: false
+        GdnBreakGdnToolBinSkim: false
+        GdnBreakGdnToolCodesignValidation: false
+        GdnBreakGdnToolFortifySca: false
+        GdnBreakGdnToolFxCop: false
+        GdnBreakGdnToolRoslynAnalyzers: false
+        GdnBreakGdnToolSDLNativeRules: false
+        GdnBreakGdnToolTSLint: false
+        GdnBreakGdnToolBandit: False
+        GdnBreakGdnToolCSRF: False
+        GdnBreakGdnToolSemmle: False
+        GdnBreakGdnToolPSScriptAnalyzer: False
+        GdnBreakBaselineFiles: ''
+        GdnBreakBaselines: default
+        GdnBreakSuppressionFiles: ''
+        GdnBreakSuppressionSets: default
+    - task: AdvancedSecurity-Publish@1
+      displayName: "\U0001F6E1 Publish SDL Results to Advanced Security (1ES PT)"
+      condition: and( succeededOrFailed(), and(succeeded(), ne(variables['OneES_SkipSDLSourcesAnalysis'], true)) )
+      continueOnError: true
+      target:
+        container: host
+      timeoutInMinutes: 5
+      inputs:
+        SarifsInputDirectory: $(Pipeline.Workspace)\.gdn\a
