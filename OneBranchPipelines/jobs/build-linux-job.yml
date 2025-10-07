@@ -56,10 +56,10 @@ jobs:
       - checkout: self
         fetchDepth: 0
       
-      # Install Docker (following ODBC pattern)
+      # Install Docker
       - task: DockerInstaller@0
         inputs:
-          dockerVersion: '17.09.0-ce'
+          dockerVersion: '20.10.21'
         displayName: 'Install Docker'
       
       - bash: |
@@ -72,37 +72,17 @@ jobs:
           fi
           
           uname -a
-          if [[ "$(uname -m)" == "aarch64" ]]; then
-            docarch=aarch64
-          else
-            docarch=x86_64
-          fi
           
-          wget https://download.docker.com/linux/static/stable/$docarch/docker-17.09.0-ce.tgz
-          tar -xvf docker-17.09.0-ce.tgz
+          # Start dockerd
+          sudo dockerd > docker.log 2>&1 &
+          sleep 10
           
-          ls -l
-          ls -l docker
-          export PATH=$PATH:`pwd`/docker
-          echo "================================="
-          sudo apt install cgroupfs-mount
-          sudo cgroupfs-mount
-          pwd
-          
-          sudo sh -c 'export PATH=$PATH:`pwd`/docker;nohup dockerd -H unix:///var/run/docker.sock > docker.log 2>&1' &
-          sleep 15
-          ls -l /var/run/docker.sock
-          sudo chmod 666 /var/run/docker.sock
-          ls -l /var/run/docker.sock
-          
-          echo "----------- Docker version and info ---------------"
-          docker/docker --version
-          docker/docker info
-          echo "==========================================="
+          # Verify Docker works
+          docker --version
+          docker info
         displayName: 'Setup and start Docker daemon'
       
       - script: |
-          export PATH=$PATH:`pwd`/docker
           docker run --rm --privileged tonistiigi/binfmt --install all
         displayName: 'Enable QEMU (for aarch64)'
       
@@ -113,7 +93,6 @@ jobs:
         displayName: 'Prepare artifact directories'
       
       - script: |
-          export PATH=$PATH:`pwd`/docker
           docker run -d --name build-$(LINUX_TAG)-$(ARCH) \
             --platform $(DOCKER_PLATFORM) \
             -v $(Build.SourcesDirectory):/workspace \
