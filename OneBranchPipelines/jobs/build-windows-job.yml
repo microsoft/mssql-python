@@ -17,7 +17,7 @@ jobs:
   - job: BuildWindowsWheels
     displayName: 'Build Windows Wheels'
     pool:
-      type: windows
+      vmImage: 'windows-2022'
     
     strategy:
       matrix:
@@ -66,8 +66,6 @@ jobs:
     
     variables:
       ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
-      # OneBranch requires a container image - using standard Windows LTSC2022 with VS2022
-      WindowsContainerImage: 'onebranch.azurecr.io/windows/ltsc2022/vse2022:latest'
     
     steps:
       - task: UsePythonVersion@0

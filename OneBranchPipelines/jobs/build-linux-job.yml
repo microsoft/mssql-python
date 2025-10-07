@@ -17,7 +17,7 @@ jobs:
   - job: BuildLinuxWheels
     displayName: 'Build Linux Wheels'
     pool:
-      type: linux
+      vmImage: 'ubuntu-22.04'
     timeoutInMinutes: 120
     
     strategy:
@@ -45,8 +45,6 @@ jobs:
     
     variables:
       ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
-      # OneBranch requires a container image - using standard Linux container
-      LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2004:latest'
     
     steps:
       - checkout: self
