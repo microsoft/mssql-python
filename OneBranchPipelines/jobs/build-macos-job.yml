@@ -41,22 +41,9 @@ jobs:
     
     variables:
       ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
-      # OneBranch requires a container image - using standard macOS container
-      MacOSContainerImage: 'onebranch.azurecr.io/macos/monterey:latest'
     
     steps:
-      # Create pip.conf to trust PyPI hosts (before Python installation)
-      - script: |
-          mkdir -p ~/.config/pip
-          cat > ~/.config/pip/pip.conf <<EOF
-          [global]
-          trusted-host = pypi.org
-                         pypi.python.org
-                         files.pythonhosted.org
-          EOF
-          cat ~/.config/pip/pip.conf
-        displayName: 'Configure pip trusted hosts'
-      
+
       - task: UsePythonVersion@0
         inputs:
           versionSpec: '$(pythonVersion)'
@@ -73,9 +60,9 @@ jobs:
       - script: |
           python --version
           python -m pip --version
-          python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --upgrade pip || echo "Pip upgrade failed, continuing with existing pip"
-          python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
-          python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org cmake pybind11
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install cmake pybind11
         displayName: 'Install dependencies'
       
       - script: |
