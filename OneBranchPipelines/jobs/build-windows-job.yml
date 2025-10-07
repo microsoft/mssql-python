@@ -75,12 +75,16 @@ jobs:
           versionSpec: '$(pythonVersion)'
           architecture: '$(architecture)'
           addToPath: true
+          disableDownloadFromRegistry: false
         displayName: 'Use Python $(pythonVersion) ($(architecture))'
+        continueOnError: false
       
       - script: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install cmake pybind11
+          python --version
+          python -m pip --version
+          python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --upgrade pip || echo "Pip upgrade failed, continuing with existing pip"
+          python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org -r requirements.txt
+          python -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org cmake pybind11
         displayName: 'Install dependencies'
       
       - powershell: |
