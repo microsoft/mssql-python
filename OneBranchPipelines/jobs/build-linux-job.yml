@@ -20,7 +20,7 @@ jobs:
       type: linux
       isCustom: true
       name: Django-1ES-pool
-      vmImage: ADO-UB22-SQL22
+      vmImage: ADO-UB20-SQL22
     timeoutInMinutes: 120
     
     strategy:
