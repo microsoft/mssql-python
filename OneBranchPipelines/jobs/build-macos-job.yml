@@ -13,10 +13,11 @@ parameters:
     type: string
     default: 'Release'
 
-- job: BuildMacOSWheels
-  displayName: 'Build macOS Wheels'
-  pool:
-    vmImage: 'macOS-14'
+jobs:
+  - job: BuildMacOSWheels
+    displayName: 'Build macOS Wheels'
+    pool:
+      vmImage: 'macOS-14'
     
     strategy:
       matrix:
