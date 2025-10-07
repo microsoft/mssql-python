@@ -7887,12 +7887,7 @@ def test_datetimeoffset_read_write(cursor, db_connection):
             assert row is not None
             fetched_id, fetched_dt = row
             assert fetched_dt.tzinfo is not None
-            expected_utc = dt.astimezone(timezone.utc)
-            fetched_utc = fetched_dt.astimezone(timezone.utc)
-            # Ignore sub-microsecond differences
-            expected_utc = expected_utc.replace(microsecond=int(expected_utc.microsecond / 1000) * 1000)
-            fetched_utc = fetched_utc.replace(microsecond=int(fetched_utc.microsecond / 1000) * 1000)
-            assert fetched_utc == expected_utc
+            assert fetched_dt == dt
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_read_write;")
         db_connection.commit()
@@ -7926,12 +7921,7 @@ def test_datetimeoffset_max_min_offsets(cursor, db_connection):
             assert fetched_id == expected_id, f"ID mismatch: expected {expected_id}, got {fetched_id}"
             assert fetched_dt.tzinfo is not None, f"Fetched datetime object is naive for id {fetched_id}"
 
-            # Compare in UTC to avoid offset differences
-            expected_utc = expected_dt.astimezone(timezone.utc).replace(tzinfo=None)
-            fetched_utc = fetched_dt.astimezone(timezone.utc).replace(tzinfo=None)
-            assert fetched_utc == expected_utc, (
-                f"Value mismatch for id {expected_id}: expected UTC {expected_utc}, got {fetched_utc}"
-            )
+            assert fetched_dt == expected_dt, f"Value mismatch for id {expected_id}: expected {expected_dt}, got {fetched_dt}"
 
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_read_write;")
@@ -7986,12 +7976,7 @@ def test_datetimeoffset_dst_transitions(cursor, db_connection):
             assert fetched_id == expected_id, f"ID mismatch: expected {expected_id}, got {fetched_id}"
             assert fetched_dt.tzinfo is not None, f"Fetched datetime object is naive for id {fetched_id}"
 
-            # Compare UTC time to avoid issues due to offsets changing in DST
-            expected_utc = expected_dt.astimezone(timezone.utc).replace(tzinfo=None)
-            fetched_utc = fetched_dt.astimezone(timezone.utc).replace(tzinfo=None)
-            assert fetched_utc == expected_utc, (
-                f"Value mismatch for id {expected_id}: expected UTC {expected_utc}, got {fetched_utc}"
-            )
+            assert fetched_dt == expected_dt, f"Value mismatch for id {expected_id}: expected {expected_dt}, got {fetched_dt}"
 
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_datetimeoffset_dst_transitions;")
@@ -8068,17 +8053,7 @@ def test_datetimeoffset_executemany(cursor, db_connection):
             fetched_id, fetched_dto = rows[i]
             assert fetched_dto.tzinfo is not None, "Fetched datetime object is naive."
 
-            expected_utc = python_dt.astimezone(timezone.utc).replace(tzinfo=None)
-            fetched_utc = fetched_dto.astimezone(timezone.utc).replace(tzinfo=None)
-
-            # Round microseconds to nearest millisecond for comparison
-            expected_utc = expected_utc.replace(microsecond=int(expected_utc.microsecond / 1000) * 1000)
-            fetched_utc = fetched_utc.replace(microsecond=int(fetched_utc.microsecond / 1000) * 1000)
-
-            assert fetched_utc == expected_utc, (
-                f"Value mismatch for test case {i}. "
-                f"Expected UTC: {expected_utc}, Got UTC: {fetched_utc}"
-            )
+            assert fetched_dto == python_dt, f"Value mismatch for id {fetched_id}: expected {python_dt}, got {fetched_dto}"
     finally:
         cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
         db_connection.commit()
@@ -8144,10 +8119,7 @@ def test_datetimeoffset_extreme_offsets(cursor, db_connection):
         for i, dt in enumerate(extreme_offsets):
             _, fetched = rows[i]
             assert fetched.tzinfo is not None
-            # Round-trip comparison via UTC
-            expected_utc = dt.astimezone(timezone.utc).replace(tzinfo=None)
-            fetched_utc = fetched.astimezone(timezone.utc).replace(tzinfo=None)
-            assert expected_utc == fetched_utc, f"Extreme offset round-trip failed for {dt.tzinfo}"
+            assert fetched == dt, f"Value mismatch for id {i}: expected {dt}, got {fetched}"
     finally:
         cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
         db_connection.commit()
