@@ -98,11 +98,17 @@ extends:
   template: 'v2/OneBranch.${{ parameters.oneBranchType }}.CrossPlat.yml@templates'
 
   parameters:
-    # Container definitions for Linux builds
+    # Container definitions for all platforms
     containers:
+    - container: windows_build_container
+      image: onebranch.azurecr.io/windows/ltsc2022/vse2022:latest
+      type: Windows
     - container: linux_build_container
       image: mcr.microsoft.com/onebranch/azurelinux/build:3.0
       type: Linux
+    - container: macos_build_container
+      image: onebranch.azurecr.io/macos/monterey:latest
+      type: macOS
     
     # Feature flags
     featureFlags:
