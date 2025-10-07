@@ -382,19 +382,6 @@ class Cursor:
                     False,
                 )
                 
-            try:
-                val = uuid.UUID(param)
-                parameters_list[i] = val.bytes_le
-                return (
-                    ddbc_sql_const.SQL_GUID.value,
-                    ddbc_sql_const.SQL_C_GUID.value,
-                    16,
-                    0,
-                    False
-                )
-            except ValueError:
-                pass
-
             # String mapping logic here
             is_unicode = self._is_unicode_string(param)
 
