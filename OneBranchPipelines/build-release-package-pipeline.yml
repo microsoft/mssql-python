@@ -103,12 +103,10 @@ extends:
     - container: windows_build_container
       image: onebranch.azurecr.io/windows/ltsc2022/vse2022:latest
       type: Windows
-    - container: linux_build_container
-      image: mcr.microsoft.com/onebranch/azurelinux/build:3.0
-      type: Linux
     - container: macos_build_container
       image: onebranch.azurecr.io/macos/monterey:latest
       type: macOS
+    # Note: Linux job uses custom 1ES pool with Docker support instead of OneBranch container
     
     # Feature flags
     featureFlags:

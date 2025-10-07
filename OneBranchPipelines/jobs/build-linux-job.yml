@@ -17,9 +17,10 @@ jobs:
   - job: BuildLinuxWheels
     displayName: 'Build Linux Wheels'
     pool:
+      type: linux
+      isCustom: true
       name: Django-1ES-pool
-      demands:
-      - imageOverride -equals ADO-UB22-SQL22
+      vmImage: ADO-UB22-SQL22
     timeoutInMinutes: 120
     
     strategy:
