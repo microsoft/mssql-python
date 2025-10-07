@@ -17,6 +17,8 @@ jobs:
   - job: BuildMacOSWheels
     displayName: 'Build macOS Wheels'
     pool:
+      name: Azure Pipelines
+      type: macOS
       vmImage: 'macOS-14'
     timeoutInMinutes: 120
     
