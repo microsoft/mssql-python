@@ -5,6 +5,7 @@ This module initializes the mssql_python package.
 """
 import threading
 import locale
+import sys
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
@@ -31,6 +32,7 @@ class Settings:
         self.lowercase = False
         # Use the pre-determined separator - no locale access here
         self.decimal_separator = _DEFAULT_DECIMAL_SEPARATOR
+        self.native_uuid = False  # Default to False for backwards compatibility
 
 # Global settings instance
 _settings = Settings()
@@ -40,9 +42,11 @@ def get_settings():
     """Return the global settings object"""
     with _settings_lock:
         _settings.lowercase = lowercase
+        _settings.native_uuid = native_uuid
         return _settings
 
 lowercase = _settings.lowercase  # Default is False
+native_uuid = _settings.native_uuid  # Default is False
 
 # Set the initial decimal separator in C++
 from .ddbc_bindings import DDBCSetDecimalSeparator
@@ -166,7 +170,6 @@ def pooling(max_size=100, idle_timeout=600, enabled=True):
     else:
         PoolingManager.enable(max_size, idle_timeout)
 
-import sys
 _original_module_setattr = sys.modules[__name__].__setattr__
 
 def _custom_setattr(name, value):
