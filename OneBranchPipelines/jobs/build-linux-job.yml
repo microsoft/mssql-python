@@ -17,12 +17,8 @@ jobs:
   - job: BuildLinuxWheels
     displayName: 'Build Linux Wheels'
     pool:
-      type: linux
+      vmImage: 'ubuntu-22.04'
     timeoutInMinutes: 120
-    
-    # Request Docker service from OneBranch
-    services:
-      docker: docker
     
     strategy:
       matrix:
