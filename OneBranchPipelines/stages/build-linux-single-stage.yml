@@ -43,11 +43,6 @@ stages:
           LINUX_TAG: ${{ parameters.linuxTag }}
           ARCH: ${{ parameters.arch }}
           DOCKER_PLATFORM: ${{ parameters.dockerPlatform }}
-          # Disable SDL tools on individual build stages - globalSdl runs once at end
-          ob_sdl_tsa_enabled: false
-          ob_sdl_binskim_enabled: false
-          ob_sdl_codeql_compiled_enabled: false
-          ob_sdl_credscan_enabled: false
         
         steps:
           - checkout: self
