@@ -4,8 +4,11 @@
 #       should come from variable groups, not redefined here to avoid cyclical references
 variables:
   # Symbol paths for ApiScan
+  # Must use Build.SourcesDirectory (not ob_outputDirectory) so files persist for globalSdl
+  # Files are copied here during build stages, before ApiScan runs
   - name: apiScanDllPath
-    value: '$(ob_outputDirectory)/bindings'
+    value: '$(Build.SourcesDirectory)/apiScan/dlls'
   
   - name: apiScanPdbPath
-    value: '$(ob_outputDirectory)/symbols'
+    value: '$(Build.SourcesDirectory)/apiScan/pdbs'
+

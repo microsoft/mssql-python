@@ -139,8 +139,23 @@ stages:
               SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
               Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pdb'
               TargetFolder: '$(ob_outputDirectory)\symbols'
-            displayName: 'Copy PDB symbols'
-            condition: and(succeeded(), eq('${{ parameters.buildConfiguration }}', 'Debug'))
+            displayName: 'Copy PDB files'
+          
+          # Copy files to ApiScan directories (for globalSdl scanning)
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+              Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
+              TargetFolder: '$(Build.SourcesDirectory)\apiScan\dlls\windows\py$(shortPyVer)\$(targetArch)'
+            displayName: 'Copy PYD to ApiScan directory'
+          
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+              Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pdb'
+              TargetFolder: '$(Build.SourcesDirectory)\apiScan\pdbs\windows\py$(shortPyVer)\$(targetArch)'
+            displayName: 'Copy PDB to ApiScan directory'
+
           
           - script: |
               python -m pip install --upgrade pip wheel setuptools
@@ -194,7 +209,7 @@ stages:
                   signPath: '$(ob_outputDirectory)\wheels'
           
           # Publish symbols (Windows only)
-          - ${{ if and(eq(parameters.oneBranchType, 'Official'), eq(parameters.buildConfiguration, 'Debug')) }}:
+          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
               - template: /OneBranchPipelines/steps/symbol-publishing-step.yml@self
                 parameters:
                   SymbolsFolder: '$(ob_outputDirectory)\symbols'
