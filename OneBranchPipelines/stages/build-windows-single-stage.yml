@@ -32,8 +32,7 @@ stages:
           type: windows
           isCustom: true
           name: Django-1ES-pool
-          demands:
-            - imageOverride -equals WIN22-SQL22
+          vmImage: WIN22-SQL22
         timeoutInMinutes: 120
         
         variables:
@@ -52,7 +51,7 @@ stages:
             inputs:
               versionSpec: '${{ parameters.pythonVersion }}'
               architecture: '${{ parameters.architecture }}'
-            displayName: 'Use Python "${{ parameters.pythonVersion }}" ${{ parameters.architecture }}'
+            displayName: 'Use Python ${{ parameters.pythonVersion }} ${{ parameters.architecture }}'
           
           - powershell: |
               Write-Host "Python version:"
@@ -72,16 +71,18 @@ stages:
             displayName: 'Install Python dependencies'
           
           - powershell: |
-              Write-Host "Setting up SQL Server LocalDB..."
-              sqllocaldb create MSSQLLocalDB -s
-              sqllocaldb info MSSQLLocalDB
-              
-              Write-Host "Creating test database and user..."
-              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB;"
-              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)';"
-              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "USE TestDB; CREATE USER testuser FOR LOGIN testuser;"
-              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "USE TestDB; ALTER ROLE db_owner ADD MEMBER testuser;"
-            displayName: 'Setup SQL Server LocalDB'
+              sqllocaldb create MSSQLLocalDB
+              sqllocaldb start MSSQLLocalDB
+            displayName: 'Start LocalDB instance'
+          
+          - powershell: |
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+            displayName: 'Setup database and user'
+            env:
+              DB_PASSWORD: $(DB_PASSWORD)
           
           - powershell: |
               $ErrorActionPreference = "Stop"

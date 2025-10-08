@@ -30,7 +30,7 @@ stages:
           type: linux
           isCustom: true
           name: Azure Pipelines
-          vmImage: 'macOS-latest'
+          vmImage: 'macOS-14'
         timeoutInMinutes: 120
         
         variables:
@@ -47,7 +47,7 @@ stages:
           - task: UsePythonVersion@0
             inputs:
               versionSpec: '${{ parameters.pythonVersion }}'
-            displayName: 'Use Python "${{ parameters.pythonVersion }}"'
+            displayName: 'Use Python ${{ parameters.pythonVersion }}'
           
           - bash: |
               set -e
@@ -61,17 +61,9 @@ stages:
               set -e
               echo "Installing Python dependencies..."
               python3 -m pip install --upgrade pip
-              python3 -m pip install setuptools wheel pybind11 pytest pyodbc delocate
+              python3 -m pip install setuptools wheel pybind11 pytest pyodbc
               echo "Dependencies installed successfully"
             displayName: 'Install Python dependencies'
-          
-          - bash: |
-              set -e
-              echo "Installing ODBC Driver 18 for SQL Server..."
-              brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
-              brew update
-              HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 mssql-tools18
-            displayName: 'Install ODBC Driver'
           
           - bash: |
               set -e
@@ -91,14 +83,7 @@ stages:
               set -e
               echo "Building Python wheel..."
               python3 setup.py bdist_wheel
-              
-              echo "Repairing wheel with delocate..."
-              delocate-wheel -w dist_repaired -v dist/*.whl
-              
-              echo "Replacing original wheel with repaired version..."
-              rm -rf dist
-              mv dist_repaired dist
-            displayName: 'Build and repair Python wheel'
+            displayName: 'Build wheel package'
           
           - bash: |
               set -e
