@@ -49,8 +49,10 @@ stages:
           - task: UsePythonVersion@0
             inputs:
               versionSpec: '${{ parameters.pythonVersion }}'
-              architecture: '${{ parameters.architecture }}'
-            displayName: 'Use Python ${{ parameters.pythonVersion }} ${{ parameters.architecture }}'
+              architecture: 'x64'
+              addToPath: true
+            displayName: 'Use Python ${{ parameters.pythonVersion }} (${{ parameters.architecture }})'
+            continueOnError: false
           
           - powershell: |
               Write-Host "Python version:"
