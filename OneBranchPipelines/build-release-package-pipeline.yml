@@ -65,21 +65,21 @@ parameters:
   - name: windowsConfigs
     type: object
     default:
-      - { pyVer: '310', pyVersionFull: '3.10', arch: 'x64' }
-      - { pyVer: '311', pyVersionFull: '3.11', arch: 'x64' }
-      - { pyVer: '312', pyVersionFull: '3.12', arch: 'x64' }
-      - { pyVer: '313', pyVersionFull: '3.13', arch: 'x64' }
-      - { pyVer: '311', pyVersionFull: '3.11', arch: 'arm64' }
-      - { pyVer: '312', pyVersionFull: '3.12', arch: 'arm64' }
-      - { pyVer: '313', pyVersionFull: '3.13', arch: 'arm64' }
+      - { pyVer: '310', pyVersionFull: "'3.10'", arch: 'x64' }
+      - { pyVer: '311', pyVersionFull: "'3.11'", arch: 'x64' }
+      - { pyVer: '312', pyVersionFull: "'3.12'", arch: 'x64' }
+      - { pyVer: '313', pyVersionFull: "'3.13'", arch: 'x64' }
+      - { pyVer: '311', pyVersionFull: "'3.11'", arch: 'arm64' }
+      - { pyVer: '312', pyVersionFull: "'3.12'", arch: 'arm64' }
+      - { pyVer: '313', pyVersionFull: "'3.13'", arch: 'arm64' }
   
   - name: macosConfigs
     type: object
     default:
-      - { pyVer: '310', pyVersionFull: '3.10' }
-      - { pyVer: '311', pyVersionFull: '3.11' }
-      - { pyVer: '312', pyVersionFull: '3.12' }
-      - { pyVer: '313', pyVersionFull: '3.13' }
+      - { pyVer: '310', pyVersionFull: "'3.10'" }
+      - { pyVer: '311', pyVersionFull: "'3.11'" }
+      - { pyVer: '312', pyVersionFull: "'3.12'" }
+      - { pyVer: '313', pyVersionFull: "'3.13'" }
   
   - name: linuxConfigs
     type: object
