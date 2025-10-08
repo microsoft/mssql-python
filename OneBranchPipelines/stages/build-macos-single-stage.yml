@@ -46,52 +46,77 @@ stages:
           - task: UsePythonVersion@0
             inputs:
               versionSpec: '${{ parameters.pythonVersion }}'
-            displayName: 'Use Python ${{ parameters.pythonVersion }}'
+              addToPath: true
+            displayName: 'Use Python ${{ parameters.pythonVersion }} (Universal2)'
+            continueOnError: false
           
-          - bash: |
-              set -e
-              echo "Python version:"
-              python3 --version
-              echo "Architecture:"
-              uname -m
-            displayName: 'Verify Python installation'
+          - script: |
+              brew update
+              brew uninstall cmake --ignore-dependencies || echo "CMake not installed"
+              brew install cmake
+            displayName: 'Install CMake'
           
-          - bash: |
-              set -e
-              echo "Installing Python dependencies..."
-              python3 -m pip install --upgrade pip
-              python3 -m pip install setuptools wheel pybind11 pytest pyodbc
-              echo "Dependencies installed successfully"
-            displayName: 'Install Python dependencies'
+          - script: |
+              python --version
+              python -m pip --version
+              python -m pip install --upgrade pip
+              python -m pip install -r requirements.txt
+              python -m pip install cmake pybind11
+            displayName: 'Install dependencies'
           
-          - bash: |
-              set -e
-              echo "Building native bindings..."
-              cd mssql_python/pybind
-              bash build.sh
-            displayName: 'Build native bindings'
+          - script: |
+              echo "Python Version: ${{ parameters.pythonVersion }}"
+              echo "Building Universal2 Binary"
+              cd "$(Build.SourcesDirectory)/mssql_python/pybind"
+              ./build.sh
+            displayName: 'Build .so file'
+            continueOnError: false
           
           - task: CopyFiles@2
             inputs:
               SourceFolder: '$(Build.SourcesDirectory)/mssql_python'
-              Contents: '*.dylib'
+              Contents: '*.so'
               TargetFolder: '$(ob_outputDirectory)/bindings/macOS'
-            displayName: 'Copy dylib files'
+            displayName: 'Copy .so files'
           
-          - bash: |
-              set -e
-              echo "Building Python wheel..."
-              python3 setup.py bdist_wheel
-            displayName: 'Build wheel package'
+          - script: |
+              brew update
+              brew install docker colima
+              colima start --cpu 3 --memory 10 --disk 30 --vm-type=vz || \
+              colima start --cpu 3 --memory 10 --disk 30 --vm-type=qemu
+              sleep 30
+              docker context use colima >/dev/null || true
+              docker version
+            displayName: 'Install and start Docker (Colima)'
+            timeoutInMinutes: 15
           
-          - bash: |
-              set -e
-              echo "Running pytests to validate bindings..."
-              python3 -m pytest -v || echo "Tests failed or SQL Server not available"
+          - script: |
+              docker pull mcr.microsoft.com/mssql/server:2022-latest
+              docker run --name sqlserver \
+                -e ACCEPT_EULA=Y \
+                -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+                -p 1433:1433 -d \
+                mcr.microsoft.com/mssql/server:2022-latest
+              
+              for i in {1..30}; do
+                docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
+                  -S localhost -U SA -P "$DB_PASSWORD" -C -Q "SELECT 1" && break
+                sleep 2
+              done
+            displayName: 'Start SQL Server (Docker)'
+            env:
+              DB_PASSWORD: $(DB_PASSWORD)
+          
+          - script: |
+              python -m pytest -v
             displayName: 'Run pytests'
-            continueOnError: true
             env:
               DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+          
+          - script: |
+              python -m pip install --upgrade pip wheel setuptools
+              python setup.py bdist_wheel
+            displayName: 'Build wheel package'
           
           - task: CopyFiles@2
             inputs:
