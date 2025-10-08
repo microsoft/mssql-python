@@ -18,8 +18,14 @@ jobs:
     displayName: 'Build Linux Wheels'
     pool:
       type: linux
-      # Removed isCustom: true to enable OneBranch auto-publishing from ob_outputDirectory
-      # Using OneBranch managed Linux pool instead of custom Django-1ES-pool
+      isCustom: true
+      # IMPORTANT: Custom pool required for Docker daemon access
+      # OneBranch managed pools don't have Docker daemon running/accessible
+      # We build Linux wheels inside Docker containers (manylinux/musllinux)
+      # Django-1ES-pool provides Docker-enabled agents
+      name: Django-1ES-pool
+      demands:
+      - imageOverride -equals ADO-UB22-SQL22
     timeoutInMinutes: 120
     
     strategy:
@@ -182,9 +188,14 @@ jobs:
         displayName: 'Cleanup container'
         condition: always()
       
-      # Note: Using OneBranch managed pool (no isCustom: true) enables automatic
-      # publishing of $(ob_outputDirectory) as artifact: drop_Build_BuildLinuxWheels
-      # with subdirectories: wheels/, bindings/
+      # Publish artifacts explicitly (custom pool doesn't support auto-publishing)
+      # Following ODBC team's pattern: custom pools need explicit PublishPipelineArtifact@1
+      - task: PublishPipelineArtifact@1
+        displayName: 'Publish Linux Artifacts'
+        inputs:
+          targetPath: '$(ob_outputDirectory)'
+          artifact: 'drop_Build_BuildLinuxWheels'
+          publishLocation: 'pipeline'
       
       # Malware scanning
       - template: ../steps/malware-scanning-step.yml@self

@@ -11,8 +11,11 @@
 8. [Job Templates](#job-templates)
 9. [Step Templates](#step-templates)
 10. [Signing and Publishing](#signing-and-publishing)
-11. [Usage Guide](#usage-guide)
-12. [Troubleshooting](#troubleshooting)
+11. [Artifact Publishing](#artifact-publishing)
+12. [Symbol Publishing](#symbol-publishing)
+13. [Usage Guide](#usage-guide)
+14. [Troubleshooting](#troubleshooting)
+15. [Change History](#change-history)
 
 ---
 
@@ -633,6 +636,170 @@ parameters:
 
 ---
 
+## Artifact Publishing
+
+### The Docker Daemon Problem
+
+**Issue**: OneBranch managed Linux pools don't have Docker daemon running or accessible.
+
+**Error encountered**:
+```bash
+ERROR: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?
+errors pretty printing info
+##[error]Bash exited with code '1'.
+```
+
+**Why it matters**: The mssql-python project builds Linux wheels inside Docker containers (manylinux/musllinux) to ensure compatibility across different Linux distributions. Without Docker access, Linux builds fail completely.
+
+### OneBranch Artifact Publishing Rules
+
+**Two Publishing Methods**:
+
+1. **Automatic Publishing** (OneBranch managed pools):
+   - **Requirements**: Pool with `type: windows` or `type: linux` WITHOUT `isCustom: true`
+   - **Behavior**: OneBranch automatically publishes `$(ob_outputDirectory)` to artifacts
+   - **Artifact Name**: `drop_<Stage>_<Job>` (e.g., `drop_Build_BuildWindowsWheels`)
+   - **Pros**: Zero configuration, automatic subdirectory preservation
+   - **Cons**: Limited pool capabilities (no Docker on Linux)
+
+2. **Explicit Publishing** (Custom pools):
+   - **Requirements**: Pool with `isCustom: true` + `PublishPipelineArtifact@1` task
+   - **Behavior**: Manual artifact publishing with explicit task
+   - **Task Restrictions**: Must use `@1` version (not `@2`), `PublishBuildArtifacts@1` blocked
+   - **Pros**: Access to custom agent capabilities (Docker, specific tools)
+   - **Cons**: Requires explicit task configuration
+
+### Implementation by Platform
+
+#### Windows (Explicit Publishing)
+```yaml
+pool:
+  type: windows
+  isCustom: true
+  name: Django-1ES-pool
+  vmImage: WIN22-SQL22
+
+# Explicit publishing required
+- task: PublishPipelineArtifact@1
+  displayName: 'Publish Windows Artifacts'
+  inputs:
+    targetPath: '$(ob_outputDirectory)'
+    artifact: 'drop_Build_BuildWindowsWheels'
+    publishLocation: 'pipeline'
+```
+
+**Why custom pool**: 
+- ✅ **SQL Server Testing**: Django-1ES-pool provides LocalDB for integration tests
+- ✅ **Specialized Build Tools**: Pre-configured with Visual Studio, CMake, etc.
+- ✅ **Consistency**: All three platforms use explicit publishing pattern
+
+#### macOS (Explicit Publishing)
+```yaml
+pool:
+  type: linux
+  isCustom: true
+  name: Azure Pipelines
+  vmImage: 'macOS-14'
+
+# Explicit publishing required
+- task: PublishPipelineArtifact@1
+  displayName: 'Publish macOS Artifacts'
+  inputs:
+    targetPath: '$(ob_outputDirectory)'
+    artifact: 'drop_Build_BuildMacOSWheels'
+    publishLocation: 'pipeline'
+```
+
+**Why custom pool**: Microsoft-hosted macOS agents aren't OneBranch managed pools.
+
+#### Linux (Explicit Publishing - Docker Required)
+```yaml
+pool:
+  type: linux
+  isCustom: true
+  name: Django-1ES-pool
+  demands:
+  - imageOverride -equals ADO-UB22-SQL22
+
+# Explicit publishing required
+- task: PublishPipelineArtifact@1
+  displayName: 'Publish Linux Artifacts'
+  inputs:
+    targetPath: '$(ob_outputDirectory)'
+    artifact: 'drop_Build_BuildLinuxWheels'
+    publishLocation: 'pipeline'
+```
+
+**Why custom pool**: 
+1. ✅ **Docker Access**: Django-1ES-pool provides Docker-enabled agents
+2. ✅ **manylinux Builds**: Requires Docker to run `quay.io/pypa/manylinux_*` containers
+3. ✅ **musllinux Builds**: Requires Docker to run `quay.io/pypa/musllinux_*` containers
+4. ❌ **No Auto-Publishing**: Custom pools disable OneBranch auto-publishing
+5. ✅ **Explicit Task Works**: `PublishPipelineArtifact@1` allowed for custom jobs
+
+### Expected Artifacts
+
+After successful pipeline run, three artifacts published:
+
+```
+drop_Build_BuildWindowsWheels/
+├── wheels/
+│   ├── mssql_python-0.13.0-cp310-cp310-win_amd64.whl
+│   ├── mssql_python-0.13.0-cp311-cp311-win_amd64.whl
+│   ├── ... (7 total)
+├── bindings/windows/
+│   ├── ddbc_bindings.pyd
+│   └── ... (.pyd files)
+└── symbols/ (if publishSymbols: true)
+    └── ... (.pdb files)
+
+drop_Build_BuildLinuxWheels/
+├── wheels/
+│   ├── mssql_python-0.13.0-cp310-cp310-manylinux_2_28_x86_64.whl
+│   ├── mssql_python-0.13.0-cp310-cp310-musllinux_1_2_x86_64.whl
+│   ├── ... (16 total)
+└── bindings/
+    ├── manylinux-x86_64/
+    ├── manylinux-aarch64/
+    ├── musllinux-x86_64/
+    └── musllinux-aarch64/
+
+drop_Build_BuildMacOSWheels/
+├── wheels/
+│   ├── mssql_python-0.13.0-cp310-cp310-macosx_10_9_universal2.whl
+│   ├── ... (4 total)
+└── bindings/macOS/
+    └── ... (.so files)
+```
+
+### Verification Steps
+
+**After pipeline completes**:
+
+1. Navigate to pipeline run → Artifacts
+2. Verify 3 artifacts present:
+   - ✅ `drop_Build_BuildWindowsWheels`
+   - ✅ `drop_Build_BuildLinuxWheels`
+   - ✅ `drop_Build_BuildMacOSWheels`
+3. Download each artifact, verify subdirectories:
+   - ✅ `wheels/` contains `.whl` files
+   - ✅ `bindings/` contains native libraries
+   - ✅ (Windows only) `symbols/` contains `.pdb` files
+
+**Testing wheels**:
+```bash
+# Download artifact
+az pipelines runs artifact download --artifact-name drop_Build_BuildWindowsWheels
+
+# Install wheel
+pip install wheels/mssql_python-0.13.0-cp310-cp310-win_amd64.whl
+
+# Test import
+python -c "import mssql_python; print(mssql_python.__version__)"
+```
+
+---
+
 ## Signing and Publishing
 
 ### ESRP Code Signing Overview
@@ -1145,8 +1312,9 @@ Update build scripts to handle `Profile` configuration.
 ## Version History
 
 | Version | Date | Changes |
-|---------|------|---------|
+|---------|---------|--------------------------------------------------------------|
 | 1.0.0 | 2025-10-07 | Initial comprehensive documentation |
+| 1.1.0 | 2025-10-08 | **Artifact Publishing Fix**: Restored Linux custom pool (Django-1ES-pool) to fix Docker daemon access. Added explicit `PublishPipelineArtifact@1` for Linux (matching macOS pattern). Documented Docker requirement and publishing rules. |
 
 ---
 
