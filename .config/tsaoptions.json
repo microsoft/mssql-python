@@ -1,5 +1,5 @@
 {
-  "instanceUrl": "https://sqlclientdrivers.visualstudio.com/",
+  "instanceUrl": "https://sqlclientdrivers.visualstudio.com",
   "projectName": "mssql-python",
   "areaPath": "mssql-python",
   "iterationPath": "mssql-python",
