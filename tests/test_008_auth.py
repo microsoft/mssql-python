@@ -220,3 +220,178 @@ def test_error_handling():
     # Test non-string input
     with pytest.raises(ValueError, match="Connection string must be a string"):
         process_connection_string(None)
+
+
+def test_short_access_token_protection_blocks_short_tokens():
+    """
+    Test protection against ODBC driver crashes with malformed access tokens.
+    
+    Microsoft ODBC Driver 18 has a bug where it crashes (segfault on macOS/Linux,
+    access violation on Windows) when given malformed access tokens. This test
+    verifies that our defensive validation properly rejects invalid tokens before
+    they reach the ODBC driver.
+    
+    The validation is implemented in Connection::setAttribute() in connection.cpp
+    and checks:
+    1. Minimum size (4 bytes for ACCESSTOKEN header)
+    2. Structure integrity (declared size matches actual size)
+    3. Non-empty data (not all zeros)
+    
+    This test runs in a subprocess to isolate potential crashes.
+    """
+    import os
+    import subprocess
+    
+    # Get connection string and remove UID/Pwd to force token-only mode
+    conn_str = os.getenv("DB_CONNECTION_STRING")
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING environment variable not set")
+    
+    # Remove authentication to force pure token mode
+    conn_str_no_auth = conn_str
+    for remove_param in ["UID=", "Pwd=", "uid=", "pwd="]:
+        if remove_param in conn_str_no_auth:
+            parts = conn_str_no_auth.split(";")
+            parts = [p for p in parts if not p.lower().startswith(remove_param.lower())]
+            conn_str_no_auth = ";".join(parts)
+    
+    # Escape connection string for embedding in subprocess code
+    escaped_conn_str = conn_str_no_auth.replace('\\', '\\\\').replace('"', '\\"')
+    
+    # Test cases for problematic tokens
+    test_cases = [
+        (b"", "empty token"),
+        (b"x" * 3, "too small (< 4 bytes)"),
+        (b"\x00\x00\x00\x00", "header only, no data"),
+        (b"\x10\x00\x00\x00" + b"\x00" * 16, "size mismatch (declares 16, total 20)"),
+        (b"\x10\x00\x00\x00" + b"\x00" * 12, "size mismatch (declares 16, has 12)"),
+        (b"\x08\x00\x00\x00" + b"\x00" * 8, "all zeros data"),
+    ]
+    
+    for token, description in test_cases:
+        # Convert bytes to hex string for safe embedding in subprocess code
+        token_hex = token.hex()
+        
+        code = f"""
+import sys
+from mssql_python import connect
+
+conn_str = "{escaped_conn_str}"
+fake_token = bytes.fromhex("{token_hex}")
+attrs_before = {{1256: fake_token}}  # SQL_COPT_SS_ACCESS_TOKEN = 1256
+
+try:
+    connect(conn_str, attrs_before=attrs_before)
+    print("ERROR: Should have raised exception for {description}")
+    sys.exit(1)
+except Exception as e:
+    error_msg = str(e)
+    # Check for our validation error messages
+    if "Invalid access token" in error_msg:
+        print(f"PASS: Got expected validation error for {description}")
+        sys.exit(0)
+    else:
+        print(f"ERROR: Got unexpected error for {description}: {{error_msg}}")
+        sys.exit(1)
+"""
+        
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True
+        )
+        
+        # Should not crash (exit code 139 on Linux, 134 on macOS, -11 on some systems)
+        assert result.returncode not in [134, 139, -11], \
+            f"Crash detected for {description}! STDERR: {result.stderr}"
+        
+        # Should exit cleanly with our validation error
+        assert result.returncode == 0, \
+            f"Expected validation error for {description}. Exit code: {result.returncode}\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+        
+        assert "PASS" in result.stdout, \
+            f"Expected PASS message for {description}, got: {result.stdout}"
+
+
+def test_short_access_token_protection_allows_valid_tokens():
+    """
+    Test that properly formatted access tokens are NOT blocked by validation.
+    
+    This verifies that our defensive validation only blocks malformed tokens,
+    and allows properly structured tokens to proceed (even though they may fail
+    authentication if the token is invalid, which is expected behavior).
+    
+    Runs in separate subprocess to avoid ODBC driver state pollution from earlier tests.
+    """
+    import os
+    import subprocess
+    import struct
+    
+    # Get connection string and remove UID/Pwd to force token-only mode
+    conn_str = os.getenv("DB_CONNECTION_STRING")
+    if not conn_str:
+        pytest.skip("DB_CONNECTION_STRING environment variable not set")
+    
+    # Remove authentication to force pure token mode
+    conn_str_no_auth = conn_str
+    for remove_param in ["UID=", "Pwd=", "uid=", "pwd="]:
+        if remove_param in conn_str_no_auth:
+            parts = conn_str_no_auth.split(";")
+            parts = [p for p in parts if not p.lower().startswith(remove_param.lower())]
+            conn_str_no_auth = ";".join(parts)
+    
+    # Escape connection string for embedding in subprocess code
+    escaped_conn_str = conn_str_no_auth.replace('\\', '\\\\').replace('"', '\\"')
+    
+    # Test that properly formatted tokens don't get blocked (but will fail auth)
+    # Create a properly formatted UTF-16LE encoded ACCESSTOKEN structure
+    code = f"""
+import sys
+import struct
+from mssql_python import connect
+
+conn_str = "{escaped_conn_str}"
+
+# Create properly formatted ACCESSTOKEN with UTF-16LE encoded data
+# Use a fake JWT-like string that encodes properly
+fake_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"  # Base64-like JWT header
+token_data = fake_jwt.encode('utf-16-le')  # Properly encode as UTF-16LE
+token_struct = struct.pack(f'<I{{len(token_data)}}s', len(token_data), token_data)
+
+attrs_before = {{1256: token_struct}}
+
+try:
+    connect(conn_str, attrs_before=attrs_before)
+    print("ERROR: Should have failed authentication")
+    sys.exit(1)
+except Exception as e:
+    error_msg = str(e)
+    # Should NOT get our validation errors
+    if "Invalid access token" in error_msg:
+        print(f"ERROR: Valid token structure was incorrectly blocked: {{error_msg}}")
+        sys.exit(1)
+    # Should get an authentication/connection error instead
+    elif any(keyword in error_msg.lower() for keyword in ["login", "auth", "tcp", "connect", "token"]):
+        print(f"PASS: Valid token structure not blocked, got expected connection/auth error")
+        sys.exit(0)
+    else:
+        print(f"WARN: Got unexpected error (but structure passed validation): {{error_msg}}")
+        sys.exit(0)  # Still pass - structure validation worked
+"""
+    
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True
+    )
+    
+    # Should not crash
+    assert result.returncode not in [134, 139, -11], \
+        f"Segfault detected for legitimate token! STDERR: {result.stderr}"
+    
+    # Should pass the test
+    assert result.returncode == 0, \
+        f"Legitimate token test failed. Exit code: {result.returncode}\nSTDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    
+    assert "PASS" in result.stdout, \
+        f"Expected PASS message for legitimate token, got: {result.stdout}"
