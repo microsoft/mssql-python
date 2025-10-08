@@ -26,13 +26,14 @@ jobs:
     steps:
       - checkout: none  # No source code needed for consolidation
       
-      # Download ALL artifacts from all platform build jobs
-      # This downloads all Windows, macOS, and Linux artifacts (27 total)
+      # Download ALL artifacts from current build
+      # Matrix jobs publish as: Windows_<JobId>, macOS_<JobId>, Linux_<JobId>
+      # This downloads all of them automatically (27 total artifacts)
       - task: DownloadPipelineArtifact@2
         displayName: 'Download All Platform Artifacts'
         inputs:
           buildType: 'current'
-          targetPath: '$(Pipeline.Workspace)/artifacts'
+          targetPath: '$(Pipeline.Workspace)/all-artifacts'
       
       # Consolidate all wheels into single dist/ directory
       - bash: |
@@ -40,18 +41,37 @@ jobs:
           echo "Creating consolidated dist directory..."
           mkdir -p $(ob_outputDirectory)/dist
           
-          echo "Finding all wheel files from all artifacts..."
-          find $(Pipeline.Workspace)/artifacts -name "*.whl" -exec ls -lh {} \;
+          echo "=========================================="
+          echo "Searching for all wheel files across all artifacts..."
+          echo "=========================================="
+          
+          # List all downloaded artifacts
+          echo "Downloaded artifacts:"
+          ls -la $(Pipeline.Workspace)/all-artifacts/
+          
+          echo ""
+          echo "Finding all .whl files..."
+          find $(Pipeline.Workspace)/all-artifacts -name "*.whl" -exec ls -lh {} \;
           
           echo ""
           echo "Copying all wheels to consolidated dist/..."
-          find $(Pipeline.Workspace)/artifacts -name "*.whl" -exec cp -v {} $(ob_outputDirectory)/dist/ \;
+          find $(Pipeline.Workspace)/all-artifacts -name "*.whl" -exec cp -v {} $(ob_outputDirectory)/dist/ \;
           
           echo ""
+          echo "=========================================="
           echo "Consolidation complete! Total wheels:"
+          echo "=========================================="
           ls -lh $(ob_outputDirectory)/dist/
           echo ""
-          echo "Total wheel count: $(ls -1 $(ob_outputDirectory)/dist/*.whl 2>/dev/null | wc -l)"
+          WHEEL_COUNT=$(ls -1 $(ob_outputDirectory)/dist/*.whl 2>/dev/null | wc -l)
+          echo "Total wheel count: $WHEEL_COUNT"
+          echo "Expected: 27 wheels (7 Windows + 4 macOS + 16 Linux)"
+          
+          if [ "$WHEEL_COUNT" -ne 27 ]; then
+            echo "WARNING: Expected 27 wheels but found $WHEEL_COUNT"
+          else
+            echo "SUCCESS: All 27 wheels consolidated!"
+          fi
         displayName: 'Consolidate wheels from all platforms'
       
       # Optional: Consolidate native bindings for reference
@@ -60,20 +80,29 @@ jobs:
           echo "Creating bindings directory structure..."
           mkdir -p $(ob_outputDirectory)/bindings
           
-          echo "Copying all bindings from all artifacts..."
-          find $(Pipeline.Workspace)/artifacts -type d -name "bindings" -exec cp -rv {}/* $(ob_outputDirectory)/bindings/ \; 2>/dev/null || true
+          echo "Searching for bindings directories..."
+          find $(Pipeline.Workspace)/all-artifacts -type d -name "bindings" | while read dir; do
+            echo "Found bindings in: $dir"
+            cp -rv "$dir"/* $(ob_outputDirectory)/bindings/ 2>/dev/null || true
+          done
           
           echo "Bindings consolidation complete!"
+          echo "Bindings structure:"
+          find $(ob_outputDirectory)/bindings -type f | head -20
         displayName: 'Consolidate native bindings (optional)'
         continueOnError: true
       
       # Optional: Consolidate Windows symbols
       - bash: |
           set -e
-          if find $(Pipeline.Workspace)/artifacts -type d -name "symbols" | grep -q .; then
+          echo "Searching for symbols directories..."
+          if find $(Pipeline.Workspace)/all-artifacts -type d -name "symbols" | grep -q .; then
             echo "Copying Windows symbols..."
             mkdir -p $(ob_outputDirectory)/symbols
-            find $(Pipeline.Workspace)/artifacts -type d -name "symbols" -exec cp -rv {}/* $(ob_outputDirectory)/symbols/ \;
+            find $(Pipeline.Workspace)/all-artifacts -type d -name "symbols" | while read dir; do
+              echo "Found symbols in: $dir"
+              cp -rv "$dir"/* $(ob_outputDirectory)/symbols/ 2>/dev/null || true
+            done
             echo "Symbols consolidation complete!"
           else
             echo "No Windows symbols found (expected for NonOfficial builds)"

@@ -188,14 +188,13 @@ jobs:
         displayName: 'Cleanup container'
         condition: always()
       
-      # Note: OneBranch automatically publishes $(ob_outputDirectory) as artifact
-      # drop_Build_BuildLinuxWheels even with custom pools (isCustom: true)
-      # Explicit publish with unique artifact name per matrix iteration
+      # Note: Each matrix iteration needs unique artifact name
+      # Using System.JobId to avoid conflicts when multiple iterations run in parallel
       - task: PublishPipelineArtifact@1
         displayName: 'Publish Linux Artifacts'
         inputs:
           targetPath: '$(ob_outputDirectory)'
-          artifact: 'drop_Build_BuildLinuxWheels_$(LINUX_TAG)_$(ARCH)'
+          artifact: 'Linux_$(System.JobId)'
           publishLocation: 'pipeline'
       
       # Malware scanning

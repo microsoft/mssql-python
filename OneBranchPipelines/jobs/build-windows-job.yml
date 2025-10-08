@@ -174,14 +174,13 @@ jobs:
           TargetFolder: '$(ob_outputDirectory)\wheels'
         displayName: 'Copy wheel files'
       
-      # Note: OneBranch automatically publishes $(ob_outputDirectory) as artifact
-      # drop_Build_BuildWindowsWheels even with custom pools (isCustom: true)
-      # Explicit publish with unique artifact name per matrix iteration
+      # Note: Each matrix iteration needs unique artifact name
+      # Using System.JobId to avoid conflicts when multiple iterations run in parallel
       - task: PublishPipelineArtifact@1
         displayName: 'Publish Windows Artifacts'
         inputs:
           targetPath: '$(ob_outputDirectory)'
-          artifact: 'drop_Build_BuildWindowsWheels_py$(shortPyVer)_$(targetArch)'
+          artifact: 'Windows_$(System.JobId)'
           publishLocation: 'pipeline'
       
       # Malware scanning
