@@ -1,0 +1,203 @@
+# Windows Single Configuration Stage Template
+# Builds Python wheel for a specific Python version and architecture
+parameters:
+  - name: stageName
+    type: string
+  - name: jobName
+    type: string
+    default: 'BuildWheel'
+  - name: pythonVersion
+    type: string
+  - name: shortPyVer
+    type: string
+  - name: architecture
+    type: string
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+  - name: signingEnabled
+    type: boolean
+    default: true
+  - name: buildConfiguration
+    type: string
+    default: 'Release'
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: 'Build Windows Python ${{ parameters.pythonVersion }} ${{ parameters.architecture }}'
+    jobs:
+      - job: ${{ parameters.jobName }}
+        displayName: 'Build Wheel - Python ${{ parameters.pythonVersion }} ${{ parameters.architecture }}'
+        pool:
+          type: windows
+          isCustom: true
+          name: Django-1ES-pool
+          demands:
+            - imageOverride -equals WIN22-SQL22
+        timeoutInMinutes: 120
+        
+        variables:
+          ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+          LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+          pythonVersion: ${{ parameters.pythonVersion }}
+          shortPyVer: ${{ parameters.shortPyVer }}
+          targetArch: ${{ parameters.architecture }}
+          DB_PASSWORD: $(sqlPassword)
+        
+        steps:
+          - checkout: self
+            fetchDepth: 0
+          
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '${{ parameters.pythonVersion }}'
+              architecture: '${{ parameters.architecture }}'
+            displayName: 'Use Python ${{ parameters.pythonVersion }} ${{ parameters.architecture }}'
+          
+          - powershell: |
+              Write-Host "Python version:"
+              python --version
+              Write-Host "Python location:"
+              python -c "import sys; print(sys.executable)"
+              Write-Host "Architecture:"
+              python -c "import platform; print(platform.machine())"
+            displayName: 'Verify Python installation'
+          
+          - powershell: |
+              $ErrorActionPreference = "Stop"
+              Write-Host "Installing Python dependencies..."
+              python -m pip install --upgrade pip
+              python -m pip install setuptools wheel pybind11 pytest pyodbc
+              Write-Host "Dependencies installed successfully"
+            displayName: 'Install Python dependencies'
+          
+          - powershell: |
+              Write-Host "Setting up SQL Server LocalDB..."
+              sqllocaldb create MSSQLLocalDB -s
+              sqllocaldb info MSSQLLocalDB
+              
+              Write-Host "Creating test database and user..."
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB;"
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)';"
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "USE TestDB; CREATE USER testuser FOR LOGIN testuser;"
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "USE TestDB; ALTER ROLE db_owner ADD MEMBER testuser;"
+            displayName: 'Setup SQL Server LocalDB'
+          
+          - powershell: |
+              $ErrorActionPreference = "Stop"
+              
+              $architecture = "$(targetArch)"
+              Write-Host "Building for architecture: $architecture"
+              Write-Host "Python short version: $(shortPyVer)"
+              
+              cd mssql_python\pybind
+              
+              $env:CMAKE_GENERATOR="Visual Studio 17 2022"
+              if ($architecture -eq "arm64") {
+                $env:CMAKE_GENERATOR_PLATFORM="ARM64"
+                Write-Host "Downloading ARM64 msodbcsql library..."
+                Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/?linkid=2249004" -OutFile "msodbcsql.msi"
+                Start-Process msiexec.exe -Wait -ArgumentList '/i msodbcsql.msi /qn IACCEPTMSODBCSQLLICENSETERMS=YES'
+              } else {
+                $env:CMAKE_GENERATOR_PLATFORM="x64"
+              }
+              
+              Write-Host "Environment:"
+              Write-Host "  CMAKE_GENERATOR=$env:CMAKE_GENERATOR"
+              Write-Host "  CMAKE_GENERATOR_PLATFORM=$env:CMAKE_GENERATOR_PLATFORM"
+              
+              $targetArch = if ($architecture -eq "arm64") { "ARM64" } else { "x64" }
+              Write-Host "Target architecture for build: $targetArch"
+              
+              function architecture {
+                if ($architecture -eq "arm64") { return "ARM64" } else { return "x64" }
+              }
+              
+              call build.bat $(targetArch)
+              call keep_single_arch.bat $(targetArch)
+              
+              cd ..\..
+            displayName: 'Build PYD for ${{ parameters.architecture }}'
+            continueOnError: false
+          
+          - powershell: |
+              Write-Host "Running pytests to validate bindings"
+              if ("$(targetArch)" -eq "arm64") {
+                Write-Host "Skipping pytests on Windows ARM64"
+              } else {
+                python -m pytest -v
+              }
+            displayName: 'Run pytests'
+            env:
+              DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+          
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+              Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
+              TargetFolder: '$(ob_outputDirectory)\bindings\windows'
+            displayName: 'Copy PYD files'
+          
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+              Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pdb'
+              TargetFolder: '$(ob_outputDirectory)\symbols'
+            displayName: 'Copy PDB symbols'
+            condition: and(succeeded(), eq('${{ parameters.buildConfiguration }}', 'Debug'))
+          
+          - script: |
+              python setup.py bdist_wheel
+            displayName: 'Build Python wheel'
+          
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)\dist'
+              Contents: '*.whl'
+              TargetFolder: '$(ob_outputDirectory)\wheels'
+            displayName: 'Copy wheel files'
+          
+          # Explicit publish with OneBranch-compliant artifact name
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Windows Artifacts'
+            inputs:
+              targetPath: '$(ob_outputDirectory)'
+              artifact: 'drop_${{ parameters.stageName }}_${{ parameters.jobName }}'
+              publishLocation: 'pipeline'
+          
+          # Malware scanning
+          - template: /OneBranchPipelines/steps/malware-scanning-step.yml@self
+            parameters:
+              scanPath: '$(ob_outputDirectory)'
+              artifactType: 'dll'
+          
+          # ESRP Code Signing for DLLs (only for Official builds)
+          - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
+              - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
+                parameters:
+                  appRegistrationClientId: '$(SigningAppRegistrationClientId)'
+                  appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+                  artifactType: 'dll'
+                  authAkvName: '$(SigningAuthAkvName)'
+                  authSignCertName: '$(SigningAuthSignCertName)'
+                  esrpClientId: '$(SigningEsrpClientId)'
+                  esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+                  signPath: '$(ob_outputDirectory)\bindings\windows'
+              
+              - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
+                parameters:
+                  appRegistrationClientId: '$(SigningAppRegistrationClientId)'
+                  appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+                  artifactType: 'whl'
+                  authAkvName: '$(SigningAuthAkvName)'
+                  authSignCertName: '$(SigningAuthSignCertName)'
+                  esrpClientId: '$(SigningEsrpClientId)'
+                  esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+                  signPath: '$(ob_outputDirectory)\wheels'
+          
+          # Publish symbols (Windows only)
+          - ${{ if and(eq(parameters.oneBranchType, 'Official'), eq(parameters.buildConfiguration, 'Debug')) }}:
+              - template: /OneBranchPipelines/steps/symbol-publishing-step.yml@self
+                parameters:
+                  SymbolsFolder: '$(ob_outputDirectory)\symbols'
+                  SymbolsArtifactName: 'Symbols_Win_py${{ parameters.shortPyVer }}_${{ parameters.architecture }}'

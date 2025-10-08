@@ -1,5 +1,7 @@
 # Consolidate Artifacts Job Template
-# Downloads artifacts from all platform build jobs and consolidates into single dist/ folder
+# Downloads artifacts from all platform build stages and consolidates into single dist/ folder
+# Works with individual stage artifacts (15 stages total: 7 Windows + 4 macOS + 4 Linux)
+# Each Linux stage builds 4 Python versions, resulting in 27 total wheels
 parameters:
   - name: oneBranchType
     type: string
@@ -8,10 +10,6 @@ parameters:
 jobs:
   - job: ConsolidateArtifacts
     displayName: 'Consolidate All Platform Artifacts'
-    dependsOn:
-      - BuildWindowsWheels
-      - BuildMacOSWheels
-      - BuildLinuxWheels
     condition: succeeded()
     
     pool:
