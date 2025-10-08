@@ -647,9 +647,7 @@ import threading
 import sys
 import time
 from mssql_python import connect
-
 conn = connect("{escaped_conn_str}")
-
 def aggressive_worker(thread_id):
     '''Worker that creates cursors with pending results and doesn't clean up'''
     for i in range(8):
@@ -663,24 +661,22 @@ def aggressive_worker(thread_id):
         
         # Don't fetch results, don't close cursors - maximum chaos
         time.sleep(0.005)  # Let other threads interleave
-
 # Start multiple daemon threads
 for i in range(3):
     t = threading.Thread(target=aggressive_worker, args=(i,), daemon=True)
     t.start()
-
 # Let them run briefly then exit abruptly
 time.sleep(0.3)
 print("Exiting abruptly with active threads and pending queries")
 sys.exit(0)  # Abrupt exit without joining threads
 """
-    
+
     result = subprocess.run(
         [sys.executable, "-c", code],
         capture_output=True,
         text=True
     )
-    
+
     # Should not segfault - should exit cleanly even with abrupt exit
     assert result.returncode == 0, f"Expected clean exit, but got exit code {result.returncode}. STDERR: {result.stderr}"
     assert "Exiting abruptly with active threads and pending queries" in result.stdout
