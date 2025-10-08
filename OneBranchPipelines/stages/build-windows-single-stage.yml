@@ -83,41 +83,35 @@ stages:
             env:
               DB_PASSWORD: $(DB_PASSWORD)
           
-          - powershell: |
-              $ErrorActionPreference = "Stop"
+          - task: DownloadPipelineArtifact@2
+            condition: eq(variables['targetArch'], 'arm64')
+            inputs:
+              buildType: 'specific'
+              project: '$(System.TeamProject)'
+              definition: 2162
+              buildVersionToDownload: 'latest'
+              artifactName: 'mssql-python-arm64-libs'
+              targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
+            displayName: 'Download ARM64 Python libs'
+          
+          - script: |
+              echo "Python Version: $(pythonVersion)"
+              echo "Short Tag: $(shortPyVer)"
+              echo "Architecture: Host=$(architecture), Target=$(targetArch)"
               
-              $architecture = "$(targetArch)"
-              Write-Host "Building for architecture: $architecture"
-              Write-Host "Python short version: $(shortPyVer)"
+              cd "$(Build.SourcesDirectory)\mssql_python\pybind"
               
-              cd mssql_python\pybind
-              
-              $env:CMAKE_GENERATOR="Visual Studio 17 2022"
-              if ($architecture -eq "arm64") {
-                $env:CMAKE_GENERATOR_PLATFORM="ARM64"
-                Write-Host "Downloading ARM64 msodbcsql library..."
-                Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/?linkid=2249004" -OutFile "msodbcsql.msi"
-                Start-Process msiexec.exe -Wait -ArgumentList '/i msodbcsql.msi /qn IACCEPTMSODBCSQLLICENSETERMS=YES'
-              } else {
-                $env:CMAKE_GENERATOR_PLATFORM="x64"
-              }
-              
-              Write-Host "Environment:"
-              Write-Host "  CMAKE_GENERATOR=$env:CMAKE_GENERATOR"
-              Write-Host "  CMAKE_GENERATOR_PLATFORM=$env:CMAKE_GENERATOR_PLATFORM"
-              
-              $targetArch = if ($architecture -eq "arm64") { "ARM64" } else { "x64" }
-              Write-Host "Target architecture for build: $targetArch"
-              
-              function architecture {
-                if ($architecture -eq "arm64") { return "ARM64" } else { return "x64" }
-              }
+              REM Override lib path for ARM64
+              if "$(targetArch)"=="arm64" (
+                echo Using arm64-specific Python library...
+                set CUSTOM_PYTHON_LIB_DIR=$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64
+              )
               
               call build.bat $(targetArch)
               call keep_single_arch.bat $(targetArch)
               
               cd ..\..
-            displayName: 'Build PYD for ${{ parameters.architecture }}'
+            displayName: 'Build PYD for $(targetArch)'
             continueOnError: false
           
           - powershell: |
@@ -147,8 +141,10 @@ stages:
             condition: and(succeeded(), eq('${{ parameters.buildConfiguration }}', 'Debug'))
           
           - script: |
+              python -m pip install --upgrade pip wheel setuptools
+              set ARCHITECTURE=$(targetArch)
               python setup.py bdist_wheel
-            displayName: 'Build Python wheel'
+            displayName: 'Build wheel package'
           
           - task: CopyFiles@2
             inputs:
