@@ -176,7 +176,13 @@ jobs:
       
       # Note: OneBranch automatically publishes $(ob_outputDirectory) as artifact
       # drop_Build_BuildWindowsWheels even with custom pools (isCustom: true)
-      # No explicit PublishPipelineArtifact task needed
+      # Explicit publish with unique artifact name per matrix iteration
+      - task: PublishPipelineArtifact@1
+        displayName: 'Publish Windows Artifacts'
+        inputs:
+          targetPath: '$(ob_outputDirectory)'
+          artifact: 'drop_Build_BuildWindowsWheels_py$(shortPyVer)_$(targetArch)'
+          publishLocation: 'pipeline'
       
       # Malware scanning
       - template: /OneBranchPipelines/steps/malware-scanning-step.yml@self

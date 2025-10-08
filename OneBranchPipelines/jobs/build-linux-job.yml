@@ -190,7 +190,13 @@ jobs:
       
       # Note: OneBranch automatically publishes $(ob_outputDirectory) as artifact
       # drop_Build_BuildLinuxWheels even with custom pools (isCustom: true)
-      # No explicit PublishPipelineArtifact task needed
+      # Explicit publish with unique artifact name per matrix iteration
+      - task: PublishPipelineArtifact@1
+        displayName: 'Publish Linux Artifacts'
+        inputs:
+          targetPath: '$(ob_outputDirectory)'
+          artifact: 'drop_Build_BuildLinuxWheels_$(LINUX_TAG)_$(ARCH)'
+          publishLocation: 'pipeline'
       
       # Malware scanning
       - template: ../steps/malware-scanning-step.yml@self
