@@ -174,14 +174,9 @@ jobs:
           TargetFolder: '$(ob_outputDirectory)\wheels'
         displayName: 'Copy wheel files'
       
-      # Publish artifacts explicitly (custom pool doesn't support auto-publishing)
-      # Following ODBC team's pattern: custom pools need explicit PublishPipelineArtifact@1
-      - task: PublishPipelineArtifact@1
-        displayName: 'Publish Windows Artifacts'
-        inputs:
-          targetPath: '$(ob_outputDirectory)'
-          artifact: 'drop_Build_BuildWindowsWheels'
-          publishLocation: 'pipeline'
+      # Note: OneBranch automatically publishes $(ob_outputDirectory) as artifact
+      # drop_Build_BuildWindowsWheels even with custom pools (isCustom: true)
+      # No explicit PublishPipelineArtifact task needed
       
       # Malware scanning
       - template: /OneBranchPipelines/steps/malware-scanning-step.yml@self

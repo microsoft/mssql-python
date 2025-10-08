@@ -917,6 +917,216 @@ ob_outputDirectory/
 
 ---
 
+## Symbol Publishing
+
+### Overview
+
+**What are Symbols?**
+
+Symbols (`.pdb` files on Windows) contain debugging information that maps compiled binary code back to source code. They enable:
+- Stack trace debugging with source file names and line numbers
+- Crash dump analysis in production environments
+- Performance profiling with function names
+- Security incident investigation
+
+**Why Publish Symbols?**
+
+For enterprise software like mssql-python, published symbols allow:
+1. **Microsoft Support**: Diagnose customer issues without shipping debug builds
+2. **Crash Analytics**: Understand production failures with full context
+3. **Security Response**: Analyze security incidents efficiently
+4. **Customer Debugging**: Enterprise customers can debug integration issues
+
+### Symbol Publishing in OneBranch
+
+**Platform Coverage**: Windows only (`.pdb` files)
+- Linux/macOS: Debug symbols embedded in `.so` files (not separately published)
+- Windows: Separate `.pdb` files published to symbol servers
+
+**Two Symbol Destinations**:
+
+1. **Azure DevOps Symbol Server** (Internal):
+   - For team debugging during development
+   - Retention: 5 years (configurable)
+   - Access: Team members via Visual Studio or WinDbg
+   - Task: `PublishSymbols@2`
+
+2. **Microsoft Symbol Publishing Service** (Internal + Public):
+   - For Microsoft-wide symbol sharing
+   - Can publish to internal (default) and/or public symbol servers
+   - Access: Via symbol server URL in debuggers
+   - Task: `AzureCLI@2` with custom PowerShell script
+
+### Implementation in Windows Job
+
+**Symbols are collected during build**:
+```yaml
+# Copy PDB files to ob_outputDirectory
+- task: CopyFiles@2
+  inputs:
+    SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+    Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pdb'
+    TargetFolder: '$(ob_outputDirectory)\symbols'
+  displayName: 'Copy PDB files'
+```
+
+**Symbol publishing steps** (Official builds only):
+
+#### Step 1: Configure Symbol Account
+```yaml
+- powershell: 'Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"'
+  displayName: 'Update Symbol.AccountName with SqlClientDrivers'
+```
+
+Sets the Azure DevOps symbol account to `SqlClientDrivers` (shared with SQL Client team).
+
+#### Step 2: Publish to Azure DevOps Symbol Server
+```yaml
+- task: PublishSymbols@2
+  displayName: 'Upload symbols to Azure DevOps Symbol Server'
+  inputs:
+    SymbolsFolder: '$(ob_outputDirectory)\symbols'
+    SearchPattern: '**/*.pdb'
+    IndexSources: false
+    SymbolServerType: TeamServices
+    SymbolsMaximumWaitTime: 60
+    SymbolExpirationInDays: 1825 # 5 years
+    SymbolsProduct: mssql-python
+    SymbolsVersion: $(Build.BuildId)
+    SymbolsArtifactName: $(System.TeamProject)-$(Build.SourceBranchName)-$(Build.DefinitionName)-$(Build.BuildId)
+    Pat: $(System.AccessToken)
+```
+
+**Key Parameters**:
+- `SymbolsFolder`: Where PDB files are located
+- `IndexSources`: `false` (don't embed source file paths - security)
+- `SymbolExpirationInDays`: 1825 days = 5 years retention
+- `SymbolsArtifactName`: Unique identifier for this build's symbols
+
+#### Step 3: Publish to Microsoft Symbol Publishing Service
+```yaml
+- task: AzureCLI@2
+  displayName: 'Publish symbols to Microsoft Symbol Publishing Service'
+  condition: succeeded()
+  env:
+    SymbolServer: '$(SymbolServer)'
+    SymbolTokenUri: '$(SymbolTokenUri)'
+    requestName: '$(System.TeamProject)-$(Build.SourceBranchName)-$(Build.DefinitionName)-$(Build.BuildId)'
+  inputs:
+    azureSubscription: 'SymbolsPublishing-msodbcsql-mssql-python'
+    scriptType: ps
+    scriptLocation: inlineScript
+    inlineScript: |
+      # Configuration
+      $publishToInternalServer = $true  # Microsoft internal symbol server
+      $publishToPublicServer = $false   # Public symbol server (Microsoft Symbol Server)
+      
+      # Get credentials and publish
+      # (Full script in build-windows-job.yml)
+```
+
+**Publishing Options**:
+- `publishToInternalServer: true` - Symbols available to Microsoft employees
+- `publishToPublicServer: false` - Symbols NOT available publicly (default for security)
+
+**Publishing Status Codes**:
+
+**PublishingStatus**:
+- `0` NotRequested - Not submitted yet
+- `1` Submitted - In queue
+- `2` Processing - Currently publishing
+- `3` Completed - Finished (check PublishingResult)
+
+**PublishingResult**:
+- `0` Pending - Not completed
+- `1` Succeeded - Published successfully
+- `2` Failed - Publishing failed
+- `3` Cancelled - Request was cancelled
+
+### Required Variables
+
+**From `symbol-variables.yml`**:
+```yaml
+# Symbol server configuration (from variable group)
+- name: SymbolServer
+  value: $(SymbolServer)  # e.g., 'symbolsmicrosoft'
+
+- name: SymbolTokenUri  
+  value: $(SymbolTokenUri)  # e.g., 'https://microsoft.onmicrosoft.com/...'
+```
+
+**From Variable Group** (`ESRP Federated Creds (AME)` or similar):
+- `SymbolServer`: Symbol server hostname
+- `SymbolTokenUri`: Azure AD resource URI for authentication
+
+**Azure Service Connection**:
+- `SymbolsPublishing-msodbcsql-mssql-python`: Service principal with symbol publishing permissions
+
+### Symbol Artifact Structure
+
+**After Windows build completes**:
+```
+drop_Build_BuildWindowsWheels/
+├── wheels/
+│   └── ... (.whl files)
+├── bindings/windows/
+│   └── ... (.pyd files)
+└── symbols/
+    ├── ddbc_bindings.cp310-win_amd64.pdb
+    ├── ddbc_bindings.cp311-win_amd64.pdb
+    ├── ddbc_bindings.cp312-win_amd64.pdb
+    ├── ddbc_bindings.cp313-win_amd64.pdb
+    ├── ddbc_bindings.cp311-win_arm64.pdb
+    ├── ddbc_bindings.cp312-win_arm64.pdb
+    └── ddbc_bindings.cp313-win_arm64.pdb
+```
+
+### Debugging with Published Symbols
+
+**Visual Studio**:
+1. Tools → Options → Debugging → Symbols
+2. Add symbol server URL: `https://symbolsmicrosoft.trafficmanager.net/...`
+3. Enable "Microsoft Symbol Servers"
+4. Debug your application - symbols load automatically
+
+**WinDbg**:
+```
+.sympath+ srv*https://symbolsmicrosoft.trafficmanager.net/...
+.reload
+```
+
+**Python Stack Traces**:
+Symbols help when Python calls native extensions:
+```python
+# Without symbols:
+File "mssql_python/connection.py", line 123, in connect
+  ddbc_bindings.pyd!0x00007FF8A1B2C3D0
+
+# With symbols:
+File "mssql_python/connection.py", line 123, in connect
+  ddbc_bindings.pyd!Connection::Connect() Line 456 in connection.cpp
+```
+
+### Troubleshooting Symbol Publishing
+
+**Error: "Symbol publishing failed with status 2"**
+- **Cause**: Authentication failure or invalid symbols
+- **Fix**: Verify Azure service connection has permissions, check PDB files are valid
+
+**Error: "SymbolServer variable not found"**
+- **Cause**: Missing variable group
+- **Fix**: Ensure `ESRP Federated Creds (AME)` group includes `SymbolServer` and `SymbolTokenUri`
+
+**Symbols not loading in Visual Studio**:
+- **Cause**: Symbol server URL incorrect or permissions
+- **Fix**: Verify symbol server URL, ensure you're authenticated to Azure AD
+
+**No symbols directory in artifacts**:
+- **Cause**: PDB files not copied from build output
+- **Fix**: Check `CopyFiles@2` task runs successfully, verify PDB files exist in build directory
+
+---
+
 ## Usage Guide
 
 ### Running NonOfficial Build (Testing)
@@ -1282,23 +1492,235 @@ Update build scripts to handle `Profile` configuration.
 
 ---
 
+## Change History
+
+### Overview
+This section documents major changes, fixes, and learnings from the OneBranch migration and subsequent improvements.
+
+---
+
+### 2025-10-08: Artifact Publishing Fix (Docker Daemon Issue)
+
+**Problem**: 
+Artifacts not publishing in builds. Investigation revealed OneBranch managed pools don't have Docker daemon accessible, causing Linux builds to fail.
+
+**Error**:
+```bash
+ERROR: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. 
+Is the docker daemon running?
+##[error]Bash exited with code '1'.
+```
+
+**Root Cause**:
+- Initial implementation removed `isCustom: true` from all pools to enable OneBranch auto-publishing
+- OneBranch managed Linux pools don't have Docker daemon running/accessible
+- Linux builds require Docker to run manylinux/musllinux container images
+- Windows builds also benefit from custom pool for LocalDB and specialized tools
+
+**Solution Implemented**:
+
+1. **Linux Job**: Restored custom pool configuration
+   ```yaml
+   pool:
+     type: linux
+     isCustom: true
+     name: Django-1ES-pool
+     demands:
+     - imageOverride -equals ADO-UB22-SQL22
+   ```
+   Added explicit artifact publishing:
+   ```yaml
+   - task: PublishPipelineArtifact@1
+     displayName: 'Publish Linux Artifacts'
+     inputs:
+       targetPath: '$(ob_outputDirectory)'
+       artifact: 'drop_Build_BuildLinuxWheels'
+       publishLocation: 'pipeline'
+   ```
+
+2. **Windows Job**: Also restored custom pool for consistency
+   ```yaml
+   pool:
+     type: windows
+     isCustom: true
+     name: Django-1ES-pool
+     vmImage: WIN22-SQL22
+   ```
+   Added explicit artifact publishing:
+   ```yaml
+   - task: PublishPipelineArtifact@1
+     displayName: 'Publish Windows Artifacts'
+     inputs:
+       targetPath: '$(ob_outputDirectory)'
+       artifact: 'drop_Build_BuildWindowsWheels'
+       publishLocation: 'pipeline'
+   ```
+
+3. **macOS Job**: Already using explicit publishing (Microsoft-hosted agents)
+
+**Pattern Adopted**: ODBC team's proven approach
+- All platforms now use custom pools with explicit `PublishPipelineArtifact@1`
+- Consistent pattern across all three platforms
+- Access to specialized capabilities (Docker, LocalDB, build tools)
+
+**Files Changed**:
+- `OneBranchPipelines/jobs/build-linux-job.yml`
+- `OneBranchPipelines/jobs/build-windows-job.yml`
+- `OneBranchPipelines/OneBranch-mssql-python-summary.md` (added Artifact Publishing section)
+
+**Verification**:
+- ✅ Docker daemon access restored for Linux builds
+- ✅ All 3 artifacts publish correctly: `drop_Build_BuildWindowsWheels`, `drop_Build_BuildLinuxWheels`, `drop_Build_BuildMacOSWheels`
+- ✅ Subdirectory structure preserved: `wheels/`, `bindings/`, `symbols/`
+
+---
+
+### 2025-10-08: Documentation Consolidation
+
+**Problem**: Multiple documentation files created during development, causing:
+- Confusion about which document is authoritative
+- Duplication of information
+- Maintenance burden (updates needed in multiple places)
+
+**Files Deleted** (merged into master summary):
+1. `ACCESSING_ARTIFACTS.md` (17KB) - Artifact access patterns
+2. `ARTIFACT_PUBLISHING_FIX.md` (5.9KB) - Docker daemon fix documentation
+3. `ESRP_SETUP_GUIDE.md` (11KB) - ESRP signing setup
+4. `ESRP_SIGNING_CLEANUP.md` (8.6KB) - ESRP refactoring notes
+5. `MIGRATION_SUMMARY.md` (9.5KB) - Migration overview
+6. `README.md` (4.5KB) - OneBranch pipeline intro
+7. `SYMBOLS_EXPLAINED.md` (18KB) - Symbol publishing details
+8. `SYMBOL_PUBLISHING_INTEGRATION.md` (12.6KB) - Symbol integration guide
+
+**Total Content Consolidated**: ~87KB of documentation
+
+**Master Document**: `OneBranchPipelines/OneBranch-mssql-python-summary.md`
+- Now the **single source of truth** for all OneBranch documentation
+- Includes: Architecture, Parameters, Variables, Build Matrix, SDL, Jobs, Steps, Signing, Symbols, Troubleshooting, Usage
+- All future updates go directly to this file
+
+**Benefits**:
+- ✅ One authoritative document
+- ✅ No duplicate information
+- ✅ Easier to maintain
+- ✅ Complete context in one place
+- ✅ Better version control
+
+---
+
+### 2025-10-07: Initial OneBranch Migration
+
+**Scope**: Complete migration from Classic Azure Pipelines to OneBranch v2 CrossPlat
+
+**Major Changes**:
+
+1. **Pipeline Structure**:
+   - Extended OneBranch base templates (`v2/OneBranch.Official.CrossPlat.yml`)
+   - Separated into job templates: `build-windows-job.yml`, `build-macos-job.yml`, `build-linux-job.yml`
+   - Created step templates: `malware-scanning-step.yml`, `compound-esrp-code-signing-step.yml`
+   - Organized variables into 5 separate files
+
+2. **SDL Integration**:
+   - Integrated 10 SDL tools via `globalSdl` configuration
+   - Added CodeQL for Python and C++ scanning
+   - Added ApiScan, Armory, BinSkim, CodeInspector, CredScan, PoliCheck
+   - Configured SBOM generation
+   - Added TSA integration for Official builds
+
+3. **Build Matrix**:
+   - 27 total wheel builds per run
+   - Windows: 7 builds (Python 3.10-3.13, x64/ARM64)
+   - macOS: 4 builds (Python 3.10-3.13, universal2)
+   - Linux: 16 builds (Python 3.10-3.13, manylinux/musllinux, x86_64/aarch64)
+
+4. **Code Signing**:
+   - Integrated ESRP code signing for Official builds
+   - Used existing `ESRP Federated Creds (AME)` variable group
+   - Signs both wheels (`.whl`) and native bindings (`.dll`, `.pyd`, `.so`)
+   - Added variable mapping for OneBranch naming conventions
+
+5. **Symbol Publishing** (Windows only):
+   - Publishes `.pdb` files to Azure DevOps Symbol Server
+   - Publishes to Microsoft Symbol Publishing Service
+   - 5-year retention policy
+   - Internal server only (not public)
+
+6. **Package Version Strategy**:
+   - Added `packageVersion` parameter for SDL tool metadata
+   - Kept `setup.py` as source of truth for actual package version
+   - Both must be kept in sync manually
+
+**Files Created**:
+- `OneBranchPipelines/build-release-package-pipeline.yml` (main pipeline)
+- `OneBranchPipelines/jobs/` (3 job templates)
+- `OneBranchPipelines/steps/` (2 step templates)
+- `OneBranchPipelines/variables/` (5 variable files)
+- `OneBranchPipelines/OneBranch-mssql-python-summary.md` (comprehensive docs)
+
+**Validation**:
+- ✅ Pipeline passes OneBranch schema validation
+- ✅ SDL tools configured correctly
+- ✅ ESRP signing integration working
+- ✅ Symbol publishing configured
+- ✅ All three platforms building successfully
+
+---
+
+### Key Learnings
+
+**OneBranch Patterns**:
+1. **Template Paths**: Must use absolute paths with `@self` when using `extends` pattern
+2. **Variable Timing**: Distinguish compile-time (`${{ }}`) vs runtime (`$()`) variables
+3. **Pool Configuration**: `isCustom: true` disables auto-publishing, requires explicit tasks
+4. **Artifact Publishing**: Use `PublishPipelineArtifact@1` (not `@2`) for custom pools
+5. **SDL Integration**: All SDL tools configured via `globalSdl` in main pipeline
+
+**Platform-Specific**:
+1. **Linux**: Requires Docker daemon access → needs custom pool
+2. **Windows**: Benefits from LocalDB and specialized tools → custom pool recommended
+3. **macOS**: Microsoft-hosted agents → always needs custom pool + explicit publishing
+4. **Symbols**: Windows only (`.pdb` files), Linux/macOS embed symbols in binaries
+
+**ESRP Signing**:
+1. **Variable Group**: Existing `ESRP Federated Creds (AME)` works for both signing and release
+2. **Mapping Required**: OneBranch uses different variable names, need explicit mapping
+3. **Official Only**: Signing only runs in Official builds, NonOfficial skips signing
+4. **Two Operations**: Code signing (this pipeline) separate from release publishing (different pipeline)
+
+**Documentation**:
+1. **Single Source of Truth**: Maintain one comprehensive document, not multiple files
+2. **Context Matters**: Include "why" decisions were made, not just "what" configuration is
+3. **Examples**: Show before/after, correct/incorrect patterns
+4. **Troubleshooting**: Document errors encountered and solutions
+
+---
+
 ## References
 
 ### Key Files
 
+**Pipeline Files**:
 - **Main Pipeline**: `OneBranchPipelines/build-release-package-pipeline.yml`
-- **Variables**: `OneBranchPipelines/variables/common-variables.yml`
-- **Windows Jobs**: `OneBranchPipelines/jobs/build-windows-job.yml`
-- **macOS Jobs**: `OneBranchPipelines/jobs/build-macos-job.yml`
-- **Linux Jobs**: `OneBranchPipelines/jobs/build-linux-job.yml`
-- **Package Version Docs**: `OneBranchPipelines/PACKAGE_VERSION_IMPLEMENTATION.md`
-- **Migration Summary**: `OneBranchPipelines/MIGRATION_SUMMARY.md`
+- **Windows Job**: `OneBranchPipelines/jobs/build-windows-job.yml`
+- **macOS Job**: `OneBranchPipelines/jobs/build-macos-job.yml`
+- **Linux Job**: `OneBranchPipelines/jobs/build-linux-job.yml`
+- **Malware Scanning Step**: `OneBranchPipelines/steps/malware-scanning-step.yml`
+- **ESRP Signing Step**: `OneBranchPipelines/steps/compound-esrp-code-signing-step.yml`
 
-### Documentation
+**Variable Files**:
+- **Common Variables**: `OneBranchPipelines/variables/common-variables.yml`
+- **Build Variables**: `OneBranchPipelines/variables/build-variables.yml`
+- **OneBranch Variables**: `OneBranchPipelines/variables/onebranch-variables.yml`
+- **Signing Variables**: `OneBranchPipelines/variables/signing-variables.yml`
+- **Symbol Variables**: `OneBranchPipelines/variables/symbol-variables.yml`
 
-- **OneBranch Learnings**: `OneBranch_Learnings/` directory
-- **SqlClient Reference**: `sqlclient_eng/pipelines/`
-- **This Document**: `OneBranchPipelines/OneBranch-mssql-python-summary.md`
+**Documentation** (Single Source of Truth):
+- **This Document**: `OneBranchPipelines/OneBranch-mssql-python-summary.md` - Complete OneBranch reference
+
+**Related Documentation**:
+- **OneBranch Learnings**: `OneBranch_Learnings/` directory - OneBranch migration patterns and analysis
+- **SqlClient Reference**: `sqlclient_eng/pipelines/` - Reference implementations from SQL Client team
+- **ODBC Reference**: `odbc_eng/` - Reference implementations from ODBC team
 
 ### External Resources
 
@@ -1312,9 +1734,11 @@ Update build scripts to handle `Profile` configuration.
 ## Version History
 
 | Version | Date | Changes |
-|---------|---------|--------------------------------------------------------------|
-| 1.0.0 | 2025-10-07 | Initial comprehensive documentation |
-| 1.1.0 | 2025-10-08 | **Artifact Publishing Fix**: Restored Linux custom pool (Django-1ES-pool) to fix Docker daemon access. Added explicit `PublishPipelineArtifact@1` for Linux (matching macOS pattern). Documented Docker requirement and publishing rules. |
+|---------|----------|--------------------------------------------------------------------------|
+| 1.0.0 | 2025-10-07 | Initial comprehensive documentation for OneBranch pipeline |
+| 1.1.0 | 2025-10-08 | **Artifact Publishing Fix**: Restored Linux custom pool (Django-1ES-pool) to fix Docker daemon access. Added explicit `PublishPipelineArtifact@1` for Linux. |
+| 1.2.0 | 2025-10-08 | **Windows Consistency Update**: Restored Windows custom pool (Django-1ES-pool) for consistency with Linux, added explicit artifact publishing for Windows. All three platforms now use identical publishing pattern. |
+| 1.3.0 | 2025-10-08 | **Documentation Consolidation**: Deleted 8 separate markdown files (~87KB), merged all content into single master document. Added Symbol Publishing section and comprehensive Change History section. |
 
 ---
 
@@ -1327,6 +1751,9 @@ For questions or issues with this pipeline:
 
 ---
 
-**Last Updated**: October 7, 2025  
+**Last Updated**: October 8, 2025  
+**Pipeline Version**: v2 OneBranch CrossPlat  
+**Document Version**: 1.3.0  
+**Document Owner**: Gaurav Sharma  
 **Pipeline Version**: v2 OneBranch CrossPlat  
 **Document Owner**: Gaurav Sharma

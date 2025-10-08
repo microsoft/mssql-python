@@ -188,14 +188,9 @@ jobs:
         displayName: 'Cleanup container'
         condition: always()
       
-      # Publish artifacts explicitly (custom pool doesn't support auto-publishing)
-      # Following ODBC team's pattern: custom pools need explicit PublishPipelineArtifact@1
-      - task: PublishPipelineArtifact@1
-        displayName: 'Publish Linux Artifacts'
-        inputs:
-          targetPath: '$(ob_outputDirectory)'
-          artifact: 'drop_Build_BuildLinuxWheels'
-          publishLocation: 'pipeline'
+      # Note: OneBranch automatically publishes $(ob_outputDirectory) as artifact
+      # drop_Build_BuildLinuxWheels even with custom pools (isCustom: true)
+      # No explicit PublishPipelineArtifact task needed
       
       # Malware scanning
       - template: ../steps/malware-scanning-step.yml@self
