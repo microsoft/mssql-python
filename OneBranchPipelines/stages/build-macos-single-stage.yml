@@ -38,7 +38,6 @@ stages:
           LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
           pythonVersion: ${{ parameters.pythonVersion }}
           shortPyVer: ${{ parameters.shortPyVer }}
-          DB_PASSWORD: $(sqlPassword)
         
         steps:
           - checkout: self

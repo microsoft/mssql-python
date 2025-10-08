@@ -41,7 +41,6 @@ stages:
           pythonVersion: ${{ parameters.pythonVersion }}
           shortPyVer: ${{ parameters.shortPyVer }}
           targetArch: ${{ parameters.architecture }}
-          DB_PASSWORD: $(sqlPassword)
         
         steps:
           - checkout: self
