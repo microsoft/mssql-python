@@ -129,6 +129,23 @@ jobs:
           TargetFolder: '$(ob_outputDirectory)/wheels'
         displayName: 'Copy wheel files'
       
+      # Publish artifacts (wheels and .so bindings)
+      - task: PublishBuildArtifacts@1
+        condition: succeededOrFailed()
+        inputs:
+          PathtoPublish: '$(ob_outputDirectory)/wheels'
+          ArtifactName: 'mssql-python-wheels-dist'
+          publishLocation: 'Container'
+        displayName: 'Publish wheels as artifacts'
+      
+      - task: PublishBuildArtifacts@1
+        condition: succeededOrFailed()
+        inputs:
+          PathtoPublish: '$(ob_outputDirectory)/bindings'
+          ArtifactName: 'mssql-python-ddbc-bindings'
+          publishLocation: 'Container'
+        displayName: 'Publish .so files as artifacts'
+      
       # Malware scanning
       - template: ../steps/malware-scanning-step.yml@self
         parameters:

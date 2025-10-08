@@ -206,24 +206,5 @@ extends:
               signingEnabled: '${{ parameters.signingEnabled }}'
               buildConfiguration: '${{ parameters.buildConfiguration }}'
 
-      # Optional: Symbol Publishing Stage (Official builds only)
-      - ${{ if and(eq(parameters.oneBranchType, 'Official'), eq(parameters.publishSymbols, true)) }}:
-          - stage: PublishSymbols
-            displayName: 'Publish Debug Symbols'
-            dependsOn: Build
-            condition: succeeded()
-            jobs:
-              - job: PublishSymbolsJob
-                displayName: 'Publish Symbols to Symbol Server'
-                pool:
-                  type: windows
-                steps:
-                  - task: PublishSymbols@2
-                    displayName: 'Publish Symbols'
-                    inputs:
-                      SymbolsFolder: '$(ob_outputDirectory)/symbols'
-                      SearchPattern: '**/*.pdb'
-                      IndexSources: false
-                      PublishSymbols: true
-                      SymbolServerType: 'TeamServices'
-                      SymbolsArtifactName: 'mssql-python-symbols'
+      # Note: Symbol publishing is now handled directly in the Windows build job
+      # See /OneBranchPipelines/jobs/build-windows-job.yml for symbol publishing steps
