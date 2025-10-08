@@ -18,9 +18,8 @@ jobs:
     displayName: 'Build Windows Wheels'
     pool:
       type: windows
-      isCustom: true
-      name: Django-1ES-pool
-      vmImage: WIN22-SQL22
+      # Removed isCustom: true to enable OneBranch auto-publishing from ob_outputDirectory
+      # Using OneBranch managed Windows pool instead of custom Django-1ES-pool
     
     strategy:
       matrix:
@@ -172,8 +171,9 @@ jobs:
           TargetFolder: '$(ob_outputDirectory)\wheels'
         displayName: 'Copy wheel files'
       
-      # Note: OneBranch automatically publishes $(ob_outputDirectory) as artifact:
-      # drop_Build_BuildWindowsWheels with subdirectories: wheels/, bindings/, symbols/
+      # Note: Using OneBranch managed pool (no isCustom: true) enables automatic
+      # publishing of $(ob_outputDirectory) as artifact: drop_Build_BuildWindowsWheels
+      # with subdirectories: wheels/, bindings/windows/, symbols/
       
       # Malware scanning
       - template: /OneBranchPipelines/steps/malware-scanning-step.yml@self

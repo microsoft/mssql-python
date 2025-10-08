@@ -129,8 +129,14 @@ jobs:
           TargetFolder: '$(ob_outputDirectory)/wheels'
         displayName: 'Copy wheel files'
       
-      # Note: OneBranch automatically publishes $(ob_outputDirectory) as artifact:
-      # drop_Build_BuildMacOSWheels with subdirectories: wheels/, bindings/
+      # Note: macOS uses Microsoft-hosted agents (not OneBranch managed), so we need
+      # to explicitly publish artifacts using PublishPipelineArtifact@1
+      - task: PublishPipelineArtifact@1
+        displayName: 'Publish macOS Artifacts'
+        inputs:
+          targetPath: '$(ob_outputDirectory)'
+          artifact: 'drop_Build_BuildMacOSWheels'
+          publishLocation: 'pipeline'
       
       # Malware scanning
       - template: ../steps/malware-scanning-step.yml@self

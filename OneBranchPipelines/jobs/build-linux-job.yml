@@ -18,10 +18,8 @@ jobs:
     displayName: 'Build Linux Wheels'
     pool:
       type: linux
-      isCustom: true
-      name: Django-1ES-pool
-      demands:
-      - imageOverride -equals ADO-UB22-SQL22
+      # Removed isCustom: true to enable OneBranch auto-publishing from ob_outputDirectory
+      # Using OneBranch managed Linux pool instead of custom Django-1ES-pool
     timeoutInMinutes: 120
     
     strategy:
@@ -184,8 +182,9 @@ jobs:
         displayName: 'Cleanup container'
         condition: always()
       
-      # Note: OneBranch automatically publishes $(ob_outputDirectory) as artifact:
-      # drop_Build_BuildLinuxWheels with subdirectories: wheels/, bindings/
+      # Note: Using OneBranch managed pool (no isCustom: true) enables automatic
+      # publishing of $(ob_outputDirectory) as artifact: drop_Build_BuildLinuxWheels
+      # with subdirectories: wheels/, bindings/
       
       # Malware scanning
       - template: ../steps/malware-scanning-step.yml@self
