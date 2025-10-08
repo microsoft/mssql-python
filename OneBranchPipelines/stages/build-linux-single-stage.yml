@@ -43,16 +43,6 @@ stages:
           LINUX_TAG: ${{ parameters.linuxTag }}
           ARCH: ${{ parameters.arch }}
           DOCKER_PLATFORM: ${{ parameters.dockerPlatform }}
-          IMAGE: ${{ if eq(parameters.linuxTag, 'manylinux') }}:
-            ${{ if eq(parameters.arch, 'x86_64') }}:
-              quay.io/pypa/manylinux_2_28_x86_64
-            ${{ if eq(parameters.arch, 'aarch64') }}:
-              quay.io/pypa/manylinux_2_28_aarch64
-          ${{ if eq(parameters.linuxTag, 'musllinux') }}:
-            ${{ if eq(parameters.arch, 'x86_64') }}:
-              quay.io/pypa/musllinux_1_2_x86_64
-            ${{ if eq(parameters.arch, 'aarch64') }}:
-              quay.io/pypa/musllinux_1_2_aarch64
         
         steps:
           - checkout: self
@@ -95,11 +85,18 @@ stages:
             displayName: 'Prepare artifact directories'
           
           - script: |
+              # Determine image based on LINUX_TAG and ARCH
+              if [[ "$(LINUX_TAG)" == "musllinux" ]]; then
+                IMAGE="quay.io/pypa/musllinux_1_2_$(ARCH)"
+              else
+                IMAGE="quay.io/pypa/manylinux_2_28_$(ARCH)"
+              fi
+              
               docker run -d --name build-$(LINUX_TAG)-$(ARCH) \
                 --platform $(DOCKER_PLATFORM) \
                 -v $(Build.SourcesDirectory):/workspace \
                 -w /workspace \
-                $(IMAGE) \
+                $IMAGE \
                 tail -f /dev/null
             displayName: 'Start $(LINUX_TAG) $(ARCH) container'
           
