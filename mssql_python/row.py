@@ -1,3 +1,6 @@
+from mssql_python import get_settings
+import uuid
+
 class Row:
     """
     A row of data from a cursor fetch operation. Provides both tuple-like indexing
@@ -30,7 +33,21 @@ class Row:
         if hasattr(cursor.connection, '_output_converters') and cursor.connection._output_converters:
             self._values = self._apply_output_converters(values)
         else:
-            self._values = values
+            self._values = self._process_uuid_values(values, description)
+
+    def _process_uuid_values(self, values, description):
+        """
+        Convert UUID objects to strings if native_uuid setting is False.
+        """
+        if get_settings().native_uuid:
+            return values
+        processed_values = []
+        for i, value in enumerate(values):
+            if i < len(description) and description[i] and isinstance(value, uuid.UUID):
+                processed_values.append(str(value))
+            else:
+                processed_values.append(value)
+        return processed_values
         
         # TODO: ADO task - Optimize memory usage by sharing column map across rows
         # Instead of storing the full cursor_description in each Row object:
