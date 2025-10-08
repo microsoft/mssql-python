@@ -52,7 +52,7 @@ stages:
             inputs:
               versionSpec: '${{ parameters.pythonVersion }}'
               architecture: '${{ parameters.architecture }}'
-            displayName: 'Use Python ${{ parameters.pythonVersion }} ${{ parameters.architecture }}'
+            displayName: 'Use Python "${{ parameters.pythonVersion }}" ${{ parameters.architecture }}'
           
           - powershell: |
               Write-Host "Python version:"
