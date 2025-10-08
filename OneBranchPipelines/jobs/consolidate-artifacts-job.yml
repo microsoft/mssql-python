@@ -132,5 +132,5 @@ jobs:
         displayName: 'Publish Consolidated Artifacts'
         inputs:
           targetPath: '$(ob_outputDirectory)'
-          artifact: 'drop_Build_ConsolidateArtifacts'
+          artifact: 'drop_Consolidate_ConsolidateArtifacts'
           publishLocation: 'pipeline'
