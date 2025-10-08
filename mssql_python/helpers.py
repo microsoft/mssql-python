@@ -7,8 +7,8 @@ This module provides helper functions for the mssql_python package.
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import raise_exception
 from mssql_python.logging_config import get_logger
-import platform
-from pathlib import Path
+import re
+from mssql_python.constants import ConstantsDDBC
 from mssql_python.ddbc_bindings import normalize_architecture
 
 logger = get_logger()
@@ -155,6 +155,96 @@ def sanitize_user_input(user_input: str, max_length: int = 50) -> str:
     # Return placeholder if nothing remains after sanitization
     return sanitized if sanitized else "<invalid>"
 
+def validate_attribute_value(attribute, value, is_connected=True, sanitize_logs=True, max_log_length=50):
+    """
+    Validates attribute and value pairs for connection attributes.
+    
+    Performs basic type checking and validation of ODBC connection attributes.
+    
+    Args:
+        attribute (int): The connection attribute to validate (SQL_ATTR_*)
+        value: The value to set for the attribute (int, str, bytes, or bytearray)
+        is_connected (bool): Whether the connection is already established
+        sanitize_logs (bool): Whether to include sanitized versions for logging
+        max_log_length (int): Maximum length of sanitized output for logging
+        
+    Returns:
+        tuple: (is_valid, error_message, sanitized_attribute, sanitized_value)
+    """
+    # Sanitize a value for logging
+    def _sanitize_for_logging(input_val, max_length=max_log_length):
+        if not isinstance(input_val, str):
+            try:
+                input_val = str(input_val)
+            except:
+                return "<non-string>"
+        
+        # Allow alphanumeric, dash, underscore, and dot
+        sanitized = re.sub(r'[^\w\-\.]', '', input_val)
+        
+        # Limit length
+        if len(sanitized) > max_length:
+            sanitized = sanitized[:max_length] + "..."
+        
+        return sanitized if sanitized else "<invalid>"
+    
+    # Create sanitized versions for logging
+    sanitized_attr = _sanitize_for_logging(attribute) if sanitize_logs else str(attribute)
+    sanitized_val = _sanitize_for_logging(value) if sanitize_logs else str(value)
+    
+    # Basic attribute validation - must be an integer
+    if not isinstance(attribute, int):
+        return False, f"Attribute must be an integer, got {type(attribute).__name__}", sanitized_attr, sanitized_val
+    
+    # Define driver-level attributes that are supported
+    SUPPORTED_ATTRIBUTES = [
+        ConstantsDDBC.SQL_ATTR_ACCESS_MODE.value,
+        ConstantsDDBC.SQL_ATTR_CONNECTION_TIMEOUT.value,
+        ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value,
+        ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value,
+        ConstantsDDBC.SQL_ATTR_PACKET_SIZE.value,
+        ConstantsDDBC.SQL_ATTR_TXN_ISOLATION.value
+    ]
+    
+    # Check if attribute is supported
+    if attribute not in SUPPORTED_ATTRIBUTES:
+        return False, f"Unsupported attribute: {attribute}", sanitized_attr, sanitized_val
+    
+    # Check timing constraints for these specific attributes
+    BEFORE_ONLY_ATTRIBUTES = [
+        ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value,
+        ConstantsDDBC.SQL_ATTR_PACKET_SIZE.value
+    ]
+    
+    # Check if attribute can be set at the current connection state
+    if is_connected and attribute in BEFORE_ONLY_ATTRIBUTES:
+        return False, (f"Attribute {attribute} must be set before connection establishment. "
+                      "Use the attrs_before parameter when creating the connection."), sanitized_attr, sanitized_val
+    
+    # Basic value type validation
+    if isinstance(value, int):
+        # For integer values, check if negative (login timeout can be -1 for default)
+        if value < 0 and attribute != ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value:
+            return False, f"Integer value cannot be negative: {value}", sanitized_attr, sanitized_val
+    
+    elif isinstance(value, str):
+        # Basic string length check
+        MAX_STRING_SIZE = 8192  # 8KB maximum
+        if len(value) > MAX_STRING_SIZE:
+            return False, f"String value too large: {len(value)} bytes (max {MAX_STRING_SIZE})", sanitized_attr, sanitized_val
+    
+    elif isinstance(value, (bytes, bytearray)):
+        # Basic binary length check
+        MAX_BINARY_SIZE = 32768  # 32KB maximum
+        if len(value) > MAX_BINARY_SIZE:
+            return False, f"Binary value too large: {len(value)} bytes (max {MAX_BINARY_SIZE})", sanitized_attr, sanitized_val
+    
+    else:
+        # Reject unsupported value types
+        return False, f"Unsupported attribute value type: {type(value).__name__}", sanitized_attr, sanitized_val
+    
+    # All basic validations passed
+    return True, None, sanitized_attr, sanitized_val
 
 def log(level: str, message: str, *args) -> None:
     """
