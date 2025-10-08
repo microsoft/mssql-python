@@ -172,22 +172,8 @@ jobs:
           TargetFolder: '$(ob_outputDirectory)\wheels'
         displayName: 'Copy wheel files'
       
-      # Publish artifacts (wheels and PYD bindings)
-      - task: PublishPipelineArtifact@2
-        condition: succeededOrFailed()
-        inputs:
-          targetPath: '$(ob_outputDirectory)\wheels'
-          artifactName: 'mssql-python-wheels-dist'
-          artifactType: 'pipeline'
-        displayName: 'Publish wheels as artifacts'
-      
-      - task: PublishPipelineArtifact@2
-        condition: succeededOrFailed()
-        inputs:
-          targetPath: '$(ob_outputDirectory)\bindings'
-          artifactName: 'mssql-python-ddbc-bindings'
-          artifactType: 'pipeline'
-        displayName: 'Publish PYD files as artifacts'
+      # Note: OneBranch automatically publishes $(ob_outputDirectory) as artifact:
+      # drop_Build_BuildWindowsWheels with subdirectories: wheels/, bindings/, symbols/
       
       # Malware scanning
       - template: /OneBranchPipelines/steps/malware-scanning-step.yml@self
