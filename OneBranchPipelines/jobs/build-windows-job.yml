@@ -173,20 +173,20 @@ jobs:
         displayName: 'Copy wheel files'
       
       # Publish artifacts (wheels and PYD bindings)
-      - task: PublishBuildArtifacts@1
+      - task: PublishPipelineArtifact@2
         condition: succeededOrFailed()
         inputs:
-          PathtoPublish: '$(ob_outputDirectory)\wheels'
-          ArtifactName: 'mssql-python-wheels-dist'
-          publishLocation: 'Container'
+          targetPath: '$(ob_outputDirectory)\wheels'
+          artifactName: 'mssql-python-wheels-dist'
+          artifactType: 'pipeline'
         displayName: 'Publish wheels as artifacts'
       
-      - task: PublishBuildArtifacts@1
+      - task: PublishPipelineArtifact@2
         condition: succeededOrFailed()
         inputs:
-          PathtoPublish: '$(ob_outputDirectory)\bindings'
-          ArtifactName: 'mssql-python-ddbc-bindings'
-          publishLocation: 'Container'
+          targetPath: '$(ob_outputDirectory)\bindings'
+          artifactName: 'mssql-python-ddbc-bindings'
+          artifactType: 'pipeline'
         displayName: 'Publish PYD files as artifacts'
       
       # Malware scanning
