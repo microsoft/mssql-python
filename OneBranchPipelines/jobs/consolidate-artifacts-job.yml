@@ -1,0 +1,136 @@
+# Consolidate Artifacts Job Template
+# Downloads artifacts from all platform build jobs and consolidates into single dist/ folder
+parameters:
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+
+jobs:
+  - job: ConsolidateArtifacts
+    displayName: 'Consolidate All Platform Artifacts'
+    dependsOn:
+      - BuildWindowsWheels
+      - BuildMacOSWheels
+      - BuildLinuxWheels
+    condition: succeeded()
+    
+    pool:
+      type: linux
+      isCustom: true
+      name: Azure Pipelines
+      vmImage: 'ubuntu-latest'
+    
+    variables:
+      ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+    
+    steps:
+      - checkout: none  # No source code needed for consolidation
+      
+      # Download Windows artifacts
+      - task: DownloadPipelineArtifact@2
+        displayName: 'Download Windows Artifacts'
+        inputs:
+          artifactName: 'drop_Build_BuildWindowsWheels'
+          targetPath: '$(Pipeline.Workspace)/windows'
+      
+      # Download macOS artifacts
+      - task: DownloadPipelineArtifact@2
+        displayName: 'Download macOS Artifacts'
+        inputs:
+          artifactName: 'drop_Build_BuildMacOSWheels'
+          targetPath: '$(Pipeline.Workspace)/macos'
+      
+      # Download Linux artifacts
+      - task: DownloadPipelineArtifact@2
+        displayName: 'Download Linux Artifacts'
+        inputs:
+          artifactName: 'drop_Build_BuildLinuxWheels'
+          targetPath: '$(Pipeline.Workspace)/linux'
+      
+      # Consolidate all wheels into single dist/ directory
+      - bash: |
+          set -e
+          echo "Creating consolidated dist directory..."
+          mkdir -p $(ob_outputDirectory)/dist
+          
+          echo "Consolidating Windows wheels..."
+          find $(Pipeline.Workspace)/windows -name "*.whl" -exec cp -v {} $(ob_outputDirectory)/dist/ \;
+          
+          echo "Consolidating macOS wheels..."
+          find $(Pipeline.Workspace)/macos -name "*.whl" -exec cp -v {} $(ob_outputDirectory)/dist/ \;
+          
+          echo "Consolidating Linux wheels..."
+          find $(Pipeline.Workspace)/linux -name "*.whl" -exec cp -v {} $(ob_outputDirectory)/dist/ \;
+          
+          echo ""
+          echo "Consolidation complete! Total wheels:"
+          ls -lh $(ob_outputDirectory)/dist/
+          echo ""
+          echo "Total wheel count: $(ls -1 $(ob_outputDirectory)/dist/*.whl | wc -l)"
+        displayName: 'Consolidate wheels from all platforms'
+      
+      # Optional: Consolidate native bindings for reference
+      - bash: |
+          set -e
+          echo "Creating bindings directory structure..."
+          mkdir -p $(ob_outputDirectory)/bindings
+          
+          if [ -d "$(Pipeline.Workspace)/windows/bindings" ]; then
+            echo "Copying Windows bindings..."
+            cp -rv $(Pipeline.Workspace)/windows/bindings $(ob_outputDirectory)/bindings/windows
+          fi
+          
+          if [ -d "$(Pipeline.Workspace)/macos/bindings" ]; then
+            echo "Copying macOS bindings..."
+            cp -rv $(Pipeline.Workspace)/macos/bindings $(ob_outputDirectory)/bindings/macos
+          fi
+          
+          if [ -d "$(Pipeline.Workspace)/linux/bindings" ]; then
+            echo "Copying Linux bindings..."
+            cp -rv $(Pipeline.Workspace)/linux/bindings $(ob_outputDirectory)/bindings/linux
+          fi
+          
+          echo "Bindings consolidation complete!"
+        displayName: 'Consolidate native bindings (optional)'
+        continueOnError: true
+      
+      # Optional: Consolidate Windows symbols
+      - bash: |
+          set -e
+          if [ -d "$(Pipeline.Workspace)/windows/symbols" ]; then
+            echo "Copying Windows symbols..."
+            mkdir -p $(ob_outputDirectory)/symbols
+            cp -rv $(Pipeline.Workspace)/windows/symbols/* $(ob_outputDirectory)/symbols/
+            echo "Symbols consolidation complete!"
+          else
+            echo "No Windows symbols found (expected for NonOfficial builds)"
+          fi
+        displayName: 'Consolidate Windows symbols (optional)'
+        continueOnError: true
+      
+      # Verify consolidation
+      - bash: |
+          echo "=========================================="
+          echo "Consolidation Summary"
+          echo "=========================================="
+          echo ""
+          echo "Wheels in dist/:"
+          ls -lh $(ob_outputDirectory)/dist/*.whl || echo "No wheels found!"
+          echo ""
+          echo "Total wheels: $(ls -1 $(ob_outputDirectory)/dist/*.whl 2>/dev/null | wc -l)"
+          echo ""
+          if [ -d "$(ob_outputDirectory)/bindings" ]; then
+            echo "Bindings directory:"
+            find $(ob_outputDirectory)/bindings -type f | head -20
+          fi
+          echo ""
+          echo "=========================================="
+        displayName: 'Verify consolidation'
+      
+      # Publish consolidated artifacts
+      - task: PublishPipelineArtifact@1
+        displayName: 'Publish Consolidated Artifacts'
+        inputs:
+          targetPath: '$(ob_outputDirectory)'
+          artifact: 'drop_Build_ConsolidateArtifacts'
+          publishLocation: 'pipeline'

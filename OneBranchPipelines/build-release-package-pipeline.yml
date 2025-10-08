@@ -205,6 +205,11 @@ extends:
               oneBranchType: '${{ parameters.oneBranchType }}'
               signingEnabled: '${{ parameters.signingEnabled }}'
               buildConfiguration: '${{ parameters.buildConfiguration }}'
+          
+          # Consolidate all platform artifacts into single dist/ folder
+          - template: /OneBranchPipelines/jobs/consolidate-artifacts-job.yml@self
+            parameters:
+              oneBranchType: '${{ parameters.oneBranchType }}'
 
       # Note: Symbol publishing is now handled directly in the Windows build job
       # See /OneBranchPipelines/jobs/build-windows-job.yml for symbol publishing steps
