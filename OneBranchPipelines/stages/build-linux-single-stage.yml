@@ -37,15 +37,17 @@ stages:
           - imageOverride -equals ADO-UB22-SQL22
         timeoutInMinutes: 120
         
-        # Disable SDL on individual build stages - globalSdl will run once at pipeline level
-        sdl: false
-        
         variables:
           ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
           LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
           LINUX_TAG: ${{ parameters.linuxTag }}
           ARCH: ${{ parameters.arch }}
           DOCKER_PLATFORM: ${{ parameters.dockerPlatform }}
+          # Disable SDL tools on individual build stages - globalSdl runs once at end
+          ob_sdl_tsa_enabled: false
+          ob_sdl_binskim_enabled: false
+          ob_sdl_codeql_compiled_enabled: false
+          ob_sdl_credscan_enabled: false
         
         steps:
           - checkout: self
