@@ -62,11 +62,7 @@ struct NumericData {
     NumericData() : precision(0), scale(0), sign(0), val(SQL_MAX_NUMERIC_LEN, '\0') {}
 
     NumericData(SQLCHAR precision, SQLSCHAR scale, SQLCHAR sign, const std::string& valueBytes)
-        : precision(precision), scale(scale), sign(sign) {
-            val = valueBytes;
-        // Ensure val is always exactly SQL_MAX_NUMERIC_LEN bytes
-        val.resize(SQL_MAX_NUMERIC_LEN, '\0');
-        }
+        : precision(precision), scale(scale), sign(sign), val(valueBytes) {}
 };
 
 // Struct to hold the DateTimeOffset structure
@@ -562,21 +558,10 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 decimalPtr->sign = decimalParam.sign;
                 // Convert the integer decimalParam.val to char array
                 std::memset(static_cast<void*>(decimalPtr->val), 0, sizeof(decimalPtr->val));
-                // std::memcpy(static_cast<void*>(decimalPtr->val),
-			    // reinterpret_cast<char*>(&decimalParam.val),
-                //             sizeof(decimalParam.val));
-                size_t src_len = decimalParam.val.size();
-    if (src_len > sizeof(decimalPtr->val)) {
-        // Defensive: should never happen if Python side ensures 16 bytes; but guard anyway
-        ThrowStdException("Numeric value byte buffer too large for SQL_NUMERIC_STRUCT (paramIndex " + std::to_string(paramIndex) + ")");
-    }
-    if (src_len > 0) {
-        std::memcpy(static_cast<void*>(decimalPtr->val),
-                    static_cast<const void*>(decimalParam.val.data()),
-                    src_len);
-    }
-    //print the data received from python
-    LOG("Numeric parameter val bytes: {}", decimalPtr->val);
+                size_t copyLen = std::min(decimalParam.val.size(), sizeof(decimalPtr->val));
+                if (copyLen > 0) {
+                    std::memcpy(decimalPtr->val, decimalParam.val.data(), copyLen);
+                }
                 dataPtr = static_cast<void*>(decimalPtr);
                 break;
             }
@@ -2069,13 +2054,15 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                         NumericData decimalParam = element.cast<NumericData>();
                         LOG("Received numeric parameter at [%zu]: precision=%d, scale=%d, sign=%d, val=%lld",
                             i, decimalParam.precision, decimalParam.scale, decimalParam.sign, decimalParam.val);
-                        numericArray[i].precision = decimalParam.precision;
-                        numericArray[i].scale = decimalParam.scale;
-                        numericArray[i].sign = decimalParam.sign;
-                        std::memset(numericArray[i].val, 0, sizeof(numericArray[i].val));
-                        std::memcpy(numericArray[i].val,
-                                    reinterpret_cast<const char*>(&decimalParam.val),
-                                    std::min(sizeof(decimalParam.val), sizeof(numericArray[i].val)));
+                        SQL_NUMERIC_STRUCT& target = numericArray[i];
+                        std::memset(&target, 0, sizeof(SQL_NUMERIC_STRUCT));
+                        target.precision = decimalParam.precision;
+                        target.scale = decimalParam.scale;
+                        target.sign = decimalParam.sign;
+                        size_t copyLen = std::min(decimalParam.val.size(), sizeof(target.val));
+                        if (copyLen > 0) {
+                            std::memcpy(target.val, decimalParam.val.data(), copyLen);
+                        }
                         strLenOrIndArray[i] = sizeof(SQL_NUMERIC_STRUCT);
                     }
                     dataPtr = numericArray;

@@ -1640,22 +1640,6 @@ def test_parse_datetime2(cursor, db_connection):
         cursor.execute("DROP TABLE #pytest_datetime2_test")
         db_connection.commit()
 
-def test_get_numeric_data(cursor, db_connection):
-    """Test _get_numeric_data"""
-    try:
-        cursor.execute("CREATE TABLE #pytest_numeric_test (numeric_column DECIMAL(10, 2))")
-        db_connection.commit()
-        cursor.execute("INSERT INTO #pytest_numeric_test (numeric_column) VALUES (?)", [decimal.Decimal('123.45')])
-        db_connection.commit()
-        cursor.execute("SELECT numeric_column FROM #pytest_numeric_test")
-        row = cursor.fetchone()
-        assert row[0] == decimal.Decimal('123.45'), "Numeric data parsing failed"
-    except Exception as e:
-        pytest.fail(f"Numeric data parsing test failed: {e}")
-    finally:
-        cursor.execute("DROP TABLE #pytest_numeric_test")
-        db_connection.commit()
-
 def test_none(cursor, db_connection):
     """Test None"""
     try:
@@ -1719,48 +1703,6 @@ def test_sql_varchar(cursor, db_connection):
         pytest.fail(f"SQL_VARCHAR parsing test failed: {e}")
     finally:
         cursor.execute("DROP TABLE #pytest_varchar_test")
-        db_connection.commit()
-
-def test_numeric_precision_scale_positive_exponent(cursor, db_connection):
-    """Test precision and scale for numeric values with positive exponent"""
-    try:
-        cursor.execute("CREATE TABLE #pytest_numeric_test (numeric_column DECIMAL(10, 2))")
-        db_connection.commit()
-        cursor.execute("INSERT INTO #pytest_numeric_test (numeric_column) VALUES (?)", [decimal.Decimal('31400')])
-        db_connection.commit()
-        cursor.execute("SELECT numeric_column FROM #pytest_numeric_test")
-        row = cursor.fetchone()
-        assert row[0] == decimal.Decimal('31400'), "Numeric data parsing failed"
-        # Check precision and scale
-        precision = 5  # 31400 has 5 significant digits
-        scale = 0      # No digits after the decimal point
-        assert precision == 5, "Precision calculation failed"
-        assert scale == 0, "Scale calculation failed"
-    except Exception as e:
-        pytest.fail(f"Numeric precision and scale test failed: {e}")
-    finally:
-        cursor.execute("DROP TABLE #pytest_numeric_test")
-        db_connection.commit()
-
-def test_numeric_precision_scale_negative_exponent(cursor, db_connection):
-    """Test precision and scale for numeric values with negative exponent"""
-    try:
-        cursor.execute("CREATE TABLE #pytest_numeric_test (numeric_column DECIMAL(10, 5))")
-        db_connection.commit()
-        cursor.execute("INSERT INTO #pytest_numeric_test (numeric_column) VALUES (?)", [decimal.Decimal('0.03140')])
-        db_connection.commit()
-        cursor.execute("SELECT numeric_column FROM #pytest_numeric_test")
-        row = cursor.fetchone()
-        assert row[0] == decimal.Decimal('0.03140'), "Numeric data parsing failed"
-        # Check precision and scale
-        precision = 5  # 0.03140 has 5 significant digits
-        scale = 5      # 5 digits after the decimal point
-        assert precision == 5, "Precision calculation failed"
-        assert scale == 5, "Scale calculation failed"
-    except Exception as e:
-        pytest.fail(f"Numeric precision and scale test failed: {e}")
-    finally:
-        cursor.execute("DROP TABLE #pytest_numeric_test")
         db_connection.commit()
 
 def test_row_attribute_access(cursor, db_connection):
@@ -11402,7 +11344,224 @@ def test_datetime_string_parameter_binding(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, table_name)
         db_connection.commit()
-        
+
+# ---------------------------------------------------------
+# Test 1: Basic numeric insertion and fetch roundtrip
+# ---------------------------------------------------------
+@pytest.mark.parametrize("precision, scale, value", [
+    (10, 2, decimal.Decimal("12345.67")),
+    (10, 4, decimal.Decimal("12.3456")),
+    (10, 0, decimal.Decimal("1234567890")),
+])
+def test_numeric_basic_roundtrip(cursor, db_connection, precision, scale, value):
+    """Verify simple numeric values roundtrip correctly"""
+    table_name = f"#pytest_numeric_basic_{precision}_{scale}"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (val NUMERIC({precision}, {scale}))")
+        cursor.execute(f"INSERT INTO {table_name} (val) VALUES (?)", (value,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
+        row = cursor.fetchone()
+        assert row is not None, "Expected one row to be returned"
+        fetched = row[0]
+
+        expected = value.quantize(decimal.Decimal(f"1e-{scale}")) if scale > 0 else value
+        assert fetched == expected, f"Expected {expected}, got {fetched}"
+
+    finally:
+        cursor.execute(f"DROP TABLE {table_name}")
+        db_connection.commit()
+
+# ---------------------------------------------------------
+# Test 2: High precision numeric values (near SQL Server max)
+# ---------------------------------------------------------
+@pytest.mark.parametrize("value", [
+    decimal.Decimal("99999999999999999999999999999999999999"),  # 38 digits
+    decimal.Decimal("12345678901234567890.1234567890"),        # high precision
+])
+def test_numeric_high_precision_roundtrip(cursor, db_connection, value):
+    """Verify high-precision NUMERIC values roundtrip without precision loss"""
+    precision, scale = 38, max(0, -value.as_tuple().exponent)
+    table_name = "#pytest_numeric_high_precision"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (val NUMERIC({precision}, {scale}))")
+        cursor.execute(f"INSERT INTO {table_name} (val) VALUES (?)", (value,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == value, f"High-precision roundtrip failed. Expected {value}, got {row[0]}"
+
+    finally:
+        cursor.execute(f"DROP TABLE {table_name}")
+        db_connection.commit()
+
+# ---------------------------------------------------------
+# Test 3: Negative, zero, and small fractional values
+# ---------------------------------------------------------
+@pytest.mark.parametrize("value", [
+    decimal.Decimal("-98765.43210"),
+    decimal.Decimal("-99999999999999999999.9999999999"),
+    decimal.Decimal("0"),
+    decimal.Decimal("0.00001"),
+])
+def test_numeric_negative_and_small_values(cursor, db_connection, value):
+    precision, scale = 38, max(0, -value.as_tuple().exponent)
+    table_name = "#pytest_numeric_neg_small"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (val NUMERIC({precision}, {scale}))")
+        cursor.execute(f"INSERT INTO {table_name} (val) VALUES (?)", (value,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
+        row = cursor.fetchone()
+        assert row[0] == value, f"Expected {value}, got {row[0]}"
+
+    finally:
+        cursor.execute(f"DROP TABLE {table_name}")
+        db_connection.commit()
+
+# ---------------------------------------------------------
+# Test 4: NULL handling and multiple inserts
+# ---------------------------------------------------------
+def test_numeric_null_and_multiple_rows(cursor, db_connection):
+    table_name = "#pytest_numeric_nulls"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (val NUMERIC(20,5))")
+
+        values = [decimal.Decimal("123.45678"), None, decimal.Decimal("-999.99999")]
+        for v in values:
+            cursor.execute(f"INSERT INTO {table_name} (val) VALUES (?)", (v,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name} ORDER BY val ASC")
+        rows = [r[0] for r in cursor.fetchall()]
+
+        non_null_expected = sorted([v for v in values if v is not None])
+        non_null_actual = sorted([v for v in rows if v is not None])
+
+        assert non_null_actual == non_null_expected, f"Expected {non_null_expected}, got {non_null_actual}"
+        assert any(r is None for r in rows), "Expected one NULL value in result set"
+
+    finally:
+        cursor.execute(f"DROP TABLE {table_name}")
+        db_connection.commit()
+
+# ---------------------------------------------------------
+# Test 5: Boundary precision values (max precision / scale)
+# ---------------------------------------------------------
+def test_numeric_boundary_precision(cursor, db_connection):
+    table_name = "#pytest_numeric_boundary"
+    precision, scale = 38, 37
+    value = decimal.Decimal("0." + "9" * 37)  # 0.999... up to 37 digits
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (val NUMERIC({precision},{scale}))")
+        cursor.execute(f"INSERT INTO {table_name} (val) VALUES (?)", (value,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name}")
+        row = cursor.fetchone()
+        assert row[0] == value, f"Boundary precision mismatch: expected {value}, got {row[0]}"
+
+    finally:
+        cursor.execute(f"DROP TABLE {table_name}")
+        db_connection.commit()
+
+# ---------------------------------------------------------
+# Test 6: Precision/scale positive exponent (corner case)
+# ---------------------------------------------------------
+def test_numeric_precision_scale_positive_exponent(cursor, db_connection):
+    try:
+        cursor.execute("CREATE TABLE #pytest_numeric_test (numeric_column DECIMAL(10, 2))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_numeric_test (numeric_column) VALUES (?)", [decimal.Decimal('31400')])
+        db_connection.commit()
+        cursor.execute("SELECT numeric_column FROM #pytest_numeric_test")
+        row = cursor.fetchone()
+        assert row[0] == decimal.Decimal('31400'), "Numeric data parsing failed"
+
+        precision = 5
+        scale = 0
+        assert precision == 5, "Precision calculation failed"
+        assert scale == 0, "Scale calculation failed"
+
+    finally:
+        cursor.execute("DROP TABLE #pytest_numeric_test")
+        db_connection.commit()
+
+# ---------------------------------------------------------
+# Test 7: Precision/scale negative exponent (corner case)
+# ---------------------------------------------------------
+def test_numeric_precision_scale_negative_exponent(cursor, db_connection):
+    try:
+        cursor.execute("CREATE TABLE #pytest_numeric_test (numeric_column DECIMAL(10, 5))")
+        db_connection.commit()
+        cursor.execute("INSERT INTO #pytest_numeric_test (numeric_column) VALUES (?)", [decimal.Decimal('0.03140')])
+        db_connection.commit()
+        cursor.execute("SELECT numeric_column FROM #pytest_numeric_test")
+        row = cursor.fetchone()
+        assert row[0] == decimal.Decimal('0.03140'), "Numeric data parsing failed"
+
+        precision = 5
+        scale = 5
+        assert precision == 5, "Precision calculation failed"
+        assert scale == 5, "Scale calculation failed"
+
+    finally:
+        cursor.execute("DROP TABLE #pytest_numeric_test")
+        db_connection.commit()
+
+# ---------------------------------------------------------
+# Test 8: fetchmany for numeric values
+# ---------------------------------------------------------
+@pytest.mark.parametrize("values", [[
+    decimal.Decimal("11.11"), decimal.Decimal("22.22"), decimal.Decimal("33.33")
+]])
+def test_numeric_fetchmany(cursor, db_connection, values):
+    table_name = "#pytest_numeric_fetchmany"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (val NUMERIC(10,2))")
+        for v in values:
+            cursor.execute(f"INSERT INTO {table_name} (val) VALUES (?)", (v,))
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name} ORDER BY val")
+        rows1 = cursor.fetchmany(2)
+        rows2 = cursor.fetchmany(2)
+        all_rows = [r[0] for r in rows1 + rows2]
+
+        assert all_rows == sorted(values), f"fetchmany mismatch: expected {sorted(values)}, got {all_rows}"
+
+    finally:
+        cursor.execute(f"DROP TABLE {table_name}")
+        db_connection.commit()
+
+# ---------------------------------------------------------
+# Test 9: executemany for numeric values
+# ---------------------------------------------------------
+@pytest.mark.parametrize("values", [[
+    decimal.Decimal("111.1111"), decimal.Decimal("222.2222"), decimal.Decimal("333.3333"),
+]])
+def test_numeric_executemany(cursor, db_connection, values):
+    precision, scale = 38, 10
+    table_name = "#pytest_numeric_executemany"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (val NUMERIC({precision},{scale}))")
+
+        params = [(v,) for v in values]
+        cursor.executemany(f"INSERT INTO {table_name} (val) VALUES (?)", params)
+        db_connection.commit()
+
+        cursor.execute(f"SELECT val FROM {table_name} ORDER BY val")
+        rows = [r[0] for r in cursor.fetchall()]
+        assert rows == sorted(values), f"executemany() mismatch: expected {sorted(values)}, got {rows}"
+
+    finally:
+        cursor.execute(f"DROP TABLE {table_name}")
+        db_connection.commit()
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
