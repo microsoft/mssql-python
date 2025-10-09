@@ -6,8 +6,9 @@ parameters:
     default: '$(ob_outputDirectory)\symbols'
 
 steps:
+  # Set AccountName for SqlClientDrivers organization (where mssql-python project resides)
   - powershell: 'Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"'
-    displayName: 'Update Symbol.AccountName with SqlClientDrivers'
+    displayName: 'Set Symbol AccountName to SqlClientDrivers org'
   
   - task: PublishSymbols@2
     displayName: 'Upload symbols to Azure DevOps Symbol Server'
@@ -20,9 +21,12 @@ steps:
       SymbolExpirationInDays: 1825 # 5 years
       SymbolsProduct: mssql-python
       SymbolsVersion: $(Build.BuildId)
-      SymbolsArtifactName: $(System.TeamProject)-$(Build.SourceBranchName)-$(Build.DefinitionName)-$(Build.BuildId)
+      # Remove SymbolsArtifactName to match MSSQL-JDBC working pattern
       Pat: $(System.AccessToken)
   
+  # Publish to Microsoft Symbol Publishing Service (External)
+  # Note: This requires additional variable group with SymbolServer, SymbolTokenUri variables
+  # Similar to SqlClient's 'akv-variables-v2' group containing SymbolsPublishServer, SymbolsPublishTokenUri
   - task: AzureCLI@2
     displayName: 'Publish symbols to Microsoft Symbol Publishing Service'
     condition: succeeded()

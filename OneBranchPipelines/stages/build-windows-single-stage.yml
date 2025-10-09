@@ -21,6 +21,9 @@ parameters:
   - name: buildConfiguration
     type: string
     default: 'Release'
+  - name: publishSymbols
+    type: boolean
+    default: true
 
 stages:
   - stage: ${{ parameters.stageName }}
@@ -214,7 +217,7 @@ stages:
           #         signPath: '$(ob_outputDirectory)\wheels'
           
           # Publish symbols (Windows only)
-          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+          - ${{ if eq(parameters.publishSymbols, true) }}:
               - template: /OneBranchPipelines/steps/symbol-publishing-step.yml@self
                 parameters:
                   SymbolsFolder: '$(ob_outputDirectory)\symbols'
