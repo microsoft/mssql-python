@@ -6,9 +6,13 @@ parameters:
     default: '$(ob_outputDirectory)\symbols'
 
 steps:
-  # Set AccountName for SqlClientDrivers organization (where mssql-python project resides)
-  - powershell: 'Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"'
-    displayName: 'Set Symbol AccountName to SqlClientDrivers org'
+  # Set AccountName for SqlClientDrivers organization (separate PowerShell task like JDBC)
+  - task: PowerShell@2
+    displayName: 'Set Symbol.AccountName to SqlClientDrivers'
+    inputs:
+      targetType: inline
+      script: |
+        Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"
   
   - task: PublishSymbols@2
     displayName: 'Push Symbols to SqlClientDrivers ADO Organization'
