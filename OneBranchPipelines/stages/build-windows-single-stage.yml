@@ -184,8 +184,8 @@ stages:
               scanPath: '$(ob_outputDirectory)'
               artifactType: 'dll'
           
-          # ESRP Malware scanning (Official builds only)
-          - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
+          # ESRP Malware scanning (when signing is enabled)
+          - ${{ if eq(parameters.signingEnabled, true) }}:
               - task: EsrpMalwareScanning@5
                 displayName: 'ESRP MalwareScanning - Python Wheels'
                 inputs:
@@ -199,24 +199,19 @@ stages:
                   CleanupTempStorage: 1
                   VerboseLogin: 1
           
-          # OneBranch Code Signing (Official builds only)
-          # Note: We only sign wheels on all platforms (Windows, macOS, Linux). The wheel signature cryptographically
-          # verifies the entire archive contents, making individual binary signing unnecessary. This approach is
-          # correct for PyPI distribution where only wheel signatures are validated.
-          #
-          # References:
-          # - https://eng.ms/docs/products/onebranch/signing/containerbuildsigning#signing-using-onebranchpipelinesigning-ado-task
-          #   (specifies not to use raw ESRP task for common certificates)
-          # - https://eng.ms/docs/products/onebranch/signing/containerbuildsigning/availablesigningcpcodesandoperations
-          #   (key code usage - .whl files not explicitly listed, treated as binary archives)
-          - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
-              - task: onebranch.pipeline.signing@1
-                displayName: 'Sign Python Wheels'
-                inputs:
-                  command: 'sign'
-                  signing_profile: 'external_distribution'
-                  files_to_sign: '**/*.whl'
-                  search_root: '$(ob_outputDirectory)/wheels'
+          # ESRP Code Signing (DISABLED - wheel files cannot be signed with SignTool)
+          # See compound-esrp-code-signing-step.yml for detailed explanation of why this doesn't work
+          # - ${{ if eq(parameters.signingEnabled, true) }}:
+          #     - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
+          #       parameters:
+          #         appRegistrationClientId: '$(SigningAppRegistrationClientId)'
+          #         appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+          #         artifactType: 'whl'
+          #         authAkvName: '$(SigningAuthAkvName)'
+          #         authSignCertName: '$(SigningAuthSignCertName)'
+          #         esrpClientId: '$(SigningEsrpClientId)'
+          #         esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+          #         signPath: '$(ob_outputDirectory)\wheels'
           
           # Publish symbols (Windows only)
           - ${{ if eq(parameters.oneBranchType, 'Official') }}:
