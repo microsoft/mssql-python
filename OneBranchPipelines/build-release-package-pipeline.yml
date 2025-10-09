@@ -1,9 +1,3 @@
-################################################################################
-# Licensed to the .NET Foundation under one or more agreements.
-# The .NET Foundation licenses this file to you under the MIT license.
-# See the LICENSE file in the project root for more information.
-################################################################################
-
 # OneBranch Pipeline for mssql-python
 # Builds Python wheels for Windows, macOS, and Linux with security compliance
 
@@ -66,6 +60,41 @@ parameters:
     displayName: 'Package Version (e.g., 0.13.0)'
     type: string
     default: '0.13.0'
+  
+  # Configuration matrices for each platform
+  - name: windowsConfigs
+    type: object
+    default:
+      - pyVer: '310'
+        arch: 'x64'
+      - pyVer: '311'
+        arch: 'x64'
+      - pyVer: '312'
+        arch: 'x64'
+      - pyVer: '313'
+        arch: 'x64'
+      - pyVer: '311'
+        arch: 'arm64'
+      - pyVer: '312'
+        arch: 'arm64'
+      - pyVer: '313'
+        arch: 'arm64'
+  
+  - name: macosConfigs
+    type: object
+    default:
+      - pyVer: '310'
+      - pyVer: '311'
+      - pyVer: '312'
+      - pyVer: '313'
+  
+  - name: linuxConfigs
+    type: object
+    default:
+      - { tag: 'manylinux', arch: 'x86_64', platform: 'linux/amd64' }
+      - { tag: 'manylinux', arch: 'aarch64', platform: 'linux/arm64' }
+      - { tag: 'musllinux', arch: 'x86_64', platform: 'linux/amd64' }
+      - { tag: 'musllinux', arch: 'aarch64', platform: 'linux/arm64' }
 
 # Variable templates
 variables:
@@ -104,6 +133,12 @@ extends:
   template: 'v2/OneBranch.${{ parameters.oneBranchType }}.CrossPlat.yml@templates'
 
   parameters:
+    # Container definitions
+    # Note: All jobs use custom 1ES pools or Microsoft-hosted agents
+    # Windows: Django-1ES-pool + WIN22-SQL22 (custom 1ES)
+    # Linux: Django-1ES-pool + ADO-UB22-SQL22 (custom 1ES) 
+    # macOS: Azure Pipelines + macOS-14 (Microsoft-hosted)
+    
     # Feature flags
     featureFlags:
       WindowsHostVersion:
@@ -182,48 +217,69 @@ extends:
 
     # Pipeline stages
     stages:
-      - stage: Build
-        displayName: 'Build Python Wheels'
+      # Windows stages - one per Python version/architecture combination
+      - ${{ each config in parameters.windowsConfigs }}:
+          - template: /OneBranchPipelines/stages/build-windows-single-stage.yml@self
+            parameters:
+              stageName: Win_py${{ config.pyVer }}_${{ config.arch }}
+              jobName: BuildWheel
+              pythonVersion: ${{ format('{0}.{1}', substring(config.pyVer, 0, 1), substring(config.pyVer, 1, 2)) }}
+              shortPyVer: ${{ config.pyVer }}
+              architecture: ${{ config.arch }}
+              oneBranchType: '${{ parameters.oneBranchType }}'
+              signingEnabled: '${{ parameters.signingEnabled }}'
+              buildConfiguration: '${{ parameters.buildConfiguration }}'
+      
+      # macOS stages - one per Python version (universal2 binaries)
+      - ${{ each config in parameters.macosConfigs }}:
+          - template: /OneBranchPipelines/stages/build-macos-single-stage.yml@self
+            parameters:
+              stageName: MacOS_py${{ config.pyVer }}
+              jobName: BuildWheel
+              pythonVersion: ${{ format('{0}.{1}', substring(config.pyVer, 0, 1), substring(config.pyVer, 1, 2)) }}
+              shortPyVer: ${{ config.pyVer }}
+              oneBranchType: '${{ parameters.oneBranchType }}'
+              signingEnabled: '${{ parameters.signingEnabled }}'
+              buildConfiguration: '${{ parameters.buildConfiguration }}'
+      
+      # Linux stages - one per distribution/architecture (builds all Python versions inside)
+      - ${{ each config in parameters.linuxConfigs }}:
+          - template: /OneBranchPipelines/stages/build-linux-single-stage.yml@self
+            parameters:
+              stageName: Linux_${{ config.tag }}_${{ config.arch }}
+              jobName: BuildWheels
+              linuxTag: ${{ config.tag }}
+              arch: ${{ config.arch }}
+              dockerPlatform: ${{ config.platform }}
+              oneBranchType: '${{ parameters.oneBranchType }}'
+              signingEnabled: '${{ parameters.signingEnabled }}'
+              buildConfiguration: '${{ parameters.buildConfiguration }}'
+      
+      # Consolidate all artifacts into single dist/ folder
+      - stage: Consolidate
+        displayName: 'Consolidate All Artifacts'
+        dependsOn:
+          # Windows dependencies
+          - Win_py310_x64
+          - Win_py311_x64
+          - Win_py312_x64
+          - Win_py313_x64
+          - Win_py311_arm64
+          - Win_py312_arm64
+          - Win_py313_arm64
+          # macOS dependencies
+          - MacOS_py310
+          - MacOS_py311
+          - MacOS_py312
+          - MacOS_py313
+          # Linux dependencies
+          - Linux_manylinux_x86_64
+          - Linux_manylinux_aarch64
+          - Linux_musllinux_x86_64
+          - Linux_musllinux_aarch64
         jobs:
-          # Windows builds
-          - template: /OneBranchPipelines/jobs/build-windows-job.yml@self
+          - template: /OneBranchPipelines/jobs/consolidate-artifacts-job.yml@self
             parameters:
               oneBranchType: '${{ parameters.oneBranchType }}'
-              signingEnabled: '${{ parameters.signingEnabled }}'
-              buildConfiguration: '${{ parameters.buildConfiguration }}'
 
-          # macOS builds
-          - template: /OneBranchPipelines/jobs/build-macos-job.yml@self
-            parameters:
-              oneBranchType: '${{ parameters.oneBranchType }}'
-              signingEnabled: '${{ parameters.signingEnabled }}'
-              buildConfiguration: '${{ parameters.buildConfiguration }}'
-
-          # Linux builds
-          - template: /OneBranchPipelines/jobs/build-linux-job.yml@self
-            parameters:
-              oneBranchType: '${{ parameters.oneBranchType }}'
-              signingEnabled: '${{ parameters.signingEnabled }}'
-              buildConfiguration: '${{ parameters.buildConfiguration }}'
-
-      # Optional: Symbol Publishing Stage (Official builds only)
-      - ${{ if and(eq(parameters.oneBranchType, 'Official'), eq(parameters.publishSymbols, true)) }}:
-          - stage: PublishSymbols
-            displayName: 'Publish Debug Symbols'
-            dependsOn: Build
-            condition: succeeded()
-            jobs:
-              - job: PublishSymbolsJob
-                displayName: 'Publish Symbols to Symbol Server'
-                pool:
-                  type: windows
-                steps:
-                  - task: PublishSymbols@2
-                    displayName: 'Publish Symbols'
-                    inputs:
-                      SymbolsFolder: '$(ob_outputDirectory)/symbols'
-                      SearchPattern: '**/*.pdb'
-                      IndexSources: false
-                      PublishSymbols: true
-                      SymbolServerType: 'TeamServices'
-                      SymbolsArtifactName: 'mssql-python-symbols'
+      # Note: Symbol publishing is now handled directly in the Windows build stages

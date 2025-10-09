@@ -1,27 +1,14 @@
 # Symbol Publishing Variables
 # These variables configure where debug symbols (.pdb files) are published
-# Required variable group: 'build-secrets'
+# Note: Symbol server variables (SymbolsAzureSubscription, SymbolsPublishServer, etc.)
+#       should come from variable groups, not redefined here to avoid cyclical references
 variables:
-  # Azure subscription for symbol publishing
-  - name: SymbolsAzureSubscription
-    value: $(SymbolsAzureSubscription)
-  
-  # Symbol server configuration
-  - name: SymbolsPublishServer
-    value: $(SymbolsPublishServer)
-  
-  - name: SymbolsPublishProjectName
-    value: $(SymbolsPublishProjectName)
-  
-  - name: SymbolsPublishTokenUri
-    value: $(SymbolsPublishTokenUri)
-  
-  - name: SymbolsUploadAccount
-    value: $(SymbolsUploadAccount)
-  
   # Symbol paths for ApiScan
+  # Must use Build.SourcesDirectory (not ob_outputDirectory) so files persist for globalSdl
+  # Files are copied here during build stages, before ApiScan runs
   - name: apiScanDllPath
-    value: '$(ob_outputDirectory)/bindings'
+    value: '$(Build.SourcesDirectory)/apiScan/dlls'
   
   - name: apiScanPdbPath
-    value: '$(ob_outputDirectory)/symbols'
+    value: '$(Build.SourcesDirectory)/apiScan/pdbs'
+
