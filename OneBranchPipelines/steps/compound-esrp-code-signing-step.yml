@@ -151,12 +151,23 @@ steps:
               }
             ]
   
-  - script: |
-      echo "Signed files in: ${{ parameters.signPath }}"
-      if [ -d "${{ parameters.signPath }}" ]; then
-        find "${{ parameters.signPath }}" -type f \( -name "*.whl" -o -name "*.pyd" -o -name "*.dll" -o -name "*.so" -o -name "*.dylib" \) -ls
-      else
-        dir /s "${{ parameters.signPath }}"
-      fi
-    displayName: 'List signed files'
-    condition: succeededOrFailed()
+  # List signed files (platform-specific)
+  - ${{ if eq(parameters.artifactType, 'dll') }}:
+      # Windows - use cmd syntax
+      - script: |
+          echo Signed files in: ${{ parameters.signPath }}
+          dir /s /b "${{ parameters.signPath }}\*.whl" "${{ parameters.signPath }}\*.pyd" "${{ parameters.signPath }}\*.dll" 2>nul
+        displayName: 'List signed files (Windows)'
+        condition: succeededOrFailed()
+  
+  - ${{ else }}:
+      # Linux/macOS - use bash syntax
+      - bash: |
+          echo "Signed files in: ${{ parameters.signPath }}"
+          if [ -d "${{ parameters.signPath }}" ]; then
+            find "${{ parameters.signPath }}" -type f \( -name "*.whl" -o -name "*.pyd" -o -name "*.dll" -o -name "*.so" -o -name "*.dylib" \) -ls
+          else
+            echo "Directory not found: ${{ parameters.signPath }}"
+          fi
+        displayName: 'List signed files (Linux/macOS)'
+        condition: succeededOrFailed()
