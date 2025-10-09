@@ -216,7 +216,6 @@ class Cursor:
             precision = exponent * -1
             scale = exponent * -1
 
-        # TODO: Revisit this check, do we want this restriction?
         if precision > 38:
             raise ValueError(
                 "Precision of the numeric value is too high - "
@@ -231,22 +230,17 @@ class Cursor:
         # strip decimal point from param & convert the significant digits to integer
         # Ex: 12.34 ---> 1234
         int_str = ''.join(str(d) for d in digits_tuple)
-
-        # Apply exponent to get the unscaled integer string
         if exponent > 0:
             int_str = int_str + ('0' * exponent)
         elif exponent < 0:
-            # if exponent negative and abs(exponent) > num_digits we padded precision above
-            # for the integer representation we pad leading zeros
             if -exponent > num_digits:
                 int_str = ('0' * (-exponent - num_digits)) + int_str
 
-        # Edge: if int_str becomes empty (Decimal('0')), make "0"
         if int_str == '':
             int_str = '0'
 
-        # Convert decimal base-10 string -> python int, then to 16 little-endian bytes
-        big_int = int(int_str)  # Python big int is arbitrary precision
+        # Convert decimal base-10 string to python int, then to 16 little-endian bytes
+        big_int = int(int_str)
         byte_array = bytearray(16)  # SQL_MAX_NUMERIC_LEN
         for i in range(16):
             byte_array[i] = big_int & 0xFF
@@ -254,7 +248,6 @@ class Cursor:
             if big_int == 0:
                 break
 
-        # numeric_data.val should be bytes (pybindable). Ensure a bytes object of length 16.
         numeric_data.val = bytes(byte_array)
         return numeric_data
 

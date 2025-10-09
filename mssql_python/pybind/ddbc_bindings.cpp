@@ -2052,8 +2052,8 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                             throw std::runtime_error(MakeParamMismatchErrorStr(info.paramCType, paramIndex));
                         }
                         NumericData decimalParam = element.cast<NumericData>();
-                        LOG("Received numeric parameter at [%zu]: precision=%d, scale=%d, sign=%d, val=%lld",
-                            i, decimalParam.precision, decimalParam.scale, decimalParam.sign, decimalParam.val);
+                        LOG("Received numeric parameter at [%zu]: precision=%d, scale=%d, sign=%d, val=%s",
+                            i, decimalParam.precision, decimalParam.scale, decimalParam.sign, decimalParam.val.c_str());
                         SQL_NUMERIC_STRUCT& target = numericArray[i];
                         std::memset(&target, 0, sizeof(SQL_NUMERIC_STRUCT));
                         target.precision = decimalParam.precision;
