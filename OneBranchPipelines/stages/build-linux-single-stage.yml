@@ -227,24 +227,16 @@ stages:
                   CleanupTempStorage: 1
                   VerboseLogin: 1
           
-          # ESRP Code Signing (when signing is enabled)
-          # Note: We only sign wheels on all platforms (Windows, macOS, Linux). The wheel signature cryptographically
-          # verifies the entire archive contents, making individual binary signing unnecessary. Additionally,
-          # Linux .so files use ELF format which cannot be signed with Windows SignTool.
-          #
-          # References:
-          # - https://eng.ms/docs/products/onebranch/signing/containerbuildsigning#signing-using-onebranchpipelinesigning-ado-task
-          #   (specifies not to use raw ESRP task for common certificates)
-          # - https://eng.ms/docs/products/onebranch/signing/containerbuildsigning/availablesigningcpcodesandoperations
-          #   (key code usage - .whl files not explicitly listed, treated as binary archives)
-          - ${{ if eq(parameters.signingEnabled, true) }}:
-              - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
-                parameters:
-                  appRegistrationClientId: '$(SigningAppRegistrationClientId)'
-                  appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
-                  artifactType: 'whl'
-                  authAkvName: '$(SigningAuthAkvName)'
-                  authSignCertName: '$(SigningAuthSignCertName)'
-                  esrpClientId: '$(SigningEsrpClientId)'
-                  esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
-                  signPath: '$(ob_outputDirectory)/wheels'
+          # ESRP Code Signing (DISABLED - wheel files cannot be signed with SignTool)
+          # See compound-esrp-code-signing-step.yml for detailed explanation of why this doesn't work
+          # - ${{ if eq(parameters.signingEnabled, true) }}:
+          #     - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
+          #       parameters:
+          #         appRegistrationClientId: '$(SigningAppRegistrationClientId)'
+          #         appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+          #         artifactType: 'whl'
+          #         authAkvName: '$(SigningAuthAkvName)'
+          #         authSignCertName: '$(SigningAuthSignCertName)'
+          #         esrpClientId: '$(SigningEsrpClientId)'
+          #         esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+          #         signPath: '$(ob_outputDirectory)/wheels'
