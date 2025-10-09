@@ -191,11 +191,26 @@ stages:
               artifact: 'drop_${{ parameters.stageName }}_${{ parameters.jobName }}'
               publishLocation: 'pipeline'
           
-          # Malware scanning
+          # General malware scanning (Component Governance + OneBranch AntiMalware)
           - template: ../steps/malware-scanning-step.yml@self
             parameters:
               scanPath: '$(ob_outputDirectory)'
               artifactType: 'dll'
+          
+          # ESRP Malware scanning (Official builds only)
+          - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
+              - task: EsrpMalwareScanning@5
+                displayName: 'ESRP MalwareScanning - Python Wheels'
+                inputs:
+                  ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+                  AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
+                  AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+                  EsrpClientId: '$(SigningEsrpClientId)'
+                  UseMSIAuthentication: true
+                  FolderPath: '$(ob_outputDirectory)/wheels'
+                  Pattern: '*.whl'
+                  CleanupTempStorage: 1
+                  VerboseLogin: 1
           
           # OneBranch Code Signing (Official builds only)
           # Note: We only sign wheels on all platforms (Windows, macOS, Linux). The wheel signature cryptographically
