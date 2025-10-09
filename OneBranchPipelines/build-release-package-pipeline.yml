@@ -98,6 +98,11 @@ parameters:
 
 # Variable templates
 variables:
+  # OneBranch signing tool version
+  - name: CDP_TOOL_ONEBRANCH_SIGN_VERSION
+    value: '*'
+    readonly: true
+  
   # Set package version from parameter
   - name: PACKAGE_VERSION
     value: '${{ parameters.packageVersion }}'

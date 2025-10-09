@@ -224,9 +224,20 @@ stages:
           #   (key code usage - .whl files not explicitly listed, treated as binary archives)
           - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
               - task: onebranch.pipeline.signing@1
-                displayName: 'Sign Python Wheels'
+                displayName: 'Sign Python Wheels (Official)'
                 inputs:
                   command: 'sign'
+                  signing_environment: 'azure-ado'
                   signing_profile: 'external_distribution'
+                  files_to_sign: '**/*.whl'
+                  search_root: '$(ob_outputDirectory)/wheels'
+          
+          # TiP signing for NonOfficial builds (testing only)
+          - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'NonOfficial')) }}:
+              - task: onebranch.pipeline.signing@1
+                displayName: 'Sign Python Wheels (TiP - Testing)'
+                inputs:
+                  command: 'sign'
+                  signing_environment: 'tipsign'
                   files_to_sign: '**/*.whl'
                   search_root: '$(ob_outputDirectory)/wheels'
