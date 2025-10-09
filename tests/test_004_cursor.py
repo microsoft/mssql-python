@@ -11403,6 +11403,90 @@ def test_datetime_string_parameter_binding(cursor, db_connection):
         drop_table_if_exists(cursor, table_name)
         db_connection.commit()
         
+SMALL_XML = "<root><item>1</item></root>"
+LARGE_XML = "<root>" + "".join(f"<item>{i}</item>" for i in range(10000)) + "</root>"
+EMPTY_XML = ""
+INVALID_XML = "<root><item></root>"  # malformed
+
+def test_xml_basic_insert_fetch(cursor, db_connection):
+    """Test insert and fetch of a small XML value."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_xml_basic (id INT PRIMARY KEY IDENTITY(1,1), xml_col XML NULL);")
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_xml_basic (xml_col) VALUES (?);", SMALL_XML)
+        db_connection.commit()
+
+        row = cursor.execute("SELECT xml_col FROM #pytest_xml_basic;").fetchone()
+        assert row[0] == SMALL_XML
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_xml_basic;")
+        db_connection.commit()
+
+
+def test_xml_empty_and_null(cursor, db_connection):
+    """Test insert and fetch of empty XML and NULL values."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_xml_empty_null (id INT PRIMARY KEY IDENTITY(1,1), xml_col XML NULL);")
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_xml_empty_null (xml_col) VALUES (?);", EMPTY_XML)
+        cursor.execute("INSERT INTO #pytest_xml_empty_null (xml_col) VALUES (?);", None)
+        db_connection.commit()
+
+        rows = [r[0] for r in cursor.execute("SELECT xml_col FROM #pytest_xml_empty_null ORDER BY id;").fetchall()]
+        assert rows[0] == EMPTY_XML
+        assert rows[1] is None
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_xml_empty_null;")
+        db_connection.commit()
+
+
+def test_xml_large_insert(cursor, db_connection):
+    """Test insert and fetch of a large XML value to verify streaming/DAE."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_xml_large (id INT PRIMARY KEY IDENTITY(1,1), xml_col XML NULL);")
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_xml_large (xml_col) VALUES (?);", LARGE_XML)
+        db_connection.commit()
+
+        row = cursor.execute("SELECT xml_col FROM #pytest_xml_large;").fetchone()
+        assert row[0] == LARGE_XML
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_xml_large;")
+        db_connection.commit()
+
+
+def test_xml_batch_insert(cursor, db_connection):
+    """Test batch insert (executemany) of multiple XML values."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_xml_batch (id INT PRIMARY KEY IDENTITY(1,1), xml_col XML NULL);")
+        db_connection.commit()
+
+        xmls = [f"<root><item>{i}</item></root>" for i in range(5)]
+        cursor.executemany("INSERT INTO #pytest_xml_batch (xml_col) VALUES (?);", [(x,) for x in xmls])
+        db_connection.commit()
+
+        rows = [r[0] for r in cursor.execute("SELECT xml_col FROM #pytest_xml_batch ORDER BY id;").fetchall()]
+        assert rows == xmls
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_xml_batch;")
+        db_connection.commit()
+
+
+def test_xml_malformed_input(cursor, db_connection):
+    """Verify driver raises error for invalid XML input."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_xml_invalid (id INT PRIMARY KEY IDENTITY(1,1), xml_col XML NULL);")
+        db_connection.commit()
+
+        with pytest.raises(Exception):
+            cursor.execute("INSERT INTO #pytest_xml_invalid (xml_col) VALUES (?);", INVALID_XML)
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_xml_invalid;")
+        db_connection.commit()
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
