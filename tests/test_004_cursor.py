@@ -8123,6 +8123,40 @@ def test_datetimeoffset_extreme_offsets(cursor, db_connection):
     finally:
         cursor.execute("IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;")
         db_connection.commit()
+        
+def test_datetimeoffset_native_vs_string_simple(cursor, db_connection):
+    """
+    Replicates the user's testing scenario: fetch DATETIMEOFFSET as native datetime
+    and as string using CONVERT(nvarchar(35), ..., 121).
+    """
+    try:
+        cursor.execute("CREATE TABLE #pytest_dto_user_test (id INT PRIMARY KEY, Systime DATETIMEOFFSET);")
+        db_connection.commit()
+
+        # Insert rows similar to user's example
+        test_rows = [
+            (1, datetime(2025, 5, 14, 12, 35, 52, 501000, tzinfo=timezone(timedelta(hours=1)))),
+            (2, datetime(2025, 5, 14, 15, 20, 30, 123000, tzinfo=timezone(timedelta(hours=-5))))
+        ]
+
+        for i, dt in test_rows:
+            cursor.execute("INSERT INTO #pytest_dto_user_test (id, Systime) VALUES (?, ?);", i, dt)
+        db_connection.commit()
+
+        # Native fetch (like the user's first execute)
+        cursor.execute("SELECT Systime FROM #pytest_dto_user_test WHERE id=1;")
+        dt_native = cursor.fetchone()[0]
+        assert dt_native.tzinfo is not None
+        assert dt_native == test_rows[0][1]
+
+        # String fetch (like the user's convert to nvarchar)
+        cursor.execute("SELECT CONVERT(nvarchar(35), Systime, 121) FROM #pytest_dto_user_test WHERE id=1;")
+        dt_str = cursor.fetchone()[0]
+        assert dt_str.endswith("+01:00")  # original offset preserved
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_dto_user_test;")
+        db_connection.commit()
 
 def test_lowercase_attribute(cursor, db_connection):
     """Test that the lowercase attribute properly converts column names to lowercase"""
