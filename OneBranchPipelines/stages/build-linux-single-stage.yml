@@ -212,6 +212,14 @@ stages:
                   CleanupTempStorage: 1
                   VerboseLogin: 1
           
+          # Install OneBranch signing tools (required before signing)
+          - ${{ if eq(parameters.signingEnabled, true) }}:
+              - task: onebranch.pipeline.toolsinstaller@1
+                displayName: '🔒 Install OneBranch Signing Tools'
+                inputs:
+                  command: 'install'
+                  tools: 'onebranch.sign'
+          
           # OneBranch Code Signing (Official builds only)
           # Note: We only sign wheels on all platforms (Windows, macOS, Linux). The wheel signature cryptographically
           # verifies the entire archive contents, making individual binary signing unnecessary. Additionally,

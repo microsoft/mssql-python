@@ -103,6 +103,11 @@ variables:
     value: '*'
     readonly: true
   
+  # OneBranch tools installer (required for signing)
+  - name: CDP_TOOL_ONEBRANCH_TOOLSINSTALLER_VERSION
+    value: '*'
+    readonly: true
+  
   # Set package version from parameter
   - name: PACKAGE_VERSION
     value: '${{ parameters.packageVersion }}'
