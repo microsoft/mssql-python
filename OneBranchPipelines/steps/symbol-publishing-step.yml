@@ -11,17 +11,15 @@ steps:
     displayName: 'Set Symbol AccountName to SqlClientDrivers org'
   
   - task: PublishSymbols@2
-    displayName: 'Upload symbols to Azure DevOps Symbol Server'
+    displayName: 'Push Symbols to SqlClientDrivers ADO Organization'
     inputs:
       SymbolsFolder: '${{ parameters.SymbolsFolder }}'
       SearchPattern: '**/*.pdb'
       IndexSources: false
       SymbolServerType: TeamServices
-      SymbolsMaximumWaitTime: 60
-      SymbolExpirationInDays: 1825 # 5 years
+      SymbolsMaximumWaitTime: 10
       SymbolsProduct: mssql-python
       SymbolsVersion: $(Build.BuildId)
-      # Remove SymbolsArtifactName to match MSSQL-JDBC working pattern
       Pat: $(System.AccessToken)
   
   # Publish to Microsoft Symbol Publishing Service (External)
