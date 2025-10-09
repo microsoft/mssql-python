@@ -154,7 +154,22 @@ stages:
                   CleanupTempStorage: 1
                   VerboseLogin: 1
           
-          # ESRP Code Signing (Official builds only)
+          # ESRP Malware scanning (when signing is enabled)
+          - ${{ if eq(parameters.signingEnabled, true) }}:
+              - task: EsrpMalwareScanning@5
+                displayName: 'ESRP MalwareScanning - Python Wheels'
+                inputs:
+                  ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+                  AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
+                  AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+                  EsrpClientId: '$(SigningEsrpClientId)'
+                  UseMSIAuthentication: true
+                  FolderPath: '$(ob_outputDirectory)/wheels'
+                  Pattern: '*.whl'
+                  CleanupTempStorage: 1
+                  VerboseLogin: 1
+          
+          # ESRP Code Signing (when signing is enabled)
           # Note: We only sign wheels on all platforms (Windows, macOS, Linux). The wheel signature cryptographically
           # verifies the entire archive contents, making individual binary signing unnecessary. Additionally,
           # macOS .so/.dylib files use Mach-O format which cannot be signed with Windows SignTool.
@@ -164,7 +179,7 @@ stages:
           #   (specifies not to use raw ESRP task for common certificates)
           # - https://eng.ms/docs/products/onebranch/signing/containerbuildsigning/availablesigningcpcodesandoperations
           #   (key code usage - .whl files not explicitly listed, treated as binary archives)
-          - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
+          - ${{ if eq(parameters.signingEnabled, true) }}:
               - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
                 parameters:
                   appRegistrationClientId: '$(SigningAppRegistrationClientId)'
