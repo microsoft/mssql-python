@@ -21,6 +21,7 @@
 #define SQL_SS_TIMESTAMPOFFSET (-155)
 #define SQL_C_SS_TIMESTAMPOFFSET (0x4001)
 #define MAX_DIGITS_IN_NUMERIC 64
+#define SQL_MAX_NUMERIC_LEN 16
 
 #define STRINGIFY_FOR_CASE(x) \
     case x:                   \
@@ -56,12 +57,16 @@ struct NumericData {
     SQLCHAR precision;
     SQLSCHAR scale;
     SQLCHAR sign;  // 1=pos, 0=neg
-    std::uint64_t val; // 123.45 -> 12345
+    std::string val; // 123.45 -> 12345
 
-    NumericData() : precision(0), scale(0), sign(0), val(0) {}
+    NumericData() : precision(0), scale(0), sign(0), val(SQL_MAX_NUMERIC_LEN, '\0') {}
 
-    NumericData(SQLCHAR precision, SQLSCHAR scale, SQLCHAR sign, std::uint64_t value)
-        : precision(precision), scale(scale), sign(sign), val(value) {}
+    NumericData(SQLCHAR precision, SQLSCHAR scale, SQLCHAR sign, const std::string& valueBytes)
+        : precision(precision), scale(scale), sign(sign) {
+            val = valueBytes;
+        // Ensure val is always exactly SQL_MAX_NUMERIC_LEN bytes
+        val.resize(SQL_MAX_NUMERIC_LEN, '\0');
+        }
 };
 
 // Struct to hold the DateTimeOffset structure
@@ -557,9 +562,21 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 decimalPtr->sign = decimalParam.sign;
                 // Convert the integer decimalParam.val to char array
                 std::memset(static_cast<void*>(decimalPtr->val), 0, sizeof(decimalPtr->val));
-                std::memcpy(static_cast<void*>(decimalPtr->val),
-			    reinterpret_cast<char*>(&decimalParam.val),
-                            sizeof(decimalParam.val));
+                // std::memcpy(static_cast<void*>(decimalPtr->val),
+			    // reinterpret_cast<char*>(&decimalParam.val),
+                //             sizeof(decimalParam.val));
+                size_t src_len = decimalParam.val.size();
+    if (src_len > sizeof(decimalPtr->val)) {
+        // Defensive: should never happen if Python side ensures 16 bytes; but guard anyway
+        ThrowStdException("Numeric value byte buffer too large for SQL_NUMERIC_STRUCT (paramIndex " + std::to_string(paramIndex) + ")");
+    }
+    if (src_len > 0) {
+        std::memcpy(static_cast<void*>(decimalPtr->val),
+                    static_cast<const void*>(decimalParam.val.data()),
+                    src_len);
+    }
+    //print the data received from python
+    LOG("Numeric parameter val bytes: {}", decimalPtr->val);
                 dataPtr = static_cast<void*>(decimalPtr);
                 break;
             }
@@ -3794,7 +3811,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Define numeric data class
     py::class_<NumericData>(m, "NumericData")
         .def(py::init<>())
-        .def(py::init<SQLCHAR, SQLSCHAR, SQLCHAR, std::uint64_t>())
+        .def(py::init<SQLCHAR, SQLSCHAR, SQLCHAR, const std::string&>())
         .def_readwrite("precision", &NumericData::precision)
         .def_readwrite("scale", &NumericData::scale)
         .def_readwrite("sign", &NumericData::sign)
