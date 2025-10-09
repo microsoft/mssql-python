@@ -140,18 +140,10 @@ stages:
               artifactType: 'dll'
           
           # ESRP Code Signing (Official builds only)
+          # Note: We only sign wheels on all platforms (Windows, macOS, Linux). The wheel signature cryptographically
+          # verifies the entire archive contents, making individual binary signing unnecessary. Additionally,
+          # macOS .so/.dylib files use Mach-O format which cannot be signed with Windows SignTool.
           - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
-              - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
-                parameters:
-                  appRegistrationClientId: '$(SigningAppRegistrationClientId)'
-                  appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
-                  artifactType: 'dll'
-                  authAkvName: '$(SigningAuthAkvName)'
-                  authSignCertName: '$(SigningAuthSignCertName)'
-                  esrpClientId: '$(SigningEsrpClientId)'
-                  esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
-                  signPath: '$(ob_outputDirectory)/bindings/macOS'
-              
               - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
                 parameters:
                   appRegistrationClientId: '$(SigningAppRegistrationClientId)'
