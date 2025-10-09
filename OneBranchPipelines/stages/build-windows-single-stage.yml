@@ -213,4 +213,3 @@ stages:
               - template: /OneBranchPipelines/steps/symbol-publishing-step.yml@self
                 parameters:
                   SymbolsFolder: '$(ob_outputDirectory)\symbols'
-                  SymbolsArtifactName: 'Symbols_Win_py${{ parameters.shortPyVer }}_${{ parameters.architecture }}'
