@@ -60,8 +60,8 @@ steps:
         echo "Publish to internal server: $publishToInternalServer"
         echo "Publish to public server: $publishToPublicServer"      
 
-        $symbolServer = '$(SymbolServer)'
-        $tokenUri = '$(SymbolTokenUri)'
+        $symbolServer = $env:SymbolServer
+        $tokenUri = $env:SymbolTokenUri
         $projectName = "mssql-python"
 
         # Get the access token for the symbol publishing service
