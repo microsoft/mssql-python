@@ -13,7 +13,7 @@ steps:
       targetType: inline
       script: |
         Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"
-        Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.Pat;]$env:SYSTEM_ACCESSTOKEN"
+        Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.Pat;issecret=true;]$env:SYSTEM_ACCESSTOKEN"
         # Verify System.AccessToken is available
         if (-not $env:SYSTEM_ACCESSTOKEN) {
           # whats the length of SYSTEM_ACCESSTOKEN
