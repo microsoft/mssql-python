@@ -44,6 +44,7 @@ stages:
           pythonVersion: ${{ parameters.pythonVersion }}
           shortPyVer: ${{ parameters.shortPyVer }}
           targetArch: ${{ parameters.architecture }}
+          SYSTEM_ACCESSTOKEN: $(System.AccessToken)  # Make System.AccessToken available to all steps in this job
         
         steps:
           - checkout: self
