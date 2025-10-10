@@ -2805,7 +2805,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         microseconds,
                         tzinfo
                     );
-                    py_dt = py_dt.attr("astimezone")(datetime.attr("timezone").attr("utc"));
                     row.append(py_dt);
                 } else {
                     LOG("Error fetching DATETIMEOFFSET for column {}, ret={}", i, ret);
@@ -3318,7 +3317,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                             dtoValue.fraction / 1000,  // ns → µs
                             tzinfo
                         );
-                        py_dt = py_dt.attr("astimezone")(datetime.attr("timezone").attr("utc"));
                         row.append(py_dt);
                     } else {
                         row.append(py::none());
