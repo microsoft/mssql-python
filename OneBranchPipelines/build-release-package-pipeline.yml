@@ -42,7 +42,7 @@ parameters:
     default: 'Release'
 
   - name: publishSymbols
-    displayName: 'Publish Debug Symbols'
+    displayName: 'Publish Symbols'
     type: boolean
     default: true
 
