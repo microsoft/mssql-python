@@ -45,7 +45,21 @@ Connection::Connection(const std::wstring& conn_str, bool use_pool)
 }
 
 Connection::~Connection() {
-    disconnect();   // fallback if user forgets to disconnect
+    // During interpreter shutdown, destructors must not throw or call into Python runtime.
+    // Call disconnect() but swallow exceptions to avoid terminate() during stack unwinding.
+    try {
+        disconnect();   // fallback if user forgets to disconnect
+    } catch (const std::exception &e) {
+        // Avoid using LOG (acquires GIL). Write to stderr directly only if Python is alive.
+        if (Py_IsInitialized()) {
+            std::cerr << "Exception during Connection::~Connection cleanup: " << e.what() << std::endl;
+        }
+        // Swallow - can't safely call Python APIs here.
+    } catch (...) {
+        if (Py_IsInitialized()) {
+            std::cerr << "Unknown exception during Connection::~Connection cleanup" << std::endl;
+        }
+    }
 }
 
 // Allocates connection handle
@@ -89,12 +103,22 @@ void Connection::connect(const py::dict& attrs_before) {
 
 void Connection::disconnect() {
     if (_dbcHandle) {
+        // Use LOG for normal operations where Python is available
         LOG("Disconnecting from database");
-        SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
-        checkError(ret);
+            try {
+                SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
+                // checkError may throw; catch and write to stderr instead of calling LOG
+                try {
+                    checkError(ret);
+                } catch (const std::exception &e) {
+                    std::cerr << "SQLDisconnect reported error: " << e.what() << std::endl;
+                    // swallow - destructor callers must not throw
+                }
+            } catch (const std::exception &e) {
+                std::cerr << "Exception during SQLDisconnect call: " << e.what() << std::endl;
+            }
         _dbcHandle.reset(); // triggers SQLFreeHandle via destructor, if last owner
-    }
-    else {
+    } else {
         LOG("No connection handle to disconnect");
     }
 }
@@ -270,8 +294,15 @@ ConnectionHandle::ConnectionHandle(const std::string& connStr, bool usePool, con
 }
 
 ConnectionHandle::~ConnectionHandle() {
+    // Make destructor noexcept-safe: close but swallow exceptions.
     if (_conn) {
-        close();
+        try {
+            close();
+        } catch (const std::exception &e) {
+            LOG("Exception during ConnectionHandle destructor close: {}", e.what());
+        } catch (...) {
+            LOG("Unknown exception during ConnectionHandle destructor close");
+        }
     }
 }
 
