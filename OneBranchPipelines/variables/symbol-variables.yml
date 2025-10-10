@@ -1,7 +1,5 @@
 # Symbol Publishing Variables
 # These variables configure where debug symbols (.pdb files) are published
-# Note: Symbol server variables (SymbolsAzureSubscription, SymbolsPublishServer, etc.)
-#       should come from variable groups, not redefined here to avoid cyclical references
 variables:
   # Symbol paths for ApiScan
   # Must use Build.SourcesDirectory (not ob_outputDirectory) so files persist for globalSdl
@@ -11,4 +9,8 @@ variables:
   
   - name: apiScanPdbPath
     value: '$(Build.SourcesDirectory)/apiScan/pdbs'
+
+  # Symbol server variables come from 'Symbols Publishing' variable group:
+  # - SymbolServer: Symbol publishing server hostname
+  # - SymbolTokenUri: Token URI for symbol publishing service authentication
 

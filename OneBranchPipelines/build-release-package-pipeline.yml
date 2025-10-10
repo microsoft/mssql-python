@@ -119,6 +119,7 @@ variables:
   - template: /OneBranchPipelines/variables/symbol-variables.yml@self
     # Variable groups
   - group: 'ESRP Federated Creds (AME)'  # Contains ESRP signing credentials
+  - group: 'Symbols Publishing'  # Contains SymbolServer, SymbolTokenUri variables
 
 # OneBranch resources
 resources:
