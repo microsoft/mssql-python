@@ -16,6 +16,9 @@ steps:
         Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.Pat;]$env:SYSTEM_ACCESSTOKEN"
         # Verify System.AccessToken is available
         if (-not $env:SYSTEM_ACCESSTOKEN) {
+          # whats the length of SYSTEM_ACCESSTOKEN
+          $tokenLength = $env:SYSTEM_ACCESSTOKEN.Length
+          Write-Host "SYSTEM_ACCESSTOKEN length: $tokenLength"
           Write-Error "SYSTEM_ACCESSTOKEN is not available. Ensure 'Allow scripts to access the OAuth token' is enabled in the pipeline settings."
         } else {
           Write-Host "SYSTEM_ACCESSTOKEN is available and will be used for symbol publishing."
