@@ -506,6 +506,38 @@ print("Script completed, shutting down...") # This would NOT print anyways
     # Should not segfault (exit code 139 on Unix, 134 on macOS)
     assert result.returncode == 1, f"Expected exit code 1 due to syntax error, but got {result.returncode}. STDERR: {result.stderr}"
 
+
+def test_connection_error_then_shutdown_no_core_dump(conn_str):
+    """Test that connection-level errors followed by interpreter shutdown do not cause core dumps or pybind11 aborts"""
+    escaped_conn_str = conn_str.replace('\\', '\\\\').replace('"', '\\"')
+    code = f"""
+from mssql_python import connect
+
+# Create a connection, trigger an error on the native side, then let interpreter shutdown handle cleanup
+conn = connect("{escaped_conn_str}")
+cursor = conn.cursor()
+
+# Execute an invalid query to create an error state on the STMT/DBC
+try:
+    cursor.execute('syntax error at shutdown_test')
+except Exception:
+    # Intentionally ignore the Python-level exception; we want to ensure teardown is safe
+    pass
+
+# Don't close cursor or connection explicitly - allow objects to be cleaned up during interpreter finalization
+print('done')
+"""
+
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+
+    # Expect a non-zero return value due to the syntax error, but not a crash/abort
+    assert result.returncode != 0, f"Expected non-zero exit due to syntax error, got 0. STDERR: {result.stderr}"
+
+    # Ensure there is no segmentation fault or pybind11 abort text in stderr
+    assert "Segmentation fault" not in result.stderr
+    assert "pybind11::error_already_set" not in result.stderr
+    assert "sys.meta_path is None" not in result.stderr
+
 def test_multiple_sql_syntax_errors_no_segfault(conn_str):
     """Test multiple SQL syntax errors don't cause segfault during cleanup"""
     escaped_conn_str = conn_str.replace('\\', '\\\\').replace('"', '\\"')

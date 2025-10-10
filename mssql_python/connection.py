@@ -1244,7 +1244,17 @@ class Connection:
         """
         if "_closed" not in self.__dict__ or not self._closed:
             try:
+                import sys
+                # If the interpreter is finalizing, skip cleanup that might call into
+                # C extension destructors which use the Python C-API.
+                if sys and getattr(sys, "_is_finalizing", lambda: False)():
+                    return
                 self.close()
             except Exception as e:
-                # Dont raise exceptions from __del__ to avoid issues during garbage collection
-                log('error', f"Error during connection cleanup: {e}")
+                # During interpreter shutdown avoid logging or raising further errors
+                try:
+                    if not (hasattr(sys, "_is_finalizing") and sys._is_finalizing()):
+                        log('error', f"Error during connection cleanup: {e}")
+                except Exception:
+                    # If logging isn't available (e.g., during shutdown), silently ignore
+                    pass
