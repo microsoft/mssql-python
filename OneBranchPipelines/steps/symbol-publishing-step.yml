@@ -32,7 +32,7 @@ steps:
       SymbolsMaximumWaitTime: 10
       SymbolsProduct: mssql-python
       SymbolsVersion: $(Build.BuildId)
-      Pat: $(System.AccessToken)
+      Pat: $(SYSTEM_ACCESSTOKEN)
     env:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
   
