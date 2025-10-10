@@ -3,7 +3,7 @@
 parameters:
   - name: SymbolsFolder
     type: string
-    default: '$(ob_outputDirectory)\symbols'
+    default: '$(System.ArtifactsDirectory)/symbols'
 
 steps:
   # Set AccountName for SqlClientDrivers organization (separate PowerShell task like JDBC)

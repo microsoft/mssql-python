@@ -232,29 +232,29 @@ extends:
               buildConfiguration: '${{ parameters.buildConfiguration }}'
       
       # macOS stages - one per Python version (universal2 binaries)
-      - ${{ each config in parameters.macosConfigs }}:
-          - template: /OneBranchPipelines/stages/build-macos-single-stage.yml@self
-            parameters:
-              stageName: MacOS_py${{ config.pyVer }}
-              jobName: BuildWheel
-              pythonVersion: ${{ format('{0}.{1}', substring(config.pyVer, 0, 1), substring(config.pyVer, 1, 2)) }}
-              shortPyVer: ${{ config.pyVer }}
-              oneBranchType: '${{ parameters.oneBranchType }}'
-              signingEnabled: '${{ parameters.signingEnabled }}'
-              buildConfiguration: '${{ parameters.buildConfiguration }}'
+      # - ${{ each config in parameters.macosConfigs }}:
+      #     - template: /OneBranchPipelines/stages/build-macos-single-stage.yml@self
+      #       parameters:
+      #         stageName: MacOS_py${{ config.pyVer }}
+      #         jobName: BuildWheel
+      #         pythonVersion: ${{ format('{0}.{1}', substring(config.pyVer, 0, 1), substring(config.pyVer, 1, 2)) }}
+      #         shortPyVer: ${{ config.pyVer }}
+      #         oneBranchType: '${{ parameters.oneBranchType }}'
+      #         signingEnabled: '${{ parameters.signingEnabled }}'
+      #         buildConfiguration: '${{ parameters.buildConfiguration }}'
       
       # Linux stages - one per distribution/architecture (builds all Python versions inside)
-      - ${{ each config in parameters.linuxConfigs }}:
-          - template: /OneBranchPipelines/stages/build-linux-single-stage.yml@self
-            parameters:
-              stageName: Linux_${{ config.tag }}_${{ config.arch }}
-              jobName: BuildWheels
-              linuxTag: ${{ config.tag }}
-              arch: ${{ config.arch }}
-              dockerPlatform: ${{ config.platform }}
-              oneBranchType: '${{ parameters.oneBranchType }}'
-              signingEnabled: '${{ parameters.signingEnabled }}'
-              buildConfiguration: '${{ parameters.buildConfiguration }}'
+      # - ${{ each config in parameters.linuxConfigs }}:
+      #     - template: /OneBranchPipelines/stages/build-linux-single-stage.yml@self
+      #       parameters:
+      #         stageName: Linux_${{ config.tag }}_${{ config.arch }}
+      #         jobName: BuildWheels
+      #         linuxTag: ${{ config.tag }}
+      #         arch: ${{ config.arch }}
+      #         dockerPlatform: ${{ config.platform }}
+      #         oneBranchType: '${{ parameters.oneBranchType }}'
+      #         signingEnabled: '${{ parameters.signingEnabled }}'
+      #         buildConfiguration: '${{ parameters.buildConfiguration }}'
       
       # Consolidate all artifacts into single dist/ folder
       - stage: Consolidate
