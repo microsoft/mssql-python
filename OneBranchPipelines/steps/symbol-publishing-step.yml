@@ -13,8 +13,12 @@ steps:
       targetType: inline
       script: |
         Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"
-    env:
-      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+        # If System.AccessToken is not available, this will fail
+        if (-not $env:SYSTEM_ACCESSTOKEN) {
+          Write-Error "SYSTEM_ACCESSTOKEN is not available. Ensure 'Allow scripts to access the OAuth token' is enabled in the pipeline settings."
+        } else {
+          Write-Host "SYSTEM_ACCESSTOKEN is available."
+        }
   
   - task: PublishSymbols@2
     displayName: 'Push Symbols to SqlClientDrivers ADO Organization'
@@ -26,9 +30,7 @@ steps:
       SymbolsMaximumWaitTime: 10
       SymbolsProduct: mssql-python
       SymbolsVersion: $(Build.BuildId)
-      Pat: $(System.AccessToken)
-    env:
-      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      Pat: $(SYSTEM_ACCESSTOKEN)
   
   # Publish to Microsoft Symbol Publishing Service (External)
   # Note: This requires additional variable group with SymbolServer, SymbolTokenUri variables
