@@ -3,7 +3,7 @@
 parameters:
   - name: SymbolsFolder
     type: string
-    default: '$(System.ArtifactsDirectory)/symbols'
+    default: '$(ob_outputDirectory)\symbols'
 
 steps:
   # Set AccountName for SqlClientDrivers organization (separate PowerShell task like JDBC)
@@ -13,12 +13,14 @@ steps:
       targetType: inline
       script: |
         Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"
-        # If System.AccessToken is not available, this will fail
+        # Verify System.AccessToken is available
         if (-not $env:SYSTEM_ACCESSTOKEN) {
           Write-Error "SYSTEM_ACCESSTOKEN is not available. Ensure 'Allow scripts to access the OAuth token' is enabled in the pipeline settings."
         } else {
-          Write-Host "SYSTEM_ACCESSTOKEN is available."
+          Write-Host "SYSTEM_ACCESSTOKEN is available and will be used for symbol publishing."
         }
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
   
   - task: PublishSymbols@2
     displayName: 'Push Symbols to SqlClientDrivers ADO Organization'
@@ -30,7 +32,9 @@ steps:
       SymbolsMaximumWaitTime: 10
       SymbolsProduct: mssql-python
       SymbolsVersion: $(Build.BuildId)
-      Pat: $(SYSTEM_ACCESSTOKEN)
+      Pat: $(System.AccessToken)
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
   
   # Publish to Microsoft Symbol Publishing Service (External)
   # Note: This requires additional variable group with SymbolServer, SymbolTokenUri variables
