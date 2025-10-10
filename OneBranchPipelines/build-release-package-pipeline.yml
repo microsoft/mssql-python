@@ -257,30 +257,30 @@ extends:
       #         buildConfiguration: '${{ parameters.buildConfiguration }}'
       
       # Consolidate all artifacts into single dist/ folder
-      - stage: Consolidate
-        displayName: 'Consolidate All Artifacts'
-        dependsOn:
-          # Windows dependencies
-          - Win_py310_x64
-          - Win_py311_x64
-          - Win_py312_x64
-          - Win_py313_x64
-          - Win_py311_arm64
-          - Win_py312_arm64
-          - Win_py313_arm64
-          # macOS dependencies
-          - MacOS_py310
-          - MacOS_py311
-          - MacOS_py312
-          - MacOS_py313
-          # Linux dependencies
-          - Linux_manylinux_x86_64
-          - Linux_manylinux_aarch64
-          - Linux_musllinux_x86_64
-          - Linux_musllinux_aarch64
-        jobs:
-          - template: /OneBranchPipelines/jobs/consolidate-artifacts-job.yml@self
-            parameters:
-              oneBranchType: '${{ parameters.oneBranchType }}'
+      # - stage: Consolidate
+      #   displayName: 'Consolidate All Artifacts'
+      #   dependsOn:
+      #     # Windows dependencies
+      #     - Win_py310_x64
+      #     - Win_py311_x64
+      #     - Win_py312_x64
+      #     - Win_py313_x64
+      #     - Win_py311_arm64
+      #     - Win_py312_arm64
+      #     - Win_py313_arm64
+      #     # macOS dependencies
+      #     - MacOS_py310
+      #     - MacOS_py311
+      #     - MacOS_py312
+      #     - MacOS_py313
+      #     # Linux dependencies
+      #     - Linux_manylinux_x86_64
+      #     - Linux_manylinux_aarch64
+      #     - Linux_musllinux_x86_64
+      #     - Linux_musllinux_aarch64
+      #   jobs:
+      #     - template: /OneBranchPipelines/jobs/consolidate-artifacts-job.yml@self
+      #       parameters:
+      #         oneBranchType: '${{ parameters.oneBranchType }}'
 
       # Note: Symbol publishing is now handled directly in the Windows build stages
