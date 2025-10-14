@@ -11,14 +11,14 @@ steps:
     displayName: 'Set Symbol.AccountName to SqlClientDrivers'
     inputs:
       targetType: inline
+      # NOTE: we're setting PAT in this step since Pat:$(System.AccessToken) doesn't work in PublishSymbols@2 task directly
+      # Tried using env: parameter on PublishSymbols@2 but it didn't work
+      # This is a workaround to set it via script, and setting as a secret variable
       script: |
         Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"
         Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.Pat;issecret=true;]$env:SYSTEM_ACCESSTOKEN"
         # Verify System.AccessToken is available
         if (-not $env:SYSTEM_ACCESSTOKEN) {
-          # whats the length of SYSTEM_ACCESSTOKEN
-          $tokenLength = $env:SYSTEM_ACCESSTOKEN.Length
-          Write-Host "SYSTEM_ACCESSTOKEN length: $tokenLength"
           Write-Error "SYSTEM_ACCESSTOKEN is not available. Ensure 'Allow scripts to access the OAuth token' is enabled in the pipeline settings."
         } else {
           Write-Host "SYSTEM_ACCESSTOKEN is available and will be used for symbol publishing."
@@ -38,8 +38,9 @@ steps:
       SymbolsVersion: $(Build.BuildId)
   
   # Publish to Microsoft Symbol Publishing Service (External)
-  # Note: This requires additional variable group with SymbolServer, SymbolTokenUri variables
-  # Similar to SqlClient's 'akv-variables-v2' group containing SymbolsPublishServer, SymbolsPublishTokenUri
+  # This requires additional variable group with SymbolServer, SymbolTokenUri variables
+  # Project name must be registered with Symbol team via IcM incident
+  # Reference: https://www.osgwiki.com/wiki/Symbols_Publishing_Pipeline_to_SymWeb_and_MSDL#Step_3:_Project_Setup
   - task: AzureCLI@2
     displayName: 'Publish symbols to Microsoft Symbol Publishing Service'
     condition: succeeded()

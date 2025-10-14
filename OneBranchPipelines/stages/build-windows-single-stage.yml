@@ -217,8 +217,5 @@ stages:
           #         esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
           #         signPath: '$(ob_outputDirectory)\wheels'
           
-          # Publish symbols (Windows only)
-          - ${{ if eq(parameters.publishSymbols, true) }}:
-              - template: /OneBranchPipelines/steps/symbol-publishing-step.yml@self
-                parameters:
-                  SymbolsFolder: '$(ob_outputDirectory)\symbols'
+          # Note: Symbol publishing moved to release pipeline
+          # Symbols are published as artifacts here and consumed in release pipeline
