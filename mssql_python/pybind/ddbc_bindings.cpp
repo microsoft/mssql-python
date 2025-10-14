@@ -3181,14 +3181,28 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         LOG("Error while fetching rows in batches");
         return ret;
     }
+    // Pre-cache column metadata to avoid repeated dictionary lookups (major optimization)
+    struct ColumnInfo {
+        SQLSMALLINT dataType;
+        SQLULEN columnSize;
+        bool isLob;  // Pre-compute LOB status for O(1) lookup
+    };
+    std::vector<ColumnInfo> columnInfos(numCols);
+    for (SQLUSMALLINT col = 0; col < numCols; col++) {
+        const auto& columnMeta = columnNames[col].cast<py::dict>();
+        columnInfos[col].dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
+        columnInfos[col].columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+        columnInfos[col].isLob = std::find(lobColumns.begin(), lobColumns.end(), col + 1) != lobColumns.end(); // col+1 because lobColumns uses 1-based indexing
+    }
+    
     // numRowsFetched is the SQL_ATTR_ROWS_FETCHED_PTR attribute. It'll be populated by
     // SQLFetchScroll
         for (SQLULEN i = 0; i < numRowsFetched; i++) {
             py::list row(numCols);  // Pre-allocate with known column count for better performance
             for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-                // Cache column metadata lookup for better performance
-                const auto& columnMeta = columnNames[col - 1].cast<py::dict>();
-                SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
+                // Use pre-cached column metadata for optimal performance
+                const ColumnInfo& colInfo = columnInfos[col - 1];
+                SQLSMALLINT dataType = colInfo.dataType;
                 SQLLEN dataLen = buffers.indicators[col - 1][i];            if (dataLen == SQL_NULL_DATA) {
                 row[col - 1] = py::none();
                 continue;
@@ -3229,11 +3243,11 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_CHAR:
                 case SQL_VARCHAR:
                 case SQL_LONGVARCHAR: {
-                    SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+                    SQLULEN columnSize = colInfo.columnSize;
                     HandleZeroColumnSizeAtFetch(columnSize);
                     uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 					uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
-                    bool isLob = std::find(lobColumns.begin(), lobColumns.end(), col) != lobColumns.end();
+                    bool isLob = colInfo.isLob;  // Use cached LOB status for O(1) lookup
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
                         // SQLFetch will nullterminate the data
@@ -3249,11 +3263,11 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_WVARCHAR:
                 case SQL_WLONGVARCHAR: {
                     // TODO: variable length data needs special handling, this logic wont suffice
-                    SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+                    SQLULEN columnSize = colInfo.columnSize;
                     HandleZeroColumnSizeAtFetch(columnSize);
                     uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 					uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
-                    bool isLob = std::find(lobColumns.begin(), lobColumns.end(), col) != lobColumns.end();
+                    bool isLob = colInfo.isLob;  // Use cached LOB status for O(1) lookup
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
                         // SQLFetch will nullterminate the data
@@ -3411,9 +3425,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_BINARY:
                 case SQL_VARBINARY:
                 case SQL_LONGVARBINARY: {
-                    SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+                    SQLULEN columnSize = colInfo.columnSize;
                     HandleZeroColumnSizeAtFetch(columnSize);
-                    bool isLob = std::find(lobColumns.begin(), lobColumns.end(), col) != lobColumns.end();
+                    bool isLob = colInfo.isLob;  // Use cached LOB status for O(1) lookup
                     if (!isLob && static_cast<size_t>(dataLen) <= columnSize) {
                         row[col - 1] = py::bytes(reinterpret_cast<const char*>(
                                                      &buffers.charBuffers[col - 1][i * columnSize]),
@@ -3424,6 +3438,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
                 default: {
+                    const auto& columnMeta = columnNames[col - 1].cast<py::dict>();  // Re-fetch for error case only
                     std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                     std::ostringstream errorString;
                     errorString << "Unsupported data type for column - " << columnName.c_str()
