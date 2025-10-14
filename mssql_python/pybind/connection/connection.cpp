@@ -196,10 +196,6 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         LOG("Set attribute successfully");
     }
     
-    // Zero out sensitive data if used
-    if (!buffer.empty()) {
-        std::fill(buffer.begin(), buffer.end(), static_cast<char>(0));
-    }
     return ret;
 }
 
