@@ -2989,7 +2989,6 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                                      buffers.indicators[col - 1].data());
                 break;
             }
-            case SQL_SS_XML:
             case SQL_WCHAR:
             case SQL_WVARCHAR:
             case SQL_WLONGVARCHAR: {
@@ -3190,10 +3189,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     } else {
                         row.append(FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false));
                     }
-                    break;
-                }
-                case SQL_SS_XML: {
-                    row.append(FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false));
                     break;
                 }
                 case SQL_WCHAR:
@@ -3516,11 +3511,10 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
              dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
              dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
-                std::cout<<"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"<<std::endl;
             lobColumns.push_back(i + 1); // 1-based
         }
     }
-    std::cout<<"lobColumns.size()="<<lobColumns.size()<<std::endl;
+
     // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
     if (!lobColumns.empty()) {
         LOG("LOB columns detected, using per-row SQLGetData path");
@@ -3535,7 +3529,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         }
         return SQL_SUCCESS;
     }
-    std::cout<<"No LOB columns, using batch fetch path"<<std::endl;
+
     // Initialize column buffers
     ColumnBuffers buffers(numCols, fetchSize);
 
