@@ -81,7 +81,7 @@ class Cursor:
         self.description = None
         self.rowcount = -1
         self.arraysize = (
-            1000  # Increased default for better performance - user can still change it
+            5000  # Optimized default for better performance - sweet spot between speed and memory
         )
         self.buffer_length = 1024  # Default buffer length for string data
         self.closed = False
@@ -99,8 +99,8 @@ class Cursor:
         # rownumber attribute
         self._rownumber = -1  # DB-API extension: last returned row index, -1 before first
         
-        # Performance optimizations
-        self._fast_mode = False  # When enabled, returns tuples instead of Row objects
+        # Performance optimizations (enabled by default)
+        self._fast_mode = True  # Returns tuples instead of Row objects for better performance
         self._cached_column_map = None  # Cache column mapping for performance
         self._next_row_index = 0  # internal: index of the next row the driver will return (0-based)
         self._has_result_set = False  # Track if we have an active result set
