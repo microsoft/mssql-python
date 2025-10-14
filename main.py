@@ -157,7 +157,7 @@ print(f"Elapsed time in pyodbc for query 4: {elapsed_time:.4f} seconds")
 cursor.close()
 conn.close()
 
-print("Using mssql-python now")
+print("Using mssql-python now (original)")
 start_time = time.perf_counter()
 conn = connect(conn_str)
 cursor = conn.cursor()
@@ -166,28 +166,64 @@ rows = cursor.fetchall()
 
 end_time = time.perf_counter()
 elapsed_time = end_time - start_time
-print(f"Elapsed time in mssql-python for query 1: {elapsed_time:.4f} seconds")
+print(f"Elapsed time in mssql-python (original) for query 1: {elapsed_time:.4f} seconds")
 
 start_time = time.perf_counter()
 cursor.execute(LARGE_DATASET)
 rows = cursor.fetchall()
 end_time = time.perf_counter()
 elapsed_time = end_time - start_time
-print(f"Elapsed time in mssql-python for query 2: {elapsed_time:.4f} seconds")
+print(f"Elapsed time in mssql-python (original) for query 2: {elapsed_time:.4f} seconds")
 
 start_time = time.perf_counter()
 cursor.execute(VERY_LARGE_DATASET)
 rows = cursor.fetchall()
 end_time = time.perf_counter()
 elapsed_time = end_time - start_time
-print(f"Elapsed time in mssql-python for query 3: {elapsed_time:.4f} seconds")
+print(f"Elapsed time in mssql-python (original) for query 3: {elapsed_time:.4f} seconds")
 
 start_time = time.perf_counter()
 cursor.execute(SUBQUERY_WITH_CTE)
 rows = cursor.fetchall()
 end_time = time.perf_counter()
 elapsed_time = end_time - start_time
-print(f"Elapsed time in mssql-python for query 4: {elapsed_time:.4f} seconds")
+print(f"Elapsed time in mssql-python (original) for query 4: {elapsed_time:.4f} seconds")
+
+cursor.close()
+conn.close()
+
+print("Using mssql-python now (optimized)")
+start_time = time.perf_counter()
+conn = connect(conn_str)
+conn.enable_performance_mode()  # Enable connection-level performance mode
+cursor = conn.cursor()  # This will automatically apply optimizations
+cursor.execute(COMPLEX_JOIN_AGGREGATION)        
+rows = cursor.fetchall()
+
+end_time = time.perf_counter()
+elapsed_time = end_time - start_time
+print(f"Elapsed time in mssql-python (optimized) for query 1: {elapsed_time:.4f} seconds")
+
+start_time = time.perf_counter()
+cursor.execute(LARGE_DATASET)
+rows = cursor.fetchall()
+end_time = time.perf_counter()
+elapsed_time = end_time - start_time
+print(f"Elapsed time in mssql-python (optimized) for query 2: {elapsed_time:.4f} seconds")
+
+start_time = time.perf_counter()
+cursor.execute(VERY_LARGE_DATASET)
+rows = cursor.fetchall()
+end_time = time.perf_counter()
+elapsed_time = end_time - start_time
+print(f"Elapsed time in mssql-python (optimized) for query 3: {elapsed_time:.4f} seconds")
+
+start_time = time.perf_counter()
+cursor.execute(SUBQUERY_WITH_CTE)
+rows = cursor.fetchall()
+end_time = time.perf_counter()
+elapsed_time = end_time - start_time
+print(f"Elapsed time in mssql-python (optimized) for query 4: {elapsed_time:.4f} seconds")
 
 cursor.close()
 conn.close()

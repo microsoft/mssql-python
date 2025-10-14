@@ -202,6 +202,9 @@ class Connection:
         self._pooling = PoolingManager.is_enabled()
         self._conn = ddbc_bindings.Connection(self.connection_str, self._pooling, self._attrs_before)
         self.setautocommit(autocommit)
+        
+        # Performance optimization settings
+        self._performance_mode = False  # When enabled, applies aggressive optimizations
 
     def _construct_connection_string(self, connection_str: str = "", **kwargs) -> str:
         """
@@ -595,6 +598,12 @@ class Connection:
             )
 
         cursor = Cursor(self, timeout=self._timeout)
+        
+        # Apply performance optimizations if enabled
+        if self._performance_mode:
+            cursor.optimize_for_performance()
+            cursor.enable_fast_mode()  # Enable fast mode when performance mode is on
+        
         self._cursors.add(cursor)  # Track the cursor
         return cursor
     
@@ -1235,6 +1244,27 @@ class Connection:
         """
         if not self._closed:
             self.close()
+
+    def enable_performance_mode(self):
+        """
+        Enable performance mode for all cursors created from this connection.
+        This applies optimizations that prioritize speed over some features:
+        - Returns tuples instead of Row objects
+        - Increases batch sizes for better throughput
+        - Caches column mappings
+        - Uses aggressive arraysize settings
+        """
+        self._performance_mode = True
+        
+    def disable_performance_mode(self):
+        """
+        Disable performance mode and return to standard behavior.
+        """
+        self._performance_mode = False
+        
+    def is_performance_mode_enabled(self):
+        """Check if performance mode is enabled."""
+        return self._performance_mode
 
     def __del__(self):
         """

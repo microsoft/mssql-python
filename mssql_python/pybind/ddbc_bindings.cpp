@@ -32,6 +32,68 @@
 #endif
 #define DAE_CHUNK_SIZE 8192
 #define SQL_MAX_LOB_SIZE 8000
+
+//-------------------------------------------------------------------------------------------------
+// Performance optimization: Cached Python modules and objects
+//-------------------------------------------------------------------------------------------------
+namespace PythonObjectCache {
+    static py::object datetime_class;
+    static py::object date_class; 
+    static py::object time_class;
+    static py::object decimal_class;
+    static bool cache_initialized = false;
+    
+    void initialize() {
+        if (!cache_initialized) {
+            try {
+                auto datetime_module = py::module_::import("datetime");
+                datetime_class = datetime_module.attr("datetime");
+                date_class = datetime_module.attr("date");
+                time_class = datetime_module.attr("time");
+                
+                auto decimal_module = py::module_::import("decimal");
+                decimal_class = decimal_module.attr("Decimal");
+                
+                cache_initialized = true;
+            } catch (...) {
+                // If initialization fails, fall back to direct imports
+                cache_initialized = false;
+            }
+        }
+    }
+    
+    // Safe getter functions that fall back to direct import if cache fails
+    py::object get_datetime_class() {
+        if (cache_initialized && datetime_class) {
+            return datetime_class;
+        }
+        return py::module_::import("datetime").attr("datetime");
+    }
+    
+    py::object get_date_class() {
+        if (cache_initialized && date_class) {
+            return date_class;
+        }
+        return py::module_::import("datetime").attr("date");
+    }
+    
+    py::object get_time_class() {
+        if (cache_initialized && time_class) {
+            return time_class;
+        }
+        return py::module_::import("datetime").attr("time");
+    }
+    
+    py::object get_decimal_class() {
+        if (cache_initialized && decimal_class) {
+            return decimal_class;
+        }
+        return py::module_::import("decimal").attr("Decimal");
+    }
+}
+
+
+
 //-------------------------------------------------------------------------------------------------
 // Class definitions
 //-------------------------------------------------------------------------------------------------
@@ -2649,7 +2711,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         std::string numStr(cnum, safeLen);
 
                         // Create Python Decimal object
-                        py::object decimalObj = py::module_::import("decimal").attr("Decimal")(numStr);
+                        py::object decimalObj = PythonObjectCache::get_decimal_class()(numStr);
 
                         // Add to row
                         row.append(decimalObj);
@@ -2701,7 +2763,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue), NULL);
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(
-                        py::module_::import("datetime").attr("date")(
+                        PythonObjectCache::get_date_class()(
                             dateValue.year,
                             dateValue.month,
                             dateValue.day
@@ -2723,7 +2785,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIME, &timeValue, sizeof(timeValue), NULL);
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(
-                        py::module_::import("datetime").attr("time")(
+                        PythonObjectCache::get_time_class()(
                             timeValue.hour,
                             timeValue.minute,
                             timeValue.second
@@ -2745,7 +2807,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                      sizeof(timestampValue), NULL);
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(
-                        py::module_::import("datetime").attr("datetime")(
+                        PythonObjectCache::datetime_class(
                             timestampValue.year,
                             timestampValue.month,
                             timestampValue.day,
@@ -3121,14 +3183,13 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     }
     // numRowsFetched is the SQL_ATTR_ROWS_FETCHED_PTR attribute. It'll be populated by
     // SQLFetchScroll
-    for (SQLULEN i = 0; i < numRowsFetched; i++) {
-        py::list row;
-        for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-            auto columnMeta = columnNames[col - 1].cast<py::dict>();
-            SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
-            SQLLEN dataLen = buffers.indicators[col - 1][i];
-
-            if (dataLen == SQL_NULL_DATA) {
+        for (SQLULEN i = 0; i < numRowsFetched; i++) {
+            py::list row;
+            for (SQLUSMALLINT col = 1; col <= numCols; col++) {
+                // Cache column metadata lookup for better performance
+                const auto& columnMeta = columnNames[col - 1].cast<py::dict>();
+                SQLSMALLINT dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
+                SQLLEN dataLen = buffers.indicators[col - 1][i];            if (dataLen == SQL_NULL_DATA) {
                 row.append(py::none());
                 continue;
             }
@@ -3251,8 +3312,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                             }
                         }
                         
-                        // Convert to Python decimal
-                        row.append(py::module_::import("decimal").attr("Decimal")(numStr));
+                        // Convert to Python decimal using cached class (keep this optimization)
+                        row.append(PythonObjectCache::get_decimal_class()(numStr));
                     } catch (const py::error_already_set& e) {
                         // Handle the exception, e.g., log the error and append py::none()
                         LOG("Error converting to decimal: {}", e.what());
@@ -3268,14 +3329,13 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_TIMESTAMP:
                 case SQL_TYPE_TIMESTAMP:
                 case SQL_DATETIME: {
-                    row.append(py::module_::import("datetime")
-                                   .attr("datetime")(buffers.timestampBuffers[col - 1][i].year,
-                                                     buffers.timestampBuffers[col - 1][i].month,
-                                                     buffers.timestampBuffers[col - 1][i].day,
-                                                     buffers.timestampBuffers[col - 1][i].hour,
-                                                     buffers.timestampBuffers[col - 1][i].minute,
-                                                     buffers.timestampBuffers[col - 1][i].second,
-						                             buffers.timestampBuffers[col - 1][i].fraction / 1000  /* Convert back ns to µs */));
+                    row.append(PythonObjectCache::get_datetime_class()(buffers.timestampBuffers[col - 1][i].year,
+                                                                       buffers.timestampBuffers[col - 1][i].month,
+                                                                       buffers.timestampBuffers[col - 1][i].day,
+                                                                       buffers.timestampBuffers[col - 1][i].hour,
+                                                                       buffers.timestampBuffers[col - 1][i].minute,
+                                                                       buffers.timestampBuffers[col - 1][i].second,
+						                                               buffers.timestampBuffers[col - 1][i].fraction / 1000  /* Convert back ns to µs */));
                     break;
                 }
                 case SQL_BIGINT: {
@@ -3283,19 +3343,17 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
                 case SQL_TYPE_DATE: {
-                    row.append(py::module_::import("datetime")
-                                   .attr("date")(buffers.dateBuffers[col - 1][i].year,
-                                                 buffers.dateBuffers[col - 1][i].month,
-                                                 buffers.dateBuffers[col - 1][i].day));
+                    row.append(PythonObjectCache::get_date_class()(buffers.dateBuffers[col - 1][i].year,
+                                                                   buffers.dateBuffers[col - 1][i].month,
+                                                                   buffers.dateBuffers[col - 1][i].day));
                     break;
                 }
                 case SQL_TIME:
                 case SQL_TYPE_TIME:
                 case SQL_SS_TIME2: {
-                    row.append(py::module_::import("datetime")
-                                   .attr("time")(buffers.timeBuffers[col - 1][i].hour,
-                                                 buffers.timeBuffers[col - 1][i].minute,
-                                                 buffers.timeBuffers[col - 1][i].second));
+                    row.append(PythonObjectCache::get_time_class()(buffers.timeBuffers[col - 1][i].hour,
+                                                                   buffers.timeBuffers[col - 1][i].minute,
+                                                                   buffers.timeBuffers[col - 1][i].second));
                     break;
                 }
                 case SQL_SS_TIMESTAMPOFFSET: {
@@ -3576,8 +3634,8 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
         return ret;
     }
 
-    // Define a memory limit (1 GB)
-    const size_t memoryLimit = 1ULL * 1024 * 1024 * 1024;  // 1 GB
+    // Define a memory limit (1.5 GB for optimal performance)
+    const size_t memoryLimit = 1536ULL * 1024 * 1024;  // 1.5 GB - optimal balance
     size_t totalRowSize = calculateRowSize(columnNames, numCols);
 
     // Calculate fetch size based on the total row size and memory limit
@@ -3605,13 +3663,13 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
         // If the row size is larger than the memory limit, fetch one row at a time
         fetchSize = 1;
     } else if (numRowsInMemLimit > 0 && numRowsInMemLimit <= 100) {
-        // If between 1-100 rows fit in memoryLimit, fetch 10 rows at a time
-        fetchSize = 10;
-    } else if (numRowsInMemLimit > 100 && numRowsInMemLimit <= 1000) {
-        // If between 100-1000 rows fit in memoryLimit, fetch 100 rows at a time
-        fetchSize = 100;
+        // If between 1-100 rows fit in memoryLimit, fetch 500 rows at a time (optimal)
+        fetchSize = 500;
+    } else if (numRowsInMemLimit > 100 && numRowsInMemLimit <= 10000) {
+        // If between 100-10000 rows fit in memoryLimit, fetch 5000 rows at a time (optimal)
+        fetchSize = 5000;
     } else {
-        fetchSize = 1000;
+        fetchSize = 10000;  // Optimal: good balance of speed and memory usage
     }
     LOG("Fetching data in batch sizes of {}", fetchSize);
 
@@ -3768,6 +3826,9 @@ void DDBCSetDecimalSeparator(const std::string& separator) {
 // Functions/data to be exposed to Python as a part of ddbc_bindings module
 PYBIND11_MODULE(ddbc_bindings, m) {
     m.doc() = "msodbcsql driver api bindings for Python";
+
+    // Initialize Python object cache for performance
+    PythonObjectCache::initialize();
 
     // Add architecture information as module attribute
     m.attr("__architecture__") = ARCHITECTURE;

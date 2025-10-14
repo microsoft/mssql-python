@@ -81,7 +81,7 @@ class Cursor:
         self.description = None
         self.rowcount = -1
         self.arraysize = (
-            1  # Default number of rows to fetch at a time is 1, user can change it
+            1000  # Increased default for better performance - user can still change it
         )
         self.buffer_length = 1024  # Default buffer length for string data
         self.closed = False
@@ -98,6 +98,10 @@ class Cursor:
         
         # rownumber attribute
         self._rownumber = -1  # DB-API extension: last returned row index, -1 before first
+        
+        # Performance optimizations
+        self._fast_mode = False  # When enabled, returns tuples instead of Row objects
+        self._cached_column_map = None  # Cache column mapping for performance
         self._next_row_index = 0  # internal: index of the next row the driver will return (0-based)
         self._has_result_set = False  # Track if we have an active result set
         self._skip_increment_for_next_fetch = False  # Track if we need to skip incrementing the row index
@@ -1010,9 +1014,12 @@ class Cursor:
         if self.description:  # If we have column descriptions, it's likely a SELECT
             self.rowcount = -1
             self._reset_rownumber()
+            # Performance optimization: pre-build column map after execution
+            self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
         else:
             self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
             self._clear_rownumber()
+            self._cached_column_map = None  # Clear cache for non-SELECT statements
 
         # After successful execution, initialize description if there are results
         column_metadata = []
@@ -1775,8 +1782,16 @@ class Cursor:
             else:
                 self.rowcount = self._next_row_index
             
+            # Performance optimization: return tuples in fast mode
+            if self._fast_mode:
+                return [tuple(row_data) for row_data in rows_data]
+            
+            # Build column map once and cache it for better performance
+            if self._cached_column_map is None and self.description:
+                self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
+            
             # Convert raw data to Row objects
-            column_map = getattr(self, '_column_name_map', None)
+            column_map = self._cached_column_map or getattr(self, '_column_name_map', None)
             return [Row(self, self.description, row_data, column_map) for row_data in rows_data]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
@@ -1787,7 +1802,7 @@ class Cursor:
         Fetch all (remaining) rows of a query result.
         
         Returns:
-            List of Row objects.
+            List of Row objects or tuples (if fast mode is enabled).
         """
         self._check_closed()  # Check if the cursor is closed
         if not self._has_result_set and self.description:
@@ -1813,8 +1828,15 @@ class Cursor:
             else:
                 self.rowcount = self._next_row_index
             
-            # Convert raw data to Row objects
-            column_map = getattr(self, '_column_name_map', None)
+            # Performance optimization: return tuples in fast mode
+            if self._fast_mode:
+                return [tuple(row_data) for row_data in rows_data]
+            
+            # Build column map once and cache it for better performance
+            if self._cached_column_map is None and self.description:
+                self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
+            
+            column_map = self._cached_column_map or getattr(self, '_column_name_map', None)
             return [Row(self, self.description, row_data, column_map) for row_data in rows_data]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
@@ -2168,3 +2190,47 @@ class Cursor:
             # Log the error and re-raise
             log('error', f"Error executing tables query: {e}")
             raise
+
+    # Performance optimization methods
+    def enable_fast_mode(self):
+        """
+        Enable fast mode for better performance.
+        In fast mode, fetch methods return tuples instead of Row objects,
+        significantly reducing memory usage and object creation overhead.
+        
+        Note: This breaks DB-API compatibility but provides better performance
+        for applications that don't need Row object features.
+        """
+        self._fast_mode = True
+        
+    def disable_fast_mode(self):
+        """
+        Disable fast mode and return to standard Row objects.
+        """
+        self._fast_mode = False
+        
+    def is_fast_mode_enabled(self):
+        """
+        Check if fast mode is currently enabled.
+        
+        Returns:
+            bool: True if fast mode is enabled, False otherwise.
+        """
+        return self._fast_mode
+        
+
+
+    def optimize_for_performance(self):
+        """
+        Apply all available performance optimizations to this cursor.
+        This includes:
+        - Increasing arraysize for better batching (sweet spot between speed and memory)
+        - Pre-building column maps for faster row creation
+        - Optimizing internal data structures
+        """
+        # Set arraysize to optimal value based on testing results
+        self.arraysize = 5000  # Sweet spot - more aggressive than default but not excessive
+        
+        # Pre-build column map if we have description
+        if self.description and self._cached_column_map is None:
+            self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
