@@ -1046,11 +1046,11 @@ class Cursor:
 
         # Reset lastrowid at the start of each execute
         self._lastrowid = None
-
+        
         try:
             # Use @@IDENTITY which persists across statement boundaries
             identity_query = "SELECT @@IDENTITY"
-            
+
             ret = ddbc_bindings.DDBCSQLExecute(
                 self.hstmt,
                 identity_query,
@@ -1059,20 +1059,21 @@ class Cursor:
                 [False],  # Don't prepare this simple query
                 False,    # Use SQLExecDirectW
             )
-            
+
             # Check if the execution was successful
             if ret == ddbc_sql_const.SQL_SUCCESS.value or ret == ddbc_sql_const.SQL_SUCCESS_WITH_INFO.value:
                 # Fetch the result
                 row_data = []
                 fetch_ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
-                
+
                 if (fetch_ret == ddbc_sql_const.SQL_SUCCESS.value and 
                     row_data and row_data[0] is not None):
                     self._lastrowid = int(row_data[0])
-            
+
         except Exception:
             # If we can't get the identity, leave lastrowid as None
             self._lastrowid = None
+            log('debug', "Could not retrieve lastrowid: %s", e)
 
         # Return self for method chaining
         return self
