@@ -1048,9 +1048,7 @@ class Cursor:
         self._lastrowid = None
 
         # Check if this was a single INSERT operation that affected exactly one row
-        if (self.rowcount == 1 and 
-            operation.strip().upper().startswith('INSERT') and
-            'SELECT' not in operation.upper()):
+        if self.rowcount == 1:
             try:
                 # Use @@IDENTITY which persists across statement boundaries
                 identity_query = "SELECT @@IDENTITY"
