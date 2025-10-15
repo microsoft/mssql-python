@@ -6,23 +6,41 @@ parameters:
     default: '$(ob_outputDirectory)\symbols'
 
 steps:
-  - powershell: 'Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"'
-    displayName: 'Update Symbol.AccountName with SqlClientDrivers'
+  # Set AccountName for SqlClientDrivers organization (separate PowerShell task like JDBC)
+  - task: PowerShell@2
+    displayName: 'Set Symbol.AccountName to SqlClientDrivers'
+    inputs:
+      targetType: inline
+      # NOTE: we're setting PAT in this step since Pat:$(System.AccessToken) doesn't work in PublishSymbols@2 task directly
+      # Tried using env: parameter on PublishSymbols@2 but it didn't work
+      # This is a workaround to set it via script, and setting as a secret variable
+      script: |
+        Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.AccountName;]SqlClientDrivers"
+        Write-Host "##vso[task.setvariable variable=ArtifactServices.Symbol.Pat;issecret=true;]$env:SYSTEM_ACCESSTOKEN"
+        # Verify System.AccessToken is available
+        if (-not $env:SYSTEM_ACCESSTOKEN) {
+          Write-Error "SYSTEM_ACCESSTOKEN is not available. Ensure 'Allow scripts to access the OAuth token' is enabled in the pipeline settings."
+        } else {
+          Write-Host "SYSTEM_ACCESSTOKEN is available and will be used for symbol publishing."
+        }
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
   
   - task: PublishSymbols@2
-    displayName: 'Upload symbols to Azure DevOps Symbol Server'
+    displayName: 'Push Symbols to SqlClientDrivers ADO Organization'
     inputs:
       SymbolsFolder: '${{ parameters.SymbolsFolder }}'
       SearchPattern: '**/*.pdb'
       IndexSources: false
       SymbolServerType: TeamServices
-      SymbolsMaximumWaitTime: 60
-      SymbolExpirationInDays: 1825 # 5 years
+      SymbolsMaximumWaitTime: 10
       SymbolsProduct: mssql-python
       SymbolsVersion: $(Build.BuildId)
-      SymbolsArtifactName: $(System.TeamProject)-$(Build.SourceBranchName)-$(Build.DefinitionName)-$(Build.BuildId)
-      Pat: $(System.AccessToken)
   
+  # Publish to Microsoft Symbol Publishing Service (External)
+  # This requires additional variable group with SymbolServer, SymbolTokenUri variables
+  # Project name must be registered with Symbol team via IcM incident
+  # Reference: https://www.osgwiki.com/wiki/Symbols_Publishing_Pipeline_to_SymWeb_and_MSDL#Step_3:_Project_Setup
   - task: AzureCLI@2
     displayName: 'Publish symbols to Microsoft Symbol Publishing Service'
     condition: succeeded()
@@ -39,12 +57,12 @@ steps:
         $publishToInternalServer = $true 
         $publishToPublicServer = $false
 
-        echo "Publishing request name: $(requestName)"
+        echo "Publishing request name: $env:requestName"
         echo "Publish to internal server: $publishToInternalServer"
         echo "Publish to public server: $publishToPublicServer"      
 
-        $symbolServer = '$(SymbolServer)'
-        $tokenUri = '$(SymbolTokenUri)'
+        $symbolServer = $env:SymbolServer
+        $tokenUri = $env:SymbolTokenUri
         $projectName = "mssql-python"
 
         # Get the access token for the symbol publishing service
@@ -53,7 +71,7 @@ steps:
         echo ">  1.Symbol publishing token acquired."
 
         echo "Registering the request name ..."
-        $requestName = '$(requestName)'
+        $requestName = $env:requestName
         $requestNameRegistrationBody = "{'requestName': '$requestName'}"
         Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $requestNameRegistrationBody
 

@@ -21,6 +21,9 @@ parameters:
   - name: buildConfiguration
     type: string
     default: 'Release'
+  - name: publishSymbols
+    type: boolean
+    default: true
 
 stages:
   - stage: ${{ parameters.stageName }}
@@ -41,6 +44,7 @@ stages:
           pythonVersion: ${{ parameters.pythonVersion }}
           shortPyVer: ${{ parameters.shortPyVer }}
           targetArch: ${{ parameters.architecture }}
+          SYSTEM_ACCESSTOKEN: $(System.AccessToken)  # Make System.AccessToken available to all steps in this job
         
         steps:
           - checkout: self
@@ -213,8 +217,5 @@ stages:
           #         esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
           #         signPath: '$(ob_outputDirectory)\wheels'
           
-          # Publish symbols (Windows only)
-          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
-              - template: /OneBranchPipelines/steps/symbol-publishing-step.yml@self
-                parameters:
-                  SymbolsFolder: '$(ob_outputDirectory)\symbols'
+          # Note: Symbol publishing moved to release pipeline
+          # Symbols are published as artifacts here and consumed in release pipeline

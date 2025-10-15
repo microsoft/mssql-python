@@ -41,11 +41,6 @@ parameters:
       - 'Debug'
     default: 'Release'
 
-  - name: publishSymbols
-    displayName: 'Publish Debug Symbols'
-    type: boolean
-    default: true
-
   - name: runSdlTasks
     displayName: 'Run SDL Security Tasks'
     type: boolean
@@ -150,10 +145,10 @@ extends:
       # ApiScan - Scans APIs for security vulnerabilities
       apiscan:
         enabled: ${{ parameters.runSdlTasks }}
-        softwareFolder: '${{ variables.apiScanDllPath }}'
+        softwareFolder: '$(apiScanDllPath)'
         softwareName: 'mssql-python'
-        softwareVersionNum: '${{ variables.packageVersion }}'
-        symbolsFolder: '${{ variables.apiScanPdbPath }}'
+        softwareVersionNum: '$(packageVersion)'
+        symbolsFolder: '$(apiScanPdbPath)'
 
       # Armory - Security scanning for binaries
       armory:
