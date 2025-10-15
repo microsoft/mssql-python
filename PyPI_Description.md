@@ -39,12 +39,12 @@ PyBind11 provides:
 
 We are currently in **Public Preview**.
 
-## What's new in v0.13.0
+## What's new in v0.13.1
 
-- **Enhanced Batch Operations:** Complete support for UNIQUEIDENTIFIER and DATETIMEOFFSET in `executemany()` operations with automatic type inference, enabling efficient bulk inserts of complex data types including UUIDs and timezone-aware datetimes.
-- **Streaming Large Values:** Robust handling of large objects (NVARCHAR/VARCHAR/VARBINARY(MAX)) in `executemany()` with automatic Data-At-Execution detection and fallback, supporting streaming inserts and fetches for massive datasets.
-- **Improved Cursor Reliability:** Enhanced `cursor.rowcount` accuracy across all fetch operations, including proper handling of empty result sets and consistent behavior for SELECT, INSERT, and UPDATE operations.
-- **Critical Stability Fixes:** Resolved memory leaks with secure token buffer handling, fixed resource cleanup to prevent segmentation faults during Python shutdown, and corrected type inference bugs in batch operations.
+- **Authentication Reliability:** Fixed token handling for Microsoft Entra ID authentication to ensure stable and reliable connections.
+- **Timezone Preservation:** Removed forced UTC conversion for `datetimeoffset` values, preserving original timezone information in Python `datetime` objects for accurate cross-timezone data handling.
+- **Connection Pooling Stability:** Enhanced pool shutdown mechanism with proper tracking to prevent resource leaks and ensure cleanup operations execute reliably.
+- **Predictable Type Handling:** Refined UUID string parameter handling to prevent automatic type coercion, ensuring strings are processed as intended.
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
 
