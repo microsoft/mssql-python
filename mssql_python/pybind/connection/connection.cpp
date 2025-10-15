@@ -172,7 +172,9 @@ SqlHandlePtr Connection::allocStatementHandle() {
 
 SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     LOG("Setting SQL attribute");
-    std::string buffer; // to hold sensitive data temporarily
+    //SQLPOINTER ptr = nullptr;
+    //SQLINTEGER length = 0;
+    static std::string buffer; // to hold sensitive data temporarily
     
     if (py::isinstance<py::int_>(value)) {
         // Get the integer value
