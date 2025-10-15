@@ -3181,10 +3181,12 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         LOG("Error while fetching rows in batches");
         return ret;
     }
-    // Pre-cache column metadata to avoid repeated dictionary lookups (major optimization)
+    // Pre-cache column metadata to avoid repeated dictionary lookups
     struct ColumnInfo {
         SQLSMALLINT dataType;
         SQLULEN columnSize;
+        SQLULEN processedColumnSize;  // Post-HandleZeroColumnSizeAtFetch processing
+        uint64_t fetchBufferSize;     // Pre-computed buffer size for char/wchar types
         bool isLob;  // Pre-compute LOB status for O(1) lookup
     };
     std::vector<ColumnInfo> columnInfos(numCols);
@@ -3193,17 +3195,40 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         columnInfos[col].dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
         columnInfos[col].columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
         columnInfos[col].isLob = std::find(lobColumns.begin(), lobColumns.end(), col + 1) != lobColumns.end(); // col+1 because lobColumns uses 1-based indexing
+        
+        // Pre-compute processed column size and fetch buffer size for char/wchar types
+        columnInfos[col].processedColumnSize = columnInfos[col].columnSize;
+        HandleZeroColumnSizeAtFetch(columnInfos[col].processedColumnSize);
+        columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize + 1; // +1 for null terminator
     }
+    
+    // Cache expensive module imports and operations outside the loops
+    static const std::string defaultSeparator = ".";
+    std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
+    bool isDefaultDecimalSeparator = (decimalSeparator == defaultSeparator);
+    
+    // Cache Python module imports to avoid repeated imports
+    py::object datetime_module = py::module_::import("datetime");
+    py::object uuid_module = py::module_::import("uuid");
     
     // numRowsFetched is the SQL_ATTR_ROWS_FETCHED_PTR attribute. It'll be populated by
     // SQLFetchScroll
-        for (SQLULEN i = 0; i < numRowsFetched; i++) {
-            py::list row(numCols);  // Pre-allocate with known column count for better performance
-            for (SQLUSMALLINT col = 1; col <= numCols; col++) {
+    
+    // Pre-allocate rows list for optimal performance - eliminates dynamic growth overhead
+    size_t currentSize = rows.size();
+    for (SQLULEN i = 0; i < numRowsFetched; i++) {
+        rows.append(py::none());  // Pre-allocate placeholder elements
+    }
+    
+    for (SQLULEN i = 0; i < numRowsFetched; i++) {
+        // Create row container - use list for normal mode, pre-allocate for fast mode conversion to tuple
+        py::list row(numCols);  // Pre-allocate with known column count for better performance
+        for (SQLUSMALLINT col = 1; col <= numCols; col++) {
                 // Use pre-cached column metadata for optimal performance
                 const ColumnInfo& colInfo = columnInfos[col - 1];
                 SQLSMALLINT dataType = colInfo.dataType;
-                SQLLEN dataLen = buffers.indicators[col - 1][i];            if (dataLen == SQL_NULL_DATA) {
+                SQLLEN dataLen = buffers.indicators[col - 1][i];
+                            if (dataLen == SQL_NULL_DATA) {
                 row[col - 1] = py::none();
                 continue;
             }
@@ -3250,8 +3275,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     bool isLob = colInfo.isLob;  // Use cached LOB status for O(1) lookup
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
-                        // SQLFetch will nullterminate the data
-                        row[col - 1] = std::string(
+                        // SQLFetch will nullterminate the data - Direct py::str creation for optimal performance
+                        row[col - 1] = py::str(
                             reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * fetchBufferSize]),
                             numCharsInData);
                     } else {
@@ -3270,14 +3295,14 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     bool isLob = colInfo.isLob;  // Use cached LOB status for O(1) lookup
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
-                        // SQLFetch will nullterminate the data
+                        // SQLFetch will nullterminate the data - optimized wstring creation
 #if defined(__APPLE__) || defined(__linux__)
                         // Use unix-specific conversion to handle the wchar_t/SQLWCHAR size difference
                         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
                         std::wstring wstr = SQLWCHARToWString(wcharData, numCharsInData);
                         row[col - 1] = wstr;
 #else
-                        // On Windows, wchar_t and SQLWCHAR are both 2 bytes, so direct cast works
+                        // On Windows, wchar_t and SQLWCHAR are both 2 bytes, direct assignment
                         row[col - 1] = std::wstring(
                             reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]),
                             numCharsInData);
@@ -3310,24 +3335,24 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_DECIMAL:
                 case SQL_NUMERIC: {
                     try {
-                        // Convert the string to use the current decimal separator
-                        std::string numStr(reinterpret_cast<const char*>(
-                            &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]),
-                            buffers.indicators[col - 1][i]);
+                        // Direct conversion optimized for performance
+                        SQLLEN decimalDataLen = buffers.indicators[col - 1][i];
+                        const char* rawData = reinterpret_cast<const char*>(
+                            &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]);
                         
-                        // Get the current separator in a thread-safe way
-                        std::string separator = GetDecimalSeparator();
-                        
-                        if (separator != ".") {
-                            // Replace the driver's decimal point with our configured separator
+                        // Use pre-cached decimal separator for optimal performance
+                        if (isDefaultDecimalSeparator) {
+                            // Fast path: Direct py::str creation without intermediate string
+                            row[col - 1] = PythonObjectCache::get_decimal_class()(py::str(rawData, decimalDataLen));
+                        } else {
+                            // Slow path: Need separator replacement
+                            std::string numStr(rawData, decimalDataLen);
                             size_t pos = numStr.find('.');
                             if (pos != std::string::npos) {
-                                numStr.replace(pos, 1, separator);
+                                numStr.replace(pos, 1, decimalSeparator);
                             }
+                            row[col - 1] = PythonObjectCache::get_decimal_class()(numStr);
                         }
-                        
-                        // Convert to Python decimal using cached class (keep this optimization)
-                        row[col - 1] = PythonObjectCache::get_decimal_class()(numStr);
                     } catch (const py::error_already_set& e) {
                         // Handle the exception, e.g., log the error and set py::none()
                         LOG("Error converting to decimal: {}", e.what());
@@ -3343,13 +3368,11 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_TIMESTAMP:
                 case SQL_TYPE_TIMESTAMP:
                 case SQL_DATETIME: {
-                    row[col - 1] = PythonObjectCache::get_datetime_class()(buffers.timestampBuffers[col - 1][i].year,
-                                                                           buffers.timestampBuffers[col - 1][i].month,
-                                                                           buffers.timestampBuffers[col - 1][i].day,
-                                                                           buffers.timestampBuffers[col - 1][i].hour,
-                                                                           buffers.timestampBuffers[col - 1][i].minute,
-                                                                           buffers.timestampBuffers[col - 1][i].second,
-						                                                   buffers.timestampBuffers[col - 1][i].fraction / 1000  /* Convert back ns to µs */);
+                    // Optimized datetime creation with direct struct access
+                    const SQL_TIMESTAMP_STRUCT& ts = buffers.timestampBuffers[col - 1][i];
+                    row[col - 1] = PythonObjectCache::get_datetime_class()(ts.year, ts.month, ts.day,
+                                                                           ts.hour, ts.minute, ts.second,
+                                                                           ts.fraction / 1000  /* ns → µs */);
                     break;
                 }
                 case SQL_BIGINT: {
@@ -3449,7 +3472,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
             }
         }
-        rows.append(row);  // TODO: Could be optimized with pre-allocation if we knew total row count
+        rows[currentSize + i] = row;  // Use indexed assignment with correct offset
     }
     return ret;
 }

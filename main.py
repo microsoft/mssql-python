@@ -10,8 +10,8 @@ import string
 # setup_logging('stdout')
 
 # conn_str = os.getenv("DB_CONNECTION_STRING")
-# conn_str = "Server=Saumya;DATABASE=master;UID=sa;PWD=HappyPass1234;Trust_Connection=yes;TrustServerCertificate=yes;"
-conn_str= "DRIVER={ODBC Driver 18 for SQL Server};Server=tcp:sqlsumitsardb.database.windows.net,1433;Database=AdventureWorks2022;Uid=sqladmin;Pwd=SoftMicro$123;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+conn_str = "DRIVER={ODBC Driver 18 for SQL Server};Server=Saumya;DATABASE=AdventureWorks2022;UID=sa;PWD=HappyPass1234;Trust_Connection=yes;TrustServerCertificate=yes;"
+# conn_str= "DRIVER={ODBC Driver 18 for SQL Server};Server=tcp:sqlsumitsardb.database.windows.net,1433;Database=AdventureWorks2022;Uid=sqladmin;Pwd=SoftMicro$123;Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
 
 
 
@@ -126,16 +126,13 @@ cursor.execute(COMPLEX_JOIN_AGGREGATION)
 
 rows = cursor.fetchall()
 
-# for row in rows:
-#     print(f"Database ID: {row[0]}, Name: {row[1]}")
-
 end_time = time.perf_counter()
 elapsed_time = end_time - start_time
 print(f"Elapsed time in pyodbc for query 1: {elapsed_time:.4f} seconds")
 
 start_time = time.perf_counter()
 cursor.execute(LARGE_DATASET)
-rows = cursor.fetchall()
+rows1 = cursor.fetchall()
 end_time = time.perf_counter()
 elapsed_time = end_time - start_time
 print(f"Elapsed time in pyodbc for query 2: {elapsed_time:.4f} seconds")
@@ -170,11 +167,15 @@ print(f"Elapsed time in mssql-python (optimized) for query 1: {elapsed_time:.4f}
 
 start_time = time.perf_counter()
 cursor.execute(LARGE_DATASET)
-rows = cursor.fetchall()
+rows2 = cursor.fetchall()
 end_time = time.perf_counter()
 elapsed_time = end_time - start_time
 print(f"Elapsed time in mssql-python (optimized) for query 2: {elapsed_time:.4f} seconds")
 
+
+# assert len(rows1) == len(rows2), f"Row count mismatch: pyodbc={len(rows1)}, mssql-python={len(rows2)}"
+# for i in range(len(rows1)):
+#     assert rows1[i] == rows2[i], f"Row {i} mismatch:\npyodbc={rows1[i]}\nmssql-python={rows2[i]}"
 start_time = time.perf_counter()
 cursor.execute(VERY_LARGE_DATASET)
 rows = cursor.fetchall()

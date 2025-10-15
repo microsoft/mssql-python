@@ -102,6 +102,7 @@ class Cursor:
         # Performance optimizations (enabled by default)
         self._fast_mode = True  # Returns tuples instead of Row objects for better performance
         self._cached_column_map = None  # Cache column mapping for performance
+        self._cached_converter_map = None  # Cache output converter mapping for performance
         self._next_row_index = 0  # internal: index of the next row the driver will return (0-based)
         self._has_result_set = False  # Track if we have an active result set
         self._skip_increment_for_next_fetch = False  # Track if we need to skip incrementing the row index
@@ -709,6 +710,37 @@ class Cursor:
             ))
         self.description = description
 
+    def _build_converter_map(self):
+        """
+        Build a pre-computed converter map for output converters.
+        Returns a list where each element is either a converter function or None.
+        This eliminates the need to look up converters for every row.
+        """
+        if not self.description or not hasattr(self.connection, '_output_converters') or not self.connection._output_converters:
+            return None
+        
+        converter_map = []
+        
+        for desc in self.description:
+            if desc is None:
+                converter_map.append(None)
+                continue
+            
+            # Get SQL type from description
+            sql_type = desc[1]  # type_code is at index 1 in description tuple
+            
+            # Try to get a converter for this type
+            converter = self.connection.get_output_converter(sql_type)
+            
+            # If no converter found for the SQL type, try the WVARCHAR converter as a fallback
+            if converter is None:
+                from mssql_python.constants import ConstantsDDBC
+                converter = self.connection.get_output_converter(ConstantsDDBC.SQL_WVARCHAR.value)
+            
+            converter_map.append(converter)
+        
+        return converter_map
+
     def _map_data_type(self, sql_type):
         """
         Map SQL data type to Python data type.
@@ -1016,10 +1048,13 @@ class Cursor:
             self._reset_rownumber()
             # Performance optimization: pre-build column map after execution
             self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
+            # Performance optimization: pre-build converter map for output converters
+            self._cached_converter_map = self._build_converter_map()
         else:
             self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
             self._clear_rownumber()
             self._cached_column_map = None  # Clear cache for non-SELECT statements
+            self._cached_converter_map = None  # Clear converter cache for non-SELECT statements
 
         # After successful execution, initialize description if there are results
         column_metadata = []
@@ -1734,9 +1769,14 @@ class Cursor:
 
             self.rowcount = self._next_row_index
             
-            # Create and return a Row object, passing column name map if available
-            column_map = getattr(self, '_column_name_map', None)
-            return Row(self, self.description, row_data, column_map)
+            # Create and return a Row object using optimized constructor
+            # Build column map once and cache it for better performance
+            if self._cached_column_map is None and self.description:
+                self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
+            column_map = self._cached_column_map or getattr(self, '_column_name_map', None)
+            # Use cached converter map for optimal performance
+            converter_map = getattr(self, '_cached_converter_map', None)
+            return Row(row_data, column_map, self, converter_map)
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -1782,17 +1822,13 @@ class Cursor:
             else:
                 self.rowcount = self._next_row_index
             
-            # Performance optimization: return tuples in fast mode
-            if self._fast_mode:
-                return [tuple(row_data) for row_data in rows_data]
-            
             # Build column map once and cache it for better performance
             if self._cached_column_map is None and self.description:
                 self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
             
-            # Convert raw data to Row objects
+            # Convert raw data to Row objects using optimized constructor
             column_map = self._cached_column_map or getattr(self, '_column_name_map', None)
-            return [Row(self, self.description, row_data, column_map) for row_data in rows_data]
+            return [Row(row_data, column_map, self) for row_data in rows_data]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -1828,16 +1864,13 @@ class Cursor:
             else:
                 self.rowcount = self._next_row_index
             
-            # Performance optimization: return tuples in fast mode
-            if self._fast_mode:
-                return [tuple(row_data) for row_data in rows_data]
-            
             # Build column map once and cache it for better performance
             if self._cached_column_map is None and self.description:
                 self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
             
+            # Convert raw data to Row objects using optimized constructor
             column_map = self._cached_column_map or getattr(self, '_column_name_map', None)
-            return [Row(self, self.description, row_data, column_map) for row_data in rows_data]
+            return [Row(row_data, column_map, self) for row_data in rows_data]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
