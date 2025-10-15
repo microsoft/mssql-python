@@ -1,0 +1,315 @@
+# OneBranch Official Release Pipeline for mssql-python
+# Downloads wheel and symbol artifacts from build pipeline, publishes symbols, and releases wheels to PyPI via ESRP
+# This pipeline is ALWAYS Official - no NonOfficial option
+
+name: $(Year:YY)$(DayOfYear)$(Rev:.r)-Release
+
+# Manual trigger only - releases should be deliberate
+trigger: none
+pr: none
+
+# Parameters for release pipeline
+parameters:
+  - name: packageVersion
+    displayName: 'Package Version (e.g., 0.13.0)'
+    type: string
+    default: '0.13.0'
+
+  - name: publishSymbols
+    displayName: 'Publish Symbols to Symbol Servers'
+    type: boolean
+    default: true
+
+  - name: releaseToPyPI
+    displayName: 'Release to PyPI (Production)'
+    type: boolean
+    default: false  # Safety: Default to false to prevent accidental releases
+
+# Variables
+variables:
+  - name: PACKAGE_VERSION
+    value: '${{ parameters.packageVersion }}'
+    readonly: true
+  
+  - name: packageVersion
+    value: '${{ parameters.packageVersion }}'
+    readonly: true
+  
+  # Common variables
+  - template: /OneBranchPipelines/variables/common-variables.yml@self
+  - template: /OneBranchPipelines/variables/onebranch-variables.yml@self
+  
+  # Variable groups
+  - group: 'ESRP Federated Creds (AME)'  # Contains ESRP signing credentials
+  - group: 'Symbols Publishing'  # Contains SymbolServer, SymbolTokenUri variables
+
+# OneBranch resources
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: 'OneBranch.Pipelines/GovernedTemplates'
+      ref: 'refs/heads/main'
+  
+  # Reference to the build pipeline
+  pipelines:
+    - pipeline: buildPipeline
+      source: 'Build-Release-Package-Pipeline'  # Name of the build pipeline
+      trigger: none  # Manual trigger only
+
+# Extend OneBranch official template
+# Always uses Official template for release pipeline
+extends:
+  template: 'v2/OneBranch.Official.CrossPlat.yml@templates'
+
+  parameters:
+    # Feature flags
+    featureFlags:
+      WindowsHostVersion:
+        Version: '2022'
+
+    # Global SDL Configuration
+    globalSdl:
+      # Minimal SDL for release pipeline - artifacts already scanned during build
+      binskim:
+        enabled: true
+        break: true
+      
+      credscan:
+        enabled: true
+        suppressionsFile: '$(REPO_ROOT)/.config/CredScanSuppressions.json'
+      
+      policheck:
+        enabled: true
+        break: true
+        exclusionFile: '$(REPO_ROOT)/.config/PolicheckExclusions.xml'
+      
+      # Publish SDL logs
+      publishLogs:
+        enabled: true
+      
+      # TSA - Always enabled for Official release pipeline
+      tsa:
+        enabled: true
+        configFile: '$(REPO_ROOT)/.config/tsaoptions.json'
+
+    # Pipeline stages
+    stages:
+      - stage: ReleasePackages
+        displayName: 'Release Python Packages to PyPI'
+        
+        jobs:
+          - job: DownloadAndRelease
+            displayName: 'Download Artifacts and Release via ESRP'
+            
+            pool:
+              type: windows
+            
+            variables:
+              ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+            
+            steps:
+              # Step 1: Download wheel artifacts from build pipeline
+              - task: DownloadPipelineArtifact@2
+                displayName: 'Download Wheel Artifacts from Build Pipeline'
+                inputs:
+                  buildType: 'specific'
+                  project: '$(System.TeamProject)'
+                  definition: 2199  # Build-Release-Package-Pipeline definition ID
+                  buildVersionToDownload: 'latest'
+                  artifactName: 'drop_build_main_wheels'  # OneBranch drops artifacts with 'drop_' prefix
+                  targetPath: '$(Build.SourcesDirectory)/artifacts/wheels'
+              
+              # Step 2: Download symbol artifacts from build pipeline
+              - task: DownloadPipelineArtifact@2
+                displayName: 'Download Symbol Artifacts from Build Pipeline'
+                inputs:
+                  buildType: 'specific'
+                  project: '$(System.TeamProject)'
+                  definition: 2199  # Build-Release-Package-Pipeline definition ID
+                  buildVersionToDownload: 'latest'
+                  artifactName: 'drop_build_main_symbols'  # Symbol artifacts
+                  targetPath: '$(Build.SourcesDirectory)/artifacts/symbols'
+              
+              # Step 3: List downloaded artifacts for verification
+              - task: PowerShell@2
+                displayName: 'List Downloaded Wheel and Symbol Files'
+                inputs:
+                  targetType: 'inline'
+                  script: |
+                    Write-Host "====================================="
+                    Write-Host "Downloaded Artifacts:"
+                    Write-Host "====================================="
+                    
+                    # List wheel files
+                    $wheelsPath = "$(Build.SourcesDirectory)/artifacts/wheels/wheels"
+                    if (Test-Path $wheelsPath) {
+                      $wheels = Get-ChildItem -Path $wheelsPath -Filter "*.whl" -Recurse
+                      
+                      Write-Host "`n[WHEELS] Total wheel files found: $($wheels.Count)"
+                      foreach ($wheel in $wheels) {
+                        $size = [math]::Round($wheel.Length / 1MB, 2)
+                        Write-Host "  - $($wheel.Name) (${size} MB)"
+                      }
+                      
+                      # Verify expected number of wheels (currently 7 for Windows only)
+                      $expectedCount = 7
+                      if ($wheels.Count -lt $expectedCount) {
+                        Write-Warning "Expected at least $expectedCount wheels, but found $($wheels.Count)"
+                      }
+                      
+                      # Copy wheels to dist folder for ESRP
+                      Write-Host "`nCopying wheels to $(Build.SourcesDirectory)/dist..."
+                      New-Item -ItemType Directory -Force -Path "$(Build.SourcesDirectory)/dist" | Out-Null
+                      Copy-Item -Path "$wheelsPath/*.whl" -Destination "$(Build.SourcesDirectory)/dist/" -Force
+                      
+                    } else {
+                      Write-Error "Wheel directory not found at: $wheelsPath"
+                      exit 1
+                    }
+                    
+                    # List symbol files
+                    $symbolsPath = "$(Build.SourcesDirectory)/artifacts/symbols/symbols"
+                    if (Test-Path $symbolsPath) {
+                      $symbols = Get-ChildItem -Path $symbolsPath -Filter "*.pdb" -Recurse
+                      
+                      Write-Host "`n[SYMBOLS] Total PDB files found: $($symbols.Count)"
+                      foreach ($symbol in $symbols) {
+                        $size = [math]::Round($symbol.Length / 1KB, 2)
+                        Write-Host "  - $($symbol.Name) (${size} KB)"
+                      }
+                      
+                      # Copy symbols to symbols folder for publishing
+                      Write-Host "`nCopying symbols to $(Build.SourcesDirectory)/symbols..."
+                      New-Item -ItemType Directory -Force -Path "$(Build.SourcesDirectory)/symbols" | Out-Null
+                      Copy-Item -Path "$symbolsPath/*.pdb" -Destination "$(Build.SourcesDirectory)/symbols/" -Force
+                      
+                    } else {
+                      Write-Warning "Symbol directory not found at: $symbolsPath"
+                      Write-Warning "Symbol publishing will be skipped if no PDB files found"
+                    }
+                    
+                    Write-Host "`n====================================="
+                    Write-Host "Summary:"
+                    Write-Host "Wheels: $($wheels.Count) files"
+                    Write-Host "Symbols: $(if ($symbols) { $symbols.Count } else { 0 }) files"
+                    Write-Host "====================================="
+              
+              # Step 4: Verify wheel integrity
+              - task: PowerShell@2
+                displayName: 'Verify Wheel Integrity'
+                inputs:
+                  targetType: 'inline'
+                  script: |
+                    Write-Host "Verifying wheel file integrity..."
+                    
+                    $wheels = Get-ChildItem -Path "$(Build.SourcesDirectory)/dist" -Filter "*.whl"
+                    $allValid = $true
+                    
+                    foreach ($wheel in $wheels) {
+                      # Check if wheel is a valid ZIP file
+                      try {
+                        Add-Type -AssemblyName System.IO.Compression.FileSystem
+                        $zip = [System.IO.Compression.ZipFile]::OpenRead($wheel.FullName)
+                        $entryCount = $zip.Entries.Count
+                        $zip.Dispose()
+                        
+                        Write-Host "✓ $($wheel.Name) - Valid ($entryCount entries)"
+                      }
+                      catch {
+                        Write-Error "✗ $($wheel.Name) - INVALID: $_"
+                        $allValid = $false
+                      }
+                    }
+                    
+                    if (-not $allValid) {
+                      Write-Error "One or more wheel files are corrupted"
+                      exit 1
+                    }
+                    
+                    Write-Host "`nAll wheels verified successfully!"
+              
+              # Step 5: Publish Symbols (if enabled and symbols exist)
+              - ${{ if eq(parameters.publishSymbols, true) }}:
+                  - template: /OneBranchPipelines/steps/symbol-publishing-step.yml@self
+                    parameters:
+                      SymbolsFolder: '$(Build.SourcesDirectory)/symbols'
+              
+              # Step 6: Copy wheels to ob_outputDirectory for OneBranch artifact publishing
+              - task: CopyFiles@2
+                displayName: 'Stage Wheels for Release'
+                inputs:
+                  SourceFolder: '$(Build.SourcesDirectory)/dist'
+                  Contents: '*.whl'
+                  TargetFolder: '$(ob_outputDirectory)/release'
+                  flattenFolders: true
+              
+              # Step 7: ESRP Release Task (only if releaseToPyPI is true)
+              - ${{ if eq(parameters.releaseToPyPI, true) }}:
+                  - task: EsrpRelease@9
+                    displayName: 'ESRP Release to PyPI'
+                    inputs:
+                      connectedservicename: '$(ESRPConnectedServiceName)'
+                      usemanagedidentity: true
+                      keyvaultname: '$(AuthAKVName)'
+                      signcertname: '$(AuthSignCertName)'
+                      clientid: '$(EsrpClientId)'
+                      Intent: 'PackageDistribution'
+                      ContentType: 'PyPI'
+                      ContentSource: 'Folder'
+                      FolderLocation: '$(Build.SourcesDirectory)/dist'
+                      WaitForReleaseCompletion: true
+                      Owners: '$(owner)'
+                      Approvers: '$(approver)'
+                      ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
+                      MainPublisher: 'ESRPRELPACMAN'
+                      DomainTenantId: '$(DomainTenantId)'
+              
+              # Step 8: Show release status
+              - ${{ if eq(parameters.releaseToPyPI, true) }}:
+                  - task: PowerShell@2
+                    displayName: 'Release Summary'
+                    inputs:
+                      targetType: 'inline'
+                      script: |
+                        Write-Host "====================================="
+                        Write-Host "ESRP Release Completed"
+                        Write-Host "====================================="
+                        Write-Host "Package: mssql-python"
+                        Write-Host "Version: ${{ parameters.packageVersion }}"
+                        Write-Host "Target: PyPI"
+                        Write-Host "Owners: $(owner)"
+                        Write-Host "Approvers: $(approver)"
+                        Write-Host "Symbols Published: ${{ parameters.publishSymbols }}"
+                        Write-Host "====================================="
+                        Write-Host ""
+                        Write-Host "Next steps:"
+                        Write-Host "1. Verify release in ESRP portal"
+                        Write-Host "2. Wait for approval workflow completion"
+                        Write-Host "3. Verify package on PyPI: https://pypi.org/project/mssql-python/"
+                        Write-Host "4. Verify symbols in SqlClientDrivers org (if published)"
+                        Write-Host "====================================="
+              
+              - ${{ if eq(parameters.releaseToPyPI, false) }}:
+                  - task: PowerShell@2
+                    displayName: 'Dry Run - Release Skipped'
+                    inputs:
+                      targetType: 'inline'
+                      script: |
+                        Write-Host "====================================="
+                        Write-Host "DRY RUN MODE - No Release Performed"
+                        Write-Host "====================================="
+                        Write-Host "Package: mssql-python"
+                        Write-Host "Version: ${{ parameters.packageVersion }}"
+                        Write-Host ""
+                        Write-Host "Actions performed:"
+                        Write-Host "- Downloaded wheels from build pipeline"
+                        Write-Host "- Downloaded symbols from build pipeline"
+                        if ("${{ parameters.publishSymbols }}" -eq "True") {
+                          Write-Host "- Published symbols to SqlClientDrivers org"
+                        }
+                        Write-Host ""
+                        Write-Host "To perform actual release:"
+                        Write-Host "1. Set 'releaseToPyPI' parameter to true"
+                        Write-Host "2. Re-run pipeline"
+                        Write-Host "====================================="
