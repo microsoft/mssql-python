@@ -11451,12 +11451,10 @@ def test_lastrowid_multiple_insert(cursor, db_connection):
         cursor.execute("CREATE TABLE #test_lastrowid (id INT IDENTITY(1,1) PRIMARY KEY, name VARCHAR(50))")
         db_connection.commit()
         
-        # Multiple INSERT should set lastrowid to None (undefined semantics)
         cursor.execute("INSERT INTO #test_lastrowid (name) VALUES ('test1'), ('test2'), ('test3')")
         db_connection.commit()
         
-        # lastrowid semantics are undefined for multiple inserts, but we set it to None
-        assert cursor.lastrowid is None, "lastrowid should be None for multiple INSERTs"
+        assert cursor.lastrowid == 3, "lastrowid should be 3 for multiple INSERTs"
         
     finally:
         try:
