@@ -41,8 +41,8 @@ _settings_lock = threading.Lock()
 def get_settings():
     """Return the global settings object"""
     with _settings_lock:
-        _settings.lowercase = lowercase
-        _settings.native_uuid = native_uuid
+        _settings.lowercase = bool(lowercase)
+        _settings.native_uuid = bool(native_uuid)
         return _settings
 
 lowercase = _settings.lowercase  # Default is False
@@ -174,10 +174,24 @@ _original_module_setattr = sys.modules[__name__].__setattr__
 
 def _custom_setattr(name, value):
     if name == 'lowercase':
+        # Strict boolean type check for lowercase
+        if not isinstance(value, bool):
+            raise ValueError("lowercase must be a boolean value (True or False)")
+        
         with _settings_lock:
-            _settings.lowercase = bool(value)
+            _settings.lowercase = value
             # Update the module's lowercase variable
             _original_module_setattr(name, _settings.lowercase)
+    elif name == 'native_uuid':
+
+        # Strict boolean type check for native_uuid
+        if not isinstance(value, bool):
+            raise ValueError("native_uuid must be a boolean value (True or False)")
+        
+        with _settings_lock:
+            _settings.native_uuid = value
+            # Update the module's native_uuid variable
+            _original_module_setattr(name, _settings.native_uuid)
     else:
         _original_module_setattr(name, value)
 

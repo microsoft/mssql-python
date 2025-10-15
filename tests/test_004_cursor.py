@@ -11432,17 +11432,6 @@ def test_datetime_string_parameter_binding(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, table_name)
         db_connection.commit()
-        
-def test_close(db_connection):
-    """Test closing the cursor"""
-    try:
-        cursor = db_connection.cursor()
-        cursor.close()
-        assert cursor.closed, "Cursor should be closed after calling close()"
-    except Exception as e:
-        pytest.fail(f"Cursor close test failed: {e}")
-    finally:
-        cursor = db_connection.cursor()
 
 def test_native_uuid_setting(db_connection):
     """Test that the native_uuid setting affects how UUID values are returned."""
@@ -11482,3 +11471,89 @@ def test_native_uuid_setting(db_connection):
         # Reset to original value and clean up
         mssql_python.native_uuid = original_value
         drop_table_if_exists(cursor, "#test_uuid")
+
+def test_wide_result_set_with_uuid(db_connection):
+    """Test UUID handling in wide result sets (performance test)"""
+    import uuid
+    import time
+    
+    # Store original setting
+    original_value = mssql_python.native_uuid
+
+    cursor = db_connection.cursor()
+    try:
+        # Create a wide table with one UUID column
+        cursor.execute("DROP TABLE IF EXISTS #wide_uuid_test")
+        create_stmt = "CREATE TABLE #wide_uuid_test (id UNIQUEIDENTIFIER"
+        for i in range(1, 31):
+            create_stmt += f", col{i} VARCHAR(50)"
+        create_stmt += ")"
+        cursor.execute(create_stmt)
+        
+        # Insert test data
+        test_uuid = uuid.uuid4()
+        values = [test_uuid]
+        for i in range(1, 31):
+            values.append(f"Value {i}")
+        
+        placeholders = ", ".join(["?"] * 31)
+        cursor.execute(f"INSERT INTO #wide_uuid_test VALUES ({placeholders})", values)
+        
+        # Test with native_uuid = True
+        mssql_python.native_uuid = True
+        
+        # Check if _uuid_indices is populated
+        cursor.execute("SELECT * FROM #wide_uuid_test")
+        assert hasattr(cursor, '_uuid_indices'), "UUID indices not identified"
+        assert cursor._uuid_indices == [0], "Expected UUID at index 0"
+        
+        # Verify correct conversion
+        row = cursor.fetchone()
+        assert isinstance(row[0], uuid.UUID), "UUID not converted to uuid.UUID object"
+        assert row[0] == test_uuid, "UUID value mismatch"
+        
+        # Verify all other columns remain strings
+        for i in range(1, 31):
+            assert isinstance(row[i], str), f"Column {i} should be a string"
+            
+    finally:
+        mssql_python.native_uuid = original_value
+
+def test_null_uuid_column(db_connection):
+    """Test handling NULL values in UUID columns"""
+    import uuid
+    
+    # Store original setting
+    original_value = mssql_python.native_uuid
+
+    cursor = db_connection.cursor()
+    try:
+        # Create test table
+        cursor.execute("DROP TABLE IF EXISTS #null_uuid_test")
+        cursor.execute("CREATE TABLE #null_uuid_test (id INT, uuid_col UNIQUEIDENTIFIER)")
+        
+        # Insert NULL UUID
+        cursor.execute("INSERT INTO #null_uuid_test VALUES (1, NULL)")
+        
+        # Test with native_uuid = True
+        mssql_python.native_uuid = True
+        
+        cursor.execute("SELECT * FROM #null_uuid_test")
+        row = cursor.fetchone()
+        
+        # NULL should remain None
+        assert row[1] is None, "NULL UUID should remain None"
+        
+    finally:
+        mssql_python.native_uuid = original_value
+        
+def test_close(db_connection):
+    """Test closing the cursor"""
+    try:
+        cursor = db_connection.cursor()
+        cursor.close()
+        assert cursor.closed, "Cursor should be closed after calling close()"
+    except Exception as e:
+        pytest.fail(f"Cursor close test failed: {e}")
+    finally:
+        cursor = db_connection.cursor()

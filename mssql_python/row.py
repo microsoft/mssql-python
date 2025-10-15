@@ -3,20 +3,10 @@ import uuid
 
 class Row:
     """
-    A row of data from a cursor fetch operation. Provides both tuple-like indexing
-    and attribute access to column values.
-
-    Column attribute access behavior depends on the global 'lowercase' setting:
-    - When enabled: Case-insensitive attribute access
-    - When disabled (default): Case-sensitive attribute access matching original column names
-
-    Example:
-        row = cursor.fetchone()
-        print(row[0])           # Access by index
-        print(row.column_name)  # Access by column name (case sensitivity varies)
+    A row of data from a cursor fetch operation.
     """
     
-    def __init__(self, cursor, description, values, column_map=None):
+    def __init__(self, cursor, description, values, column_map=None, settings_snapshot=None):
         """
         Initialize a Row object with values and description.
         
@@ -25,46 +15,98 @@ class Row:
             description: The cursor description containing column metadata
             values: List of values for this row
             column_map: Optional pre-built column map (for optimization)
+            settings_snapshot: Settings snapshot from cursor to ensure consistency
         """
         self._cursor = cursor
         self._description = description
         
-        # Apply output converters if available
-        if hasattr(cursor.connection, '_output_converters') and cursor.connection._output_converters:
-            self._values = self._apply_output_converters(values)
+        # Use settings snapshot if provided, otherwise fallback to global settings
+        if settings_snapshot is not None:
+            self._settings = settings_snapshot
         else:
-            self._values = self._process_uuid_values(values, description)
-
-    def _process_uuid_values(self, values, description):
-        """
-        Convert UUID objects to strings if native_uuid setting is False.
-        """
-        if get_settings().native_uuid:
-            return values
-        processed_values = []
-        for i, value in enumerate(values):
-            if i < len(description) and description[i] and isinstance(value, uuid.UUID):
-                processed_values.append(str(value))
-            else:
-                processed_values.append(value)
-        return processed_values
-        
-        # TODO: ADO task - Optimize memory usage by sharing column map across rows
-        # Instead of storing the full cursor_description in each Row object:
-        # 1. Build the column map once at the cursor level after setting description
-        # 2. Pass only this map to each Row instance
-        # 3. Remove cursor_description from Row objects entirely
-        
-        # Create mapping of column names to indices
+            settings = get_settings()
+            self._settings = {
+                'lowercase': settings.lowercase,
+                'native_uuid': settings.native_uuid
+            }
+        # Create mapping of column names to indices first
         # If column_map is not provided, build it from description
         if column_map is None:
-            column_map = {}
+            self._column_map = {}
             for i, col_desc in enumerate(description):
-                col_name = col_desc[0]  # Name is first item in description tuple
-                column_map[col_name] = i
-                
-        self._column_map = column_map
-    
+                if col_desc:  # Ensure column description exists
+                    col_name = col_desc[0]  # Name is first item in description tuple
+                    if self._settings.get('lowercase'):
+                        col_name = col_name.lower()
+                    self._column_map[col_name] = i
+        else:
+            self._column_map = column_map
+        
+        # First make a mutable copy of values
+        processed_values = list(values)
+        
+        # Apply output converters if available
+        if hasattr(cursor.connection, '_output_converters') and cursor.connection._output_converters:
+            processed_values = self._apply_output_converters(processed_values)
+        
+        # Process UUID values using the snapshotted setting
+        self._values = self._process_uuid_values(processed_values, description)
+            
+    def _process_uuid_values(self, values, description):
+        """
+        Convert string UUIDs to uuid.UUID objects if native_uuid setting is True,
+        or ensure UUIDs are returned as strings if False.
+        """
+        import uuid
+        
+        # Use the snapshot setting for native_uuid
+        native_uuid = self._settings.get('native_uuid')
+        
+        # Early return if no conversion needed
+        if not native_uuid and not any(isinstance(v, uuid.UUID) for v in values):
+            return values
+        
+        # Get pre-identified UUID indices from cursor if available
+        uuid_indices = getattr(self._cursor, '_uuid_indices', None)
+        processed_values = list(values)  # Create a copy to modify
+        
+        # Process only UUID columns when native_uuid is True
+        if native_uuid:
+            # If we have pre-identified UUID columns
+            if uuid_indices is not None:
+                for i in uuid_indices:
+                    if i < len(processed_values) and processed_values[i] is not None:
+                        value = processed_values[i]
+                        if isinstance(value, str):
+                            try:
+                                # Remove braces if present
+                                clean_value = value.strip('{}')
+                                processed_values[i] = uuid.UUID(clean_value)
+                            except (ValueError, AttributeError):
+                                pass  # Keep original if conversion fails
+            # Fallback to scanning all columns if indices weren't pre-identified
+            else:
+                for i, value in enumerate(processed_values):
+                    if value is None:
+                        continue
+                    
+                    if i < len(description) and description[i]:
+                        # Check SQL type for UNIQUEIDENTIFIER (-11)
+                        sql_type = description[i][1]
+                        if sql_type == -11:  # SQL_GUID
+                            if isinstance(value, str):
+                                try:
+                                    processed_values[i] = uuid.UUID(value.strip('{}'))
+                                except (ValueError, AttributeError):
+                                    pass
+        # When native_uuid is False, convert UUID objects to strings
+        else:
+            for i, value in enumerate(processed_values):
+                if isinstance(value, uuid.UUID):
+                    processed_values[i] = str(value)
+        
+        return processed_values
+        
     def _apply_output_converters(self, values):
         """
         Apply output converters to raw values.
@@ -100,17 +142,22 @@ class Row:
             if converter:
                 try:
                     # If value is already a Python type (str, int, etc.), 
-                    # we need to convert it to bytes for our converters
+                    # we need to handle it appropriately
                     if isinstance(value, str):
                         # Encode as UTF-16LE for string values (SQL_WVARCHAR format)
                         value_bytes = value.encode('utf-16-le')
                         converted_values[i] = converter(value_bytes)
+                    elif isinstance(value, int):
+                        # For integers, we'll convert to bytes
+                        value_bytes = value.to_bytes(8, byteorder='little')
+                        converted_values[i] = converter(value_bytes)
                     else:
+                        # Pass the value directly for other types
                         converted_values[i] = converter(value)
-                except Exception:
+                except Exception as e:
                     # Log the exception for debugging without leaking sensitive data
                     if hasattr(self._cursor, 'log'):
-                        self._cursor.log('debug', 'Exception occurred in output converter', exc_info=True)
+                        self._cursor.log('debug', f'Exception occurred in output converter: {type(e).__name__}', exc_info=True)
                     # If conversion fails, keep the original value
                     pass
         
@@ -123,24 +170,21 @@ class Row:
     def __getattr__(self, name):
         """
         Allow accessing by column name as attribute: row.column_name
-        
-        Note: Case sensitivity depends on the global 'lowercase' setting:
-        - When lowercase=True: Column names are stored in lowercase, enabling
-          case-insensitive attribute access (e.g., row.NAME, row.name, row.Name all work).
-        - When lowercase=False (default): Column names preserve original casing,
-          requiring exact case matching for attribute access.
         """
-        # Handle lowercase attribute access - if lowercase is enabled,
-        # try to match attribute names case-insensitively
+        # _column_map should already be set in __init__, but check to be safe
+        if not hasattr(self, '_column_map'):
+            self._column_map = {}
+            
+        # Try direct lookup first
         if name in self._column_map:
             return self._values[self._column_map[name]]
         
-        # If lowercase is enabled on the cursor, try case-insensitive lookup
-        if hasattr(self._cursor, 'lowercase') and self._cursor.lowercase:
+        # Use the snapshot lowercase setting instead of global
+        if self._settings.get('lowercase'):
+            # If lowercase is enabled, try case-insensitive lookup
             name_lower = name.lower()
-            for col_name in self._column_map:
-                if col_name.lower() == name_lower:
-                    return self._values[self._column_map[col_name]]
+            if name_lower in self._column_map:
+                return self._values[self._column_map[name_lower]]
         
         raise AttributeError(f"Row has no attribute '{name}'")
     
