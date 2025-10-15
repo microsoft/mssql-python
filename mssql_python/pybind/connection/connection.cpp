@@ -173,7 +173,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     LOG("Setting SQL attribute");
     SQLPOINTER ptr = nullptr;
     SQLINTEGER length = 0;
-    std::string buffer; // to hold sensitive data temporarily
+    static std::string buffer; // to hold sensitive data temporarily
 
     if (py::isinstance<py::int_>(value)) {
         int intValue = value.cast<int>();
@@ -196,10 +196,6 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         LOG("Set attribute successfully");
     }
     
-    // Zero out sensitive data if used
-    if (!buffer.empty()) {
-        std::fill(buffer.begin(), buffer.end(), static_cast<char>(0));
-    }
     return ret;
 }
 
