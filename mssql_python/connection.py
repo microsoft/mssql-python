@@ -340,7 +340,7 @@ class Connection:
         
         # Set default encoding if not provided
         if encoding is None:
-            encoding = 'utf-16le'
+            encoding = 'utf-8'
             
         # Validate encoding using cached validation for better performance
         if not _validate_encoding(encoding):
