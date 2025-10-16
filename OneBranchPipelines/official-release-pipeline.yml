@@ -116,7 +116,11 @@ extends:
               - task: DownloadPipelineArtifact@2
                 displayName: 'Download Consolidated Artifacts from Build Pipeline'
                 inputs:
-                  source: 'buildPipeline'  # Use the pipeline resource selected in UI
+                  buildType: 'specific'
+                  project: '$(System.TeamProject)'
+                  definition: 2199  # Build-Release-Package-Pipeline definition ID
+                  buildVersionToDownload: 'specific'
+                  buildId: $(resources.pipeline.buildPipeline.runID)  # Use the build run selected in UI
                   artifactName: 'drop_Consolidate_ConsolidateArtifacts'  # Consolidated artifact with dist/ and symbols/
                   targetPath: '$(Build.SourcesDirectory)/artifacts'
               
