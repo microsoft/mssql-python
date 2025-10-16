@@ -55,7 +55,7 @@ steps:
       inlineScript: |
         # Should be true by default for internal server
         $publishToInternalServer = $true 
-        $publishToPublicServer = $false
+        $publishToPublicServer = $true
 
         echo "Publishing request name: $env:requestName"
         echo "Publish to internal server: $publishToInternalServer"
