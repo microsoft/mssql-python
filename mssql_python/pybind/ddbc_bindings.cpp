@@ -1901,7 +1901,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         std::cout << "DEBUG: Python params list:" << std::endl;
         for (size_t i = 0; i < params.size(); ++i) {
             const py::object& param = params[i];
-            std::cout << "  Param[" << i << "]: type=" << std::string(py::str(param.get_type()).cast<std::string>());
+            std::cout << "  Param[" << i << "]: type=" << std::string(py::str(py::type::of(param)).cast<std::string>());
             try {
             std::cout << ", repr=" << std::string(py::repr(param).cast<std::string>());
             } catch (...) {

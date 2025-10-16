@@ -142,10 +142,10 @@ class Cursor:
         except Exception as e:
             # If anything goes wrong, return default settings
             log('warning', f"Failed to get decoding settings for SQL type {sql_type}: {e}")
-            if sql_type == SQL_WCHAR:
-                return {'encoding': 'utf-16le', 'ctype': SQL_WCHAR}
+            if sql_type == ddbc_sql_const.SQL_WCHAR.value:
+                return {'encoding': 'utf-16le', 'ctype': ddbc_sql_const.SQL_WCHAR.value}
             else:
-                return {'encoding': 'utf-8', 'ctype': SQL_CHAR}
+                return {'encoding': 'utf-8', 'ctype': ddbc_sql_const.SQL_CHAR.value}
 
     def _is_unicode_string(self, param):
         """

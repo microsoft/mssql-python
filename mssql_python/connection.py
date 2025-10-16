@@ -326,13 +326,11 @@ class Connection:
         Raises:
             ProgrammingError: If the encoding is not valid or not supported.
             InterfaceError: If the connection is closed.
+            ValueError: If attempting to use non-UTF-16LE encoding with SQL_WCHAR.
             
-        Example:
-            # For databases that only communicate with UTF-8
-            cnxn.setencoding(encoding='utf-8')
-            
-            # For explicitly using SQL_CHAR
-            cnxn.setencoding(encoding='utf-8', ctype=mssql_python.SQL_CHAR)
+        Note:
+            SQL_WCHAR must always use UTF-16LE encoding as required by SQL Server.
+            Custom encodings are only supported with SQL_CHAR.
         """
         if self._closed:
             raise InterfaceError(
@@ -371,6 +369,13 @@ class Connection:
             raise ProgrammingError(
                 driver_error=f"Invalid ctype: {ctype}",
                 ddbc_error=f"ctype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) or SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value})",
+            )
+        
+        # Enforce UTF-16LE for SQL_WCHAR
+        if ctype == ConstantsDDBC.SQL_WCHAR.value and encoding not in UTF16_ENCODINGS:
+            raise ValueError(
+                f"SQL_WCHAR must use UTF-16LE encoding. '{encoding}' is not supported for SQL_WCHAR. "
+                f"Use SQL_CHAR if you need to use '{encoding}' encoding."
             )
         
         # Store the encoding settings
@@ -428,16 +433,12 @@ class Connection:
         Raises:
             ProgrammingError: If the sqltype, encoding, or ctype is invalid.
             InterfaceError: If the connection is closed.
+            ValueError: If attempting to use non-UTF-16LE encoding with SQL_WCHAR.
             
-        Example:
-            # Configure SQL_CHAR to use UTF-8 decoding
-            cnxn.setdecoding(mssql_python.SQL_CHAR, encoding='utf-8')
-            
-            # Configure column metadata decoding
-            cnxn.setdecoding(mssql_python.SQL_WMETADATA, encoding='utf-16le')
-            
-            # Use explicit ctype
-            cnxn.setdecoding(mssql_python.SQL_WCHAR, encoding='utf-16le', ctype=mssql_python.SQL_WCHAR)
+        Note:
+            SQL_WCHAR and SQL_WMETADATA data from SQL Server is always encoded as UTF-16LE
+            and must use SQL_WCHAR ctype as required by the SQL Server ODBC driver.
+            Custom encodings are only supported for SQL_CHAR.
         """
         if self._closed:
             raise InterfaceError(
@@ -458,39 +459,49 @@ class Connection:
                 ddbc_error=f"sqltype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}), SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value}), or SQL_WMETADATA ({SQL_WMETADATA})",
             )
         
-        # Set default encoding based on sqltype if not provided
-        if encoding is None:
-            if sqltype == ConstantsDDBC.SQL_CHAR.value:
+        # For SQL_WCHAR and SQL_WMETADATA, enforce UTF-16LE encoding and SQL_WCHAR ctype
+        if sqltype in (ConstantsDDBC.SQL_WCHAR.value, SQL_WMETADATA):
+            if encoding is not None and encoding.lower() not in UTF16_ENCODINGS:
+                raise ValueError(
+                    f"SQL_WCHAR and SQL_WMETADATA must use UTF-16LE encoding. '{encoding}' is not supported. "
+                    f"Custom encodings are only supported for SQL_CHAR."
+                )
+            # Always enforce UTF-16LE for wide character types
+            encoding = 'utf-16le'
+            # Always enforce SQL_WCHAR ctype for wide character types
+            ctype = ConstantsDDBC.SQL_WCHAR.value
+        else:
+            # For SQL_CHAR, allow custom encoding settings
+            # Set default encoding for SQL_CHAR if not provided
+            if encoding is None:
                 encoding = 'utf-8'  # Default for SQL_CHAR in Python 3
-            else:  # SQL_WCHAR or SQL_WMETADATA
-                encoding = 'utf-16le'  # Default for SQL_WCHAR in Python 3
         
-        # Validate encoding using cached validation for better performance
-        if not _validate_encoding(encoding):
-            log('warning', "Invalid encoding attempted: %s", sanitize_user_input(str(encoding)))
-            raise ProgrammingError(
-                driver_error=f"Unsupported encoding: {encoding}",
-                ddbc_error=f"The encoding '{encoding}' is not supported by Python",
-            )
+            # Validate encoding
+            if not _validate_encoding(encoding):
+                log('warning', "Invalid encoding attempted: %s", sanitize_user_input(str(encoding)))
+                raise ProgrammingError(
+                    driver_error=f"Unsupported encoding: {encoding}",
+                    ddbc_error=f"The encoding '{encoding}' is not supported by Python",
+                )
         
-        # Normalize encoding to lowercase for consistency
-        encoding = encoding.lower()
+            # Normalize encoding to lowercase for consistency
+            encoding = encoding.lower()
         
-        # Set default ctype based on encoding if not provided
-        if ctype is None:
-            if encoding in UTF16_ENCODINGS:
-                ctype = ConstantsDDBC.SQL_WCHAR.value
-            else:
-                ctype = ConstantsDDBC.SQL_CHAR.value
+            # Set default ctype based on encoding if not provided
+            if ctype is None:
+                if encoding in UTF16_ENCODINGS:
+                    ctype = ConstantsDDBC.SQL_WCHAR.value
+                else:
+                    ctype = ConstantsDDBC.SQL_CHAR.value
         
-        # Validate ctype
-        valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
-        if ctype not in valid_ctypes:
-            log('warning', "Invalid ctype attempted: %s", sanitize_user_input(str(ctype)))
-            raise ProgrammingError(
-                driver_error=f"Invalid ctype: {ctype}",
-                ddbc_error=f"ctype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) or SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value})",
-            )
+            # Validate ctype
+            valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
+            if ctype not in valid_ctypes:
+                log('warning', "Invalid ctype attempted: %s", sanitize_user_input(str(ctype)))
+                raise ProgrammingError(
+                    driver_error=f"Invalid ctype: {ctype}",
+                    ddbc_error=f"ctype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) or SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value})",
+                )
         
         # Store the decoding settings for the specified sqltype
         self._decoding_settings[sqltype] = {
