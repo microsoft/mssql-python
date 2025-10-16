@@ -380,13 +380,32 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                         
                         py::bytes encoded = EncodeString(text_to_encode, encoding, false);
                         std::string encoded_str = encoded.cast<std::string>();
-                        strParam = AllocateParamBuffer<std::string>(paramBuffers, encoded_str);
                         
+                        // Check if data would be truncated and raise error instead of silent truncation
+                        if (encoded_str.size() > paramInfo.columnSize) {
+                            std::ostringstream errMsg;
+                            errMsg << "String data for parameter [" << paramIndex 
+                                << "] would be truncated. Actual length: " << encoded_str.size() 
+                                << ", Maximum allowed: " << paramInfo.columnSize;
+                            ThrowStdException(errMsg.str());
+                        }
+                        
+                        strParam = AllocateParamBuffer<std::string>(paramBuffers, encoded_str);
                         LOG("SQL_C_CHAR Parameter[{}]: Encoding={}, Length={}", paramIndex, encoding, strParam->size());
                     } else {
                         // For bytes/bytearray, use as-is
                         std::string raw_bytes = param.cast<std::string>();
-                        strParam = AllocateParamBuffer<std::string>(paramBuffers, param.cast<std::string>());
+                        
+                        // Check if data would be truncated and raise error
+                        if (raw_bytes.size() > paramInfo.columnSize) {
+                            std::ostringstream errMsg;
+                            errMsg << "Binary data for parameter [" << paramIndex 
+                                << "] would be truncated. Actual length: " << raw_bytes.size() 
+                                << ", Maximum allowed: " << paramInfo.columnSize;
+                            ThrowStdException(errMsg.str());
+                        }
+                        
+                        strParam = AllocateParamBuffer<std::string>(paramBuffers, raw_bytes);
                     }
                     dataPtr = const_cast<void*>(static_cast<const void*>(strParam->c_str()));
                     bufferLength = strParam->size() + 1;
@@ -417,6 +436,15 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                         binData = std::string(reinterpret_cast<const char*>(PyByteArray_AsString(param.ptr())),
                                             PyByteArray_Size(param.ptr()));
                     }
+                    // Check if data would be truncated and raise error
+                    if (binData.size() > paramInfo.columnSize) {
+                        std::ostringstream errMsg;
+                        errMsg << "Binary data for parameter [" << paramIndex 
+                            << "] would be truncated. Actual length: " << binData.size() 
+                            << ", Maximum allowed: " << paramInfo.columnSize;
+                        ThrowStdException(errMsg.str());
+                    }
+                    
                     std::string* binBuffer = AllocateParamBuffer<std::string>(paramBuffers, binData);
                     dataPtr = const_cast<void*>(static_cast<const void*>(binBuffer->data()));
                     bufferLength = static_cast<SQLLEN>(binBuffer->size());
@@ -447,7 +475,18 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                         std::string text_to_encode = param.cast<std::string>();
                         py::bytes encoded = EncodeString(text_to_encode, encoding, true); // true for wide character
                         py::object decoded = py::module_::import("codecs").attr("decode")(encoded, py::str("utf-16le"), py::str("strict"));
-                        strParam = AllocateParamBuffer<std::wstring>(paramBuffers, decoded.cast<std::wstring>());
+                        std::wstring wstr = decoded.cast<std::wstring>();
+                        
+                        // Check if data would be truncated and raise error
+                        if (wstr.size() > paramInfo.columnSize) {
+                            std::ostringstream errMsg;
+                            errMsg << "String data for parameter [" << paramIndex 
+                                << "] would be truncated. Actual length: " << wstr.size() 
+                                << ", Maximum allowed: " << paramInfo.columnSize;
+                            ThrowStdException(errMsg.str());
+                        }
+                        
+                        strParam = AllocateParamBuffer<std::wstring>(paramBuffers, wstr);
                     } else {
                         // For bytes/bytearray, first decode using the specified encoding
                         try {
@@ -455,10 +494,20 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                             py::bytes encoded = EncodeString(raw_bytes, encoding, true); // true for wide character
                             py::object decoded = py::module_::import("codecs").attr("decode")(encoded, py::str("utf-16le"), py::str("strict"));
                             std::wstring wstr = decoded.cast<std::wstring>();
+                            
+                            // Check if data would be truncated and raise error
+                            if (wstr.size() > paramInfo.columnSize) {
+                                std::ostringstream errMsg;
+                                errMsg << "String data for parameter [" << paramIndex 
+                                    << "] would be truncated. Actual length: " << wstr.size() 
+                                    << ", Maximum allowed: " << paramInfo.columnSize;
+                                ThrowStdException(errMsg.str());
+                            }
+                            
                             strParam = AllocateParamBuffer<std::wstring>(paramBuffers, wstr);
                         } catch (const std::exception& e) {
+                            // Original fallback code - but still check for truncation
                             LOG("Error encoding bytes to wstring: {}", e.what());
-                            // Fall back to the original method
                             py::object decoded = py::reinterpret_steal<py::object>(
                                 PyUnicode_DecodeLocaleAndSize(
                                     PyBytes_AsString(param.ptr()), 
@@ -466,10 +515,19 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                                     encoding.c_str()
                                 ));
                             std::wstring wstr = decoded.cast<std::wstring>();
+                            
+                            // Check if data would be truncated and raise error
+                            if (wstr.size() > paramInfo.columnSize) {
+                                std::ostringstream errMsg;
+                                errMsg << "String data for parameter [" << paramIndex 
+                                    << "] would be truncated. Actual length: " << wstr.size() 
+                                    << ", Maximum allowed: " << paramInfo.columnSize;
+                                ThrowStdException(errMsg.str());
+                            }
+                            
                             strParam = AllocateParamBuffer<std::wstring>(paramBuffers, wstr);
                         }
                     }
-                    
                     LOG("SQL_C_WCHAR Parameter[{}]: Encoding={}, Length={}, isDAE={}", 
                         paramIndex, encoding, strParam->size(), paramInfo.isDAE);
                     
@@ -1944,10 +2002,20 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                             // Use EncodeString to properly handle the encoding to UTF-16LE
                             py::bytes encoded = EncodeString(pyStr.cast<std::string>(), encoding, true);
                             // Convert to wstring
-                            wstr = py::str(encoded).cast<std::wstring>();
+                            wstr = encoded.attr("decode")("utf-16-le").cast<std::wstring>();
                         }
                         
-                        size_t copySize = std::min(wstr.size(), info.columnSize);
+                        // Check if data would be truncated and raise error instead of silent truncation
+                        if (wstr.size() > info.columnSize) {
+                            std::ostringstream errMsg;
+                            errMsg << "String data for parameter [" << paramIndex << "] at row " << i 
+                                    << " would be truncated. Actual length: " << wstr.size() 
+                                    << ", Maximum allowed: " << info.columnSize;
+                            ThrowStdException(errMsg.str());
+                        }
+                        
+                        // Now we know the data fits, so use the full size
+                        size_t copySize = wstr.size();
                 #if defined(_WIN32)
                         // Windows: direct copy
                         wmemcpy(&wcharArray[i * (info.columnSize + 1)], wstr.c_str(), copySize);
@@ -1956,38 +2024,16 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                 #else
                         // Unix: convert wchar_t to SQLWCHAR (uint16_t)
                         std::vector<SQLWCHAR> sqlwchars = WStringToSQLWCHAR(wstr);
-                        size_t sqlwcharsCopySize = std::min(sqlwchars.size(), info.columnSize);
+                        // No need for min() since we already verified the size
                         memcpy(&wcharArray[i * (info.columnSize + 1)], sqlwchars.data(), 
-                            sqlwcharsCopySize * sizeof(SQLWCHAR));
-                        wcharArray[i * (info.columnSize + 1) + sqlwcharsCopySize] = 0;
-                        strLenOrIndArray[i] = sqlwcharsCopySize * sizeof(SQLWCHAR);
+                            sqlwchars.size() * sizeof(SQLWCHAR));
+                        wcharArray[i * (info.columnSize + 1) + sqlwchars.size()] = 0;
+                        strLenOrIndArray[i] = sqlwchars.size() * sizeof(SQLWCHAR);
                 #endif
                     }
                     dataPtr = wcharArray;
                     bufferLength = (info.columnSize + 1) * sizeof(SQLWCHAR);
                     break;  
-                }
-                case SQL_C_TINYINT:
-                case SQL_C_UTINYINT: {
-                    unsigned char* dataArray = AllocateParamBufferArray<unsigned char>(tempBuffers, paramSetSize);
-                    for (size_t i = 0; i < paramSetSize; ++i) {
-                        if (columnValues[i].is_none()) {
-                            if (!strLenOrIndArray)
-                                strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
-                            dataArray[i] = 0;
-                            strLenOrIndArray[i] = SQL_NULL_DATA;
-                        } else {
-                            int intVal = columnValues[i].cast<int>();
-                            if (intVal < 0 || intVal > 255) {
-                                ThrowStdException("UTINYINT value out of range at rowIndex " + std::to_string(i));
-                            }
-                            dataArray[i] = static_cast<unsigned char>(intVal);
-                            if (strLenOrIndArray) strLenOrIndArray[i] = 0;
-                        }
-                    }
-                    dataPtr = dataArray;
-                    bufferLength = sizeof(unsigned char);
-                    break;
                 }
                 case SQL_C_SHORT: {
                     short* dataArray = AllocateParamBufferArray<short>(tempBuffers, paramSetSize);
@@ -2034,7 +2080,16 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                             str = value.cast<std::string>();
                         }
                         
-                        size_t copySize = std::min(str.size(), info.columnSize);
+                        // Check if data would be truncated and raise error instead of silent truncation
+                        if (str.size() > info.columnSize) {
+                            std::ostringstream errMsg;
+                            errMsg << "String/Binary data for parameter [" << paramIndex << "] at row " << i 
+                                << " would be truncated. Actual length: " << str.size() 
+                                << ", Maximum allowed: " << info.columnSize;
+                            ThrowStdException(errMsg.str());
+                        }
+                        // Now we know the data fits, so use the full size
+                        size_t copySize = str.size();
                         memcpy(&charArray[i * (info.columnSize + 1)], str.c_str(), copySize);
                         charArray[i * (info.columnSize + 1) + copySize] = 0; // Null-terminate
                         strLenOrIndArray[i] = copySize;
@@ -2060,6 +2115,28 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                     break;
                 }
                 case SQL_C_STINYINT:
+                case SQL_C_TINYINT: {
+                    // Use char for SQL_C_STINYINT/TINYINT (signed 8-bit integer)
+                    char* dataArray = AllocateParamBufferArray<char>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (columnValues[i].is_none()) {
+                            strLenOrIndArray[i] = SQL_NULL_DATA;
+                            dataArray[i] = 0;
+                        } else {
+                            int intVal = columnValues[i].cast<int>();
+                            if (intVal < -128 || intVal > 127) {
+                                ThrowStdException("TINYINT value out of range at rowIndex " + std::to_string(i));
+                            }
+                            dataArray[i] = static_cast<char>(intVal);
+                            strLenOrIndArray[i] = 0;
+                        }
+                    }
+                    dataPtr = dataArray;
+                    bufferLength = sizeof(char);
+                    break;
+                }
+                case SQL_C_UTINYINT:
                 case SQL_C_USHORT: {
                     unsigned short* dataArray = AllocateParamBufferArray<unsigned short>(tempBuffers, paramSetSize);
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
