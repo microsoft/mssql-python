@@ -6532,7 +6532,7 @@ def test_attrs_before_connection_types(conn_str):
         # Integer attribute
         ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value: 30,
         # String attribute (catalog name)
-        ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value: "master"
+        ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value: "testdb"
     }
     
     conn = connect(conn_str, attrs_before=attrs)
