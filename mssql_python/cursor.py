@@ -16,7 +16,7 @@ from typing import List, Union, Any
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
-from mssql_python.exceptions import InterfaceError, NotSupportedError, ProgrammingError
+from mssql_python.exceptions import InterfaceError, NotSupportedError, ProgrammingError, OperationalError, DatabaseError
 from mssql_python.row import Row
 from mssql_python import get_settings
 
@@ -114,18 +114,21 @@ class Cursor:
         if hasattr(self._connection, 'getencoding'):
             try:
                 return self._connection.getencoding()
-            except:
-                # Return default encoding settings if there's an error
+            except (OperationalError, DatabaseError) as db_error:
+                # Only catch database-related errors, not programming errors
+                log('warning', f"Failed to get encoding settings from connection due to database error: {db_error}")
                 return {
                     'encoding': 'utf-8', 
                     'ctype': ddbc_sql_const.SQL_CHAR.value
                 }
+            # Let programming errors (AttributeError, TypeError, etc.) propagate up the stack
+        
         # Return default encoding settings if getencoding is not available
         return {
             'encoding': 'utf-8',
             'ctype': ddbc_sql_const.SQL_CHAR.value
         }
-
+    
     def _get_decoding_settings(self, sql_type):
         """
         Get decoding settings for a specific SQL type.
@@ -139,13 +142,14 @@ class Cursor:
         try:
             # Get decoding settings from connection for this SQL type
             return self._connection.getdecoding(sql_type)
-        except Exception as e:
-            # If anything goes wrong, return default settings
-            log('warning', f"Failed to get decoding settings for SQL type {sql_type}: {e}")
+        except (OperationalError, DatabaseError) as db_error:
+            # Only handle expected database-related errors
+            log('warning', f"Failed to get decoding settings for SQL type {sql_type} due to database error: {db_error}")
             if sql_type == ddbc_sql_const.SQL_WCHAR.value:
                 return {'encoding': 'utf-16le', 'ctype': ddbc_sql_const.SQL_WCHAR.value}
             else:
                 return {'encoding': 'utf-8', 'ctype': ddbc_sql_const.SQL_CHAR.value}
+        # Let programming errors propagate up the stack - we want to know if there's a bug
 
     def _is_unicode_string(self, param):
         """
