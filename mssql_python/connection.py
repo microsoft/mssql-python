@@ -152,8 +152,8 @@ class Connection:
         # Initialize encoding settings with defaults for Python 3
         # Python 3 only has str (which is Unicode), so we use utf-16le by default
         self._encoding_settings = {
-            'encoding': 'utf-16le',
-            'ctype': ConstantsDDBC.SQL_WCHAR.value
+            'encoding': 'utf-8',
+            'ctype': ConstantsDDBC.SQL_CHAR.value
         }
 
         # Initialize decoding settings with Python 3 defaults
@@ -373,9 +373,10 @@ class Connection:
         
         # Enforce UTF-16LE for SQL_WCHAR
         if ctype == ConstantsDDBC.SQL_WCHAR.value and encoding not in UTF16_ENCODINGS:
-            raise ValueError(
-                f"SQL_WCHAR must use UTF-16LE encoding. '{encoding}' is not supported for SQL_WCHAR. "
-                f"Use SQL_CHAR if you need to use '{encoding}' encoding."
+            raise ProgrammingError(
+                driver_error=f"SQL_WCHAR requires UTF-16LE encoding",
+                ddbc_error=f"SQL_WCHAR must use UTF-16LE encoding. '{encoding}' is not supported for SQL_WCHAR. "
+                          f"Use SQL_CHAR if you need to use '{encoding}' encoding."
             )
         
         # Store the encoding settings
@@ -462,9 +463,9 @@ class Connection:
         # For SQL_WCHAR and SQL_WMETADATA, enforce UTF-16LE encoding and SQL_WCHAR ctype
         if sqltype in (ConstantsDDBC.SQL_WCHAR.value, SQL_WMETADATA):
             if encoding is not None and encoding.lower() not in UTF16_ENCODINGS:
-                raise ValueError(
-                    f"SQL_WCHAR and SQL_WMETADATA must use UTF-16LE encoding. '{encoding}' is not supported. "
-                    f"Custom encodings are only supported for SQL_CHAR."
+                raise ProgrammingError(
+                    driver_error=f"SQL_WCHAR and SQL_WMETADATA must use UTF-16LE encoding. '{encoding}' is not supported.",
+                    ddbc_error=f"Custom encodings are only supported for SQL_CHAR. '{encoding}' is not valid for SQL_WCHAR or SQL_WMETADATA."
                 )
             # Always enforce UTF-16LE for wide character types
             encoding = 'utf-16le'

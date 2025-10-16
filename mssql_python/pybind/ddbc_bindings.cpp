@@ -212,17 +212,10 @@ py::bytes EncodeString(const std::string& text, const std::string& encoding, boo
     // Import Python's codecs module
     py::module_ codecs = py::module_::import("codecs");
     
-    // Detailed logging for debugging
-    std::cout << "========== EncodeString DEBUG ==========" << std::endl;
-    std::cout << "Input text: '" << text << "'" << std::endl;
-    std::cout << "Requested encoding: " << encoding << std::endl;
-    std::cout << "toWideChar flag: " << (toWideChar ? "true" : "false") << std::endl;
-    
     try {
         py::bytes result;
         
         if (toWideChar) {
-            std::cout << "Processing for SQL_C_WCHAR (wide character)" << std::endl;
             
             // For East Asian encodings that need special handling
             if (encoding == "gbk" || encoding == "gb2312" || encoding == "gb18030" || 
@@ -230,7 +223,6 @@ py::bytes EncodeString(const std::string& text, const std::string& encoding, boo
                 encoding == "shift_jis" || encoding == "cp932" || encoding == "euc_kr" ||
                 encoding == "cp949" || encoding == "euc_jp") {
                 
-                std::cout << "Using East Asian encoding: " << encoding << std::endl;
                 
                 // First decode the string using the specified encoding to get Unicode
                 py::object unicode_str = codecs.attr("decode")(
@@ -239,74 +231,42 @@ py::bytes EncodeString(const std::string& text, const std::string& encoding, boo
                     py::str("strict")
                 );
                 
-                std::cout << "Successfully decoded with " << encoding << std::endl;
                 
                 // Now encode as UTF-16LE for SQL Server
                 result = codecs.attr("encode")(unicode_str, py::str("utf-16le"), py::str("strict"));
-                std::cout << "Re-encoded to UTF-16LE for SQL Server" << std::endl;
             } 
             else {
                 // For all other encodings with wide chars, use UTF-16LE
-                std::cout << "Using UTF-16LE for wide character data" << std::endl;
                 result = codecs.attr("encode")(py::str(text), py::str("utf-16le"), py::str("strict"));
             }
         }
         else {
             // For SQL_C_CHAR, use the specified encoding directly
-            std::cout << "Processing for SQL_C_CHAR (narrow character)" << std::endl;
-            std::cout << "Using specified encoding: " << encoding << std::endl;
             result = codecs.attr("encode")(py::str(text), py::str(encoding), py::str("strict"));
         }
-        
-        // Log the result size
-        size_t result_size = PyBytes_Size(result.ptr());
-        std::cout << "Encoded result size: " << result_size << " bytes" << std::endl;
-        
-        // Debug first few bytes of the result
-        const char* data = PyBytes_AsString(result.ptr());
-        std::cout << "First bytes (hex): ";
-        for (size_t i = 0; i < std::min(result_size, size_t(16)); ++i) {
-            std::cout << std::hex << std::setw(2) << std::setfill('0') 
-                      << (static_cast<int>(data[i]) & 0xFF) << " ";
-        }
-        std::cout << std::dec << std::endl;
-        
-        std::cout << "EncodeString completed successfully" << std::endl;
-        std::cout << "=======================================" << std::endl;
         return result;
     } 
     catch (const std::exception& e) {
         // Log the error
-        std::cout << "ERROR in EncodeString: " << e.what() << std::endl;
         LOG("EncodeString error: {}", e.what());
         
         try {
             // Fallback with replace error handler
-            std::cout << "Attempting fallback encoding..." << std::endl;
             py::bytes result;
             
             if (toWideChar) {
                 result = codecs.attr("encode")(py::str(text), py::str("utf-16le"), py::str("replace"));
-                std::cout << "Fallback: Encoded with utf-16le and replace error handler" << std::endl;
             } 
             else {
                 result = codecs.attr("encode")(py::str(text), py::str(encoding), py::str("replace"));
-                std::cout << "Fallback: Encoded with " << encoding << " and replace error handler" << std::endl;
             }
-            
-            std::cout << "Fallback encoding successful" << std::endl;
-            std::cout << "=======================================" << std::endl;
             return result;
         } 
         catch (const std::exception& e2) {
             // Ultimate fallback
-            std::cout << "ERROR in fallback encoding: " << e2.what() << std::endl;
-            std::cout << "Using ultimate fallback to UTF-8" << std::endl;
             LOG("Fallback encoding error: {}", e2.what());
             
             py::bytes result = codecs.attr("encode")(py::str(text), py::str("utf-8"), py::str("replace"));
-            std::cout << "Ultimate fallback completed" << std::endl;
-            std::cout << "=======================================" << std::endl;
             return result;
         }
     }
@@ -405,16 +365,8 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
 
-                std::cout << "  Type: SQL_C_CHAR" << std::endl;
-                std::cout << "  Python type: ";
-                if (py::isinstance<py::str>(param)) std::cout << "str";
-                else if (py::isinstance<py::bytes>(param)) std::cout << "bytes";
-                else if (py::isinstance<py::bytearray>(param)) std::cout << "bytearray";
-                std::cout << std::endl;
-                
                 if (paramInfo.isDAE) {
                     LOG("Parameter[{}] is marked for DAE streaming", paramIndex);
-                    std::cout << "  Is DAE streaming" << std::endl;
                     dataPtr = const_cast<void*>(reinterpret_cast<const void*>(&paramInfos[paramIndex]));
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                     *strLenOrIndPtr = SQL_LEN_DATA_AT_EXEC(0);
@@ -425,39 +377,15 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     if (py::isinstance<py::str>(param)) {
                         // Use the EncodeString function to handle encoding properly
                         std::string text_to_encode = param.cast<std::string>();
-                        std::cout << "  Original string: '" << text_to_encode << "'" << std::endl;
-                        std::cout << "  String length: " << text_to_encode.size() << " bytes" << std::endl;
-                        
-                        // Print raw bytes of the original string
-                        std::cout << "  Raw bytes: ";
-                        for (size_t i = 0; i < text_to_encode.size(); ++i) {
-                            std::cout << std::hex << std::setw(2) << std::setfill('0') 
-                                      << (static_cast<int>(text_to_encode[i]) & 0xFF) << " ";
-                        }
-                        std::cout << std::dec << std::endl;
                         
                         py::bytes encoded = EncodeString(text_to_encode, encoding, false);
                         std::string encoded_str = encoded.cast<std::string>();
                         strParam = AllocateParamBuffer<std::string>(paramBuffers, encoded_str);
                         
-                        std::cout << "  Encoded length: " << encoded_str.size() << " bytes" << std::endl;
-                        std::cout << "  Encoded bytes: ";
-                        for (size_t i = 0; i < std::min(encoded_str.size(), size_t(32)); ++i) {
-                            std::cout << std::hex << std::setw(2) << std::setfill('0') 
-                                      << (static_cast<int>(encoded_str[i]) & 0xFF) << " ";
-                        }
-                        std::cout << std::dec << std::endl;
                         LOG("SQL_C_CHAR Parameter[{}]: Encoding={}, Length={}", paramIndex, encoding, strParam->size());
                     } else {
                         // For bytes/bytearray, use as-is
                         std::string raw_bytes = param.cast<std::string>();
-                        std::cout << "  Raw bytes length: " << raw_bytes.size() << " bytes" << std::endl;
-                        std::cout << "  Raw bytes: ";
-                        for (size_t i = 0; i < std::min(raw_bytes.size(), size_t(32)); ++i) {
-                            std::cout << std::hex << std::setw(2) << std::setfill('0') 
-                                      << (static_cast<int>(raw_bytes[i]) & 0xFF) << " ";
-                        }
-                        std::cout << std::dec << std::endl;
                         strParam = AllocateParamBuffer<std::string>(paramBuffers, param.cast<std::string>());
                     }
                     dataPtr = const_cast<void*>(static_cast<const void*>(strParam->c_str()));
@@ -502,18 +430,10 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     !py::isinstance<py::bytes>(param)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
-
-                std::cout << "  Type: SQL_C_WCHAR" << std::endl;
-                std::cout << "  Python type: ";
-                if (py::isinstance<py::str>(param)) std::cout << "str";
-                else if (py::isinstance<py::bytes>(param)) std::cout << "bytes";
-                else if (py::isinstance<py::bytearray>(param)) std::cout << "bytearray";
-                std::cout << std::endl;
                 
                 if (paramInfo.isDAE) {
                     // deferred execution
                     LOG("Parameter[{}] is marked for DAE streaming", paramIndex);
-                    std::cout << "  Is DAE streaming" << std::endl;
                     dataPtr = const_cast<void*>(reinterpret_cast<const void*>(&paramInfos[paramIndex]));
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
                     *strLenOrIndPtr = SQL_LEN_DATA_AT_EXEC(0);
@@ -525,80 +445,19 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     if (py::isinstance<py::str>(param)) {
                         // For Python strings, convert to wstring using EncodeString
                         std::string text_to_encode = param.cast<std::string>();
-                        
-                        std::cout << "  Original string: '" << text_to_encode << "'" << std::endl;
-                        std::cout << "  String length: " << text_to_encode.size() << " bytes" << std::endl;
-                        std::cout << "  Using encoding: " << encoding << std::endl;
-                        
-                        // Print raw bytes of the original string
-                        std::cout << "  Raw bytes: ";
-                        for (size_t i = 0; i < text_to_encode.size(); ++i) {
-                            std::cout << std::hex << std::setw(2) << std::setfill('0') 
-                                      << (static_cast<int>(text_to_encode[i]) & 0xFF) << " ";
-                        }
-                        std::cout << std::dec << std::endl;
-                        
-                        // Try to show the string as Unicode codepoints
-                        try {
-                            py::object unicode_obj = py::reinterpret_steal<py::object>(
-                                PyUnicode_DecodeUTF8(text_to_encode.c_str(), text_to_encode.length(), "strict")
-                            );
-                            std::cout << "  UTF-8 decoded as: " << unicode_obj.cast<std::string>() << std::endl;
-                        } catch (const std::exception& e) {
-                            std::cout << "  Could not decode as UTF-8: " << e.what() << std::endl;
-                        }
-
                         py::bytes encoded = EncodeString(text_to_encode, encoding, true); // true for wide character
-                        // Print the encoded bytes
-                        std::string encoded_str = encoded.cast<std::string>();
-                        std::cout << "  Encoded length: " << encoded_str.size() << " bytes" << std::endl;
-                        std::cout << "  Encoded bytes: ";
-                        for (size_t i = 0; i < std::min(encoded_str.size(), size_t(32)); ++i) {
-                            std::cout << std::hex << std::setw(2) << std::setfill('0') 
-                                      << (static_cast<int>(encoded_str[i]) & 0xFF) << " ";
-                        }
-                        std::cout << std::dec << std::endl;
-                        
-                        // Convert bytes to wstring
                         py::object decoded = py::module_::import("codecs").attr("decode")(encoded, py::str("utf-16le"), py::str("strict"));
-                        std::wstring wstr = decoded.cast<std::wstring>();
-                        
-                        std::cout << "  Decoded wstring length: " << wstr.length() << " characters" << std::endl;
-                        
-                        // Try to show the decoded string representation
-                        try {
-                            std::string repr = decoded.cast<std::string>();
-                            std::cout << "  Decoded as: " << repr << std::endl;
-                        } catch (const std::exception& e) {
-                            std::cout << "  Could not represent decoded string: " << e.what() << std::endl;
-                        }
                         strParam = AllocateParamBuffer<std::wstring>(paramBuffers, decoded.cast<std::wstring>());
                     } else {
                         // For bytes/bytearray, first decode using the specified encoding
                         try {
-                            // Use EncodeString for consistent encoding behavior
                             std::string raw_bytes = param.cast<std::string>();
-                            
-                            std::cout << "  Raw bytes length: " << raw_bytes.size() << " bytes" << std::endl;
-                            std::cout << "  Raw bytes: ";
-                            for (size_t i = 0; i < std::min(raw_bytes.size(), size_t(32)); ++i) {
-                                std::cout << std::hex << std::setw(2) << std::setfill('0') 
-                                          << (static_cast<int>(raw_bytes[i]) & 0xFF) << " ";
-                            }
-                            std::cout << std::dec << std::endl;
-                            
                             py::bytes encoded = EncodeString(raw_bytes, encoding, true); // true for wide character
                             py::object decoded = py::module_::import("codecs").attr("decode")(encoded, py::str("utf-16le"), py::str("strict"));
                             std::wstring wstr = decoded.cast<std::wstring>();
-                            
-                            std::cout << "  Decoded wstring length: " << wstr.length() << " characters" << std::endl;
-                            
                             strParam = AllocateParamBuffer<std::wstring>(paramBuffers, wstr);
                         } catch (const std::exception& e) {
                             LOG("Error encoding bytes to wstring: {}", e.what());
-                            std::cout << "  ERROR encoding bytes: " << e.what() << std::endl;
-                            std::cout << "  Falling back to PyUnicode_DecodeLocaleAndSize" << std::endl;
-                            
                             // Fall back to the original method
                             py::object decoded = py::reinterpret_steal<py::object>(
                                 PyUnicode_DecodeLocaleAndSize(
@@ -607,7 +466,6 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                                     encoding.c_str()
                                 ));
                             std::wstring wstr = decoded.cast<std::wstring>();
-                            std::cout << "  Fallback wstring length: " << wstr.length() << " characters" << std::endl;
                             strParam = AllocateParamBuffer<std::wstring>(paramBuffers, wstr);
                         }
                     }
@@ -1896,19 +1754,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         // This vector manages the heap memory allocated for parameter buffers.
         // It must be in scope until SQLExecute is done.
         std::vector<std::shared_ptr<void>> paramBuffers;
-        std::cout << "Binding parameters..." << std::endl;
-        // Debug: Print the Python params list and its types
-        std::cout << "DEBUG: Python params list:" << std::endl;
-        for (size_t i = 0; i < params.size(); ++i) {
-            const py::object& param = params[i];
-            std::cout << "  Param[" << i << "]: type=" << std::string(py::str(py::type::of(param)).cast<std::string>());
-            try {
-            std::cout << ", repr=" << std::string(py::repr(param).cast<std::string>());
-            } catch (...) {
-            std::cout << ", repr=<error>";
-            }
-            std::cout << std::endl;
-        }
+        LOG("Binding parameters...");
         rc = BindParameters(hStmt, params, paramInfos, paramBuffers, encoding, ctype);
         if (!SQL_SUCCEEDED(rc)) {
             return rc;

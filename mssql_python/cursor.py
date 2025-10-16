@@ -117,13 +117,13 @@ class Cursor:
             except:
                 # Return default encoding settings if there's an error
                 return {
-                    'encoding': 'utf-16le', 
-                    'ctype': ddbc_sql_const.SQL_WCHAR.value
+                    'encoding': 'utf-8', 
+                    'ctype': ddbc_sql_const.SQL_CHAR.value
                 }
         # Return default encoding settings if getencoding is not available
         return {
-            'encoding': 'utf-16le',
-            'ctype': ddbc_sql_const.SQL_WCHAR.value
+            'encoding': 'utf-8',
+            'ctype': ddbc_sql_const.SQL_CHAR.value
         }
 
     def _get_decoding_settings(self, sql_type):
