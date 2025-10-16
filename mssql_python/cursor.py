@@ -1000,6 +1000,8 @@ class Cursor:
         # After successful execution, initialize description if there are results
         column_metadata = []
         try:
+            # ODBC specification guarantees that column metadata is available immediately after
+            # a successful SQLExecute/SQLExecDirect for the first result set
             ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
             self._initialize_description(column_metadata)
         except Exception as e:
@@ -1014,11 +1016,15 @@ class Cursor:
                 'lowercase': settings.lowercase,
                 'native_uuid': settings.native_uuid
             }
-            # Identify UUID columns (SQL_GUID = -11)
+            # Identify UUID columns based on Python type in description[1]
+            # This relies on _map_data_type correctly mapping SQL_GUID to uuid.UUID
             self._uuid_indices = []
             for i, desc in enumerate(self.description):
                 if desc and desc[1] == uuid.UUID:  # Column type code at index 1
                     self._uuid_indices.append(i)
+                # Verify we have complete description tuples (7 items per PEP-249)
+                elif desc and len(desc) != 7:
+                    log('warning', f"Column description at index {i} has incorrect tuple length: {len(desc)}")
             self.rowcount = -1
             self._reset_rownumber()
         else:

@@ -6,6 +6,7 @@ This module initializes the mssql_python package.
 import threading
 import locale
 import sys
+import types
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
@@ -41,12 +42,7 @@ _settings_lock = threading.Lock()
 def get_settings():
     """Return the global settings object"""
     with _settings_lock:
-        _settings.lowercase = bool(lowercase)
-        _settings.native_uuid = bool(native_uuid)
         return _settings
-
-lowercase = _settings.lowercase  # Default is False
-native_uuid = _settings.native_uuid  # Default is False
 
 # Set the initial decimal separator in C++
 from .ddbc_bindings import DDBCSetDecimalSeparator
@@ -172,33 +168,6 @@ def pooling(max_size=100, idle_timeout=600, enabled=True):
 
 _original_module_setattr = sys.modules[__name__].__setattr__
 
-def _custom_setattr(name, value):
-    if name == 'lowercase':
-        # Strict boolean type check for lowercase
-        if not isinstance(value, bool):
-            raise ValueError("lowercase must be a boolean value (True or False)")
-        
-        with _settings_lock:
-            _settings.lowercase = value
-            # Update the module's lowercase variable
-            _original_module_setattr(name, _settings.lowercase)
-    elif name == 'native_uuid':
-
-        # Strict boolean type check for native_uuid
-        if not isinstance(value, bool):
-            raise ValueError("native_uuid must be a boolean value (True or False)")
-        
-        with _settings_lock:
-            _settings.native_uuid = value
-            # Update the module's native_uuid variable
-            _original_module_setattr(name, _settings.native_uuid)
-    else:
-        _original_module_setattr(name, value)
-
-# Replace the module's __setattr__ with our custom version
-sys.modules[__name__].__setattr__ = _custom_setattr
-
-
 # Export SQL constants at module level
 SQL_CHAR = ConstantsDDBC.SQL_CHAR.value
 SQL_VARCHAR = ConstantsDDBC.SQL_VARCHAR.value
@@ -274,3 +243,45 @@ def get_info_constants():
     """
     return {name: member.value for name, member in GetInfoConstants.__members__.items()}
 
+# Create a custom module class that uses properties instead of __setattr__
+class _MSSQLModule(types.ModuleType):
+    @property
+    def native_uuid(self):
+        return _settings.native_uuid
+
+    @native_uuid.setter
+    def native_uuid(self, value):
+        if not isinstance(value, bool):
+            raise ValueError("native_uuid must be a boolean value")
+        with _settings_lock:
+            _settings.native_uuid = value
+
+    @property
+    def lowercase(self):
+        return _settings.lowercase
+
+    @lowercase.setter
+    def lowercase(self, value):
+        if not isinstance(value, bool):
+            raise ValueError("lowercase must be a boolean value")
+        with _settings_lock:
+            _settings.lowercase = value
+
+# Replace the current module with our custom module class
+old_module = sys.modules[__name__]
+new_module = _MSSQLModule(__name__)
+
+# Copy all existing attributes to the new module
+for attr_name in dir(old_module):
+    if attr_name != "__class__":
+        try:
+            setattr(new_module, attr_name, getattr(old_module, attr_name))
+        except AttributeError:
+            pass
+
+# Replace the module in sys.modules
+sys.modules[__name__] = new_module
+
+# Initialize property values
+lowercase = _settings.lowercase
+native_uuid = _settings.native_uuid

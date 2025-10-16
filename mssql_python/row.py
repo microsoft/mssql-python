@@ -1,4 +1,5 @@
 from mssql_python import get_settings
+from mssql_python.constants import ConstantsDDBC
 import uuid
 
 class Row:
@@ -122,6 +123,18 @@ class Row:
         
         converted_values = list(values)
         
+        # Map SQL type codes to appropriate byte sizes
+        int_size_map = {
+            # SQL_TINYINT
+            ConstantsDDBC.SQL_TINYINT.value: 1,
+            # SQL_SMALLINT
+            ConstantsDDBC.SQL_SMALLINT.value: 2,
+            # SQL_INTEGER
+            ConstantsDDBC.SQL_INTEGER.value: 4,
+            # SQL_BIGINT
+            ConstantsDDBC.SQL_BIGINT.value: 8
+        }
+        
         for i, (value, desc) in enumerate(zip(values, self._description)):
             if desc is None or value is None:
                 continue
@@ -135,7 +148,6 @@ class Row:
             # If no converter found for the SQL type but the value is a string or bytes,
             # try the WVARCHAR converter as a fallback
             if converter is None and isinstance(value, (str, bytes)):
-                from mssql_python.constants import ConstantsDDBC
                 converter = self._cursor.connection.get_output_converter(ConstantsDDBC.SQL_WVARCHAR.value)
             
             # If we found a converter, apply it
@@ -148,18 +160,26 @@ class Row:
                         value_bytes = value.encode('utf-16-le')
                         converted_values[i] = converter(value_bytes)
                     elif isinstance(value, int):
-                        # For integers, we'll convert to bytes
-                        value_bytes = value.to_bytes(8, byteorder='little')
-                        converted_values[i] = converter(value_bytes)
+                        # Get appropriate byte size for this integer type
+                        byte_size = int_size_map.get(sql_type, 8)
+                        try:
+                            # Use signed=True to properly handle negative values
+                            value_bytes = value.to_bytes(byte_size, byteorder='little', signed=True)
+                            converted_values[i] = converter(value_bytes)
+                        except OverflowError as e:
+                            # Log specific overflow error with details to help diagnose the issue
+                            if hasattr(self._cursor, 'log'):
+                                self._cursor.log('warning', 
+                                    f'Integer overflow: value {value} does not fit in {byte_size} bytes for SQL type {sql_type}')
+                            # Keep the original value in this case
                     else:
                         # Pass the value directly for other types
                         converted_values[i] = converter(value)
                 except Exception as e:
                     # Log the exception for debugging without leaking sensitive data
                     if hasattr(self._cursor, 'log'):
-                        self._cursor.log('debug', f'Exception occurred in output converter: {type(e).__name__}', exc_info=True)
+                        self._cursor.log('warning', f'Exception in output converter: {type(e).__name__} for SQL type {sql_type}')
                     # If conversion fails, keep the original value
-                    pass
         
         return converted_values
 
