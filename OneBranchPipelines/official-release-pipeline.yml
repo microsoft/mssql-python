@@ -112,27 +112,16 @@ extends:
               ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
             
             steps:
-              # Step 1: Download wheel artifacts from build pipeline
+              # Step 1: Download consolidated artifacts from build pipeline
               - task: DownloadPipelineArtifact@2
-                displayName: 'Download Wheel Artifacts from Build Pipeline'
+                displayName: 'Download Consolidated Artifacts from Build Pipeline'
                 inputs:
                   buildType: 'specific'
                   project: '$(System.TeamProject)'
                   definition: 2199  # Build-Release-Package-Pipeline definition ID
                   buildVersionToDownload: 'latest'
-                  artifactName: 'drop_build_main_wheels'  # OneBranch drops artifacts with 'drop_' prefix
-                  targetPath: '$(Build.SourcesDirectory)/artifacts/wheels'
-              
-              # Step 2: Download symbol artifacts from build pipeline
-              - task: DownloadPipelineArtifact@2
-                displayName: 'Download Symbol Artifacts from Build Pipeline'
-                inputs:
-                  buildType: 'specific'
-                  project: '$(System.TeamProject)'
-                  definition: 2199  # Build-Release-Package-Pipeline definition ID
-                  buildVersionToDownload: 'latest'
-                  artifactName: 'drop_build_main_symbols'  # Symbol artifacts
-                  targetPath: '$(Build.SourcesDirectory)/artifacts/symbols'
+                  artifactName: 'drop_Consolidate_ConsolidateArtifacts'  # Consolidated artifact with dist/ and symbols/
+                  targetPath: '$(Build.SourcesDirectory)/artifacts'
               
               # Step 3: List downloaded artifacts for verification
               - task: PowerShell@2
@@ -145,7 +134,7 @@ extends:
                     Write-Host "====================================="
                     
                     # List wheel files
-                    $wheelsPath = "$(Build.SourcesDirectory)/artifacts/wheels/wheels"
+                    $wheelsPath = "$(Build.SourcesDirectory)/artifacts/dist"
                     if (Test-Path $wheelsPath) {
                       $wheels = Get-ChildItem -Path $wheelsPath -Filter "*.whl" -Recurse
                       
@@ -153,12 +142,6 @@ extends:
                       foreach ($wheel in $wheels) {
                         $size = [math]::Round($wheel.Length / 1MB, 2)
                         Write-Host "  - $($wheel.Name) (${size} MB)"
-                      }
-                      
-                      # Verify expected number of wheels (currently 7 for Windows only)
-                      $expectedCount = 7
-                      if ($wheels.Count -lt $expectedCount) {
-                        Write-Warning "Expected at least $expectedCount wheels, but found $($wheels.Count)"
                       }
                       
                       # Copy wheels to dist folder for ESRP
@@ -172,7 +155,7 @@ extends:
                     }
                     
                     # List symbol files
-                    $symbolsPath = "$(Build.SourcesDirectory)/artifacts/symbols/symbols"
+                    $symbolsPath = "$(Build.SourcesDirectory)/artifacts/symbols"
                     if (Test-Path $symbolsPath) {
                       $symbols = Get-ChildItem -Path $symbolsPath -Filter "*.pdb" -Recurse
                       
