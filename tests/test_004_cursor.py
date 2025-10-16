@@ -11635,7 +11635,6 @@ def test_numeric_extreme_exponents_precision_loss(cursor, db_connection, value, 
         
         # Verify the value was stored and retrieved
         actual = row[0]
-        print(f"✅ {description}: {value} -> {actual}")
         
         # For extreme small values, check they're mathematically equivalent
         assert abs(actual - value) < decimal.Decimal('1E-18'), \
@@ -11727,10 +11726,6 @@ def test_numeric_beyond_38_digit_precision_negative(cursor, db_connection, value
         f"Expected precision error message for {description}, got: {error_msg}"
     assert "maximum precision supported by SQL Server is 38" in error_msg, \
         f"Expected SQL Server precision limit message for {description}, got: {error_msg}"
-    
-    print(f"✅ Correctly rejected {description}: {value}")
-
-
 
 def test_close(db_connection):
     """Test closing the cursor"""
