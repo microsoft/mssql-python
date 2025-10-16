@@ -321,7 +321,27 @@ class Cursor:
             )
         
         if isinstance(param, decimal.Decimal):
-        # Detect MONEY / SMALLMONEY range
+            # First check precision limit for all decimal values
+            decimal_as_tuple = param.as_tuple()
+            digits_tuple = decimal_as_tuple.digits
+            num_digits = len(digits_tuple)
+            exponent = decimal_as_tuple.exponent
+
+            # Calculate the SQL precision (same logic as _get_numeric_data)
+            if exponent >= 0:
+                precision = num_digits + exponent
+            elif (-1 * exponent) <= num_digits:
+                precision = num_digits
+            else:
+                precision = exponent * -1
+
+            if precision > 38:
+                raise ValueError(
+                    f"Precision of the numeric value is too high. "
+                    f"The maximum precision supported by SQL Server is 38, but got {precision}."
+                )
+
+            # Detect MONEY / SMALLMONEY range
             if SMALLMONEY_MIN  <= param <= SMALLMONEY_MAX:
                 # smallmoney
                 parameters_list[i] = str(param)

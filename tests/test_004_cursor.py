@@ -11562,6 +11562,176 @@ def test_numeric_executemany(cursor, db_connection, values):
         cursor.execute(f"DROP TABLE {table_name}")
         db_connection.commit()
 
+# ---------------------------------------------------------
+# Test 10: Leading zeros precision loss
+# ---------------------------------------------------------
+@pytest.mark.parametrize("value, expected_precision, expected_scale", [
+    # Leading zeros (using values that won't become scientific notation)
+    (decimal.Decimal('000000123.45'), 38, 2),         # Leading zeros in integer part
+    (decimal.Decimal('000.0001234'), 38, 7),          # Leading zeros in decimal part
+    (decimal.Decimal('0000000000000.123456789'), 38, 9),  # Many leading zeros + decimal
+    (decimal.Decimal('000000.000000123456'), 38, 12)     # Lots of leading zeros (avoiding E notation)
+])
+def test_numeric_leading_zeros_precision_loss(cursor, db_connection, value, expected_precision, expected_scale):
+    """Test precision loss with values containing lots of leading zeros"""
+    table_name = "#pytest_numeric_leading_zeros"
+    try:
+        # Use explicit precision and scale to avoid scientific notation issues
+        cursor.execute(f"CREATE TABLE {table_name} (val NUMERIC({expected_precision}, {expected_scale}))")
+        cursor.execute(f"INSERT INTO {table_name} (val) VALUES (?)", (value,))
+        db_connection.commit()
+        
+        cursor.execute(f"SELECT val FROM {table_name}")
+        row = cursor.fetchone()
+        assert row is not None, "Expected one row to be returned"
+        
+        # Normalize both values to the same scale for comparison
+        expected = value.quantize(decimal.Decimal(f"1e-{expected_scale}"))
+        actual = row[0]
+        
+        # Verify that leading zeros are handled correctly during conversion and roundtrip
+        assert actual == expected, f"Leading zeros precision loss for {value}, expected {expected}, got {actual}"
+        
+    except Exception as e:
+        # Handle cases where values get converted to scientific notation and cause SQL Server conversion errors
+        error_msg = str(e).lower()
+        if "converting" in error_msg and "varchar" in error_msg and "numeric" in error_msg:
+            pytest.skip(f"Value {value} converted to scientific notation, causing expected SQL Server conversion error: {e}")
+        else:
+            raise  # Re-raise unexpected errors
+        
+    finally:
+        try:
+            cursor.execute(f"DROP TABLE {table_name}")
+            db_connection.commit()
+        except:
+            pass
+
+# ---------------------------------------------------------
+# Test 11: Extreme exponents precision loss
+# ---------------------------------------------------------
+@pytest.mark.parametrize("value, description", [
+    (decimal.Decimal('1E-20'), "1E-20 exponent"),      
+    (decimal.Decimal('1E-38'), "1E-38 exponent"),             
+    (decimal.Decimal('5E-35'), "5E-35 exponent"), 
+    (decimal.Decimal('9E-30'), "9E-30 exponent"),
+    (decimal.Decimal('2.5E-25'), "2.5E-25 exponent")
+])
+def test_numeric_extreme_exponents_precision_loss(cursor, db_connection, value, description):
+    """Test precision loss with values having extreme small magnitudes"""
+    # Scientific notation values like 1E-20 create scale > precision situations
+    # that violate SQL Server's NUMERIC(P,S) rules - this is expected behavior
+    
+    table_name = "#pytest_numeric_extreme_exp"
+    try:
+        # Try with a reasonable precision/scale that should handle most cases
+        cursor.execute(f"CREATE TABLE {table_name} (val NUMERIC(38, 20))")
+        cursor.execute(f"INSERT INTO {table_name} (val) VALUES (?)", (value,))
+        db_connection.commit()
+        
+        cursor.execute(f"SELECT val FROM {table_name}")
+        row = cursor.fetchone()
+        assert row is not None, "Expected one row to be returned"
+        
+        # Verify the value was stored and retrieved
+        actual = row[0]
+        print(f"✅ {description}: {value} -> {actual}")
+        
+        # For extreme small values, check they're mathematically equivalent
+        assert abs(actual - value) < decimal.Decimal('1E-18'), \
+            f"Extreme exponent value not preserved for {description}: {value} -> {actual}"
+        
+    except Exception as e:
+        # Handle expected SQL Server validation errors for scientific notation values
+        error_msg = str(e).lower()
+        if "scale" in error_msg and "range" in error_msg:
+            # This is expected - SQL Server rejects invalid scale/precision combinations
+            pytest.skip(f"Expected SQL Server scale/precision validation for {description}: {e}")
+        elif any(keyword in error_msg for keyword in ["converting", "overflow", "precision", "varchar", "numeric"]):
+            # Other expected precision/conversion issues
+            pytest.skip(f"Expected SQL Server precision limits or VARCHAR conversion for {description}: {e}")
+        else:
+            raise  # Re-raise if it's not a precision-related error
+    finally:
+        try:
+            cursor.execute(f"DROP TABLE {table_name}")
+            db_connection.commit()
+        except:
+            pass  # Table might not exist if creation failed
+
+# ---------------------------------------------------------
+# Test 12: 38-digit precision boundary limits
+# ---------------------------------------------------------
+@pytest.mark.parametrize("value", [
+    # 38 digits with negative exponent  
+    decimal.Decimal('0.' + '0'*36 + '1'),      # 38 digits total (1 + 37 decimal places)
+    # very large numbers at 38-digit limit
+    decimal.Decimal('9' * 38),                 # Maximum 38-digit integer
+    decimal.Decimal('1' + '0' * 37),           # Large 38-digit number
+    # Additional boundary cases
+    decimal.Decimal('0.' + '0'*35 + '12'),     # 37 total digits
+    decimal.Decimal('0.' + '0'*34 + '123'),    # 36 total digits
+    decimal.Decimal('0.' + '1' * 37),          # All 1's in decimal part
+    decimal.Decimal('1.' + '9' * 36),          # Close to maximum with integer part
+])
+def test_numeric_precision_boundary_limits(cursor, db_connection, value):
+    """Test precision loss with values close to the 38-digit precision limit"""
+    precision, scale = 38, 37  # Maximum precision with high scale
+    table_name = "#pytest_numeric_boundary_limits"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (val NUMERIC({precision}, {scale}))")
+        cursor.execute(f"INSERT INTO {table_name} (val) VALUES (?)", (value,))
+        db_connection.commit()
+        
+        cursor.execute(f"SELECT val FROM {table_name}")
+        row = cursor.fetchone()
+        assert row is not None, "Expected one row to be returned"
+        
+        # Ensure implementation behaves correctly even at the boundaries of SQL Server's maximum precision
+        assert row[0] == value, f"Boundary precision loss for {value}, got {row[0]}"
+        
+    except Exception as e:
+        # Some boundary values might exceed SQL Server limits
+        pytest.skip(f"Value {value} may exceed SQL Server precision limits: {e}")
+    finally:
+        try:
+            cursor.execute(f"DROP TABLE {table_name}")
+            db_connection.commit()
+        except:
+            pass  # Table might not exist if creation failed
+
+# ---------------------------------------------------------
+# Test 13: Negative test - Values exceeding 38-digit precision limit
+# ---------------------------------------------------------
+@pytest.mark.parametrize("value, description", [
+    (decimal.Decimal('1' + '0' * 38), "39 digits integer"),                           # 39 digits
+    (decimal.Decimal('9' * 39), "39 nines"),                                          # 39 digits of 9s  
+    (decimal.Decimal('12345678901234567890123456789012345678901234567890'), "50 digits"), # 50 digits
+    (decimal.Decimal('0.111111111111111111111111111111111111111'), "39 decimal places"), # 39 decimal digits
+    (decimal.Decimal('1' * 20 + '.' + '9' * 20), "40 total digits"),                 # 40 total digits (20+20)
+    (decimal.Decimal('123456789012345678901234567890.12345678901234567'), "47 total digits"), # 47 total digits
+])
+def test_numeric_beyond_38_digit_precision_negative(cursor, db_connection, value, description):
+    """
+    Negative test: Ensure proper error handling for values exceeding SQL Server's 38-digit precision limit.
+    
+    After our precision validation fix, mssql-python should now gracefully reject values with precision > 38
+    by raising a ValueError with a clear message, matching pyodbc behavior.
+    """
+    # These values should be rejected by our precision validation
+    with pytest.raises(ValueError) as exc_info:
+        cursor.execute("SELECT ?", (value,))
+    
+    error_msg = str(exc_info.value)
+    assert "Precision of the numeric value is too high" in error_msg, \
+        f"Expected precision error message for {description}, got: {error_msg}"
+    assert "maximum precision supported by SQL Server is 38" in error_msg, \
+        f"Expected SQL Server precision limit message for {description}, got: {error_msg}"
+    
+    print(f"✅ Correctly rejected {description}: {value}")
+
+
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:

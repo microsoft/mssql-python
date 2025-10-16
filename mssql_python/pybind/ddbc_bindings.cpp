@@ -62,7 +62,13 @@ struct NumericData {
     NumericData() : precision(0), scale(0), sign(0), val(SQL_MAX_NUMERIC_LEN, '\0') {}
 
     NumericData(SQLCHAR precision, SQLSCHAR scale, SQLCHAR sign, const std::string& valueBytes)
-        : precision(precision), scale(scale), sign(sign), val(valueBytes) {}
+        : precision(precision), scale(scale), sign(sign), val(SQL_MAX_NUMERIC_LEN, '\0') {
+        if (valueBytes.size() > SQL_MAX_NUMERIC_LEN) {
+            throw std::runtime_error("NumericData valueBytes size exceeds SQL_MAX_NUMERIC_LEN (16)");
+        }
+        // Copy binary data to buffer, remaining bytes stay zero-padded
+        std::memcpy(&val[0], valueBytes.data(), valueBytes.size());
+    }
 };
 
 // Struct to hold the DateTimeOffset structure
