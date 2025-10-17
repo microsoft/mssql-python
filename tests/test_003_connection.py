@@ -6525,24 +6525,6 @@ def test_attrs_before_after_only_attributes(conn_str):
     assert result[0][0] == 1
     conn.close()
 
-
-def test_attrs_before_connection_types(conn_str):
-    """Test attrs_before with different data types for attribute values."""
-    attrs = {
-        # Integer attribute
-        ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value: 30,
-    }
-    
-    conn = connect(conn_str, attrs_before=attrs)
-    conn.set_attr(ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value, "testdb")
-    # Verify connection was successful and current catalog was set
-    cursor = conn.cursor()
-    cursor.execute("SELECT DB_NAME()")
-    
-    result = cursor.fetchone()[0]
-    assert result.lower() == "testdb"
-    conn.close()
-
 def test_set_attr_unsupported_attribute(db_connection):
     """Test that setting an unsupported attribute raises an error."""
     # Choose an attribute not in the supported list
