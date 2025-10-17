@@ -85,7 +85,18 @@ steps:
         }
         $publishSymbolsBody = $publishSymbols | ConvertTo-Json -Compress
         echo "Publishing symbols request body: $publishSymbolsBody"
-        Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests/$requestName" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $publishSymbolsBody
+        
+        try {
+            $response = Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests/$requestName" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $publishSymbolsBody
+            echo "Response: $($response | ConvertTo-Json)"
+        } catch {
+            echo "##[error]Failed to publish symbols. Status Code: $($_.Exception.Response.StatusCode.value__)"
+            echo "##[error]Error Message: $($_.Exception.Message)"
+            if ($_.ErrorDetails.Message) {
+                echo "##[error]Error Details: $($_.ErrorDetails.Message)"
+            }
+            throw
+        }
 
         echo ">  3.Request to publish symbols succeeded."
 
