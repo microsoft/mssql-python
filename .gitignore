@@ -60,3 +60,6 @@ build/
 # Virtual environments
 *venv*/
 **/*venv*/
+
+# main.py - no need to track this file
+main.py
