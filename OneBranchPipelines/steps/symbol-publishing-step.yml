@@ -38,7 +38,8 @@ steps:
       SymbolsVersion: $(Build.BuildId)
   
   # Publish to Microsoft Symbol Publishing Service (External)
-  # This requires additional variable group with SymbolServer, SymbolTokenUri variables
+  # This step finds the request name created by PublishSymbols@2 task above and publishes to internal/public servers
+  # The PublishSymbols@2 task uploads symbols and creates a request; this step marks it for publishing
   # Project name must be registered with Symbol team via IcM incident
   # Reference: https://www.osgwiki.com/wiki/Symbols_Publishing_Pipeline_to_SymWeb_and_MSDL#Step_3:_Project_Setup
   - task: AzureCLI@2
@@ -47,47 +48,68 @@ steps:
     env:
       SymbolServer: '$(SymbolServer)'
       SymbolTokenUri: '$(SymbolTokenUri)'
-      requestName: '$(System.TeamProject)-$(Build.SourceBranchName)-$(Build.DefinitionName)-$(Build.BuildId)'
     inputs:
       azureSubscription: 'SymbolsPublishing-msodbcsql-mssql-python'
       scriptType: ps
       scriptLocation: inlineScript
       inlineScript: |
-        # Should be true by default for internal server
-        $publishToInternalServer = $true
-        $publishToPublicServer = $true
-
-        echo "Publishing request name: $env:requestName"
-        echo "Publish to internal server: $publishToInternalServer"
-        echo "Publish to public server: $publishToPublicServer"      
-
         $symbolServer = $env:SymbolServer
         $tokenUri = $env:SymbolTokenUri
         $projectName = "mssql-python"
 
         # Get the access token for the symbol publishing service
         $symbolPublishingToken = az account get-access-token --resource $tokenUri --query accessToken -o tsv
-
         echo ">  1.Symbol publishing token acquired."
 
+        # Get the logs from the current pipeline run to find the request name created by PublishSymbols@2
+        echo "Searching for request name created by PublishSymbols@2 task..."
+        $logList = Invoke-RestMethod -Uri "https://dev.azure.com/$(System.TeamProject)/_apis/pipelines/$(System.DefinitionId)/runs/$(Build.BuildId)/logs?api-version=7.1-preview.1" -Method GET -Headers @{ Authorization = "Bearer $(System.AccessToken)" } -ContentType "application/json"
+
+        $requestName = $null
+        $logList.logs | ForEach-Object {
+            $id = $_.id
+            $log = Invoke-RestMethod -Uri "$(System.CollectionUri)$(System.TeamProject)/_apis/build/builds/$(Build.BuildId)/logs/$id" -Method GET -Headers @{ Authorization = "Bearer $(System.AccessToken)" } -ContentType "application/json"
+            
+            echo $log > log.txt
+            # PublishSymbols@2 creates a request with pattern like: Request 'mssql-python/.../...'
+            $request = Select-String -Path log.txt -Pattern "Request '.*'" -ErrorAction SilentlyContinue
+            
+            if ($request -and $request -match "'mssql-python\/.*'") {
+                $requestName = (-Split $Matches[0])[0].Replace("'","")
+                echo "Found request name: $requestName"
+            }
+        }
+
+        if (-not $requestName) {
+            echo "##[error]Could not find request name in build logs. The PublishSymbols@2 task may have failed or not created a request."
+            exit 1
+        }
+
+        echo ">  2.Request name found from PublishSymbols@2 task."
+
+        # Register the request name (if not already registered by PublishSymbols@2)
         echo "Registering the request name ..."
-        $requestName = $env:requestName
         $requestNameRegistration = @{ requestName = $requestName }
         $requestNameRegistrationBody = $requestNameRegistration | ConvertTo-Json -Compress
-        Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $requestNameRegistrationBody
+        try {
+            Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $requestNameRegistrationBody
+            echo ">  3.Registration of request name succeeded."
+        } catch {
+            echo "Registration may have already existed (this is okay): $($_.Exception.Message)"
+        }
 
-        echo ">  2.Registration of request name succeeded."
-
-        echo "Publishing the symbols ..."
+        # Publish the symbols to internal and public servers
+        echo "Publishing the symbols to internal and public servers..."
         $publishSymbols = @{
-            publishToInternalServer = $publishToInternalServer
-            publishToPublicServer = $publishToPublicServer
+            publishToInternalServer = $true
+            publishToPublicServer = $true
         }
         $publishSymbolsBody = $publishSymbols | ConvertTo-Json -Compress
         echo "Publishing symbols request body: $publishSymbolsBody"
         
         try {
             $response = Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests/$requestName" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $publishSymbolsBody
+            echo ">  4.Request to publish symbols succeeded."
             echo "Response: $($response | ConvertTo-Json)"
         } catch {
             echo "##[error]Failed to publish symbols. Status Code: $($_.Exception.Response.StatusCode.value__)"
