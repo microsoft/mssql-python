@@ -21,6 +21,9 @@ parameters:
   - name: buildConfiguration
     type: string
     default: 'Release'
+  - name: publishSymbols
+    type: boolean
+    default: true
 
 stages:
   - stage: ${{ parameters.stageName }}
