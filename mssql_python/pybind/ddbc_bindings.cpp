@@ -3831,6 +3831,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")
         .def("set_autocommit", &ConnectionHandle::setAutocommit)
         .def("get_autocommit", &ConnectionHandle::getAutocommit)
+        .def("set_attr", &ConnectionHandle::setAttr, py::arg("attribute"), py::arg("value"), "Set connection attribute")
         .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle)
         .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"));
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");

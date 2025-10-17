@@ -16,7 +16,7 @@ import codecs
 from typing import Any
 import threading
 from mssql_python.cursor import Cursor
-from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, sanitize_user_input, log
+from mssql_python.helpers import add_driver_to_connection_str, sanitize_connection_string, sanitize_user_input, log, validate_attribute_value
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
 from mssql_python.exceptions import InterfaceError, ProgrammingError
@@ -109,6 +109,7 @@ class Connection:
         setencoding(encoding=None, ctype=None) -> None:
         setdecoding(sqltype, encoding=None, ctype=None) -> None:
         getdecoding(sqltype) -> dict:
+        set_attr(attribute, value) -> None:
     """
 
     # DB-API 2.0 Exception attributes
@@ -129,10 +130,16 @@ class Connection:
         Initialize the connection object with the specified connection string and parameters.
 
         Args:
-            - connection_str (str): The connection string to connect to.
-            - autocommit (bool): If True, causes a commit to be performed after each SQL statement.
+            connection_str (str): The connection string to connect to.
+            autocommit (bool): If True, causes a commit to be performed after each SQL statement.
+            attrs_before (dict, optional): Dictionary of connection attributes to set before 
+                                          connection establishment. Keys are SQL_ATTR_* constants,
+                                          and values are their corresponding settings.
+                                          Use this for attributes that must be set before connecting,
+                                          such as SQL_ATTR_LOGIN_TIMEOUT, SQL_ATTR_ODBC_CURSORS, 
+                                          and SQL_ATTR_PACKET_SIZE.
+            timeout (int): Login timeout in seconds. 0 means no timeout.
             **kwargs: Additional key/value pairs for the connection string.
-            Not including below properties since we are driver doesn't support this:
 
         Returns:
             None
@@ -143,6 +150,12 @@ class Connection:
         This method sets up the initial state for the connection object,
         preparing it for further operations such as connecting to the 
         database, executing queries, etc.
+        
+        Example:
+            >>> # Setting login timeout using attrs_before
+            >>> import mssql_python as ms
+            >>> conn = ms.connect("Server=myserver;Database=mydb", 
+            ...                   attrs_before={ms.SQL_ATTR_LOGIN_TIMEOUT: 30})
         """
         self.connection_str = self._construct_connection_string(
             connection_str, **kwargs
@@ -546,6 +559,71 @@ class Connection:
             )
         
         return self._decoding_settings[sqltype].copy()
+    
+    def set_attr(self, attribute, value):
+        """
+        Set a connection attribute.
+
+        This method sets a connection attribute using SQLSetConnectAttr.
+        It provides pyodbc-compatible functionality for configuring connection
+        behavior such as autocommit mode, transaction isolation level, and
+        connection timeouts.
+
+        Args:
+            attribute (int): The connection attribute to set. Should be one of the
+                           SQL_ATTR_* constants (e.g., SQL_ATTR_AUTOCOMMIT,
+                           SQL_ATTR_TXN_ISOLATION).
+            value: The value to set for the attribute. Can be an integer, string, 
+                   bytes, or bytearray depending on the attribute type.
+
+        Raises:
+            InterfaceError: If the connection is closed or attribute is invalid.
+            ProgrammingError: If the value type or range is invalid.
+            ProgrammingError: If the attribute cannot be set after connection.
+
+        Example:
+            >>> conn.set_attr(SQL_ATTR_TXN_ISOLATION, SQL_TXN_READ_COMMITTED)
+            
+        Note:
+            Some attributes (like SQL_ATTR_LOGIN_TIMEOUT, SQL_ATTR_ODBC_CURSORS, and 
+            SQL_ATTR_PACKET_SIZE) can only be set before connection establishment and
+            must be provided in the attrs_before parameter when creating the connection.
+            Attempting to set these attributes after connection will raise a ProgrammingError.
+        """
+        if self._closed:
+            raise InterfaceError("Cannot set attribute on closed connection", "Connection is closed")
+
+        # Use the integrated validation helper function with connection state
+        is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
+            attribute, value, is_connected=True
+        )
+        
+        if not is_valid:
+            # Use the already sanitized values for logging
+            log('warning', f"Invalid attribute or value: {sanitized_attr}={sanitized_val}, {error_message}")
+            raise ProgrammingError(
+                driver_error=f"Invalid attribute or value: {error_message}",
+                ddbc_error=error_message
+            )
+        
+        # Log with sanitized values
+        log('debug', f"Setting connection attribute: {sanitized_attr}={sanitized_val}")
+
+        try:
+            # Call the underlying C++ method
+            self._conn.set_attr(attribute, value)
+            log('info', f"Connection attribute {sanitized_attr} set successfully")
+
+        except Exception as e:
+            error_msg = f"Failed to set connection attribute {sanitized_attr}: {str(e)}"
+            log('error', error_msg)
+
+            # Determine appropriate exception type based on error content
+            error_str = str(e).lower()
+            if 'invalid' in error_str or 'unsupported' in error_str or 'cast' in error_str:
+                raise InterfaceError(error_msg, str(e)) from e
+            else:
+                raise ProgrammingError(error_msg, str(e)) from e
 
     @property
     def searchescape(self):

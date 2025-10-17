@@ -147,6 +147,28 @@ SQL_CHAR = ConstantsDDBC.SQL_CHAR.value
 SQL_WCHAR = ConstantsDDBC.SQL_WCHAR.value
 SQL_WMETADATA = -99
 
+# Export connection attribute constants for set_attr()
+# Only include driver-level attributes that the SQL Server ODBC driver can handle directly
+
+# Core driver-level attributes
+SQL_ATTR_ACCESS_MODE = ConstantsDDBC.SQL_ATTR_ACCESS_MODE.value
+SQL_ATTR_CONNECTION_TIMEOUT = ConstantsDDBC.SQL_ATTR_CONNECTION_TIMEOUT.value
+SQL_ATTR_CURRENT_CATALOG = ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value
+SQL_ATTR_LOGIN_TIMEOUT = ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value
+SQL_ATTR_PACKET_SIZE = ConstantsDDBC.SQL_ATTR_PACKET_SIZE.value
+SQL_ATTR_TXN_ISOLATION = ConstantsDDBC.SQL_ATTR_TXN_ISOLATION.value
+
+# Transaction Isolation Level Constants
+SQL_TXN_READ_UNCOMMITTED = ConstantsDDBC.SQL_TXN_READ_UNCOMMITTED.value
+SQL_TXN_READ_COMMITTED = ConstantsDDBC.SQL_TXN_READ_COMMITTED.value
+SQL_TXN_REPEATABLE_READ = ConstantsDDBC.SQL_TXN_REPEATABLE_READ.value
+SQL_TXN_SERIALIZABLE = ConstantsDDBC.SQL_TXN_SERIALIZABLE.value
+
+# Access Mode Constants
+SQL_MODE_READ_WRITE = ConstantsDDBC.SQL_MODE_READ_WRITE.value
+SQL_MODE_READ_ONLY = ConstantsDDBC.SQL_MODE_READ_ONLY.value
+
+
 from .pooling import PoolingManager
 def pooling(max_size=100, idle_timeout=600, enabled=True):
 #     """
