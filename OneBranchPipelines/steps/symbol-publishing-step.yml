@@ -54,8 +54,8 @@ steps:
       scriptLocation: inlineScript
       inlineScript: |
         # Should be true by default for internal server
-        $publishToInternalServer = "true"
-        $publishToPublicServer = "true"
+        $publishToInternalServer = $true
+        $publishToPublicServer = $true
 
         echo "Publishing request name: $env:requestName"
         echo "Publish to internal server: $publishToInternalServer"
@@ -72,13 +72,18 @@ steps:
 
         echo "Registering the request name ..."
         $requestName = $env:requestName
-        $requestNameRegistrationBody = "{'requestName': '$requestName'}"
+        $requestNameRegistration = @{ requestName = $requestName }
+        $requestNameRegistrationBody = $requestNameRegistration | ConvertTo-Json -Compress
         Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $requestNameRegistrationBody
 
         echo ">  2.Registration of request name succeeded."
 
         echo "Publishing the symbols ..."
-        $publishSymbolsBody = "{'publishToInternalServer': $publishToInternalServer, 'publishToPublicServer': $publishToPublicServer}"
+        $publishSymbols = @{
+            publishToInternalServer = $publishToInternalServer
+            publishToPublicServer = $publishToPublicServer
+        }
+        $publishSymbolsBody = $publishSymbols | ConvertTo-Json -Compress
         echo "Publishing symbols request body: $publishSymbolsBody"
         Invoke-RestMethod -Method POST -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests/$requestName" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json" -Body $publishSymbolsBody
 
