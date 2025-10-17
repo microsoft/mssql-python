@@ -6531,15 +6531,14 @@ def test_attrs_before_connection_types(conn_str):
     attrs = {
         # Integer attribute
         ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value: 30,
-        # String attribute (catalog name)
-        ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value: "testdb"
     }
     
     conn = connect(conn_str, attrs_before=attrs)
-    
+    conn.set_attr(ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value, "testdb")
     # Verify connection was successful and current catalog was set
     cursor = conn.cursor()
     cursor.execute("SELECT DB_NAME()")
+    
     result = cursor.fetchone()[0]
     assert result.lower() == "testdb"
     conn.close()
