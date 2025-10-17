@@ -21,6 +21,8 @@
 #define SQL_SS_TIMESTAMPOFFSET (-155)
 #define SQL_C_SS_TIMESTAMPOFFSET (0x4001)
 #define MAX_DIGITS_IN_NUMERIC 64
+#define SQL_MAX_NUMERIC_LEN 16
+#define SQL_SS_XML (-152)
 
 #define STRINGIFY_FOR_CASE(x) \
     case x:                   \
@@ -56,12 +58,18 @@ struct NumericData {
     SQLCHAR precision;
     SQLSCHAR scale;
     SQLCHAR sign;  // 1=pos, 0=neg
-    std::uint64_t val; // 123.45 -> 12345
+    std::string val; // 123.45 -> 12345
 
-    NumericData() : precision(0), scale(0), sign(0), val(0) {}
+    NumericData() : precision(0), scale(0), sign(0), val(SQL_MAX_NUMERIC_LEN, '\0') {}
 
-    NumericData(SQLCHAR precision, SQLSCHAR scale, SQLCHAR sign, std::uint64_t value)
-        : precision(precision), scale(scale), sign(sign), val(value) {}
+    NumericData(SQLCHAR precision, SQLSCHAR scale, SQLCHAR sign, const std::string& valueBytes)
+        : precision(precision), scale(scale), sign(sign), val(SQL_MAX_NUMERIC_LEN, '\0') {
+        if (valueBytes.size() > SQL_MAX_NUMERIC_LEN) {
+            throw std::runtime_error("NumericData valueBytes size exceeds SQL_MAX_NUMERIC_LEN (16)");
+        }
+        // Copy binary data to buffer, remaining bytes stay zero-padded
+        std::memcpy(&val[0], valueBytes.data(), valueBytes.size());
+    }
 };
 
 // Struct to hold the DateTimeOffset structure
@@ -790,9 +798,10 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 decimalPtr->sign = decimalParam.sign;
                 // Convert the integer decimalParam.val to char array
                 std::memset(static_cast<void*>(decimalPtr->val), 0, sizeof(decimalPtr->val));
-                std::memcpy(static_cast<void*>(decimalPtr->val),
-			    reinterpret_cast<char*>(&decimalParam.val),
-                            sizeof(decimalParam.val));
+                size_t copyLen = std::min(decimalParam.val.size(), sizeof(decimalPtr->val));
+                if (copyLen > 0) {
+                    std::memcpy(decimalPtr->val, decimalParam.val.data(), copyLen);
+                }
                 dataPtr = static_cast<void*>(decimalPtr);
                 break;
             }
@@ -2333,15 +2342,17 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                             throw std::runtime_error(MakeParamMismatchErrorStr(info.paramCType, paramIndex));
                         }
                         NumericData decimalParam = element.cast<NumericData>();
-                        LOG("Received numeric parameter at [%zu]: precision=%d, scale=%d, sign=%d, val=%lld",
-                            i, decimalParam.precision, decimalParam.scale, decimalParam.sign, decimalParam.val);
-                        numericArray[i].precision = decimalParam.precision;
-                        numericArray[i].scale = decimalParam.scale;
-                        numericArray[i].sign = decimalParam.sign;
-                        std::memset(numericArray[i].val, 0, sizeof(numericArray[i].val));
-                        std::memcpy(numericArray[i].val,
-                                    reinterpret_cast<const char*>(&decimalParam.val),
-                                    std::min(sizeof(decimalParam.val), sizeof(numericArray[i].val)));
+                        LOG("Received numeric parameter at [%zu]: precision=%d, scale=%d, sign=%d, val=%s",
+                            i, decimalParam.precision, decimalParam.scale, decimalParam.sign, decimalParam.val.c_str());
+                        SQL_NUMERIC_STRUCT& target = numericArray[i];
+                        std::memset(&target, 0, sizeof(SQL_NUMERIC_STRUCT));
+                        target.precision = decimalParam.precision;
+                        target.scale = decimalParam.scale;
+                        target.sign = decimalParam.sign;
+                        size_t copyLen = std::min(decimalParam.val.size(), sizeof(target.val));
+                        if (copyLen > 0) {
+                            std::memcpy(target.val, decimalParam.val.data(), copyLen);
+                        }
                         strLenOrIndArray[i] = sizeof(SQL_NUMERIC_STRUCT);
                     }
                     dataPtr = numericArray;
@@ -2796,6 +2807,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         row.append(py::none());
                     }
                 }
+                break;
+            }
+            case SQL_SS_XML:
+            {
+                LOG("Streaming XML for column {}", i);
+                row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false));
                 break;
             }
             case SQL_WCHAR:
@@ -3663,6 +3680,7 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
             case SQL_LONGVARCHAR:
                 rowSize += columnSize;
                 break;
+            case SQL_SS_XML:
             case SQL_WCHAR:
             case SQL_WVARCHAR:
             case SQL_WLONGVARCHAR:
@@ -3767,7 +3785,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || 
              dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
-             dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY) &&
+             dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1); // 1-based
         }
@@ -3889,7 +3907,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows, const std:
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || 
              dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
-             dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY) &&
+             dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1); // 1-based
         }
@@ -4060,7 +4078,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Define numeric data class
     py::class_<NumericData>(m, "NumericData")
         .def(py::init<>())
-        .def(py::init<SQLCHAR, SQLSCHAR, SQLCHAR, std::uint64_t>())
+        .def(py::init<SQLCHAR, SQLSCHAR, SQLCHAR, const std::string&>())
         .def_readwrite("precision", &NumericData::precision)
         .def_readwrite("scale", &NumericData::scale)
         .def_readwrite("sign", &NumericData::sign)

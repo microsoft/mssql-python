@@ -242,7 +242,8 @@ class Cursor:
             the numeric data.
         """
         decimal_as_tuple = param.as_tuple()
-        num_digits = len(decimal_as_tuple.digits)
+        digits_tuple = decimal_as_tuple.digits
+        num_digits = len(digits_tuple)
         exponent = decimal_as_tuple.exponent
 
         # Calculate the SQL precision & scale
@@ -262,12 +263,11 @@ class Cursor:
             precision = exponent * -1
             scale = exponent * -1
 
-        # TODO: Revisit this check, do we want this restriction?
-        if precision > 15:
+        if precision > 38:
             raise ValueError(
                 "Precision of the numeric value is too high - "
                 + str(param)
-                + ". Should be less than or equal to 15"
+                + ". Should be less than or equal to 38"
             )
         Numeric_Data = ddbc_bindings.NumericData
         numeric_data = Numeric_Data()
@@ -276,12 +276,26 @@ class Cursor:
         numeric_data.sign = 1 if decimal_as_tuple.sign == 0 else 0
         # strip decimal point from param & convert the significant digits to integer
         # Ex: 12.34 ---> 1234
-        val = str(param)
-        if "." in val or "-" in val:
-            val = val.replace(".", "")
-            val = val.replace("-", "")
-        val = int(val)
-        numeric_data.val = val
+        int_str = ''.join(str(d) for d in digits_tuple)
+        if exponent > 0:
+            int_str = int_str + ('0' * exponent)
+        elif exponent < 0:
+            if -exponent > num_digits:
+                int_str = ('0' * (-exponent - num_digits)) + int_str
+
+        if int_str == '':
+            int_str = '0'
+
+        # Convert decimal base-10 string to python int, then to 16 little-endian bytes
+        big_int = int(int_str)
+        byte_array = bytearray(16)  # SQL_MAX_NUMERIC_LEN
+        for i in range(16):
+            byte_array[i] = big_int & 0xFF
+            big_int >>= 8
+            if big_int == 0:
+                break
+
+        numeric_data.val = bytes(byte_array)
         return numeric_data
 
     def _map_sql_type(self, param, parameters_list, i, min_val=None, max_val=None):
@@ -354,7 +368,27 @@ class Cursor:
             )
         
         if isinstance(param, decimal.Decimal):
-        # Detect MONEY / SMALLMONEY range
+            # First check precision limit for all decimal values
+            decimal_as_tuple = param.as_tuple()
+            digits_tuple = decimal_as_tuple.digits
+            num_digits = len(digits_tuple)
+            exponent = decimal_as_tuple.exponent
+
+            # Calculate the SQL precision (same logic as _get_numeric_data)
+            if exponent >= 0:
+                precision = num_digits + exponent
+            elif (-1 * exponent) <= num_digits:
+                precision = num_digits
+            else:
+                precision = exponent * -1
+
+            if precision > 38:
+                raise ValueError(
+                    f"Precision of the numeric value is too high. "
+                    f"The maximum precision supported by SQL Server is 38, but got {precision}."
+                )
+
+            # Detect MONEY / SMALLMONEY range
             if SMALLMONEY_MIN  <= param <= SMALLMONEY_MAX:
                 # smallmoney
                 parameters_list[i] = str(param)
