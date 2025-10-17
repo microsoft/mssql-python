@@ -40,7 +40,14 @@ steps:
   # Publish to Microsoft Symbol Publishing Service (External)
   # This step finds the request name created by PublishSymbols@2 task above and publishes to internal/public servers
   # The PublishSymbols@2 task uploads symbols and creates a request; this step marks it for publishing
-  # Project name must be registered with Symbol team via IcM incident
+  # 
+  # PREREQUISITES (Critical for avoiding 403 Forbidden errors):
+  # 1. Project must be registered with Symbol team via IcM incident (ICM 696470276 for mssql-python)
+  # 2. Service principal/identity used by azureSubscription must be added as Reader AND Publisher
+  #    - Symbol team must explicitly grant this identity access to your project
+  #    - 403 errors indicate the identity hasn't been added or wrong identity is being used
+  # 3. Verify identity matches: az account get-access-token will use the identity from azureSubscription
+  # 
   # Reference: https://www.osgwiki.com/wiki/Symbols_Publishing_Pipeline_to_SymWeb_and_MSDL#Step_3:_Project_Setup
   - task: AzureCLI@2
     displayName: 'Publish symbols to Microsoft Symbol Publishing Service'
@@ -58,20 +65,37 @@ steps:
         $projectName = "mssql-python"
 
         # Get the access token for the symbol publishing service
+        # This uses the identity from azureSubscription
+        # CRITICAL: The identity must be registered as Reader AND Publisher for the project
+        # Otherwise you'll get 403 Forbidden errors when calling the Symbol Publishing Service API
         $symbolPublishingToken = az account get-access-token --resource $tokenUri --query accessToken -o tsv
         echo ">  1.Symbol publishing token acquired."
 
-        # Get the logs from the current pipeline run to find the request name created by PublishSymbols@2
+        # CRITICAL: We search build logs to find the auto-generated request name from PublishSymbols@2
+        # Two implementation patterns exist:
+        # 1. JDBC Pattern (used here): PublishSymbols@2 auto-generates request name → search logs → publish
+        # 2. SqlClient Pattern: Pass explicit symbolsArtifactName parameter → use same name → publish
+        # We use JDBC pattern because it's more flexible and doesn't require parameter coordination
+        
+        # KEY LEARNING: Must use $(System.CollectionUri) for correct API URL construction
+        # $(System.CollectionUri) = full org URL like "https://dev.azure.com/SqlClientDrivers/"
+        # $(System.TeamProject) = only project name like "mssql-python"
+        # Previous error: Used "https://dev.azure.com/$(System.TeamProject)" which resolved to
+        # "https://dev.azure.com/mssql-python" (missing organization) → 404 error
         echo "Searching for request name created by PublishSymbols@2 task..."
         $logList = Invoke-RestMethod -Uri "$(System.CollectionUri)$(System.TeamProject)/_apis/build/builds/$(Build.BuildId)/logs?api-version=7.1" -Method GET -Headers @{ Authorization = "Bearer $(System.AccessToken)" } -ContentType "application/json"
 
+        # KEY LEARNING: Build API returns logs in the .value property, not .logs
+        # Previous error: Used $logList.logs → property not found
+        # Azure DevOps Build API schema: { "value": [ { "id": 1, ... }, ... ] }
         $requestName = $null
         $logList.value | ForEach-Object {
             $id = $_.id
             $log = Invoke-RestMethod -Uri "$(System.CollectionUri)$(System.TeamProject)/_apis/build/builds/$(Build.BuildId)/logs/$id" -Method GET -Headers @{ Authorization = "Bearer $(System.AccessToken)" } -ContentType "application/json"
             
             echo $log > log.txt
-            # PublishSymbols@2 creates a request with pattern like: Request 'mssql-python/.../...'
+            # PublishSymbols@2 creates a request with pattern like: Request 'mssql-python/{branch}/{date}.{build}/{buildId}/{guid}'
+            # Example: Request 'mssql-python/official-release/25290.7-release/127537/23bc7689-7bae-4d13-8772-ae70c50b72df'
             $request = Select-String -Path log.txt -Pattern "Request '.*'" -ErrorAction SilentlyContinue
             
             if ($request -and $request -match "'mssql-python\/.*'") {
@@ -87,7 +111,10 @@ steps:
 
         echo ">  2.Request name found from PublishSymbols@2 task."
 
-        # Register the request name (if not already registered by PublishSymbols@2)
+        # Register the request name with Symbol Publishing Service
+        # This is an idempotent operation - if already registered, API returns success
+        # KEY LEARNING: Use ConvertTo-Json for proper JSON formatting (not manual string construction)
+        # This ensures correct boolean values and escaping
         echo "Registering the request name ..."
         $requestNameRegistration = @{ requestName = $requestName }
         $requestNameRegistrationBody = $requestNameRegistration | ConvertTo-Json -Compress
@@ -99,6 +126,10 @@ steps:
         }
 
         # Publish the symbols to internal and public servers
+        # KEY LEARNING: This API call is asynchronous - it submits the request but doesn't wait for completion
+        # We need to poll the status endpoint (below) to confirm when publishing finishes
+        # Status codes: 0=NotRequested, 1=Submitted, 2=Processing, 3=Completed
+        # Result codes: 0=Pending, 1=Succeeded, 2=Failed, 3=Cancelled
         echo "Publishing the symbols to internal and public servers..."
         $publishSymbols = @{
             publishToInternalServer = $true
@@ -123,6 +154,9 @@ steps:
         echo ">  3.Request to publish symbols succeeded."
 
         # Poll for publishing status until complete or timeout
+        # KEY LEARNING: Publishing is asynchronous - need to poll until Status=3 (Completed)
+        # Both internal and public servers must complete before we can confirm success
+        # Timeout after 5 minutes (30 attempts × 10 seconds) as a safety measure
         echo ">  4.Checking the status of the request ..."
         $maxAttempts = 30  # 30 attempts = ~5 minutes with 10 second intervals
         $attemptCount = 0
@@ -136,7 +170,9 @@ steps:
             echo "  Internal Server: Status=$($status.publishToInternalServerStatus), Result=$($status.publishToInternalServerResult)"
             echo "  Public Server: Status=$($status.publishToPublicServerStatus), Result=$($status.publishToPublicServerResult)"
             
-            # Check if both are completed (status 3) or submitted/processing
+            # Wait for both servers to reach Status=3 (Completed)
+            # KEY LEARNING: Empty file arrays (filesBlockedFromPublicServer, filesPublishedAsPrivateSymbolsToPublicServer)
+            # are normal and expected - they populate only when there are blocked/private files
             $internalDone = $status.publishToInternalServerStatus -eq 3
             $publicDone = $status.publishToPublicServerStatus -eq 3
             
@@ -147,7 +183,7 @@ steps:
                 echo "  Internal Result: $($status.publishToInternalServerResult) (1=Success, 2=Failed)"
                 echo "  Public Result: $($status.publishToPublicServerResult) (1=Success, 2=Failed)"
                 
-                # Check for failures
+                # Check for failures and report with detailed messages
                 if ($status.publishToInternalServerResult -eq 2) {
                     echo "##[warning]Internal server publishing failed: $($status.publishToInternalServerFailureMessage)"
                 }
@@ -155,7 +191,7 @@ steps:
                     echo "##[warning]Public server publishing failed: $($status.publishToPublicServerFailureMessage)"
                 }
                 
-                # Output final status
+                # Output final status for debugging
                 echo ""
                 echo "Final Status:"
                 $status | ConvertTo-Json
@@ -171,20 +207,3 @@ steps:
             echo "##[warning]Publishing status check timed out after $maxAttempts attempts. Symbols may still be processing."
             echo "You can check status manually at: https://$symbolServer.trafficmanager.net/projects/$projectName/requests/$requestName"
         }
-        
-        echo ""
-        echo "Use below tables to interpret the values of xxxServerStatus and xxxServerResult fields from the response."
-        
-        echo "PublishingStatus"
-        echo "-----------------"
-        echo "0 NotRequested; The request has not been requested to publish."
-        echo "1 Submitted; The request is submitted to be published"
-        echo "2 Processing; The request is still being processed"
-        echo "3 Completed; The request has been completed processing. It can be failed or successful. Check PublishingResult to get more details"
-        
-        echo "PublishingResult"
-        echo "-----------------"
-        echo "0 Pending; The request has not completed or has not been requested."
-        echo "1 Succeeded; The request has published successfully"
-        echo "2 Failed; The request has failed to publish"
-        echo "3 Cancelled; The request was cancelled"
