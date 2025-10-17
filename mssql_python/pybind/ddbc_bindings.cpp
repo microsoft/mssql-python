@@ -1023,6 +1023,12 @@ SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle)
     : _type(type), _handle(rawHandle) {}
 
 SqlHandle::~SqlHandle() {
+    // In SqlHandle::~SqlHandle() or SqlHandle::free()
+    if (Py_IsInitialized() == 0) {
+        // Python is shutting down - don't call SQLFreeHandle
+        // The OS will clean up when process exits
+        return;
+    }
     if (_handle) {
         free();
     }
