@@ -122,11 +122,57 @@ steps:
 
         echo ">  3.Request to publish symbols succeeded."
 
-        # The following REST calls are used to check publishing status.
+        # Poll for publishing status until complete or timeout
         echo ">  4.Checking the status of the request ..."
+        $maxAttempts = 30  # 30 attempts = ~5 minutes with 10 second intervals
+        $attemptCount = 0
+        $publishingComplete = $false
 
-        Invoke-RestMethod -Method GET -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests/$requestName" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json"
+        while (-not $publishingComplete -and $attemptCount -lt $maxAttempts) {
+            $attemptCount++
+            $status = Invoke-RestMethod -Method GET -Uri "https://$symbolServer.trafficmanager.net/projects/$projectName/requests/$requestName" -Headers @{ Authorization = "Bearer $symbolPublishingToken" } -ContentType "application/json"
+            
+            echo "Attempt $attemptCount/$maxAttempts - Status Check:"
+            echo "  Internal Server: Status=$($status.publishToInternalServerStatus), Result=$($status.publishToInternalServerResult)"
+            echo "  Public Server: Status=$($status.publishToPublicServerStatus), Result=$($status.publishToPublicServerResult)"
+            
+            # Check if both are completed (status 3) or submitted/processing
+            $internalDone = $status.publishToInternalServerStatus -eq 3
+            $publicDone = $status.publishToPublicServerStatus -eq 3
+            
+            if ($internalDone -and $publicDone) {
+                $publishingComplete = $true
+                echo ""
+                echo "Publishing completed!"
+                echo "  Internal Result: $($status.publishToInternalServerResult) (1=Success, 2=Failed)"
+                echo "  Public Result: $($status.publishToPublicServerResult) (1=Success, 2=Failed)"
+                
+                # Check for failures
+                if ($status.publishToInternalServerResult -eq 2) {
+                    echo "##[warning]Internal server publishing failed: $($status.publishToInternalServerFailureMessage)"
+                }
+                if ($status.publishToPublicServerResult -eq 2) {
+                    echo "##[warning]Public server publishing failed: $($status.publishToPublicServerFailureMessage)"
+                }
+                
+                # Output final status
+                echo ""
+                echo "Final Status:"
+                $status | ConvertTo-Json
+            } else {
+                if ($attemptCount -lt $maxAttempts) {
+                    echo "  Still processing... waiting 10 seconds before next check"
+                    Start-Sleep -Seconds 10
+                }
+            }
+        }
         
+        if (-not $publishingComplete) {
+            echo "##[warning]Publishing status check timed out after $maxAttempts attempts. Symbols may still be processing."
+            echo "You can check status manually at: https://$symbolServer.trafficmanager.net/projects/$projectName/requests/$requestName"
+        }
+        
+        echo ""
         echo "Use below tables to interpret the values of xxxServerStatus and xxxServerResult fields from the response."
         
         echo "PublishingStatus"
