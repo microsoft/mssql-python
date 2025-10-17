@@ -63,10 +63,10 @@ steps:
 
         # Get the logs from the current pipeline run to find the request name created by PublishSymbols@2
         echo "Searching for request name created by PublishSymbols@2 task..."
-        $logList = Invoke-RestMethod -Uri "https://dev.azure.com/$(System.TeamProject)/_apis/pipelines/$(System.DefinitionId)/runs/$(Build.BuildId)/logs?api-version=7.1-preview.1" -Method GET -Headers @{ Authorization = "Bearer $(System.AccessToken)" } -ContentType "application/json"
+        $logList = Invoke-RestMethod -Uri "$(System.CollectionUri)$(System.TeamProject)/_apis/build/builds/$(Build.BuildId)/logs?api-version=7.1" -Method GET -Headers @{ Authorization = "Bearer $(System.AccessToken)" } -ContentType "application/json"
 
         $requestName = $null
-        $logList.logs | ForEach-Object {
+        $logList.value | ForEach-Object {
             $id = $_.id
             $log = Invoke-RestMethod -Uri "$(System.CollectionUri)$(System.TeamProject)/_apis/build/builds/$(Build.BuildId)/logs/$id" -Method GET -Headers @{ Authorization = "Bearer $(System.AccessToken)" } -ContentType "application/json"
             
