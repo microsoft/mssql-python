@@ -10,7 +10,7 @@ import logging
 
 # GLOBALS - DB-API 2.0 Required Module Globals
 # https://www.python.org/dev/peps/pep-0249/#module-interface
-apilevel: str  # "2.0" 
+apilevel: str  # "2.0"
 paramstyle: str  # "qmark"
 threadsafety: int  # 1
 
@@ -29,7 +29,9 @@ class Settings:
 def get_settings() -> Settings: ...
 def setDecimalSeparator(separator: str) -> None: ...
 def getDecimalSeparator() -> str: ...
-def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) -> None: ...
+def pooling(
+    max_size: int = 100, idle_timeout: int = 600, enabled: bool = True
+) -> None: ...
 def get_info_constants() -> Dict[str, int]: ...
 
 # Logging Functions
@@ -40,25 +42,30 @@ def get_logger() -> Optional[logging.Logger]: ...
 # https://www.python.org/dev/peps/pep-0249/#type-objects
 class STRING:
     """Type object for string-based database columns (e.g. CHAR, VARCHAR)."""
+
     ...
 
 class BINARY:
     """Type object for binary database columns (e.g. BINARY, VARBINARY)."""
+
     ...
 
 class NUMBER:
     """Type object for numeric database columns (e.g. INT, DECIMAL)."""
+
     ...
 
 class DATETIME:
     """Type object for date/time database columns (e.g. DATE, TIMESTAMP)."""
+
     ...
 
 class ROWID:
     """Type object for row identifier columns."""
+
     ...
 
-# DB-API 2.0 Type Constructors  
+# DB-API 2.0 Type Constructors
 # https://www.python.org/dev/peps/pep-0249/#type-constructors
 def Date(year: int, month: int, day: int) -> datetime.date: ...
 def Time(hour: int, minute: int, second: int) -> datetime.time: ...
@@ -118,16 +125,27 @@ class NotSupportedError(DatabaseError):
 class Row:
     """
     Represents a database result row.
-    
+
     Supports both index-based and name-based column access.
     """
+
     def __init__(
-        self, 
-        cursor: "Cursor", 
-        description: List[Tuple[str, Any, Optional[int], Optional[int], Optional[int], Optional[int], Optional[bool]]], 
-        values: List[Any], 
-        column_map: Optional[Dict[str, int]] = None, 
-        settings_snapshot: Optional[Dict[str, Any]] = None
+        self,
+        cursor: "Cursor",
+        description: List[
+            Tuple[
+                str,
+                Any,
+                Optional[int],
+                Optional[int],
+                Optional[int],
+                Optional[int],
+                Optional[bool],
+            ]
+        ],
+        values: List[Any],
+        column_map: Optional[Dict[str, int]] = None,
+        settings_snapshot: Optional[Dict[str, Any]] = None,
     ) -> None: ...
     def __getitem__(self, index: int) -> Any: ...
     def __getattr__(self, name: str) -> Any: ...
@@ -142,38 +160,52 @@ class Row:
 class Cursor:
     """
     Database cursor for executing SQL operations and fetching results.
-    
+
     This class should not be instantiated directly. Use Connection.cursor() instead.
     """
-    
+
     # DB-API 2.0 Required Attributes
-    description: Optional[List[Tuple[str, Any, Optional[int], Optional[int], Optional[int], Optional[int], Optional[bool]]]]
+    description: Optional[
+        List[
+            Tuple[
+                str,
+                Any,
+                Optional[int],
+                Optional[int],
+                Optional[int],
+                Optional[int],
+                Optional[bool],
+            ]
+        ]
+    ]
     rowcount: int
     arraysize: int
-    
+
     # Extension Attributes
     closed: bool
     messages: List[str]
-    
+
     @property
     def rownumber(self) -> int: ...
-    
-    @property 
+    @property
     def connection(self) -> "Connection": ...
-
     def __init__(self, connection: "Connection", timeout: int = 0) -> None: ...
 
     # DB-API 2.0 Required Methods
-    def callproc(self, procname: str, parameters: Optional[Sequence[Any]] = None) -> Optional[Sequence[Any]]: ...
+    def callproc(
+        self, procname: str, parameters: Optional[Sequence[Any]] = None
+    ) -> Optional[Sequence[Any]]: ...
     def close(self) -> None: ...
     def execute(
-        self, 
-        operation: str, 
+        self,
+        operation: str,
         *parameters: Any,
         use_prepare: bool = True,
         reset_cursor: bool = True,
     ) -> "Cursor": ...
-    def executemany(self, operation: str, seq_of_parameters: List[Sequence[Any]]) -> None: ...
+    def executemany(
+        self, operation: str, seq_of_parameters: List[Sequence[Any]]
+    ) -> None: ...
     def fetchone(self) -> Optional[Row]: ...
     def fetchmany(self, size: Optional[int] = None) -> List[Row]: ...
     def fetchall(self) -> List[Row]: ...
@@ -186,10 +218,10 @@ class Cursor:
 class Connection:
     """
     Database connection object.
-    
+
     This class should not be instantiated directly. Use the connect() function instead.
     """
-    
+
     # DB-API 2.0 Exception Attributes
     Warning: type[Warning]
     Error: type[Error]
@@ -201,21 +233,18 @@ class Connection:
     InternalError: type[InternalError]
     ProgrammingError: type[ProgrammingError]
     NotSupportedError: type[NotSupportedError]
-    
+
     # Connection Properties
     @property
     def timeout(self) -> int: ...
     @timeout.setter
     def timeout(self, value: int) -> None: ...
-    
     @property
     def autocommit(self) -> bool: ...
     @autocommit.setter
     def autocommit(self, value: bool) -> None: ...
-    
     @property
     def searchescape(self) -> str: ...
-
     def __init__(
         self,
         connection_str: str = "",
@@ -230,25 +259,35 @@ class Connection:
     def commit(self) -> None: ...
     def rollback(self) -> None: ...
     def close(self) -> None: ...
-    
+
     # Extension Methods
     def setautocommit(self, value: bool = False) -> None: ...
-    def setencoding(self, encoding: Optional[str] = None, ctype: Optional[int] = None) -> None: ...
+    def setencoding(
+        self, encoding: Optional[str] = None, ctype: Optional[int] = None
+    ) -> None: ...
     def getencoding(self) -> Dict[str, Union[str, int]]: ...
-    def setdecoding(self, sqltype: int, encoding: Optional[str] = None, ctype: Optional[int] = None) -> None: ...
+    def setdecoding(
+        self, sqltype: int, encoding: Optional[str] = None, ctype: Optional[int] = None
+    ) -> None: ...
     def getdecoding(self, sqltype: int) -> Dict[str, Union[str, int]]: ...
-    def set_attr(self, attribute: int, value: Union[int, str, bytes, bytearray]) -> None: ...
-    def add_output_converter(self, sqltype: int, func: Callable[[Any], Any]) -> None: ...
-    def get_output_converter(self, sqltype: Union[int, type]) -> Optional[Callable[[Any], Any]]: ...
+    def set_attr(
+        self, attribute: int, value: Union[int, str, bytes, bytearray]
+    ) -> None: ...
+    def add_output_converter(
+        self, sqltype: int, func: Callable[[Any], Any]
+    ) -> None: ...
+    def get_output_converter(
+        self, sqltype: Union[int, type]
+    ) -> Optional[Callable[[Any], Any]]: ...
     def remove_output_converter(self, sqltype: Union[int, type]) -> None: ...
     def clear_output_converters(self) -> None: ...
     def execute(self, sql: str, *args: Any) -> Cursor: ...
     def batch_execute(
-        self, 
-        statements: List[str], 
-        params: Optional[List[Union[None, Any, Tuple[Any, ...], List[Any]]]] = None, 
-        reuse_cursor: Optional[Cursor] = None, 
-        auto_close: bool = False
+        self,
+        statements: List[str],
+        params: Optional[List[Union[None, Any, Tuple[Any, ...], List[Any]]]] = None,
+        reuse_cursor: Optional[Cursor] = None,
+        auto_close: bool = False,
     ) -> Tuple[List[Union[List[Row], int]], Cursor]: ...
     def getinfo(self, info_type: int) -> Union[str, int, bool, None]: ...
 
@@ -262,7 +301,7 @@ def connect(
     autocommit: bool = False,
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> Connection: ...
 
 # SQL Type Constants
@@ -290,7 +329,7 @@ SQL_TIME: int
 SQL_TIMESTAMP: int
 SQL_WMETADATA: int
 
-# Connection Attribute Constants  
+# Connection Attribute Constants
 SQL_ATTR_ACCESS_MODE: int
 SQL_ATTR_CONNECTION_TIMEOUT: int
 SQL_ATTR_CURRENT_CATALOG: int

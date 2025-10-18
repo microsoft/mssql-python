@@ -245,52 +245,63 @@ def test_decimal_separator_edge_cases():
 
 def test_decimal_separator_whitespace_validation():
     """Test specific validation for whitespace characters"""
-    
+
     # Save original separator for restoration
     original_separator = getDecimalSeparator()
-    
+
     try:
         # Test Line 92: Regular space character should raise ValueError
-        with pytest.raises(ValueError, match="Whitespace characters are not allowed as decimal separators"):
+        with pytest.raises(
+            ValueError,
+            match="Whitespace characters are not allowed as decimal separators",
+        ):
             setDecimalSeparator(" ")
-        
+
         # Test additional whitespace characters that trigger isspace()
         whitespace_chars = [
-            " ",      # Regular space (U+0020)
-            "\u00A0", # Non-breaking space (U+00A0)  
-            "\u2000", # En quad (U+2000)
-            "\u2001", # Em quad (U+2001)
-            "\u2002", # En space (U+2002)
-            "\u2003", # Em space (U+2003)
-            "\u2004", # Three-per-em space (U+2004)
-            "\u2005", # Four-per-em space (U+2005)
-            "\u2006", # Six-per-em space (U+2006)
-            "\u2007", # Figure space (U+2007)
-            "\u2008", # Punctuation space (U+2008)
-            "\u2009", # Thin space (U+2009)
-            "\u200A", # Hair space (U+200A)
-            "\u3000", # Ideographic space (U+3000)
+            " ",  # Regular space (U+0020)
+            "\u00a0",  # Non-breaking space (U+00A0)
+            "\u2000",  # En quad (U+2000)
+            "\u2001",  # Em quad (U+2001)
+            "\u2002",  # En space (U+2002)
+            "\u2003",  # Em space (U+2003)
+            "\u2004",  # Three-per-em space (U+2004)
+            "\u2005",  # Four-per-em space (U+2005)
+            "\u2006",  # Six-per-em space (U+2006)
+            "\u2007",  # Figure space (U+2007)
+            "\u2008",  # Punctuation space (U+2008)
+            "\u2009",  # Thin space (U+2009)
+            "\u200a",  # Hair space (U+200A)
+            "\u3000",  # Ideographic space (U+3000)
         ]
-        
+
         for ws_char in whitespace_chars:
-            with pytest.raises(ValueError, match="Whitespace characters are not allowed as decimal separators"):
+            with pytest.raises(
+                ValueError,
+                match="Whitespace characters are not allowed as decimal separators",
+            ):
                 setDecimalSeparator(ws_char)
-        
+
         # Test that control characters trigger the whitespace error (line 92)
         # instead of the control character error (lines 95-98)
         control_chars = ["\t", "\n", "\r", "\v", "\f"]
-        
+
         for ctrl_char in control_chars:
             # These should trigger the whitespace error, NOT the control character error
-            with pytest.raises(ValueError, match="Whitespace characters are not allowed as decimal separators"):
+            with pytest.raises(
+                ValueError,
+                match="Whitespace characters are not allowed as decimal separators",
+            ):
                 setDecimalSeparator(ctrl_char)
-                
+
         # Test that valid characters still work after validation tests
         valid_chars = [".", ",", ";", ":", "-", "_"]
         for valid_char in valid_chars:
             setDecimalSeparator(valid_char)
-            assert getDecimalSeparator() == valid_char, f"Failed to set valid character '{valid_char}'"
-            
+            assert (
+                getDecimalSeparator() == valid_char
+            ), f"Failed to set valid character '{valid_char}'"
+
     finally:
         # Restore original setting
         setDecimalSeparator(original_separator)
@@ -298,66 +309,82 @@ def test_decimal_separator_whitespace_validation():
 
 def test_unreachable_control_character_validation():
     """
-    The control characters \\t, \\n, \\r, \\v, \\f are all caught by the isspace() 
+    The control characters \\t, \\n, \\r, \\v, \\f are all caught by the isspace()
     check before reaching the specific control character validation.
-    
+
     This test documents the unreachable code issue for potential refactoring.
     """
-    
+
     # Demonstrate that all control characters from lines 95-98 return True for isspace()
     control_chars = ["\t", "\n", "\r", "\v", "\f"]
-    
+
     for ctrl_char in control_chars:
         # All these should return True, proving they're caught by isspace() first
-        assert ctrl_char.isspace(), f"Control character {repr(ctrl_char)} should return True for isspace()"
-        
+        assert (
+            ctrl_char.isspace()
+        ), f"Control character {repr(ctrl_char)} should return True for isspace()"
+
         # Therefore they trigger the whitespace error, not the control character error
-        with pytest.raises(ValueError, match="Whitespace characters are not allowed as decimal separators"):
+        with pytest.raises(
+            ValueError,
+            match="Whitespace characters are not allowed as decimal separators",
+        ):
             setDecimalSeparator(ctrl_char)
+
 
 def test_decimal_separator_comprehensive_edge_cases():
     """
     Additional comprehensive test to ensure maximum coverage of setDecimalSeparator validation.
     This test covers all reachable validation paths in lines 70-100 of __init__.py
     """
-    
+
     original_separator = getDecimalSeparator()
-    
+
     try:
         # Test type validation (around line 72)
         with pytest.raises(ValueError, match="Decimal separator must be a string"):
             setDecimalSeparator(123)  # integer
-            
+
         with pytest.raises(ValueError, match="Decimal separator must be a string"):
             setDecimalSeparator(None)  # None
-            
+
         with pytest.raises(ValueError, match="Decimal separator must be a string"):
             setDecimalSeparator([","])  # list
-            
+
         # Test length validation - empty string (around line 77)
         with pytest.raises(ValueError, match="Decimal separator cannot be empty"):
             setDecimalSeparator("")
-            
+
         # Test length validation - multiple characters (around line 80)
-        with pytest.raises(ValueError, match="Decimal separator must be a single character"):
-            setDecimalSeparator("..") 
-            
-        with pytest.raises(ValueError, match="Decimal separator must be a single character"):
+        with pytest.raises(
+            ValueError, match="Decimal separator must be a single character"
+        ):
+            setDecimalSeparator("..")
+
+        with pytest.raises(
+            ValueError, match="Decimal separator must be a single character"
+        ):
             setDecimalSeparator("abc")
-            
+
         # Test whitespace validation (line 92) - THIS IS THE MAIN TARGET
-        with pytest.raises(ValueError, match="Whitespace characters are not allowed as decimal separators"):
+        with pytest.raises(
+            ValueError,
+            match="Whitespace characters are not allowed as decimal separators",
+        ):
             setDecimalSeparator(" ")  # regular space
-            
-        with pytest.raises(ValueError, match="Whitespace characters are not allowed as decimal separators"):
+
+        with pytest.raises(
+            ValueError,
+            match="Whitespace characters are not allowed as decimal separators",
+        ):
             setDecimalSeparator("\t")  # tab (also isspace())
-            
+
         # Test successful cases - reach line 100+ (set in Python side settings)
         valid_separators = [".", ",", ";", ":", "-", "_", "@", "#", "$", "%", "&", "*"]
         for sep in valid_separators:
             setDecimalSeparator(sep)
             assert getDecimalSeparator() == sep, f"Failed to set separator to {sep}"
-            
+
     finally:
         setDecimalSeparator(original_separator)
 

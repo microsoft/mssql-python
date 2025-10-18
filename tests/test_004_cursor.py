@@ -14235,20 +14235,20 @@ def test_xml_malformed_input(cursor, db_connection):
         db_connection.commit()
 
 
-
 # ==================== CODE COVERAGE TEST CASES ====================
+
 
 def test_decimal_special_values_coverage(cursor):
     """Test decimal processing with special values like NaN and Infinity (Lines 213-221)."""
     from decimal import Decimal
-    
+
     # Test special decimal values that have string exponents
     test_values = [
-        Decimal('NaN'),         # Should have str exponent 'n'
-        Decimal('Infinity'),    # Should have str exponent 'F' 
-        Decimal('-Infinity'),   # Should have str exponent 'F'
+        Decimal("NaN"),  # Should have str exponent 'n'
+        Decimal("Infinity"),  # Should have str exponent 'F'
+        Decimal("-Infinity"),  # Should have str exponent 'F'
     ]
-    
+
     for special_val in test_values:
         try:
             # This should trigger the special value handling path (lines 217-218)
@@ -14257,9 +14257,11 @@ def test_decimal_special_values_coverage(cursor):
         except (ValueError, TypeError) as e:
             # Expected - either ValueError for unsupported values or TypeError due to str/int comparison
             # This exercises the special value code path (lines 217-218) even though it errors later
-            assert ("not supported" in str(e) or 
-                   "Precision of the numeric value is too high" in str(e) or
-                   "'>' not supported between instances of 'str' and 'int'" in str(e))
+            assert (
+                "not supported" in str(e)
+                or "Precision of the numeric value is too high" in str(e)
+                or "'>' not supported between instances of 'str' and 'int'" in str(e)
+            )
         except Exception as e:
             # Other exceptions are also acceptable as we're testing error paths
             pass
@@ -14268,11 +14270,11 @@ def test_decimal_special_values_coverage(cursor):
 def test_decimal_negative_exponent_edge_cases(cursor):
     """Test decimal processing with negative exponents (Lines 230-239)."""
     from decimal import Decimal
-    
+
     # Test case where digits < abs(exponent) -> triggers lines 234-235
     # Example: 0.0001 -> digits=(1,), exponent=-4 -> precision=4, scale=4
-    test_decimal = Decimal('0.0001')  # digits=(1,), exponent=-4
-    
+    test_decimal = Decimal("0.0001")  # digits=(1,), exponent=-4
+
     try:
         cursor._get_numeric_data(test_decimal)
     except ValueError as e:
@@ -14283,38 +14285,34 @@ def test_decimal_negative_exponent_edge_cases(cursor):
 def test_decimal_string_conversion_edge_cases(cursor):
     """Test decimal string conversion edge cases (Lines 248-262)."""
     from decimal import Decimal
-    
+
     # Test case 1: positive exponent (line 252)
-    decimal_with_pos_exp = Decimal('123E2')  # Should add zeros
+    decimal_with_pos_exp = Decimal("123E2")  # Should add zeros
     try:
         cursor._get_numeric_data(decimal_with_pos_exp)
     except ValueError:
         pass  # Expected for large values
-    
-    # Test case 2: negative exponent with padding needed (line 255)  
-    decimal_with_neg_exp = Decimal('1E-10')  # Should need zero padding
+
+    # Test case 2: negative exponent with padding needed (line 255)
+    decimal_with_neg_exp = Decimal("1E-10")  # Should need zero padding
     try:
         cursor._get_numeric_data(decimal_with_neg_exp)
     except ValueError:
         pass
-    
+
     # Test case 3: empty string case (line 258)
     # This is harder to trigger directly, but the logic handles it
-    zero_decimal = Decimal('0')
+    zero_decimal = Decimal("0")
     cursor._get_numeric_data(zero_decimal)
 
 
 def test_decimal_precision_special_values_executemany(cursor):
     """Test _get_decimal_precision with special values (Lines 354-362)."""
     from decimal import Decimal
-    
+
     # Test special values in executemany context
-    test_values = [
-        Decimal('NaN'),
-        Decimal('Infinity'), 
-        Decimal('-Infinity')
-    ]
-    
+    test_values = [Decimal("NaN"), Decimal("Infinity"), Decimal("-Infinity")]
+
     for special_val in test_values:
         try:
             # This should trigger the special value handling (line 358)
@@ -14327,19 +14325,19 @@ def test_decimal_precision_special_values_executemany(cursor):
 
 def test_cursor_close_connection_tracking_error(db_connection):
     """Test cursor close with connection tracking error (Lines 578-586)."""
-    
+
     cursor = db_connection.cursor()
-    
+
     # Corrupt the connection's cursor tracking to cause error
     original_cursors = db_connection._cursors
-    
+
     # Replace with something that will cause an error on discard
     class ErrorSet:
         def discard(self, item):
             raise RuntimeError("Simulated cursor tracking error")
-    
+
     db_connection._cursors = ErrorSet()
-    
+
     try:
         # This should trigger the exception handling in close() (line 582)
         cursor.close()
@@ -14353,64 +14351,68 @@ def test_cursor_close_connection_tracking_error(db_connection):
 def test_setinputsizes_validation_errors(cursor):
     """Test setinputsizes parameter validation (Lines 645-669)."""
     from mssql_python.constants import ConstantsDDBC
-    
+
     # Test invalid column_size (lines 649-651)
     with pytest.raises(ValueError, match="Invalid column size"):
         cursor.setinputsizes([(ConstantsDDBC.SQL_VARCHAR.value, -1, 0)])
-    
+
     with pytest.raises(ValueError, match="Invalid column size"):
         cursor.setinputsizes([(ConstantsDDBC.SQL_VARCHAR.value, "invalid", 0)])
-    
+
     # Test invalid decimal_digits (lines 654-656)
     with pytest.raises(ValueError, match="Invalid decimal digits"):
         cursor.setinputsizes([(ConstantsDDBC.SQL_DECIMAL.value, 10, -1)])
-    
+
     with pytest.raises(ValueError, match="Invalid decimal digits"):
         cursor.setinputsizes([(ConstantsDDBC.SQL_DECIMAL.value, 10, "invalid")])
-    
+
     # Test invalid SQL type (lines 665-667)
     with pytest.raises(ValueError, match="Invalid SQL type"):
         cursor.setinputsizes([99999])  # Invalid SQL type constant
-    
+
     with pytest.raises(ValueError, match="Invalid SQL type"):
         cursor.setinputsizes(["invalid"])  # Non-integer SQL type
 
 
 def test_executemany_decimal_column_size_adjustment(cursor, db_connection):
     """Test executemany decimal column size adjustment (Lines 739-747)."""
-    
+
     try:
         # Create table with decimal column
-        cursor.execute("CREATE TABLE #test_decimal_adjust (id INT, decimal_col DECIMAL(38,10))")
-        
+        cursor.execute(
+            "CREATE TABLE #test_decimal_adjust (id INT, decimal_col DECIMAL(38,10))"
+        )
+
         # Test with decimal parameters that should trigger column size adjustment
         params = [
-            (1, decimal.Decimal('123.456')),
-            (2, decimal.Decimal('999.999')), 
+            (1, decimal.Decimal("123.456")),
+            (2, decimal.Decimal("999.999")),
         ]
-        
+
         # This should trigger the decimal column size adjustment logic (lines 743-746)
-        cursor.executemany("INSERT INTO #test_decimal_adjust (id, decimal_col) VALUES (?, ?)", params)
-        
+        cursor.executemany(
+            "INSERT INTO #test_decimal_adjust (id, decimal_col) VALUES (?, ?)", params
+        )
+
         # Verify data was inserted correctly
         cursor.execute("SELECT COUNT(*) FROM #test_decimal_adjust")
         count = cursor.fetchone()[0]
         assert count == 2
-        
+
     finally:
         cursor.execute("DROP TABLE IF EXISTS #test_decimal_adjust")
 
 
 def test_scroll_no_result_set_error(cursor):
     """Test scroll without active result set (Lines 906-914, 2207-2215)."""
-    
+
     # Test decrement rownumber without result set (lines 910-913)
     cursor._rownumber = 5
     cursor._has_result_set = False
-    
+
     with pytest.raises(mssql_python.InterfaceError, match="Cannot decrement rownumber"):
         cursor._decrement_rownumber()
-    
+
     # Test scroll without result set (lines 2211-2214)
     with pytest.raises(mssql_python.ProgrammingError, match="No active result set"):
         cursor.scroll(1)
@@ -14418,18 +14420,18 @@ def test_scroll_no_result_set_error(cursor):
 
 def test_timeout_setting_and_logging(cursor):
     """Test timeout setting with logging (Lines 1006-1014, 1678-1688)."""
-    
+
     # Test timeout setting in execute (lines 1010, 1682-1684)
     cursor.timeout = 30
-    
+
     try:
         # This should trigger timeout setting and logging
         cursor.execute("SELECT 1")
         cursor.fetchall()
-        
+
         # Test with executemany as well
         cursor.executemany("SELECT ?", [(1,), (2,)])
-        
+
     except Exception:
         # Timeout setting might fail in some environments, which is okay
         # The important part is that we exercise the code path
@@ -14438,30 +14440,36 @@ def test_timeout_setting_and_logging(cursor):
 
 def test_column_description_validation(cursor):
     """Test column description validation (Lines 1116-1124)."""
-    
+
     # Execute query to get column descriptions
-    cursor.execute("SELECT CAST('test' AS NVARCHAR(50)) as col1, CAST(123 as INT) as col2")
-    
+    cursor.execute(
+        "SELECT CAST('test' AS NVARCHAR(50)) as col1, CAST(123 as INT) as col2"
+    )
+
     # The description should be populated and validated
     assert cursor.description is not None
     assert len(cursor.description) == 2
-    
+
     # Each description should have 7 elements per PEP-249
     for desc in cursor.description:
-        assert len(desc) == 7, f"Column description should have 7 elements, got {len(desc)}"
+        assert (
+            len(desc) == 7
+        ), f"Column description should have 7 elements, got {len(desc)}"
 
 
 def test_column_metadata_error_handling(cursor):
     """Test column metadata retrieval error handling (Lines 1156-1167)."""
-    
+
     # Execute a complex query that might stress metadata retrieval
-    cursor.execute("""
+    cursor.execute(
+        """
         SELECT 
             CAST(1 as INT) as int_col,
             CAST('test' as NVARCHAR(100)) as nvarchar_col,
             CAST(NEWID() as UNIQUEIDENTIFIER) as guid_col
-    """)
-    
+    """
+    )
+
     # This should exercise the metadata retrieval code paths
     # If there are any errors, they should be logged but not crash
     description = cursor.description
@@ -14471,49 +14479,58 @@ def test_column_metadata_error_handling(cursor):
 
 def test_fetchone_column_mapping_coverage(cursor):
     """Test fetchone with specialized column mapping (Lines 1185-1215)."""
-    
+
     # Execute query that should trigger specialized mapping
     cursor.execute("SELECT CAST(NEWID() as UNIQUEIDENTIFIER) as guid_col")
-    
+
     # This should trigger the UUID column mapping logic and fetchone specialization
     row = cursor.fetchone()
     assert row is not None
-    
+
     # Test fetchmany and fetchall as well
-    cursor.execute("SELECT CAST(NEWID() as UNIQUEIDENTIFIER) as guid_col UNION SELECT CAST(NEWID() as UNIQUEIDENTIFIER)")
-    
+    cursor.execute(
+        "SELECT CAST(NEWID() as UNIQUEIDENTIFIER) as guid_col UNION SELECT CAST(NEWID() as UNIQUEIDENTIFIER)"
+    )
+
     # Test fetchmany (lines 1194-1200)
     rows = cursor.fetchmany(1)
     assert len(rows) == 1
-    
+
     # Test fetchall (lines 1202-1208)
-    cursor.execute("SELECT CAST(NEWID() as UNIQUEIDENTIFIER) as guid_col UNION SELECT CAST(NEWID() as UNIQUEIDENTIFIER)")
+    cursor.execute(
+        "SELECT CAST(NEWID() as UNIQUEIDENTIFIER) as guid_col UNION SELECT CAST(NEWID() as UNIQUEIDENTIFIER)"
+    )
     rows = cursor.fetchall()
     assert len(rows) == 2
 
 
 def test_foreignkeys_parameter_validation(cursor):
     """Test foreignkeys parameter validation (Lines 1365-1373)."""
-    
+
     # Test with both table and foreignTable as None (should raise error)
-    with pytest.raises(mssql_python.ProgrammingError, match="Either table or foreignTable must be specified"):
+    with pytest.raises(
+        mssql_python.ProgrammingError,
+        match="Either table or foreignTable must be specified",
+    ):
         cursor.foreignKeys(table=None, foreignTable=None)
 
 
 def test_scroll_absolute_end_of_result_set(cursor):
     """Test scroll absolute to end of result set (Lines 2269-2277)."""
-    
+
     # Create a small result set
     cursor.execute("SELECT 1 UNION SELECT 2 UNION SELECT 3")
-    
+
     # Try to scroll to a position beyond the result set
-    with pytest.raises(IndexError, match="Cannot scroll to position.*end of result set reached"):
+    with pytest.raises(
+        IndexError, match="Cannot scroll to position.*end of result set reached"
+    ):
         cursor.scroll(100, mode="absolute")
 
 
 def test_tables_error_handling(cursor):
     """Test tables method error handling (Lines 2396-2404)."""
-    
+
     # Call tables method - any errors should be logged and re-raised
     try:
         cursor.tables(catalog="invalid_catalog_that_does_not_exist_12345")
@@ -14525,15 +14542,17 @@ def test_tables_error_handling(cursor):
 
 def test_callproc_not_supported_error(cursor):
     """Test callproc NotSupportedError (Lines 2413-2421)."""
-    
+
     # This should always raise NotSupportedError (lines 2417-2420)
-    with pytest.raises(mssql_python.NotSupportedError, match="callproc.*is not yet implemented"):
+    with pytest.raises(
+        mssql_python.NotSupportedError, match="callproc.*is not yet implemented"
+    ):
         cursor.callproc("test_proc")
 
 
 def test_setoutputsize_no_op(cursor):
     """Test setoutputsize no-op behavior (Lines 2433-2438)."""
-    
+
     # This should be a no-op (line 2437)
     cursor.setoutputsize(1000)  # Should not raise any errors
     cursor.setoutputsize(1000, 1)  # With column parameter
@@ -14541,80 +14560,86 @@ def test_setoutputsize_no_op(cursor):
 
 def test_cursor_del_cleanup_basic(db_connection):
     """Test cursor cleanup and __del__ method existence (Lines 2186-2194)."""
-    
+
     # Test that cursor has __del__ method and basic cleanup
     cursor = db_connection.cursor()
-    
+
     # Test that __del__ method exists
-    assert hasattr(cursor, '__del__'), "Cursor should have __del__ method"
-    
+    assert hasattr(cursor, "__del__"), "Cursor should have __del__ method"
+
     # Close cursor normally
     cursor.close()
     assert cursor.closed, "Cursor should be closed"
-    
+
     # Force garbage collection to potentially trigger __del__ cleanup paths
     import gc
+
     gc.collect()
 
 
 def test_scroll_invalid_parameters(cursor):
     """Test scroll with invalid parameters."""
-    
+
     cursor.execute("SELECT 1")
-    
+
     # Test invalid mode
     with pytest.raises(mssql_python.ProgrammingError, match="Invalid scroll mode"):
         cursor.scroll(1, mode="invalid")
-    
-    # Test non-integer value  
+
+    # Test non-integer value
     with pytest.raises(mssql_python.ProgrammingError, match="value must be an integer"):
         cursor.scroll("invalid")
 
+
 def test_row_uuid_processing_with_braces(cursor, db_connection):
     """Test Row UUID processing with braced GUID strings (Lines 95-103)."""
-    
+
     try:
         # Drop table if exists
         drop_table_if_exists(cursor, "#pytest_uuid_braces")
-        
+
         # Create table with UNIQUEIDENTIFIER column
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_uuid_braces (
                 id INT IDENTITY(1,1),
                 guid_col UNIQUEIDENTIFIER
             )
-        """)
-        
+        """
+        )
+
         # Insert a GUID with braces (this is how SQL Server often returns them)
         test_guid = "12345678-1234-5678-9ABC-123456789ABC"
         cursor.execute(
-            "INSERT INTO #pytest_uuid_braces (guid_col) VALUES (?)", 
-            [test_guid]
+            "INSERT INTO #pytest_uuid_braces (guid_col) VALUES (?)", [test_guid]
         )
         db_connection.commit()
-        
+
         # Configure native_uuid=True to trigger UUID processing
         original_setting = None
-        if hasattr(cursor.connection, '_settings') and 'native_uuid' in cursor.connection._settings:
-            original_setting = cursor.connection._settings['native_uuid']
-            cursor.connection._settings['native_uuid'] = True
-        
+        if (
+            hasattr(cursor.connection, "_settings")
+            and "native_uuid" in cursor.connection._settings
+        ):
+            original_setting = cursor.connection._settings["native_uuid"]
+            cursor.connection._settings["native_uuid"] = True
+
         # Fetch the data - this should trigger lines 95-103 in row.py
         cursor.execute("SELECT guid_col FROM #pytest_uuid_braces")
         row = cursor.fetchone()
-        
+
         # The Row class should process the GUID and convert it to UUID object
         # Line 99: clean_value = value.strip("{}")
         # Line 100: processed_values[i] = uuid.UUID(clean_value)
         assert row is not None, "Should return a row"
-        
+
         # The GUID should be processed correctly regardless of brace format
         guid_value = row[0]
-        
+
         # Restore original setting
-        if original_setting is not None and hasattr(cursor.connection, '_settings'):
-            cursor.connection._settings['native_uuid'] = original_setting
-            
+        if original_setting is not None and hasattr(cursor.connection, "_settings"):
+            cursor.connection._settings["native_uuid"] = original_setting
+
     except Exception as e:
         pytest.fail(f"UUID processing with braces test failed: {e}")
     finally:
@@ -14624,50 +14649,55 @@ def test_row_uuid_processing_with_braces(cursor, db_connection):
 
 def test_row_uuid_processing_sql_guid_type(cursor, db_connection):
     """Test Row UUID processing with SQL_GUID type detection (Lines 111-119)."""
-    
+
     try:
         # Drop table if exists
         drop_table_if_exists(cursor, "#pytest_sql_guid_type")
-        
+
         # Create table with UNIQUEIDENTIFIER column
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_sql_guid_type (
                 id INT,
                 guid_col UNIQUEIDENTIFIER
             )
-        """)
-        
+        """
+        )
+
         # Insert test data
         test_guid = "ABCDEF12-3456-7890-ABCD-1234567890AB"
         cursor.execute(
-            "INSERT INTO #pytest_sql_guid_type (id, guid_col) VALUES (?, ?)", 
-            [1, test_guid]
+            "INSERT INTO #pytest_sql_guid_type (id, guid_col) VALUES (?, ?)",
+            [1, test_guid],
         )
         db_connection.commit()
-        
+
         # Configure native_uuid=True to trigger UUID processing
         original_setting = None
-        if hasattr(cursor.connection, '_settings') and 'native_uuid' in cursor.connection._settings:
-            original_setting = cursor.connection._settings['native_uuid']
-            cursor.connection._settings['native_uuid'] = True
-        
+        if (
+            hasattr(cursor.connection, "_settings")
+            and "native_uuid" in cursor.connection._settings
+        ):
+            original_setting = cursor.connection._settings["native_uuid"]
+            cursor.connection._settings["native_uuid"] = True
+
         # Fetch the data - this should trigger lines 111-119 in row.py
         cursor.execute("SELECT id, guid_col FROM #pytest_sql_guid_type")
         row = cursor.fetchone()
-        
+
         # Line 111: sql_type = description[i][1]
-        # Line 112: if sql_type == -11:  # SQL_GUID  
+        # Line 112: if sql_type == -11:  # SQL_GUID
         # Line 115: processed_values[i] = uuid.UUID(value.strip("{}"))
         assert row is not None, "Should return a row"
         assert row[0] == 1, "ID should be 1"
-        
+
         # The GUID column should be processed
         guid_value = row[1]
-        
+
         # Restore original setting
-        if original_setting is not None and hasattr(cursor.connection, '_settings'):
-            cursor.connection._settings['native_uuid'] = original_setting
-            
+        if original_setting is not None and hasattr(cursor.connection, "_settings"):
+            cursor.connection._settings["native_uuid"] = original_setting
+
     except Exception as e:
         pytest.fail(f"UUID processing SQL_GUID type test failed: {e}")
     finally:
@@ -14677,62 +14707,79 @@ def test_row_uuid_processing_sql_guid_type(cursor, db_connection):
 
 def test_row_uuid_processing_exception_handling(cursor, db_connection):
     """Test Row UUID processing exception handling (Lines 101-102, 116-117)."""
-    
+
     try:
         # Create a table with invalid GUID data that will trigger exception handling
         drop_table_if_exists(cursor, "#pytest_uuid_exception")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_uuid_exception (
                 id INT,
                 text_col VARCHAR(50)  -- Regular text column that we'll treat as GUID
             )
-        """)
-        
+        """
+        )
+
         # Insert invalid GUID string
-        cursor.execute("INSERT INTO #pytest_uuid_exception (id, text_col) VALUES (?, ?)", 
-                      [1, "invalid-guid-string-not-a-uuid"])
+        cursor.execute(
+            "INSERT INTO #pytest_uuid_exception (id, text_col) VALUES (?, ?)",
+            [1, "invalid-guid-string-not-a-uuid"],
+        )
         db_connection.commit()
-        
+
         # Create a custom Row class to test the UUID exception handling
         from mssql_python.row import Row
-        
+
         # Execute query and get cursor results
         cursor.execute("SELECT id, text_col FROM #pytest_uuid_exception")
-        
-        # Get the raw results from the cursor 
+
+        # Get the raw results from the cursor
         results = cursor.fetchall()
         row_data = results[0]  # Get first row data
-        
+
         # Get the description from cursor
         description = cursor.description
-        
+
         # Modify description to make the text column look like SQL_GUID (-11)
         # This will trigger UUID processing on an invalid GUID string
         modified_description = [
             description[0],  # Keep ID column as-is
-            ("text_col", -11, None, None, None, None, None),  # Make it look like SQL_GUID
+            (
+                "text_col",
+                -11,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),  # Make it look like SQL_GUID
         ]
-        
+
         # Create Row instance with native_uuid=True and modified description
         original_setting = None
-        if hasattr(cursor.connection, '_settings') and 'native_uuid' in cursor.connection._settings:
-            original_setting = cursor.connection._settings['native_uuid']
-            cursor.connection._settings['native_uuid'] = True
-        
+        if (
+            hasattr(cursor.connection, "_settings")
+            and "native_uuid" in cursor.connection._settings
+        ):
+            original_setting = cursor.connection._settings["native_uuid"]
+            cursor.connection._settings["native_uuid"] = True
+
         # Create Row directly with the data and modified description
         # This should trigger exception handling in lines 101-102 and 116-117
         row = Row(cursor, modified_description, list(row_data))
-        
+
         # The invalid GUID should be kept as original value due to exception handling
         # Lines 101-102: except (ValueError, AttributeError): pass  # Keep original if conversion fails
         # Lines 116-117: except (ValueError, AttributeError): pass
         assert row[0] == 1, "ID should remain unchanged"
-        assert row[1] == "invalid-guid-string-not-a-uuid", "Invalid GUID should remain as original string"
-        
+        assert (
+            row[1] == "invalid-guid-string-not-a-uuid"
+        ), "Invalid GUID should remain as original string"
+
         # Restore original setting
-        if original_setting is not None and hasattr(cursor.connection, '_settings'):
-            cursor.connection._settings['native_uuid'] = original_setting
-        
+        if original_setting is not None and hasattr(cursor.connection, "_settings"):
+            cursor.connection._settings["native_uuid"] = original_setting
+
     except Exception as e:
         pytest.fail(f"UUID processing exception handling test failed: {e}")
     finally:
@@ -14742,21 +14789,25 @@ def test_row_uuid_processing_exception_handling(cursor, db_connection):
 
 def test_row_output_converter_overflow_error(cursor, db_connection):
     """Test Row output converter OverflowError handling (Lines 186-195)."""
-    
+
     try:
         # Create a table with integer column
         drop_table_if_exists(cursor, "#pytest_overflow_test")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_overflow_test (
                 id INT,
                 small_int TINYINT  -- TINYINT can only hold 0-255
             )
-        """)
-        
+        """
+        )
+
         # Insert a valid value first
-        cursor.execute("INSERT INTO #pytest_overflow_test (id, small_int) VALUES (?, ?)", [1, 100])
+        cursor.execute(
+            "INSERT INTO #pytest_overflow_test (id, small_int) VALUES (?, ?)", [1, 100]
+        )
         db_connection.commit()
-        
+
         # Create a custom output converter that will cause OverflowError
         def problematic_converter(value):
             if isinstance(value, int) and value == 100:
@@ -14764,30 +14815,34 @@ def test_row_output_converter_overflow_error(cursor, db_connection):
                 # by simulating a value that's too large for the byte size
                 raise OverflowError("int too big to convert to bytes")
             return value
-        
+
         # Add the converter to the connection (if supported)
-        if hasattr(cursor.connection, '_output_converters'):
+        if hasattr(cursor.connection, "_output_converters"):
             # Create a converter that will trigger the overflow
-            original_converters = getattr(cursor.connection, '_output_converters', {})
-            cursor.connection._output_converters = {-6: problematic_converter}  # TINYINT SQL type
-        
+            original_converters = getattr(cursor.connection, "_output_converters", {})
+            cursor.connection._output_converters = {
+                -6: problematic_converter
+            }  # TINYINT SQL type
+
         # Fetch the data - this should trigger lines 186-195 in row.py
         cursor.execute("SELECT id, small_int FROM #pytest_overflow_test")
         row = cursor.fetchone()
-        
+
         # Line 188: except OverflowError as e:
         # Lines 190-194: if hasattr(self._cursor, "log"): self._cursor.log(...)
         # Line 195: # Keep the original value in this case
         assert row is not None, "Should return a row"
         assert row[0] == 1, "ID should be 1"
-        
+
         # The overflow should be handled and original value kept
-        assert row[1] == 100, "Value should be kept as original due to overflow handling"
-        
+        assert (
+            row[1] == 100
+        ), "Value should be kept as original due to overflow handling"
+
         # Restore original converters
-        if hasattr(cursor.connection, '_output_converters'):
+        if hasattr(cursor.connection, "_output_converters"):
             cursor.connection._output_converters = original_converters
-        
+
     except Exception as e:
         pytest.fail(f"Output converter OverflowError test failed: {e}")
     finally:
@@ -14797,50 +14852,59 @@ def test_row_output_converter_overflow_error(cursor, db_connection):
 
 def test_row_output_converter_general_exception(cursor, db_connection):
     """Test Row output converter general exception handling (Lines 198-206)."""
-    
+
     try:
         # Create a table with string column
         drop_table_if_exists(cursor, "#pytest_exception_test")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_exception_test (
                 id INT,
                 text_col VARCHAR(50)
             )
-        """)
-        
+        """
+        )
+
         # Insert test data
-        cursor.execute("INSERT INTO #pytest_exception_test (id, text_col) VALUES (?, ?)", [1, "test_value"])
+        cursor.execute(
+            "INSERT INTO #pytest_exception_test (id, text_col) VALUES (?, ?)",
+            [1, "test_value"],
+        )
         db_connection.commit()
-        
+
         # Create a custom output converter that will raise a general exception
         def failing_converter(value):
             if value == "test_value":
                 raise RuntimeError("Custom converter error for testing")
             return value
-        
+
         # Add the converter to the connection (if supported)
         original_converters = {}
-        if hasattr(cursor.connection, '_output_converters'):
-            original_converters = getattr(cursor.connection, '_output_converters', {})
-            cursor.connection._output_converters = {12: failing_converter}  # VARCHAR SQL type
-        
+        if hasattr(cursor.connection, "_output_converters"):
+            original_converters = getattr(cursor.connection, "_output_converters", {})
+            cursor.connection._output_converters = {
+                12: failing_converter
+            }  # VARCHAR SQL type
+
         # Fetch the data - this should trigger lines 198-206 in row.py
         cursor.execute("SELECT id, text_col FROM #pytest_exception_test")
         row = cursor.fetchone()
-        
+
         # Line 199: except Exception as e:
         # Lines 201-205: if hasattr(self._cursor, "log"): self._cursor.log(...)
         # Line 206: # If conversion fails, keep the original value
         assert row is not None, "Should return a row"
         assert row[0] == 1, "ID should be 1"
-        
+
         # The exception should be handled and original value kept
-        assert row[1] == "test_value", "Value should be kept as original due to exception handling"
-        
+        assert (
+            row[1] == "test_value"
+        ), "Value should be kept as original due to exception handling"
+
         # Restore original converters
-        if hasattr(cursor.connection, '_output_converters'):
+        if hasattr(cursor.connection, "_output_converters"):
             cursor.connection._output_converters = original_converters
-        
+
     except Exception as e:
         pytest.fail(f"Output converter general exception test failed: {e}")
     finally:
@@ -14850,32 +14914,36 @@ def test_row_output_converter_general_exception(cursor, db_connection):
 
 def test_row_cursor_log_method_availability(cursor, db_connection):
     """Test Row checking for cursor.log method availability (Lines 190, 201)."""
-    
+
     try:
         # Create test data
         drop_table_if_exists(cursor, "#pytest_log_check")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_log_check (
                 id INT,
                 value_col INT
             )
-        """)
-        
-        cursor.execute("INSERT INTO #pytest_log_check (id, value_col) VALUES (?, ?)", [1, 42])
+        """
+        )
+
+        cursor.execute(
+            "INSERT INTO #pytest_log_check (id, value_col) VALUES (?, ?)", [1, 42]
+        )
         db_connection.commit()
-        
+
         # Test that cursor has log method or doesn't have it
         # Lines 190 and 201: if hasattr(self._cursor, "log"):
         cursor.execute("SELECT id, value_col FROM #pytest_log_check")
         row = cursor.fetchone()
-        
+
         assert row is not None, "Should return a row"
         assert row[0] == 1, "ID should be 1"
         assert row[1] == 42, "Value should be 42"
-        
+
         # The hasattr check should complete without error
         # This covers the conditional log method availability checks
-        
+
     except Exception as e:
         pytest.fail(f"Cursor log method availability test failed: {e}")
     finally:
@@ -14885,64 +14953,80 @@ def test_row_cursor_log_method_availability(cursor, db_connection):
 
 def test_row_uuid_attribute_error_handling(cursor, db_connection):
     """Test Row UUID processing AttributeError handling."""
-    
+
     try:
         # Create a table with integer data that will trigger AttributeError
         drop_table_if_exists(cursor, "#pytest_uuid_attr_error")
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_uuid_attr_error (
                 guid_col INT  -- Integer column that we'll treat as GUID
             )
-        """)
-        
+        """
+        )
+
         # Insert integer value
-        cursor.execute("INSERT INTO #pytest_uuid_attr_error (guid_col) VALUES (?)", [42])
+        cursor.execute(
+            "INSERT INTO #pytest_uuid_attr_error (guid_col) VALUES (?)", [42]
+        )
         db_connection.commit()
-        
+
         # Create a custom Row class to test the AttributeError handling
         from mssql_python.row import Row
-        
+
         # Execute query and get cursor results
         cursor.execute("SELECT guid_col FROM #pytest_uuid_attr_error")
-        
-        # Get the raw results from the cursor 
+
+        # Get the raw results from the cursor
         results = cursor.fetchall()
         row_data = results[0]  # Get first row data
-        
+
         # Get the description from cursor
         description = cursor.description
-        
+
         # Modify description to make the integer column look like SQL_GUID (-11)
         # This will trigger UUID processing on an integer (will cause AttributeError on .strip())
         modified_description = [
-            ("guid_col", -11, None, None, None, None, None),  # Make it look like SQL_GUID
+            (
+                "guid_col",
+                -11,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),  # Make it look like SQL_GUID
         ]
-        
+
         # Create Row instance with native_uuid=True and modified description
         original_setting = None
-        if hasattr(cursor.connection, '_settings') and 'native_uuid' in cursor.connection._settings:
-            original_setting = cursor.connection._settings['native_uuid']
-            cursor.connection._settings['native_uuid'] = True
-        
+        if (
+            hasattr(cursor.connection, "_settings")
+            and "native_uuid" in cursor.connection._settings
+        ):
+            original_setting = cursor.connection._settings["native_uuid"]
+            cursor.connection._settings["native_uuid"] = True
+
         # Create Row directly with the data and modified description
         # This should trigger AttributeError handling in lines 101-102 and 116-117
         row = Row(cursor, modified_description, list(row_data))
-        
+
         # The integer value should be kept as original due to AttributeError handling
         # Lines 101-102: except (ValueError, AttributeError): pass  # Keep original if conversion fails
         # Lines 116-117: except (ValueError, AttributeError): pass
-        assert row[0] == 42, "Value should remain as original integer due to AttributeError"
-        
+        assert (
+            row[0] == 42
+        ), "Value should remain as original integer due to AttributeError"
+
         # Restore original setting
-        if original_setting is not None and hasattr(cursor.connection, '_settings'):
-            cursor.connection._settings['native_uuid'] = original_setting
-        
+        if original_setting is not None and hasattr(cursor.connection, "_settings"):
+            cursor.connection._settings["native_uuid"] = original_setting
+
     except Exception as e:
         pytest.fail(f"UUID AttributeError handling test failed: {e}")
     finally:
         drop_table_if_exists(cursor, "#pytest_uuid_attr_error")
         db_connection.commit()
-
 
 
 def test_close(db_connection):

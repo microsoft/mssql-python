@@ -117,18 +117,20 @@ def test_binary_string_encoding():
     # Test basic string encoding
     result = Binary("hello")
     assert result == b"hello", "String should be encoded to UTF-8 bytes"
-    
+
     # Test string with UTF-8 characters
     result = Binary("café")
     assert result == "café".encode("utf-8"), "UTF-8 string should be properly encoded"
-    
+
     # Test empty string
     result = Binary("")
     assert result == b"", "Empty string should encode to empty bytes"
-    
+
     # Test string with special characters
     result = Binary("Hello\nWorld\t!")
-    assert result == b"Hello\nWorld\t!", "String with special characters should encode properly"
+    assert (
+        result == b"Hello\nWorld\t!"
+    ), "String with special characters should encode properly"
 
 
 def test_binary_unsupported_types_error():
@@ -137,40 +139,52 @@ def test_binary_unsupported_types_error():
     with pytest.raises(TypeError) as exc_info:
         Binary(123)
     assert "Cannot convert type int to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
-    
+    assert "Binary() only accepts str, bytes, or bytearray objects" in str(
+        exc_info.value
+    )
+
     # Test float type
     with pytest.raises(TypeError) as exc_info:
         Binary(3.14)
     assert "Cannot convert type float to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
-    
+    assert "Binary() only accepts str, bytes, or bytearray objects" in str(
+        exc_info.value
+    )
+
     # Test list type
     with pytest.raises(TypeError) as exc_info:
         Binary([1, 2, 3])
     assert "Cannot convert type list to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
-    
+    assert "Binary() only accepts str, bytes, or bytearray objects" in str(
+        exc_info.value
+    )
+
     # Test dict type
     with pytest.raises(TypeError) as exc_info:
         Binary({"key": "value"})
     assert "Cannot convert type dict to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
-    
+    assert "Binary() only accepts str, bytes, or bytearray objects" in str(
+        exc_info.value
+    )
+
     # Test None type
     with pytest.raises(TypeError) as exc_info:
         Binary(None)
     assert "Cannot convert type NoneType to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
-    
+    assert "Binary() only accepts str, bytes, or bytearray objects" in str(
+        exc_info.value
+    )
+
     # Test custom object type
     class CustomObject:
         pass
-    
+
     with pytest.raises(TypeError) as exc_info:
         Binary(CustomObject())
     assert "Cannot convert type CustomObject to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
+    assert "Binary() only accepts str, bytes, or bytearray objects" in str(
+        exc_info.value
+    )
 
 
 def test_binary_comprehensive_coverage():
@@ -180,26 +194,30 @@ def test_binary_comprehensive_coverage():
     result = Binary(bytes_input)
     assert result is bytes_input, "Bytes input should be returned as-is"
     assert result == b"hello bytes", "Bytes content should be unchanged"
-    
+
     # Test bytearray input (should convert to bytes)
     bytearray_input = bytearray(b"hello bytearray")
     result = Binary(bytearray_input)
     assert isinstance(result, bytes), "Bytearray should be converted to bytes"
-    assert result == b"hello bytearray", "Bytearray content should be preserved in bytes"
-    
+    assert (
+        result == b"hello bytearray"
+    ), "Bytearray content should be preserved in bytes"
+
     # Test string input with various encodings (Lines 134-135)
     # ASCII string
     result = Binary("hello world")
     assert result == b"hello world", "ASCII string should encode properly"
-    
+
     # Unicode string
     result = Binary("héllo wørld")
-    assert result == "héllo wørld".encode("utf-8"), "Unicode string should encode to UTF-8"
-    
+    assert result == "héllo wørld".encode(
+        "utf-8"
+    ), "Unicode string should encode to UTF-8"
+
     # String with emojis
     result = Binary("Hello 🌍")
     assert result == "Hello 🌍".encode("utf-8"), "Emoji string should encode to UTF-8"
-    
+
     # Empty inputs
     assert Binary("") == b"", "Empty string should encode to empty bytes"
     assert Binary(b"") == b"", "Empty bytes should remain empty bytes"

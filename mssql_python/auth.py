@@ -135,7 +135,9 @@ def get_auth_token(auth_type: str) -> Optional[bytes]:
         return None
 
 
-def process_connection_string(connection_string: str) -> Tuple[str, Optional[Dict[int, bytes]]]:
+def process_connection_string(
+    connection_string: str,
+) -> Tuple[str, Optional[Dict[int, bytes]]]:
     """
     Process connection string and handle authentication.
 

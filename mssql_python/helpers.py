@@ -160,7 +160,11 @@ def sanitize_user_input(user_input: str, max_length: int = 50) -> str:
 
 
 def validate_attribute_value(
-    attribute: Union[int, str], value: Union[int, str, bytes, bytearray], is_connected: bool = True, sanitize_logs: bool = True, max_log_length: int = 50
+    attribute: Union[int, str],
+    value: Union[int, str, bytes, bytearray],
+    is_connected: bool = True,
+    sanitize_logs: bool = True,
+    max_log_length: int = 50,
 ) -> Tuple[bool, Optional[str], str, str]:
     """
     Validates attribute and value pairs for connection attributes.

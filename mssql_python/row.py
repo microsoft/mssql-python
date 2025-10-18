@@ -13,12 +13,22 @@ class Row:
     """
 
     def __init__(
-        self, 
-        cursor: "Cursor", 
-        description: List[Tuple[str, Any, Optional[int], Optional[int], Optional[int], Optional[int], Optional[bool]]], 
-        values: List[Any], 
-        column_map: Optional[Dict[str, int]] = None, 
-        settings_snapshot: Optional[Dict[str, Any]] = None
+        self,
+        cursor: "Cursor",
+        description: List[
+            Tuple[
+                str,
+                Any,
+                Optional[int],
+                Optional[int],
+                Optional[int],
+                Optional[int],
+                Optional[bool],
+            ]
+        ],
+        values: List[Any],
+        column_map: Optional[Dict[str, int]] = None,
+        settings_snapshot: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Initialize a Row object with values and description.
@@ -68,7 +78,21 @@ class Row:
         # Process UUID values using the snapshotted setting
         self._values = self._process_uuid_values(processed_values, description)
 
-    def _process_uuid_values(self, values: List[Any], description: List[Tuple[str, Any, Optional[int], Optional[int], Optional[int], Optional[int], Optional[bool]]]) -> List[Any]:
+    def _process_uuid_values(
+        self,
+        values: List[Any],
+        description: List[
+            Tuple[
+                str,
+                Any,
+                Optional[int],
+                Optional[int],
+                Optional[int],
+                Optional[int],
+                Optional[bool],
+            ]
+        ],
+    ) -> List[Any]:
         """
         Convert string UUIDs to uuid.UUID objects if native_uuid setting is True,
         or ensure UUIDs are returned as strings if False.

@@ -203,39 +203,41 @@ def test_connection_error():
         excinfo.value
     ) or "Neither DSN nor SERVER keyword supplied" in str(excinfo.value)
 
+
 def test_truncate_error_message_successful_cases():
     """Test truncate_error_message with valid Microsoft messages for comparison."""
-    
+
     # Test successful truncation (should not trigger exception path)
     valid_message = "[Microsoft][SQL Server]Some database error message"
     result = truncate_error_message(valid_message)
     expected = "[Microsoft]Some database error message"
     assert result == expected
-    
+
     # Test non-Microsoft message (should return as-is)
     non_microsoft_message = "Regular error message"
     result = truncate_error_message(non_microsoft_message)
     assert result == non_microsoft_message
 
+
 def test_truncate_error_message_exception_path():
     """Test truncate_error_message exception handling."""
-    
+
     # Test with malformed Microsoft messages that should trigger the exception path
     # These inputs will cause a ValueError on line 526 when looking for the second "]"
-    
+
     test_cases = [
         "[Microsoft",  # Missing closing bracket - should cause index error
-        "[Microsoft]",  # No second bracket section - should cause index error  
+        "[Microsoft]",  # No second bracket section - should cause index error
         "[Microsoft]no_second_bracket",  # No second bracket - should cause index error
         "[Microsoft]text_without_proper_structure",  # Missing second bracket structure
     ]
-    
+
     for malformed_message in test_cases:
         # Call the actual function to see how it handles the malformed input
         try:
             result = truncate_error_message(malformed_message)
             # If we get a result without exception, the function handled the error
-            # This means the exception path (lines 528-531) was executed 
+            # This means the exception path (lines 528-531) was executed
             # and it returned the original message (line 531)
             assert result == malformed_message
             print(f"Exception handled correctly for: {malformed_message}")
@@ -248,23 +250,23 @@ def test_truncate_error_message_exception_path():
             # IndexError might occur on the first bracket search
             # This still shows we're testing the problematic lines
             print(f"IndexError occurred as expected for: {malformed_message}")
-    
+
     # The fact that we can trigger these exceptions shows we're covering
     # the target lines (526-534) in the function
 
 
 def test_truncate_error_message_specific_error_lines():
     """Test specific conditions that trigger the ValueError on line 526."""
-    
+
     # These inputs are crafted to specifically trigger the line:
     # string_third = string_second[string_second.index("]") + 1 :]
-    
+
     specific_test_cases = [
         "[Microsoft]This text has no second bracket",
         "[Microsoft]x",  # Minimal content, no second bracket
         "[Microsoft] ",  # Just space, no second bracket
     ]
-    
+
     for test_case in specific_test_cases:
         # The function should handle these gracefully or raise expected exceptions
         try:
@@ -284,13 +286,13 @@ def test_truncate_error_message_specific_error_lines():
 
 def test_truncate_error_message_logger_exists_check():
     """Test the 'if logger:' condition on line 529 naturally."""
-    
+
     # Import the logger to verify its existence
     from mssql_python.exceptions import logger
-    
+
     # Test with input that would trigger the exception path
     problematic_input = "[Microsoft]will_cause_error_on_line_526"
-    
+
     # Call the function - this should exercise the exception handling
     try:
         result = truncate_error_message(problematic_input)
@@ -302,35 +304,37 @@ def test_truncate_error_message_logger_exists_check():
         # If the try-catch worked, lines 528-531 would be executed
         # including the "if logger:" check on line 529
         pass
-    
+
     # Verify logger exists or is None (for the "if logger:" condition)
-    assert logger is None or hasattr(logger, 'error')
+    assert logger is None or hasattr(logger, "error")
 
 
 def test_truncate_error_message_comprehensive_edge_cases():
     """Test comprehensive edge cases for exception handling coverage."""
-    
+
     # Test cases designed to exercise different paths through the function
     edge_cases = [
         # Cases that should return early (no exception)
         ("", "early_return"),  # Empty string - early return
         ("Normal error message", "early_return"),  # Non-Microsoft - early return
-        
         # Cases that should trigger exception on line 526
         ("[Microsoft]a", "exception"),  # Too short for second bracket
-        ("[Microsoft]ab", "exception"),  # Still too short  
+        ("[Microsoft]ab", "exception"),  # Still too short
         ("[Microsoft]abc", "exception"),  # No second bracket structure
         ("[Microsoft] no bracket here", "exception"),  # Space but no second bracket
-        ("[Microsoft]multiple words no bracket", "exception"),  # Multiple words, no bracket
+        (
+            "[Microsoft]multiple words no bracket",
+            "exception",
+        ),  # Multiple words, no bracket
     ]
-    
+
     for test_case, expected_path in edge_cases:
         try:
             result = truncate_error_message(test_case)
-            
+
             # All should return strings
             assert isinstance(result, str)
-            
+
             # Verify expected behavior
             if expected_path == "early_return":
                 # Non-Microsoft messages should return unchanged
@@ -338,7 +342,7 @@ def test_truncate_error_message_comprehensive_edge_cases():
             elif expected_path == "exception":
                 # If we get here, exception was caught and original returned
                 assert result == test_case
-                
+
         except ValueError:
             # This means we reached line 526 successfully
             if expected_path == "exception":
@@ -351,18 +355,18 @@ def test_truncate_error_message_comprehensive_edge_cases():
 
 def test_truncate_error_message_return_paths():
     """Test different return paths in the truncate_error_message function."""
-    
+
     # Test the successful path (no exception)
     success_case = "[Microsoft][SQL Server]Database error message"
     result = truncate_error_message(success_case)
     expected = "[Microsoft]Database error message"
     assert result == expected
-    
+
     # Test the early return path (non-Microsoft)
-    early_return_case = "Regular error message"  
+    early_return_case = "Regular error message"
     result = truncate_error_message(early_return_case)
     assert result == early_return_case
-    
+
     # Test the exception return path (line 531)
     exception_case = "[Microsoft]malformed_no_second_bracket"
     try:

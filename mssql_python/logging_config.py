@@ -51,7 +51,9 @@ class LoggingManager:
         """Get the current log file path"""
         return self._log_file
 
-    def setup(self, mode: str = "file", log_level: int = logging.DEBUG) -> Optional[logging.Logger]:
+    def setup(
+        self, mode: str = "file", log_level: int = logging.DEBUG
+    ) -> Optional[logging.Logger]:
         """
         Set up logging configuration.
 

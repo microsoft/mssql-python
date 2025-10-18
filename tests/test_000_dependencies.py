@@ -463,37 +463,46 @@ def test_get_driver_path_from_ddbc_bindings():
     except Exception as e:
         pytest.fail(f"Failed to call GetDriverPathCpp: {e}")
 
+
 def test_normalize_architecture_windows_unsupported():
     """Test normalize_architecture with unsupported Windows architecture (Lines 33-41)."""
-    
+
     # Test unsupported architecture on Windows (should raise ImportError)
-    with pytest.raises(ImportError, match="Unsupported architecture.*for platform.*windows"):
+    with pytest.raises(
+        ImportError, match="Unsupported architecture.*for platform.*windows"
+    ):
         normalize_architecture("windows", "unsupported_arch")
-    
+
     # Test another invalid architecture
-    with pytest.raises(ImportError, match="Unsupported architecture.*for platform.*windows"):
+    with pytest.raises(
+        ImportError, match="Unsupported architecture.*for platform.*windows"
+    ):
         normalize_architecture("windows", "invalid123")
 
 
 def test_normalize_architecture_linux_unsupported():
     """Test normalize_architecture with unsupported Linux architecture (Lines 53-61)."""
-    
+
     # Test unsupported architecture on Linux (should raise ImportError)
-    with pytest.raises(ImportError, match="Unsupported architecture.*for platform.*linux"):
+    with pytest.raises(
+        ImportError, match="Unsupported architecture.*for platform.*linux"
+    ):
         normalize_architecture("linux", "unsupported_arch")
-    
+
     # Test another invalid architecture
-    with pytest.raises(ImportError, match="Unsupported architecture.*for platform.*linux"):
+    with pytest.raises(
+        ImportError, match="Unsupported architecture.*for platform.*linux"
+    ):
         normalize_architecture("linux", "sparc")
 
 
 def test_normalize_architecture_unsupported_platform():
     """Test normalize_architecture with unsupported platform (Lines 59-67)."""
-    
+
     # Test completely unsupported platform (should raise OSError)
     with pytest.raises(OSError, match="Unsupported platform.*freebsd.*expected one of"):
         normalize_architecture("freebsd", "x86_64")
-    
+
     # Test another unsupported platform
     with pytest.raises(OSError, match="Unsupported platform.*solaris.*expected one of"):
         normalize_architecture("solaris", "sparc")
@@ -501,14 +510,14 @@ def test_normalize_architecture_unsupported_platform():
 
 def test_normalize_architecture_valid_cases():
     """Test normalize_architecture with valid cases for coverage."""
-    
+
     # Test valid Windows architectures
     assert normalize_architecture("windows", "amd64") == "x64"
     assert normalize_architecture("windows", "win64") == "x64"
     assert normalize_architecture("windows", "x86") == "x86"
     assert normalize_architecture("windows", "arm64") == "arm64"
-    
-    # Test valid Linux architectures 
+
+    # Test valid Linux architectures
     assert normalize_architecture("linux", "amd64") == "x86_64"
     assert normalize_architecture("linux", "x64") == "x86_64"
     assert normalize_architecture("linux", "arm64") == "arm64"
@@ -517,111 +526,123 @@ def test_normalize_architecture_valid_cases():
 
 def test_ddbc_bindings_platform_validation():
     """Test platform validation logic in ddbc_bindings module (Lines 82-91)."""
-    
+
     # This test verifies the platform validation code paths
     # We can't easily mock sys.platform, but we can test the normalize_architecture function
     # which contains similar validation logic
-    
+
     # The actual platform validation happens during module import
     # Since we're running tests, the module has already been imported successfully
     # So we test the related validation functions instead
-    
+
     import platform
+
     current_platform = platform.system().lower()
-    
+
     # Verify current platform is supported
-    assert current_platform in ["windows", "darwin", "linux"], \
-        f"Current platform {current_platform} should be supported"
+    assert current_platform in [
+        "windows",
+        "darwin",
+        "linux",
+    ], f"Current platform {current_platform} should be supported"
 
 
 def test_ddbc_bindings_extension_detection():
     """Test extension detection logic (Lines 89-97)."""
-    
+
     import platform
+
     current_platform = platform.system().lower()
-    
+
     if current_platform == "windows":
         expected_extension = ".pyd"
     else:  # macOS or Linux
         expected_extension = ".so"
-    
+
     # We can verify this by checking what the module import system expects
     # The extension detection logic is used during import
     import os
+
     module_dir = os.path.dirname(__file__).replace("tests", "mssql_python")
-    
+
     # Check that some ddbc_bindings file exists with the expected extension
-    ddbc_files = [f for f in os.listdir(module_dir) 
-                  if f.startswith("ddbc_bindings.") and f.endswith(expected_extension)]
-    
-    assert len(ddbc_files) > 0, f"Should find ddbc_bindings files with {expected_extension} extension"
+    ddbc_files = [
+        f
+        for f in os.listdir(module_dir)
+        if f.startswith("ddbc_bindings.") and f.endswith(expected_extension)
+    ]
+
+    assert (
+        len(ddbc_files) > 0
+    ), f"Should find ddbc_bindings files with {expected_extension} extension"
 
 
 def test_ddbc_bindings_fallback_search_logic():
     """Test the fallback module search logic conceptually (Lines 100-118)."""
-    
+
     import os
     import tempfile
     import shutil
-    
+
     # Create a temporary directory structure to test the fallback logic
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create some mock module files
         mock_files = [
             "ddbc_bindings.cp39-win_amd64.pyd",
-            "ddbc_bindings.cp310-linux_x86_64.so", 
-            "other_file.txt"
+            "ddbc_bindings.cp310-linux_x86_64.so",
+            "other_file.txt",
         ]
-        
+
         for filename in mock_files:
-            with open(os.path.join(temp_dir, filename), 'w') as f:
+            with open(os.path.join(temp_dir, filename), "w") as f:
                 f.write("mock content")
-        
+
         # Test the file filtering logic that would be used in fallback
-        extension = ".pyd" if os.name == 'nt' else ".so"
+        extension = ".pyd" if os.name == "nt" else ".so"
         found_files = [
-            f for f in os.listdir(temp_dir)
+            f
+            for f in os.listdir(temp_dir)
             if f.startswith("ddbc_bindings.") and f.endswith(extension)
         ]
-        
+
         if extension == ".pyd":
             assert "ddbc_bindings.cp39-win_amd64.pyd" in found_files
         else:
             assert "ddbc_bindings.cp310-linux_x86_64.so" in found_files
-        
+
         assert "other_file.txt" not in found_files
         assert len(found_files) >= 1
 
 
 def test_ddbc_bindings_module_loading_success():
     """Test that ddbc_bindings module loads successfully with expected attributes."""
-    
+
     # Test that the module has been loaded and has expected functions/classes
     import mssql_python.ddbc_bindings as ddbc
-    
+
     # Verify some expected attributes exist (these would be defined in the C++ extension)
     # The exact attributes depend on what's compiled into the module
     expected_functions = [
-        'normalize_architecture',  # This is defined in the Python code
+        "normalize_architecture",  # This is defined in the Python code
     ]
-    
+
     for func_name in expected_functions:
         assert hasattr(ddbc, func_name), f"ddbc_bindings should have {func_name}"
 
 
 def test_ddbc_bindings_import_error_scenarios():
     """Test scenarios that would trigger ImportError in ddbc_bindings."""
-    
+
     # Test the normalize_architecture function which has similar error patterns
     # to the main module loading logic
-    
+
     # This exercises the error handling patterns without breaking the actual import
     test_cases = [
         ("windows", "unsupported_architecture"),
-        ("linux", "unknown_arch"),  
+        ("linux", "unknown_arch"),
         ("invalid_platform", "x86_64"),
     ]
-    
+
     for platform_name, arch in test_cases:
         with pytest.raises((ImportError, OSError)):
             normalize_architecture(platform_name, arch)
@@ -629,23 +650,25 @@ def test_ddbc_bindings_import_error_scenarios():
 
 def test_ddbc_bindings_warning_fallback_scenario():
     """Test the warning message scenario for fallback module (Lines 114-116)."""
-    
+
     # We can't easily simulate the exact fallback scenario during testing
     # since it would require manipulating the file system during import
     # But we can test that the warning logic would work conceptually
-    
+
     import io
     import contextlib
-    
+
     # Simulate the warning print statement
     expected_module = "ddbc_bindings.cp310-win_amd64.pyd"
     fallback_module = "ddbc_bindings.cp39-win_amd64.pyd"
-    
+
     # Capture stdout to verify warning format
     f = io.StringIO()
     with contextlib.redirect_stdout(f):
-        print(f"Warning: Using fallback module file {fallback_module} instead of {expected_module}")
-    
+        print(
+            f"Warning: Using fallback module file {fallback_module} instead of {expected_module}"
+        )
+
     output = f.getvalue()
     assert "Warning: Using fallback module file" in output
     assert fallback_module in output
@@ -654,14 +677,14 @@ def test_ddbc_bindings_warning_fallback_scenario():
 
 def test_ddbc_bindings_no_module_found_error():
     """Test error when no ddbc_bindings module is found (Lines 110-112)."""
-    
+
     # Test the error message format that would be used
     python_version = "cp310"
-    architecture = "x64"  
+    architecture = "x64"
     extension = ".pyd"
-    
+
     expected_error = f"No ddbc_bindings module found for {python_version}-{architecture} with extension {extension}"
-    
+
     # Verify the error message format is correct
     assert "No ddbc_bindings module found for" in expected_error
     assert python_version in expected_error

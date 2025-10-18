@@ -8231,7 +8231,7 @@ def test_validate_attribute_string_size_limit():
     """Test validate_attribute_value string size validation (Lines 261-269)."""
     from mssql_python.helpers import validate_attribute_value
     from mssql_python.constants import ConstantsDDBC
-    
+
     # Test with a valid string (within limit)
     valid_string = "x" * 8192  # Exactly at the limit
     is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
@@ -8239,7 +8239,7 @@ def test_validate_attribute_string_size_limit():
     )
     assert is_valid is True
     assert error_message is None
-    
+
     # Test with string that exceeds the limit (triggers lines 265-269)
     oversized_string = "x" * 8193  # One byte over the limit
     is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
@@ -8250,7 +8250,7 @@ def test_validate_attribute_string_size_limit():
     assert "8193 bytes (max 8192)" in error_message
     assert isinstance(sanitized_attr, str)
     assert isinstance(sanitized_val, str)
-    
+
     # Test with much larger string to confirm the validation
     very_large_string = "x" * 16384  # Much larger than limit
     is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
@@ -8265,7 +8265,7 @@ def test_validate_attribute_binary_size_limit():
     """Test validate_attribute_value binary size validation (Lines 272-280)."""
     from mssql_python.helpers import validate_attribute_value
     from mssql_python.constants import ConstantsDDBC
-    
+
     # Test with valid binary data (within limit)
     valid_binary = b"x" * 32768  # Exactly at the limit
     is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
@@ -8273,7 +8273,7 @@ def test_validate_attribute_binary_size_limit():
     )
     assert is_valid is True
     assert error_message is None
-    
+
     # Test with binary data that exceeds the limit (triggers lines 276-280)
     oversized_binary = b"x" * 32769  # One byte over the limit
     is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
@@ -8284,7 +8284,7 @@ def test_validate_attribute_binary_size_limit():
     assert "32769 bytes (max 32768)" in error_message
     assert isinstance(sanitized_attr, str)
     assert isinstance(sanitized_val, str)
-    
+
     # Test with bytearray that exceeds the limit
     oversized_bytearray = bytearray(b"x" * 32769)
     is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
@@ -8293,7 +8293,7 @@ def test_validate_attribute_binary_size_limit():
     assert is_valid is False
     assert "Binary value too large" in error_message
     assert "32769 bytes (max 32768)" in error_message
-    
+
     # Test with much larger binary data to confirm the validation
     very_large_binary = b"x" * 65536  # Much larger than limit
     is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
@@ -8308,7 +8308,7 @@ def test_validate_attribute_size_limits_edge_cases():
     """Test validate_attribute_value size limit edge cases."""
     from mssql_python.helpers import validate_attribute_value
     from mssql_python.constants import ConstantsDDBC
-    
+
     # Test string exactly at the boundary
     boundary_string = "a" * 8192
     is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
@@ -8316,26 +8316,26 @@ def test_validate_attribute_size_limits_edge_cases():
     )
     assert is_valid is True
     assert error_message is None
-    
-    # Test binary exactly at the boundary  
+
+    # Test binary exactly at the boundary
     boundary_binary = b"a" * 32768
     is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
         ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value, boundary_binary
     )
     assert is_valid is True
     assert error_message is None
-    
+
     # Test empty values (should be valid)
     is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
         ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value, ""
     )
     assert is_valid is True
-    
+
     is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
         ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value, b""
     )
     assert is_valid is True
-    
+
     is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
         ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value, bytearray()
     )
@@ -8344,57 +8344,58 @@ def test_validate_attribute_size_limits_edge_cases():
 
 def test_searchescape_caching_behavior(db_connection):
     """Test searchescape property caching and basic functionality."""
-    
+
     # Clear any cached searchescape to test fresh behavior
     if hasattr(db_connection, "_searchescape"):
         delattr(db_connection, "_searchescape")
-    
+
     # First call should retrieve and cache the value
     escape_char1 = db_connection.searchescape
     assert isinstance(escape_char1, str), "Search escape should be a string"
-    
+
     # Second call should return cached value
     escape_char2 = db_connection.searchescape
     assert escape_char1 == escape_char2, "Cached searchescape should be consistent"
-    
+
     # The property should be cached now
-    assert hasattr(db_connection, "_searchescape"), "Should cache searchescape after first access"
+    assert hasattr(
+        db_connection, "_searchescape"
+    ), "Should cache searchescape after first access"
 
 
 def test_batch_execute_auto_close_behavior(db_connection):
     """Test batch_execute auto_close functionality with valid operations."""
-    
+
     # Test successful execution with auto_close=True
     results, cursor = db_connection.batch_execute(
-        ["SELECT 1 as test_col"], 
-        auto_close=True
+        ["SELECT 1 as test_col"], auto_close=True
     )
-    
+
     # Verify results
     assert len(results) == 1, "Should have one result set"
     assert results[0][0][0] == 1, "Should return correct value"
-    
+
     # Since auto_close=True, the cursor should be closed
     assert cursor.closed, "Cursor should be closed when auto_close=True"
 
 
 def test_getinfo_invalid_info_types(db_connection):
     """Test getinfo with various invalid info types to trigger error paths."""
-    
+
     from mssql_python.constants import GetInfoConstants
-    
+
     # Test with very large invalid info_type (should return None)
     result = db_connection.getinfo(99999)
     assert result is None, "Should return None for invalid large info_type"
-    
-    # Test with negative info_type (should return None) 
+
+    # Test with negative info_type (should return None)
     result = db_connection.getinfo(-1)
     assert result is None, "Should return None for negative info_type"
-    
+
     # Test with invalid type (should raise ValueError)
     with pytest.raises(ValueError, match="info_type must be an integer"):
         db_connection.getinfo("invalid")
-    
+
     # Test some valid info types to ensure normal operation
     driver_name = db_connection.getinfo(GetInfoConstants.SQL_DRIVER_NAME.value)
     assert isinstance(driver_name, str), "Driver name should be a string"
@@ -8402,18 +8403,20 @@ def test_getinfo_invalid_info_types(db_connection):
 
 def test_getinfo_different_return_types(db_connection):
     """Test getinfo with different return types to exercise various code paths."""
-    
+
     from mssql_python.constants import GetInfoConstants
-    
+
     # Test Y/N type (should return "Y" or "N")
-    accessible_tables = db_connection.getinfo(GetInfoConstants.SQL_ACCESSIBLE_TABLES.value)
+    accessible_tables = db_connection.getinfo(
+        GetInfoConstants.SQL_ACCESSIBLE_TABLES.value
+    )
     assert accessible_tables in ("Y", "N"), "Accessible tables should be Y or N"
-    
+
     # Test numeric type (should return integer)
     max_col_len = db_connection.getinfo(GetInfoConstants.SQL_MAX_COLUMN_NAME_LEN.value)
     assert isinstance(max_col_len, int), "Max column name length should be integer"
     assert max_col_len > 0, "Max column name length should be positive"
-    
+
     # Test string type (should return string)
     driver_name = db_connection.getinfo(GetInfoConstants.SQL_DRIVER_NAME.value)
     assert isinstance(driver_name, str), "Driver name should be string"
@@ -8422,32 +8425,34 @@ def test_getinfo_different_return_types(db_connection):
 
 def test_connection_cursor_lifecycle_management(conn_str):
     """Test connection cursor tracking and cleanup."""
-    
+
     conn = connect(conn_str)
-    
+
     try:
         # Create multiple cursors
         cursor1 = conn.cursor()
         cursor2 = conn.cursor()
-        
+
         # Verify cursors are being tracked
-        assert hasattr(conn, '_cursors'), "Connection should track cursors"
+        assert hasattr(conn, "_cursors"), "Connection should track cursors"
         assert len(conn._cursors) == 2, "Should track both cursors"
-        
+
         # Close one cursor manually
         cursor1.close()
-        
+
         # The closed cursor should be removed from tracking
-        assert cursor1 not in conn._cursors, "Closed cursor should be removed from tracking"
+        assert (
+            cursor1 not in conn._cursors
+        ), "Closed cursor should be removed from tracking"
         assert len(conn._cursors) == 1, "Should only track open cursor"
-        
+
         # Connection close should handle remaining cursors
         conn.close()
-        
+
         # Verify both cursors are closed
         assert cursor1.closed, "First cursor should be closed"
         assert cursor2.closed, "Second cursor should be closed"
-        
+
     except Exception as e:
         # Ensure connection is closed in case of error
         if not conn._closed:
@@ -8457,21 +8462,23 @@ def test_connection_cursor_lifecycle_management(conn_str):
 
 def test_connection_remove_cursor_edge_cases(conn_str):
     """Test edge cases in cursor removal."""
-    
+
     conn = connect(conn_str)
-    
+
     try:
         cursor = conn.cursor()
-        
+
         # Test removing cursor that's already closed
         cursor.close()
-        
+
         # Try to remove it again - should not raise exception (line 1375 path)
         conn._remove_cursor(cursor)
-        
+
         # Cursor should no longer be in the set
-        assert cursor not in conn._cursors, "Cursor should not be in cursor set after removal"
-        
+        assert (
+            cursor not in conn._cursors
+        ), "Cursor should not be in cursor set after removal"
+
     finally:
         if not conn._closed:
             conn.close()
@@ -8479,30 +8486,32 @@ def test_connection_remove_cursor_edge_cases(conn_str):
 
 def test_connection_multiple_cursor_operations(conn_str):
     """Test multiple cursor operations and proper cleanup."""
-    
+
     conn = connect(conn_str)
-    
+
     try:
         cursors = []
-        
+
         # Create multiple cursors and perform operations
         for i in range(3):
             cursor = conn.cursor()
             cursor.execute(f"SELECT {i+1} as test_value")
             result = cursor.fetchone()
-            assert result[0] == i+1, f"Cursor {i} should return {i+1}"
+            assert result[0] == i + 1, f"Cursor {i} should return {i+1}"
             cursors.append(cursor)
-        
+
         # Verify all cursors are tracked
         assert len(conn._cursors) == 3, "Should track all 3 cursors"
-        
+
         # Close cursors individually
         for cursor in cursors:
             cursor.close()
-            
+
         # All cursors should be removed from tracking
-        assert len(conn._cursors) == 0, "All cursors should be removed after individual close"
-        
+        assert (
+            len(conn._cursors) == 0
+        ), "All cursors should be removed after individual close"
+
     finally:
         if not conn._closed:
             conn.close()
@@ -8510,88 +8519,97 @@ def test_connection_multiple_cursor_operations(conn_str):
 
 def test_batch_execute_error_handling_with_invalid_sql(db_connection):
     """Test batch_execute error handling with invalid SQL."""
-    
+
     # Test with invalid SQL to trigger execution error
     with pytest.raises((DatabaseError, ProgrammingError)):
-        db_connection.batch_execute([
-            "SELECT 1",  # Valid
-            "INVALID SQL SYNTAX HERE",  # Invalid - should cause error
-        ], auto_close=True)
-    
+        db_connection.batch_execute(
+            [
+                "SELECT 1",  # Valid
+                "INVALID SQL SYNTAX HERE",  # Invalid - should cause error
+            ],
+            auto_close=True,
+        )
+
     # Test that connection remains usable after error
     results, cursor = db_connection.batch_execute(
-        ["SELECT 'recovery_test' as recovery"], 
-        auto_close=True
+        ["SELECT 'recovery_test' as recovery"], auto_close=True
     )
-    assert results[0][0][0] == "recovery_test", "Connection should be usable after error"
+    assert (
+        results[0][0][0] == "recovery_test"
+    ), "Connection should be usable after error"
     assert cursor.closed, "Cursor should be closed with auto_close=True"
 
 
 def test_comprehensive_getinfo_scenarios(db_connection):
     """Comprehensive test for various getinfo scenarios and edge cases."""
-    
+
     from mssql_python.constants import GetInfoConstants
-    
+
     # Test multiple valid info types to exercise different code paths
     test_cases = [
         # String types
         (GetInfoConstants.SQL_DRIVER_NAME.value, str),
         (GetInfoConstants.SQL_DATA_SOURCE_NAME.value, str),
         (GetInfoConstants.SQL_SERVER_NAME.value, str),
-        
-        # Y/N types  
+        # Y/N types
         (GetInfoConstants.SQL_ACCESSIBLE_TABLES.value, str),
         (GetInfoConstants.SQL_ACCESSIBLE_PROCEDURES.value, str),
-        
         # Numeric types
         (GetInfoConstants.SQL_MAX_COLUMN_NAME_LEN.value, int),
         (GetInfoConstants.SQL_TXN_CAPABLE.value, int),
     ]
-    
+
     for info_type, expected_type in test_cases:
         result = db_connection.getinfo(info_type)
-        
+
         # Some info types might return None if not supported by the driver
         if result is not None:
-            assert isinstance(result, expected_type), \
-                f"Info type {info_type} should return {expected_type.__name__} or None"
-            
+            assert isinstance(
+                result, expected_type
+            ), f"Info type {info_type} should return {expected_type.__name__} or None"
+
             # Additional validation for specific types
             if expected_type == str and info_type in {
                 GetInfoConstants.SQL_ACCESSIBLE_TABLES.value,
-                GetInfoConstants.SQL_ACCESSIBLE_PROCEDURES.value
+                GetInfoConstants.SQL_ACCESSIBLE_PROCEDURES.value,
             }:
-                assert result in ("Y", "N"), f"Y/N type should return 'Y' or 'N', got {result}"
+                assert result in (
+                    "Y",
+                    "N",
+                ), f"Y/N type should return 'Y' or 'N', got {result}"
             elif expected_type == int:
-                assert result >= 0, f"Numeric info type should return non-negative integer"
-    
+                assert (
+                    result >= 0
+                ), f"Numeric info type should return non-negative integer"
+
     # Test boundary cases that might trigger fallback paths
     edge_case_info_types = [999, 9999, 0]  # Various potentially unsupported types
-    
+
     for info_type in edge_case_info_types:
         result = db_connection.getinfo(info_type)
         # These should either return a valid value or None (not raise exceptions)
-        assert result is None or isinstance(result, (str, int, bool)), \
-            f"Edge case info type {info_type} should return valid type or None"
+        assert result is None or isinstance(
+            result, (str, int, bool)
+        ), f"Edge case info type {info_type} should return valid type or None"
 
 
 def test_connection_context_manager_with_cursor_cleanup(conn_str):
     """Test connection context manager with cursor cleanup on exceptions."""
-    
+
     # Test that cursors are properly cleaned up when connection context exits
     with connect(conn_str) as conn:
         cursor1 = conn.cursor()
         cursor2 = conn.cursor()
-        
+
         # Perform operations
         cursor1.execute("SELECT 1")
         cursor2.execute("SELECT 2")
-        
+
         # Verify cursors are tracked
         assert len(conn._cursors) == 2, "Should track both cursors"
-        
+
         # When we exit the context, cursors should be cleaned up
-        
+
     # After context exit, cursors should be closed
     assert cursor1.closed, "Cursor1 should be closed after context exit"
     assert cursor2.closed, "Cursor2 should be closed after context exit"
@@ -8599,36 +8617,38 @@ def test_connection_context_manager_with_cursor_cleanup(conn_str):
 
 def test_batch_execute_with_existing_cursor_reuse(db_connection):
     """Test batch_execute reusing an existing cursor vs creating new cursor."""
-    
+
     # Create a cursor first
     existing_cursor = db_connection.cursor()
-    
+
     try:
         # Test 1: Use batch_execute with existing cursor (auto_close should not affect it)
         results, returned_cursor = db_connection.batch_execute(
-            ["SELECT 'reuse_test' as message"], 
+            ["SELECT 'reuse_test' as message"],
             reuse_cursor=existing_cursor,
-            auto_close=True  # Should not close existing cursor
+            auto_close=True,  # Should not close existing cursor
         )
-        
+
         # Should return the same cursor we passed in
-        assert returned_cursor is existing_cursor, "Should return the same cursor when reusing"
+        assert (
+            returned_cursor is existing_cursor
+        ), "Should return the same cursor when reusing"
         assert not returned_cursor.closed, "Existing cursor should not be auto-closed"
         assert results[0][0][0] == "reuse_test", "Should execute successfully"
-        
+
         # Test 2: Use batch_execute without reuse_cursor (should create new cursor and auto_close it)
         results2, returned_cursor2 = db_connection.batch_execute(
-            ["SELECT 'new_cursor_test' as message"], 
-            auto_close=True  # Should close new cursor
+            ["SELECT 'new_cursor_test' as message"],
+            auto_close=True,  # Should close new cursor
         )
-        
+
         assert returned_cursor2 is not existing_cursor, "Should create a new cursor"
         assert returned_cursor2.closed, "New cursor should be auto-closed"
         assert results2[0][0][0] == "new_cursor_test", "Should execute successfully"
-        
+
         # Original cursor should still be open
         assert not existing_cursor.closed, "Original cursor should still be open"
-        
+
     finally:
         # Clean up
         if not existing_cursor.closed:
@@ -8637,53 +8657,53 @@ def test_batch_execute_with_existing_cursor_reuse(db_connection):
 
 def test_connection_close_with_problematic_cursors(conn_str):
     """Test connection close behavior when cursors have issues."""
-    
+
     conn = connect(conn_str)
-    
+
     # Create several cursors, some of which we'll manipulate to cause issues
     cursor1 = conn.cursor()
     cursor2 = conn.cursor()
     cursor3 = conn.cursor()
-    
+
     # Execute some operations to make them active
     cursor1.execute("SELECT 1")
     cursor1.fetchall()
-    
-    cursor2.execute("SELECT 2")  
+
+    cursor2.execute("SELECT 2")
     cursor2.fetchall()
-    
+
     # Close one cursor manually but leave it in the cursors set
     cursor3.execute("SELECT 3")
     cursor3.fetchall()
     cursor3.close()  # This should trigger _remove_cursor
-    
+
     # Now close the connection - this should try to close remaining cursors
     # and trigger the cursor cleanup code (lines 1325-1335)
     conn.close()
-    
+
     # All cursors should be closed now
     assert cursor1.closed, "Cursor1 should be closed"
-    assert cursor2.closed, "Cursor2 should be closed" 
+    assert cursor2.closed, "Cursor2 should be closed"
     assert cursor3.closed, "Cursor3 should already be closed"
 
 
 def test_connection_searchescape_property_detailed(db_connection):
     """Test detailed searchescape property behavior including edge cases."""
-    
+
     # Clear any cached value to test fresh retrieval
     if hasattr(db_connection, "_searchescape"):
         delattr(db_connection, "_searchescape")
-    
+
     # First access should call getinfo and cache result
     escape_char = db_connection.searchescape
-    
+
     # Should be a string (either valid escape char or fallback)
     assert isinstance(escape_char, str), "Search escape should be a string"
-    
+
     # Should now have cached value
     assert hasattr(db_connection, "_searchescape"), "Should cache searchescape"
     assert db_connection._searchescape == escape_char, "Cached value should match"
-    
+
     # Second access should use cached value
     escape_char2 = db_connection.searchescape
     assert escape_char == escape_char2, "Should return same cached value"
@@ -8691,9 +8711,9 @@ def test_connection_searchescape_property_detailed(db_connection):
 
 def test_getinfo_comprehensive_edge_case_coverage(db_connection):
     """Test getinfo with comprehensive edge cases to hit various code paths."""
-    
+
     from mssql_python.constants import GetInfoConstants
-    
+
     # Test a wide range of info types to potentially hit different processing paths
     info_types_to_test = [
         # Standard string types
@@ -8703,42 +8723,48 @@ def test_getinfo_comprehensive_edge_case_coverage(db_connection):
         GetInfoConstants.SQL_USER_NAME.value,
         GetInfoConstants.SQL_IDENTIFIER_QUOTE_CHAR.value,
         GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value,
-        
         # Y/N types that might have different handling
         GetInfoConstants.SQL_ACCESSIBLE_TABLES.value,
         GetInfoConstants.SQL_ACCESSIBLE_PROCEDURES.value,
         GetInfoConstants.SQL_DATA_SOURCE_READ_ONLY.value,
-        
         # Numeric types with potentially different byte lengths
         GetInfoConstants.SQL_MAX_COLUMN_NAME_LEN.value,
         GetInfoConstants.SQL_MAX_TABLE_NAME_LEN.value,
         GetInfoConstants.SQL_MAX_SCHEMA_NAME_LEN.value,
         GetInfoConstants.SQL_TXN_CAPABLE.value,
-        
         # Edge cases - potentially unsupported or unusual
-        0, 1, 999, 1000, 9999, 10000
+        0,
+        1,
+        999,
+        1000,
+        9999,
+        10000,
     ]
-    
+
     for info_type in info_types_to_test:
         try:
             result = db_connection.getinfo(info_type)
-            
+
             # Result should be valid type or None
             if result is not None:
-                assert isinstance(result, (str, int, bool)), \
-                    f"Info type {info_type} returned invalid type {type(result)}"
-                
+                assert isinstance(
+                    result, (str, int, bool)
+                ), f"Info type {info_type} returned invalid type {type(result)}"
+
                 # Additional validation for known types
                 if info_type in {
                     GetInfoConstants.SQL_ACCESSIBLE_TABLES.value,
                     GetInfoConstants.SQL_ACCESSIBLE_PROCEDURES.value,
-                    GetInfoConstants.SQL_DATA_SOURCE_READ_ONLY.value
+                    GetInfoConstants.SQL_DATA_SOURCE_READ_ONLY.value,
                 }:
-                    assert result in ("Y", "N"), \
-                        f"Y/N info type {info_type} should return 'Y' or 'N', got {result}"
-                        
+                    assert result in (
+                        "Y",
+                        "N",
+                    ), f"Y/N info type {info_type} should return 'Y' or 'N', got {result}"
+
         except Exception as e:
             # Some info types might raise exceptions, which is acceptable
             # Just make sure it's not a critical error
-            assert not isinstance(e, (SystemError, MemoryError)), \
-                f"Info type {info_type} caused critical error: {e}"
+            assert not isinstance(
+                e, (SystemError, MemoryError)
+            ), f"Info type {info_type} caused critical error: {e}"

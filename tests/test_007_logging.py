@@ -248,24 +248,24 @@ def test_timestamp_in_log_filename(cleanup_logger):
 def test_invalid_logging_mode(cleanup_logger):
     """Test that invalid logging modes raise ValueError (Lines 130-138)."""
     from mssql_python.logging_config import LoggingManager
-    
+
     # Test invalid mode "invalid" - should trigger line 134
     manager = LoggingManager()
     with pytest.raises(ValueError, match="Invalid logging mode: invalid"):
         manager.setup(mode="invalid")
-    
+
     # Test another invalid mode "console" - should also trigger line 134
     with pytest.raises(ValueError, match="Invalid logging mode: console"):
         manager.setup(mode="console")
-    
+
     # Test invalid mode "both" - should also trigger line 134
     with pytest.raises(ValueError, match="Invalid logging mode: both"):
         manager.setup(mode="both")
-    
+
     # Test empty string mode - should trigger line 134
     with pytest.raises(ValueError, match="Invalid logging mode: "):
         manager.setup(mode="")
-    
+
     # Test None as mode (will become string "None") - should trigger line 134
     with pytest.raises(ValueError, match="Invalid logging mode: None"):
         manager.setup(mode=str(None))
@@ -274,7 +274,7 @@ def test_invalid_logging_mode(cleanup_logger):
 def test_valid_logging_modes_for_comparison(cleanup_logger):
     """Test that valid logging modes work correctly for comparison."""
     from mssql_python.logging_config import LoggingManager
-    
+
     # Test valid mode "file" - should not raise exception
     manager = LoggingManager()
     try:
@@ -283,13 +283,13 @@ def test_valid_logging_modes_for_comparison(cleanup_logger):
         assert manager.enabled is True
     except ValueError:
         pytest.fail("Valid mode 'file' should not raise ValueError")
-    
+
     # Reset manager for next test
     manager._enabled = False
     manager._initialized = False
     manager._logger = None
     manager._log_file = None
-    
+
     # Test valid mode "stdout" - should not raise exception
     try:
         logger = manager.setup(mode="stdout")
@@ -302,20 +302,20 @@ def test_valid_logging_modes_for_comparison(cleanup_logger):
 def test_logging_mode_validation_error_message_format(cleanup_logger):
     """Test that the error message format for invalid modes is correct."""
     from mssql_python.logging_config import LoggingManager
-    
+
     manager = LoggingManager()
-    
+
     # Test the exact error message format from line 134
     invalid_modes = ["invalid", "debug", "console", "stderr", "syslog"]
-    
+
     for invalid_mode in invalid_modes:
         with pytest.raises(ValueError) as exc_info:
             manager.setup(mode=invalid_mode)
-        
+
         # Verify the error message format matches line 134
         expected_message = f"Invalid logging mode: {invalid_mode}"
         assert str(exc_info.value) == expected_message
-        
+
         # Reset manager state for next iteration
         manager._enabled = False
         manager._initialized = False

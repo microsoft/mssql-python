@@ -233,7 +233,9 @@ class Connection:
         )
         self.setautocommit(autocommit)
 
-    def _construct_connection_string(self, connection_str: str = "", **kwargs: Any) -> str:
+    def _construct_connection_string(
+        self, connection_str: str = "", **kwargs: Any
+    ) -> str:
         """
         Construct the connection string by concatenating the connection string
         with key/value pairs from kwargs.
@@ -336,7 +338,9 @@ class Connection:
         """
         self._conn.set_autocommit(value)
 
-    def setencoding(self, encoding: Optional[str] = None, ctype: Optional[int] = None) -> None:
+    def setencoding(
+        self, encoding: Optional[str] = None, ctype: Optional[int] = None
+    ) -> None:
         """
         Sets the text encoding for SQL statements and text parameters.
 
@@ -445,7 +449,9 @@ class Connection:
 
         return self._encoding_settings.copy()
 
-    def setdecoding(self, sqltype: int, encoding: Optional[str] = None, ctype: Optional[int] = None) -> None:
+    def setdecoding(
+        self, sqltype: int, encoding: Optional[str] = None, ctype: Optional[int] = None
+    ) -> None:
         """
         Sets the text decoding used when reading SQL_CHAR and SQL_WCHAR from the database.
 
@@ -600,7 +606,9 @@ class Connection:
 
         return self._decoding_settings[sqltype].copy()
 
-    def set_attr(self, attribute: int, value: Union[int, str, bytes, bytearray]) -> None:
+    def set_attr(
+        self, attribute: int, value: Union[int, str, bytes, bytearray]
+    ) -> None:
         """
         Set a connection attribute.
 
@@ -761,7 +769,9 @@ class Connection:
                 self._conn.add_output_converter(sqltype, func)
         log("info", f"Added output converter for SQL type {sqltype}")
 
-    def get_output_converter(self, sqltype: Union[int, type]) -> Optional[Callable[[Any], Any]]:
+    def get_output_converter(
+        self, sqltype: Union[int, type]
+    ) -> Optional[Callable[[Any], Any]]:
         """
         Get the output converter function for the specified SQL type.
 
@@ -868,11 +878,11 @@ class Connection:
             raise
 
     def batch_execute(
-        self, 
-        statements: List[str], 
-        params: Optional[List[Union[None, Any, Tuple[Any, ...], List[Any]]]] = None, 
-        reuse_cursor: Optional[Cursor] = None, 
-        auto_close: bool = False
+        self,
+        statements: List[str],
+        params: Optional[List[Union[None, Any, Tuple[Any, ...], List[Any]]]] = None,
+        reuse_cursor: Optional[Cursor] = None,
+        auto_close: bool = False,
     ) -> Tuple[List[Union[List["Row"], int]], Cursor]:
         """
         Execute multiple SQL statements efficiently using a single cursor.

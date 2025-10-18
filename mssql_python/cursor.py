@@ -25,7 +25,9 @@ if TYPE_CHECKING:
     from mssql_python.connection import Connection
 
 # Constants for string handling
-MAX_INLINE_CHAR: int = 4000  # NVARCHAR/VARCHAR inline limit; this triggers NVARCHAR(MAX)/VARCHAR(MAX) + DAE
+MAX_INLINE_CHAR: int = (
+    4000  # NVARCHAR/VARCHAR inline limit; this triggers NVARCHAR(MAX)/VARCHAR(MAX) + DAE
+)
 SMALLMONEY_MIN: decimal.Decimal = decimal.Decimal("-214748.3648")
 SMALLMONEY_MAX: decimal.Decimal = decimal.Decimal("214748.3647")
 MONEY_MIN: decimal.Decimal = decimal.Decimal("-922337203685477.5808")
@@ -83,7 +85,19 @@ class Cursor:
         # self.connection.autocommit = False
         self.hstmt: Optional[Any] = None
         self._initialize_cursor()
-        self.description: Optional[List[Tuple[str, Any, Optional[int], Optional[int], Optional[int], Optional[int], Optional[bool]]]] = None
+        self.description: Optional[
+            List[
+                Tuple[
+                    str,
+                    Any,
+                    Optional[int],
+                    Optional[int],
+                    Optional[int],
+                    Optional[int],
+                    Optional[bool],
+                ]
+            ]
+        ] = None
         self.rowcount: int = -1
         self.arraysize: int = (
             1  # Default number of rows to fetch at a time is 1, user can change it
@@ -269,7 +283,14 @@ class Cursor:
         numeric_data.val = bytes(byte_array)
         return numeric_data
 
-    def _map_sql_type(self, param: Any, parameters_list: List[Any], i: int, min_val: Optional[Any] = None, max_val: Optional[Any] = None) -> Tuple[int, int, int, int, bool]:
+    def _map_sql_type(
+        self,
+        param: Any,
+        parameters_list: List[Any],
+        i: int,
+        min_val: Optional[Any] = None,
+        max_val: Optional[Any] = None,
+    ) -> Tuple[int, int, int, int, bool]:
         """
         Map a Python data type to the corresponding SQL type,
         C type, Column size, and Decimal digits.
@@ -701,7 +722,13 @@ class Cursor:
         return sql_to_c_type.get(sql_type, ddbc_sql_const.SQL_C_DEFAULT.value)
 
     def _create_parameter_types_list(
-        self, parameter: Any, param_info: Optional[Tuple[Any, ...]], parameters_list: List[Any], i: int, min_val: Optional[Any] = None, max_val: Optional[Any] = None
+        self,
+        parameter: Any,
+        param_info: Optional[Tuple[Any, ...]],
+        parameters_list: List[Any],
+        i: int,
+        min_val: Optional[Any] = None,
+        max_val: Optional[Any] = None,
     ) -> Tuple[int, int, int, int, bool]:
         """
         Maps parameter types for the given parameter.
@@ -1651,7 +1678,9 @@ class Cursor:
 
         return sample_value, None, None
 
-    def executemany(self, operation: str, seq_of_parameters: List[Sequence[Any]]) -> None:
+    def executemany(
+        self, operation: str, seq_of_parameters: List[Sequence[Any]]
+    ) -> None:
         """
         Prepare a database operation and execute it against all parameter sequences.
         This version uses column-wise parameter binding and a single batched SQLExecute().
@@ -2399,36 +2428,38 @@ class Cursor:
             log("error", f"Error executing tables query: {e}")
             raise
 
-    def callproc(self, procname: str, parameters: Optional[Sequence[Any]] = None) -> Optional[Sequence[Any]]:
+    def callproc(
+        self, procname: str, parameters: Optional[Sequence[Any]] = None
+    ) -> Optional[Sequence[Any]]:
         """
         Call a stored database procedure with the given name.
-        
+
         Args:
             procname: Name of the stored procedure to call
             parameters: Optional sequence of parameters to pass to the procedure
-            
+
         Returns:
             A sequence containing the result parameters (input parameters unchanged,
             output parameters with their new values)
-            
+
         Raises:
             NotSupportedError: This method is not yet implemented
         """
         raise NotSupportedError(
             driver_error="callproc() is not yet implemented",
-            ddbc_error="Stored procedure calls are not currently supported"
+            ddbc_error="Stored procedure calls are not currently supported",
         )
 
     def setoutputsize(self, size: int, column: Optional[int] = None) -> None:
         """
         Set a column buffer size for fetches of large columns.
-        
+
         This method is optional and is not implemented in this driver.
-        
+
         Args:
             size: Maximum size of the column buffer
             column: Optional column index (0-based) to set the size for
-            
+
         Note:
             This method is a no-op in this implementation as buffer sizes
             are managed automatically by the underlying driver.
