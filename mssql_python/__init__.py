@@ -211,8 +211,10 @@ def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) 
 _original_module_setattr = sys.modules[__name__].__setattr__
 
 # Export SQL constants at module level
+SQL_CHAR: int = ConstantsDDBC.SQL_CHAR.value
 SQL_VARCHAR: int = ConstantsDDBC.SQL_VARCHAR.value
 SQL_LONGVARCHAR: int = ConstantsDDBC.SQL_LONGVARCHAR.value
+SQL_WCHAR: int = ConstantsDDBC.SQL_WCHAR.value
 SQL_WVARCHAR: int = ConstantsDDBC.SQL_WVARCHAR.value
 SQL_WLONGVARCHAR: int = ConstantsDDBC.SQL_WLONGVARCHAR.value
 SQL_DECIMAL: int = ConstantsDDBC.SQL_DECIMAL.value

@@ -134,6 +134,140 @@ class TestAADAuth:
         with pytest.raises(RuntimeError, match="Azure AD authentication failed"):
             mock_get_token_failing("default")
 
+    def test_get_token_general_exception_handling_init_error(self):
+        """Test general Exception handling during credential initialization (Lines 52-56)."""
+        
+        # Test by modifying the mock credential classes to raise exceptions
+        import sys
+        
+        # Get the current azure.identity module (which is mocked)
+        azure_identity = sys.modules['azure.identity']
+        
+        # Store original credentials
+        original_default = azure_identity.DefaultAzureCredential
+        original_device = azure_identity.DeviceCodeCredential
+        original_interactive = azure_identity.InteractiveBrowserCredential
+        
+        # Create a mock credential that raises exceptions during initialization
+        class MockCredentialWithInitError:
+            def __init__(self):
+                raise ValueError("Mock credential initialization failed")
+            
+            def get_token(self, scope):
+                pass  # Won't be reached
+        
+        try:
+            # Test DefaultAzureCredential initialization error
+            azure_identity.DefaultAzureCredential = MockCredentialWithInitError
+            
+            with pytest.raises(RuntimeError) as exc_info:
+                AADAuth.get_token("default")
+            
+            # Verify the error message format (lines 54-56)
+            error_message = str(exc_info.value)
+            assert "Failed to create MockCredentialWithInitError" in error_message
+            assert "Mock credential initialization failed" in error_message
+            
+            # Verify exception chaining is preserved (from e)
+            assert exc_info.value.__cause__ is not None
+            assert isinstance(exc_info.value.__cause__, ValueError)
+            
+            # Test different exception types
+            class MockCredentialWithTypeError:
+                def __init__(self):
+                    raise TypeError("Invalid argument type passed")
+            
+            azure_identity.DeviceCodeCredential = MockCredentialWithTypeError
+            
+            with pytest.raises(RuntimeError) as exc_info:
+                AADAuth.get_token("devicecode")
+            
+            assert "Failed to create MockCredentialWithTypeError" in str(exc_info.value)
+            assert "Invalid argument type passed" in str(exc_info.value)
+            assert isinstance(exc_info.value.__cause__, TypeError)
+            
+        finally:
+            # Restore original credentials
+            azure_identity.DefaultAzureCredential = original_default
+            azure_identity.DeviceCodeCredential = original_device
+            azure_identity.InteractiveBrowserCredential = original_interactive
+
+    def test_get_token_general_exception_handling_token_error(self):
+        """Test general Exception handling during token retrieval (Lines 52-56)."""
+        
+        import sys
+        azure_identity = sys.modules['azure.identity']
+        
+        # Store original credentials
+        original_interactive = azure_identity.InteractiveBrowserCredential
+        
+        # Create a credential that fails during get_token call
+        class MockCredentialWithTokenError:
+            def __init__(self):
+                pass  # Successful initialization
+                
+            def get_token(self, scope):
+                raise OSError("Network connection failed during token retrieval")
+        
+        try:
+            azure_identity.InteractiveBrowserCredential = MockCredentialWithTokenError
+            
+            with pytest.raises(RuntimeError) as exc_info:
+                AADAuth.get_token("interactive")
+            
+            # Verify the error message format (lines 54-56)
+            error_message = str(exc_info.value)
+            assert "Failed to create MockCredentialWithTokenError" in error_message
+            assert "Network connection failed during token retrieval" in error_message
+            
+            # Verify exception chaining
+            assert exc_info.value.__cause__ is not None
+            assert isinstance(exc_info.value.__cause__, OSError)
+            
+        finally:
+            # Restore original credential
+            azure_identity.InteractiveBrowserCredential = original_interactive
+
+    def test_get_token_various_exception_types_coverage(self):
+        """Test coverage of different exception types (Lines 52-56)."""
+        
+        import sys
+        azure_identity = sys.modules['azure.identity']
+        
+        # Store original credential
+        original_default = azure_identity.DefaultAzureCredential
+        
+        # Test different exception types that could occur
+        exception_test_cases = [
+            (ImportError, "Required dependency missing"),
+            (AttributeError, "Missing required attribute"),
+            (RuntimeError, "Custom runtime error"),
+        ]
+        
+        for exception_type, exception_message in exception_test_cases:
+            class MockCredentialWithCustomError:
+                def __init__(self):
+                    raise exception_type(exception_message)
+            
+            try:
+                azure_identity.DefaultAzureCredential = MockCredentialWithCustomError
+                
+                with pytest.raises(RuntimeError) as exc_info:
+                    AADAuth.get_token("default")
+                
+                # Verify the error message format (lines 54-56)
+                error_message = str(exc_info.value)
+                assert "Failed to create MockCredentialWithCustomError" in error_message
+                assert exception_message in error_message
+                
+                # Verify exception chaining is preserved
+                assert exc_info.value.__cause__ is not None
+                assert isinstance(exc_info.value.__cause__, exception_type)
+                
+            finally:
+                # Restore for next iteration
+                azure_identity.DefaultAzureCredential = original_default
+
 
 class TestProcessAuthParameters:
     def test_empty_parameters(self):
