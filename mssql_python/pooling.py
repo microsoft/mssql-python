@@ -1,20 +1,19 @@
 # mssql_python/pooling.py
 import atexit
+from typing import Dict
 from mssql_python import ddbc_bindings
 import threading
 
+
 class PoolingManager:
-    _enabled = False
-    _initialized = False 
-    _pools_closed = False  # Track if pools have been closed
-    _lock = threading.Lock()
-    _config = {
-        "max_size": 100,
-        "idle_timeout": 600
-    }
+    _enabled: bool = False
+    _initialized: bool = False
+    _pools_closed: bool = False  # Track if pools have been closed
+    _lock: threading.Lock = threading.Lock()
+    _config: Dict[str, int] = {"max_size": 100, "idle_timeout": 600}
 
     @classmethod
-    def enable(cls, max_size=100, idle_timeout=600):
+    def enable(cls, max_size: int = 100, idle_timeout: int = 600) -> None:
         with cls._lock:
             if cls._enabled:
                 return
@@ -29,30 +28,33 @@ class PoolingManager:
             cls._initialized = True
 
     @classmethod
-    def disable(cls):
+    def disable(cls) -> None:
         with cls._lock:
-            if cls._enabled and not cls._pools_closed:  # Only cleanup if enabled and not already closed
+            if (
+                cls._enabled and not cls._pools_closed
+            ):  # Only cleanup if enabled and not already closed
                 ddbc_bindings.close_pooling()
             cls._pools_closed = True
             cls._enabled = False
             cls._initialized = True
 
     @classmethod
-    def is_enabled(cls):
+    def is_enabled(cls) -> bool:
         return cls._enabled
 
     @classmethod
-    def is_initialized(cls):
+    def is_initialized(cls) -> bool:
         return cls._initialized
 
     @classmethod
-    def _reset_for_testing(cls):
+    def _reset_for_testing(cls) -> None:
         """Reset pooling state - for testing purposes only"""
         with cls._lock:
             cls._enabled = False
             cls._initialized = False
             cls._pools_closed = False
-    
+
+
 @atexit.register
 def shutdown_pooling():
     with PoolingManager._lock:

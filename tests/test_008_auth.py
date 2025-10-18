@@ -12,16 +12,18 @@ from mssql_python.auth import (
     process_auth_parameters,
     remove_sensitive_params,
     get_auth_token,
-    process_connection_string
+    process_connection_string,
 )
 from mssql_python.constants import AuthType
 import secrets
 
 SAMPLE_TOKEN = secrets.token_hex(44)
 
+
 @pytest.fixture(autouse=True)
 def setup_azure_identity():
     """Setup mock azure.identity module"""
+
     class MockToken:
         token = SAMPLE_TOKEN
 
@@ -51,26 +53,28 @@ def setup_azure_identity():
             ClientAuthenticationError = MockClientAuthenticationError
 
     # Create mock azure module if it doesn't exist
-    if 'azure' not in sys.modules:
-        sys.modules['azure'] = type('MockAzure', (), {})()
-    
+    if "azure" not in sys.modules:
+        sys.modules["azure"] = type("MockAzure", (), {})()
+
     # Add identity and core modules to azure
-    sys.modules['azure.identity'] = MockIdentity()
-    sys.modules['azure.core'] = MockCore()
-    sys.modules['azure.core.exceptions'] = MockCore.exceptions()
-    
+    sys.modules["azure.identity"] = MockIdentity()
+    sys.modules["azure.core"] = MockCore()
+    sys.modules["azure.core.exceptions"] = MockCore.exceptions()
+
     yield
-    
+
     # Cleanup
-    for module in ['azure.identity', 'azure.core', 'azure.core.exceptions']:
+    for module in ["azure.identity", "azure.core", "azure.core.exceptions"]:
         if module in sys.modules:
             del sys.modules[module]
+
 
 class TestAuthType:
     def test_auth_type_constants(self):
         assert AuthType.INTERACTIVE.value == "activedirectoryinteractive"
         assert AuthType.DEVICE_CODE.value == "activedirectorydevicecode"
         assert AuthType.DEFAULT.value == "activedirectorydefault"
+
 
 class TestAADAuth:
     def test_get_token_struct(self):
@@ -101,19 +105,22 @@ class TestAADAuth:
     def test_get_token_client_authentication_error(self):
         """Test that ClientAuthenticationError is properly handled"""
         from azure.core.exceptions import ClientAuthenticationError
-        
+
         # Create a mock credential that raises ClientAuthenticationError
         class MockFailingCredential:
             def get_token(self, scope):
                 raise ClientAuthenticationError("Mock authentication failed")
-        
+
         # Use monkeypatch to mock the credential creation
         def mock_get_token_failing(auth_type):
             from azure.core.exceptions import ClientAuthenticationError
+
             if auth_type == "default":
                 try:
                     credential = MockFailingCredential()
-                    token = credential.get_token("https://database.windows.net/.default").token
+                    token = credential.get_token(
+                        "https://database.windows.net/.default"
+                    ).token
                     return AADAuth.get_token_struct(token)
                 except ClientAuthenticationError as e:
                     raise RuntimeError(
@@ -123,9 +130,10 @@ class TestAADAuth:
                     ) from e
             else:
                 return AADAuth.get_token(auth_type)
-        
+
         with pytest.raises(RuntimeError, match="Azure AD authentication failed"):
             mock_get_token_failing("default")
+
 
 class TestProcessAuthParameters:
     def test_empty_parameters(self):
@@ -156,6 +164,7 @@ class TestProcessAuthParameters:
         _, auth_type = process_auth_parameters(params)
         assert auth_type == "default"
 
+
 class TestRemoveSensitiveParams:
     def test_remove_sensitive_parameters(self):
         params = [
@@ -165,7 +174,7 @@ class TestRemoveSensitiveParams:
             "Encrypt=yes",
             "TrustServerCertificate=yes",
             "Authentication=ActiveDirectoryDefault",
-            "Database=testdb"
+            "Database=testdb",
         ]
         filtered_params = remove_sensitive_params(params)
         assert "Server=test" in filtered_params
@@ -176,11 +185,12 @@ class TestRemoveSensitiveParams:
         assert "TrustServerCertificate=yes" not in filtered_params
         assert "Authentication=ActiveDirectoryDefault" not in filtered_params
 
+
 class TestProcessConnectionString:
     def test_process_connection_string_with_default_auth(self):
         conn_str = "Server=test;Authentication=ActiveDirectoryDefault;Database=testdb"
         result_str, attrs = process_connection_string(conn_str)
-        
+
         assert "Server=test" in result_str
         assert "Database=testdb" in result_str
         assert attrs is not None
@@ -190,7 +200,7 @@ class TestProcessConnectionString:
     def test_process_connection_string_no_auth(self):
         conn_str = "Server=test;Database=testdb;UID=user;PWD=password"
         result_str, attrs = process_connection_string(conn_str)
-        
+
         assert "Server=test" in result_str
         assert "Database=testdb" in result_str
         assert "UID=user" in result_str
@@ -199,14 +209,17 @@ class TestProcessConnectionString:
 
     def test_process_connection_string_interactive_non_windows(self, monkeypatch):
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
-        conn_str = "Server=test;Authentication=ActiveDirectoryInteractive;Database=testdb"
+        conn_str = (
+            "Server=test;Authentication=ActiveDirectoryInteractive;Database=testdb"
+        )
         result_str, attrs = process_connection_string(conn_str)
-        
+
         assert "Server=test" in result_str
         assert "Database=testdb" in result_str
         assert attrs is not None
         assert 1256 in attrs
         assert isinstance(attrs[1256], bytes)
+
 
 def test_error_handling():
     # Empty string should raise ValueError
