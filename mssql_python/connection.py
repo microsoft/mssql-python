@@ -16,6 +16,7 @@ import re
 import codecs
 from typing import Any, Dict, Optional, Union, List, Tuple, Callable, TYPE_CHECKING
 import threading
+
 from mssql_python.cursor import Cursor
 from mssql_python.helpers import (
     add_driver_to_connection_str,
@@ -26,9 +27,20 @@ from mssql_python.helpers import (
 )
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
-from mssql_python.exceptions import InterfaceError, ProgrammingError
+from mssql_python.exceptions import (
+    Warning,  # pylint: disable=redefined-builtin
+    Error,
+    InterfaceError,
+    DatabaseError,
+    DataError,
+    OperationalError,
+    IntegrityError,
+    InternalError,
+    ProgrammingError,
+    NotSupportedError,
+)
 from mssql_python.auth import process_connection_string
-from mssql_python.constants import ConstantsDDBC
+from mssql_python.constants import ConstantsDDBC, GetInfoConstants
 
 if TYPE_CHECKING:
     from mssql_python.row import Row
@@ -61,22 +73,6 @@ def _validate_encoding(encoding: str) -> bool:
         return True
     except LookupError:
         return False
-
-
-# Import all DB-API 2.0 exception classes for Connection attributes
-from mssql_python.exceptions import (
-    Warning,
-    Error,
-    InterfaceError,
-    DatabaseError,
-    DataError,
-    OperationalError,
-    IntegrityError,
-    InternalError,
-    ProgrammingError,
-    NotSupportedError,
-)
-from mssql_python.constants import GetInfoConstants
 
 
 class Connection:
@@ -121,7 +117,8 @@ class Connection:
     """
 
     # DB-API 2.0 Exception attributes
-    # These allow users to catch exceptions using connection.Error, connection.ProgrammingError, etc.
+    # These allow users to catch exceptions using connection.Error,
+    # connection.ProgrammingError, etc.
     Warning = Warning
     Error = Error
     InterfaceError = InterfaceError
@@ -146,13 +143,14 @@ class Connection:
 
         Args:
             connection_str (str): The connection string to connect to.
-            autocommit (bool): If True, causes a commit to be performed after each SQL statement.
+            autocommit (bool): If True, causes a commit to be performed after
+                              each SQL statement.
             attrs_before (dict, optional): Dictionary of connection attributes to set before
                                           connection establishment. Keys are SQL_ATTR_* constants,
                                           and values are their corresponding settings.
-                                          Use this for attributes that must be set before connecting,
-                                          such as SQL_ATTR_LOGIN_TIMEOUT, SQL_ATTR_ODBC_CURSORS,
-                                          and SQL_ATTR_PACKET_SIZE.
+                                          Use this for attributes that must be set before
+                                          connecting, such as SQL_ATTR_LOGIN_TIMEOUT,
+                                          SQL_ATTR_ODBC_CURSORS, and SQL_ATTR_PACKET_SIZE.
             timeout (int): Login timeout in seconds. 0 means no timeout.
             **kwargs: Additional key/value pairs for the connection string.
 
@@ -213,16 +211,23 @@ class Connection:
         self._closed = False
         self._timeout = timeout
 
-        # Using WeakSet which automatically removes cursors when they are no longer in use
+        # Using WeakSet which automatically removes cursors when they are no
+        # longer in use
         # It is a set that holds weak references to its elements.
-        # When an object is only weakly referenced, it can be garbage collected even if it's still in the set.
-        # It prevents memory leaks by ensuring that cursors are cleaned up when no longer in use without requiring explicit deletion.
-        # TODO: Think and implement scenarios for multi-threaded access to cursors
+        # When an object is only weakly referenced, it can be garbage
+        # collected even if it's still in the set.
+        # It prevents memory leaks by ensuring that cursors are cleaned up
+        # when no longer in use without requiring explicit deletion.
+        # TODO: Think and implement scenarios for multi-threaded access
+        # to cursors
         self._cursors = weakref.WeakSet()
 
         # Initialize output converters dictionary and its lock for thread safety
         self._output_converters = {}
         self._converters_lock = threading.Lock()
+
+        # Initialize search escape character
+        self._searchescape = None
 
         # Auto-enable pooling if user never called
         if not PoolingManager.is_initialized():
@@ -352,7 +357,8 @@ class Connection:
                 encoding that converts text to bytes. If None, defaults to 'utf-16le'.
             ctype (int, optional): The C data type to use when passing data:
                 SQL_CHAR or SQL_WCHAR. If not provided, SQL_WCHAR is used for
-                UTF-16 variants (see UTF16_ENCODINGS constant). SQL_CHAR is used for all other encodings.
+                UTF-16 variants (see UTF16_ENCODINGS constant). SQL_CHAR is used
+                for all other encodings.
 
         Returns:
             None
@@ -412,7 +418,10 @@ class Connection:
             )
             raise ProgrammingError(
                 driver_error=f"Invalid ctype: {ctype}",
-                ddbc_error=f"ctype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) or SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value})",
+                ddbc_error=(
+                    f"ctype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) or "
+                    f"SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value})"
+                ),
             )
 
         # Store the encoding settings
@@ -482,7 +491,8 @@ class Connection:
             cnxn.setdecoding(mssql_python.SQL_WMETADATA, encoding='utf-16le')
 
             # Use explicit ctype
-            cnxn.setdecoding(mssql_python.SQL_WCHAR, encoding='utf-16le', ctype=mssql_python.SQL_WCHAR)
+            cnxn.setdecoding(mssql_python.SQL_WCHAR, encoding='utf-16le',
+                           ctype=mssql_python.SQL_WCHAR)
         """
         if self._closed:
             raise InterfaceError(
@@ -504,7 +514,11 @@ class Connection:
             )
             raise ProgrammingError(
                 driver_error=f"Invalid sqltype: {sqltype}",
-                ddbc_error=f"sqltype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}), SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value}), or SQL_WMETADATA ({SQL_WMETADATA})",
+                ddbc_error=(
+                    f"sqltype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}), "
+                    f"SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value}), or "
+                    f"SQL_WMETADATA ({SQL_WMETADATA})"
+                ),
             )
 
         # Set default encoding based on sqltype if not provided
@@ -546,7 +560,10 @@ class Connection:
             )
             raise ProgrammingError(
                 driver_error=f"Invalid ctype: {ctype}",
-                ddbc_error=f"ctype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) or SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value})",
+                ddbc_error=(
+                    f"ctype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) or "
+                    f"SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value})"
+                ),
             )
 
         # Store the decoding settings for the specified sqltype
@@ -601,7 +618,11 @@ class Connection:
         if sqltype not in valid_sqltypes:
             raise ProgrammingError(
                 driver_error=f"Invalid sqltype: {sqltype}",
-                ddbc_error=f"sqltype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}), SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value}), or SQL_WMETADATA ({SQL_WMETADATA})",
+                ddbc_error=(
+                    f"sqltype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}), "
+                    f"SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value}), or "
+                    f"SQL_WMETADATA ({SQL_WMETADATA})"
+                ),
             )
 
         return self._decoding_settings[sqltype].copy()
@@ -679,8 +700,7 @@ class Connection:
                 or "cast" in error_str
             ):
                 raise InterfaceError(error_msg, str(e)) from e
-            else:
-                raise ProgrammingError(error_msg, str(e)) from e
+            raise ProgrammingError(error_msg, str(e)) from e
 
     @property
     def searchescape(self) -> str:
@@ -692,7 +712,7 @@ class Connection:
         Returns:
             str: The search pattern escape character (usually '\' or another character)
         """
-        if not hasattr(self, "_searchescape"):
+        if not hasattr(self, "_searchescape") or self._searchescape is None:
             try:
                 escape_char = self.getinfo(
                     GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value
@@ -700,13 +720,16 @@ class Connection:
                 # Some drivers might return this as an integer memory address
                 # or other non-string format, so ensure we have a string
                 if not isinstance(escape_char, str):
-                    escape_char = "\\"  # Default to backslash if not a string
+                    # Default to backslash if not a string
+                    escape_char = "\\"
                 self._searchescape = escape_char
             except Exception as e:
                 # Log the exception for debugging, but do not expose sensitive info
                 log(
                     "warning",
-                    f"Failed to retrieve search escape character, using default '\\'. Exception: {type(e).__name__}",
+                    "Failed to retrieve search escape character, using default '\\'. "
+                    "Exception: %s",
+                    type(e).__name__,
                 )
                 self._searchescape = "\\"
         return self._searchescape
@@ -726,7 +749,6 @@ class Connection:
             DatabaseError: If there is an error while creating the cursor.
             InterfaceError: If there is an error related to the database interface.
         """
-        """Return a new Cursor object using the connection."""
         if self._closed:
             # raise InterfaceError
             raise InterfaceError(
@@ -986,7 +1008,7 @@ class Connection:
                     )
                     raise
 
-        except Exception as e:
+        except Exception:
             # If an error occurs and auto_close is True, close the cursor
             if auto_close:
                 try:
@@ -1050,7 +1072,7 @@ class Connection:
         # Get the raw result from the C++ layer
         try:
             raw_result = self._conn.get_info(info_type)
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             # Log the error and return None for invalid info types
             log("warning", f"getinfo({info_type}) failed: {e}")
             return None
@@ -1147,7 +1169,9 @@ class Connection:
                         except Exception as e:
                             log(
                                 "error",
-                                f"Failed to decode string in getinfo: {e}. Returning None to avoid silent corruption.",
+                                "Failed to decode string in getinfo: %s. "
+                                "Returning None to avoid silent corruption.",
+                                e,
                             )
                             # Explicitly return None to signal decoding failure
                             return None
@@ -1160,11 +1184,9 @@ class Connection:
                     byte_val = data[0]
                     if byte_val in (b"Y"[0], b"y"[0], 1):
                         return "Y"
-                    else:
-                        return "N"
-                else:
-                    # If it's not a byte or we can't determine, default to 'N'
                     return "N"
+                # If it's not a byte or we can't determine, default to 'N'
+                return "N"
             elif is_numeric_type:
                 # Handle numeric types based on length
                 if isinstance(data, bytes):
@@ -1235,26 +1257,26 @@ class Connection:
 
                     # Return as is if we can't convert
                     return data
-            else:
-                # For other types, try to determine the most appropriate type
-                if isinstance(data, bytes):
-                    # Try to convert to string first
-                    try:
-                        return data[:length].decode("utf-8").rstrip("\0")
-                    except UnicodeDecodeError:
-                        pass
 
-                    # Try to convert to int for short binary data
-                    try:
-                        if length <= 8:
-                            return int.from_bytes(data[:length], "little", signed=True)
-                    except Exception:
-                        pass
+            # For other types, try to determine the most appropriate type
+            if isinstance(data, bytes):
+                # Try to convert to string first
+                try:
+                    return data[:length].decode("utf-8").rstrip("\0")
+                except UnicodeDecodeError:
+                    pass
 
-                    # Return as is if we can't determine
-                    return data
-                else:
-                    return data
+                # Try to convert to int for short binary data
+                try:
+                    if length <= 8:
+                        return int.from_bytes(data[:length], "little", signed=True)
+                except Exception:  # pylint: disable=broad-exception-caught
+                    pass
+
+                # Return as is if we can't determine
+                return data
+
+            return data
 
         return raw_result  # Return as-is
 
@@ -1332,7 +1354,7 @@ class Connection:
                 try:
                     if not cursor.closed:
                         cursor.close()
-                except Exception as e:
+                except Exception as e:  # pylint: disable=broad-exception-caught
                     # Collect errors but continue closing other cursors
                     close_errors.append(f"Error closing cursor: {e}")
                     log("warning", f"Error closing cursor: {e}")
@@ -1341,10 +1363,12 @@ class Connection:
             if close_errors:
                 log(
                     "warning",
-                    f"Encountered {len(close_errors)} errors while closing cursors",
+                    "Encountered %d errors while closing cursors",
+                    len(close_errors),
                 )
 
-            # Clear the cursor set explicitly to release any internal references
+            # Clear the cursor set explicitly to release any internal
+            # references
             self._cursors.clear()
 
         # Close the connection even if cursor cleanup had issues
@@ -1353,7 +1377,8 @@ class Connection:
                 if not self.autocommit:
                     # If autocommit is disabled, rollback any uncommitted changes
                     # This is important to ensure no partial transactions remain
-                    # For autocommit True, this is not necessary as each statement is committed immediately
+                    # For autocommit True, this is not necessary as each statement is
+                    # committed immediately
                     log(
                         "info",
                         "Rolling back uncommitted changes before closing connection.",
@@ -1411,15 +1436,17 @@ class Connection:
         """
         Exit the context manager.
 
-        Closes the connection when exiting the context, ensuring proper resource cleanup.
-        This follows the modern standard used by most database libraries.
+        Closes the connection when exiting the context, ensuring proper
+        resource cleanup. This follows the modern standard used by most
+        database libraries.
         """
         if not self._closed:
             self.close()
 
     def __del__(self) -> None:
         """
-        Destructor to ensure the connection is closed when the connection object is no longer needed.
+        Destructor to ensure the connection is closed when the connection object
+        is no longer needed.
         This is a safety net to ensure resources are cleaned up
         even if close() was not called explicitly.
         """

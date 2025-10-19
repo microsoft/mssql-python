@@ -4,13 +4,15 @@ Licensed under the MIT license.
 This module provides helper functions for the mssql_python package.
 """
 
+import re
+import threading
+import locale
 from typing import Any, Union, Tuple, Optional
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import raise_exception
 from mssql_python.logging_config import get_logger
-import re
 from mssql_python.constants import ConstantsDDBC
-from mssql_python.ddbc_bindings import normalize_architecture
+# normalize_architecture import removed as it's unused
 
 logger = get_logger()
 
@@ -52,7 +54,7 @@ def add_driver_to_connection_str(connection_str: str) -> str:
         connection_str = ";".join(final_connection_attributes)
 
     except Exception as e:
-        raise Exception(
+        raise ValueError(
             "Invalid connection string, Please follow the format: "
             "Server=server_name;Database=database_name;UID=user_name;PWD=password"
         ) from e
@@ -125,8 +127,6 @@ def sanitize_connection_string(conn_str: str) -> str:
     """
     # Remove sensitive information from the connection string, Pwd section
     # Replace Pwd=...; or Pwd=... (end of string) with Pwd=***;
-    import re
-
     return re.sub(r"(Pwd\s*=\s*)[^;]*", r"\1***", conn_str, flags=re.IGNORECASE)
 
 
@@ -146,8 +146,6 @@ def sanitize_user_input(user_input: str, max_length: int = 50) -> str:
         return "<non-string>"
 
     # Remove control characters and non-printable characters
-    import re
-
     # Allow alphanumeric, dash, underscore, and dot (common in encoding names)
     sanitized = re.sub(r"[^\w\-\.]", "", user_input)
 
@@ -187,7 +185,7 @@ def validate_attribute_value(
         if not isinstance(input_val, str):
             try:
                 input_val = str(input_val)
-            except:
+            except (TypeError, ValueError):
                 return "<non-string>"
 
         # Allow alphanumeric, dash, underscore, and dot
@@ -215,7 +213,7 @@ def validate_attribute_value(
         )
 
     # Define driver-level attributes that are supported
-    SUPPORTED_ATTRIBUTES = [
+    supported_attributes = [
         ConstantsDDBC.SQL_ATTR_ACCESS_MODE.value,
         ConstantsDDBC.SQL_ATTR_CONNECTION_TIMEOUT.value,
         ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value,
@@ -225,7 +223,7 @@ def validate_attribute_value(
     ]
 
     # Check if attribute is supported
-    if attribute not in SUPPORTED_ATTRIBUTES:
+    if attribute not in supported_attributes:
         return (
             False,
             f"Unsupported attribute: {attribute}",
@@ -234,13 +232,13 @@ def validate_attribute_value(
         )
 
     # Check timing constraints for these specific attributes
-    BEFORE_ONLY_ATTRIBUTES = [
+    before_only_attributes = [
         ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value,
         ConstantsDDBC.SQL_ATTR_PACKET_SIZE.value,
     ]
 
     # Check if attribute can be set at the current connection state
-    if is_connected and attribute in BEFORE_ONLY_ATTRIBUTES:
+    if is_connected and attribute in before_only_attributes:
         return (
             False,
             (
@@ -264,22 +262,22 @@ def validate_attribute_value(
 
     elif isinstance(value, str):
         # Basic string length check
-        MAX_STRING_SIZE = 8192  # 8KB maximum
-        if len(value) > MAX_STRING_SIZE:
+        max_string_size = 8192  # 8KB maximum
+        if len(value) > max_string_size:
             return (
                 False,
-                f"String value too large: {len(value)} bytes (max {MAX_STRING_SIZE})",
+                f"String value too large: {len(value)} bytes (max {max_string_size})",
                 sanitized_attr,
                 sanitized_val,
             )
 
     elif isinstance(value, (bytes, bytearray)):
         # Basic binary length check
-        MAX_BINARY_SIZE = 32768  # 32KB maximum
-        if len(value) > MAX_BINARY_SIZE:
+        max_binary_size = 32768  # 32KB maximum
+        if len(value) > max_binary_size:
             return (
                 False,
-                f"Binary value too large: {len(value)} bytes (max {MAX_BINARY_SIZE})",
+                f"Binary value too large: {len(value)} bytes (max {max_binary_size})",
                 sanitized_attr,
                 sanitized_val,
             )
@@ -306,6 +304,45 @@ def log(level: str, message: str, *args) -> None:
         message: Log message with optional format placeholders
         *args: Arguments for message formatting
     """
-    logger = get_logger()
-    if logger:
-        getattr(logger, level)(message, *args)
+    current_logger = get_logger()
+    if current_logger:
+        getattr(current_logger, level)(message, *args)
+
+
+# Settings functionality moved here to avoid circular imports
+
+# Initialize the locale setting only once at module import time
+# This avoids thread-safety issues with locale
+_default_decimal_separator: str = "."
+try:
+    # Get the locale setting once during module initialization
+    locale_separator = locale.localeconv()["decimal_point"]
+    if locale_separator and len(locale_separator) == 1:
+        _default_decimal_separator = locale_separator
+except (AttributeError, KeyError, TypeError, ValueError):
+    pass  # Keep the default "." if locale access fails
+
+
+class Settings:
+    """
+    Settings class for mssql_python package configuration.
+    
+    This class holds global settings that affect the behavior of the package,
+    including lowercase column names, decimal separator, and native UUID handling.
+    """
+    def __init__(self) -> None:
+        self.lowercase: bool = False
+        # Use the pre-determined separator - no locale access here
+        self.decimal_separator: str = _default_decimal_separator
+        self.native_uuid: bool = False  # Default to False for backwards compatibility
+
+
+# Global settings instance
+_settings: Settings = Settings()
+_settings_lock: threading.Lock = threading.Lock()
+
+
+def get_settings() -> Settings:
+    """Return the global settings object"""
+    with _settings_lock:
+        return _settings

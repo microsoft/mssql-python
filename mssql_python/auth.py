@@ -22,12 +22,20 @@ class AADAuth:
     @staticmethod
     def get_token(auth_type: str) -> bytes:
         """Get token using the specified authentication type"""
-        from azure.identity import (
-            DefaultAzureCredential,
-            DeviceCodeCredential,
-            InteractiveBrowserCredential,
-        )
-        from azure.core.exceptions import ClientAuthenticationError
+        # Import Azure libraries inside method to support test mocking
+        # pylint: disable=import-outside-toplevel
+        try:
+            from azure.identity import (
+                DefaultAzureCredential,
+                DeviceCodeCredential,
+                InteractiveBrowserCredential,
+            )
+            from azure.core.exceptions import ClientAuthenticationError
+        except ImportError as e:
+            raise RuntimeError(
+                "Azure authentication libraries are not installed. "
+                "Please install with: pip install azure-identity azure-core"
+            ) from e
 
         # Mapping of auth types to credential classes
         credential_map = {

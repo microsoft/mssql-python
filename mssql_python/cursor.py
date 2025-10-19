@@ -8,6 +8,7 @@ Resource Management:
 - Do not use a cursor after it is closed, or after its parent connection is closed.
 - Use close() to release resources held by the cursor as soon as it is no longer needed.
 """
+# pylint: disable=too-many-lines  # Large file due to comprehensive DB-API 2.0 implementation
 
 import decimal
 import uuid
@@ -34,7 +35,7 @@ MONEY_MIN: decimal.Decimal = decimal.Decimal("-922337203685477.5808")
 MONEY_MAX: decimal.Decimal = decimal.Decimal("922337203685477.5807")
 
 
-class Cursor:
+class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
     """
     Represents a database cursor, which is used to manage the context of a fetch operation.
 
@@ -112,6 +113,10 @@ class Cursor:
             False
         ]  # Indicates if last_executed_stmt was prepared by ddbc shim.
         # Is a list instead of a bool coz bools in Python are immutable.
+
+        # Initialize attributes that may be defined later to avoid pylint warnings
+        # Note: _original_fetch* methods are not initialized here as they need to be
+        # conditionally set based on hasattr() checks
         # Hence, we can't pass around bools by reference & modify them.
         # Therefore, it must be a list with exactly one bool element.
 
@@ -283,7 +288,7 @@ class Cursor:
         numeric_data.val = bytes(byte_array)
         return numeric_data
 
-    def _map_sql_type(
+    def _map_sql_type(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements,too-many-branches
         self,
         param: Any,
         parameters_list: List[Any],
@@ -403,7 +408,7 @@ class Cursor:
                     0,
                     False,
                 )
-            elif MONEY_MIN <= param <= MONEY_MAX:
+            if MONEY_MIN <= param <= MONEY_MAX:
                 # money
                 parameters_list[i] = str(param)
                 return (
@@ -413,16 +418,15 @@ class Cursor:
                     0,
                     False,
                 )
-            else:
-                # fallback to generic numeric binding
-                parameters_list[i] = self._get_numeric_data(param)
-                return (
-                    ddbc_sql_const.SQL_NUMERIC.value,
-                    ddbc_sql_const.SQL_C_NUMERIC.value,
-                    parameters_list[i].precision,
-                    parameters_list[i].scale,
-                    False,
-                )
+            # fallback to generic numeric binding
+            parameters_list[i] = self._get_numeric_data(param)
+            return (
+                ddbc_sql_const.SQL_NUMERIC.value,
+                ddbc_sql_const.SQL_C_NUMERIC.value,
+                parameters_list[i].precision,
+                parameters_list[i].scale,
+                False,
+            )
 
         if isinstance(param, uuid.UUID):
             parameters_list[i] = param.bytes_le
@@ -497,14 +501,14 @@ class Cursor:
                     0,
                     True,
                 )
-            else:  # Small blobs → direct binding
-                return (
-                    ddbc_sql_const.SQL_VARBINARY.value,
-                    ddbc_sql_const.SQL_C_BINARY.value,
-                    max(length, 1),
-                    0,
-                    False,
-                )
+            # Small blobs → direct binding
+            return (
+                ddbc_sql_const.SQL_VARBINARY.value,
+                ddbc_sql_const.SQL_C_BINARY.value,
+                max(length, 1),
+                0,
+                False,
+            )
 
         if isinstance(param, datetime.datetime):
             if param.tzinfo is not None:
@@ -516,15 +520,14 @@ class Cursor:
                     7,
                     False,
                 )
-            else:
-                # Naive datetime -> TIMESTAMP
-                return (
-                    ddbc_sql_const.SQL_TIMESTAMP.value,
-                    ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
-                    26,
-                    6,
-                    False,
-                )
+            # Naive datetime -> TIMESTAMP
+            return (
+                ddbc_sql_const.SQL_TIMESTAMP.value,
+                ddbc_sql_const.SQL_C_TYPE_TIMESTAMP.value,
+                26,
+                6,
+                False,
+            )
 
         if isinstance(param, datetime.date):
             return (
@@ -599,7 +602,7 @@ class Cursor:
         ):
             try:
                 self.connection._cursors.discard(self)
-            except Exception as e:
+            except Exception as e:  # pylint: disable=broad-exception-caught
                 log("warning", "Error removing cursor from connection tracking: %s", e)
 
         if self.hstmt:
@@ -673,7 +676,8 @@ class Cursor:
 
                     if not isinstance(decimal_digits, int) or decimal_digits < 0:
                         raise ValueError(
-                            f"Invalid decimal digits: {decimal_digits}. Must be a non-negative integer."
+                            f"Invalid decimal digits: {decimal_digits}. "
+                            f"Must be a non-negative integer."
                         )
 
                     self._inputsizes.append((sql_type, column_size, decimal_digits))
@@ -721,7 +725,7 @@ class Cursor:
         }
         return sql_to_c_type.get(sql_type, ddbc_sql_const.SQL_C_DEFAULT.value)
 
-    def _create_parameter_types_list(
+    def _create_parameter_types_list(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         parameter: Any,
         param_info: Optional[Tuple[Any, ...]],
@@ -797,7 +801,7 @@ class Cursor:
             return
 
         description = []
-        for i, col in enumerate(column_metadata):
+        for _, col in enumerate(column_metadata):
             # Get column name - lowercase it if the lowercase flag is set
             column_name = col["ColumnName"]
 
@@ -989,9 +993,9 @@ class Cursor:
         Raises:
             StopIteration: When no more rows are available.
         """
-        return self.__next__()
+        return next(self)
 
-    def execute(
+    def execute(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
         self,
         operation: str,
         *parameters,
@@ -1035,7 +1039,7 @@ class Cursor:
                 )
                 check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
                 log("debug", f"Set query timeout to {timeout_value} seconds")
-            except Exception as e:
+            except Exception as e:  # pylint: disable=broad-exception-caught
                 log("warning", f"Failed to set query timeout: {e}")
 
         param_info = ddbc_bindings.ParamInfo
@@ -1053,7 +1057,8 @@ class Cursor:
 
                 warnings.warn(
                     f"Number of input sizes ({len(self._inputsizes)}) does not match "
-                    f"number of parameters ({len(parameters)}). This may lead to unexpected behavior.",
+                    f"number of parameters ({len(parameters)}). "
+                    f"This may lead to unexpected behavior.",
                     Warning,
                 )
 
@@ -1101,7 +1106,7 @@ class Cursor:
 
             # Check for errors but don't raise exceptions for info/warning messages
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             log("warning", "Execute failed, resetting cursor: %s", e)
             self._reset_cursor()
             raise
@@ -1124,7 +1129,7 @@ class Cursor:
             # a successful SQLExecute/SQLExecDirect for the first result set
             ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
             self._initialize_description(column_metadata)
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             # If describe fails, it's likely there are no results (e.g., for INSERT)
             self.description = None
 
@@ -1132,13 +1137,13 @@ class Cursor:
         if self.description:  # If we have column descriptions, it's likely a SELECT
             # Capture settings snapshot for this result set
             settings = get_settings()
-            self._settings_snapshot = {
+            self._settings_snapshot = {  # pylint: disable=attribute-defined-outside-init
                 "lowercase": settings.lowercase,
                 "native_uuid": settings.native_uuid,
             }
             # Identify UUID columns based on Python type in description[1]
             # This relies on _map_data_type correctly mapping SQL_GUID to uuid.UUID
-            self._uuid_indices = []
+            self._uuid_indices = []  # pylint: disable=attribute-defined-outside-init
             for i, desc in enumerate(self.description):
                 if desc and desc[1] == uuid.UUID:  # Column type code at index 1
                     self._uuid_indices.append(i)
@@ -1158,7 +1163,7 @@ class Cursor:
         # Return self for method chaining
         return self
 
-    def _prepare_metadata_result_set(
+    def _prepare_metadata_result_set(  # pylint: disable=too-many-statements
         self, column_metadata=None, fallback_description=None, specialized_mapping=None
     ):
         """
@@ -1185,11 +1190,12 @@ class Cursor:
                 ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
             except InterfaceError as e:
                 log("error", f"Driver interface error during metadata retrieval: {e}")
-            except Exception as e:
+            except Exception as e:  # pylint: disable=broad-exception-caught
                 # Log the exception with appropriate context
                 log(
                     "error",
-                    f"Failed to retrieve column metadata: {e}. Using standard ODBC column definitions instead.",
+                    f"Failed to retrieve column metadata: {e}. "
+                    f"Using standard ODBC column definitions instead.",
                 )
 
         # Initialize the description attribute with the column metadata
@@ -1200,7 +1206,7 @@ class Cursor:
             self.description = fallback_description
 
         # Define column names in ODBC standard order
-        self._column_map = {}
+        self._column_map = {}  # pylint: disable=attribute-defined-outside-init
         for i, (name, *_) in enumerate(self.description):
             # Add standard name
             self._column_map[name] = i
@@ -1236,9 +1242,9 @@ class Cursor:
 
             # Save original fetch methods
             if not hasattr(self, "_original_fetchone"):
-                self._original_fetchone = self.fetchone
-                self._original_fetchmany = self.fetchmany
-                self._original_fetchall = self.fetchall
+                self._original_fetchone = self.fetchone  # pylint: disable=attribute-defined-outside-init
+                self._original_fetchmany = self.fetchmany  # pylint: disable=attribute-defined-outside-init
+                self._original_fetchall = self.fetchall  # pylint: disable=attribute-defined-outside-init
 
             # Use specialized mapping methods
             self.fetchone = fetchone_with_specialized_mapping
@@ -1248,9 +1254,9 @@ class Cursor:
             # Standard column mapping
             # Remember original fetch methods (store only once)
             if not hasattr(self, "_original_fetchone"):
-                self._original_fetchone = self.fetchone
-                self._original_fetchmany = self.fetchmany
-                self._original_fetchall = self.fetchall
+                self._original_fetchone = self.fetchone  # pylint: disable=attribute-defined-outside-init
+                self._original_fetchmany = self.fetchmany  # pylint: disable=attribute-defined-outside-init
+                self._original_fetchall = self.fetchall  # pylint: disable=attribute-defined-outside-init
 
                 # Create wrapper fetch methods that add column mappings
                 def fetchone_with_mapping():
@@ -1298,13 +1304,14 @@ class Cursor:
 
             # Use the helper method to prepare the result set
             return self._prepare_metadata_result_set()
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             self._reset_cursor()
             raise e
 
     def procedures(self, procedure=None, catalog=None, schema=None):
         """
-        Executes SQLProcedures and creates a result set of information about procedures in the data source.
+        Executes SQLProcedures and creates a result set of information about procedures
+        in the data source.
 
         Args:
             procedure (str, optional): Procedure name pattern. Default is None (all procedures).
@@ -1372,7 +1379,7 @@ class Cursor:
             fallback_description=fallback_description
         )
 
-    def foreignKeys(
+    def foreignKeys(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         table=None,
         catalog=None,
@@ -1382,7 +1389,8 @@ class Cursor:
         foreignSchema=None,
     ):
         """
-        Executes the SQLForeignKeys function and creates a result set of column names that are foreign keys.
+        Executes the SQLForeignKeys function and creates a result set of column names
+        that are foreign keys.
 
         This function returns:
         1. Foreign keys in the specified table that reference primary keys in other tables, OR
@@ -1518,7 +1526,7 @@ class Cursor:
             fallback_description=fallback_description
         )
 
-    def statistics(
+    def statistics(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         table: str,
         catalog: str = None,
@@ -1678,7 +1686,7 @@ class Cursor:
 
         return sample_value, None, None
 
-    def executemany(
+    def executemany(  # pylint: disable=too-many-locals,too-many-branches,too-many-statements
         self, operation: str, seq_of_parameters: List[Sequence[Any]]
     ) -> None:
         """
@@ -1709,7 +1717,7 @@ class Cursor:
                 )
                 check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
                 log("debug", f"Set query timeout to {self._timeout} seconds")
-            except Exception as e:
+            except Exception as e:  # pylint: disable=broad-exception-caught
                 log("warning", f"Failed to set query timeout: {e}")
 
         # Get sample row for parameter type detection and validation
@@ -1882,10 +1890,10 @@ class Cursor:
                 ) and not isinstance(val, decimal.Decimal):
                     try:
                         processed_row[i] = decimal.Decimal(str(val))
-                    except Exception as e:
+                    except Exception as e:  # pylint: disable=broad-exception-caught
                         raise ValueError(
                             f"Failed to convert parameter at row {row}, column {i} to Decimal: {e}"
-                        )
+                        ) from e
             processed_parameters.append(processed_row)
 
         # Now transpose the processed parameters
@@ -1965,7 +1973,7 @@ class Cursor:
             column_map = getattr(self, "_column_name_map", None)
             settings_snapshot = getattr(self, "_settings_snapshot", None)
             return Row(self, self.description, row_data, column_map, settings_snapshot)
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             # On error, don't increment rownumber - rethrow the error
             raise e
 
@@ -1992,7 +2000,7 @@ class Cursor:
         # Fetch raw data
         rows_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
+            _ = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
@@ -2016,7 +2024,7 @@ class Cursor:
                 Row(self, self.description, row_data, column_map, settings_snapshot)
                 for row_data in rows_data
             ]
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             # On error, don't increment rownumber - rethrow the error
             raise e
 
@@ -2034,7 +2042,7 @@ class Cursor:
         # Fetch raw data
         rows_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+            _ = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
@@ -2057,7 +2065,7 @@ class Cursor:
                 Row(self, self.description, row_data, column_map, settings_snapshot)
                 for row_data in rows_data
             ]
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             # On error, don't increment rownumber - rethrow the error
             raise e
 
@@ -2102,7 +2110,6 @@ class Cursor:
         """Closes the cursor when exiting the context, ensuring proper resource cleanup."""
         if not self.closed:
             self.close()
-        return None
 
     def fetchval(self):
         """
@@ -2208,7 +2215,7 @@ class Cursor:
         if "closed" not in self.__dict__ or not self.closed:
             try:
                 self.close()
-            except Exception as e:
+            except Exception as e:  # pylint: disable=broad-exception-caught
                 # Don't raise an exception in __del__, just log it
                 # If interpreter is shutting down, we might not have logging set up
                 import sys
@@ -2218,13 +2225,16 @@ class Cursor:
                     return
                 log("debug", "Exception during cursor cleanup in __del__: %s", e)
 
-    def scroll(self, value: int, mode: str = "relative") -> None:
+    def scroll(self, value: int, mode: str = "relative") -> None:  # pylint: disable=too-many-branches
         """
         Scroll using SQLFetchScroll only, matching test semantics:
-          - relative(N>0): consume N rows; rownumber = previous + N; next fetch returns the following row.
+          - relative(N>0): consume N rows; rownumber = previous + N; 
+            next fetch returns the following row.
           - absolute(-1): before first (rownumber = -1), no data consumed.
-          - absolute(0): position so next fetch returns first row; rownumber stays 0 even after that fetch.
-          - absolute(k>0): next fetch returns row index k (0-based); rownumber == k after scroll.
+          - absolute(0): position so next fetch returns first row; 
+            rownumber stays 0 even after that fetch.
+          - absolute(k>0): next fetch returns row index k (0-based); 
+            rownumber == k after scroll.
         """
         self._check_closed()
 
@@ -2308,7 +2318,7 @@ class Cursor:
             self._rownumber = value
             self._next_row_index = value
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             if isinstance(e, (IndexError, NotSupportedError)):
                 raise
             raise IndexError(f"Scroll operation failed: {e}") from e
@@ -2325,8 +2335,6 @@ class Cursor:
             ProgrammingError: If count is not an integer.
             NotSupportedError: If attempting to skip backwards.
         """
-        from mssql_python.exceptions import ProgrammingError, NotSupportedError
-
         self._check_closed()
 
         # Clear messages
@@ -2335,14 +2343,13 @@ class Cursor:
         # Simply delegate to the scroll method with 'relative' mode
         self.scroll(count, "relative")
 
-    def _execute_tables(
+    def _execute_tables(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         stmt_handle,
         catalog_name=None,
         schema_name=None,
         table_name=None,
         table_type=None,
-        search_escape=None,
     ):
         """
         Execute SQLTables ODBC function to retrieve table metadata.
@@ -2373,7 +2380,7 @@ class Cursor:
         if stmt_handle:
             self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(stmt_handle))
 
-    def tables(self, table=None, catalog=None, schema=None, tableType=None):
+    def tables(self, table=None, catalog=None, schema=None, tableType=None):  # pylint: disable=too-many-arguments,too-many-positional-arguments
         """
         Returns information about tables in the database that match the given criteria using
         the SQLTables ODBC function.
@@ -2423,7 +2430,7 @@ class Cursor:
                 fallback_description=fallback_description
             )
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             # Log the error and re-raise
             log("error", f"Error executing tables query: {e}")
             raise
@@ -2465,4 +2472,3 @@ class Cursor:
             are managed automatically by the underlying driver.
         """
         # This is a no-op - buffer sizes are managed automatically
-        pass

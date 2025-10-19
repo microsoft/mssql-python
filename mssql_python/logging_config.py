@@ -9,7 +9,7 @@ from logging.handlers import RotatingFileHandler
 import os
 import sys
 import datetime
-from typing import Optional, Union
+from typing import Optional
 
 
 class LoggingManager:
@@ -105,9 +105,11 @@ class LoggingManager:
 
         # Create a custom formatter that adds [Python Layer log] prefix only to non-DDBC messages
         class PythonLayerFormatter(logging.Formatter):
+            """Custom formatter that adds [Python Layer log] prefix to non-DDBC messages."""
             def format(self, record):
                 message = record.getMessage()
-                # Don't add [Python Layer log] prefix if the message already has [DDBC Bindings log] or [Python Layer log]
+                # Don't add [Python Layer log] prefix if the message already has
+                # [DDBC Bindings log] or [Python Layer log]
                 if (
                     "[DDBC Bindings log]" not in message
                     and "[Python Layer log]" not in message

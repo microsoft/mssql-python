@@ -1,7 +1,15 @@
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
-from mssql_python import get_settings
-from mssql_python.constants import ConstantsDDBC
+"""
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+This module contains the Row class, which represents a single row of data 
+from a cursor fetch operation.
+"""
+import decimal
 import uuid
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+from mssql_python.constants import ConstantsDDBC
+from mssql_python.helpers import get_settings
 
 if TYPE_CHECKING:
     from mssql_python.cursor import Cursor
@@ -97,7 +105,6 @@ class Row:
         Convert string UUIDs to uuid.UUID objects if native_uuid setting is True,
         or ensure UUIDs are returned as strings if False.
         """
-        import uuid
 
         # Use the snapshot setting for native_uuid
         native_uuid = self._settings.get("native_uuid")
@@ -209,12 +216,13 @@ class Row:
                                 byte_size, byteorder="little", signed=True
                             )
                             converted_values[i] = converter(value_bytes)
-                        except OverflowError as e:
+                        except OverflowError:
                             # Log specific overflow error with details to help diagnose the issue
                             if hasattr(self._cursor, "log"):
                                 self._cursor.log(
                                     "warning",
-                                    f"Integer overflow: value {value} does not fit in {byte_size} bytes for SQL type {sql_type}",
+                                    f"Integer overflow: value {value} does not fit in "
+                                    f"{byte_size} bytes for SQL type {sql_type}",
                                 )
                             # Keep the original value in this case
                     else:
@@ -225,7 +233,8 @@ class Row:
                     if hasattr(self._cursor, "log"):
                         self._cursor.log(
                             "warning",
-                            f"Exception in output converter: {type(e).__name__} for SQL type {sql_type}",
+                            f"Exception in output converter: {type(e).__name__} "
+                            f"for SQL type {sql_type}",
                         )
                     # If conversion fails, keep the original value
 
@@ -263,7 +272,7 @@ class Row:
         """
         if isinstance(other, list):
             return self._values == other
-        elif isinstance(other, Row):
+        if isinstance(other, Row):
             return self._values == other._values
         return super().__eq__(other)
 
@@ -277,12 +286,11 @@ class Row:
 
     def __str__(self) -> str:
         """Return string representation of the row"""
-        from decimal import Decimal
+        # Local import to avoid circular dependency
         from mssql_python import getDecimalSeparator
-
         parts = []
         for value in self:
-            if isinstance(value, Decimal):
+            if isinstance(value, decimal.Decimal):
                 # Apply custom decimal separator for display
                 sep = getDecimalSeparator()
                 if sep != "." and value is not None:

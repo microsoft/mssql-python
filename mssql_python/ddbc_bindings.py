@@ -1,16 +1,23 @@
+"""
+Dynamic loading of platform-specific DDBC bindings for mssql-python.
+
+This module handles the runtime loading of the appropriate compiled extension
+module based on the current platform, architecture, and Python version.
+"""
+
 import os
 import importlib.util
 import sys
 import platform
 
 
-def normalize_architecture(platform_name, architecture):
+def normalize_architecture(platform_name_param, architecture_param):
     """
     Normalize architecture names for the given platform.
 
     Args:
-        platform_name (str): Platform name ('windows', 'darwin', 'linux')
-        architecture (str): Architecture string to normalize
+        platform_name_param (str): Platform name ('windows', 'darwin', 'linux')
+        architecture_param (str): Architecture string to normalize
 
     Returns:
         str: Normalized architecture name
@@ -19,9 +26,9 @@ def normalize_architecture(platform_name, architecture):
         ImportError: If architecture is not supported for the given platform
         OSError: If platform is not supported
     """
-    arch_lower = architecture.lower()
+    arch_lower = architecture_param.lower()
 
-    if platform_name == "windows":
+    if platform_name_param == "windows":
         arch_map = {
             "win64": "x64",
             "amd64": "x64",
@@ -32,17 +39,17 @@ def normalize_architecture(platform_name, architecture):
         }
         if arch_lower in arch_map:
             return arch_map[arch_lower]
-        else:
-            supported = list(set(arch_map.keys()))
-            raise ImportError(
-                f"Unsupported architecture '{architecture}' for platform '{platform_name}'; expected one of {supported}"
-            )
+        supported = list(set(arch_map.keys()))
+        raise ImportError(
+            f"Unsupported architecture '{architecture_param}' for platform "
+            f"'{platform_name_param}'; expected one of {supported}"
+        )
 
-    elif platform_name == "darwin":
+    if platform_name_param == "darwin":
         # For macOS, return runtime architecture
         return platform.machine().lower()
 
-    elif platform_name == "linux":
+    if platform_name_param == "linux":
         arch_map = {
             "x64": "x86_64",
             "amd64": "x86_64",
@@ -52,17 +59,17 @@ def normalize_architecture(platform_name, architecture):
         }
         if arch_lower in arch_map:
             return arch_map[arch_lower]
-        else:
-            supported = list(set(arch_map.keys()))
-            raise ImportError(
-                f"Unsupported architecture '{architecture}' for platform '{platform_name}'; expected one of {supported}"
-            )
-
-    else:
-        supported_platforms = ["windows", "darwin", "linux"]
-        raise OSError(
-            f"Unsupported platform '{platform_name}'; expected one of {supported_platforms}"
+        supported = list(set(arch_map.keys()))
+        raise ImportError(
+            f"Unsupported architecture '{architecture_param}' for platform "
+            f"'{platform_name_param}'; expected one of {supported}"
         )
+
+    supported_platforms_list = ["windows", "darwin", "linux"]
+    raise OSError(
+        f"Unsupported platform '{platform_name_param}'; expected one of "
+        f"{supported_platforms_list}"
+    )
 
 
 # Get current Python version and architecture
@@ -85,7 +92,8 @@ else:
 if platform_name not in ["windows", "darwin", "linux"]:
     supported_platforms = ["windows", "darwin", "linux"]
     raise ImportError(
-        f"Unsupported platform '{platform_name}' for mssql-python; expected one of {supported_platforms}"
+        f"Unsupported platform '{platform_name}' for mssql-python; expected one "
+        f"of {supported_platforms}"
     )
 
 # Determine extension based on platform
@@ -108,18 +116,20 @@ if not os.path.exists(module_path):
     ]
     if not module_files:
         raise ImportError(
-            f"No ddbc_bindings module found for {python_version}-{architecture} with extension {extension}"
+            f"No ddbc_bindings module found for {python_version}-{architecture} "
+            f"with extension {extension}"
         )
     module_path = os.path.join(module_dir, module_files[0])
     print(
-        f"Warning: Using fallback module file {module_files[0]} instead of {expected_module}"
+        f"Warning: Using fallback module file {module_files[0]} instead of "
+        f"{expected_module}"
     )
 
 # Use the original module name 'ddbc_bindings' that the C extension was compiled with
-name = "ddbc_bindings"
-spec = importlib.util.spec_from_file_location(name, module_path)
+module_name = "ddbc_bindings"
+spec = importlib.util.spec_from_file_location(module_name, module_path)
 module = importlib.util.module_from_spec(spec)
-sys.modules[name] = module
+sys.modules[module_name] = module
 spec.loader.exec_module(module)
 
 # Copy all attributes from the loaded module to this module

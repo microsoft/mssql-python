@@ -551,5 +551,5 @@ def raise_exception(sqlstate: str, ddbc_error: str) -> None:
         raise exception_class
     raise DatabaseError(
         driver_error=f"An error occurred with SQLSTATE code: {sqlstate}",
-        ddbc_error=f"{ddbc_error}" if ddbc_error else f"Unknown DDBC error",
+        ddbc_error=f"{ddbc_error}" if ddbc_error else "Unknown DDBC error",
     )

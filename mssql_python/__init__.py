@@ -4,18 +4,58 @@ Licensed under the MIT license.
 This module initializes the mssql_python package.
 """
 
-import threading
-import locale
 import sys
 import types
-from typing import Dict, TYPE_CHECKING
+from typing import Dict
 
-if TYPE_CHECKING:
-    from .connection import Connection
-    from .cursor import Cursor
+# Import settings from helpers to avoid circular imports
+from .helpers import Settings, get_settings, _settings, _settings_lock
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
+from .exceptions import (
+    Warning,
+    Error,
+    InterfaceError,
+    DatabaseError,
+    DataError,
+    OperationalError,
+    IntegrityError,
+    InternalError,
+    ProgrammingError,
+    NotSupportedError,
+)
+
+# Type Objects
+from .type import (
+    Date,
+    Time,
+    Timestamp,
+    DateFromTicks,
+    TimeFromTicks,
+    TimestampFromTicks,
+    Binary,
+    STRING,
+    BINARY,
+    NUMBER,
+    DATETIME,
+    ROWID,
+)
+
+# Connection Objects
+from .db_connection import connect, Connection
+
+# Cursor Objects
+from .cursor import Cursor
+
+# Logging Configuration
+from .logging_config import setup_logging, get_logger
+
+# Constants
+from .constants import ConstantsDDBC, GetInfoConstants
+
+# Pooling
+from .pooling import PoolingManager
 
 # GLOBALS
 # Read-Only
@@ -23,41 +63,13 @@ apilevel: str = "2.0"
 paramstyle: str = "qmark"
 threadsafety: int = 1
 
-# Initialize the locale setting only once at module import time
-# This avoids thread-safety issues with locale
-_DEFAULT_DECIMAL_SEPARATOR: str = "."
-try:
-    # Get the locale setting once during module initialization
-    _locale_separator = locale.localeconv()["decimal_point"]
-    if _locale_separator and len(_locale_separator) == 1:
-        _DEFAULT_DECIMAL_SEPARATOR = _locale_separator
-except (AttributeError, KeyError, TypeError, ValueError):
-    pass  # Keep the default "." if locale access fails
-
-
-class Settings:
-    def __init__(self) -> None:
-        self.lowercase: bool = False
-        # Use the pre-determined separator - no locale access here
-        self.decimal_separator: str = _DEFAULT_DECIMAL_SEPARATOR
-        self.native_uuid: bool = False  # Default to False for backwards compatibility
-
-
-# Global settings instance
-_settings: Settings = Settings()
-_settings_lock: threading.Lock = threading.Lock()
-
-
-def get_settings() -> Settings:
-    """Return the global settings object"""
-    with _settings_lock:
-        return _settings
-
-
 # Set the initial decimal separator in C++
-from .ddbc_bindings import DDBCSetDecimalSeparator
-
-DDBCSetDecimalSeparator(_settings.decimal_separator)
+try:
+    from .ddbc_bindings import DDBCSetDecimalSeparator
+    DDBCSetDecimalSeparator(_settings.decimal_separator)
+except ImportError:
+    # Handle case where ddbc_bindings is not available
+    DDBCSetDecimalSeparator = None
 
 
 # New functions for decimal separator control
@@ -101,9 +113,8 @@ def setDecimalSeparator(separator: str) -> None:
     _settings.decimal_separator = separator
 
     # Update the C++ side
-    from .ddbc_bindings import DDBCSetDecimalSeparator
-
-    DDBCSetDecimalSeparator(separator)
+    if DDBCSetDecimalSeparator is not None:
+        DDBCSetDecimalSeparator(separator)
 
 
 def getDecimalSeparator() -> str:
@@ -116,48 +127,6 @@ def getDecimalSeparator() -> str:
     """
     return _settings.decimal_separator
 
-
-# Import necessary modules
-from .exceptions import (
-    Warning,
-    Error,
-    InterfaceError,
-    DatabaseError,
-    DataError,
-    OperationalError,
-    IntegrityError,
-    InternalError,
-    ProgrammingError,
-    NotSupportedError,
-)
-
-# Type Objects
-from .type import (
-    Date,
-    Time,
-    Timestamp,
-    DateFromTicks,
-    TimeFromTicks,
-    TimestampFromTicks,
-    Binary,
-    STRING,
-    BINARY,
-    NUMBER,
-    DATETIME,
-    ROWID,
-)
-
-# Connection Objects
-from .db_connection import connect, Connection
-
-# Cursor Objects
-from .cursor import Cursor
-
-# Logging Configuration
-from .logging_config import setup_logging, get_logger
-
-# Constants
-from .constants import ConstantsDDBC, GetInfoConstants
 
 # Export specific constants for setencoding()
 SQL_CHAR: int = ConstantsDDBC.SQL_CHAR.value
@@ -186,22 +155,20 @@ SQL_MODE_READ_WRITE: int = ConstantsDDBC.SQL_MODE_READ_WRITE.value
 SQL_MODE_READ_ONLY: int = ConstantsDDBC.SQL_MODE_READ_ONLY.value
 
 
-from .pooling import PoolingManager
-
-
 def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) -> None:
-    #     """
-    #     Enable connection pooling with the specified parameters.
-    #     By default:
-    #         - If not explicitly called, pooling will be auto-enabled with default values.
+    """
+    Enable connection pooling with the specified parameters.
+    By default:
+        - If not explicitly called, pooling will be auto-enabled with default values.
 
-    #     Args:
-    #         max_size (int): Maximum number of connections in the pool.
-    #         idle_timeout (int): Time in seconds before idle connections are closed.
+    Args:
+        max_size (int): Maximum number of connections in the pool.
+        idle_timeout (int): Time in seconds before idle connections are closed.
+        enabled (bool): Whether to enable or disable pooling.
 
-    #     Returns:
-    #         None
-    #     """
+    Returns:
+        None
+    """
     if not enabled:
         PoolingManager.disable()
     else:
@@ -211,10 +178,8 @@ def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) 
 _original_module_setattr = sys.modules[__name__].__setattr__
 
 # Export SQL constants at module level
-SQL_CHAR: int = ConstantsDDBC.SQL_CHAR.value
 SQL_VARCHAR: int = ConstantsDDBC.SQL_VARCHAR.value
 SQL_LONGVARCHAR: int = ConstantsDDBC.SQL_LONGVARCHAR.value
-SQL_WCHAR: int = ConstantsDDBC.SQL_WCHAR.value
 SQL_WVARCHAR: int = ConstantsDDBC.SQL_WVARCHAR.value
 SQL_WLONGVARCHAR: int = ConstantsDDBC.SQL_WLONGVARCHAR.value
 SQL_DECIMAL: int = ConstantsDDBC.SQL_DECIMAL.value
@@ -291,10 +256,12 @@ def get_info_constants() -> Dict[str, int]:
 class _MSSQLModule(types.ModuleType):
     @property
     def native_uuid(self) -> bool:
+        """Get the native UUID setting."""
         return _settings.native_uuid
 
     @native_uuid.setter
     def native_uuid(self, value: bool) -> None:
+        """Set the native UUID setting."""
         if not isinstance(value, bool):
             raise ValueError("native_uuid must be a boolean value")
         with _settings_lock:
@@ -302,10 +269,12 @@ class _MSSQLModule(types.ModuleType):
 
     @property
     def lowercase(self) -> bool:
+        """Get the lowercase setting."""
         return _settings.lowercase
 
     @lowercase.setter
     def lowercase(self, value: bool) -> None:
+        """Set the lowercase setting."""
         if not isinstance(value, bool):
             raise ValueError("lowercase must be a boolean value")
         with _settings_lock:

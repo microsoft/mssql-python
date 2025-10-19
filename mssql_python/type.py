@@ -42,8 +42,12 @@ class DATETIME(datetime.datetime):
     This type object is used to describe date/time columns in a database.
     """
 
-    def __new__(cls, year: int = 1, month: int = 1, day: int = 1):
-        return datetime.datetime.__new__(cls, year, month, day)
+    def __new__(cls, year: int = 1, month: int = 1, day: int = 1,
+                hour: int = 0, minute: int = 0, second: int = 0,
+                microsecond: int = 0, tzinfo=None, *, fold: int = 0):
+        return datetime.datetime.__new__(cls, year, month, day, hour,
+                                       minute, second, microsecond, tzinfo,
+                                       fold=fold)
 
 
 class ROWID(int):
@@ -129,13 +133,12 @@ def Binary(value) -> bytes:
     """
     if isinstance(value, bytes):
         return value
-    elif isinstance(value, bytearray):
+    if isinstance(value, bytearray):
         return bytes(value)
-    elif isinstance(value, str):
+    if isinstance(value, str):
         return value.encode("utf-8")
-    else:
-        # Raise TypeError for unsupported types to improve type safety
-        raise TypeError(
-            f"Cannot convert type {type(value).__name__} to bytes. "
-            f"Binary() only accepts str, bytes, or bytearray objects."
-        )
+    # Raise TypeError for unsupported types to improve type safety
+    raise TypeError(
+        f"Cannot convert type {type(value).__name__} to bytes. "
+        f"Binary() only accepts str, bytes, or bytearray objects."
+    )
