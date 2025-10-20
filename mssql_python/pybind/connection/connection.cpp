@@ -109,7 +109,8 @@ void Connection::disconnect() {
     }
 }
 
-// TODO: Add an exception class in C++ for error handling, DB spec compliant
+// TODO(microsoft): Add an exception class in C++ for error handling,
+// DB spec compliant
 void Connection::checkError(SQLRETURN ret) const {
     if (!SQL_SUCCEEDED(ret)) {
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
