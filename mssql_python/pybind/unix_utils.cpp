@@ -6,7 +6,7 @@
 // between SQLWCHAR, std::wstring, and UTF-8 strings to bridge encoding
 // differences specific to macOS.
 
-#include "pybind/unix_utils.h"
+#include "unix_utils.h"
 #include <iostream>
 #include <string>
 #include <utility>
