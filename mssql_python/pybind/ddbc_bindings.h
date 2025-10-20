@@ -169,8 +169,8 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
 #endif
 
 #if defined(__APPLE__) || defined(__linux__)
-#include "mssql_python/pybind/unix_utils.h"    // Unix-specific fixes
-#include "mssql_python/pybind/unix_buffers.h"  // Unix-specific buffers
+#include "pybind/unix_utils.h"    // Unix-specific fixes
+#include "pybind/unix_buffers.h"  // Unix-specific buffers
 #endif
 
 //-------------------------------------------------------------------------------------------------
