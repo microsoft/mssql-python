@@ -8,13 +8,13 @@
 
 #pragma once
 
-#include <string>
-#include <vector>
-#include <locale>
-#include <codecvt>
+#include <pybind11/pybind11.h>
 #include <sql.h>
 #include <sqlext.h>
-#include <pybind11/pybind11.h>
+#include <codecvt>
+#include <locale>
+#include <string>
+#include <vector>
 
 namespace py = pybind11;
 
