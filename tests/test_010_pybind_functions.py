@@ -52,7 +52,7 @@ class TestPybindModuleInfo:
         valid_architectures = [
             'x64', 'x86', 'arm64', 'win64',  # Windows
             'x86_64', 'i386', 'aarch64',     # Linux
-            'arm64', 'x86_64'                # macOS (arm64/Intel)
+            'arm64', 'x86_64', 'universal2'  # macOS (arm64/Intel/Universal)
         ]
         assert arch in valid_architectures, f"Unknown architecture: {arch}"
         
