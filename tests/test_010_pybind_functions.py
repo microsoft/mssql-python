@@ -48,7 +48,13 @@ class TestPybindModuleInfo:
     def test_architecture_consistency(self):
         """Test that architecture attributes are consistent."""
         arch = getattr(ddbc, 'ARCHITECTURE')
-        assert arch in ['x64', 'x86', 'arm64', 'win64']  # Valid architectures
+        # Valid architectures for Windows, Linux, and macOS
+        valid_architectures = [
+            'x64', 'x86', 'arm64', 'win64',  # Windows
+            'x86_64', 'i386', 'aarch64',     # Linux
+            'arm64', 'x86_64'                # macOS (arm64/Intel)
+        ]
+        assert arch in valid_architectures, f"Unknown architecture: {arch}"
         
     def test_module_docstring(self):
         """Test that the module has proper documentation."""
