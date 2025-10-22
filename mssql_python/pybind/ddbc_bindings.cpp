@@ -175,21 +175,11 @@ SQLTablesFunc SQLTables_ptr = nullptr;
 
 SQLDescribeParamFunc SQLDescribeParam_ptr = nullptr;
 
-// Cached codecs module and common encode/decode callables for performance
+// Safe codecs access without static destructors to avoid Python finalization crashes
 namespace {
-    struct CodecCache {
-        py::object codecs_module;
-        py::object decode_func;
-        py::object encode_func;
-        CodecCache() {
-            codecs_module = py::module_::import("codecs");
-            decode_func = codecs_module.attr("decode");
-            encode_func = codecs_module.attr("encode");
-        }
-    };
-    CodecCache& get_codec_cache() {
-        static CodecCache cache;
-        return cache;
+    // Get codecs module safely - no caching to avoid static destructor issues
+    py::object get_codecs_module() {
+        return py::module_::import("codecs");
     }
 }
 
@@ -225,22 +215,22 @@ py::object DecodeString(const void* data, SQLLEN dataLen, const std::string& enc
                 if (!unicode) throw py::error_already_set();
                 return py::reinterpret_steal<py::object>(unicode);
             }
-            // Fallback: use cached codecs.decode
-            auto& cache = get_codec_cache();
+            // Fallback: use direct codecs.decode (no caching to avoid static destructor issues)
+            py::object codecs = get_codecs_module();
             py::bytes bytes_obj(static_cast<const char*>(data), dataLen);
-            return cache.decode_func(bytes_obj, py::str(encoding), py::str("strict"));
+            return codecs.attr("decode")(bytes_obj, py::str(encoding), py::str("strict"));
         }
     }
     catch (const std::exception& e) {
         LOG("DecodeString error: {}", e.what());
         // Fallback with "replace" error handler
         try {
-            auto& cache = get_codec_cache();
+            py::object codecs = get_codecs_module();
             py::bytes bytes_obj(static_cast<const char*>(data), dataLen);
             if (isWideChar) {
-                return cache.decode_func(bytes_obj, py::str("utf-16le"), py::str("replace"));
+                return codecs.attr("decode")(bytes_obj, py::str("utf-16le"), py::str("replace"));
             } else {
-                return cache.decode_func(bytes_obj, py::str(encoding), py::str("replace"));
+                return codecs.attr("decode")(bytes_obj, py::str(encoding), py::str("replace"));
             }
         } catch (const std::exception&) {
             return py::str("[Decoding Error]");
@@ -273,8 +263,8 @@ py::bytes EncodeString(const std::string& text, const std::string& encoding, boo
                 py::bytes result = py::reinterpret_steal<py::bytes>(encoded);
                 return result;
             } else {
-                auto& cache = get_codec_cache();
-                return cache.encode_func(py::str(text), py::str(encoding), py::str("strict")).cast<py::bytes>();
+                py::object codecs = get_codecs_module();
+                return codecs.attr("encode")(py::str(text), py::str(encoding), py::str("strict")).cast<py::bytes>();
             }
         }
     }
@@ -291,14 +281,14 @@ py::bytes EncodeString(const std::string& text, const std::string& encoding, boo
                 py::bytes result = py::reinterpret_steal<py::bytes>(encoded);
                 return result;
             } else {
-                auto& cache = get_codec_cache();
-                return cache.encode_func(py::str(text), py::str(encoding), py::str("replace")).cast<py::bytes>();
+                py::object codecs = get_codecs_module();
+                return codecs.attr("encode")(py::str(text), py::str(encoding), py::str("replace")).cast<py::bytes>();
             }
         } catch (const std::exception& e2) {
             LOG("Fallback encoding error: {}", e2.what());
             // Ultimate fallback: encode as utf-8 with replace
-            auto& cache = get_codec_cache();
-            return cache.encode_func(py::str(text), py::str("utf-8"), py::str("replace")).cast<py::bytes>();
+            py::object codecs = get_codecs_module();
+            return codecs.attr("encode")(py::str(text), py::str("utf-8"), py::str("replace")).cast<py::bytes>();
         }
     }
 }
@@ -318,8 +308,8 @@ py::bytes EncodeParameterString(const py::str& param, const std::string& encodin
                 if (!encoded) throw py::error_already_set();
                 return py::reinterpret_steal<py::bytes>(encoded);
             } else {
-                auto& cache = get_codec_cache();
-                return cache.encode_func(param, py::str(encoding), py::str("strict")).cast<py::bytes>();
+                py::object codecs = get_codecs_module();
+                return codecs.attr("encode")(param, py::str(encoding), py::str("strict")).cast<py::bytes>();
             }
         }
     }
@@ -332,14 +322,14 @@ py::bytes EncodeParameterString(const py::str& param, const std::string& encodin
                 if (!encoded) throw py::error_already_set();
                 return py::reinterpret_steal<py::bytes>(encoded);
             } else {
-                auto& cache = get_codec_cache();
-                return cache.encode_func(param, py::str(encoding), py::str("replace")).cast<py::bytes>();
+                py::object codecs = get_codecs_module();
+                return codecs.attr("encode")(param, py::str(encoding), py::str("replace")).cast<py::bytes>();
             }
         } catch (const std::exception& e2) {
             LOG("Fallback parameter encoding error: {}", e2.what());
             // Ultimate fallback: encode as utf-8 with replace
-            auto& cache = get_codec_cache();
-            return cache.encode_func(param, py::str("utf-8"), py::str("replace")).cast<py::bytes>();
+            py::object codecs = get_codecs_module();
+            return codecs.attr("encode")(param, py::str("utf-8"), py::str("replace")).cast<py::bytes>();
         }
     }
 }
@@ -4359,13 +4349,17 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     });
 
 
-    // Module-level UUID class cache
-    // This caches the uuid.UUID class at module initialization time and keeps it alive
-    // for the entire module lifetime, avoiding static destructor issues during Python finalization
+    // Module-level UUID class cache - designed to be safe during Python finalization
+    // Returns a fresh import on each call to avoid static py::object destructor issues
     m.def("_get_uuid_class", []() -> py::object {
-        static py::object uuid_class = py::module_::import("uuid").attr("UUID");
-        return uuid_class;
-    }, "Internal helper to get cached UUID class");
+        try {
+            // Always import fresh to avoid static object cleanup issues during finalization
+            return py::module_::import("uuid").attr("UUID");
+        } catch (const std::exception&) {
+            // If we can't import uuid module (e.g., during finalization), return None
+            return py::none();
+        }
+    }, "Internal helper to get UUID class safely");
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
