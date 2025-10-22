@@ -609,48 +609,89 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                         
                         strParam = AllocateParamBuffer<std::wstring>(paramBuffers, wstr);
                     } else {
-                        // For bytes/bytearray, first decode using the specified encoding
-                        try {
-                            std::string raw_bytes = param.cast<std::string>();
-                            py::bytes encoded = EncodeString(raw_bytes, encoding, true); // true for wide character
-                            py::object decoded = py::module_::import("codecs").attr("decode")(encoded, py::str("utf-16le"), py::str("strict"));
-                            std::wstring wstr = decoded.cast<std::wstring>();
-                            
-                            // Check if data would be truncated and raise error
-                            if (wstr.size() > paramInfo.columnSize) {
-                                std::ostringstream errMsg;
-                                errMsg << "String data for parameter [" << paramIndex 
-                                    << "] would be truncated. Actual length: " << wstr.size() 
-                                    << ", Maximum allowed: " << paramInfo.columnSize;
-                                ThrowStdException(errMsg.str());
+                        // OPTIMIZED: For bytes/bytearray, use direct conversion to avoid double encoding
+                        std::wstring wstr;
+                        
+                        if (py::isinstance<py::bytes>(param)) {
+                            // Direct conversion from bytes using CPython API
+                            const char* data = PyBytes_AsString(param.ptr());
+                            Py_ssize_t size = PyBytes_Size(param.ptr());
+                            if (!data || size < 0) {
+                                ThrowStdException("Invalid bytes parameter at index " + std::to_string(paramIndex));
                             }
                             
-                            strParam = AllocateParamBuffer<std::wstring>(paramBuffers, wstr);
-                        } catch (const std::exception& e) {
-                            // Original fallback code - but still check for truncation
-                            LOG("Error encoding bytes to wstring: {}", e.what());
-                            py::object decoded = py::reinterpret_steal<py::object>(
-                                PyUnicode_DecodeLocaleAndSize(
-                                    PyBytes_AsString(param.ptr()), 
-                                    PyBytes_Size(param.ptr()), 
-                                    encoding.c_str()
-                                ));
-                            std::wstring wstr = decoded.cast<std::wstring>();
+                            // Use direct PyUnicode decode based on encoding
+                            py::object unicode_obj;
+                            if (encoding == "utf-16le" || encoding == "utf-16" || encoding == "unicode") {
+                                // Direct UTF-16LE decode
+                                int byteorder = -1; // Little-endian
+                                PyObject* unicode = PyUnicode_DecodeUTF16(data, size, "strict", &byteorder);
+                                if (!unicode) throw py::error_already_set();
+                                unicode_obj = py::reinterpret_steal<py::object>(unicode);
+                            } else if (encoding == "utf-8") {
+                                PyObject* unicode = PyUnicode_DecodeUTF8(data, size, "strict");
+                                if (!unicode) throw py::error_already_set();
+                                unicode_obj = py::reinterpret_steal<py::object>(unicode);
+                            } else if (encoding == "latin-1" || encoding == "iso-8859-1") {
+                                PyObject* unicode = PyUnicode_DecodeLatin1(data, size, "strict");
+                                if (!unicode) throw py::error_already_set();
+                                unicode_obj = py::reinterpret_steal<py::object>(unicode);
+                            } else {
+                                // Fallback for other encodings
+                                PyObject* unicode = PyUnicode_Decode(data, size, encoding.c_str(), "strict");
+                                if (!unicode) throw py::error_already_set();
+                                unicode_obj = py::reinterpret_steal<py::object>(unicode);
+                            }
+                            wstr = unicode_obj.cast<std::wstring>();
                             
-                            // Check if data would be truncated and raise error
-                            if (wstr.size() > paramInfo.columnSize) {
-                                std::ostringstream errMsg;
-                                errMsg << "String data for parameter [" << paramIndex 
-                                    << "] would be truncated. Actual length: " << wstr.size() 
-                                    << ", Maximum allowed: " << paramInfo.columnSize;
-                                ThrowStdException(errMsg.str());
+                        } else if (py::isinstance<py::bytearray>(param)) {
+                            // Direct conversion from bytearray using CPython API
+                            char* data = PyByteArray_AsString(param.ptr());
+                            Py_ssize_t size = PyByteArray_Size(param.ptr());
+                            if (!data || size < 0) {
+                                ThrowStdException("Invalid bytearray parameter at index " + std::to_string(paramIndex));
                             }
                             
-                            strParam = AllocateParamBuffer<std::wstring>(paramBuffers, wstr);
+                            // Use direct PyUnicode decode based on encoding
+                            py::object unicode_obj;
+                            if (encoding == "utf-16le" || encoding == "utf-16" || encoding == "unicode") {
+                                // Direct UTF-16LE decode
+                                int byteorder = -1; // Little-endian
+                                PyObject* unicode = PyUnicode_DecodeUTF16(data, size, "strict", &byteorder);
+                                if (!unicode) throw py::error_already_set();
+                                unicode_obj = py::reinterpret_steal<py::object>(unicode);
+                            } else if (encoding == "utf-8") {
+                                PyObject* unicode = PyUnicode_DecodeUTF8(data, size, "strict");
+                                if (!unicode) throw py::error_already_set();
+                                unicode_obj = py::reinterpret_steal<py::object>(unicode);
+                            } else if (encoding == "latin-1" || encoding == "iso-8859-1") {
+                                PyObject* unicode = PyUnicode_DecodeLatin1(data, size, "strict");
+                                if (!unicode) throw py::error_already_set();
+                                unicode_obj = py::reinterpret_steal<py::object>(unicode);
+                            } else {
+                                // Fallback for other encodings
+                                PyObject* unicode = PyUnicode_Decode(data, size, encoding.c_str(), "strict");
+                                if (!unicode) throw py::error_already_set();
+                                unicode_obj = py::reinterpret_steal<py::object>(unicode);
+                            }
+                            wstr = unicode_obj.cast<std::wstring>();
+                        } else {
+                            ThrowStdException("Unsupported parameter type for WCHAR at index " + std::to_string(paramIndex));
                         }
+                        
+                        // Check if data would be truncated and raise error
+                        if (wstr.size() > paramInfo.columnSize) {
+                            std::ostringstream errMsg;
+                            errMsg << "String data for parameter [" << paramIndex 
+                                << "] would be truncated. Actual length: " << wstr.size() 
+                                << ", Maximum allowed: " << paramInfo.columnSize;
+                            ThrowStdException(errMsg.str());
+                        }
+                        
+                        strParam = AllocateParamBuffer<std::wstring>(paramBuffers, wstr);
                     }
-                    LOG("SQL_C_WCHAR Parameter[{}]: Encoding={}, Length={}, isDAE={}", 
-                        paramIndex, encoding, strParam->size(), paramInfo.isDAE);
+                    LOG("SQL_C_WCHAR Parameter[{}]: Length={}, isDAE={} (optimized direct conversion)", 
+                        paramIndex, strParam->size(), paramInfo.isDAE);
                     
                     std::vector<SQLWCHAR>* sqlwcharBuffer =
                         AllocateParamBuffer<std::vector<SQLWCHAR>>(paramBuffers, WStringToSQLWCHAR(*strParam));
