@@ -561,9 +561,27 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     std::wstring* strParam = nullptr;
                     
                     if (py::isinstance<py::str>(param)) {
-                        // OPTIMIZED: Direct cast Python str to std::wstring (no double conversion)
-                        // This eliminates: py::str → UTF-16LE bytes → py::str → std::wstring overhead
-                        std::wstring wstr = param.cast<std::wstring>();
+                        // Safe wstring conversion to avoid Linux SIGABRT during pytest teardown
+                        std::wstring wstr;
+                        try {
+                            // Use our controlled encoding instead of pybind11's automatic conversion
+                            py::bytes utf16_bytes = EncodeString(param.cast<py::str>(), "utf-16le", true);
+                            std::string byte_str = utf16_bytes.cast<std::string>();
+                            
+                            // Convert UTF-16LE bytes to wstring
+                            wstr.reserve(byte_str.size() / 2);
+                            for (size_t i = 0; i < byte_str.size(); i += 2) {
+                                if (i + 1 < byte_str.size()) {
+                                    wchar_t wc = static_cast<wchar_t>(
+                                        (static_cast<unsigned char>(byte_str[i]) | 
+                                         (static_cast<unsigned char>(byte_str[i + 1]) << 8)));
+                                    wstr.push_back(wc);
+                                }
+                            }
+                        } catch (const std::exception& e) {
+                            LOG("Error in safe wstring conversion, falling back to pybind11: {}", e.what());
+                            wstr = param.cast<std::wstring>();
+                        }
                         
                         // Check if data would be truncated and raise error
                         if (wstr.size() > paramInfo.columnSize) {
@@ -609,7 +627,24 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                                 if (!unicode) throw py::error_already_set();
                                 unicode_obj = py::reinterpret_steal<py::object>(unicode);
                             }
-                            wstr = unicode_obj.cast<std::wstring>();
+                            // Safe conversion from Unicode object to wstring (bytes path)
+                            try {
+                                py::bytes utf16_bytes = EncodeString(unicode_obj.cast<py::str>(), "utf-16le", true);
+                                std::string byte_str = utf16_bytes.cast<std::string>();
+                                
+                                wstr.reserve(byte_str.size() / 2);
+                                for (size_t i = 0; i < byte_str.size(); i += 2) {
+                                    if (i + 1 < byte_str.size()) {
+                                        wchar_t wc = static_cast<wchar_t>(
+                                            (static_cast<unsigned char>(byte_str[i]) | 
+                                             (static_cast<unsigned char>(byte_str[i + 1]) << 8)));
+                                        wstr.push_back(wc);
+                                    }
+                                }
+                            } catch (const std::exception& e) {
+                                LOG("Error in safe Unicode wstring conversion (bytes), falling back: {}", e.what());
+                                wstr = unicode_obj.cast<std::wstring>();
+                            }
                             
                         } else if (py::isinstance<py::bytearray>(param)) {
                             // Direct conversion from bytearray using CPython API
@@ -641,7 +676,24 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                                 if (!unicode) throw py::error_already_set();
                                 unicode_obj = py::reinterpret_steal<py::object>(unicode);
                             }
-                            wstr = unicode_obj.cast<std::wstring>();
+                            // Safe conversion from Unicode object to wstring (bytearray path)
+                            try {
+                                py::bytes utf16_bytes = EncodeString(unicode_obj.cast<py::str>(), "utf-16le", true);
+                                std::string byte_str = utf16_bytes.cast<std::string>();
+                                
+                                wstr.reserve(byte_str.size() / 2);
+                                for (size_t i = 0; i < byte_str.size(); i += 2) {
+                                    if (i + 1 < byte_str.size()) {
+                                        wchar_t wc = static_cast<wchar_t>(
+                                            (static_cast<unsigned char>(byte_str[i]) | 
+                                             (static_cast<unsigned char>(byte_str[i + 1]) << 8)));
+                                        wstr.push_back(wc);
+                                    }
+                                }
+                            } catch (const std::exception& e) {
+                                LOG("Error in safe Unicode wstring conversion (bytearray), falling back: {}", e.what());
+                                wstr = unicode_obj.cast<std::wstring>();
+                            }
                         } else {
                             ThrowStdException("Unsupported parameter type for WCHAR at index " + std::to_string(paramIndex));
                         }
@@ -1971,7 +2023,25 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                 }
                 if (py::isinstance<py::str>(pyObj)) {
                     if (matchedInfo->paramCType == SQL_C_WCHAR) {
-                        std::wstring wstr = pyObj.cast<std::wstring>();
+                        std::wstring wstr;
+                        try {
+                            // Safe wstring conversion for DAE (Data At Execution) parameters
+                            py::bytes utf16_bytes = EncodeString(pyObj.cast<py::str>(), "utf-16le", true);
+                            std::string byte_str = utf16_bytes.cast<std::string>();
+                            
+                            wstr.reserve(byte_str.size() / 2);
+                            for (size_t i = 0; i < byte_str.size(); i += 2) {
+                                if (i + 1 < byte_str.size()) {
+                                    wchar_t wc = static_cast<wchar_t>(
+                                        (static_cast<unsigned char>(byte_str[i]) | 
+                                         (static_cast<unsigned char>(byte_str[i + 1]) << 8)));
+                                    wstr.push_back(wc);
+                                }
+                            }
+                        } catch (const std::exception& e) {
+                            LOG("Error in safe wstring conversion (DAE), falling back: {}", e.what());
+                            wstr = pyObj.cast<std::wstring>();
+                        }
                         const SQLWCHAR* dataPtr = nullptr;
                         size_t totalChars = 0;
 #if defined(__APPLE__) || defined(__linux__)
