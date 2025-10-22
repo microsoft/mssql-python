@@ -242,26 +242,25 @@ py::object DecodeString(const void* data, SQLLEN dataLen, const std::string& enc
 py::bytes EncodeString(const std::string& text, const std::string& encoding, bool toWideChar) {
     try {
         if (toWideChar) {
-            // Encode directly to UTF-16LE using CPython API
-            // First, create a Unicode object from the input string
-            PyObject* unicode = PyUnicode_FromStringAndSize(text.data(), static_cast<Py_ssize_t>(text.size()));
+            // Encode directly to UTF-16LE using CPython API with RAII wrapper
+            py::object unicode = py::reinterpret_steal<py::object>(
+                PyUnicode_FromStringAndSize(text.data(), static_cast<Py_ssize_t>(text.size())));
             if (!unicode) throw py::error_already_set();
-            // Encode to UTF-16LE (no BOM)
-            PyObject* encoded = PyUnicode_AsEncodedString(unicode, "utf-16le", "strict");
-            Py_DECREF(unicode);
+            
+            // Encode to UTF-16LE (no BOM) - RAII wrapper handles cleanup automatically
+            PyObject* encoded = PyUnicode_AsEncodedString(unicode.ptr(), "utf-16le", "strict");
             if (!encoded) throw py::error_already_set();
-            py::bytes result = py::reinterpret_steal<py::bytes>(encoded);
-            return result;
+            return py::reinterpret_steal<py::bytes>(encoded);
         } else {
             // For SQL_C_CHAR, use CPython API for utf-8/ascii, else fallback to codecs.encode
             if (encoding == "utf-8" || encoding == "ascii") {
-                PyObject* unicode = PyUnicode_FromStringAndSize(text.data(), static_cast<Py_ssize_t>(text.size()));
+                py::object unicode = py::reinterpret_steal<py::object>(
+                    PyUnicode_FromStringAndSize(text.data(), static_cast<Py_ssize_t>(text.size())));
                 if (!unicode) throw py::error_already_set();
-                PyObject* encoded = PyUnicode_AsEncodedString(unicode, encoding.c_str(), "strict");
-                Py_DECREF(unicode);
+                
+                PyObject* encoded = PyUnicode_AsEncodedString(unicode.ptr(), encoding.c_str(), "strict");
                 if (!encoded) throw py::error_already_set();
-                py::bytes result = py::reinterpret_steal<py::bytes>(encoded);
-                return result;
+                return py::reinterpret_steal<py::bytes>(encoded);
             } else {
                 py::object codecs = get_codecs_module();
                 return codecs.attr("encode")(py::str(text), py::str(encoding), py::str("strict")).cast<py::bytes>();
@@ -273,13 +272,13 @@ py::bytes EncodeString(const std::string& text, const std::string& encoding, boo
         // Fallback with "replace" error handler
         try {
             if (toWideChar) {
-                PyObject* unicode = PyUnicode_FromStringAndSize(text.data(), static_cast<Py_ssize_t>(text.size()));
+                py::object unicode = py::reinterpret_steal<py::object>(
+                    PyUnicode_FromStringAndSize(text.data(), static_cast<Py_ssize_t>(text.size())));
                 if (!unicode) throw py::error_already_set();
-                PyObject* encoded = PyUnicode_AsEncodedString(unicode, "utf-16le", "replace");
-                Py_DECREF(unicode);
+                
+                PyObject* encoded = PyUnicode_AsEncodedString(unicode.ptr(), "utf-16le", "replace");
                 if (!encoded) throw py::error_already_set();
-                py::bytes result = py::reinterpret_steal<py::bytes>(encoded);
-                return result;
+                return py::reinterpret_steal<py::bytes>(encoded);
             } else {
                 py::object codecs = get_codecs_module();
                 return codecs.attr("encode")(py::str(text), py::str(encoding), py::str("replace")).cast<py::bytes>();
