@@ -185,8 +185,13 @@ namespace {
 
 // DecodeString: Efficiently decode bytes to Python str using CPython APIs where possible
 py::object DecodeString(const void* data, SQLLEN dataLen, const std::string& encoding, bool isWideChar) {
-    if (data == nullptr || dataLen <= 0) {
+    if (data == nullptr) {
         return py::none();
+    }
+    
+    if (dataLen <= 0) {
+        // Return empty string for zero-length data, not None
+        return py::str("");
     }
 
     try {
@@ -217,7 +222,7 @@ py::object DecodeString(const void* data, SQLLEN dataLen, const std::string& enc
             }
             // Fallback: use direct codecs.decode (no caching to avoid static destructor issues)
             py::object codecs = get_codecs_module();
-            py::bytes bytes_obj(static_cast<const char*>(data), dataLen);
+            py::bytes bytes_obj(static_cast<const char*>(data), static_cast<size_t>(dataLen));
             return codecs.attr("decode")(bytes_obj, py::str(encoding), py::str("strict"));
         }
     }
@@ -225,8 +230,13 @@ py::object DecodeString(const void* data, SQLLEN dataLen, const std::string& enc
         LOG("DecodeString error: {}", e.what());
         // Fallback with "replace" error handler
         try {
+            // Additional safety check before creating bytes object
+            if (data == nullptr || dataLen < 0) {
+                return py::str("[Decoding Error - Invalid Data]");
+            }
+            
             py::object codecs = get_codecs_module();
-            py::bytes bytes_obj(static_cast<const char*>(data), dataLen);
+            py::bytes bytes_obj(static_cast<const char*>(data), static_cast<size_t>(dataLen));
             if (isWideChar) {
                 return codecs.attr("decode")(bytes_obj, py::str("utf-16le"), py::str("replace"));
             } else {
@@ -3610,7 +3620,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 LOG("Unexpected negative data length. Column ID - {}, SQL Type - {}, Data Length - {}", col, dataType, dataLen);
                 ThrowStdException("Unexpected negative data length, check logs for details");
             }
-            assert(dataLen > 0 && "Data length must be > 0");
 
             switch (dataType) {
                 case SQL_CHAR:
