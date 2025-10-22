@@ -303,6 +303,47 @@ py::bytes EncodeString(const std::string& text, const std::string& encoding, boo
     }
 }
 
+// EncodeParameterString: Directly encode Python str parameters efficiently
+py::bytes EncodeParameterString(const py::str& param, const std::string& encoding, bool toWideChar) {
+    try {
+        if (toWideChar) {
+            // Direct encode to UTF-16LE without round-trip conversions
+            PyObject* encoded = PyUnicode_AsEncodedString(param.ptr(), "utf-16le", "strict");
+            if (!encoded) throw py::error_already_set();
+            return py::reinterpret_steal<py::bytes>(encoded);
+        } else {
+            // Direct encode to target encoding without round-trip conversions
+            if (encoding == "utf-8" || encoding == "ascii") {
+                PyObject* encoded = PyUnicode_AsEncodedString(param.ptr(), encoding.c_str(), "strict");
+                if (!encoded) throw py::error_already_set();
+                return py::reinterpret_steal<py::bytes>(encoded);
+            } else {
+                auto& cache = get_codec_cache();
+                return cache.encode_func(param, py::str(encoding), py::str("strict")).cast<py::bytes>();
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        LOG("EncodeParameterString error: {}", e.what());
+        // Fallback with "replace" error handler
+        try {
+            if (toWideChar) {
+                PyObject* encoded = PyUnicode_AsEncodedString(param.ptr(), "utf-16le", "replace");
+                if (!encoded) throw py::error_already_set();
+                return py::reinterpret_steal<py::bytes>(encoded);
+            } else {
+                auto& cache = get_codec_cache();
+                return cache.encode_func(param, py::str(encoding), py::str("replace")).cast<py::bytes>();
+            }
+        } catch (const std::exception& e2) {
+            LOG("Fallback parameter encoding error: {}", e2.what());
+            // Ultimate fallback: encode as utf-8 with replace
+            auto& cache = get_codec_cache();
+            return cache.encode_func(param, py::str("utf-8"), py::str("replace")).cast<py::bytes>();
+        }
+    }
+}
+
 namespace {
 
 // Helper functions for safe WCHAR handling
@@ -448,10 +489,8 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     // Use the specified encoding when converting to string
                     std::string* strParam = nullptr;
                     if (py::isinstance<py::str>(param)) {
-                        // Use the EncodeString function to handle encoding properly
-                        std::string text_to_encode = param.cast<std::string>();
-                        
-                        py::bytes encoded = EncodeString(text_to_encode, encoding, false);
+                        // Direct encode Python str to target encoding (no round-trip conversions)
+                        py::bytes encoded = EncodeParameterString(param.cast<py::str>(), encoding, false);
                         std::string encoded_str = encoded.cast<std::string>();
                         
                         // Check if data would be truncated and raise error instead of silent truncation
@@ -544,9 +583,8 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     std::wstring* strParam = nullptr;
                     
                     if (py::isinstance<py::str>(param)) {
-                        // For Python strings, convert to wstring using EncodeString
-                        std::string text_to_encode = param.cast<std::string>();
-                        py::bytes encoded = EncodeString(text_to_encode, encoding, true); // true for wide character
+                        // Direct encode Python str to UTF-16LE then convert to wstring (single encode operation)
+                        py::bytes encoded = EncodeParameterString(param.cast<py::str>(), encoding, true);
                         py::object decoded = py::module_::import("codecs").attr("decode")(encoded, py::str("utf-16le"), py::str("strict"));
                         std::wstring wstr = decoded.cast<std::wstring>();
                         
