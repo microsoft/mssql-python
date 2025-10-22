@@ -594,10 +594,9 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     std::wstring* strParam = nullptr;
                     
                     if (py::isinstance<py::str>(param)) {
-                        // Direct encode Python str to UTF-16LE then convert to wstring (single encode operation)
-                        py::bytes encoded = EncodeParameterString(param.cast<py::str>(), encoding, true);
-                        py::object decoded = py::module_::import("codecs").attr("decode")(encoded, py::str("utf-16le"), py::str("strict"));
-                        std::wstring wstr = decoded.cast<std::wstring>();
+                        // OPTIMIZED: Direct cast Python str to std::wstring (no double conversion)
+                        // This eliminates: py::str → UTF-16LE bytes → py::str → std::wstring overhead
+                        std::wstring wstr = param.cast<std::wstring>();
                         
                         // Check if data would be truncated and raise error
                         if (wstr.size() > paramInfo.columnSize) {
