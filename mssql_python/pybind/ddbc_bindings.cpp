@@ -305,6 +305,48 @@ py::bytes EncodeString(const std::string& text, const std::string& encoding, boo
 
 namespace {
 
+// Helper functions for safe WCHAR handling
+SQLLEN ValidateWCharByteLength(SQLLEN dataLen, SQLUSMALLINT columnIndex) {
+    if (dataLen <= 0) {
+        return dataLen;
+    }
+    
+    // Ensure even byte length for WCHAR data to prevent corruption
+    if (dataLen % sizeof(SQLWCHAR) != 0) {
+        LOG("Warning: WCHAR column {} has odd byte length {}, truncating to even boundary", 
+            columnIndex, dataLen);
+        return (dataLen / sizeof(SQLWCHAR)) * sizeof(SQLWCHAR);
+    }
+    
+    return dataLen;
+}
+
+size_t SafeTrimWCharNulls(SQLWCHAR* data, size_t numChars, SQLUSMALLINT columnIndex) {
+    if (!data || numChars == 0) {
+        return 0;
+    }
+    
+    size_t actualChars = numChars;
+    
+    // Trim trailing null characters
+    while (actualChars > 0 && data[actualChars - 1] == 0) {
+        --actualChars;
+    }
+    
+    // Check for broken surrogate pairs at the end
+    if (actualChars > 0) {
+        SQLWCHAR lastChar = data[actualChars - 1];
+        // High surrogate range: 0xD800-0xDBFF (needs to be followed by low surrogate)
+        if (lastChar >= 0xD800 && lastChar <= 0xDBFF) {
+            LOG("Warning: WCHAR column {} ends with unpaired high surrogate U+{:04X}, removing", 
+                columnIndex, static_cast<unsigned>(lastChar));
+            --actualChars;
+        }
+    }
+    
+    return actualChars;
+}
+
 const char* GetSqlCTypeAsString(const SQLSMALLINT cType) {
     switch (cType) {
         STRINGIFY_FOR_CASE(SQL_C_CHAR);
@@ -2689,17 +2731,40 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
                     LOG("Loop {}: Trimmed null terminator (narrow)", loopCount);
                 }
             } else {
-                // Wide characters
+                // Wide characters - ensure even byte boundaries and validate surrogate pairs
                 size_t wcharSize = sizeof(SQLWCHAR);
+                
+                // Ensure even byte boundary first
+                if (bytesRead % wcharSize != 0) {
+                    LOG("Loop {}: WCHAR data has odd byte length {}, truncating to even boundary", 
+                        loopCount, bytesRead);
+                    bytesRead = (bytesRead / wcharSize) * wcharSize;
+                }
+                
                 if (bytesRead >= wcharSize) {
                     auto sqlwBuf = reinterpret_cast<const SQLWCHAR*>(chunk.data());
                     size_t wcharCount = bytesRead / wcharSize;
+                    
+                    // Trim null terminators
                     while (wcharCount > 0 && sqlwBuf[wcharCount - 1] == 0) {
                         --wcharCount;
                         bytesRead -= wcharSize;
                     }
+                    
+                    // Check for incomplete surrogate pairs at chunk boundary
+                    if (wcharCount > 0) {
+                        SQLWCHAR lastChar = sqlwBuf[wcharCount - 1];
+                        // High surrogate range: 0xD800-0xDBFF (needs to be followed by low surrogate)
+                        if (lastChar >= 0xD800 && lastChar <= 0xDBFF && ret != SQL_SUCCESS) {
+                            // We're in the middle of a stream and have an unpaired high surrogate
+                            // Keep it for the next chunk to potentially pair with low surrogate
+                            LOG("Loop {}: Preserving high surrogate U+{:04X} for next chunk", 
+                                loopCount, static_cast<unsigned>(lastChar));
+                        }
+                    }
+                    
                     if (bytesRead < DAE_CHUNK_SIZE) {
-                        LOG("Loop {}: Trimmed null terminator (wide)", loopCount);
+                        LOG("Loop {}: Trimmed/validated WCHAR data to {} bytes", loopCount, bytesRead);
                     }
                 }
             }
@@ -2729,7 +2794,34 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
 
     // Use DecodeString function with the proper encoding based on character type
     const std::string& encoding = isWideChar ? wcharEncoding : charEncoding;
-    LOG("FetchLobColumnData: Using DecodeString with encoding {}", encoding);
+    
+    if (isWideChar) {
+        // Final validation for WCHAR data - ensure even byte length and no broken surrogate pairs
+        size_t bufferSize = buffer.size();
+        if (bufferSize % sizeof(SQLWCHAR) != 0) {
+            LOG("FetchLobColumnData: Final WCHAR buffer has odd byte length {}, truncating", bufferSize);
+            bufferSize = (bufferSize / sizeof(SQLWCHAR)) * sizeof(SQLWCHAR);
+            buffer.resize(bufferSize);
+        }
+        
+        if (bufferSize >= sizeof(SQLWCHAR)) {
+            auto wcharBuf = reinterpret_cast<const SQLWCHAR*>(buffer.data());
+            size_t numChars = bufferSize / sizeof(SQLWCHAR);
+            
+            // Check for incomplete surrogate pair at the end
+            if (numChars > 0) {
+                SQLWCHAR lastChar = wcharBuf[numChars - 1];
+                if (lastChar >= 0xD800 && lastChar <= 0xDBFF) {
+                    LOG("FetchLobColumnData: Removing incomplete high surrogate U+{:04X} at end", 
+                        static_cast<unsigned>(lastChar));
+                    bufferSize -= sizeof(SQLWCHAR);
+                    buffer.resize(bufferSize);
+                }
+            }
+        }
+    }
+    
+    LOG("FetchLobColumnData: Using DecodeString with encoding {} for {} bytes", encoding, buffer.size());
     return DecodeString(buffer.data(), buffer.size(), encoding, isWideChar);
 }
 
@@ -2828,14 +2920,42 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(), fetchBufferSize, &dataLen);
                     if (SQL_SUCCEEDED(ret)) {
                         if (dataLen > 0) {
-                            uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
-                            if (numCharsInData < dataBuffer.size()) {
-                                // Use the common decoding function
-                                row.append(DecodeString(dataBuffer.data(), dataLen, wcharEncoding, true));
-                                LOG("Appended WCHAR string using encoding {} to result row", wcharEncoding);
+                            // Validate WCHAR byte length to prevent corruption
+                            if (dataLen % sizeof(SQLWCHAR) != 0) {
+                                LOG("Warning: WCHAR column {} has odd byte length {}, truncating to even boundary", 
+                                    i, dataLen);
+                                dataLen = (dataLen / sizeof(SQLWCHAR)) * sizeof(SQLWCHAR);
+                            }
+                            
+                            uint64_t numCharsInData = static_cast<uint64_t>(dataLen) / sizeof(SQLWCHAR);
+                            if (numCharsInData <= static_cast<uint64_t>(columnSize) && static_cast<uint64_t>(dataLen) <= fetchBufferSize) {
+                                // Safely trim null terminators without corrupting surrogate pairs
+                                SQLWCHAR* wcharData = dataBuffer.data();
+                                size_t actualChars = numCharsInData;
+                                
+                                // Trim trailing nulls but preserve data integrity
+                                while (actualChars > 0 && wcharData[actualChars - 1] == 0) {
+                                    --actualChars;
+                                }
+                                
+                                // Validate we don't have broken surrogate pairs at the end
+                                if (actualChars > 0) {
+                                    SQLWCHAR lastChar = wcharData[actualChars - 1];
+                                    // High surrogate range: 0xD800-0xDBFF
+                                    if (lastChar >= 0xD800 && lastChar <= 0xDBFF) {
+                                        LOG("Warning: WCHAR column {} ends with unpaired high surrogate, removing", i);
+                                        --actualChars;
+                                    }
+                                }
+                                
+                                size_t validByteLength = actualChars * sizeof(SQLWCHAR);
+                                row.append(DecodeString(wcharData, validByteLength, wcharEncoding, true));
+                                LOG("Appended WCHAR string ({} chars, {} bytes) using encoding {} to result row", 
+                                    actualChars, validByteLength, wcharEncoding);
                             } else {
                                 // Buffer too small, fallback to streaming
-                                LOG("WCHAR column {} data truncated, using streaming LOB", i);
+                                LOG("WCHAR column {} data truncated (chars={}, buffer={}), using streaming LOB", 
+                                    i, numCharsInData, columnSize);
                                 row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, charEncoding, wcharEncoding));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
@@ -3474,22 +3594,32 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     SQLULEN columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
                     HandleZeroColumnSizeAtFetch(columnSize);
                     uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
-					uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
+                    
+                    // Validate WCHAR byte length to prevent corruption
+                    SQLLEN validDataLen = ValidateWCharByteLength(dataLen, col);
+                    uint64_t numCharsInData = static_cast<uint64_t>(validDataLen) / sizeof(SQLWCHAR);
+                    
                     bool isLob = std::find(lobColumns.begin(), lobColumns.end(), col) != lobColumns.end();
-					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
+                    // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
+                        SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
+                        
+                        // Safely trim nulls and validate surrogate pairs
+                        size_t actualChars = SafeTrimWCharNulls(wcharData, numCharsInData, col);
+                        size_t validByteLength = actualChars * sizeof(SQLWCHAR);
+                        
                         #if defined(__APPLE__) || defined(__linux__)
-                            // Use unix-specific conversion to handle the wchar_t/SQLWCHAR size difference
-                            SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
-                            // Use DecodeString directly with the raw data
-                            py::object decodedStr = DecodeString(wcharData, numCharsInData * sizeof(SQLWCHAR), wcharEncoding, true);
+                            // Use DecodeString directly with the validated raw data
+                            py::object decodedStr = DecodeString(wcharData, validByteLength, wcharEncoding, true);
                             row.append(decodedStr);
                         #else
                             // On Windows, wchar_t and SQLWCHAR are both 2 bytes, so direct cast works
-                            wchar_t* wcharData = reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]);
-                            py::object decodedStr = DecodeString(wcharData, numCharsInData * sizeof(wchar_t), wcharEncoding, true);
+                            py::object decodedStr = DecodeString(wcharData, validByteLength, wcharEncoding, true);
                             row.append(decodedStr);
                         #endif
+                        
+                        LOG("FetchBatchData: Appended WCHAR string ({} chars, {} bytes) using encoding {} to result row", 
+                            actualChars, validByteLength, wcharEncoding);
                     } else {
                         // Pass encoding parameters to FetchLobColumnData
                         row.append(FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false, charEncoding, wcharEncoding));
@@ -4099,6 +4229,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")
         .def("set_autocommit", &ConnectionHandle::setAutocommit)
         .def("get_autocommit", &ConnectionHandle::getAutocommit)
+        .def("set_attr", &ConnectionHandle::setAttr, py::arg("attribute"), py::arg("value"), "Set connection attribute")
         .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle)
         .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"));
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
