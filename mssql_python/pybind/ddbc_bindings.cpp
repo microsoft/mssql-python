@@ -238,99 +238,56 @@ py::object DecodeString(const void* data, SQLLEN dataLen, const std::string& enc
     }
 }
 
-// EncodeString: Efficiently encode Python str to bytes using CPython APIs where possible
-py::bytes EncodeString(const std::string& text, const std::string& encoding, bool toWideChar) {
+// EncodeString: Efficiently encode Python str directly to bytes using CPython APIs
+// OPTIMIZED: Direct py::str overload eliminates double conversion (py::str → UTF-8 → py::str)
+py::bytes EncodeString(const py::str& pystr, const std::string& encoding, bool toWideChar) {
     try {
         if (toWideChar) {
-            // Encode directly to UTF-16LE using CPython API with RAII wrapper
-            py::object unicode = py::reinterpret_steal<py::object>(
-                PyUnicode_FromStringAndSize(text.data(), static_cast<Py_ssize_t>(text.size())));
-            if (!unicode) throw py::error_already_set();
-            
-            // Encode to UTF-16LE (no BOM) - RAII wrapper handles cleanup automatically
-            PyObject* encoded = PyUnicode_AsEncodedString(unicode.ptr(), "utf-16le", "strict");
+            // Default UTF-16LE encoding for SQL_WCHAR - direct CPython API
+            PyObject* encoded = PyUnicode_AsEncodedString(pystr.ptr(), "utf-16le", "strict");
             if (!encoded) throw py::error_already_set();
             return py::reinterpret_steal<py::bytes>(encoded);
         } else {
-            // For SQL_C_CHAR, use CPython API for utf-8/ascii, else fallback to codecs.encode
-            if (encoding == "utf-8" || encoding == "ascii") {
-                py::object unicode = py::reinterpret_steal<py::object>(
-                    PyUnicode_FromStringAndSize(text.data(), static_cast<Py_ssize_t>(text.size())));
-                if (!unicode) throw py::error_already_set();
-                
-                PyObject* encoded = PyUnicode_AsEncodedString(unicode.ptr(), encoding.c_str(), "strict");
+            // Use CPython API for default UTF-8 (SQL_CHAR) and common encodings, fallback to codecs
+            if (encoding == "utf-8") {
+                // Default encoding for SQL_CHAR - direct CPython API
+                PyObject* encoded = PyUnicode_AsEncodedString(pystr.ptr(), "utf-8", "strict");
                 if (!encoded) throw py::error_already_set();
                 return py::reinterpret_steal<py::bytes>(encoded);
             } else {
+                // General encoding support using codecs module
                 py::object codecs = get_codecs_module();
-                return codecs.attr("encode")(py::str(text), py::str(encoding), py::str("strict")).cast<py::bytes>();
+                return codecs.attr("encode")(pystr, py::str(encoding), py::str("strict")).cast<py::bytes>();
             }
         }
     }
     catch (const std::exception& e) {
-        LOG("EncodeString error: {}", e.what());
+        LOG("EncodeString error with py::str and encoding '{}': {}", encoding, e.what());
         // Fallback with "replace" error handler
         try {
             if (toWideChar) {
-                py::object unicode = py::reinterpret_steal<py::object>(
-                    PyUnicode_FromStringAndSize(text.data(), static_cast<Py_ssize_t>(text.size())));
-                if (!unicode) throw py::error_already_set();
-                
-                PyObject* encoded = PyUnicode_AsEncodedString(unicode.ptr(), "utf-16le", "replace");
+                PyObject* encoded = PyUnicode_AsEncodedString(pystr.ptr(), "utf-16le", "replace");
                 if (!encoded) throw py::error_already_set();
                 return py::reinterpret_steal<py::bytes>(encoded);
             } else {
                 py::object codecs = get_codecs_module();
-                return codecs.attr("encode")(py::str(text), py::str(encoding), py::str("replace")).cast<py::bytes>();
+                return codecs.attr("encode")(pystr, py::str(encoding), py::str("replace")).cast<py::bytes>();
             }
         } catch (const std::exception& e2) {
-            LOG("Fallback encoding error: {}", e2.what());
+            LOG("Fallback EncodeString error: {}", e2.what());
             // Ultimate fallback: encode as utf-8 with replace
-            py::object codecs = get_codecs_module();
-            return codecs.attr("encode")(py::str(text), py::str("utf-8"), py::str("replace")).cast<py::bytes>();
+            PyObject* encoded = PyUnicode_AsEncodedString(pystr.ptr(), "utf-8", "replace");
+            if (!encoded) throw py::error_already_set();
+            return py::reinterpret_steal<py::bytes>(encoded);
         }
     }
 }
 
-// EncodeParameterString: Directly encode Python str parameters efficiently
-py::bytes EncodeParameterString(const py::str& param, const std::string& encoding, bool toWideChar) {
-    try {
-        if (toWideChar) {
-            // Direct encode to UTF-16LE without round-trip conversions
-            PyObject* encoded = PyUnicode_AsEncodedString(param.ptr(), "utf-16le", "strict");
-            if (!encoded) throw py::error_already_set();
-            return py::reinterpret_steal<py::bytes>(encoded);
-        } else {
-            // Direct encode to target encoding without round-trip conversions
-            if (encoding == "utf-8" || encoding == "ascii") {
-                PyObject* encoded = PyUnicode_AsEncodedString(param.ptr(), encoding.c_str(), "strict");
-                if (!encoded) throw py::error_already_set();
-                return py::reinterpret_steal<py::bytes>(encoded);
-            } else {
-                py::object codecs = get_codecs_module();
-                return codecs.attr("encode")(param, py::str(encoding), py::str("strict")).cast<py::bytes>();
-            }
-        }
-    }
-    catch (const std::exception& e) {
-        LOG("EncodeParameterString error: {}", e.what());
-        // Fallback with "replace" error handler
-        try {
-            if (toWideChar) {
-                PyObject* encoded = PyUnicode_AsEncodedString(param.ptr(), "utf-16le", "replace");
-                if (!encoded) throw py::error_already_set();
-                return py::reinterpret_steal<py::bytes>(encoded);
-            } else {
-                py::object codecs = get_codecs_module();
-                return codecs.attr("encode")(param, py::str(encoding), py::str("replace")).cast<py::bytes>();
-            }
-        } catch (const std::exception& e2) {
-            LOG("Fallback parameter encoding error: {}", e2.what());
-            // Ultimate fallback: encode as utf-8 with replace
-            py::object codecs = get_codecs_module();
-            return codecs.attr("encode")(param, py::str("utf-8"), py::str("replace")).cast<py::bytes>();
-        }
-    }
+// EncodeString: Backward compatibility overload for std::string (converts to py::str first)
+py::bytes EncodeString(const std::string& text, const std::string& encoding, bool toWideChar) {
+    // Convert std::string to py::str and delegate to optimized version
+    py::str pystr = py::str(text);
+    return EncodeString(pystr, encoding, toWideChar);
 }
 
 namespace {
@@ -478,8 +435,8 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     // Use the specified encoding when converting to string
                     std::string* strParam = nullptr;
                     if (py::isinstance<py::str>(param)) {
-                        // Direct encode Python str to target encoding (no round-trip conversions)
-                        py::bytes encoded = EncodeParameterString(param.cast<py::str>(), encoding, false);
+                        // OPTIMIZED: Direct encode Python str to target encoding (no double conversion)
+                        py::bytes encoded = EncodeString(param.cast<py::str>(), encoding, false);
                         std::string encoded_str = encoded.cast<std::string>();
                         
                         // Check if data would be truncated and raise error instead of silent truncation
@@ -2235,8 +2192,8 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                         std::string str;
                         
                         if (py::isinstance<py::str>(value)) {
-                            // Use EncodeString function with false for toWideChar (not wide char)
-                            py::bytes encoded = EncodeString(value.cast<std::string>(), encoding, false);
+                            // OPTIMIZED: Direct encoding from py::str to target encoding (no double conversion)
+                            py::bytes encoded = EncodeString(value.cast<py::str>(), encoding, false);
                             str = encoded.cast<std::string>();
                         } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
                             // For bytes/bytearray, use as-is
@@ -2620,8 +2577,8 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
                 if (!py_obj_ptr) return SQL_ERROR;
 
                 if (py::isinstance<py::str>(*py_obj_ptr)) {
-                    // Use EncodeString function with false for non-wide characters
-                    py::bytes encoded = EncodeString(py_obj_ptr->cast<std::string>(), encoding, false);
+                    // OPTIMIZED: Direct encoding from py::str to target encoding (no double conversion)
+                    py::bytes encoded = EncodeString(py_obj_ptr->cast<py::str>(), encoding, false);
                     std::string data = encoded.cast<std::string>();
                     SQLLEN data_len = static_cast<SQLLEN>(data.size());
                     rc = SQLPutData_ptr(hStmt, (SQLPOINTER)data.c_str(), data_len);
