@@ -533,10 +533,20 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     std::string binData;
                     if (py::isinstance<py::bytes>(param)) {
                         binData = param.cast<std::string>();
+                    } else if (py::isinstance<py::bytearray>(param)) {
+                        // Safer bytearray handling
+                        Py_ssize_t size = PyByteArray_Size(param.ptr());
+                        if (size < 0) {
+                            ThrowStdException("Invalid bytearray parameter at index " + std::to_string(paramIndex));
+                        }
+                        char* data = PyByteArray_AsString(param.ptr());
+                        if (data == nullptr) {
+                            ThrowStdException("Failed to get bytearray data at index " + std::to_string(paramIndex));
+                        }
+                        binData = std::string(data, static_cast<size_t>(size));
                     } else {
-                        // bytearray
-                        binData = std::string(reinterpret_cast<const char*>(PyByteArray_AsString(param.ptr())),
-                                            PyByteArray_Size(param.ptr()));
+                        // Handle str case (should be converted to bytes first)
+                        ThrowStdException("String parameter for binary column must be bytes or bytearray at index " + std::to_string(paramIndex));
                     }
                     // Check if data would be truncated and raise error
                     if (binData.size() > paramInfo.columnSize) {
@@ -547,10 +557,22 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                         ThrowStdException(errMsg.str());
                     }
                     
+                    // Additional safety checks
+                    if (binData.size() > static_cast<size_t>(std::numeric_limits<SQLLEN>::max())) {
+                        ThrowStdException("Binary data too large for SQLLEN at parameter index " + std::to_string(paramIndex));
+                    }
+                    
                     std::string* binBuffer = AllocateParamBuffer<std::string>(paramBuffers, binData);
+                    if (!binBuffer) {
+                        ThrowStdException("Failed to allocate binary buffer at parameter index " + std::to_string(paramIndex));
+                    }
+                    
                     dataPtr = const_cast<void*>(static_cast<const void*>(binBuffer->data()));
                     bufferLength = static_cast<SQLLEN>(binBuffer->size());
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
+                    if (!strLenOrIndPtr) {
+                        ThrowStdException("Failed to allocate length indicator at parameter index " + std::to_string(paramIndex));
+                    }
                     *strLenOrIndPtr = bufferLength;
                 }
                 break;
