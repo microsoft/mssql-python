@@ -179,7 +179,16 @@ SQLDescribeParamFunc SQLDescribeParam_ptr = nullptr;
 namespace {
     // Get codecs module safely - no caching to avoid static destructor issues
     py::object get_codecs_module() {
-        return py::module_::import("codecs");
+        try {
+            return py::module_::import("codecs");
+        } catch (const py::error_already_set&) {
+            LOG("Failed to import codecs module");
+            // If Python is shutting down, return None safely
+            return py::none();
+        } catch (...) {
+            LOG("Failed to import codecs module");
+            return py::none();
+        }
     }
 }
 
@@ -236,6 +245,9 @@ py::object DecodeString(const void* data, SQLLEN dataLen, const std::string& enc
             }
             
             py::object codecs = get_codecs_module();
+            if (codecs.is_none()) {
+                return py::str("[Decoding Error - Codecs Unavailable]");
+            }
             py::bytes bytes_obj(static_cast<const char*>(data), static_cast<size_t>(dataLen));
             if (isWideChar) {
                 return codecs.attr("decode")(bytes_obj, py::str("utf-16le"), py::str("replace"));
@@ -267,6 +279,10 @@ py::bytes EncodeString(const py::str& pystr, const std::string& encoding, bool t
             } else {
                 // General encoding support using codecs module
                 py::object codecs = get_codecs_module();
+                if (codecs.is_none()) {
+                    // Fallback during shutdown - return empty bytes to avoid crash
+                    return py::bytes("");
+                }
                 return codecs.attr("encode")(pystr, py::str(encoding), py::str("strict")).cast<py::bytes>();
             }
         }
@@ -281,6 +297,10 @@ py::bytes EncodeString(const py::str& pystr, const std::string& encoding, bool t
                 return py::reinterpret_steal<py::bytes>(encoded);
             } else {
                 py::object codecs = get_codecs_module();
+                if (codecs.is_none()) {
+                    // Ultimate fallback during shutdown - return empty bytes to avoid crash
+                    return py::bytes("");
+                }
                 return codecs.attr("encode")(pystr, py::str(encoding), py::str("replace")).cast<py::bytes>();
             }
         } catch (const std::exception& e2) {
