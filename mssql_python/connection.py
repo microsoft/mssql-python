@@ -386,6 +386,12 @@ class Connection:
                 ddbc_error=f"ctype must be SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) or SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value})",
             )
         
+        # Enforce UTF-16 encoding restriction for SQL_WCHAR
+        if ctype == ConstantsDDBC.SQL_WCHAR.value and encoding not in UTF16_ENCODINGS:
+            log('warning', "SQL_WCHAR only supports UTF-16 encodings. Attempted encoding '%s' is not allowed. Using default 'utf-16le' instead.", 
+                sanitize_user_input(encoding))
+            encoding = 'utf-16le'
+        
         # Store the encoding settings
         self._encoding_settings = {
             'encoding': encoding,
@@ -489,12 +495,25 @@ class Connection:
         # Normalize encoding to lowercase for consistency
         encoding = encoding.lower()
         
+        # Enforce UTF-16 encoding restriction for SQL_WCHAR and SQL_WMETADATA
+        if (sqltype == ConstantsDDBC.SQL_WCHAR.value or sqltype == SQL_WMETADATA) and encoding not in UTF16_ENCODINGS:
+            sqltype_name = "SQL_WCHAR" if sqltype == ConstantsDDBC.SQL_WCHAR.value else "SQL_WMETADATA"
+            log('warning', "%s only supports UTF-16 encodings. Attempted encoding '%s' is not allowed. Using default 'utf-16le' instead.", 
+                sqltype_name, sanitize_user_input(encoding))
+            encoding = 'utf-16le'
+        
         # Set default ctype based on encoding if not provided
         if ctype is None:
             if encoding in UTF16_ENCODINGS:
                 ctype = ConstantsDDBC.SQL_WCHAR.value
             else:
                 ctype = ConstantsDDBC.SQL_CHAR.value
+        
+        # Additional validation: if user explicitly sets ctype to SQL_WCHAR but encoding is not UTF-16
+        if ctype == ConstantsDDBC.SQL_WCHAR.value and encoding not in UTF16_ENCODINGS:
+            log('warning', "SQL_WCHAR ctype only supports UTF-16 encodings. Attempted encoding '%s' is not compatible. Using default 'utf-16le' instead.", 
+                sanitize_user_input(encoding))
+            encoding = 'utf-16le'
         
         # Validate ctype
         valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
