@@ -300,6 +300,31 @@ py::bytes EncodeString(const std::string& text, const std::string& encoding, boo
     return EncodeString(pystr, encoding, toWideChar);
 }
 
+// Safe wstring conversion helper to prevent SIGABRT during Python shutdown
+std::wstring SafeCastToWString(const py::object& obj) {
+    try {
+        // Use our controlled encoding instead of pybind11's automatic conversion
+        py::bytes utf16_bytes = EncodeString(obj.cast<py::str>(), "utf-16le", true);
+        std::string byte_str = utf16_bytes.cast<std::string>();
+        
+        // Convert UTF-16LE bytes to wstring
+        std::wstring result;
+        result.reserve(byte_str.size() / 2);
+        for (size_t i = 0; i < byte_str.size(); i += 2) {
+            if (i + 1 < byte_str.size()) {
+                wchar_t wc = static_cast<wchar_t>(
+                    (static_cast<unsigned char>(byte_str[i]) | 
+                     (static_cast<unsigned char>(byte_str[i + 1]) << 8)));
+                result.push_back(wc);
+            }
+        }
+        return result;
+    } catch (const std::exception& e) {
+        LOG("Safe wstring conversion failed, falling back to pybind11: {}", e.what());
+        return obj.cast<std::wstring>();  // Fallback to original method
+    }
+}
+
 namespace {
 
 // Helper functions for safe WCHAR handling
@@ -579,8 +604,8 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                                 }
                             }
                         } catch (const std::exception& e) {
-                            LOG("Error in safe wstring conversion, falling back to pybind11: {}", e.what());
-                            wstr = param.cast<std::wstring>();
+                            LOG("Error in safe wstring conversion, falling back to helper: {}", e.what());
+                            wstr = SafeCastToWString(param);
                         }
                         
                         // Check if data would be truncated and raise error
