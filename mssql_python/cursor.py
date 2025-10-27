@@ -16,7 +16,7 @@ from typing import List, Union, Any
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
-from mssql_python.exceptions import InterfaceError, NotSupportedError, ProgrammingError
+from mssql_python.exceptions import InterfaceError, NotSupportedError, ProgrammingError, OperationalError, DatabaseError
 from mssql_python.row import Row
 from mssql_python import get_settings
 
@@ -250,6 +250,51 @@ class Cursor:
 
         numeric_data.val = bytes(byte_array)
         return numeric_data
+    
+    def _get_encoding_settings(self):
+        """
+        Get the encoding settings from the connection.
+        
+        Returns:
+            dict: A dictionary with 'encoding' and 'ctype' keys, or default settings if not available
+        """
+        if hasattr(self._connection, 'getencoding'):
+            try:
+                return self._connection.getencoding()
+            except (OperationalError, DatabaseError) as db_error:
+                # Only catch database-related errors, not programming errors
+                log('warning', f"Failed to get encoding settings from connection due to database error: {db_error}")
+                return {
+                    'encoding': 'utf-16le', 
+                    'ctype': ddbc_sql_const.SQL_WCHAR.value
+                }
+            
+        # Return default encoding settings if getencoding is not available
+        return {
+            'encoding': 'utf-16le',
+            'ctype': ddbc_sql_const.SQL_WCHAR.value
+        }
+
+    def _get_decoding_settings(self, sql_type):
+        """
+        Get decoding settings for a specific SQL type.
+        
+        Args:
+            sql_type: SQL type constant (SQL_CHAR, SQL_WCHAR, etc.)
+            
+        Returns:
+            Dictionary containing the decoding settings.
+        """
+        try:
+            # Get decoding settings from connection for this SQL type
+            return self._connection.getdecoding(sql_type)
+        except (OperationalError, DatabaseError) as db_error:
+            # Only handle expected database-related errors
+            log('warning', f"Failed to get decoding settings for SQL type {sql_type} due to database error: {db_error}")
+            if sql_type == ddbc_sql_const.SQL_WCHAR.value:
+                return {'encoding': 'utf-16le', 'ctype': ddbc_sql_const.SQL_WCHAR.value}
+            else:
+                return {'encoding': 'utf-8', 'ctype': ddbc_sql_const.SQL_CHAR.value}
 
     def _map_sql_type(self, param, parameters_list, i, min_val=None, max_val=None):
         """
@@ -938,6 +983,9 @@ class Cursor:
         # Clear any previous messages
         self.messages = []
 
+        # Getting encoding setting
+        encoding_settings = self._get_encoding_settings()
+
         # Apply timeout if set (non-zero)
         if self._timeout > 0:
             try:
@@ -1008,6 +1056,7 @@ class Cursor:
             parameters_type,
             self.is_stmt_prepared,
             use_prepare,
+            encoding_settings
         )
         # Check return code
         try:
@@ -1703,6 +1752,9 @@ class Cursor:
         # Now transpose the processed parameters
         columnwise_params, row_count = self._transpose_rowwise_to_columnwise(processed_parameters)
         
+        # Get encoding settings
+        encoding_settings = self._get_encoding_settings()
+
         # Add debug logging
         log('debug', "Executing batch query with %d parameter sets:\n%s",
             len(seq_of_parameters), "\n".join(f"  {i+1}: {tuple(p) if isinstance(p, (list, tuple)) else p}" for i, p in enumerate(seq_of_parameters[:5]))  # Limit to first 5 rows for large batches
@@ -1713,7 +1765,8 @@ class Cursor:
             operation,
             columnwise_params,
             parameters_type,
-            row_count
+            row_count,
+            encoding_settings
         )
         
         # Capture any diagnostic messages after execution
@@ -1745,10 +1798,13 @@ class Cursor:
         """
         self._check_closed()  # Check if the cursor is closed
 
+        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
+        wchar_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value)
+
         # Fetch raw data
         row_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
+            ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data, char_decoding.get('encoding', 'utf-8'), wchar_decoding.get('encoding', 'utf-16le'))
             
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
@@ -1796,11 +1852,14 @@ class Cursor:
 
         if size <= 0:
             return []
-        
+
+        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
+        wchar_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value)
+
         # Fetch raw data
         rows_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
+            ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size, char_decoding.get('encoding', 'utf-8'), wchar_decoding.get('encoding', 'utf-16le'))
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
@@ -1837,10 +1896,13 @@ class Cursor:
         if not self._has_result_set and self.description:
             self._reset_rownumber()
 
+        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
+        wchar_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value)
+
         # Fetch raw data
         rows_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+            ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data, char_decoding.get('encoding', 'utf-8'), wchar_decoding.get('encoding', 'utf-16le'))
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
