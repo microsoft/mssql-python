@@ -1,9 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-// INFO|TODO - Note that is file is Windows specific right now. Making it
-//             arch agnostic will be taken up in future.
-
 #ifndef MSSQL_PYTHON_CONNECTION_POOL_H_
 #define MSSQL_PYTHON_CONNECTION_POOL_H_
 
