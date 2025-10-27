@@ -11,6 +11,7 @@ class ConstantsDDBC(Enum):
     """
     Constants used in the DDBC module.
     """
+
     SQL_HANDLE_ENV = 1
     SQL_HANDLE_DBC = 2
     SQL_HANDLE_STMT = 3
@@ -178,11 +179,12 @@ class ConstantsDDBC(Enum):
     # Reset Connection Constants
     SQL_RESET_CONNECTION_YES = 1
 
+
 class GetInfoConstants(Enum):
     """
     These constants are used with various methods like getinfo().
     """
-    
+
     # Driver and database information
     SQL_DRIVER_NAME = 6
     SQL_DRIVER_VER = 7
@@ -317,67 +319,92 @@ class GetInfoConstants(Enum):
     SQL_IC_SENSITIVE = 3
     SQL_IC_MIXED = 4
 
+
 class AuthType(Enum):
     """Constants for authentication types"""
+
     INTERACTIVE = "activedirectoryinteractive"
     DEVICE_CODE = "activedirectorydevicecode"
     DEFAULT = "activedirectorydefault"
 
+
 class SQLTypes:
     """Constants for valid SQL data types to use with setinputsizes"""
-    
+
     @classmethod
     def get_valid_types(cls) -> set:
         """Returns a set of all valid SQL type constants"""
-        
+
         return {
-            ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_VARCHAR.value, 
-            ConstantsDDBC.SQL_LONGVARCHAR.value, ConstantsDDBC.SQL_WCHAR.value,
-            ConstantsDDBC.SQL_WVARCHAR.value, ConstantsDDBC.SQL_WLONGVARCHAR.value,
-            ConstantsDDBC.SQL_DECIMAL.value, ConstantsDDBC.SQL_NUMERIC.value, 
-            ConstantsDDBC.SQL_BIT.value, ConstantsDDBC.SQL_TINYINT.value,
-            ConstantsDDBC.SQL_SMALLINT.value, ConstantsDDBC.SQL_INTEGER.value, 
-            ConstantsDDBC.SQL_BIGINT.value, ConstantsDDBC.SQL_REAL.value,
-            ConstantsDDBC.SQL_FLOAT.value, ConstantsDDBC.SQL_DOUBLE.value, 
-            ConstantsDDBC.SQL_BINARY.value, ConstantsDDBC.SQL_VARBINARY.value,
-            ConstantsDDBC.SQL_LONGVARBINARY.value, ConstantsDDBC.SQL_DATE.value, 
-            ConstantsDDBC.SQL_TIME.value, ConstantsDDBC.SQL_TIMESTAMP.value,
-            ConstantsDDBC.SQL_GUID.value
+            ConstantsDDBC.SQL_CHAR.value,
+            ConstantsDDBC.SQL_VARCHAR.value,
+            ConstantsDDBC.SQL_LONGVARCHAR.value,
+            ConstantsDDBC.SQL_WCHAR.value,
+            ConstantsDDBC.SQL_WVARCHAR.value,
+            ConstantsDDBC.SQL_WLONGVARCHAR.value,
+            ConstantsDDBC.SQL_DECIMAL.value,
+            ConstantsDDBC.SQL_NUMERIC.value,
+            ConstantsDDBC.SQL_BIT.value,
+            ConstantsDDBC.SQL_TINYINT.value,
+            ConstantsDDBC.SQL_SMALLINT.value,
+            ConstantsDDBC.SQL_INTEGER.value,
+            ConstantsDDBC.SQL_BIGINT.value,
+            ConstantsDDBC.SQL_REAL.value,
+            ConstantsDDBC.SQL_FLOAT.value,
+            ConstantsDDBC.SQL_DOUBLE.value,
+            ConstantsDDBC.SQL_BINARY.value,
+            ConstantsDDBC.SQL_VARBINARY.value,
+            ConstantsDDBC.SQL_LONGVARBINARY.value,
+            ConstantsDDBC.SQL_DATE.value,
+            ConstantsDDBC.SQL_TIME.value,
+            ConstantsDDBC.SQL_TIMESTAMP.value,
+            ConstantsDDBC.SQL_GUID.value,
         }
-    
+
     # Could also add category methods for convenience
     @classmethod
     def get_string_types(cls) -> set:
         """Returns a set of string SQL type constants"""
-        
+
         return {
-            ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_VARCHAR.value, 
-            ConstantsDDBC.SQL_LONGVARCHAR.value, ConstantsDDBC.SQL_WCHAR.value,
-            ConstantsDDBC.SQL_WVARCHAR.value, ConstantsDDBC.SQL_WLONGVARCHAR.value
+            ConstantsDDBC.SQL_CHAR.value,
+            ConstantsDDBC.SQL_VARCHAR.value,
+            ConstantsDDBC.SQL_LONGVARCHAR.value,
+            ConstantsDDBC.SQL_WCHAR.value,
+            ConstantsDDBC.SQL_WVARCHAR.value,
+            ConstantsDDBC.SQL_WLONGVARCHAR.value,
         }
-    
+
     @classmethod
     def get_numeric_types(cls) -> set:
         """Returns a set of numeric SQL type constants"""
-        
+
         return {
-            ConstantsDDBC.SQL_DECIMAL.value, ConstantsDDBC.SQL_NUMERIC.value,
-            ConstantsDDBC.SQL_BIT.value, ConstantsDDBC.SQL_TINYINT.value,
-            ConstantsDDBC.SQL_SMALLINT.value, ConstantsDDBC.SQL_INTEGER.value,
-            ConstantsDDBC.SQL_BIGINT.value, ConstantsDDBC.SQL_REAL.value,
-            ConstantsDDBC.SQL_FLOAT.value, ConstantsDDBC.SQL_DOUBLE.value
+            ConstantsDDBC.SQL_DECIMAL.value,
+            ConstantsDDBC.SQL_NUMERIC.value,
+            ConstantsDDBC.SQL_BIT.value,
+            ConstantsDDBC.SQL_TINYINT.value,
+            ConstantsDDBC.SQL_SMALLINT.value,
+            ConstantsDDBC.SQL_INTEGER.value,
+            ConstantsDDBC.SQL_BIGINT.value,
+            ConstantsDDBC.SQL_REAL.value,
+            ConstantsDDBC.SQL_FLOAT.value,
+            ConstantsDDBC.SQL_DOUBLE.value,
         }
+
 
 class AttributeSetTime(Enum):
     """
     Defines when connection attributes can be set in relation to connection establishment.
-    
+
     This enum is used to validate if a specific connection attribute can be set before
     connection, after connection, or at either time.
     """
+
     BEFORE_ONLY = 1  # Must be set before connection is established
-    AFTER_ONLY = 2   # Can only be set after connection is established
-    EITHER = 3       # Can be set either before or after connection
+    AFTER_ONLY = 2  # Can only be set after connection is established
+    EITHER = 3  # Can be set either before or after connection
+
 
 # Dictionary mapping attributes to their valid set times
 ATTRIBUTE_SET_TIMING = {
@@ -385,13 +412,11 @@ ATTRIBUTE_SET_TIMING = {
     ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value: AttributeSetTime.BEFORE_ONLY,
     ConstantsDDBC.SQL_ATTR_ODBC_CURSORS.value: AttributeSetTime.BEFORE_ONLY,
     ConstantsDDBC.SQL_ATTR_PACKET_SIZE.value: AttributeSetTime.BEFORE_ONLY,
-    
     # Can only be set after connection
     ConstantsDDBC.SQL_ATTR_CONNECTION_DEAD.value: AttributeSetTime.AFTER_ONLY,
     ConstantsDDBC.SQL_ATTR_ENLIST_IN_DTC.value: AttributeSetTime.AFTER_ONLY,
     ConstantsDDBC.SQL_ATTR_TRANSLATE_LIB.value: AttributeSetTime.AFTER_ONLY,
     ConstantsDDBC.SQL_ATTR_TRANSLATE_OPTION.value: AttributeSetTime.AFTER_ONLY,
-    
     # Can be set either before or after connection
     ConstantsDDBC.SQL_ATTR_ACCESS_MODE.value: AttributeSetTime.EITHER,
     ConstantsDDBC.SQL_ATTR_ASYNC_DBC_EVENT.value: AttributeSetTime.EITHER,
@@ -406,13 +431,14 @@ ATTRIBUTE_SET_TIMING = {
     ConstantsDDBC.SQL_ATTR_TXN_ISOLATION.value: AttributeSetTime.EITHER,
 }
 
+
 def get_attribute_set_timing(attribute):
     """
     Get when an attribute can be set (before connection, after, or either).
-    
+
     Args:
         attribute (int): The connection attribute (SQL_ATTR_*)
-        
+
     Returns:
         AttributeSetTime: When the attribute can be set
     """
