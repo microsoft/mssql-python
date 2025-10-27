@@ -16,7 +16,6 @@ class Row:
     def __init__(self, values, column_map, cursor=None, converter_map=None):
         """
         Initialize a Row object with values and pre-built column map.
-        
         Args:
             values: List of values for this row  
             column_map: Pre-built column name to index mapping (shared across rows)
@@ -38,26 +37,27 @@ class Row:
     def _apply_output_converters(self, values, cursor):
         """
         Apply output converters to raw values.
-        
+
         Args:
             values: Raw values from the database
             cursor: Cursor object with connection and description
-            
+
         Returns:
             List of converted values
         """
         if not cursor.description:
             return values
-        
+
         converted_values = list(values)
         
         for i, (value, desc) in enumerate(zip(values, cursor.description)):
+
             if desc is None or value is None:
                 continue
-            
+
             # Get SQL type from description
             sql_type = desc[1]  # type_code is at index 1 in description tuple
-            
+
             # Try to get a converter for this type
             converter = cursor.connection.get_output_converter(sql_type)
             
@@ -74,7 +74,7 @@ class Row:
                     # we need to convert it to bytes for our converters
                     if isinstance(value, str):
                         # Encode as UTF-16LE for string values (SQL_WVARCHAR format)
-                        value_bytes = value.encode('utf-16-le')
+                        value_bytes = value.encode("utf-16-le")
                         converted_values[i] = converter(value_bytes)
                     else:
                         converted_values[i] = converter(value)
@@ -112,11 +112,11 @@ class Row:
         
         return converted_values
 
-    def __getitem__(self, index):
+    def __getitem__(self, index: int) -> Any:
         """Allow accessing by numeric index: row[0]"""
         return self._values[index]
-    
-    def __getattr__(self, name):
+
+    def __getattr__(self, name: str) -> Any:
         """
         Allow accessing by column name as attribute: row.column_name
         
@@ -139,48 +139,47 @@ class Row:
                     return self._values[self._column_map[col_name]]
         
         raise AttributeError(f"Row has no attribute '{name}'")
-    
-    def __eq__(self, other):
+
+    def __eq__(self, other: Any) -> bool:
         """
         Support comparison with lists for test compatibility.
         This is the key change needed to fix the tests.
         """
         if isinstance(other, list):
             return self._values == other
-        elif isinstance(other, Row):
+        if isinstance(other, Row):
             return self._values == other._values
         return super().__eq__(other)
-    
-    def __len__(self):
+
+    def __len__(self) -> int:
         """Return the number of values in the row"""
         return len(self._values)
-    
-    def __iter__(self):
+
+    def __iter__(self) -> Any:
         """Allow iteration through values"""
         return iter(self._values)
-    
-    def __str__(self):
+
+    def __str__(self) -> str:
         """Return string representation of the row"""
-        from decimal import Decimal
+        # Local import to avoid circular dependency
         from mssql_python import getDecimalSeparator
-        
         parts = []
         for value in self:
-            if isinstance(value, Decimal):
+            if isinstance(value, decimal.Decimal):
                 # Apply custom decimal separator for display
                 sep = getDecimalSeparator()
-                if sep != '.' and value is not None:
+                if sep != "." and value is not None:
                     s = str(value)
-                    if '.' in s:
-                        s = s.replace('.', sep)
+                    if "." in s:
+                        s = s.replace(".", sep)
                     parts.append(s)
                 else:
                     parts.append(str(value))
             else:
                 parts.append(repr(value))
-        
+
         return "(" + ", ".join(parts) + ")"
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """Return a detailed string representation for debugging"""
         return repr(tuple(self._values))

@@ -42,8 +42,12 @@ class DATETIME(datetime.datetime):
     This type object is used to describe date/time columns in a database.
     """
 
-    def __new__(cls, year: int = 1, month: int = 1, day: int = 1):
-        return datetime.datetime.__new__(cls, year, month, day)
+    def __new__(cls, year: int = 1, month: int = 1, day: int = 1,
+                hour: int = 0, minute: int = 0, second: int = 0,
+                microsecond: int = 0, tzinfo=None, *, fold: int = 0):
+        return datetime.datetime.__new__(cls, year, month, day, hour,
+                                       minute, second, microsecond, tzinfo,
+                                       fold=fold)
 
 
 class ROWID(int):
@@ -71,7 +75,13 @@ def Time(hour: int, minute: int, second: int) -> datetime.time:
 
 
 def Timestamp(
-    year: int, month: int, day: int, hour: int, minute: int, second: int, microsecond: int
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int,
+    second: int,
+    microsecond: int,
 ) -> datetime.datetime:
     """
     Generates a timestamp object.
@@ -103,31 +113,32 @@ def TimestampFromTicks(ticks: int) -> datetime.datetime:
 def Binary(value) -> bytes:
     """
     Converts a string or bytes to bytes for use with binary database columns.
-    
+
     This function follows the DB-API 2.0 specification.
     It accepts only str and bytes/bytearray types to ensure type safety.
-    
+
     Args:
         value: A string (str) or bytes-like object (bytes, bytearray)
-        
+
     Returns:
         bytes: The input converted to bytes
-        
+
     Raises:
         TypeError: If the input type is not supported
-        
+
     Examples:
         Binary("hello")           # Returns b"hello"
-        Binary(b"hello")          # Returns b"hello"  
+        Binary(b"hello")          # Returns b"hello"
         Binary(bytearray(b"hi"))  # Returns b"hi"
     """
     if isinstance(value, bytes):
         return value
-    elif isinstance(value, bytearray):
+    if isinstance(value, bytearray):
         return bytes(value)
-    elif isinstance(value, str):
+    if isinstance(value, str):
         return value.encode("utf-8")
-    else:
-        # Raise TypeError for unsupported types to improve type safety
-        raise TypeError(f"Cannot convert type {type(value).__name__} to bytes. "
-                       f"Binary() only accepts str, bytes, or bytearray objects.")
+    # Raise TypeError for unsupported types to improve type safety
+    raise TypeError(
+        f"Cannot convert type {type(value).__name__} to bytes. "
+        f"Binary() only accepts str, bytes, or bytearray objects."
+    )
