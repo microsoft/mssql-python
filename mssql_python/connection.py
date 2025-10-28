@@ -218,39 +218,66 @@ class Connection:
 
     def _construct_connection_string(self, connection_str: str = "", **kwargs) -> str:
         """
-        Construct the connection string by concatenating the connection string 
-        with key/value pairs from kwargs.
-
+        Construct the connection string by parsing, filtering, and merging parameters.
+        
+        This method:
+        1. Parses the base connection_str into parameters
+        2. Filters parameters against an allow-list
+        3. Merges kwargs (which also go through allow-list)
+        4. Adds Driver and APP parameters (always controlled by the driver)
+        5. Rebuilds the connection string
+        
         Args:
             connection_str (str): The base connection string.
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:
-            str: The constructed connection string.
+            str: The constructed and filtered connection string.
         """
-        # Add the driver attribute to the connection string
-        conn_str = add_driver_to_connection_str(connection_str)
-
-        # Add additional key-value pairs to the connection string
+        from mssql_python.connection_string_parser import _ConnectionStringParser
+        from mssql_python.connection_string_allowlist import ConnectionStringAllowList
+        from mssql_python.connection_string_builder import _ConnectionStringBuilder
+        
+        # Step 1: Parse base connection string with allowlist validation
+        allowlist = ConnectionStringAllowList()
+        parser = _ConnectionStringParser(allowlist=allowlist)
+        parsed_params = parser.parse(connection_str)
+        
+        # Step 2: Filter against allow-list
+        filtered_params = ConnectionStringAllowList.filter_params(
+            parsed_params, 
+            warn_rejected=True
+        )
+        
+        # Step 3: Process kwargs and merge with filtered_params
+        # kwargs override connection string values (processed after, so they take precedence)
         for key, value in kwargs.items():
-            if key.lower() == "host" or key.lower() == "server":
-                key = "Server"
-            elif key.lower() == "user" or key.lower() == "uid":
-                key = "Uid"
-            elif key.lower() == "password" or key.lower() == "pwd":
-                key = "Pwd"
-            elif key.lower() == "database":
-                key = "Database"
-            elif key.lower() == "encrypt":
-                key = "Encrypt"
-            elif key.lower() == "trust_server_certificate":
-                key = "TrustServerCertificate"
+            normalized_key = ConnectionStringAllowList.normalize_key(key)
+            if normalized_key:
+                # Driver and APP are reserved - raise error if user tries to set them
+                if normalized_key in ('Driver', 'APP'):
+                    raise ValueError(
+                        f"Connection parameter '{key}' is reserved and controlled by the driver. "
+                        f"It cannot be set by the user."
+                    )
+                # kwargs override any existing values from connection string
+                filtered_params[normalized_key] = str(value)
             else:
-                continue
-            conn_str += f"{key}={value};"
-
+                log('warning', f"Ignoring unknown connection parameter from kwargs: {key}")
+        
+        # Step 4: Build connection string with merged params
+        builder = _ConnectionStringBuilder(filtered_params)
+        
+        # Step 5: Add Driver and APP parameters (always controlled by the driver)
+        # These maintain existing behavior: Driver is always hardcoded, APP is always MSSQL-Python
+        builder.add_param('Driver', 'ODBC Driver 18 for SQL Server')
+        builder.add_param('APP', 'MSSQL-Python')
+        
+        # Step 6: Build final string
+        conn_str = builder.build()
+        
         log('info', "Final connection string: %s", sanitize_connection_string(conn_str))
-
+        
         return conn_str
     
     @property

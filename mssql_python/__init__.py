@@ -114,6 +114,9 @@ from .exceptions import (
     NotSupportedError,
 )
 
+# Connection string parser exceptions
+from .connection_string_parser import ConnectionStringParseError
+
 # Type Objects
 from .type import (
     Date,

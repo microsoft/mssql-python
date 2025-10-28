@@ -8,13 +8,15 @@
 
 ## Executive Summary
 
-This document outlines the design for implementing a **connection string parameter allow-list** in the mssql-python driver. Currently, the driver has a limited allow-list in `_construct_connection_string()` for **kwargs only**, but passes the base connection string **as-is** to the ODBC driver. The new design implements a comprehensive parser that validates **all** connection string parameters against an allow-list before passing them to ODBC Driver 18 for SQL Server.
+This document outlines the design for implementing a **connection string parameter allow-list** in the mssql-python driver. Currently, the driver has a limited allow-list in `_construct_connection_string()` for **kwargs only**, but passes the base connection string **as-is** to the ODBC driver. The new design implements a comprehensive parser that uses **lenient ODBC-style parsing** to extract parameters and validates **all** connection string parameters against an allow-list before passing them to ODBC Driver 18 for SQL Server.
+
+**Key Design Philosophy**: The parser follows **ODBC driver behavior** - it parses valid key=value pairs and **silently ignores** malformed entries (with warning logs), rather than raising exceptions. This matches the behavior of all Microsoft SQL Server drivers (ODBC, .NET, JDBC) and ensures maximum compatibility.
 
 This allow-list approach is necessary for three key reasons:
 
 1. **ODBC Feature Compatibility**: Some ODBC connection string parameters require additional configurations (e.g., Always Encrypted extensibility modules) for which Python doesn't have a first-class experience yet. Allowing these parameters without proper support would create confusion and support burden.
 
-2. **Future TDS Runtime Migration**: The driver is planned to migrate from ODBC to a Rust-based TDS runtime. While ODBC parity is a goal, not all ODBC features will be available during or after the migration. By deliberately allow-listing parameters now, we can ensure a smoother migration path and avoid the breaking change of removing previously exposed parameters later. It's easier to add parameters over time than to remove them once users depend on them.
+2. **Future Driver Evolution**: The driver may evolve its underlying implementation over time. While ODBC parity is a goal, not all ODBC features may remain available as the driver evolves. By deliberately allow-listing parameters now, we can ensure a smoother evolution path and avoid the breaking change of removing previously exposed parameters later. It's easier to add parameters over time than to remove them once users depend on them.
 
 3. **Simplified Connection Experience**: ODBC connection strings have accumulated many parameter synonyms over decades of backward compatibility (e.g., "server", "address", "addr", "network address" all mean the same thing). A modern Python driver should provide a cleaner, simplified API by exposing only a curated set of parameters with clear, consistent naming.
 
@@ -51,12 +53,12 @@ This allow-list approach is necessary for three key reasons:
    - These features don't have first-class Python API support yet
    - Allowing these parameters creates user confusion and support issues
 
-3. **Future Migration Concerns**: The driver is planned to migrate to a Rust-based TDS runtime:
-   - While ODBC parity is a goal, not all ODBC features will be available during or after migration
-   - Some ODBC-specific parameters won't translate to the new runtime
+3. **Future Driver Evolution**: The driver may evolve its underlying implementation:
+   - While ODBC parity is a goal, not all ODBC features may remain available as the driver evolves
+   - Some ODBC-specific parameters may not translate to future implementations
    - Being deliberate about which parameters to expose avoids future breaking changes
    - It's easier to add parameters over time than to remove them once users depend on them
-   - Gating parameters now prevents users from building dependencies on features that won't be available
+   - Gating parameters now prevents users from building dependencies on features that may not be available
 
 4. **Parameter Synonym Bloat**: ODBC connection strings have accumulated many synonyms:
    - "Server", "Address", "Addr", "Network Address" all mean the same thing
@@ -70,11 +72,14 @@ This allow-list approach is necessary for three key reasons:
    - Empty values
    - Malformed connection strings
    
+6. **Parser Behavior Mismatch**: The original strict parser design would raise exceptions for malformed connection strings, but **ODBC drivers use lenient parsing** - they silently ignore malformed entries and continue parsing valid ones. This mismatch could break user code that works with other Microsoft SQL Server drivers.
+   
    **Citations**:
    - `mssql_python/helpers.py`, lines 28-30: `connection_attributes = connection_str.split(";")` - splits on semicolon without handling braced values. Passwords could have the special characters which are considered delimiters in connection strings.
    - `mssql_python/helpers.py`, line 33: `if attribute.lower().split("=")[0] == "driver":` - splits on `=` without handling escaped or braced values
    - `mssql_python/helpers.py`, lines 66-67: `for param in parameters:` / `if param.lower().startswith("app="):` - simple string operations, no ODBC-compliant parsing
    - `mssql_python/helpers.py`, line 69: `key, _ = param.split("=", 1)` - splits on first `=` only, doesn't handle braces or escaping
+   - **ODBC Driver Investigation**: Research into the ODBC driver codebase (`/Sql/Ntdbms/sqlncli/odbc/sqlcconn.cpp`) confirms that ODBC uses lenient parsing - malformed entries without `=` are silently ignored with `hr = S_FALSE; goto RetExit`, and parsing continues for subsequent parameters.
 
 ### Design Motivations
 
@@ -84,10 +89,10 @@ This allow-list approach is necessary for three key reasons:
    - Reduce the support burden by rejecting parameters we can't properly handle
 
 2. **Migration Path**: The allow-list provides:
-   - A stable API surface that will work across both ODBC and future Rust-based implementations
+   - A stable API surface that will work across current and future driver implementations
    - Clear documentation of what parameters are supported
    - A deliberate, controlled approach to exposing parameters (easier to add than remove)
-   - Protection against breaking changes when migrating runtimes
+   - Protection against breaking changes when evolving the driver
    - Ability to achieve ODBC parity incrementally while maintaining backward compatibility
 
 3. **Simplified API**: By normalizing synonyms and exposing only canonical parameter names:
@@ -96,16 +101,24 @@ This allow-list approach is necessary for three key reasons:
    - Code examples are more uniform
    - New Python developers aren't confused by legacy ODBC conventions
 
+4. **ODBC-Compatible Behavior**: By using lenient parsing that matches ODBC driver behavior:
+   - User code that works with ODBC/other Microsoft drivers continues to work
+   - Malformed connection string entries are handled gracefully (logged but not fatal)
+   - Maximum compatibility with existing connection string patterns
+   - Debugging is easier with warning logs for problematic entries
+
 ### Requirements
 
-1. Parse the complete connection string (base + kwargs)
+1. Parse the complete connection string (base + kwargs) using **lenient ODBC-style parsing**
 2. Validate all parameters against an allow-list
 3. Reconstruct a clean connection string with only allowed parameters
 4. Maintain backward compatibility with existing code
 5. Ensure high performance (sub-millisecond overhead)
 6. Handle ODBC connection string syntax correctly
 7. Normalize parameter synonyms to canonical names
-8. Prepare for future Rust-based TDS runtime migration
+8. Prepare for future driver enhancements
+9. **Match ODBC driver behavior**: Silently ignore malformed entries with warning logs, never raise exceptions for syntax errors during parsing
+10. **Provide diagnostic logging**: Log warnings for ignored/malformed entries to help users debug connection string issues
 
 ---
 
@@ -163,7 +176,7 @@ Only kwargs go through the allow-list check for non-Driver/APP parameters. This 
 
 1. Users can pass unsupported ODBC parameters that the Python driver can't properly handle
 2. Parameters that require additional infrastructure (like Always Encrypted extensibility) get passed to ODBC without validation
-3. ODBC-specific parameters that won't work in the future Rust-based runtime can create forward compatibility issues
+3. Parameters that may not be supported in future driver versions can create forward compatibility issues
 4. Multiple synonyms for the same parameter create API inconsistency
 
 **3. The parsing is inadequate for ODBC connection strings**:
@@ -192,13 +205,15 @@ for attribute in connection_attributes:
 
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| FR-1 | Parse complete ODBC connection strings correctly | **P0** |
+| FR-1 | Parse complete ODBC connection strings correctly with **lenient parsing** | **P0** |
 | FR-2 | Filter all parameters against an allow-list | **P0** |
 | FR-3 | Support ODBC connection string syntax (`;`, `{}`, `=`) | **P0** |
 | FR-4 | Merge kwargs with connection string parameters | **P0** |
 | FR-5 | Preserve parameter values exactly (including special chars) | **P0** |
 | FR-6 | Maintain backward compatibility | **P1** |
-| FR-7 | Provide clear error messages for invalid params | **P1** |
+| FR-7 | Provide clear warning logs for malformed/rejected params | **P1** |
+| FR-8 | **Never raise exceptions** for malformed connection string syntax (ODBC behavior) | **P0** |
+| FR-9 | Log diagnostics for ignored entries to aid debugging | **P1** |
 
 ### Non-Functional Requirements
 
@@ -334,29 +349,57 @@ SpaceStr      = *SP    ; zero or more spaces
 
 ### Parser Implementation
 
+**Lenient Parsing Philosophy**
+
+The parser implementation follows **ODBC driver behavior** - it uses **lenient parsing** that:
+- **Never raises exceptions** for malformed connection string syntax
+- **Silently ignores** malformed entries (entries without `=`, empty keys, unclosed braces)
+- **Logs warnings** for ignored entries to provide diagnostics
+- **Returns partial results** - successfully parsed key-value pairs even when some entries are malformed
+
+This matches the behavior observed in Microsoft's ODBC driver (`sqlcconn.cpp` lines 4273-4285), which returns `S_FALSE` and continues parsing when encountering malformed entries.
+
 ```python
 class ConnectionStringParser:
     """
     Parses ODBC connection strings into key-value dictionaries.
     Handles ODBC-specific syntax including braces, escaping, and semicolons.
+    
+    Uses LENIENT PARSING (matching ODBC driver behavior):
+    - Ignores malformed entries instead of raising exceptions
+    - Logs warnings for ignored/malformed entries
+    - Returns partial results (valid entries only)
     """
     
     def __init__(self):
         """Initialize the parser."""
-        pass
+        self._logger = None  # Lazy initialization
+    
+    def _get_logger(self):
+        """Get or create the logger instance (lazy initialization)."""
+        if self._logger is None:
+            from mssql_python.logging_config import get_logger
+            self._logger = get_logger()
+        return self._logger
+    
+    def _log_warning(self, message: str):
+        """Log a warning message using the configured logger."""
+        logger = self._get_logger()
+        logger.warning(message)
     
     def parse(self, connection_str: str) -> Dict[str, str]:
         """
         Parse a connection string into a dictionary of parameters.
         
+        LENIENT PARSING: Ignores malformed entries (logs warnings instead of raising exceptions).
+        This matches ODBC driver behavior.
+        
         Args:
             connection_str: ODBC-format connection string
             
         Returns:
-            Dictionary mapping parameter names (lowercase) to values
-            
-        Raises:
-            ValueError: If connection string is malformed
+            Dictionary mapping parameter names (lowercase) to values.
+            Returns empty dict if all entries are malformed.
             
         Examples:
             >>> parser.parse("Server=localhost;Database=mydb")
@@ -364,46 +407,116 @@ class ConnectionStringParser:
             
             >>> parser.parse("Server={;local;};PWD={p}}w{{d}")
             {'server': ';local;', 'pwd': 'p}w{d'}
+            
+            >>> parser.parse("Server=localhost;InvalidEntry;Database=mydb")
+            # Logs: WARNING: Ignoring malformed connection string entry (no '=' found): 'InvalidEntry'
+            {'server': 'localhost', 'database': 'mydb'}  # Partial result
+            
+            >>> parser.parse("Server=localhost;PWD={unclosed")
+            # Logs: WARNING: Ignoring malformed braced value (unclosed brace): 'PWD={unclosed'
+            {'server': 'localhost'}  # Partial result
         """
+        # Example: "" or None → return empty dict
         if not connection_str:
             return {}
-            
+        
+        # Example: "  \t  " → strip to "" → return empty dict
         connection_str = connection_str.strip()
         if not connection_str:
             return {}
         
+        # Dictionary to store parsed key=value pairs
+        # Example: will become {'server': 'localhost', 'database': 'mydb'}
         params = {}
+        
+        # Track current position in the string as we parse character by character
+        # Example: for "Server=localhost", starts at 0 (the 'S')
         current_pos = 0
         str_len = len(connection_str)
         
+        # Main parsing loop - process one key=value pair per iteration
+        # Example: "Server=localhost;Database=mydb" → processes 2 pairs
         while current_pos < str_len:
-            # Skip whitespace and semicolons
+            # Skip leading whitespace and semicolons
+            # Example: "  ;  Server=localhost" → skips to position of 'S'
+            # Example: "Server=localhost;;Database=mydb" → skips double semicolons
             while current_pos < str_len and connection_str[current_pos] in ' \t;':
                 current_pos += 1
             
+            # If we've reached the end after skipping whitespace/semicolons, we're done
+            # Example: "Server=localhost;  " → exits cleanly after trailing whitespace
             if current_pos >= str_len:
                 break
             
-            # Parse key
+            # Parse the key (everything before '=' or ';')
+            # Example: "Server=localhost" → key_start=0
             key_start = current_pos
+            
+            # Advance until we hit '=', ';', or end of string
+            # Example: "Server=localhost" → stops at '=' (position 6)
+            # Example: "InvalidEntry;Database=mydb" → stops at ';' (position 12)
             while current_pos < str_len and connection_str[current_pos] not in '=;':
                 current_pos += 1
             
+            # Check if we found a valid '=' separator
+            # Example: "InvalidEntry;..." → current_pos points to ';', not '='
             if current_pos >= str_len or connection_str[current_pos] != '=':
-                # No '=' found - malformed attribute
-                raise ValueError(
-                    f"Malformed connection string: expected '=' after key at position {current_pos}"
-                )
+                # LENIENT: No '=' found, this is a malformed entry
+                # Example: "Server=localhost;BadEntry;Database=mydb"
+                #          → "BadEntry" has no '=', so extract it and log warning
+                malformed_entry = connection_str[key_start:current_pos].strip()
+                if malformed_entry:  # Only log if non-empty (avoid logging for just whitespace)
+                    # Example: logs "Ignoring malformed connection string entry (no '=' found): 'BadEntry'"
+                    self._log_warning(
+                        f"Ignoring malformed connection string entry (no '=' found): '{malformed_entry}'"
+                    )
+                # Skip to next semicolon to continue parsing
+                # Example: "BadEntry;Database=mydb" → skip to ';' before "Database"
+                while current_pos < str_len and connection_str[current_pos] != ';':
+                    current_pos += 1
+                continue
             
+            # Extract and normalize the key
+            # Example: "Server=localhost" → key = "server" (lowercase)
+            # Example: "  SERVER  =localhost" → key = "server" (stripped and lowercased)
             key = connection_str[key_start:current_pos].strip().lower()
-            current_pos += 1  # Skip '='
             
-            # Parse value
-            value, current_pos = self._parse_value(connection_str, current_pos)
+            # LENIENT: Skip entries with empty keys
+            # Example: "=somevalue;Server=localhost" → empty key before '='
+            if not key:
+                # Example: logs "Ignoring connection string entry with empty key"
+                self._log_warning("Ignoring connection string entry with empty key")
+                current_pos += 1  # Skip the '='
+                # Skip to next semicolon
+                # Example: "=badvalue;Server=localhost" → skip to ';' before "Server"
+                while current_pos < str_len and connection_str[current_pos] != ';':
+                    current_pos += 1
+                continue
             
-            # Store parameter (later ones override earlier ones)
-            params[key] = value
+            # Move past the '=' character
+            # Example: "Server=localhost" → current_pos now points to 'l' in "localhost"
+            current_pos += 1
+            
+            # Parse the value (with lenient error handling for unclosed braces)
+            # Example: "Server=localhost" → value="localhost", current_pos=16
+            # Example: "PWD={p;w}" → value="p;w", current_pos=9
+            try:
+                value, current_pos = self._parse_value(connection_str, current_pos)
+                # Store the key=value pair (later occurrences override earlier ones)
+                # Example: "Server=old;Server=new" → params['server'] = 'new'
+                params[key] = value
+            except ValueError as e:
+                # LENIENT: Unclosed brace or other parsing error
+                # Example: "Server=localhost;PWD={unclosed;Database=mydb"
+                #          → logs warning for PWD, continues to parse Database
+                self._log_warning(f"Ignoring malformed braced value: {e}")
+                # Skip to next semicolon to continue parsing other entries
+                # Example: skip from '{unclosed' to ';' before "Database"
+                while current_pos < str_len and connection_str[current_pos] != ';':
+                    current_pos += 1
         
+        # Return all successfully parsed key=value pairs
+        # Example: "Server=localhost;BadEntry;Database=mydb" → {'server': 'localhost', 'database': 'mydb'}
         return params
     
     def _parse_value(self, connection_str: str, start_pos: int) -> Tuple[str, int]:
@@ -421,29 +534,65 @@ class ConnectionStringParser:
         """
         str_len = len(connection_str)
         
-        # Skip leading whitespace
+        # Skip leading whitespace before the value
+        # Example: "Server=  localhost" → skip spaces, start_pos points to 'l'
         while start_pos < str_len and connection_str[start_pos] in ' \t':
             start_pos += 1
         
+        # If we've consumed the entire string or reached a semicolon, return empty value
+        # Example: "Server=" → empty value
+        # Example: "Server=;" → empty value
         if start_pos >= str_len:
             return '', start_pos
         
-        # Check if value is braced
+        # Determine if this is a braced value or simple value
+        # Braced value: starts with '{', requires special escape handling
+        # Simple value: everything else, read until semicolon
         if connection_str[start_pos] == '{':
+            # Example: "PWD={p;w}" → delegate to _parse_braced_value
+            # Example: "Server={local;server}" → delegate to _parse_braced_value
             return self._parse_braced_value(connection_str, start_pos)
         else:
+            # Example: "Server=localhost" → delegate to _parse_simple_value
+            # Example: "Database=mydb" → delegate to _parse_simple_value
             return self._parse_simple_value(connection_str, start_pos)
     
     def _parse_simple_value(self, connection_str: str, start_pos: int) -> Tuple[str, int]:
-        """Parse a simple (non-braced) value up to the next semicolon."""
+        """
+        Parse a simple (non-braced) value up to the next semicolon.
+        
+        Simple values cannot contain semicolons or opening braces.
+        
+        Args:
+            connection_str: The connection string
+            start_pos: Starting position of the value
+            
+        Returns:
+            Tuple of (parsed_value, new_position)
+            
+        Examples:
+            "Server=localhost;..." → returns ("localhost", position_after_t)
+            "Database=mydb" → returns ("mydb", end_of_string)
+        """
         str_len = len(connection_str)
+        # Mark the start of the value
+        # Example: "Server=localhost;Database=mydb"
+        #                 ^value_start (position of 'l')
         value_start = start_pos
         
-        # Read until semicolon or end of string
+        # Read characters until we hit a semicolon or end of string
+        # Example: "localhost;Database=mydb" → reads 'localhost', stops at ';'
+        # Example: "mydb" → reads 'mydb', stops at end of string
         while start_pos < str_len and connection_str[start_pos] != ';':
             start_pos += 1
         
+        # Extract the value and strip trailing whitespace
+        # Example: "localhost  ;..." → value="localhost" (trailing spaces removed)
+        # Example: "mydb" → value="mydb"
         value = connection_str[value_start:start_pos].rstrip()
+        
+        # Return the extracted value and the position after it
+        # Example: returns ("localhost", position_of_semicolon)
         return value, start_pos
     
     def _parse_braced_value(self, connection_str: str, start_pos: int) -> Tuple[str, int]:
@@ -453,30 +602,72 @@ class ConnectionStringParser:
         Braced values:
         - Start with '{' and end with '}'
         - '}' inside the value is escaped as '}}'
-        - Example: {p}}w{{d} → p}w{d
+        - '{' inside the value is escaped as '{{'
+        - Can contain semicolons and other special characters
+        
+        Args:
+            connection_str: The connection string
+            start_pos: Starting position (should point to opening '{')
+            
+        Returns:
+            Tuple of (parsed_value, new_position)
+            
+        Raises:
+            ValueError: If the braced value is not closed (missing '}')
+            
+        Examples:
+            "{p}}w{{d}" → returns ("p}w{d", position_after_closing_brace)
+            "{;local;}" → returns (";local;", position_after_closing_brace)
+            "{unclosed" → raises ValueError (caught by caller in lenient mode)
         """
         str_len = len(connection_str)
-        start_pos += 1  # Skip opening '{'
+        
+        # Skip the opening '{' character
+        # Example: "{password}" → start_pos moves from '{' to 'p'
+        start_pos += 1
+        
+        # Build the value character by character, handling escape sequences
+        # Example: will accumulate ['p', '}', 'w', '{', 'd'] for "{p}}w{{d}"
         value = []
         
+        # Process each character until we find the closing '}' or reach end of string
         while start_pos < str_len:
+            # Get current character
+            # Example: 'p' in "password}", or '}' in "p}}w{{d}"
             ch = connection_str[start_pos]
             
             if ch == '}':
-                # Check if it's an escaped brace
+                # Found a '}' - could be escaped '}}' or the closing brace
+                # Check if next character is also '}' (escaped brace)
                 if start_pos + 1 < str_len and connection_str[start_pos + 1] == '}':
-                    # Escaped brace: '}}' → '}'
+                    # Escaped right brace: '}}' → '}'
+                    # Example: "{p}}word}" → '}}' becomes single '}' in output
                     value.append('}')
-                    start_pos += 2
+                    start_pos += 2  # Skip both '}' characters
                 else:
-                    # End of braced value
-                    start_pos += 1  # Skip closing '}'
+                    # Single '}' means end of braced value
+                    # Example: "{password}" → found closing '}'
+                    start_pos += 1  # Skip the closing '}'
+                    # Join all accumulated characters and return
+                    # Example: ['p', 'a', 's', 's'] → "pass"
                     return ''.join(value), start_pos
             else:
+                # Regular character (including '{', ';', '=', etc.)
+                # Example: 'p', 'a', 's', 's' in "{password}"
+                # Example: ';' in "{local;server}"
+                # Note: '{{' is also handled here - first '{' is added to value,
+                #       second '{' will be added on next iteration
                 value.append(ch)
                 start_pos += 1
         
-        # Unclosed braced value
+        # We've reached end of string without finding closing '}'
+        # Example: "PWD={unclosed;Server=localhost"
+        #          → while loop exits because start_pos >= str_len
+        
+        # Raise ValueError - unclosed braced value
+        # NOTE: In lenient parsing mode, this exception is caught by parse()
+        # which logs a warning and continues parsing remaining entries
+        # Example: parse() will log "Ignoring malformed braced value: Unclosed braced value in connection string"
         raise ValueError("Unclosed braced value in connection string")
 ```
 
@@ -489,7 +680,7 @@ class ConnectionStringParser:
 The allow-list is designed to include only parameters that:
 
 1. **Have Python API Support**: Parameters that the driver can properly handle and configure
-2. **Are Runtime-Agnostic**: Parameters that will work in both ODBC and future Rust-based TDS runtime (or can be mapped appropriately)
+2. **Are Runtime-Agnostic**: Parameters that will work with current and future driver implementations (or can be mapped appropriately)
 3. **Are Essential for Connectivity**: Core parameters needed for database connections
 4. **Have Clear Semantics**: Parameters with well-defined behavior and no ambiguity
 
@@ -497,7 +688,7 @@ The allow-list is designed to include only parameters that:
 - It's easier to add parameters over time than to remove them once users depend on them
 - This enables us to achieve ODBC parity incrementally while maintaining backward compatibility
 - We can carefully evaluate each parameter's necessity and ensure proper Python API support before exposing it
-- Users won't build dependencies on features that may not be available after runtime migration
+- Users won't build dependencies on features that may not be available in future driver versions
 
 **Special Parameters** (handled outside the allow-list):
 - **Driver**: Always hardcoded to `{ODBC Driver 18 for SQL Server}`. User-provided values are stripped and replaced to ensure driver consistency.
@@ -660,10 +851,10 @@ class ConnectionStringAllowList:
 |--------------------|---------|------------------------|-----------|
 | Server/Authentication | Core connection functionality | **Yes** | Essential, runtime-agnostic |
 | Encryption (TLS/SSL) | TLS/SSL configuration | **Yes** | Essential for security, supported in all runtimes |
-| Connection Behavior | Timeouts, failover, MARS | **Yes** | Core functionality, can be mapped to TDS runtime |
+| Connection Behavior | Timeouts, failover, MARS | **Yes** | Core functionality, can be mapped across implementations |
 | Application Identification | Logging, monitoring | **Yes** | Informational, no side effects |
 | Always Encrypted Extensions | Custom key store providers | **No** | Requires Python key store provider API (not yet available) |
-| ODBC Driver Internals | Driver-specific configuration | **No** | ODBC-specific, won't work in Rust-based runtime |
+| ODBC Driver Internals | Driver-specific configuration | **No** | ODBC-specific, may not work in future implementations |
 | Deprecated Parameters | Legacy ODBC parameters | **No** | Should not expose in modern Python API |
 | Synonym Parameters | Alternative names for same parameter | **Normalize** | Accept but normalize to canonical name |
 
@@ -853,7 +1044,7 @@ Total                                ~3-5 KB
 │ Benefits of this approach:                                   │
 │   - "Secret=value" was filtered out (unsupported param)     │
 │   - Only parameters with Python API support are passed      │
-│   - Forward compatible with future Rust-based runtime       │
+│   - Forward compatible with future driver enhancements      │
 │   - Synonyms normalized to canonical names                  │
 └──────────────────┬───────────────────────────────────────────┘
                    │
@@ -863,7 +1054,7 @@ Total                                ~3-5 KB
 │                                                              │
 │ - Passes ONLY ALLOWED parameters to ODBC driver             │
 │ - All parameters have proper Python API support             │
-│ - Forward compatible with future Rust-based TDS runtime     │
+│ - Forward compatible with future driver enhancements        │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -1154,17 +1345,42 @@ class TestConnectionStringParser:
         result = parser.parse("Server=localhost;")
         assert result == {'server': 'localhost'}
     
-    def test_parse_malformed_raises_error(self):
-        """Test that malformed strings raise ValueError."""
+    def test_parse_malformed_no_equals(self):
+        """Test that malformed entries (no '=') are ignored with lenient parsing."""
         parser = ConnectionStringParser()
-        with pytest.raises(ValueError):
-            parser.parse("Server localhost")  # Missing '='
+        # "Server localhost" has no '=', so it's ignored
+        # Only valid entries are returned
+        result = parser.parse("Server=localhost;Invalid Entry;Database=mydb")
+        assert result == {
+            'server': 'localhost',
+            'database': 'mydb'
+        }
     
-    def test_parse_unclosed_brace_raises_error(self):
-        """Test that unclosed braces raise ValueError."""
+    def test_parse_unclosed_brace_ignored(self):
+        """Test that unclosed braces are ignored with lenient parsing."""
         parser = ConnectionStringParser()
-        with pytest.raises(ValueError):
-            parser.parse("PWD={unclosed")
+        # "PWD={unclosed" is malformed, so it's ignored
+        # Only valid entries are returned
+        result = parser.parse("Server=localhost;PWD={unclosed;Database=mydb")
+        assert result == {
+            'server': 'localhost',
+            'database': 'mydb'
+        }
+    
+    def test_parse_all_malformed_returns_empty(self):
+        """Test that all-malformed connection strings return empty dict."""
+        parser = ConnectionStringParser()
+        result = parser.parse("NoEquals;AlsoNoEquals")
+        assert result == {}
+    
+    def test_parse_malformed_with_logging(self, caplog):
+        """Test that malformed entries generate warning logs."""
+        parser = ConnectionStringParser()
+        with caplog.at_level(logging.WARNING):
+            result = parser.parse("Server=localhost;BadEntry")
+        
+        assert result == {'server': 'localhost'}
+        assert "Ignoring malformed connection string entry" in caplog.text
 
 
 class TestConnectionStringAllowList:
@@ -1278,10 +1494,10 @@ When filtering connection string parameters, proper handling of sensitive inform
 
 ### Phase 2 Enhancements
 
-1. **Rust TDS Runtime Support**
-   - Use the parsed key-value parameters from the connection string parser to generate a configuration structure for the Rust-based TDS runtime
-   - Map allow-listed parameters to their Rust runtime equivalents
-   - The same parser output will be used for both ODBC and Rust runtime configurations, ensuring consistent behavior
+1. **Extended Parameter Support**
+   - Use the parsed key-value parameters from the connection string parser to support additional connection options
+   - Map allow-listed parameters to their appropriate configurations
+   - The same parser output will be used for current and future implementations, ensuring consistent behavior
 
 ---
 
