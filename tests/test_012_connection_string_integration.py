@@ -574,7 +574,7 @@ class TestConnectAPIIntegration:
             assert app_name_received == 'MSSQL-Python', \
                 f"Expected SQL Server to receive 'MSSQL-Python', but got '{app_name_received}'"
             
-            print(f"\n✓ SQL Server correctly received APP_NAME: '{app_name_received}'")
+            print(f"\n SQL Server correctly received APP_NAME: '{app_name_received}'")
         finally:
             conn.close()
     
@@ -596,7 +596,7 @@ class TestConnectAPIIntegration:
         assert "'app'" in error_lower
         assert "controlled by the driver" in error_lower
         
-        print("\n✓ APP in connection string correctly raised ConnectionStringParseError")
+        print("\n APP in connection string correctly raised ConnectionStringParseError")
     
     @pytest.mark.skipif(not os.getenv('DB_CONNECTION_STRING'), 
                         reason="Requires database connection string")
@@ -611,7 +611,7 @@ class TestConnectAPIIntegration:
         assert "reserved and controlled by the driver" in str(exc_info.value)
         assert "APP" in str(exc_info.value) or "app" in str(exc_info.value).lower()
         
-        print("\n✓ APP in kwargs correctly raised ValueError before connecting to SQL Server")
+        print("\n APP in kwargs correctly raised ValueError before connecting to SQL Server")
 
 
 

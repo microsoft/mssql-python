@@ -100,9 +100,9 @@ parser.parse("Server=first;BadEntry;Server=second;Database")
 ## Test Coverage
 
 All tests pass (74 total):
-- **test_010_connection_string_parser.py**: 36 tests ✓
-- **test_011_connection_string_allowlist.py**: 23 tests ✓
-- **test_012_connection_string_integration.py**: 15 tests ✓
+- **test_010_connection_string_parser.py**: 36 tests 
+- **test_011_connection_string_allowlist.py**: 23 tests 
+- **test_012_connection_string_integration.py**: 15 tests 
 
 ## API Changes
 
@@ -172,7 +172,7 @@ except ConnectionStringParseError as e:
 ```python
 parser = ConnectionStringParser()
 result = parser.parse("Server=localhost;Database=mydb;UID=user;PWD=pass")
-# ✓ Returns {'server': 'localhost', 'database': 'mydb', 'uid': 'user', 'pwd': 'pass'}
+#  Returns {'server': 'localhost', 'database': 'mydb', 'uid': 'user', 'pwd': 'pass'}
 ```
 
 ### Duplicate Keywords

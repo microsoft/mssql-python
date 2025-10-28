@@ -940,7 +940,7 @@ Total                                ~3-5 KB
 │ _construct_connection_string()                      │
 │ ├─ Takes connection_str from above (UNFILTERED!)    │
 │ └─ Appends FILTERED kwargs:                         │
-│    ├─ "encrypt" → "Encrypt=yes"  ✓                  │
+│    ├─ "encrypt" → "Encrypt=yes"                    │
 │    └─ Other kwargs rejected       ✗                 │
 └──────────────────┬──────────────────────────────────┘
                    │
@@ -982,10 +982,10 @@ Total                                ~3-5 KB
 ┌──────────────────────────────────────────────────────────────┐
 │ ConnectionStringAllowList.filter_params(parsed_params)       │
 │                                                              │
-│ ├─ Check 'server' → ✓ Allowed  → Normalize to 'Server'     │
+│ ├─ Check 'server' →  Allowed  → Normalize to 'Server'     │
 │ ├─ Check 'secret' → ✗ REJECTED → Log warning, drop param   │
 │ │   (Not in allow-list - may be unsupported ODBC parameter) │
-│ └─ Check 'encrypt' → ✓ Allowed  → Normalize to 'Encrypt'   │
+│ └─ Check 'encrypt' →  Allowed  → Normalize to 'Encrypt'   │
 │                                                              │
 │ Filtered result:                                             │
 │   {                                                          │
@@ -999,8 +999,8 @@ Total                                ~3-5 KB
 │ ConnectionStringBuilder.merge_kwargs(filtered, kwargs)       │
 │                                                              │
 │ ├─ Process kwargs through allow-list:                       │
-│ │   ├─ 'encrypt' → ✓ Normalize to 'Encrypt'                │
-│ │   └─ 'database' → ✓ Normalize to 'Database'              │
+│ │   ├─ 'encrypt' →  Normalize to 'Encrypt'                │
+│ │   └─ 'database' →  Normalize to 'Database'              │
 │ │                                                            │
 │ ├─ Merge (kwargs override connection_str):                  │
 │ │   ├─ 'Server': 'myserver'        (from connection_str)   │
