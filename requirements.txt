@@ -5,3 +5,6 @@ coverage
 unittest-xml-reporting
 setuptools
 psutil
+pylint
+cpplint
+pre-commit

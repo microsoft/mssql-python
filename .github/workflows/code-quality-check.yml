@@ -1,0 +1,141 @@
+name: Code Quality
+
+permissions:
+  contents: read
+  issues: write
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+    paths:
+      - '**.py'
+      - '**.cpp'
+      - '**.h'
+
+jobs:
+  lint:
+    name: Code Linting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pylint cpplint
+
+      - name: Run Python Linter
+        id: pylint
+        continue-on-error: true
+        run: |
+          echo "Running pylint with threshold 8.5..."
+          python -m pylint --fail-under=8.5 --disable=fixme,no-member,too-many-arguments,too-many-positional-arguments,invalid-name,useless-parent-delegation --output-format=colorized mssql_python
+          echo "pylint_status=$?" >> $GITHUB_ENV
+
+      - name: Run C++ Linter
+        id: cpplint
+        continue-on-error: true
+        run: |
+          echo "Running cpplint with maximum 10 errors per file..."
+          
+          # Find C++ files excluding build directories
+          FILES=$(find mssql_python -name "*.cpp" -o -name "*.h" | grep -v "/build/")
+          if [ -z "$FILES" ]; then
+            echo "No C++ files found to check!"
+            echo "cpplint_status=0" >> $GITHUB_ENV
+            exit 0
+          fi
+          
+          echo "Found files to check:"
+          echo "$FILES"
+          
+          # Process each file individually with better error handling
+          MAX_ERRORS=10
+          FAILED_FILES=""
+          
+          for FILE in $FILES; do
+            echo "Checking $FILE..."
+            
+            # Run cpplint on a single file and capture output
+            OUTPUT=$(python -m cpplint --filter=-readability/todo --linelength=100 "$FILE" 2>&1 || true)
+            
+            # Display the output for this file
+            echo "$OUTPUT"
+            
+            # Extract error count more reliably
+            ERROR_COUNT=$(echo "$OUTPUT" | grep -o 'Total errors found: [0-9]*' | grep -o '[0-9]*' || echo "0")
+            
+            # If we couldn't extract a count, default to 0
+            if [ -z "$ERROR_COUNT" ]; then
+              ERROR_COUNT=0
+            fi
+            
+            echo "File $FILE has $ERROR_COUNT errors"
+            
+            # Check if over threshold
+            if [ "$ERROR_COUNT" -gt "$MAX_ERRORS" ]; then
+              FAILED_FILES="$FAILED_FILES\n- $FILE ($ERROR_COUNT errors)"
+            fi
+          done
+          
+          # Output results
+          if [ ! -z "$FAILED_FILES" ]; then
+            echo -e "\n⛔ The following files have more than $MAX_ERRORS errors:$FAILED_FILES"
+            echo "cpplint_status=1" >> $GITHUB_ENV
+          else
+            echo -e "\n✅ All files have $MAX_ERRORS or fewer errors."
+            echo "cpplint_status=0" >> $GITHUB_ENV
+          fi
+
+      - name: Determine overall status
+        run: |
+          if [[ "${{ env.pylint_status }}" != "0" || "${{ env.cpplint_status }}" != "0" ]]; then
+            echo "Linting checks failed!"
+            exit 1
+          else
+            echo "All linting checks passed!"
+          fi
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            let comment = '## Code Quality Check Results\n\n';
+            
+            if ('${{ env.pylint_status }}' !== '0') {
+              comment += '⚠️ **Python linting failed** - Please check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.\n\n';
+            } else {
+              comment += '✅ **Python linting passed**\n\n';
+            }
+            
+            if ('${{ env.cpplint_status }}' !== '0') {
+              comment += '⚠️ **C++ linting failed** - Some files exceed the maximum error threshold of 10.\n\n';
+            } else {
+              comment += '✅ **C++ linting passed**\n\n';
+            }
+            
+            comment += 'See [code quality guidelines](https://github.com/microsoft/mssql-python/blob/main/CONTRIBUTING.md) for more information.';
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
