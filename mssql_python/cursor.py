@@ -723,13 +723,8 @@ class Cursor:
             if desc is None:
                 converter_map.append(None)
                 continue
-            
-            # Get SQL type from description
-            sql_type = desc[1]  # type_code is at index 1 in description tuple
-            
-            # Try to get a converter for this type
+            sql_type = desc[1]
             converter = self.connection.get_output_converter(sql_type)
-            
             # If no converter found for the SQL type, try the WVARCHAR converter as a fallback
             if converter is None:
                 from mssql_python.constants import ConstantsDDBC
@@ -1044,7 +1039,7 @@ class Cursor:
         if self.description:  # If we have column descriptions, it's likely a SELECT
             self.rowcount = -1
             self._reset_rownumber()
-            # Pre-build column map and converter map for performance
+            # Pre-build column map and converter map
             self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
             self._cached_converter_map = self._build_converter_map()
         else:
@@ -1766,7 +1761,7 @@ class Cursor:
 
             self.rowcount = self._next_row_index
             
-            # Build column map once and cache it for performance
+            # Build column map once and cache it
             if self._cached_column_map is None and self.description:
                 self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
             column_map = self._cached_column_map or getattr(self, '_column_name_map', None)
@@ -1817,11 +1812,11 @@ class Cursor:
             else:
                 self.rowcount = self._next_row_index
             
-            # Build column map once and cache it for better performance
+            # Build column map once and cache it
             if self._cached_column_map is None and self.description:
                 self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
             
-            # Convert raw data to Row objects using optimized constructor
+            # Convert raw data to Row objects
             column_map = self._cached_column_map or getattr(self, '_column_name_map', None)
             return [Row(row_data, column_map, self) for row_data in rows_data]
         except Exception as e:
@@ -1859,11 +1854,11 @@ class Cursor:
             else:
                 self.rowcount = self._next_row_index
             
-            # Build column map once and cache it for better performance
+            # Build column map once and cache it
             if self._cached_column_map is None and self.description:
                 self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
             
-            # Convert raw data to Row objects using optimized constructor
+            # Convert raw data to Row objects
             column_map = self._cached_column_map or getattr(self, '_column_name_map', None)
             return [Row(row_data, column_map, self) for row_data in rows_data]
         except Exception as e:

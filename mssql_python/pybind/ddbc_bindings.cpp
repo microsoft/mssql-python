@@ -94,8 +94,6 @@ namespace PythonObjectCache {
     }
 }
 
-
-
 //-------------------------------------------------------------------------------------------------
 // Class definitions
 //-------------------------------------------------------------------------------------------------
@@ -1474,7 +1472,7 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Q
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    // Configure forward-only cursor for optimal performance
+    // Configure forward-only cursor
     if (SQLSetStmtAttr_ptr && StatementHandle && StatementHandle->get()) {
         SQLSetStmtAttr_ptr(StatementHandle->get(),
                            SQL_ATTR_CURSOR_TYPE,
@@ -1611,7 +1609,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         LOG("Statement handle is null or empty");
     }
 
-    // Configure forward-only cursor for optimal performance
+    // Configure forward-only cursor
     if (SQLSetStmtAttr_ptr && hStmt) {
         SQLSetStmtAttr_ptr(hStmt,
                            SQL_ATTR_CURSOR_TYPE,
@@ -3182,7 +3180,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                          py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched, const std::vector<SQLUSMALLINT>& lobColumns) {
     LOG("Fetching data in batches");
     SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
-    // SQLRETURN ret = SQLFetch_ptr(hStmt);
     if (ret == SQL_NO_DATA) {
         LOG("No data to fetch");
         return ret;
@@ -3204,15 +3201,12 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         const auto& columnMeta = columnNames[col].cast<py::dict>();
         columnInfos[col].dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
         columnInfos[col].columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
-        columnInfos[col].isLob = std::find(lobColumns.begin(), lobColumns.end(), col + 1) != lobColumns.end(); // col+1 because lobColumns uses 1-based indexing
-        
-        // Pre-compute processed column size and fetch buffer size for char/wchar types
+        columnInfos[col].isLob = std::find(lobColumns.begin(), lobColumns.end(), col + 1) != lobColumns.end();
         columnInfos[col].processedColumnSize = columnInfos[col].columnSize;
         HandleZeroColumnSizeAtFetch(columnInfos[col].processedColumnSize);
         columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize + 1; // +1 for null terminator
     }
     
-    // Cache expensive module imports and operations outside the loops
     static const std::string defaultSeparator = ".";
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
     bool isDefaultDecimalSeparator = (decimalSeparator == defaultSeparator);
@@ -3226,9 +3220,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         // Create row container pre-allocated with known column count
         py::list row(numCols);
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-                const ColumnInfo& colInfo = columnInfos[col - 1];
-                SQLSMALLINT dataType = colInfo.dataType;
-                SQLLEN dataLen = buffers.indicators[col - 1][i];
+            const ColumnInfo& colInfo = columnInfos[col - 1];
+            SQLSMALLINT dataType = colInfo.dataType;
+            SQLLEN dataLen = buffers.indicators[col - 1][i];
             if (dataLen == SQL_NULL_DATA) {
                 row[col - 1] = py::none();
                 continue;
@@ -3332,7 +3326,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         
                         // Use pre-cached decimal separator
                         if (isDefaultDecimalSeparator) {
-                            // Direct py::str creation without intermediate string
                             row[col - 1] = PythonObjectCache::get_decimal_class()(py::str(rawData, decimalDataLen));
                         } else {
                             std::string numStr(rawData, decimalDataLen);
@@ -3629,8 +3622,6 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     // Reset attributes before returning to avoid using stack pointers later
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
-        
-        // Process each column (data is now in buffers at index [0])
     return ret;
 }
 
@@ -3661,8 +3652,8 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
         return ret;
     }
 
-    // Define a memory limit (1.5 GB)
-    const size_t memoryLimit = 1536ULL * 1024 * 1024;
+    // Define a memory limit (1 GB)
+    const size_t memoryLimit = 1ULL * 1024 * 1024;
     size_t totalRowSize = calculateRowSize(columnNames, numCols);
 
     // Calculate fetch size based on the total row size and memory limit
@@ -3690,15 +3681,13 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
         // If the row size is larger than the memory limit, fetch one row at a time
         fetchSize = 1;
     } else if (numRowsInMemLimit > 0 && numRowsInMemLimit <= 100) {
-        fetchSize = 500;
-    // } else if (numRowsInMemLimit > 100 && numRowsInMemLimit <= 10000) {
-    //     fetchSize = 500;
+        // If between 100-1000 rows fit in memoryLimit, fetch 100 rows at a time
+        fetchSize = 100;
     } else {
         fetchSize = 1000;
     }
     LOG("Fetching data in batch sizes of {}", fetchSize);
 
-    // fetchSize = 1;
     std::vector<SQLUSMALLINT> lobColumns;
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         auto colMeta = columnNames[i].cast<py::dict>();
