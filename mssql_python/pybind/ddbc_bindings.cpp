@@ -33,9 +33,6 @@
 #define DAE_CHUNK_SIZE 8192
 #define SQL_MAX_LOB_SIZE 8000
 
-//-------------------------------------------------------------------------------------------------
-// Performance optimization: Cached Python modules and objects
-//-------------------------------------------------------------------------------------------------
 namespace PythonObjectCache {
     static py::object datetime_class;
     static py::object date_class; 
@@ -46,27 +43,21 @@ namespace PythonObjectCache {
     
     void initialize() {
         if (!cache_initialized) {
-            try {
-                auto datetime_module = py::module_::import("datetime");
-                datetime_class = datetime_module.attr("datetime");
-                date_class = datetime_module.attr("date");
-                time_class = datetime_module.attr("time");
-                
-                auto decimal_module = py::module_::import("decimal");
-                decimal_class = decimal_module.attr("Decimal");
-                
-                auto uuid_module = py::module_::import("uuid");
-                uuid_class = uuid_module.attr("UUID");
-                
-                cache_initialized = true;
-            } catch (...) {
-                // If initialization fails, fall back to direct imports
-                cache_initialized = false;
-            }
+            auto datetime_module = py::module_::import("datetime");
+            datetime_class = datetime_module.attr("datetime");
+            date_class = datetime_module.attr("date");
+            time_class = datetime_module.attr("time");
+            
+            auto decimal_module = py::module_::import("decimal");
+            decimal_class = decimal_module.attr("Decimal");
+            
+            auto uuid_module = py::module_::import("uuid");
+            uuid_class = uuid_module.attr("UUID");
+            
+            cache_initialized = true;
         }
     }
     
-    // Safe getter functions that fall back to direct import if cache fails
     py::object get_datetime_class() {
         if (cache_initialized && datetime_class) {
             return datetime_class;
@@ -2529,8 +2520,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
     
     // Cache decimal separator to avoid repeated system calls
     static const std::string defaultSeparator = ".";
-    static std::string decimalSeparator = GetDecimalSeparator();
-    static bool isDefaultDecimalSeparator = (decimalSeparator == defaultSeparator);
+    std::string decimalSeparator = GetDecimalSeparator();
+    bool isDefaultDecimalSeparator = (decimalSeparator == defaultSeparator);
     
     for (SQLSMALLINT i = 1; i <= colCount; ++i) {
         SQLWCHAR columnName[256];
@@ -2722,14 +2713,10 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 safeLen = bufSize;
                             }
                         }
-
-                        // Use cached decimal separator for locale-specific formatting
                         if (isDefaultDecimalSeparator) {
-                            // Fast path: Direct creation without string manipulation
                             py::object decimalObj = PythonObjectCache::get_decimal_class()(py::str(cnum, safeLen));
                             row.append(decimalObj);
                         } else {
-                            // Slow path: Need separator replacement for locale
                             std::string numStr(cnum, safeLen);
                             size_t pos = numStr.find('.');
                             if (pos != std::string::npos) {
@@ -3208,9 +3195,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     struct ColumnInfo {
         SQLSMALLINT dataType;
         SQLULEN columnSize;
-        SQLULEN processedColumnSize;  // Post-HandleZeroColumnSizeAtFetch processing
-        uint64_t fetchBufferSize;     // Pre-computed buffer size for char/wchar types
-        bool isLob;  // Pre-compute LOB status for O(1) lookup
+        SQLULEN processedColumnSize;
+        uint64_t fetchBufferSize;
+        bool isLob;
     };
     std::vector<ColumnInfo> columnInfos(numCols);
     for (SQLUSMALLINT col = 0; col < numCols; col++) {
@@ -3230,15 +3217,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
     bool isDefaultDecimalSeparator = (decimalSeparator == defaultSeparator);
     
-    // numRowsFetched is the SQL_ATTR_ROWS_FETCHED_PTR attribute. It'll be populated by
-    // SQLFetchScroll
-    
-    // Pre-allocate batch container to avoid 1000-5000 reallocations per batch
-    // We know the exact batch size (numRowsFetched), so reserve space upfront
     size_t initialSize = rows.size();
-    
-    // Extend the rows list with None placeholders for the entire batch
-    // This eliminates numRowsFetched reallocations during append operations
     for (SQLULEN i = 0; i < numRowsFetched; i++) {
         rows.append(py::none());
     }
@@ -3250,19 +3229,13 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 const ColumnInfo& colInfo = columnInfos[col - 1];
                 SQLSMALLINT dataType = colInfo.dataType;
                 SQLLEN dataLen = buffers.indicators[col - 1][i];
-                            if (dataLen == SQL_NULL_DATA) {
+            if (dataLen == SQL_NULL_DATA) {
                 row[col - 1] = py::none();
                 continue;
             }
-            // TODO: variable length data needs special handling, this logic wont suffice
-            // This value indicates that the driver cannot determine the length of the data
             if (dataLen == SQL_NO_TOTAL) {
                 LOG("Cannot determine the length of the data. Returning NULL value instead."
                     "Column ID - {}", col);
-                row[col - 1] = py::none();
-                continue;
-            } else if (dataLen == SQL_NULL_DATA) {
-                LOG("Column data is NULL. Setting None to the result row. Column ID - {}", col);
                 row[col - 1] = py::none();
                 continue;
             } else if (dataLen == 0) {
@@ -3359,10 +3332,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         
                         // Use pre-cached decimal separator
                         if (isDefaultDecimalSeparator) {
-                            // Fast path: Direct py::str creation without intermediate string
+                            // Direct py::str creation without intermediate string
                             row[col - 1] = PythonObjectCache::get_decimal_class()(py::str(rawData, decimalDataLen));
                         } else {
-                            // Slow path: Need separator replacement
                             std::string numStr(rawData, decimalDataLen);
                             size_t pos = numStr.find('.');
                             if (pos != std::string::npos) {
@@ -3739,6 +3711,21 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1); // 1-based
         }
+    }
+
+    // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
+    if (!lobColumns.empty()) {
+        LOG("LOB columns detected, using per-row SQLGetData path");
+        while (true) {
+            ret = SQLFetch_ptr(hStmt);
+            if (ret == SQL_NO_DATA) break;
+            if (!SQL_SUCCEEDED(ret)) return ret;
+
+            py::list row;
+            SQLGetData_wrap(StatementHandle, numCols, row);  // <-- streams LOBs correctly
+            rows.append(row);
+        }
+        return SQL_SUCCESS;
     }
 
     ColumnBuffers buffers(numCols, fetchSize);
