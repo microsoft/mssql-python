@@ -6974,7 +6974,10 @@ def test_encoding_decoding_sql_char_unicode_issue_diagnosis(db_connection):
                             elif not varchar_preserved:
                                 issue_type = "VARCHAR Only"
                             
-                            print(f"{test_name:<15} | {varchar_result:<20} | {nvarchar_result:<20} | {issue_type:<15}")
+                            # Use safe display for Unicode characters
+                            varchar_safe = varchar_result.encode('ascii', 'replace').decode('ascii') if isinstance(varchar_result, str) else str(varchar_result)
+                            nvarchar_safe = nvarchar_result.encode('ascii', 'replace').decode('ascii') if isinstance(nvarchar_result, str) else str(nvarchar_result)
+                            print(f"{test_name:<15} | {varchar_safe:<20} | {nvarchar_safe:<20} | {issue_type:<15}")
                             
                         else:
                             print(f"{test_name:<15} | {'NO DATA':<20} | {'NO DATA':<20} | {'Insert Failed':<15}")
@@ -7140,8 +7143,15 @@ def test_encoding_decoding_sql_char_best_practices_guide(db_connection):
         result = cursor.fetchone()
         
         if result:
-            print(f"[OK] Unicode Name (NVARCHAR): {result[0]}")
-            print(f"[OK] Unicode Description (NVARCHAR): {result[1]}")
+            # Use repr() to safely display Unicode characters
+            try:
+                name_safe = result[0].encode('ascii', 'replace').decode('ascii')
+                desc_safe = result[1].encode('ascii', 'replace').decode('ascii') 
+                print(f"[OK] Unicode Name (NVARCHAR): {name_safe}")
+                print(f"[OK] Unicode Description (NVARCHAR): {desc_safe}")
+            except (UnicodeError, AttributeError):
+                print(f"[OK] Unicode Name (NVARCHAR): {repr(result[0])}")
+                print(f"[OK] Unicode Description (NVARCHAR): {repr(result[1])}")
             print("[OK] Perfect Unicode preservation using NVARCHAR columns!")
         
         print("\n[OK] Best practices guide completed")
