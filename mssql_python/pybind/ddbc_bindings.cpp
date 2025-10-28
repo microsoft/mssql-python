@@ -28,6 +28,11 @@
     case x:                   \
         return #x
 
+// Platform-specific macros
+#ifndef UNREFERENCED_PARAMETER
+#define UNREFERENCED_PARAMETER(P) (void)(P)
+#endif
+
 // Architecture-specific defines
 #ifndef ARCHITECTURE
 #define ARCHITECTURE "win64"  // Default to win64 if not defined during compilation
