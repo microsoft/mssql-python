@@ -1236,24 +1236,6 @@ class Connection:
         if not self._closed:
             self.close()
 
-    def enable_performance_mode(self):
-        """
-        Performance optimizations are enabled by default.
-        This method is kept for backward compatibility.
-        """
-        pass
-        
-    def disable_performance_mode(self):
-        """
-        Performance optimizations are enabled by default and cannot be disabled.
-        This method is kept for backward compatibility.
-        """
-        pass
-        
-    def is_performance_mode_enabled(self):
-        """Performance mode is always enabled."""
-        return True
-
     def __del__(self):
         """
         Destructor to ensure the connection is closed when the connection object is no longer needed.

@@ -41,6 +41,7 @@ namespace PythonObjectCache {
     static py::object date_class; 
     static py::object time_class;
     static py::object decimal_class;
+    static py::object uuid_class;
     static bool cache_initialized = false;
     
     void initialize() {
@@ -53,6 +54,9 @@ namespace PythonObjectCache {
                 
                 auto decimal_module = py::module_::import("decimal");
                 decimal_class = decimal_module.attr("Decimal");
+                
+                auto uuid_module = py::module_::import("uuid");
+                uuid_class = uuid_module.attr("UUID");
                 
                 cache_initialized = true;
             } catch (...) {
@@ -89,6 +93,13 @@ namespace PythonObjectCache {
             return decimal_class;
         }
         return py::module_::import("decimal").attr("Decimal");
+    }
+    
+    py::object get_uuid_class() {
+        if (cache_initialized && uuid_class) {
+            return uuid_class;
+        }
+        return py::module_::import("uuid").attr("UUID");
     }
 }
 
@@ -512,7 +523,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 break;
             }
             case SQL_C_TYPE_DATE: {
-                py::object dateType = py::module_::import("datetime").attr("date");
+                py::object dateType = PythonObjectCache::get_date_class();
                 if (!py::isinstance(param, dateType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
@@ -529,7 +540,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 break;
             }
             case SQL_C_TYPE_TIME: {
-                py::object timeType = py::module_::import("datetime").attr("time");
+                py::object timeType = PythonObjectCache::get_time_class();
                 if (!py::isinstance(param, timeType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
@@ -542,7 +553,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 break;
             }
             case SQL_C_SS_TIMESTAMPOFFSET: {
-                py::object datetimeType = py::module_::import("datetime").attr("datetime");
+                py::object datetimeType = PythonObjectCache::get_datetime_class();
                 if (!py::isinstance(param, datetimeType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
@@ -586,7 +597,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 break;
             }
             case SQL_C_TYPE_TIMESTAMP: {
-                py::object datetimeType = py::module_::import("datetime").attr("datetime");
+                py::object datetimeType = PythonObjectCache::get_datetime_class();
                 if (!py::isinstance(param, datetimeType)) {
                     ThrowStdException(MakeParamMismatchErrorStr(paramInfo.paramCType, paramIndex));
                 }
@@ -1472,8 +1483,17 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Q
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    // Cursor type is now configured in Python layer via _configure_cursor_type()
-    // This allows dynamic selection between forward-only and scrollable cursors
+    // Configure forward-only cursor for optimal performance
+    if (SQLSetStmtAttr_ptr && StatementHandle && StatementHandle->get()) {
+        SQLSetStmtAttr_ptr(StatementHandle->get(),
+                           SQL_ATTR_CURSOR_TYPE,
+                           (SQLPOINTER)SQL_CURSOR_FORWARD_ONLY,
+                           0);
+        SQLSetStmtAttr_ptr(StatementHandle->get(),
+                           SQL_ATTR_CONCURRENCY,
+                           (SQLPOINTER)SQL_CONCUR_READ_ONLY,
+                           0);
+    }
 
     SQLWCHAR* queryPtr;
 #if defined(__APPLE__) || defined(__linux__)
@@ -1600,8 +1620,17 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         LOG("Statement handle is null or empty");
     }
 
-    // Cursor type is now configured in Python layer via _configure_cursor_type()
-    // This allows dynamic selection between forward-only and scrollable cursors
+    // Configure forward-only cursor for optimal performance
+    if (SQLSetStmtAttr_ptr && hStmt) {
+        SQLSetStmtAttr_ptr(hStmt,
+                           SQL_ATTR_CURSOR_TYPE,
+                           (SQLPOINTER)SQL_CURSOR_FORWARD_ONLY,
+                           0);
+        SQLSetStmtAttr_ptr(hStmt,
+                           SQL_ATTR_CONCURRENCY,
+                           (SQLPOINTER)SQL_CONCUR_READ_ONLY,
+                           0);
+    }
 
     SQLWCHAR* queryPtr;
 #if defined(__APPLE__) || defined(__linux__)
@@ -2037,7 +2066,7 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                     DateTimeOffset* dtoArray = AllocateParamBufferArray<DateTimeOffset>(tempBuffers, paramSetSize);
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
 
-                    py::object datetimeType = py::module_::import("datetime").attr("datetime");
+                    py::object datetimeType = PythonObjectCache::get_datetime_class();
 
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         const py::handle& param = columnValues[i];
@@ -2113,9 +2142,8 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                     SQLGUID* guidArray = AllocateParamBufferArray<SQLGUID>(tempBuffers, paramSetSize);
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
 
-                    // Get cached UUID class from module-level helper
-                    // This avoids static object destruction issues during Python finalization
-                    py::object uuid_class = py::module_::import("mssql_python.ddbc_bindings").attr("_get_uuid_class")();
+                    // Get cached UUID class
+                    py::object uuid_class = PythonObjectCache::get_uuid_class();
                     
                     for (size_t i = 0; i < paramSetSize; ++i) {
                         const py::handle& element = columnValues[i];
@@ -2498,6 +2526,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 
     SQLRETURN ret = SQL_SUCCESS;
     SQLHSTMT hStmt = StatementHandle->get();
+    
+    // Cache decimal separator to avoid repeated system calls
+    static const std::string defaultSeparator = ".";
+    static std::string decimalSeparator = GetDecimalSeparator();
+    static bool isDefaultDecimalSeparator = (decimalSeparator == defaultSeparator);
+    
     for (SQLSMALLINT i = 1; i <= colCount; ++i) {
         SQLWCHAR columnName[256];
         SQLSMALLINT columnNameLen;
@@ -2689,14 +2723,21 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             }
                         }
 
-                        // Use the validated length to construct the string for Decimal
-                        std::string numStr(cnum, safeLen);
-
-                        // Create Python Decimal object
-                        py::object decimalObj = PythonObjectCache::get_decimal_class()(numStr);
-
-                        // Add to row
-                        row.append(decimalObj);
+                        // Use cached decimal separator for locale-specific formatting
+                        if (isDefaultDecimalSeparator) {
+                            // Fast path: Direct creation without string manipulation
+                            py::object decimalObj = PythonObjectCache::get_decimal_class()(py::str(cnum, safeLen));
+                            row.append(decimalObj);
+                        } else {
+                            // Slow path: Need separator replacement for locale
+                            std::string numStr(cnum, safeLen);
+                            size_t pos = numStr.find('.');
+                            if (pos != std::string::npos) {
+                                numStr.replace(pos, 1, decimalSeparator);
+                            }
+                            py::object decimalObj = PythonObjectCache::get_decimal_class()(numStr);
+                            row.append(decimalObj);
+                        }
                     } catch (const py::error_already_set& e) {
                         // If conversion fails, append None
                         LOG("Error converting to decimal: {}", e.what());
@@ -2835,11 +2876,11 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     }
                     // Convert fraction from ns to µs
                     int microseconds = dtoValue.fraction / 1000;
-                    py::object datetime = py::module_::import("datetime");
-                    py::object tzinfo = datetime.attr("timezone")(
-                        datetime.attr("timedelta")(py::arg("minutes") = totalMinutes)
+                    py::object datetime_module = py::module_::import("datetime");
+                    py::object tzinfo = datetime_module.attr("timezone")(
+                        datetime_module.attr("timedelta")(py::arg("minutes") = totalMinutes)
                     );
-                    py::object py_dt = datetime.attr("datetime")(
+                    py::object py_dt = PythonObjectCache::get_datetime_class()(
                         dtoValue.year,
                         dtoValue.month,
                         dtoValue.day,
@@ -2849,7 +2890,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                         microseconds,
                         tzinfo
                     );
-                    py_dt = py_dt.attr("astimezone")(datetime.attr("timezone").attr("utc"));
+                    py_dt = py_dt.attr("astimezone")(datetime_module.attr("timezone").attr("utc"));
                     row.append(py_dt);
                 } else {
                     LOG("Error fetching DATETIMEOFFSET for column {}, ret={}", i, ret);
@@ -2941,8 +2982,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     std::memcpy(&guid_bytes[8], guidValue.Data4, sizeof(guidValue.Data4));
 
                     py::bytes py_guid_bytes(guid_bytes.data(), guid_bytes.size());
-                    py::object uuid_module = py::module_::import("uuid");
-                    py::object uuid_obj = uuid_module.attr("UUID")(py::arg("bytes")=py_guid_bytes);
+                    py::object uuid_obj = PythonObjectCache::get_uuid_class()(py::arg("bytes")=py_guid_bytes);
                     row.append(uuid_obj);
                 } else if (indicator == SQL_NULL_DATA) {
                     row.append(py::none());
@@ -3155,6 +3195,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                          py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched, const std::vector<SQLUSMALLINT>& lobColumns) {
     LOG("Fetching data in batches");
     SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
+    // SQLRETURN ret = SQLFetch_ptr(hStmt);
     if (ret == SQL_NO_DATA) {
         LOG("No data to fetch");
         return ret;
@@ -3189,21 +3230,21 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
     bool isDefaultDecimalSeparator = (decimalSeparator == defaultSeparator);
     
-    // Cache Python module imports to avoid repeated imports
-    py::object datetime_module = py::module_::import("datetime");
-    py::object uuid_module = py::module_::import("uuid");
-    
     // numRowsFetched is the SQL_ATTR_ROWS_FETCHED_PTR attribute. It'll be populated by
     // SQLFetchScroll
     
-    // Pre-allocate rows list to avoid dynamic growth
-    size_t currentSize = rows.size();
+    // Pre-allocate batch container to avoid 1000-5000 reallocations per batch
+    // We know the exact batch size (numRowsFetched), so reserve space upfront
+    size_t initialSize = rows.size();
+    
+    // Extend the rows list with None placeholders for the entire batch
+    // This eliminates numRowsFetched reallocations during append operations
     for (SQLULEN i = 0; i < numRowsFetched; i++) {
         rows.append(py::none());
     }
     
     for (SQLULEN i = 0; i < numRowsFetched; i++) {
-        // Create row container - use list for normal mode, pre-allocate for fast mode conversion to tuple
+        // Create row container pre-allocated with known column count
         py::list row(numCols);
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
                 const ColumnInfo& colInfo = columnInfos[col - 1];
@@ -3374,11 +3415,11 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     SQLLEN indicator = buffers.indicators[col - 1][rowIdx];
                     if (indicator != SQL_NULL_DATA) {
                         int totalMinutes = dtoValue.timezone_hour * 60 + dtoValue.timezone_minute;
-                        py::object datetime = py::module_::import("datetime");
-                        py::object tzinfo = datetime.attr("timezone")(
-                            datetime.attr("timedelta")(py::arg("minutes") = totalMinutes)
+                        py::object datetime_module = py::module_::import("datetime");
+                        py::object tzinfo = datetime_module.attr("timezone")(
+                            datetime_module.attr("timedelta")(py::arg("minutes") = totalMinutes)
                         );
-                        py::object py_dt = datetime.attr("datetime")(
+                        py::object py_dt = PythonObjectCache::get_datetime_class()(
                             dtoValue.year,
                             dtoValue.month,
                             dtoValue.day,
@@ -3388,7 +3429,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                             dtoValue.fraction / 1000,  // ns → µs
                             tzinfo
                         );
-                        py_dt = py_dt.attr("astimezone")(datetime.attr("timezone").attr("utc"));
+                        py_dt = py_dt.attr("astimezone")(datetime_module.attr("timezone").attr("utc"));
                         row[col - 1] = py_dt;
                     } else {
                         row[col - 1] = py::none();
@@ -3416,7 +3457,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     py::bytes py_guid_bytes(reinterpret_cast<char*>(reordered), 16);
                     py::dict kwargs;
                     kwargs["bytes"] = py_guid_bytes;
-                    py::object uuid_obj = py::module_::import("uuid").attr("UUID")(**kwargs);
+                    py::object uuid_obj = PythonObjectCache::get_uuid_class()(**kwargs);
                     row[col - 1] = uuid_obj;
                     break;
                 }
@@ -3447,7 +3488,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
             }
         }
-        rows[currentSize + i] = row;
+        rows[initialSize + i] = row;
     }
     return ret;
 }
@@ -3616,7 +3657,8 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     // Reset attributes before returning to avoid using stack pointers later
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
-
+        
+        // Process each column (data is now in buffers at index [0])
     return ret;
 }
 
@@ -3677,13 +3719,14 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
         fetchSize = 1;
     } else if (numRowsInMemLimit > 0 && numRowsInMemLimit <= 100) {
         fetchSize = 500;
-    } else if (numRowsInMemLimit > 100 && numRowsInMemLimit <= 10000) {
-        fetchSize = 5000;
+    // } else if (numRowsInMemLimit > 100 && numRowsInMemLimit <= 10000) {
+    //     fetchSize = 500;
     } else {
-        fetchSize = 10000;
+        fetchSize = 1000;
     }
     LOG("Fetching data in batch sizes of {}", fetchSize);
 
+    // fetchSize = 1;
     std::vector<SQLUSMALLINT> lobColumns;
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         auto colMeta = columnNames[i].cast<py::dict>();
@@ -3696,21 +3739,6 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1); // 1-based
         }
-    }
-
-    // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
-    if (!lobColumns.empty()) {
-        LOG("LOB columns detected, using per-row SQLGetData path");
-        while (true) {
-            ret = SQLFetch_ptr(hStmt);
-            if (ret == SQL_NO_DATA) break;
-            if (!SQL_SUCCEEDED(ret)) return ret;
-
-            py::list row;
-            SQLGetData_wrap(StatementHandle, numCols, row);  // <-- streams LOBs correctly
-            rows.append(row);
-        }
-        return SQL_SUCCESS;
     }
 
     ColumnBuffers buffers(numCols, fetchSize);
@@ -3974,15 +4002,6 @@ PYBIND11_MODULE(ddbc_bindings, m) {
                             const py::object& column) {
         return SQLColumns_wrap(StatementHandle, catalog, schema, table, column);
     });
-
-
-    // Module-level UUID class cache
-    // This caches the uuid.UUID class at module initialization time and keeps it alive
-    // for the entire module lifetime, avoiding static destructor issues during Python finalization
-    m.def("_get_uuid_class", []() -> py::object {
-        static py::object uuid_class = py::module_::import("uuid").attr("UUID");
-        return uuid_class;
-    }, "Internal helper to get cached UUID class");
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";

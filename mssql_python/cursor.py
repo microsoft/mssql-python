@@ -80,7 +80,9 @@ class Cursor:
         self._initialize_cursor()
         self.description = None
         self.rowcount = -1
-        self.arraysize = 5000  # Optimized default for better performance
+        self.arraysize = (
+            1  # Default number of rows to fetch at a time is 1, user can change it
+        )
         self.buffer_length = 1024  # Default buffer length for string data
         self.closed = False
         self._result_set_empty = False  # Add this initialization
@@ -97,7 +99,6 @@ class Cursor:
         # rownumber attribute
         self._rownumber = -1  # DB-API extension: last returned row index, -1 before first
         
-        # Performance optimizations
         self._cached_column_map = None
         self._cached_converter_map = None
         self._next_row_index = 0  # internal: index of the next row the driver will return (0-based)
@@ -475,8 +476,6 @@ class Cursor:
         Allocate the DDBC statement handle.
         """
         self.hstmt = self._connection._conn.alloc_statement_handle()
-
-
 
     def _reset_cursor(self) -> None:
         """
