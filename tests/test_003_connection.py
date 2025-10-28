@@ -6750,10 +6750,10 @@ def test_encoding_decoding_sql_char_native_character_sets(db_connection):
                             
                             # Verify data integrity
                             if retrieved_data == test_data and retrieved_encoding == encoding:
-                                print(f"  [OK] {test_name:12} | '{test_data}' → '{retrieved_data}' (Perfect match)")
+                                print(f"  [OK] {test_name:12} | '{test_data}' -> '{retrieved_data}' (Perfect match)")
                                 results.append("PASS")
                             else:
-                                print(f"  [WARN] {test_name:12} | '{test_data}' → '{retrieved_data}' (Data changed)")
+                                print(f"  [WARN] {test_name:12} | '{test_data}' -> '{retrieved_data}' (Data changed)")
                                 results.append("CHANGED")
                         else:
                             print(f"  [FAIL] {test_name:12} | No data retrieved")
@@ -6868,7 +6868,7 @@ def test_encoding_decoding_sql_char_boundary_encoding_cases(db_connection):
                             if retrieved == test_data:
                                 print(f"  [OK] {test_name:15} | Length: {data_length:3} | Perfect preservation")
                             else:
-                                print(f"  [WARN] {test_name:15} | Length: {data_length:3} → {retrieved_length:3} | Data modified")
+                                print(f"  [WARN] {test_name:15} | Length: {data_length:3} -> {retrieved_length:3} | Data modified")
                                 if data_length <= 20:  # Show diff for short strings
                                     print(f"      Original: {test_data!r}")
                                     print(f"      Retrieved: {retrieved!r}")
@@ -6893,7 +6893,7 @@ def test_encoding_decoding_sql_char_boundary_encoding_cases(db_connection):
 
 
 def test_encoding_decoding_sql_char_unicode_issue_diagnosis(db_connection):
-    """Diagnose the Unicode → ? character conversion issue with SQL_CHAR."""
+    """Diagnose the Unicode -> ? character conversion issue with SQL_CHAR."""
     cursor = db_connection.cursor()
     
     try:
@@ -6908,7 +6908,7 @@ def test_encoding_decoding_sql_char_unicode_issue_diagnosis(db_connection):
         """)
         
         print(f"\n{'='*80}")
-        print("DIAGNOSING UNICODE → ? CHARACTER CONVERSION ISSUE")
+        print("DIAGNOSING UNICODE -> ? CHARACTER CONVERSION ISSUE")
         print(f"{'='*80}")
         
         # Test Unicode strings that commonly cause issues
@@ -6987,8 +6987,8 @@ def test_encoding_decoding_sql_char_unicode_issue_diagnosis(db_connection):
         
         print(f"\n{'='*80}")
         print("DIAGNOSIS SUMMARY:")
-        print("- If VARCHAR shows '?' but NVARCHAR preserves Unicode → SQL Server conversion issue")
-        print("- If both show issues → Encoding configuration problem") 
+        print("- If VARCHAR shows '?' but NVARCHAR preserves Unicode -> SQL Server conversion issue")
+        print("- If both show issues -> Encoding configuration problem") 
         print("- VARCHAR columns are limited by SQL Server collation and character set")
         print("- NVARCHAR columns use UTF-16 and preserve Unicode correctly")
         print("[OK] Unicode issue diagnosis completed")
