@@ -7,11 +7,17 @@
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdio>
+#include <filesystem>
 #include <iomanip>  // std::setw, std::setfill
 #include <iostream>
+#include <limits>
+#include <memory>
+#include <string>
 #include <utility>  // std::forward
-#include <filesystem>
+#include <vector>
 //-------------------------------------------------------------------------------------------------
 // Macro definitions
 //-------------------------------------------------------------------------------------------------
@@ -3732,10 +3738,12 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
 // executed. It fetches the specified number of rows from the result set and populates the provided
 // Python list with the row data. If there are no more rows to fetch, it returns SQL_NO_DATA. If an
 // error occurs during fetching, it throws a runtime error.
-SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetchSize = 1,
+SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows,
+                         int fetchSize = 1,
                          const std::string& char_encoding = "utf-8",
                          const std::string& wchar_encoding = "utf-16le") {
-    UNREFERENCED_PARAMETER(wchar_encoding); // SQL_WCHAR behavior unchanged, keeping parameter for API consistency
+    UNREFERENCED_PARAMETER(wchar_encoding);  // SQL_WCHAR behavior unchanged,
+                                             // keeping parameter for API consistency
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
@@ -3755,11 +3763,13 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
         SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
 
-        if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || 
+        if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR ||
              dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR ||
-             dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
-            (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
-            lobColumns.push_back(i + 1); // 1-based
+             dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY ||
+             dataType == SQL_SS_XML) &&
+            (columnSize == 0 || columnSize == SQL_NO_TOTAL ||
+             columnSize > SQL_MAX_LOB_SIZE)) {
+            lobColumns.push_back(i + 1);  // 1-based
         }
     }
 
@@ -3772,7 +3782,9 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
             if (!SQL_SUCCEEDED(ret)) return ret;
 
             py::list row;
-            SQLGetData_wrap(StatementHandle, numCols, row, char_encoding, wchar_encoding);  // <-- streams LOBs correctly
+            // streams LOBs correctly
+            SQLGetData_wrap(StatementHandle, numCols, row, char_encoding,
+                            wchar_encoding);
             rows.append(row);
         }
         return SQL_SUCCESS;
@@ -3789,10 +3801,13 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     }
 
     SQLULEN numRowsFetched;
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE,
+                       (SQLPOINTER)(intptr_t)fetchSize, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
-    ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns, char_encoding, wchar_encoding);
+    ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols,
+                         numRowsFetched, lobColumns, char_encoding,
+                         wchar_encoding);
     if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
         LOG("Error when fetching data");
         return ret;
@@ -4071,20 +4086,30 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def("free", &SqlHandle::free, "Free the handle");
   
     py::class_<ConnectionHandle>(m, "Connection")
-        .def(py::init<const std::string&, bool, const py::dict&>(), py::arg("conn_str"), py::arg("use_pool"), py::arg("attrs_before") = py::dict())
+        .def(py::init<const std::string&, bool, const py::dict&>(),
+             py::arg("conn_str"), py::arg("use_pool"),
+             py::arg("attrs_before") = py::dict())
         .def("close", &ConnectionHandle::close, "Close the connection")
-        .def("commit", &ConnectionHandle::commit, "Commit the current transaction")
-        .def("rollback", &ConnectionHandle::rollback, "Rollback the current transaction")
+        .def("commit", &ConnectionHandle::commit,
+             "Commit the current transaction")
+        .def("rollback", &ConnectionHandle::rollback,
+             "Rollback the current transaction")
         .def("set_autocommit", &ConnectionHandle::setAutocommit)
         .def("get_autocommit", &ConnectionHandle::getAutocommit)
-        .def("set_attr", &ConnectionHandle::setAttr, py::arg("attribute"), py::arg("value"), "Set connection attribute")
+        .def("set_attr", &ConnectionHandle::setAttr, py::arg("attribute"),
+             py::arg("value"), "Set connection attribute")
         .def("alloc_statement_handle", &ConnectionHandle::allocStatementHandle)
         .def("get_info", &ConnectionHandle::getInfo, py::arg("info_type"));
     m.def("enable_pooling", &enable_pooling, "Enable global connection pooling");
-    m.def("close_pooling", []() {ConnectionPoolManager::getInstance().closePools();});
-    m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
-    m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements");
-    m.def("SQLExecuteMany", &SQLExecuteMany_wrap, "Execute statement with multiple parameter sets");
+    m.def("close_pooling", []() {
+        ConnectionPoolManager::getInstance().closePools();
+    });
+    m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap,
+          "Execute a SQL query directly");
+    m.def("DDBCSQLExecute", &SQLExecute_wrap,
+          "Prepare and execute T-SQL statements");
+    m.def("SQLExecuteMany", &SQLExecuteMany_wrap,
+          "Execute statement with multiple parameter sets");
     m.def("DDBCSQLRowCount", &SQLRowCount_wrap,
           "Get the number of rows affected by the last statement");
     m.def("DDBCSQLFetch", &SQLFetch_wrap, "Fetch the next row from the result set");
@@ -4092,87 +4117,101 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           "Get the number of columns in the result set");
     m.def("DDBCSQLDescribeCol", &SQLDescribeCol_wrap,
           "Get information about a column in the result set");
-    m.def("DDBCSQLGetData", &SQLGetData_wrap, "Retrieve data from the result set");
-    m.def("DDBCSQLMoreResults", &SQLMoreResults_wrap, "Check for more results in the result set");
-    m.def("DDBCSQLFetchOne", &FetchOne_wrap, "Fetch one row from the result set");
-    m.def("DDBCSQLFetchMany", &FetchMany_wrap, py::arg("StatementHandle"), py::arg("rows"),
-          py::arg("fetchSize") = 1,
-          py::arg("char_encoding") = "utf-8", py::arg("wchar_encoding") = "utf-16le",
+    m.def("DDBCSQLGetData", &SQLGetData_wrap,
+          "Retrieve data from the result set");
+    m.def("DDBCSQLMoreResults", &SQLMoreResults_wrap,
+          "Check for more results in the result set");
+    m.def("DDBCSQLFetchOne", &FetchOne_wrap,
+          "Fetch one row from the result set");
+    m.def("DDBCSQLFetchMany", &FetchMany_wrap, py::arg("StatementHandle"),
+          py::arg("rows"), py::arg("fetchSize") = 1,
+          py::arg("char_encoding") = "utf-8",
+          py::arg("wchar_encoding") = "utf-16le",
           "Fetch many rows from the result set");
-    m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set");
+    m.def("DDBCSQLFetchAll", &FetchAll_wrap,
+          "Fetch all rows from the result set");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
-    m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
+    m.def("DDBCSQLCheckError", &SQLCheckError_Wrap,
+          "Check for driver errors");
     m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,
           "Get all diagnostic records for a handle",
           py::arg("handle"));
-    m.def("DDBCSQLTables", &SQLTables_wrap, 
+    m.def("DDBCSQLTables", &SQLTables_wrap,
           "Get table information using ODBC SQLTables",
-          py::arg("StatementHandle"), py::arg("catalog") = std::wstring(), 
-          py::arg("schema") = std::wstring(), py::arg("table") = std::wstring(), 
+          py::arg("StatementHandle"), py::arg("catalog") = std::wstring(),
+          py::arg("schema") = std::wstring(), py::arg("table") = std::wstring(),
           py::arg("tableType") = std::wstring());
     m.def("DDBCSQLFetchScroll", &SQLFetchScroll_wrap,
-          "Scroll to a specific position in the result set and optionally fetch data");
-    m.def("DDBCSetDecimalSeparator", &DDBCSetDecimalSeparator, "Set the decimal separator character");
-    m.def("DDBCSQLSetStmtAttr", [](SqlHandlePtr stmt, SQLINTEGER attr, SQLPOINTER value) {
+          "Scroll to a specific position in the result set and optionally "
+          "fetch data");
+    m.def("DDBCSetDecimalSeparator", &DDBCSetDecimalSeparator,
+          "Set the decimal separator character");
+    m.def("DDBCSQLSetStmtAttr", [](SqlHandlePtr stmt, SQLINTEGER attr,
+                                   SQLPOINTER value) {
         return SQLSetStmtAttr_ptr(stmt->get(), attr, value, 0);
     }, "Set statement attributes");
-    m.def("DDBCSQLGetTypeInfo", &SQLGetTypeInfo_Wrapper, "Returns information about the data types that are supported by the data source",
-      py::arg("StatementHandle"), py::arg("DataType"));
+    m.def("DDBCSQLGetTypeInfo", &SQLGetTypeInfo_Wrapper,
+          "Returns information about the data types that are supported by "
+          "the data source",
+          py::arg("StatementHandle"), py::arg("DataType"));
     m.def("DDBCSQLProcedures", [](SqlHandlePtr StatementHandle,
-                             const py::object& catalog,
-                             const py::object& schema,
-                             const py::object& procedure) {
+                                  const py::object& catalog,
+                                  const py::object& schema,
+                                  const py::object& procedure) {
         return SQLProcedures_wrap(StatementHandle, catalog, schema, procedure);
     });
 
-        m.def("DDBCSQLForeignKeys", [](SqlHandlePtr StatementHandle, 
-                                 const py::object& pkCatalog,
-                                 const py::object& pkSchema,
-                                 const py::object& pkTable,
-                                 const py::object& fkCatalog,
-                                 const py::object& fkSchema,
-                                 const py::object& fkTable) {
-        return SQLForeignKeys_wrap(StatementHandle, 
-                                   pkCatalog, pkSchema, pkTable, 
+    m.def("DDBCSQLForeignKeys", [](SqlHandlePtr StatementHandle,
+                                   const py::object& pkCatalog,
+                                   const py::object& pkSchema,
+                                   const py::object& pkTable,
+                                   const py::object& fkCatalog,
+                                   const py::object& fkSchema,
+                                   const py::object& fkTable) {
+        return SQLForeignKeys_wrap(StatementHandle,
+                                   pkCatalog, pkSchema, pkTable,
                                    fkCatalog, fkSchema, fkTable);
     });
-    m.def("DDBCSQLPrimaryKeys", [](SqlHandlePtr StatementHandle, 
-                                const py::object& catalog,
-                                const py::object& schema,
-                                const std::wstring& table) {
+    m.def("DDBCSQLPrimaryKeys", [](SqlHandlePtr StatementHandle,
+                                   const py::object& catalog,
+                                   const py::object& schema,
+                                   const std::wstring& table) {
         return SQLPrimaryKeys_wrap(StatementHandle, catalog, schema, table);
     });
-    m.def("DDBCSQLSpecialColumns", [](SqlHandlePtr StatementHandle, 
-                                SQLSMALLINT identifierType,
-                                const py::object& catalog,
-                                const py::object& schema,
-                                const std::wstring& table,
-                                SQLSMALLINT scope,
-                                SQLSMALLINT nullable) {
-        return SQLSpecialColumns_wrap(StatementHandle, 
-                                identifierType, catalog, schema, table, 
-                                scope, nullable);
+    m.def("DDBCSQLSpecialColumns", [](SqlHandlePtr StatementHandle,
+                                      SQLSMALLINT identifierType,
+                                      const py::object& catalog,
+                                      const py::object& schema,
+                                      const std::wstring& table,
+                                      SQLSMALLINT scope,
+                                      SQLSMALLINT nullable) {
+        return SQLSpecialColumns_wrap(StatementHandle,
+                                      identifierType, catalog, schema, table,
+                                      scope, nullable);
     });
-    m.def("DDBCSQLStatistics", [](SqlHandlePtr StatementHandle, 
-                            const py::object& catalog,
-                            const py::object& schema,
-                            const std::wstring& table,
-                            SQLUSMALLINT unique,
-                            SQLUSMALLINT reserved) {
-        return SQLStatistics_wrap(StatementHandle, catalog, schema, table, unique, reserved);
+    m.def("DDBCSQLStatistics", [](SqlHandlePtr StatementHandle,
+                                  const py::object& catalog,
+                                  const py::object& schema,
+                                  const std::wstring& table,
+                                  SQLUSMALLINT unique,
+                                  SQLUSMALLINT reserved) {
+        return SQLStatistics_wrap(StatementHandle, catalog, schema, table,
+                                  unique, reserved);
     });
-    m.def("DDBCSQLColumns", [](SqlHandlePtr StatementHandle, 
-                            const py::object& catalog,
-                            const py::object& schema,
-                            const py::object& table,
-                            const py::object& column) {
+    m.def("DDBCSQLColumns", [](SqlHandlePtr StatementHandle,
+                               const py::object& catalog,
+                               const py::object& schema,
+                               const py::object& table,
+                               const py::object& column) {
         return SQLColumns_wrap(StatementHandle, catalog, schema, table, column);
     });
 
 
     // Module-level UUID class cache
-    // This caches the uuid.UUID class at module initialization time and keeps it alive
-    // for the entire module lifetime, avoiding static destructor issues during Python finalization
+    // This caches the uuid.UUID class at module initialization
+    // time and keeps it alive
+    // for the entire module lifetime, avoiding static
+    // destructor issues during Python finalization
     m.def("_get_uuid_class", []() -> py::object {
         static py::object uuid_class = py::module_::import("uuid").attr("UUID");
         return uuid_class;
@@ -4180,13 +4219,15 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
-    
+
     try {
         // Try loading the ODBC driver when the module is imported
         LOG("Loading ODBC driver");
         DriverLoader::getInstance().loadDriver();  // Load the driver
     } catch (const std::exception& e) {
-        // Log the error but don't throw - let the error happen when functions are called
-        LOG("Failed to load ODBC driver during module initialization: {}", e.what());
+        // Log the error but don't throw -
+        // let the error happen when functions are called
+        LOG("Failed to load ODBC driver during module initialization: {}",
+            e.what());
     }
 }
