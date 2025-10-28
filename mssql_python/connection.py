@@ -202,8 +202,6 @@ class Connection:
         self._pooling = PoolingManager.is_enabled()
         self._conn = ddbc_bindings.Connection(self.connection_str, self._pooling, self._attrs_before)
         self.setautocommit(autocommit)
-        
-        # Performance optimizations are now enabled by default
 
     def _construct_connection_string(self, connection_str: str = "", **kwargs) -> str:
         """
@@ -597,9 +595,6 @@ class Connection:
             )
 
         cursor = Cursor(self, timeout=self._timeout)
-        
-        # Performance optimizations are now enabled by default in cursor initialization
-        
         self._cursors.add(cursor)  # Track the cursor
         return cursor
     
@@ -1241,25 +1236,23 @@ class Connection:
         if not self._closed:
             self.close()
 
-    # Performance optimizations are now enabled by default
-    # Legacy methods kept for backward compatibility
     def enable_performance_mode(self):
         """
-        Performance optimizations are now enabled by default.
+        Performance optimizations are enabled by default.
         This method is kept for backward compatibility.
         """
-        pass  # No-op since performance mode is always on
+        pass
         
     def disable_performance_mode(self):
         """
-        Performance optimizations are now enabled by default and cannot be disabled.
+        Performance optimizations are enabled by default and cannot be disabled.
         This method is kept for backward compatibility.
         """
-        pass  # No-op since we want to keep performance optimizations
+        pass
         
     def is_performance_mode_enabled(self):
-        """Performance mode is always enabled now."""
-        return True  # Always return True since optimizations are default
+        """Performance mode is always enabled."""
+        return True
 
     def __del__(self):
         """

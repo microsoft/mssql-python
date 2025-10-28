@@ -1472,17 +1472,8 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Q
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    // Ensure statement is scrollable BEFORE executing
-    if (SQLSetStmtAttr_ptr && StatementHandle && StatementHandle->get()) {
-        SQLSetStmtAttr_ptr(StatementHandle->get(),
-                           SQL_ATTR_CURSOR_TYPE,
-                           (SQLPOINTER)SQL_CURSOR_STATIC,
-                           0);
-        SQLSetStmtAttr_ptr(StatementHandle->get(),
-                           SQL_ATTR_CONCURRENCY,
-                           (SQLPOINTER)SQL_CONCUR_READ_ONLY,
-                           0);
-    }
+    // Cursor type is now configured in Python layer via _configure_cursor_type()
+    // This allows dynamic selection between forward-only and scrollable cursors
 
     SQLWCHAR* queryPtr;
 #if defined(__APPLE__) || defined(__linux__)
@@ -1609,17 +1600,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         LOG("Statement handle is null or empty");
     }
 
-    // Ensure statement is scrollable BEFORE executing
-    if (SQLSetStmtAttr_ptr && hStmt) {
-        SQLSetStmtAttr_ptr(hStmt,
-                           SQL_ATTR_CURSOR_TYPE,
-                           (SQLPOINTER)SQL_CURSOR_STATIC,
-                           0);
-        SQLSetStmtAttr_ptr(hStmt,
-                           SQL_ATTR_CONCURRENCY,
-                           (SQLPOINTER)SQL_CONCUR_READ_ONLY,
-                           0);
-    }
+    // Cursor type is now configured in Python layer via _configure_cursor_type()
+    // This allows dynamic selection between forward-only and scrollable cursors
 
     SQLWCHAR* queryPtr;
 #if defined(__APPLE__) || defined(__linux__)
@@ -3214,17 +3196,16 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     // numRowsFetched is the SQL_ATTR_ROWS_FETCHED_PTR attribute. It'll be populated by
     // SQLFetchScroll
     
-    // Pre-allocate rows list for optimal performance - eliminates dynamic growth overhead
+    // Pre-allocate rows list to avoid dynamic growth
     size_t currentSize = rows.size();
     for (SQLULEN i = 0; i < numRowsFetched; i++) {
-        rows.append(py::none());  // Pre-allocate placeholder elements
+        rows.append(py::none());
     }
     
     for (SQLULEN i = 0; i < numRowsFetched; i++) {
         // Create row container - use list for normal mode, pre-allocate for fast mode conversion to tuple
-        py::list row(numCols);  // Pre-allocate with known column count for better performance
+        py::list row(numCols);
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-                // Use pre-cached column metadata for optimal performance
                 const ColumnInfo& colInfo = columnInfos[col - 1];
                 SQLSMALLINT dataType = colInfo.dataType;
                 SQLLEN dataLen = buffers.indicators[col - 1][i];
@@ -3272,10 +3253,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     HandleZeroColumnSizeAtFetch(columnSize);
                     uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 					uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
-                    bool isLob = colInfo.isLob;  // Use cached LOB status for O(1) lookup
+                    bool isLob = colInfo.isLob;
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
-                        // SQLFetch will nullterminate the data - Direct py::str creation for optimal performance
                         row[col - 1] = py::str(
                             reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * fetchBufferSize]),
                             numCharsInData);
@@ -3292,17 +3272,14 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     HandleZeroColumnSizeAtFetch(columnSize);
                     uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 					uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
-                    bool isLob = colInfo.isLob;  // Use cached LOB status for O(1) lookup
+                    bool isLob = colInfo.isLob;
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
-                        // SQLFetch will nullterminate the data - optimized wstring creation
 #if defined(__APPLE__) || defined(__linux__)
-                        // Use unix-specific conversion to handle the wchar_t/SQLWCHAR size difference
                         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
                         std::wstring wstr = SQLWCHARToWString(wcharData, numCharsInData);
                         row[col - 1] = wstr;
 #else
-                        // On Windows, wchar_t and SQLWCHAR are both 2 bytes, direct assignment
                         row[col - 1] = std::wstring(
                             reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]),
                             numCharsInData);
@@ -3335,12 +3312,11 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_DECIMAL:
                 case SQL_NUMERIC: {
                     try {
-                        // Direct conversion optimized for performance
                         SQLLEN decimalDataLen = buffers.indicators[col - 1][i];
                         const char* rawData = reinterpret_cast<const char*>(
                             &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]);
                         
-                        // Use pre-cached decimal separator for optimal performance
+                        // Use pre-cached decimal separator
                         if (isDefaultDecimalSeparator) {
                             // Fast path: Direct py::str creation without intermediate string
                             row[col - 1] = PythonObjectCache::get_decimal_class()(py::str(rawData, decimalDataLen));
@@ -3368,11 +3344,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_TIMESTAMP:
                 case SQL_TYPE_TIMESTAMP:
                 case SQL_DATETIME: {
-                    // Optimized datetime creation with direct struct access
                     const SQL_TIMESTAMP_STRUCT& ts = buffers.timestampBuffers[col - 1][i];
                     row[col - 1] = PythonObjectCache::get_datetime_class()(ts.year, ts.month, ts.day,
                                                                            ts.hour, ts.minute, ts.second,
-                                                                           ts.fraction / 1000  /* ns → µs */);
+                                                                           ts.fraction / 1000);
                     break;
                 }
                 case SQL_BIGINT: {
@@ -3450,7 +3425,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_LONGVARBINARY: {
                     SQLULEN columnSize = colInfo.columnSize;
                     HandleZeroColumnSizeAtFetch(columnSize);
-                    bool isLob = colInfo.isLob;  // Use cached LOB status for O(1) lookup
+                    bool isLob = colInfo.isLob;
                     if (!isLob && static_cast<size_t>(dataLen) <= columnSize) {
                         row[col - 1] = py::bytes(reinterpret_cast<const char*>(
                                                      &buffers.charBuffers[col - 1][i * columnSize]),
@@ -3461,7 +3436,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
                 default: {
-                    const auto& columnMeta = columnNames[col - 1].cast<py::dict>();  // Re-fetch for error case only
+                    const auto& columnMeta = columnNames[col - 1].cast<py::dict>();
                     std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                     std::ostringstream errorString;
                     errorString << "Unsupported data type for column - " << columnName.c_str()
@@ -3472,7 +3447,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
             }
         }
-        rows[currentSize + i] = row;  // Use indexed assignment with correct offset
+        rows[currentSize + i] = row;
     }
     return ret;
 }
@@ -3672,8 +3647,8 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
         return ret;
     }
 
-    // Define a memory limit (1.5 GB for optimal performance)
-    const size_t memoryLimit = 1536ULL * 1024 * 1024;  // 1.5 GB - optimal balance
+    // Define a memory limit (1.5 GB)
+    const size_t memoryLimit = 1536ULL * 1024 * 1024;
     size_t totalRowSize = calculateRowSize(columnNames, numCols);
 
     // Calculate fetch size based on the total row size and memory limit
@@ -3701,13 +3676,11 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
         // If the row size is larger than the memory limit, fetch one row at a time
         fetchSize = 1;
     } else if (numRowsInMemLimit > 0 && numRowsInMemLimit <= 100) {
-        // If between 1-100 rows fit in memoryLimit, fetch 500 rows at a time (optimal)
         fetchSize = 500;
     } else if (numRowsInMemLimit > 100 && numRowsInMemLimit <= 10000) {
-        // If between 100-10000 rows fit in memoryLimit, fetch 5000 rows at a time (optimal)
         fetchSize = 5000;
     } else {
-        fetchSize = 10000;  // Optimal: good balance of speed and memory usage
+        fetchSize = 10000;
     }
     LOG("Fetching data in batch sizes of {}", fetchSize);
 
@@ -3865,7 +3838,6 @@ void DDBCSetDecimalSeparator(const std::string& separator) {
 PYBIND11_MODULE(ddbc_bindings, m) {
     m.doc() = "msodbcsql driver api bindings for Python";
 
-    // Initialize Python object cache for performance
     PythonObjectCache::initialize();
 
     // Add architecture information as module attribute
