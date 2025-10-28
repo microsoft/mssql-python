@@ -180,24 +180,8 @@ SQLTablesFunc SQLTables_ptr = nullptr;
 
 SQLDescribeParamFunc SQLDescribeParam_ptr = nullptr;
 
-// Safe codecs access without static destructors to avoid Python finalization crashes
-namespace {
-    // Get codecs module safely - no caching to avoid static destructor issues
-    py::object get_codecs_module() {
-        try {
-            return py::module_::import("codecs");
-        } catch (const py::error_already_set&) {
-            LOG("Failed to import codecs module");
-            // If Python is shutting down, return None safely
-            return py::none();
-        } catch (...) {
-            LOG("Failed to import codecs module");
-            return py::none();
-        }
-    }
-}
 
-// Simple and safe encoding function
+// Encoding function with fallback strategy
 static py::bytes EncodingString(const std::string& text, const std::string& encoding, const std::string& errors = "strict") {
     try {
         py::gil_scoped_acquire gil;
@@ -205,10 +189,30 @@ static py::bytes EncodingString(const std::string& text, const std::string& enco
         // Create unicode string from input text
         py::str unicode_str = py::str(text);
         
-        // Encode using the specified encoding
-        py::bytes encoded = unicode_str.attr("encode")(encoding, errors);
-        
-        return encoded;
+        // Encoding strategy: try the specified encoding first,
+        // but fallback to latin-1 for Western European characters if UTF-8 fails
+        if (encoding == "utf-8" && errors == "strict") {
+            try {
+                // Try UTF-8 first
+                py::bytes encoded = unicode_str.attr("encode")(encoding, "strict");
+                return encoded;
+            } catch (const py::error_already_set&) {
+                // UTF-8 failed, try latin-1 for Western European characters
+                try {
+                    py::bytes encoded = unicode_str.attr("encode")("latin-1", "strict");
+                    LOG("EncodingString: UTF-8 failed, successfully encoded with latin-1 fallback for text: {}", text.substr(0, 50));
+                    return encoded;
+                } catch (const py::error_already_set&) {
+                    // Both failed, use original approach with error handling
+                    py::bytes encoded = unicode_str.attr("encode")(encoding, errors);
+                    return encoded;
+                }
+            }
+        } else {
+            // Use specified encoding directly for non-UTF-8 or non-strict cases
+            py::bytes encoded = unicode_str.attr("encode")(encoding, errors);
+            return encoded;
+        }
         
     } catch (const py::error_already_set& e) {
         // Re-raise Python exceptions as C++ exceptions
@@ -225,10 +229,30 @@ static py::str DecodingString(const char* data, size_t length, const std::string
         // Create bytes object from input data
         py::bytes byte_data = py::bytes(std::string(data, length));
         
-        // Decode using the specified encoding
-        py::str decoded = byte_data.attr("decode")(encoding, errors);
-        
-        return decoded;
+        // Decoding strategy: try the specified encoding first,
+        // but fallback to latin-1 for Western European characters if UTF-8 fails
+        if (encoding == "utf-8" && errors == "strict") {
+            try {
+                // Try UTF-8 first
+                py::str decoded = byte_data.attr("decode")(encoding, "strict");
+                return decoded;
+            } catch (const py::error_already_set&) {
+                // UTF-8 failed, try latin-1 for Western European characters
+                try {
+                    py::str decoded = byte_data.attr("decode")("latin-1", "strict");
+                    LOG("DecodingString: UTF-8 failed, successfully decoded with latin-1 fallback for {} bytes", length);
+                    return decoded;
+                } catch (const py::error_already_set&) {
+                    // Both failed, use original approach with error handling
+                    py::str decoded = byte_data.attr("decode")(encoding, errors);
+                    return decoded;
+                }
+            }
+        } else {
+            // Use specified encoding directly for non-UTF-8 or non-strict cases
+            py::str decoded = byte_data.attr("decode")(encoding, errors);
+            return decoded;
+        }
         
     } catch (const py::error_already_set& e) {
         // Re-raise Python exceptions as C++ exceptions  
