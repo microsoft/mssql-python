@@ -56,6 +56,8 @@ jobs:
         sqlVersion: 'LocalDB'
       SQLServer2022:
         sqlVersion: 'SQL2022'
+      AzureSQL:
+        sqlVersion: 'AzureSQL'
 
   steps:
   - task: UsePythonVersion@0
@@ -175,11 +177,11 @@ jobs:
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
-  # Run tests for Azure SQL Database (if AZURE_CONNECTION_STRING is provided)
+  # Run tests for Azure SQL Database (requires AZURE_CONNECTION_STRING variable)
   - script: |
       python -m pytest -v --junitxml=test-results-azure.xml --cov=. --cov-report=xml:coverage-azure.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on Azure SQL Database'
-    condition: and(succeeded(), ne(variables['AZURE_CONNECTION_STRING'], ''))
+    condition: and(eq(variables['sqlVersion'], 'AzureSQL'), ne(variables['AZURE_CONNECTION_STRING'], ''))
     env:
       DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
 
