@@ -50,6 +50,13 @@ jobs:
   pool:
     vmImage: 'windows-latest'
   
+  strategy:
+    matrix:
+      LocalDB:
+        sqlVersion: 'LocalDB'
+      SQLServer2022:
+        sqlVersion: 'SQL2022'
+
   steps:
   - task: UsePythonVersion@0
     inputs:
@@ -63,19 +70,87 @@ jobs:
       pip install -r requirements.txt
     displayName: 'Install dependencies'
 
-  # Start LocalDB instance
+  # Start LocalDB instance (for LocalDB matrix)
   - powershell: |
       sqllocaldb create MSSQLLocalDB
       sqllocaldb start MSSQLLocalDB
     displayName: 'Start LocalDB instance'
+    condition: eq(variables['sqlVersion'], 'LocalDB')
 
-  # Create database and user
+  # Create database and user for LocalDB
   - powershell: |
       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
       sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
       sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
-    displayName: 'Setup database and user'
+    displayName: 'Setup database and user for LocalDB'
+    condition: eq(variables['sqlVersion'], 'LocalDB')
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  # Install SQL Server 2022 (for SQL2022 matrix)
+  - powershell: |
+      Write-Host "Downloading SQL Server 2022 Express..."
+      # Download SQL Server 2022 Express installer
+      $ProgressPreference = 'SilentlyContinue'
+      Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?linkid=2216019" -OutFile "SQL2022-SSEI-Expr.exe"
+      
+      Write-Host "Installing SQL Server 2022 Express..."
+      # Install SQL Server 2022 Express with basic features
+      Start-Process -FilePath "SQL2022-SSEI-Expr.exe" -ArgumentList "/Action=Download","/MediaPath=$env:TEMP","/MediaType=Core","/Quiet" -Wait
+      
+      # Find the downloaded setup file
+      $setupFile = Get-ChildItem -Path $env:TEMP -Filter "SQLEXPR_x64_ENU.exe" -Recurse | Select-Object -First 1
+      
+      if ($setupFile) {
+        Write-Host "Extracting SQL Server setup files..."
+        Start-Process -FilePath $setupFile.FullName -ArgumentList "/x:$env:TEMP\SQLSetup","/u" -Wait
+        
+        Write-Host "Running SQL Server setup..."
+        Start-Process -FilePath "$env:TEMP\SQLSetup\setup.exe" -ArgumentList "/Q","/ACTION=Install","/FEATURES=SQLEngine","/INSTANCENAME=MSSQLSERVER","/SQLSVCACCOUNT=`"NT AUTHORITY\SYSTEM`"","/SQLSYSADMINACCOUNTS=`"BUILTIN\Administrators`"","/TCPENABLED=1","/SECURITYMODE=SQL","/SAPWD=$(DB_PASSWORD)","/IACCEPTSQLSERVERLICENSETERMS" -Wait
+      } else {
+        Write-Error "Failed to download SQL Server setup file"
+        exit 1
+      }
+      
+      Write-Host "SQL Server 2022 installation completed"
+    displayName: 'Install SQL Server 2022 Express'
+    condition: eq(variables['sqlVersion'], 'SQL2022')
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  # Create database for SQL Server 2022
+  - powershell: |
+      # Wait for SQL Server to start
+      $maxAttempts = 30
+      $attempt = 0
+      $connected = $false
+      
+      Write-Host "Waiting for SQL Server 2022 to start..."
+      while (-not $connected -and $attempt -lt $maxAttempts) {
+        try {
+          sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "SELECT 1" -C
+          $connected = $true
+          Write-Host "SQL Server is ready!"
+        } catch {
+          $attempt++
+          Write-Host "Waiting... ($attempt/$maxAttempts)"
+          Start-Sleep -Seconds 2
+        }
+      }
+      
+      if (-not $connected) {
+        Write-Error "Failed to connect to SQL Server after $maxAttempts attempts"
+        exit 1
+      }
+      
+      # Create database and user
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE DATABASE TestDB" -C
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+    displayName: 'Setup database and user for SQL Server 2022'
+    condition: eq(variables['sqlVersion'], 'SQL2022')
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -84,11 +159,29 @@ jobs:
       build.bat x64
     displayName: 'Build .pyd file'
 
+  # Run tests for LocalDB
   - script: |
-      python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
-    displayName: 'Run tests with coverage'
+      python -m pytest -v --junitxml=test-results-localdb.xml --cov=. --cov-report=xml:coverage-localdb.xml --capture=tee-sys --cache-clear
+    displayName: 'Run tests with coverage on LocalDB'
+    condition: eq(variables['sqlVersion'], 'LocalDB')
     env:
       DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+  # Run tests for SQL Server 2022
+  - script: |
+      python -m pytest -v --junitxml=test-results-sql2022.xml --cov=. --cov-report=xml:coverage-sql2022.xml --capture=tee-sys --cache-clear
+    displayName: 'Run tests with coverage on SQL Server 2022'
+    condition: eq(variables['sqlVersion'], 'SQL2022')
+    env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+  # Run tests for Azure SQL Database (if AZURE_CONNECTION_STRING is provided)
+  - script: |
+      python -m pytest -v --junitxml=test-results-azure.xml --cov=. --cov-report=xml:coverage-azure.xml --capture=tee-sys --cache-clear
+    displayName: 'Run tests with coverage on Azure SQL Database'
+    condition: and(succeeded(), ne(variables['AZURE_CONNECTION_STRING'], ''))
+    env:
+      DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
 
   - task: PublishBuildArtifacts@1
     inputs:
@@ -107,8 +200,8 @@ jobs:
   - task: PublishTestResults@2
     condition: succeededOrFailed()
     inputs:
-      testResultsFiles: '**/test-results.xml'
-      testRunTitle: 'Publish test results'
+      testResultsFiles: '**/test-results-*.xml'
+      testRunTitle: 'Publish test results for Windows $(sqlVersion)'
 
   # - task: PublishCodeCoverageResults@1
   #   inputs:
@@ -209,9 +302,15 @@ jobs:
       Ubuntu:
         dockerImage: 'ubuntu:22.04'
         distroName: 'Ubuntu'
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
+      Ubuntu_SQL2025:
+        dockerImage: 'ubuntu:22.04'
+        distroName: 'Ubuntu-SQL2025'
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
       Debian:
         dockerImage: 'debian:12'
         distroName: 'Debian'
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
 
   steps:
   - script: |
@@ -230,7 +329,7 @@ jobs:
         -e ACCEPT_EULA=Y \
         -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
         -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
+        $(sqlServerImage)
       
       # Wait for SQL Server to be ready
       echo "Waiting for SQL Server to start..."
