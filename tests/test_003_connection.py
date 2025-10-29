@@ -3639,7 +3639,7 @@ def test_execute_after_connection_close(conn_str):
     ), "Error should mention the connection is closed"
 
 
-def test_execute_multiple_simultaneous_cursors(db_connection):
+def test_execute_multiple_simultaneous_cursors(db_connection, conn_str):
     """Test creating and using many cursors simultaneously through Connection.execute
 
     ⚠️ WARNING: This test has several limitations:
@@ -3648,12 +3648,16 @@ def test_execute_multiple_simultaneous_cursors(db_connection):
     3. Memory measurement requires the optional 'psutil' package
     4. Creates cursors sequentially rather than truly concurrently
     5. Results may vary based on system resources, SQL Server version, and ODBC driver
+    6. Skipped for Azure SQL due to connection pool and throttling limitations
 
     The test verifies that:
     - Multiple cursors can be created and used simultaneously
     - Connection tracks created cursors appropriately
     - Connection remains stable after intensive cursor operations
     """
+    # Skip this test for Azure SQL Database
+    if conn_str and "database.windows.net" in conn_str.lower():
+        pytest.skip("Skipping for Azure SQL - connection limits cause this test to hang")
     import gc
     import sys
 
@@ -3712,7 +3716,7 @@ def test_execute_multiple_simultaneous_cursors(db_connection):
     final_cursor.close()
 
 
-def test_execute_with_large_parameters(db_connection):
+def test_execute_with_large_parameters(db_connection, conn_str):
     """Test executing queries with very large parameter sets
 
     ⚠️ WARNING: This test has several limitations:
@@ -3722,12 +3726,16 @@ def test_execute_with_large_parameters(db_connection):
     4. No streaming parameter support is tested
     5. Only tests with 10,000 rows, which is small compared to production scenarios
     6. Performance measurements are affected by system load and environment
+    7. Skipped for Azure SQL due to connection pool and throttling limitations
 
     The test verifies:
     - Handling of a large number of parameters in batch inserts
     - Working with parameters near but under the size limit
     - Processing large result sets
     """
+    # Skip this test for Azure SQL Database
+    if conn_str and "database.windows.net" in conn_str.lower():
+        pytest.skip("Skipping for Azure SQL - large parameter tests may cause timeouts")
 
     # Test with a temporary table for large data
     cursor = db_connection.execute(
@@ -4289,7 +4297,7 @@ def test_batch_execute_input_validation(db_connection):
     cursor.close()
 
 
-def test_batch_execute_large_batch(db_connection):
+def test_batch_execute_large_batch(db_connection, conn_str):
     """Test batch_execute with a large number of statements
 
     ⚠️ WARNING: This test has several limitations:
@@ -4299,12 +4307,16 @@ def test_batch_execute_large_batch(db_connection):
     4. Results must be fully consumed between statements to avoid "Connection is busy" errors
     5. Driver-specific limitations may exist for maximum batch sizes
     6. Network timeouts during long-running batches aren't tested
+    7. Skipped for Azure SQL due to connection pool and throttling limitations
 
     The test verifies:
     - The method can handle multiple statements in sequence
     - Results are correctly returned for all statements
     - Memory usage remains reasonable during batch processing
     """
+    # Skip this test for Azure SQL Database
+    if conn_str and "database.windows.net" in conn_str.lower():
+        pytest.skip("Skipping for Azure SQL - large batch tests may cause timeouts")
     # Create a batch of 50 statements
     statements = ["SELECT " + str(i) for i in range(50)]
 
