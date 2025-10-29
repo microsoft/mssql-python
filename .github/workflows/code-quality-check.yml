@@ -43,8 +43,8 @@ jobs:
         id: pylint
         continue-on-error: true
         run: |
-          echo "Running pylint with threshold 8.5..."
-          python -m pylint --fail-under=8.5 --disable=fixme,no-member,too-many-arguments,too-many-positional-arguments,invalid-name,useless-parent-delegation --output-format=colorized mssql_python
+          echo "Running pylint (configuration from pyproject.toml)..."
+          python -m pylint --output-format=colorized mssql_python
           echo "pylint_status=$?" >> $GITHUB_ENV
 
       - name: Run C++ Linter
