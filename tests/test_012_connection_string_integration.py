@@ -11,7 +11,7 @@ import pytest
 import os
 from unittest.mock import patch, MagicMock
 from mssql_python.connection_string_parser import _ConnectionStringParser, ConnectionStringParseError
-from mssql_python.connection_string_allowlist import ConnectionStringAllowList
+from mssql_python.connection_string_allowlist import _ConnectionStringAllowList
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
 from mssql_python import connect
 from mssql_python.connection import Connection
@@ -25,10 +25,10 @@ class TestConnectionStringIntegration:
         """Test complete flow with simple parameters."""
         # Parse
         parser = _ConnectionStringParser()
-        parsed = parser.parse("Server=localhost;Database=mydb;Encrypt=yes")
+        parsed = parser._parse("Server=localhost;Database=mydb;Encrypt=yes")
         
         # Filter
-        filtered = ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
+        filtered = _ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -46,12 +46,12 @@ class TestConnectionStringIntegration:
     def test_parse_filter_build_with_unsupported_param(self):
         """Test that unsupported parameters are flagged as errors with allowlist."""
         # Parse with allowlist
-        allowlist = ConnectionStringAllowList()
+        allowlist = _ConnectionStringAllowList()
         parser = _ConnectionStringParser(allowlist=allowlist)
         
         # Should raise error for unknown keyword
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server=localhost;Database=mydb;UnsupportedParam=value")
+            parser._parse("Server=localhost;Database=mydb;UnsupportedParam=value")
         
         assert "Unknown keyword 'unsupportedparam'" in str(exc_info.value)
     
@@ -59,10 +59,10 @@ class TestConnectionStringIntegration:
         """Test complete flow with braced values and special characters."""
         # Parse
         parser = _ConnectionStringParser()
-        parsed = parser.parse("Server={local;host};PWD={p@ss;w}}rd}")
+        parsed = parser._parse("Server={local;host};PWD={p@ss;w}}rd}")
         
         # Filter
-        filtered = ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
+        filtered = _ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -79,10 +79,10 @@ class TestConnectionStringIntegration:
         # Parse
         parser = _ConnectionStringParser()
         # Use parameters that are in the restricted allowlist
-        parsed = parser.parse("address=server1;uid=testuser;database=testdb")
+        parsed = parser._parse("address=server1;uid=testuser;database=testdb")
         
         # Filter (normalizes synonyms)
-        filtered = ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
+        filtered = _ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -101,26 +101,26 @@ class TestConnectionStringIntegration:
     def test_parse_filter_build_driver_and_app_reserved(self):
         """Test that Driver and APP in connection string raise errors."""
         # Parser should reject Driver and APP as reserved keywords
-        allowlist = ConnectionStringAllowList()
+        allowlist = _ConnectionStringAllowList()
         parser = _ConnectionStringParser(allowlist=allowlist)
         
         # Test with APP
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("APP=UserApp;Server=localhost")
+            parser._parse("APP=UserApp;Server=localhost")
         error_lower = str(exc_info.value).lower()
         assert "reserved keyword" in error_lower
         assert "'app'" in error_lower
         
         # Test with Driver
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Driver={Some Other Driver};Server=localhost")
+            parser._parse("Driver={Some Other Driver};Server=localhost")
         error_lower = str(exc_info.value).lower()
         assert "reserved keyword" in error_lower
         assert "'driver'" in error_lower
         
         # Test with both
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Driver={Some Other Driver};APP=UserApp;Server=localhost")
+            parser._parse("Driver={Some Other Driver};APP=UserApp;Server=localhost")
         error_str = str(exc_info.value).lower()
         assert "reserved keyword" in error_str
         # Should have errors for both
@@ -130,10 +130,10 @@ class TestConnectionStringIntegration:
         """Test complete flow with empty input."""
         # Parse
         parser = _ConnectionStringParser()
-        parsed = parser.parse("")
+        parsed = parser._parse("")
         
         # Filter
-        filtered = ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
+        filtered = _ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -149,10 +149,10 @@ class TestConnectionStringIntegration:
         parser = _ConnectionStringParser()
         # Note: Connection Timeout is not in the restricted allowlist
         conn_str = "Server=tcp:server.database.windows.net,1433;Database=mydb;UID=user@server;PWD={P@ss;w}}rd};Encrypt=yes;TrustServerCertificate=no"
-        parsed = parser.parse(conn_str)
+        parsed = parser._parse(conn_str)
         
         # Filter
-        filtered = ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
+        filtered = _ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -178,7 +178,7 @@ class TestConnectionStringIntegration:
         
         # Incomplete specification raises error
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server localhost;Database=mydb")
+            parser._parse("Server localhost;Database=mydb")
         
         assert "Incomplete specification" in str(exc_info.value)
         assert "'server localhost'" in str(exc_info.value).lower()
@@ -189,7 +189,7 @@ class TestConnectionStringIntegration:
         
         # Unclosed brace raises error
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("PWD={unclosed;Server=localhost")
+            parser._parse("PWD={unclosed;Server=localhost")
         
         assert "Unclosed braced value" in str(exc_info.value)
     
@@ -199,7 +199,7 @@ class TestConnectionStringIntegration:
         
         # Duplicate keywords raise error
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server=first;Server=second")
+            parser._parse("Server=first;Server=second")
         
         assert "Duplicate keyword 'server'" in str(exc_info.value)
     
@@ -214,7 +214,7 @@ class TestConnectionStringIntegration:
         }
         
         # Filter
-        filtered = ConnectionStringAllowList._normalize_params(original_params, warn_rejected=False)
+        filtered = _ConnectionStringAllowList._normalize_params(original_params, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -223,7 +223,7 @@ class TestConnectionStringIntegration:
         
         # Parse back
         parser = _ConnectionStringParser()
-        parsed = parser.parse(result)
+        parsed = parser._parse(result)
         
         # Verify values are preserved (keys are normalized to lowercase in parsing)
         assert parsed['server'] == 'localhost:1433'
@@ -243,7 +243,7 @@ class TestConnectionStringIntegration:
         
         # Parse back to verify escaping worked
         parser = _ConnectionStringParser()
-        parsed = parser.parse(result)
+        parsed = parser._parse(result)
         
         assert parsed['server'] == 'local;host'
         assert parsed['pwd'] == 'p}w{d'
@@ -255,7 +255,7 @@ class TestConnectionStringIntegration:
         
         # Multiple errors: incomplete spec, duplicate
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server=first;InvalidEntry;Server=second;Database")
+            parser._parse("Server=first;InvalidEntry;Server=second;Database")
         
         # Should have multiple errors
         assert len(exc_info.value.errors) >= 3
@@ -267,7 +267,7 @@ class TestConnectionStringIntegration:
         parser = _ConnectionStringParser()  # No allowlist
         
         # Should parse successfully even with unknown keywords
-        result = parser.parse("Server=localhost;MadeUpKeyword=value")
+        result = parser._parse("Server=localhost;MadeUpKeyword=value")
         assert result == {
             'server': 'localhost',
             'madeupkeyword': 'value'
@@ -275,12 +275,12 @@ class TestConnectionStringIntegration:
     
     def test_parser_with_allowlist_rejects_unknown(self):
         """Test that parser with allowlist rejects unknown keywords."""
-        allowlist = ConnectionStringAllowList()
+        allowlist = _ConnectionStringAllowList()
         parser = _ConnectionStringParser(allowlist=allowlist)
         
         # Should raise error for unknown keyword
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server=localhost;MadeUpKeyword=value")
+            parser._parse("Server=localhost;MadeUpKeyword=value")
         
         assert "Unknown keyword 'madeupkeyword'" in str(exc_info.value)
 
@@ -499,7 +499,7 @@ class TestConnectAPIIntegration:
         """Test that kwargs override works with a real database connection."""
         # Parse the original connection string to extract server
         parser = _ConnectionStringParser()
-        original_params = parser.parse(conn_str)
+        original_params = parser._parse(conn_str)
         
         # Get the server from original connection for reconnection
         server = original_params.get('server', 'localhost')

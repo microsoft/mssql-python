@@ -242,7 +242,7 @@ for attribute in connection_attributes:
 │              ConnectionStringParser                             │
 │                                                                 │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │  1. parse(connection_str) → Dict[str, str]                │  │
+│  │  1. _parse(connection_str) → Dict[str, str]                │  │
 │  │     - Tokenize connection string                          │  │
 │  │     - Handle escaping/quoting                             │  │
 │  │     - Return key-value pairs                              │  │
@@ -387,7 +387,7 @@ class ConnectionStringParser:
         logger = self._get_logger()
         logger.warning(message)
     
-    def parse(self, connection_str: str) -> Dict[str, str]:
+    def _parse(self, connection_str: str) -> Dict[str, str]:
         """
         Parse a connection string into a dictionary of parameters.
         
@@ -402,17 +402,17 @@ class ConnectionStringParser:
             Returns empty dict if all entries are malformed.
             
         Examples:
-            >>> parser.parse("Server=localhost;Database=mydb")
+            >>> parser._parse("Server=localhost;Database=mydb")
             {'server': 'localhost', 'database': 'mydb'}
             
-            >>> parser.parse("Server={;local;};PWD={p}}w{{d}")
+            >>> parser._parse("Server={;local;};PWD={p}}w{{d}")
             {'server': ';local;', 'pwd': 'p}w{d'}
             
-            >>> parser.parse("Server=localhost;InvalidEntry;Database=mydb")
+            >>> parser._parse("Server=localhost;InvalidEntry;Database=mydb")
             # Logs: WARNING: Ignoring malformed connection string entry (no '=' found): 'InvalidEntry'
             {'server': 'localhost', 'database': 'mydb'}  # Partial result
             
-            >>> parser.parse("Server=localhost;PWD={unclosed")
+            >>> parser._parse("Server=localhost;PWD={unclosed")
             # Logs: WARNING: Ignoring malformed braced value (unclosed brace): 'PWD={unclosed'
             {'server': 'localhost'}  # Partial result
         """
@@ -665,9 +665,9 @@ class ConnectionStringParser:
         #          → while loop exits because start_pos >= str_len
         
         # Raise ValueError - unclosed braced value
-        # NOTE: In lenient parsing mode, this exception is caught by parse()
+        # NOTE: In lenient parsing mode, this exception is caught by _parse()
         # which logs a warning and continues parsing remaining entries
-        # Example: parse() will log "Ignoring malformed braced value: Unclosed braced value in connection string"
+        # Example: _parse() will log "Ignoring malformed braced value: Unclosed braced value in connection string"
         raise ValueError("Unclosed braced value in connection string")
 ```
 
@@ -706,7 +706,7 @@ These special parameters maintain the existing behavior and ensure consistent dr
 ```python
 # File: mssql_python/connection_string_allowlist.py
 
-class ConnectionStringAllowList:
+class _ConnectionStringAllowList:
     """
     Manages the allow-list of permitted connection string parameters.
     """
@@ -800,9 +800,9 @@ class ConnectionStringAllowList:
             Canonical parameter name if allowed, None otherwise
             
         Examples:
-            >>> ConnectionStringAllowList.normalize_key('SERVER')
+            >>> _ConnectionStringAllowList.normalize_key('SERVER')
             'Server'
-            >>> ConnectionStringAllowList.normalize_key('UnsupportedParam')
+            >>> _ConnectionStringAllowList.normalize_key('UnsupportedParam')
             None
         """
         key_lower = key.lower().strip()
@@ -968,7 +968,7 @@ Total                                ~3-5 KB
                    │
                    ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ ConnectionStringParser.parse(connection_str)                 │
+│ ConnectionStringParser._parse(connection_str)                 │
 │                                                              │
 │ Parse result:                                                │
 │   {                                                          │
@@ -980,7 +980,7 @@ Total                                ~3-5 KB
                    │
                    ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ ConnectionStringAllowList.filter_params(parsed_params)       │
+│ _ConnectionStringAllowList.filter_params(parsed_params)       │
 │                                                              │
 │ ├─ Check 'server' →  Allowed  → Normalize to 'Server'     │
 │ ├─ Check 'secret' → ✗ REJECTED → Log warning, drop param   │
@@ -1144,16 +1144,16 @@ def _construct_connection_string(self, connection_str: str = "", **kwargs) -> st
         str: The constructed and filtered connection string
     """
     from mssql_python.connection_string_parser import ConnectionStringParser
-    from mssql_python.connection_string_allowlist import ConnectionStringAllowList
+    from mssql_python.connection_string_allowlist import _ConnectionStringAllowList
     from mssql_python.connection_string_builder import ConnectionStringBuilder
     from mssql_python.helpers import log, sanitize_connection_string
     
     # Step 1: Parse base connection string
     parser = ConnectionStringParser()
-    parsed_params = parser.parse(connection_str)
+    parsed_params = parser._parse(connection_str)
     
     # Step 2: Filter against allow-list
-    filtered_params = ConnectionStringAllowList.filter_params(
+    filtered_params = _ConnectionStringAllowList.filter_params(
         parsed_params, 
         warn_rejected=True
     )
@@ -1163,7 +1163,7 @@ def _construct_connection_string(self, connection_str: str = "", **kwargs) -> st
     
     # Step 4: Add kwargs (they go through allow-list too)
     for key, value in kwargs.items():
-        normalized_key = ConnectionStringAllowList.normalize_key(key)
+        normalized_key = _ConnectionStringAllowList.normalize_key(key)
         if normalized_key:
             builder.add_param(normalized_key, value)
         else:
@@ -1318,13 +1318,13 @@ class TestConnectionStringParser:
     def test_parse_empty_string(self):
         """Test parsing empty connection string."""
         parser = ConnectionStringParser()
-        result = parser.parse("")
+        result = parser._parse("")
         assert result == {}
     
     def test_parse_simple_params(self):
         """Test parsing simple key=value pairs."""
         parser = ConnectionStringParser()
-        result = parser.parse("Server=localhost;Database=mydb")
+        result = parser._parse("Server=localhost;Database=mydb")
         assert result == {
             'server': 'localhost',
             'database': 'mydb'
@@ -1333,7 +1333,7 @@ class TestConnectionStringParser:
     def test_parse_braced_values(self):
         """Test parsing braced values."""
         parser = ConnectionStringParser()
-        result = parser.parse("Server={;local;};PWD={p}}w{{d}")
+        result = parser._parse("Server={;local;};PWD={p}}w{{d}")
         assert result == {
             'server': ';local;',
             'pwd': 'p}w{d'
@@ -1342,7 +1342,7 @@ class TestConnectionStringParser:
     def test_parse_trailing_semicolon(self):
         """Test parsing with trailing semicolon."""
         parser = ConnectionStringParser()
-        result = parser.parse("Server=localhost;")
+        result = parser._parse("Server=localhost;")
         assert result == {'server': 'localhost'}
     
     def test_parse_malformed_no_equals(self):
@@ -1350,7 +1350,7 @@ class TestConnectionStringParser:
         parser = ConnectionStringParser()
         # "Server localhost" has no '=', so it's ignored
         # Only valid entries are returned
-        result = parser.parse("Server=localhost;Invalid Entry;Database=mydb")
+        result = parser._parse("Server=localhost;Invalid Entry;Database=mydb")
         assert result == {
             'server': 'localhost',
             'database': 'mydb'
@@ -1361,7 +1361,7 @@ class TestConnectionStringParser:
         parser = ConnectionStringParser()
         # "PWD={unclosed" is malformed, so it's ignored
         # Only valid entries are returned
-        result = parser.parse("Server=localhost;PWD={unclosed;Database=mydb")
+        result = parser._parse("Server=localhost;PWD={unclosed;Database=mydb")
         assert result == {
             'server': 'localhost',
             'database': 'mydb'
@@ -1370,42 +1370,42 @@ class TestConnectionStringParser:
     def test_parse_all_malformed_returns_empty(self):
         """Test that all-malformed connection strings return empty dict."""
         parser = ConnectionStringParser()
-        result = parser.parse("NoEquals;AlsoNoEquals")
+        result = parser._parse("NoEquals;AlsoNoEquals")
         assert result == {}
     
     def test_parse_malformed_with_logging(self, caplog):
         """Test that malformed entries generate warning logs."""
         parser = ConnectionStringParser()
         with caplog.at_level(logging.WARNING):
-            result = parser.parse("Server=localhost;BadEntry")
+            result = parser._parse("Server=localhost;BadEntry")
         
         assert result == {'server': 'localhost'}
         assert "Ignoring malformed connection string entry" in caplog.text
 
 
-class TestConnectionStringAllowList:
-    """Unit tests for ConnectionStringAllowList."""
+class Test_ConnectionStringAllowList:
+    """Unit tests for _ConnectionStringAllowList."""
     
     def test_normalize_key_allowed(self):
         """Test normalization of allowed keys."""
-        assert ConnectionStringAllowList.normalize_key('SERVER') == 'Server'
-        assert ConnectionStringAllowList.normalize_key('uid') == 'Uid'
+        assert _ConnectionStringAllowList.normalize_key('SERVER') == 'Server'
+        assert _ConnectionStringAllowList.normalize_key('uid') == 'Uid'
     
     def test_normalize_key_not_allowed(self):
         """Test normalization of disallowed keys."""
-        assert ConnectionStringAllowList.normalize_key('BadParam') is None
+        assert _ConnectionStringAllowList.normalize_key('BadParam') is None
     
     def test_filter_params_allows_good_params(self):
         """Test filtering allows known parameters."""
         params = {'server': 'localhost', 'database': 'mydb'}
-        filtered = ConnectionStringAllowList.filter_params(params)
+        filtered = _ConnectionStringAllowList.filter_params(params)
         assert 'Server' in filtered
         assert 'Database' in filtered
     
     def test_filter_params_rejects_bad_params(self):
         """Test filtering rejects unknown parameters."""
         params = {'server': 'localhost', 'badparam': 'value'}
-        filtered = ConnectionStringAllowList.filter_params(params)
+        filtered = _ConnectionStringAllowList.filter_params(params)
         assert 'Server' in filtered
         assert 'badparam' not in filtered
 

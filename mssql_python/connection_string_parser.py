@@ -45,12 +45,12 @@ class _ConnectionStringParser:
         Initialize the parser.
         
         Args:
-            allowlist: Optional ConnectionStringAllowList instance for keyword validation.
+            allowlist: Optional _ConnectionStringAllowList instance for keyword validation.
                       If None, no keyword validation is performed.
         """
         self._allowlist = allowlist
     
-    def parse(self, connection_str: str) -> Dict[str, str]:
+    def _parse(self, connection_str: str) -> Dict[str, str]:
         """
         Parse a connection string into a dictionary of parameters.
         
@@ -68,13 +68,13 @@ class _ConnectionStringParser:
             
         Examples:
             >>> parser = _ConnectionStringParser()
-            >>> result = parser.parse("Server=localhost;Database=mydb")
+            >>> result = parser._parse("Server=localhost;Database=mydb")
             {'server': 'localhost', 'database': 'mydb'}
             
-            >>> parser.parse("Server={;local;};PWD={p}}w{{d}")
+            >>> parser._parse("Server={;local;};PWD={p}}w{{d}")
             {'server': ';local;', 'pwd': 'p}w{d'}
             
-            >>> parser.parse("Server=localhost;Server=other")
+            >>> parser._parse("Server=localhost;Server=other")
             ConnectionStringParseError: Duplicate keyword 'server'
         """
         if not connection_str:

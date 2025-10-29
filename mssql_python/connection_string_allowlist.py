@@ -18,7 +18,7 @@ def _get_reserved_parameters():
     return RESERVED_PARAMETERS
 
 
-class ConnectionStringAllowList:
+class _ConnectionStringAllowList:
     """
     Manages the allow-list of permitted connection string parameters.
     
@@ -86,11 +86,11 @@ class ConnectionStringAllowList:
             Canonical parameter name if allowed, None otherwise
             
         Examples:
-            >>> ConnectionStringAllowList.normalize_key('SERVER')
+            >>> _ConnectionStringAllowList.normalize_key('SERVER')
             'Server'
-            >>> ConnectionStringAllowList.normalize_key('user')
+            >>> _ConnectionStringAllowList.normalize_key('user')
             'Uid'
-            >>> ConnectionStringAllowList.normalize_key('UnsupportedParam')
+            >>> _ConnectionStringAllowList.normalize_key('UnsupportedParam')
             None
         """
         key_lower = key.lower().strip()

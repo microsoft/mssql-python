@@ -260,23 +260,23 @@ class Connection:
             str: The constructed and validated connection string.
         """
         from mssql_python.connection_string_parser import _ConnectionStringParser, RESERVED_PARAMETERS
-        from mssql_python.connection_string_allowlist import ConnectionStringAllowList
+        from mssql_python.connection_string_allowlist import _ConnectionStringAllowList
         from mssql_python.connection_string_builder import _ConnectionStringBuilder
         
         # Step 1: Parse base connection string with allowlist validation
         # The parser validates everything: unknown params, reserved params, duplicates, syntax
-        allowlist = ConnectionStringAllowList()
+        allowlist = _ConnectionStringAllowList()
         parser = _ConnectionStringParser(allowlist=allowlist)
-        parsed_params = parser.parse(connection_str)
+        parsed_params = parser._parse(connection_str)
         
         # Step 2: Normalize parameter names (e.g., addr/address -> Server, uid -> UID)
         # This handles synonym mapping and deduplication via normalized keys
-        normalized_params = ConnectionStringAllowList._normalize_params(parsed_params, warn_rejected=False)
+        normalized_params = _ConnectionStringAllowList._normalize_params(parsed_params, warn_rejected=False)
         
         # Step 3: Process kwargs and merge with normalized_params
         # kwargs override connection string values (processed after, so they take precedence)
         for key, value in kwargs.items():
-            normalized_key = ConnectionStringAllowList.normalize_key(key)
+            normalized_key = _ConnectionStringAllowList.normalize_key(key)
             if normalized_key:
                 # Driver and APP are reserved - raise error if user tries to set them
                 if normalized_key in RESERVED_PARAMETERS:

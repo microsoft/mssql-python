@@ -7,7 +7,7 @@ Unit tests for _ConnectionStringParser (internal).
 
 import pytest
 from mssql_python.connection_string_parser import _ConnectionStringParser, ConnectionStringParseError
-from mssql_python.connection_string_allowlist import ConnectionStringAllowList
+from mssql_python.connection_string_allowlist import _ConnectionStringAllowList
 
 
 class TestConnectionStringParser:
@@ -16,19 +16,19 @@ class TestConnectionStringParser:
     def test_parse_empty_string(self):
         """Test parsing an empty string returns empty dict."""
         parser = _ConnectionStringParser()
-        result = parser.parse("")
+        result = parser._parse("")
         assert result == {}
     
     def test_parse_whitespace_only(self):
         """Test parsing whitespace-only connection string."""
         parser = _ConnectionStringParser()
-        result = parser.parse("   \t  ")
+        result = parser._parse("   \t  ")
         assert result == {}
     
     def test_parse_simple_params(self):
         """Test parsing simple key=value pairs."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Server=localhost;Database=mydb")
+        result = parser._parse("Server=localhost;Database=mydb")
         assert result == {
             'server': 'localhost',
             'database': 'mydb'
@@ -37,25 +37,25 @@ class TestConnectionStringParser:
     def test_parse_single_param(self):
         """Test parsing a single parameter."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Server=localhost")
+        result = parser._parse("Server=localhost")
         assert result == {'server': 'localhost'}
     
     def test_parse_trailing_semicolon(self):
         """Test parsing with trailing semicolon."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Server=localhost;")
+        result = parser._parse("Server=localhost;")
         assert result == {'server': 'localhost'}
     
     def test_parse_multiple_semicolons(self):
         """Test parsing with multiple consecutive semicolons."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Server=localhost;;Database=mydb")
+        result = parser._parse("Server=localhost;;Database=mydb")
         assert result == {'server': 'localhost', 'database': 'mydb'}
     
     def test_parse_braced_value_with_semicolon(self):
         """Test parsing braced values containing semicolons."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Server={;local;host};Database=mydb")
+        result = parser._parse("Server={;local;host};Database=mydb")
         assert result == {
             'server': ';local;host',
             'database': 'mydb'
@@ -64,56 +64,56 @@ class TestConnectionStringParser:
     def test_parse_braced_value_with_escaped_right_brace(self):
         """Test parsing braced values with escaped }}."""
         parser = _ConnectionStringParser()
-        result = parser.parse("PWD={p}}w{{d}")
+        result = parser._parse("PWD={p}}w{{d}")
         assert result == {'pwd': 'p}w{d'}
     
     def test_parse_braced_value_with_all_escapes(self):
         """Test parsing braced values with both {{ and }} escapes."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Value={test}}{{escape}")
+        result = parser._parse("Value={test}}{{escape}")
         assert result == {'value': 'test}{escape'}
     
     def test_parse_empty_value(self):
         """Test parsing parameter with empty value."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Server=;Database=mydb")
+        result = parser._parse("Server=;Database=mydb")
         assert result == {'server': '', 'database': 'mydb'}
     
     def test_parse_empty_braced_value(self):
         """Test parsing parameter with empty braced value."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Server={};Database=mydb")
+        result = parser._parse("Server={};Database=mydb")
         assert result == {'server': '', 'database': 'mydb'}
     
     def test_parse_whitespace_around_key(self):
         """Test parsing with whitespace around keys."""
         parser = _ConnectionStringParser()
-        result = parser.parse("  Server  =localhost;  Database  =mydb")
+        result = parser._parse("  Server  =localhost;  Database  =mydb")
         assert result == {'server': 'localhost', 'database': 'mydb'}
     
     def test_parse_whitespace_in_simple_value(self):
         """Test parsing simple value with trailing whitespace."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Server=localhost   ;Database=mydb")
+        result = parser._parse("Server=localhost   ;Database=mydb")
         assert result == {'server': 'localhost', 'database': 'mydb'}
     
     def test_parse_case_insensitive_keys(self):
         """Test that keys are normalized to lowercase."""
         parser = _ConnectionStringParser()
-        result = parser.parse("SERVER=localhost;DatABase=mydb")
+        result = parser._parse("SERVER=localhost;DatABase=mydb")
         assert result == {'server': 'localhost', 'database': 'mydb'}
     
     def test_parse_special_chars_in_simple_value(self):
         """Test parsing simple values with special characters (not ; { })."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Server=server:1433;User=domain\\user")
+        result = parser._parse("Server=server:1433;User=domain\\user")
         assert result == {'server': 'server:1433', 'user': 'domain\\user'}
     
     def test_parse_complex_connection_string(self):
         """Test parsing a complex realistic connection string."""
         parser = _ConnectionStringParser()
         conn_str = "Server=tcp:server.database.windows.net,1433;Database=mydb;UID=user@server;PWD={p@ss;w}}rd};Encrypt=yes"
-        result = parser.parse(conn_str)
+        result = parser._parse(conn_str)
         assert result == {
             'server': 'tcp:server.database.windows.net,1433',
             'database': 'mydb',
@@ -125,7 +125,7 @@ class TestConnectionStringParser:
     def test_parse_driver_parameter(self):
         """Test parsing Driver parameter with braced value."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Driver={ODBC Driver 18 for SQL Server};Server=localhost")
+        result = parser._parse("Driver={ODBC Driver 18 for SQL Server};Server=localhost")
         assert result == {
             'driver': 'ODBC Driver 18 for SQL Server',
             'server': 'localhost'
@@ -134,25 +134,25 @@ class TestConnectionStringParser:
     def test_parse_braced_value_with_left_brace(self):
         """Test parsing braced value containing unescaped single {."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Value={test{value}")
+        result = parser._parse("Value={test{value}")
         assert result == {'value': 'test{value'}
     
     def test_parse_braced_value_double_left_brace(self):
         """Test parsing braced value with escaped {{ (left brace)."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Value={test{{value}")
+        result = parser._parse("Value={test{{value}")
         assert result == {'value': 'test{value'}
     
     def test_parse_unicode_characters(self):
         """Test parsing values with unicode characters."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Database=数据库;Server=сервер")
+        result = parser._parse("Database=数据库;Server=сервер")
         assert result == {'database': '数据库', 'server': 'сервер'}
     
     def test_parse_equals_in_braced_value(self):
         """Test parsing braced value containing equals sign."""
         parser = _ConnectionStringParser()
-        result = parser.parse("Value={key=value}")
+        result = parser._parse("Value={key=value}")
         assert result == {'value': 'key=value'}
 
 
@@ -163,7 +163,7 @@ class TestConnectionStringParserErrors:
         """Test that duplicate keys raise an error."""
         parser = _ConnectionStringParser()
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server=first;Server=second;Server=third")
+            parser._parse("Server=first;Server=second;Server=third")
         
         assert "Duplicate keyword 'server'" in str(exc_info.value)
         assert len(exc_info.value.errors) == 2  # Two duplicates (second and third)
@@ -172,7 +172,7 @@ class TestConnectionStringParserErrors:
         """Test that keyword without '=' raises an error."""
         parser = _ConnectionStringParser()
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server;Database=mydb")
+            parser._parse("Server;Database=mydb")
         
         assert "Incomplete specification" in str(exc_info.value)
         assert "'server'" in str(exc_info.value).lower()
@@ -181,7 +181,7 @@ class TestConnectionStringParserErrors:
         """Test that trailing keyword without value raises an error."""
         parser = _ConnectionStringParser()
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server=localhost;Database")
+            parser._parse("Server=localhost;Database")
         
         assert "Incomplete specification" in str(exc_info.value)
         assert "'database'" in str(exc_info.value).lower()
@@ -190,7 +190,7 @@ class TestConnectionStringParserErrors:
         """Test that empty keyword raises an error."""
         parser = _ConnectionStringParser()
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("=value;Server=localhost")
+            parser._parse("=value;Server=localhost")
         
         assert "Empty keyword" in str(exc_info.value)
     
@@ -198,7 +198,7 @@ class TestConnectionStringParserErrors:
         """Test that unclosed braces raise an error."""
         parser = _ConnectionStringParser()
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("PWD={unclosed;Server=localhost")
+            parser._parse("PWD={unclosed;Server=localhost")
         
         assert "Unclosed braced value" in str(exc_info.value)
     
@@ -206,7 +206,7 @@ class TestConnectionStringParserErrors:
         """Test that multiple errors are collected and reported together."""
         parser = _ConnectionStringParser()
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server=first;InvalidEntry;Server=second;Database")
+            parser._parse("Server=first;InvalidEntry;Server=second;Database")
         
         # Should have: incomplete spec for InvalidEntry, duplicate Server, incomplete spec for Database
         assert len(exc_info.value.errors) >= 3
@@ -215,21 +215,21 @@ class TestConnectionStringParserErrors:
     
     def test_error_unknown_keyword_with_allowlist(self):
         """Test that unknown keywords are flagged when allowlist is provided."""
-        allowlist = ConnectionStringAllowList()
+        allowlist = _ConnectionStringAllowList()
         parser = _ConnectionStringParser(allowlist=allowlist)
         
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server=localhost;UnknownParam=value")
+            parser._parse("Server=localhost;UnknownParam=value")
         
         assert "Unknown keyword 'unknownparam'" in str(exc_info.value)
     
     def test_error_multiple_unknown_keywords(self):
         """Test that multiple unknown keywords are all flagged."""
-        allowlist = ConnectionStringAllowList()
+        allowlist = _ConnectionStringAllowList()
         parser = _ConnectionStringParser(allowlist=allowlist)
         
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server=localhost;Unknown1=val1;Database=mydb;Unknown2=val2")
+            parser._parse("Server=localhost;Unknown1=val1;Database=mydb;Unknown2=val2")
         
         errors_str = str(exc_info.value)
         assert "Unknown keyword 'unknown1'" in errors_str
@@ -237,11 +237,11 @@ class TestConnectionStringParserErrors:
     
     def test_error_combined_unknown_and_duplicate(self):
         """Test that unknown keywords and duplicates are both flagged."""
-        allowlist = ConnectionStringAllowList()
+        allowlist = _ConnectionStringAllowList()
         parser = _ConnectionStringParser(allowlist=allowlist)
         
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server=first;UnknownParam=value;Server=second")
+            parser._parse("Server=first;UnknownParam=value;Server=second")
         
         errors_str = str(exc_info.value)
         assert "Unknown keyword 'unknownparam'" in errors_str
@@ -249,11 +249,11 @@ class TestConnectionStringParserErrors:
     
     def test_valid_with_allowlist(self):
         """Test that valid keywords pass when allowlist is provided."""
-        allowlist = ConnectionStringAllowList()
+        allowlist = _ConnectionStringAllowList()
         parser = _ConnectionStringParser(allowlist=allowlist)
         
         # These are all valid keywords in the allowlist
-        result = parser.parse("Server=localhost;Database=mydb;UID=user;PWD=pass")
+        result = parser._parse("Server=localhost;Database=mydb;UID=user;PWD=pass")
         assert result == {
             'server': 'localhost',
             'database': 'mydb',
@@ -266,7 +266,7 @@ class TestConnectionStringParserErrors:
         parser = _ConnectionStringParser()  # No allowlist
         
         # Should parse successfully even with unknown keywords
-        result = parser.parse("Server=localhost;MadeUpKeyword=value")
+        result = parser._parse("Server=localhost;MadeUpKeyword=value")
         assert result == {
             'server': 'localhost',
             'madeupkeyword': 'value'
@@ -280,7 +280,7 @@ class TestConnectionStringParserEdgeCases:
         """Test string with only duplicates."""
         parser = _ConnectionStringParser()
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server=a;Server=b;Server=c")
+            parser._parse("Server=a;Server=b;Server=c")
         
         # First occurrence is kept, other two are duplicates
         assert len(exc_info.value.errors) == 2
@@ -289,7 +289,7 @@ class TestConnectionStringParserEdgeCases:
         """Test that valid params are parsed even when errors exist."""
         parser = _ConnectionStringParser()
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server=localhost;BadEntry;Database=mydb;Server=dup")
+            parser._parse("Server=localhost;BadEntry;Database=mydb;Server=dup")
         
         # Should detect incomplete and duplicate
         assert len(exc_info.value.errors) >= 2
@@ -297,13 +297,13 @@ class TestConnectionStringParserEdgeCases:
     def test_normalization_still_works(self):
         """Test that key normalization to lowercase still works."""
         parser = _ConnectionStringParser()
-        result = parser.parse("SERVER=srv;DaTaBaSe=db")
+        result = parser._parse("SERVER=srv;DaTaBaSe=db")
         assert result == {'server': 'srv', 'database': 'db'}
     
     def test_error_duplicate_after_normalization(self):
         """Test that duplicates are detected after normalization."""
         parser = _ConnectionStringParser()
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser.parse("Server=first;SERVER=second")
+            parser._parse("Server=first;SERVER=second")
         
         assert "Duplicate keyword 'server'" in str(exc_info.value)
