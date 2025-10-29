@@ -28,7 +28,7 @@ class TestConnectionStringIntegration:
         parsed = parser.parse("Server=localhost;Database=mydb;Encrypt=yes")
         
         # Filter
-        filtered = ConnectionStringAllowList.filter_params(parsed, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -62,7 +62,7 @@ class TestConnectionStringIntegration:
         parsed = parser.parse("Server={local;host};PWD={p@ss;w}}rd}")
         
         # Filter
-        filtered = ConnectionStringAllowList.filter_params(parsed, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -82,7 +82,7 @@ class TestConnectionStringIntegration:
         parsed = parser.parse("address=server1;uid=testuser;database=testdb")
         
         # Filter (normalizes synonyms)
-        filtered = ConnectionStringAllowList.filter_params(parsed, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -133,7 +133,7 @@ class TestConnectionStringIntegration:
         parsed = parser.parse("")
         
         # Filter
-        filtered = ConnectionStringAllowList.filter_params(parsed, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -152,7 +152,7 @@ class TestConnectionStringIntegration:
         parsed = parser.parse(conn_str)
         
         # Filter
-        filtered = ConnectionStringAllowList.filter_params(parsed, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -214,7 +214,7 @@ class TestConnectionStringIntegration:
         }
         
         # Filter
-        filtered = ConnectionStringAllowList.filter_params(original_params, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(original_params, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)

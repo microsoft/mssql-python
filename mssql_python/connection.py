@@ -242,38 +242,38 @@ class Connection:
         self, connection_str: str = "", **kwargs: Any
     ) -> str:
         """
-        Construct the connection string by parsing, filtering, and merging parameters.
+        Construct the connection string by parsing, validating, and merging parameters.
         
-        This method:
-        1. Parses the base connection_str into parameters
-        2. Filters parameters against an allow-list
-        3. Merges kwargs (which also go through allow-list)
-        4. Adds Driver and APP parameters (always controlled by the driver)
-        5. Rebuilds the connection string
+        This method performs a 6-step process:
+        1. Parse and validate the base connection_str (validates against allowlist)
+        2. Normalize parameter names (e.g., addr/address -> Server, uid -> UID)
+        3. Merge kwargs (which override connection_str params after normalization)
+        4. Build connection string from normalized, merged params
+        5. Add Driver and APP parameters (always controlled by the driver)
+        6. Return the final connection string
         
         Args:
             connection_str (str): The base connection string.
             **kwargs: Additional key/value pairs for the connection string.
 
         Returns:
-            str: The constructed and filtered connection string.
+            str: The constructed and validated connection string.
         """
         from mssql_python.connection_string_parser import _ConnectionStringParser, RESERVED_PARAMETERS
         from mssql_python.connection_string_allowlist import ConnectionStringAllowList
         from mssql_python.connection_string_builder import _ConnectionStringBuilder
         
         # Step 1: Parse base connection string with allowlist validation
+        # The parser validates everything: unknown params, reserved params, duplicates, syntax
         allowlist = ConnectionStringAllowList()
         parser = _ConnectionStringParser(allowlist=allowlist)
         parsed_params = parser.parse(connection_str)
         
-        # Step 2: Filter against allow-list
-        filtered_params = ConnectionStringAllowList.filter_params(
-            parsed_params, 
-            warn_rejected=True
-        )
+        # Step 2: Normalize parameter names (e.g., addr/address -> Server, uid -> UID)
+        # This handles synonym mapping and deduplication via normalized keys
+        normalized_params = ConnectionStringAllowList._normalize_params(parsed_params, warn_rejected=False)
         
-        # Step 3: Process kwargs and merge with filtered_params
+        # Step 3: Process kwargs and merge with normalized_params
         # kwargs override connection string values (processed after, so they take precedence)
         for key, value in kwargs.items():
             normalized_key = ConnectionStringAllowList.normalize_key(key)
@@ -285,12 +285,12 @@ class Connection:
                         f"It cannot be set by the user."
                     )
                 # kwargs override any existing values from connection string
-                filtered_params[normalized_key] = str(value)
+                normalized_params[normalized_key] = str(value)
             else:
                 log('warning', f"Ignoring unknown connection parameter from kwargs: {key}")
         
         # Step 4: Build connection string with merged params
-        builder = _ConnectionStringBuilder(filtered_params)
+        builder = _ConnectionStringBuilder(normalized_params)
         
         # Step 5: Add Driver and APP parameters (always controlled by the driver)
         # These maintain existing behavior: Driver is always hardcoded, APP is always MSSQL-Python

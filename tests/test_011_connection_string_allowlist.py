@@ -90,10 +90,10 @@ class TestConnectionStringAllowList:
         assert ConnectionStringAllowList.normalize_key(' uid ') == 'UID'
         assert ConnectionStringAllowList.normalize_key('  database  ') == 'Database'
     
-    def test_filter_params_allows_good_params(self):
+    def test__normalize_params_allows_good_params(self):
         """Test filtering allows known parameters."""
         params = {'server': 'localhost', 'database': 'mydb', 'encrypt': 'yes'}
-        filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(params, warn_rejected=False)
         assert 'Server' in filtered
         assert 'Database' in filtered
         assert 'Encrypt' in filtered
@@ -101,106 +101,106 @@ class TestConnectionStringAllowList:
         assert filtered['Database'] == 'mydb'
         assert filtered['Encrypt'] == 'yes'
     
-    def test_filter_params_rejects_bad_params(self):
+    def test__normalize_params_rejects_bad_params(self):
         """Test filtering rejects unknown parameters."""
         params = {'server': 'localhost', 'badparam': 'value', 'anotherbad': 'test'}
-        filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(params, warn_rejected=False)
         assert 'Server' in filtered
         assert 'badparam' not in filtered
         assert 'anotherbad' not in filtered
     
-    def test_filter_params_normalizes_keys(self):
+    def test__normalize_params_normalizes_keys(self):
         """Test filtering normalizes parameter keys."""
         params = {'server': 'localhost', 'uid': 'user', 'pwd': 'pass'}
-        filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(params, warn_rejected=False)
         assert 'Server' in filtered
         assert 'UID' in filtered
         assert 'PWD' in filtered
         assert 'server' not in filtered  # Original key should not be present
     
-    def test_filter_params_handles_address_variants(self):
+    def test__normalize_params_handles_address_variants(self):
         """Test filtering handles address/addr/server as synonyms."""
         params = {
             'address': 'addr1',
             'addr': 'addr2',
             'server': 'server1'
         }
-        filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(params, warn_rejected=False)
         # All three are synonyms that map to 'Server', last one wins
         assert filtered['Server'] == 'server1'
         assert 'Address' not in filtered
         assert 'Addr' not in filtered
     
-    def test_filter_params_empty_dict(self):
+    def test__normalize_params_empty_dict(self):
         """Test filtering empty parameter dictionary."""
-        filtered = ConnectionStringAllowList.filter_params({}, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params({}, warn_rejected=False)
         assert filtered == {}
     
-    def test_filter_params_removes_driver(self):
+    def test__normalize_params_removes_driver(self):
         """Test that Driver parameter is filtered out (controlled by driver)."""
         params = {'driver': '{Some Driver}', 'server': 'localhost'}
-        filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(params, warn_rejected=False)
         assert 'Driver' not in filtered
         assert 'Server' in filtered
     
-    def test_filter_params_removes_app(self):
+    def test__normalize_params_removes_app(self):
         """Test that APP parameter is filtered out (controlled by driver)."""
         params = {'app': 'MyApp', 'server': 'localhost'}
-        filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(params, warn_rejected=False)
         assert 'APP' not in filtered
         assert 'Server' in filtered
     
-    def test_filter_params_mixed_case_keys(self):
+    def test__normalize_params_mixed_case_keys(self):
         """Test filtering with mixed case keys."""
         params = {'SERVER': 'localhost', 'DataBase': 'mydb', 'EncRypt': 'yes'}
-        filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(params, warn_rejected=False)
         assert 'Server' in filtered
         assert 'Database' in filtered
         assert 'Encrypt' in filtered
     
-    def test_filter_params_preserves_values(self):
+    def test__normalize_params_preserves_values(self):
         """Test that filtering preserves original values unchanged."""
         params = {
             'server': 'localhost:1433',
             'database': 'MyDatabase',
             'pwd': 'P@ssw0rd!123'
         }
-        filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(params, warn_rejected=False)
         assert filtered['Server'] == 'localhost:1433'
         assert filtered['Database'] == 'MyDatabase'
         assert filtered['PWD'] == 'P@ssw0rd!123'
     
-    def test_filter_params_application_intent(self):
+    def test__normalize_params_application_intent(self):
         """Test filtering application intent parameters."""
         # Only 'applicationintent' (no spaces) is in the allowlist
         params = {'applicationintent': 'ReadOnly', 'application intent': 'ReadWrite'}
-        filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(params, warn_rejected=False)
         # 'application intent' with space is rejected, only compact form accepted
         assert filtered['ApplicationIntent'] == 'ReadOnly'
         assert len(filtered) == 1
     
-    def test_filter_params_failover_partner(self):
+    def test__normalize_params_failover_partner(self):
         """Test that failover partner is not in the restricted allowlist."""
         params = {'failover partner': 'backup.server.com', 'failoverpartner': 'backup2.com'}
-        filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(params, warn_rejected=False)
         # Failover_Partner is not in the restricted allowlist
         assert 'Failover_Partner' not in filtered
         assert 'FailoverPartner' not in filtered
         assert len(filtered) == 0
     
-    def test_filter_params_column_encryption(self):
+    def test__normalize_params_column_encryption(self):
         """Test that column encryption parameter is not in the allowlist."""
         params = {'columnencryption': 'Enabled', 'column encryption': 'Disabled'}
-        filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(params, warn_rejected=False)
         # Column encryption is not in the allowlist, so it should be filtered out
         assert 'ColumnEncryption' not in filtered
         assert len(filtered) == 0
     
-    def test_filter_params_multisubnetfailover(self):
+    def test__normalize_params_multisubnetfailover(self):
         """Test filtering multi-subnet failover parameters."""
         # Only 'multisubnetfailover' (no spaces) is in the allowlist
         params = {'multisubnetfailover': 'yes', 'multi subnet failover': 'no'}
-        filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
+        filtered = ConnectionStringAllowList._normalize_params(params, warn_rejected=False)
         # 'multi subnet failover' with spaces is rejected
         assert filtered['MultiSubnetFailover'] == 'yes'
         assert len(filtered) == 1

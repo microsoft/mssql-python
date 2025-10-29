@@ -97,9 +97,15 @@ class ConnectionStringAllowList:
         return cls.ALLOWED_PARAMS.get(key_lower)
     
     @classmethod
-    def filter_params(cls, params: Dict[str, str], warn_rejected: bool = True) -> Dict[str, str]:
+    def _normalize_params(cls, params: Dict[str, str], warn_rejected: bool = True) -> Dict[str, str]:
         """
-        Filter parameters against the allow-list.
+        Normalize and filter parameters against the allow-list (internal use only).
+        
+        This method performs several operations:
+        - Normalizes parameter names (e.g., addr/address → Server, uid → UID)
+        - Filters out parameters not in the allow-list
+        - Removes reserved parameters (Driver, APP)
+        - Deduplicates via normalized keys
         
         Args:
             params: Dictionary of connection string parameters (keys should be lowercase)
@@ -122,6 +128,10 @@ class ConnectionStringAllowList:
             sanitize_user_input = lambda x: str(x)[:50]  # Simple fallback
         
         filtered = {}
+
+        # The rejected list should ideally be empty when used in the normal connection
+        # flow, since the parser validates against the allowlist first and raises
+        # errors for unknown parameters. This filtering is primarily a safety net.
         rejected = []
         
         reserved_params = _get_reserved_parameters()
@@ -138,11 +148,14 @@ class ConnectionStringAllowList:
                 filtered[normalized_key] = value
             else:
                 # Parameter is not in allow-list
+                # Note: In normal flow, this should be empty since parser validates first
                 rejected.append(key)
-                if warn_rejected and logger:
-                    safe_key = sanitize_user_input(key)
-                    logger.warning(
-                        f"Connection string parameter '{safe_key}' is not in the allow-list and will be ignored"
-                    )
+        
+        # Log all rejected parameters together if any were found
+        if rejected and warn_rejected and logger:
+            safe_keys = [sanitize_user_input(key) for key in rejected]
+            logger.warning(
+                f"Connection string parameters not in allow-list and will be ignored: {', '.join(safe_keys)}"
+            )
         
         return filtered
