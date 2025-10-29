@@ -31,58 +31,47 @@ class ConnectionStringAllowList:
     
     # Core connection parameters with synonym mapping
     # Maps lowercase parameter names to their canonical form
+    # Based on ODBC Driver 18 for SQL Server supported parameters
     ALLOWED_PARAMS = {
-        # Server identification
+        # Server identification - addr, address, and server are synonyms
         'server': 'Server',
-        'host': 'Server',  # Common synonym
         'address': 'Server',
         'addr': 'Server',
-        'network address': 'Server',
         
         # Authentication
-        'uid': 'Uid',
-        'user id': 'Uid',
-        'user': 'Uid',
-        'pwd': 'Pwd',
-        'password': 'Pwd',
+        'uid': 'UID',
+        'pwd': 'PWD',
         'authentication': 'Authentication',
         'trusted_connection': 'Trusted_Connection',
         
         # Database
         'database': 'Database',
-        'initial catalog': 'Database',
         
         # Driver (always controlled by mssql-python)
         'driver': 'Driver',
         
         # Application name (always controlled by mssql-python)
         'app': 'APP',
-        'application name': 'APP',
         
-        # Encryption
+        # Encryption and Security
         'encrypt': 'Encrypt',
         'trustservercertificate': 'TrustServerCertificate',
-        'trust_server_certificate': 'TrustServerCertificate',  # Python-style underscore synonym
-        'trust server certificate': 'TrustServerCertificate',
-        'hostnameincertificate': 'HostNameInCertificate',
+        'hostnameincertificate': 'HostnameInCertificate',  # v18.0+
+        'servercertificate': 'ServerCertificate',  # v18.1+
+        'serverspn': 'ServerSPN',
         
         # Connection behavior
-        'connection timeout': 'Connection Timeout',
-        'connect timeout': 'Connection Timeout',
-        'timeout': 'Connection Timeout',
-        'login timeout': 'Login Timeout',
         'multisubnetfailover': 'MultiSubnetFailover',
-        'multi subnet failover': 'MultiSubnetFailover',
         'applicationintent': 'ApplicationIntent',
-        'application intent': 'ApplicationIntent',
+        'connectretrycount': 'ConnectRetryCount',
+        'connectretryinterval': 'ConnectRetryInterval',
         
-        # Failover
-        'failover partner': 'Failover_Partner',
-        'failoverpartner': 'Failover_Partner',
+        # Keep-Alive (v17.4+)
+        'keepalive': 'KeepAlive',
+        'keepaliveinterval': 'KeepAliveInterval',
         
-        # Packet size
-        'packet size': 'Packet Size',
-        'packetsize': 'Packet Size',
+        # IP Address Preference (v18.1+)
+        'ipaddresspreference': 'IpAddressPreference',
     }
     
     @classmethod

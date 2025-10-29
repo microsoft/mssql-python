@@ -13,39 +13,52 @@ class TestConnectionStringAllowList:
     """Unit tests for ConnectionStringAllowList."""
     
     def test_normalize_key_server(self):
-        """Test normalization of 'server' and its synonyms."""
+        """Test normalization of 'server' and related address parameters."""
+        # server, address, and addr are all synonyms that map to 'Server'
         assert ConnectionStringAllowList.normalize_key('server') == 'Server'
         assert ConnectionStringAllowList.normalize_key('SERVER') == 'Server'
         assert ConnectionStringAllowList.normalize_key('Server') == 'Server'
         assert ConnectionStringAllowList.normalize_key('address') == 'Server'
+        assert ConnectionStringAllowList.normalize_key('ADDRESS') == 'Server'
         assert ConnectionStringAllowList.normalize_key('addr') == 'Server'
-        assert ConnectionStringAllowList.normalize_key('network address') == 'Server'
+        assert ConnectionStringAllowList.normalize_key('ADDR') == 'Server'
     
     def test_normalize_key_authentication(self):
         """Test normalization of authentication parameters."""
-        assert ConnectionStringAllowList.normalize_key('uid') == 'Uid'
-        assert ConnectionStringAllowList.normalize_key('user id') == 'Uid'
-        assert ConnectionStringAllowList.normalize_key('user') == 'Uid'
-        assert ConnectionStringAllowList.normalize_key('pwd') == 'Pwd'
-        assert ConnectionStringAllowList.normalize_key('password') == 'Pwd'
+        assert ConnectionStringAllowList.normalize_key('uid') == 'UID'
+        assert ConnectionStringAllowList.normalize_key('UID') == 'UID'
+        assert ConnectionStringAllowList.normalize_key('pwd') == 'PWD'
+        assert ConnectionStringAllowList.normalize_key('PWD') == 'PWD'
+        assert ConnectionStringAllowList.normalize_key('authentication') == 'Authentication'
+        assert ConnectionStringAllowList.normalize_key('trusted_connection') == 'Trusted_Connection'
     
     def test_normalize_key_database(self):
-        """Test normalization of database parameters."""
+        """Test normalization of database parameter."""
         assert ConnectionStringAllowList.normalize_key('database') == 'Database'
-        assert ConnectionStringAllowList.normalize_key('initial catalog') == 'Database'
+        assert ConnectionStringAllowList.normalize_key('DATABASE') == 'Database'
+        # 'initial catalog' is not in the restricted allowlist
+        assert ConnectionStringAllowList.normalize_key('initial catalog') is None
     
     def test_normalize_key_encryption(self):
         """Test normalization of encryption parameters."""
         assert ConnectionStringAllowList.normalize_key('encrypt') == 'Encrypt'
         assert ConnectionStringAllowList.normalize_key('trustservercertificate') == 'TrustServerCertificate'
-        assert ConnectionStringAllowList.normalize_key('trust server certificate') == 'TrustServerCertificate'
-    
-    def test_normalize_key_timeout(self):
-        """Test normalization of timeout parameters."""
-        assert ConnectionStringAllowList.normalize_key('connection timeout') == 'Connection Timeout'
-        assert ConnectionStringAllowList.normalize_key('connect timeout') == 'Connection Timeout'
-        assert ConnectionStringAllowList.normalize_key('timeout') == 'Connection Timeout'
-        assert ConnectionStringAllowList.normalize_key('login timeout') == 'Login Timeout'
+        assert ConnectionStringAllowList.normalize_key('hostnameincertificate') == 'HostnameInCertificate'
+        assert ConnectionStringAllowList.normalize_key('servercertificate') == 'ServerCertificate'
+    def test_normalize_key_connection_params(self):
+        """Test normalization of connection behavior parameters."""
+        assert ConnectionStringAllowList.normalize_key('connectretrycount') == 'ConnectRetryCount'
+        assert ConnectionStringAllowList.normalize_key('connectretryinterval') == 'ConnectRetryInterval'
+        assert ConnectionStringAllowList.normalize_key('multisubnetfailover') == 'MultiSubnetFailover'
+        assert ConnectionStringAllowList.normalize_key('applicationintent') == 'ApplicationIntent'
+        assert ConnectionStringAllowList.normalize_key('keepalive') == 'KeepAlive'
+        assert ConnectionStringAllowList.normalize_key('keepaliveinterval') == 'KeepAliveInterval'
+        assert ConnectionStringAllowList.normalize_key('ipaddresspreference') == 'IpAddressPreference'
+        # Timeout parameters not in restricted allowlist
+        assert ConnectionStringAllowList.normalize_key('connection timeout') is None
+        assert ConnectionStringAllowList.normalize_key('login timeout') is None
+        assert ConnectionStringAllowList.normalize_key('connect timeout') is None
+        assert ConnectionStringAllowList.normalize_key('timeout') is None
     
     def test_normalize_key_mars(self):
         """Test that MARS parameters are not in the allowlist."""
@@ -54,9 +67,11 @@ class TestConnectionStringAllowList:
         assert ConnectionStringAllowList.normalize_key('multipleactiveresultsets') is None
     
     def test_normalize_key_app(self):
-        """Test normalization of APP parameters."""
+        """Test normalization of APP parameter."""
         assert ConnectionStringAllowList.normalize_key('app') == 'APP'
-        assert ConnectionStringAllowList.normalize_key('application name') == 'APP'
+        assert ConnectionStringAllowList.normalize_key('APP') == 'APP'
+        # 'application name' is not in restricted allowlist
+        assert ConnectionStringAllowList.normalize_key('application name') is None
     
     def test_normalize_key_driver(self):
         """Test normalization of Driver parameter."""
@@ -72,7 +87,8 @@ class TestConnectionStringAllowList:
     def test_normalize_key_whitespace(self):
         """Test normalization handles whitespace."""
         assert ConnectionStringAllowList.normalize_key('  server  ') == 'Server'
-        assert ConnectionStringAllowList.normalize_key(' uid ') == 'Uid'
+        assert ConnectionStringAllowList.normalize_key(' uid ') == 'UID'
+        assert ConnectionStringAllowList.normalize_key('  database  ') == 'Database'
     
     def test_filter_params_allows_good_params(self):
         """Test filtering allows known parameters."""
@@ -98,23 +114,22 @@ class TestConnectionStringAllowList:
         params = {'server': 'localhost', 'uid': 'user', 'pwd': 'pass'}
         filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
         assert 'Server' in filtered
-        assert 'Uid' in filtered
-        assert 'Pwd' in filtered
+        assert 'UID' in filtered
+        assert 'PWD' in filtered
         assert 'server' not in filtered  # Original key should not be present
     
-    def test_filter_params_handles_synonyms(self):
-        """Test filtering handles parameter synonyms correctly."""
+    def test_filter_params_handles_address_variants(self):
+        """Test filtering handles address/addr/server as synonyms."""
         params = {
-            'address': 'server1',
-            'user': 'testuser',
-            'initial catalog': 'testdb',
-            'connection timeout': '30'
+            'address': 'addr1',
+            'addr': 'addr2',
+            'server': 'server1'
         }
         filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
+        # All three are synonyms that map to 'Server', last one wins
         assert filtered['Server'] == 'server1'
-        assert filtered['Uid'] == 'testuser'
-        assert filtered['Database'] == 'testdb'
-        assert filtered['Connection Timeout'] == '30'
+        assert 'Address' not in filtered
+        assert 'Addr' not in filtered
     
     def test_filter_params_empty_dict(self):
         """Test filtering empty parameter dictionary."""
@@ -153,20 +168,25 @@ class TestConnectionStringAllowList:
         filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
         assert filtered['Server'] == 'localhost:1433'
         assert filtered['Database'] == 'MyDatabase'
-        assert filtered['Pwd'] == 'P@ssw0rd!123'
+        assert filtered['PWD'] == 'P@ssw0rd!123'
     
     def test_filter_params_application_intent(self):
         """Test filtering application intent parameters."""
+        # Only 'applicationintent' (no spaces) is in the allowlist
         params = {'applicationintent': 'ReadOnly', 'application intent': 'ReadWrite'}
         filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
-        # Last one wins (application intent → ReadWrite)
-        assert filtered['ApplicationIntent'] == 'ReadWrite'
+        # 'application intent' with space is rejected, only compact form accepted
+        assert filtered['ApplicationIntent'] == 'ReadOnly'
+        assert len(filtered) == 1
     
     def test_filter_params_failover_partner(self):
-        """Test filtering failover partner parameters."""
-        params = {'failover partner': 'backup.server.com'}
+        """Test that failover partner is not in the restricted allowlist."""
+        params = {'failover partner': 'backup.server.com', 'failoverpartner': 'backup2.com'}
         filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
-        assert filtered['Failover_Partner'] == 'backup.server.com'
+        # Failover_Partner is not in the restricted allowlist
+        assert 'Failover_Partner' not in filtered
+        assert 'FailoverPartner' not in filtered
+        assert len(filtered) == 0
     
     def test_filter_params_column_encryption(self):
         """Test that column encryption parameter is not in the allowlist."""
@@ -178,7 +198,9 @@ class TestConnectionStringAllowList:
     
     def test_filter_params_multisubnetfailover(self):
         """Test filtering multi-subnet failover parameters."""
+        # Only 'multisubnetfailover' (no spaces) is in the allowlist
         params = {'multisubnetfailover': 'yes', 'multi subnet failover': 'no'}
         filtered = ConnectionStringAllowList.filter_params(params, warn_rejected=False)
-        # Last one wins
-        assert filtered['MultiSubnetFailover'] == 'no'
+        # 'multi subnet failover' with spaces is rejected
+        assert filtered['MultiSubnetFailover'] == 'yes'
+        assert len(filtered) == 1

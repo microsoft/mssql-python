@@ -78,7 +78,8 @@ class TestConnectionStringIntegration:
         """Test that parameter synonyms are normalized."""
         # Parse
         parser = _ConnectionStringParser()
-        parsed = parser.parse("address=server1;user=testuser;initial catalog=testdb")
+        # Use parameters that are in the restricted allowlist
+        parsed = parser.parse("address=server1;uid=testuser;database=testdb")
         
         # Filter (normalizes synonyms)
         filtered = ConnectionStringAllowList.filter_params(parsed, warn_rejected=False)
@@ -89,13 +90,13 @@ class TestConnectionStringIntegration:
         result = builder.build()
         
         # Verify - should use canonical names
-        assert 'Server=server1' in result
-        assert 'Uid=testuser' in result
+        assert 'Server=server1' in result  # address -> Server
+        assert 'UID=testuser' in result    # uid -> UID
         assert 'Database=testdb' in result
         # Original names should not appear
         assert 'address' not in result.lower()
-        assert 'user=' not in result.lower()
-        assert 'initial catalog' not in result.lower()
+        # uid appears in UID, so check for the exact pattern
+        assert result.count('UID=') == 1
     
     def test_parse_filter_build_driver_and_app_reserved(self):
         """Test that Driver and APP in connection string raise errors."""
@@ -146,7 +147,8 @@ class TestConnectionStringIntegration:
         """Test complete flow with complex realistic connection string."""
         # Parse
         parser = _ConnectionStringParser()
-        conn_str = "Server=tcp:server.database.windows.net,1433;Database=mydb;UID=user@server;PWD={P@ss;w}}rd};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30"
+        # Note: Connection Timeout is not in the restricted allowlist
+        conn_str = "Server=tcp:server.database.windows.net,1433;Database=mydb;UID=user@server;PWD={P@ss;w}}rd};Encrypt=yes;TrustServerCertificate=no"
         parsed = parser.parse(conn_str)
         
         # Filter
@@ -162,11 +164,12 @@ class TestConnectionStringIntegration:
         assert 'Driver={ODBC Driver 18 for SQL Server}' in result
         assert 'Server=tcp:server.database.windows.net,1433' in result
         assert 'Database=mydb' in result
-        assert 'Uid=user@server' in result
-        assert 'Pwd={P@ss;w}}rd}' in result or 'PWD={P@ss;w}}rd}' in result
+        assert 'UID=user@server' in result  # UID not Uid (canonical form)
+        assert 'PWD={P@ss;w}}rd}' in result
         assert 'Encrypt=yes' in result
         assert 'TrustServerCertificate=no' in result
-        assert 'Connection Timeout=30' in result
+        # Connection Timeout not in result (filtered out)
+        assert 'Connection Timeout' not in result
         assert 'APP=MSSQL-Python' in result
     
     def test_parse_error_incomplete_specification(self):
@@ -407,17 +410,16 @@ class TestConnectAPIIntegration:
         # Mock the underlying ODBC connection
         mock_ddbc_conn.return_value = MagicMock()
         
-        conn = connect("address=server1;user=testuser;initial catalog=testdb")
+        # Use parameters that are in the restricted allowlist
+        conn = connect("address=server1;uid=testuser;database=testdb")
         
         # Synonyms should be normalized to canonical names
-        conn_str_lower = conn.connection_str.lower()
-        assert "server=server1" in conn_str_lower
-        assert "uid=testuser" in conn_str_lower
-        assert "database=testdb" in conn_str_lower
-        # Original names should not appear
-        assert "address=" not in conn_str_lower
-        assert "user=" not in conn_str_lower
-        assert "initial catalog=" not in conn_str_lower
+        assert "Server=server1" in conn.connection_str  # address -> Server
+        assert "UID=testuser" in conn.connection_str    # uid -> UID
+        assert "Database=testdb" in conn.connection_str
+        # Verify address was normalized (not present in output)
+        assert "Address=" not in conn.connection_str
+        assert "Addr=" not in conn.connection_str
         
         conn.close()
     
@@ -532,11 +534,13 @@ class TestConnectAPIIntegration:
         assert "reserved keyword" in str(exc_info.value).lower()
         assert "app" in str(exc_info.value).lower()
         
-        # Try Application Name synonym
+        # Application Name is not in the restricted allowlist (not a synonym for APP)
+        # It should be rejected as an unknown parameter
         with pytest.raises(ConnectionStringParseError) as exc_info:
             test_conn_str = conn_str + ";Application Name=UserApp"
             connect(test_conn_str)
-        assert "reserved keyword" in str(exc_info.value).lower()
+        assert "unknown keyword" in str(exc_info.value).lower()
+        assert "application name" in str(exc_info.value).lower()
     
     @pytest.mark.skipif(not os.getenv('DB_CONNECTION_STRING'), 
                         reason="Requires database connection string")
