@@ -41,19 +41,7 @@ class _ConnectionStringBuilder:
         """
         self._params[key] = str(value)
         return self
-    
-    def has_param(self, key: str) -> bool:
-        """
-        Check if a parameter exists.
-        
-        Args:
-            key: Parameter name to check
-            
-        Returns:
-            True if parameter exists, False otherwise
-        """
-        return key in self._params
-    
+
     def build(self) -> str:
         """
         Build the final connection string.

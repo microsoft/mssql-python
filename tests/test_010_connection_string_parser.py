@@ -74,16 +74,18 @@ class TestConnectionStringParser:
         assert result == {'value': 'test}{escape'}
     
     def test_parse_empty_value(self):
-        """Test parsing parameter with empty value."""
+        """Test that empty value raises error."""
         parser = _ConnectionStringParser()
-        result = parser._parse("Server=;Database=mydb")
-        assert result == {'server': '', 'database': 'mydb'}
+        with pytest.raises(ConnectionStringParseError) as exc_info:
+            parser._parse("Server=;Database=mydb")
+        assert "Empty value for keyword 'server'" in str(exc_info.value)
     
     def test_parse_empty_braced_value(self):
-        """Test parsing parameter with empty braced value."""
+        """Test that empty braced value raises error."""
         parser = _ConnectionStringParser()
-        result = parser._parse("Server={};Database=mydb")
-        assert result == {'server': '', 'database': 'mydb'}
+        with pytest.raises(ConnectionStringParseError) as exc_info:
+            parser._parse("Server={};Database=mydb")
+        assert "Empty value for keyword 'server'" in str(exc_info.value)
     
     def test_parse_whitespace_around_key(self):
         """Test parsing with whitespace around keys."""
@@ -154,6 +156,94 @@ class TestConnectionStringParser:
         parser = _ConnectionStringParser()
         result = parser._parse("Value={key=value}")
         assert result == {'value': 'key=value'}
+    
+    def test_parse_special_characters_in_values(self):
+        """Test parsing values with various special characters."""
+        parser = _ConnectionStringParser()
+        
+        # Numbers, hyphens, underscores in values
+        result = parser._parse("Server=server-123_test;Port=1433")
+        assert result == {'server': 'server-123_test', 'port': '1433'}
+        
+        # Dots, colons, commas in values
+        result = parser._parse("Server=server.domain.com:1433,1434")
+        assert result == {'server': 'server.domain.com:1433,1434'}
+        
+        # At signs, slashes in values
+        result = parser._parse("UID=user@domain.com;Path=/var/data")
+        assert result == {'uid': 'user@domain.com', 'path': '/var/data'}
+        
+        # Backslashes (common in Windows paths and domain users)
+        result = parser._parse("User=DOMAIN\\username;Path=C:\\temp")
+        assert result == {'user': 'DOMAIN\\username', 'path': 'C:\\temp'}
+    
+    def test_parse_special_characters_in_braced_values(self):
+        """Test parsing braced values with special characters that would otherwise be delimiters."""
+        parser = _ConnectionStringParser()
+        
+        # Semicolons in braced values
+        result = parser._parse("PWD={pass;word;123};Server=localhost")
+        assert result == {'pwd': 'pass;word;123', 'server': 'localhost'}
+        
+        # Equals signs in braced values
+        result = parser._parse("ConnectString={Key1=Value1;Key2=Value2}")
+        assert result == {'connectstring': 'Key1=Value1;Key2=Value2'}
+        
+        # Multiple special chars including braces
+        result = parser._parse("Token={Bearer: abc123; Expires={{2024-01-01}}}")
+        assert result == {'token': 'Bearer: abc123; Expires={2024-01-01}'}
+    
+    def test_parse_numbers_and_symbols_in_passwords(self):
+        """Test parsing passwords with various numbers and symbols."""
+        parser = _ConnectionStringParser()
+        
+        # Common password characters without braces
+        result = parser._parse("Server=localhost;PWD=Pass123!@#")
+        assert result == {'server': 'localhost', 'pwd': 'Pass123!@#'}
+        
+        # Special symbols that require bracing
+        result = parser._parse("PWD={P@ss;w0rd!};Server=srv")
+        assert result == {'pwd': 'P@ss;w0rd!', 'server': 'srv'}
+        
+        # Complex password with multiple special chars
+        result = parser._parse("PWD={P@$$w0rd!#123%;^&*()}")
+        assert result == {'pwd': 'P@$$w0rd!#123%;^&*()'}
+    
+    def test_parse_emoji_and_extended_unicode(self):
+        """Test parsing values with emoji and extended unicode characters."""
+        parser = _ConnectionStringParser()
+        
+        # Emoji in values
+        result = parser._parse("Description={Test 🚀 Database};Status=✓")
+        assert result == {'description': 'Test 🚀 Database', 'status': '✓'}
+        
+        # Various unicode scripts
+        result = parser._parse("Name=مرحبا;Title=こんにちは;Info=안녕하세요")
+        assert result == {'name': 'مرحبا', 'title': 'こんにちは', 'info': '안녕하세요'}
+    
+    def test_parse_whitespace_characters(self):
+        """Test parsing values with various whitespace characters."""
+        parser = _ConnectionStringParser()
+        
+        # Spaces in braced values (preserved)
+        result = parser._parse("Name={John Doe};Title={Senior Engineer}")
+        assert result == {'name': 'John Doe', 'title': 'Senior Engineer'}
+        
+        # Tabs in braced values
+        result = parser._parse("Data={value1\tvalue2\tvalue3}")
+        assert result == {'data': 'value1\tvalue2\tvalue3'}
+    
+    def test_parse_url_encoded_characters(self):
+        """Test parsing values that look like URL encoding."""
+        parser = _ConnectionStringParser()
+        
+        # Values with percent signs and hex-like patterns
+        result = parser._parse("Value=test%20value;Percent=100%")
+        assert result == {'value': 'test%20value', 'percent': '100%'}
+        
+        # URL-like connection strings
+        result = parser._parse("Server=https://api.example.com/v1;Key=abc-123-def")
+        assert result == {'server': 'https://api.example.com/v1', 'key': 'abc-123-def'}
 
 
 class TestConnectionStringParserErrors:
@@ -202,16 +292,35 @@ class TestConnectionStringParserErrors:
         
         assert "Unclosed braced value" in str(exc_info.value)
     
-    def test_error_multiple_issues_collected(self):
-        """Test that multiple errors are collected and reported together."""
+    def test_error_multiple_empty_values(self):
+        """Test that multiple empty values are all collected as errors."""
         parser = _ConnectionStringParser()
         with pytest.raises(ConnectionStringParseError) as exc_info:
-            parser._parse("Server=first;InvalidEntry;Server=second;Database")
+            parser._parse("Server=;Database=;UID=user;PWD=")
         
-        # Should have: incomplete spec for InvalidEntry, duplicate Server, incomplete spec for Database
-        assert len(exc_info.value.errors) >= 3
-        assert "Incomplete specification" in str(exc_info.value)
-        assert "Duplicate keyword" in str(exc_info.value)
+        # Should have 3 errors for empty values
+        errors = exc_info.value.errors
+        assert len(errors) >= 3
+        assert any("Empty value for keyword 'server'" in err for err in errors)
+        assert any("Empty value for keyword 'database'" in err for err in errors)
+        assert any("Empty value for keyword 'pwd'" in err for err in errors)
+    
+    def test_error_multiple_issues_collected(self):
+        """Test that multiple different types of errors are collected and reported together."""
+        parser = _ConnectionStringParser()
+        with pytest.raises(ConnectionStringParseError) as exc_info:
+            # Multiple error types: incomplete spec, duplicate, empty value, empty key
+            parser._parse("Server=first;InvalidEntry;Server=second;Database=;=value;WhatIsThis")
+        
+        # Should have: incomplete spec for InvalidEntry, duplicate Server, empty Database value, empty key
+        errors = exc_info.value.errors
+        assert len(errors) >= 4
+        
+        errors_str = str(exc_info.value)
+        assert "Incomplete specification" in errors_str
+        assert "Duplicate keyword" in errors_str
+        assert "Empty value for keyword 'database'" in errors_str
+        assert "Empty keyword" in errors_str
     
     def test_error_unknown_keyword_with_allowlist(self):
         """Test that unknown keywords are flagged when allowlist is provided."""
@@ -307,3 +416,33 @@ class TestConnectionStringParserEdgeCases:
             parser._parse("Server=first;SERVER=second")
         
         assert "Duplicate keyword 'server'" in str(exc_info.value)
+    
+    def test_empty_value_edge_cases(self):
+        """Test that empty values are treated as errors."""
+        parser = _ConnectionStringParser()
+        
+        # Empty value after = with trailing semicolon
+        with pytest.raises(ConnectionStringParseError) as exc_info:
+            parser._parse("Server=localhost;Database=")
+        assert "Empty value for keyword 'database'" in str(exc_info.value)
+        
+        # Empty value at end of string (no trailing semicolon)
+        with pytest.raises(ConnectionStringParseError) as exc_info:
+            parser._parse("Server=localhost;Database=")
+        assert "Empty value for keyword 'database'" in str(exc_info.value)
+        
+        # Value with only whitespace is treated as empty after strip
+        with pytest.raises(ConnectionStringParseError) as exc_info:
+            parser._parse("Server=localhost;Database=   ")
+        assert "Empty value for keyword 'database'" in str(exc_info.value)
+    
+    def test_incomplete_entry_recovery(self):
+        """Test that parser can recover from incomplete entries and continue parsing."""
+        parser = _ConnectionStringParser()
+        with pytest.raises(ConnectionStringParseError) as exc_info:
+            # Incomplete entry followed by valid entry
+            parser._parse("Server;Database=mydb;UID=user")
+        
+        # Should have error about incomplete 'Server'
+        errors = exc_info.value.errors
+        assert any('Server' in err and 'Incomplete specification' in err for err in errors)

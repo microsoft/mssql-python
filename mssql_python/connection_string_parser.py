@@ -143,6 +143,10 @@ class _ConnectionStringParser:
             try:
                 value, current_pos = self._parse_value(connection_str, current_pos)
                 
+                # ERROR: Empty value
+                if not value:
+                    errors.append(f"Empty value for keyword '{key}' (all connection string parameters must have non-empty values)")
+                
                 # Check for duplicates
                 if key in seen_keys:
                     errors.append(f"Duplicate keyword '{key}' found")

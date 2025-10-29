@@ -204,3 +204,42 @@ class Test_ConnectionStringAllowList:
         # 'multi subnet failover' with spaces is rejected
         assert filtered['MultiSubnetFailover'] == 'yes'
         assert len(filtered) == 1
+    
+    def test__normalize_params_with_warnings(self):
+        """Test that rejected parameters are logged when warn_rejected=True."""
+        import logging
+        
+        # Create a custom logger for this test
+        logger = logging.getLogger('test_normalize_params_warnings')
+        logger.setLevel(logging.WARNING)
+        
+        # Add a handler to capture log messages
+        import io
+        log_stream = io.StringIO()
+        handler = logging.StreamHandler(log_stream)
+        handler.setLevel(logging.WARNING)
+        logger.addHandler(handler)
+        
+        # Temporarily replace the get_logger function
+        import mssql_python.logging_config as logging_config
+        original_get_logger = logging_config.get_logger
+        logging_config.get_logger = lambda: logger
+        
+        try:
+            # Test with unknown parameters and warn_rejected=True
+            params = {'server': 'localhost', 'badparam1': 'value1', 'badparam2': 'value2'}
+            filtered = _ConnectionStringAllowList._normalize_params(params, warn_rejected=True)
+            
+            # Check that good param was kept
+            assert 'Server' in filtered
+            assert len(filtered) == 1
+            
+            # Check that warning was logged with all rejected keys
+            log_output = log_stream.getvalue()
+            assert 'badparam1' in log_output
+            assert 'badparam2' in log_output
+            assert 'not in allow-list' in log_output
+        finally:
+            # Restore original get_logger
+            logging_config.get_logger = original_get_logger
+            logger.removeHandler(handler)

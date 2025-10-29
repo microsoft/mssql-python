@@ -249,6 +249,21 @@ class TestConnectionStringIntegration:
         assert parsed['pwd'] == 'p}w{d'
         assert parsed['value'] == 'test;{value}'
     
+    def test_builder_empty_value(self):
+        """Test that parser rejects empty values built by builder."""
+        builder = _ConnectionStringBuilder()
+        builder.add_param('Server', 'localhost')
+        builder.add_param('Database', '')  # Empty value
+        builder.add_param('UID', 'user')
+        result = builder.build()
+        
+        # Parser should reject empty value
+        parser = _ConnectionStringParser()
+        with pytest.raises(ConnectionStringParseError) as exc_info:
+            parser._parse(result)
+        
+        assert "Empty value for keyword 'database'" in str(exc_info.value)
+    
     def test_multiple_errors_collected(self):
         """Test that multiple errors are collected and reported together."""
         parser = _ConnectionStringParser()
@@ -615,7 +630,32 @@ class TestConnectAPIIntegration:
         assert "reserved and controlled by the driver" in str(exc_info.value)
         assert "APP" in str(exc_info.value) or "app" in str(exc_info.value).lower()
         
-        print("\n APP in kwargs correctly raised ValueError before connecting to SQL Server")
+        print("\n✅ APP in kwargs correctly raised ValueError before connecting to SQL Server")
+    
+    @patch('mssql_python.connection.ddbc_bindings.Connection')
+    def test_connect_empty_value_raises_error(self, mock_ddbc_conn):
+        """Test that empty values in connection string raise ConnectionStringParseError."""
+        mock_ddbc_conn.return_value = MagicMock()
+        
+        # Empty value should raise error
+        with pytest.raises(ConnectionStringParseError) as exc_info:
+            connect("Server=localhost;Database=;UID=user")
+        
+        assert "Empty value for keyword 'database'" in str(exc_info.value)
+    
+    @patch('mssql_python.connection.ddbc_bindings.Connection')
+    def test_connect_multiple_empty_values_raises_error(self, mock_ddbc_conn):
+        """Test that multiple empty values are all collected in error."""
+        mock_ddbc_conn.return_value = MagicMock()
+        
+        # Multiple empty values
+        with pytest.raises(ConnectionStringParseError) as exc_info:
+            connect("Server=;Database=mydb;PWD=")
+        
+        errors = exc_info.value.errors
+        assert len(errors) >= 2
+        assert any("Empty value for keyword 'server'" in err for err in errors)
+        assert any("Empty value for keyword 'pwd'" in err for err in errors)
 
 
 
