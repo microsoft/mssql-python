@@ -56,8 +56,6 @@ jobs:
         sqlVersion: 'LocalDB'
       SQLServer2022:
         sqlVersion: 'SQL2022'
-      AzureSQL:
-        sqlVersion: 'AzureSQL'
 
   steps:
   - task: UsePythonVersion@0
@@ -176,14 +174,6 @@ jobs:
     condition: eq(variables['sqlVersion'], 'SQL2022')
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
-
-  # Run tests for Azure SQL Database (requires AZURE_CONNECTION_STRING variable)
-  - script: |
-      python -m pytest -v --junitxml=test-results-azure.xml --cov=. --cov-report=xml:coverage-azure.xml --capture=tee-sys --cache-clear
-    displayName: 'Run tests with coverage on Azure SQL Database'
-    condition: and(eq(variables['sqlVersion'], 'AzureSQL'), ne(variables['AZURE_CONNECTION_STRING'], ''))
-    env:
-      DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
 
   - task: PublishBuildArtifacts@1
     inputs:
@@ -305,14 +295,22 @@ jobs:
         dockerImage: 'ubuntu:22.04'
         distroName: 'Ubuntu'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
+        useAzureSQL: 'false'
       Ubuntu_SQL2025:
         dockerImage: 'ubuntu:22.04'
         distroName: 'Ubuntu-SQL2025'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
+        useAzureSQL: 'false'
+      Ubuntu_AzureSQL:
+        dockerImage: 'ubuntu:22.04'
+        distroName: 'Ubuntu-AzureSQL'
+        sqlServerImage: ''
+        useAzureSQL: 'true'
       Debian:
         dockerImage: 'debian:12'
         distroName: 'Debian'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
+        useAzureSQL: 'false'
 
   steps:
   - script: |
@@ -357,6 +355,7 @@ jobs:
         -P "$(DB_PASSWORD)" \
         -C -Q "CREATE DATABASE TestDB"
     displayName: 'Start SQL Server container for $(distroName)'
+    condition: eq(variables['useAzureSQL'], 'false')
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -455,20 +454,35 @@ jobs:
 
   - script: |
       # Run tests in the container
-      # Get SQL Server container IP
-      SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-      echo "SQL Server IP: $SQLSERVER_IP"
-      
-      docker exec \
-        -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
-        test-container-$(distroName) bash -c "
-        source /opt/venv/bin/activate
-        echo 'Build successful, running tests now on $(distroName)'
-        echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-        python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
-      "
+      if [ "$(useAzureSQL)" = "true" ]; then
+        # Azure SQL Database testing
+        echo "Testing against Azure SQL Database"
+        
+        docker exec \
+          -e DB_CONNECTION_STRING="$(AZURE_CONNECTION_STRING)" \
+          test-container-$(distroName) bash -c "
+          source /opt/venv/bin/activate
+          echo 'Build successful, running tests now on $(distroName) with Azure SQL'
+          echo 'Using Azure SQL connection string'
+          python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+        "
+      else
+        # Local SQL Server testing
+        SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+        echo "SQL Server IP: $SQLSERVER_IP"
+        
+        docker exec \
+          -e DB_CONNECTION_STRING="Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+          -e DB_PASSWORD="$(DB_PASSWORD)" \
+          test-container-$(distroName) bash -c "
+          source /opt/venv/bin/activate
+          echo 'Build successful, running tests now on $(distroName)'
+          echo 'Using connection string: Driver=ODBC Driver 18 for SQL Server;Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+          python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+        "
+      fi
     displayName: 'Run pytest with coverage in $(distroName) container'
+    condition: or(eq(variables['useAzureSQL'], 'false'), and(eq(variables['useAzureSQL'], 'true'), ne(variables['AZURE_CONNECTION_STRING'], '')))
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -483,8 +497,10 @@ jobs:
       # Clean up containers
       docker stop test-container-$(distroName) || true
       docker rm test-container-$(distroName) || true
-      docker stop sqlserver-$(distroName) || true
-      docker rm sqlserver-$(distroName) || true
+      if [ "$(useAzureSQL)" = "false" ]; then
+        docker stop sqlserver-$(distroName) || true
+        docker rm sqlserver-$(distroName) || true
+      fi
     displayName: 'Clean up $(distroName) containers'
     condition: always()
 
