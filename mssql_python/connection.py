@@ -258,7 +258,7 @@ class Connection:
         Returns:
             str: The constructed and filtered connection string.
         """
-        from mssql_python.connection_string_parser import _ConnectionStringParser
+        from mssql_python.connection_string_parser import _ConnectionStringParser, RESERVED_PARAMETERS
         from mssql_python.connection_string_allowlist import ConnectionStringAllowList
         from mssql_python.connection_string_builder import _ConnectionStringBuilder
         
@@ -279,7 +279,7 @@ class Connection:
             normalized_key = ConnectionStringAllowList.normalize_key(key)
             if normalized_key:
                 # Driver and APP are reserved - raise error if user tries to set them
-                if normalized_key in ('Driver', 'APP'):
+                if normalized_key in RESERVED_PARAMETERS:
                     raise ValueError(
                         f"Connection parameter '{key}' is reserved and controlled by the driver. "
                         f"It cannot be set by the user."

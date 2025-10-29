@@ -15,23 +15,14 @@ Parser behavior:
 - Collects all errors and reports them together
 """
 
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, List
 import logging
+from mssql_python.exceptions import ConnectionStringParseError
 
 
-class ConnectionStringParseError(Exception):
-    """Exception raised when connection string parsing fails."""
-    
-    def __init__(self, errors: List[str]):
-        """
-        Initialize the error with a list of validation errors.
-        
-        Args:
-            errors: List of error messages
-        """
-        self.errors = errors
-        message = "Connection string parsing failed:\n  " + "\n  ".join(errors)
-        super().__init__(message)
+# Reserved connection string parameters that are controlled by the driver
+# and cannot be set by users
+RESERVED_PARAMETERS = ('Driver', 'APP')
 
 
 class _ConnectionStringParser:
@@ -177,7 +168,7 @@ class _ConnectionStringParser:
                 if normalized_key is None:
                     # Unknown keyword
                     unknown_keys.append(key)
-                elif normalized_key in ('Driver', 'APP'):
+                elif normalized_key in RESERVED_PARAMETERS:
                     # Reserved keyword - user cannot set these
                     reserved_keys.append(key)
             

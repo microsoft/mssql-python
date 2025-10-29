@@ -11,6 +11,13 @@ normalization, synonym mapping, and filtering.
 from typing import Dict, Optional
 
 
+# Import RESERVED_PARAMETERS from parser module to maintain single source of truth
+def _get_reserved_parameters():
+    """Lazy import to avoid circular dependency."""
+    from mssql_python.connection_string_parser import RESERVED_PARAMETERS
+    return RESERVED_PARAMETERS
+
+
 class ConnectionStringAllowList:
     """
     Manages the allow-list of permitted connection string parameters.
@@ -128,12 +135,14 @@ class ConnectionStringAllowList:
         filtered = {}
         rejected = []
         
+        reserved_params = _get_reserved_parameters()
+        
         for key, value in params.items():
             normalized_key = cls.normalize_key(key)
             
             if normalized_key:
                 # Skip Driver and APP - these are controlled by the driver
-                if normalized_key in ('Driver', 'APP'):
+                if normalized_key in reserved_params:
                     continue
                     
                 # Parameter is allowed

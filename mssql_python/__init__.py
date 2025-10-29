@@ -27,7 +27,7 @@ from .exceptions import (
 )
 
 # Connection string parser exceptions
-from .connection_string_parser import ConnectionStringParseError
+from .exceptions import ConnectionStringParseError
 
 # Type Objects
 from .type import (
