@@ -45,6 +45,18 @@ from datetime import datetime, timedelta, timezone
 from mssql_python.constants import ConstantsDDBC
 
 
+def is_azure_sql_connection(conn_str):
+    """Helper function to detect if connection string is for Azure SQL Database"""
+    if not conn_str:
+        return False
+    # Check if database.windows.net appears in the Server parameter
+    conn_str_lower = conn_str.lower()
+    # Look for Server= or server= followed by database.windows.net
+    import re
+    server_match = re.search(r'server\s*=\s*[^;]*database\.windows\.net', conn_str_lower)
+    return server_match is not None
+
+
 @pytest.fixture(autouse=True)
 def clean_connection_state(db_connection):
     """Ensure connection is in a clean state before each test"""
@@ -415,10 +427,11 @@ def test_connection_timeout_invalid_password(conn_str):
     with pytest.raises(Exception):
         connect(bad_conn_str)
     elapsed = time.perf_counter() - start
-    # Should fail quickly (within 10 seconds)
+    # Azure SQL takes longer to timeout, so use different thresholds
+    timeout_threshold = 30 if is_azure_sql_connection(conn_str) else 10
     assert (
-        elapsed < 10
-    ), f"Connection with invalid password took too long: {elapsed:.2f}s"
+        elapsed < timeout_threshold
+    ), f"Connection with invalid password took too long: {elapsed:.2f}s (threshold: {timeout_threshold}s)"
 
 
 def test_connection_timeout_invalid_host(conn_str):
@@ -3656,7 +3669,7 @@ def test_execute_multiple_simultaneous_cursors(db_connection, conn_str):
     - Connection remains stable after intensive cursor operations
     """
     # Skip this test for Azure SQL Database
-    if conn_str and "database.windows.net" in conn_str.lower():
+    if is_azure_sql_connection(conn_str):
         pytest.skip("Skipping for Azure SQL - connection limits cause this test to hang")
     import gc
     import sys
@@ -3734,7 +3747,7 @@ def test_execute_with_large_parameters(db_connection, conn_str):
     - Processing large result sets
     """
     # Skip this test for Azure SQL Database
-    if conn_str and "database.windows.net" in conn_str.lower():
+    if is_azure_sql_connection(conn_str):
         pytest.skip("Skipping for Azure SQL - large parameter tests may cause timeouts")
 
     # Test with a temporary table for large data
@@ -4315,7 +4328,7 @@ def test_batch_execute_large_batch(db_connection, conn_str):
     - Memory usage remains reasonable during batch processing
     """
     # Skip this test for Azure SQL Database
-    if conn_str and "database.windows.net" in conn_str.lower():
+    if is_azure_sql_connection(conn_str):
         pytest.skip("Skipping for Azure SQL - large batch tests may cause timeouts")
     # Create a batch of 50 statements
     statements = ["SELECT " + str(i) for i in range(50)]
@@ -7939,8 +7952,12 @@ def test_set_attr_access_mode_after_connect(db_connection):
     assert result[0][0] == 1
 
 
-def test_set_attr_current_catalog_after_connect(db_connection):
+def test_set_attr_current_catalog_after_connect(db_connection, conn_str):
     """Test setting current catalog after connection via set_attr."""
+    # Skip this test for Azure SQL Database - it doesn't support changing database after connection
+    if is_azure_sql_connection(conn_str):
+        pytest.skip("Skipping for Azure SQL - SQL_ATTR_CURRENT_CATALOG not supported after connection")
+    
     # Get current database name
     cursor = db_connection.cursor()
     cursor.execute("SELECT DB_NAME()")
