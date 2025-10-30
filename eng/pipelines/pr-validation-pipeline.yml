@@ -54,16 +54,21 @@ jobs:
     matrix:
       LocalDB:
         sqlVersion: 'LocalDB'
+        pythonVersion: '3.13'
       SQLServer2022:
         sqlVersion: 'SQL2022'
+        pythonVersion: '3.13'
+      LocalDB_Python314:
+        sqlVersion: 'LocalDB'
+        pythonVersion: '3.14'
 
   steps:
   - task: UsePythonVersion@0
     inputs:
-      versionSpec: '3.13'
+      versionSpec: '$(pythonVersion)'
       addToPath: true
       githubToken: $(GITHUB_TOKEN)
-    displayName: 'Use Python 3.13'
+    displayName: 'Use Python $(pythonVersion)'
 
   - script: |
       python -m pip install --upgrade pip
