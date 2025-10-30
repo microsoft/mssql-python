@@ -8,6 +8,7 @@
 #include "connection/connection_pool.h"
 
 #include <cstdint>
+#include <cstring>  // For std::memcpy
 #include <iomanip>  // std::setw, std::setfill
 #include <iostream>
 #include <utility>  // std::forward
@@ -2402,12 +2403,11 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
             } else {
                 // Wide characters
                 size_t wcharSize = sizeof(SQLWCHAR);
-                if (bytesRead >= wcharSize) {
-                    auto sqlwBuf = reinterpret_cast<const SQLWCHAR*>(chunk.data()); // CodeQL [SM02986] This cast is safe because 1. std::vector guarantees proper alignment for its allocations
-                    // 2. SQLGetData writes complete SQLWCHAR units to the buffer
-                    // 3. bytesRead is controlled by the ODBC driver to be SQLWCHAR-aligned
+                if (bytesRead >= wcharSize && (bytesRead % wcharSize == 0)) {
                     size_t wcharCount = bytesRead / wcharSize;
-                    while (wcharCount > 0 && sqlwBuf[wcharCount - 1] == 0) {
+                    std::vector<SQLWCHAR> alignedBuf(wcharCount);
+                    std::memcpy(alignedBuf.data(), chunk.data(), bytesRead);
+                    while (wcharCount > 0 && alignedBuf[wcharCount - 1] == 0) {
                         --wcharCount;
                         bytesRead -= wcharSize;
                     }
@@ -2436,18 +2436,18 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
     }
     if (isWideChar) {
 #if defined(_WIN32)
-        std::wstring wstr(reinterpret_cast<const wchar_t*>(buffer.data()), buffer.size() / sizeof(wchar_t)); // CodeQL [SM02986] This cast is safe because 1. std::vector guarantees proper alignment for its allocations
-                    // 2. SQLGetData writes complete SQLWCHAR units to the buffer
-                    // 3. bytesRead is controlled by the ODBC driver to be SQLWCHAR-aligned
+        size_t wcharCount = buffer.size() / sizeof(wchar_t);
+        std::vector<wchar_t> alignedBuf(wcharCount);
+        std::memcpy(alignedBuf.data(), buffer.data(), buffer.size());
+        std::wstring wstr(alignedBuf.data(), wcharCount);
         std::string utf8str = WideToUTF8(wstr);
         return py::str(utf8str);
 #else
         // Linux/macOS handling
         size_t wcharCount = buffer.size() / sizeof(SQLWCHAR);
-        const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(buffer.data()); // CodeQL [SM02986] This cast is safe because 1. std::vector guarantees proper alignment for its allocations
-                    // 2. SQLGetData writes complete SQLWCHAR units to the buffer
-                    // 3. bytesRead is controlled by the ODBC driver to be SQLWCHAR-aligned
-        std::wstring wstr = SQLWCHARToWString(sqlwBuf, wcharCount);
+        std::vector<SQLWCHAR> alignedBuf(wcharCount);
+        std::memcpy(alignedBuf.data(), buffer.data(), buffer.size());
+        std::wstring wstr = SQLWCHARToWString(alignedBuf.data(), wcharCount);
         std::string utf8str = WideToUTF8(wstr);
         return py::str(utf8str);
 #endif
@@ -2564,8 +2564,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
                             if (numCharsInData < dataBuffer.size()) {
 #if defined(__APPLE__) || defined(__linux__)
-                                const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(dataBuffer.data());
-                                std::wstring wstr = SQLWCHARToWString(sqlwBuf, numCharsInData);
+                                std::wstring wstr = SQLWCHARToWString(dataBuffer.data(), numCharsInData);
                                 std::string utf8str = WideToUTF8(wstr);
                                 row.append(py::str(utf8str));
 #else
