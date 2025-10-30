@@ -456,10 +456,29 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     ThrowStdException("Failed to allocate buffer for SQL_C_CHAR parameter at index " + std::to_string(paramIndex));
                 }
                 
-                std::memcpy(buffer, strValue.c_str(), strValue.length());
-                buffer[strValue.length()] = '\0';  // Ensure null termination
+                // SECURITY: Validate size before copying to prevent buffer overflow
+                size_t copyLength = strValue.length();
+                if (copyLength >= bufferSize) {
+                    ThrowStdException("Buffer overflow prevented: string length exceeds allocated buffer at index " + std::to_string(paramIndex));
+                }
                 
-                paramInfo.strLenOrInd = strValue.length();
+                // Use secure copy with bounds checking
+                #ifdef _WIN32
+                    // Windows: Use memcpy_s for secure copy
+                    errno_t err = memcpy_s(buffer, bufferSize, strValue.data(), copyLength);
+                    if (err != 0) {
+                        ThrowStdException("Secure memory copy failed with error code " + std::to_string(err) + " at index " + std::to_string(paramIndex));
+                    }
+                #else
+                    // POSIX: Use std::copy_n with explicit bounds checking
+                    if (copyLength > 0) {
+                        std::copy_n(strValue.data(), copyLength, buffer);
+                    }
+                #endif
+                
+                buffer[copyLength] = '\0';  // Ensure null termination
+                
+                paramInfo.strLenOrInd = copyLength;
                 
                 LOG("Binding SQL_C_CHAR parameter at index {} with encoded length {}", paramIndex, strValue.length());
                 break;
