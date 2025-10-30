@@ -3170,9 +3170,9 @@ def test_gbk_encoding_chinese_simplified(db_connection):
                 cursor.execute("INSERT INTO #test_gbk VALUES (?, ?)", 1, chinese_text)
                 cursor.execute("SELECT data FROM #test_gbk WHERE id = 1")
                 result = cursor.fetchone()
-                print(f"  Testing '{chinese_text}' ({meaning}): {safe_display(result[0])}")
+                print(f"  Testing {chinese_text!r} ({meaning}): {safe_display(result[0])}")
             else:
-                print(f"  Skipping '{chinese_text}' (not GBK compatible)")
+                print(f"  Skipping {chinese_text!r} (not GBK compatible)")
         
         print("="*60)
         
@@ -3204,9 +3204,9 @@ def test_big5_encoding_chinese_traditional(db_connection):
                 cursor.execute("INSERT INTO #test_big5 VALUES (?, ?)", 1, chinese_text)
                 cursor.execute("SELECT data FROM #test_big5 WHERE id = 1")
                 result = cursor.fetchone()
-                print(f"  Testing '{chinese_text}' ({meaning}): {safe_display(result[0])}")
+                print(f"  Testing {chinese_text!r} ({meaning}): {safe_display(result[0])}")
             else:
-                print(f"  Skipping '{chinese_text}' (not Big5 compatible)")
+                print(f"  Skipping {chinese_text!r} (not Big5 compatible)")
         
         print("="*60)
         
@@ -3238,9 +3238,9 @@ def test_shift_jis_encoding_japanese(db_connection):
                 cursor.execute("INSERT INTO #test_sjis VALUES (?, ?)", 1, japanese_text)
                 cursor.execute("SELECT data FROM #test_sjis WHERE id = 1")
                 result = cursor.fetchone()
-                print(f"  Testing '{japanese_text}' ({meaning}): {safe_display(result[0])}")
+                print(f"  Testing {japanese_text!r} ({meaning}): {safe_display(result[0])}")
             else:
-                print(f"  Skipping '{japanese_text}' (not Shift-JIS compatible)")
+                print(f"  Skipping {japanese_text!r} (not Shift-JIS compatible)")
         
         print("="*60)
         
@@ -3273,9 +3273,9 @@ def test_euc_kr_encoding_korean(db_connection):
                 cursor.execute("INSERT INTO #test_euckr VALUES (?, ?)", 1, korean_text)
                 cursor.execute("SELECT data FROM #test_euckr WHERE id = 1")
                 result = cursor.fetchone()
-                print(f"  Testing '{korean_text}' ({meaning}): {safe_display(result[0])}")
+                print(f"  Testing {korean_text!r} ({meaning}): {safe_display(result[0])}")
             else:
-                print(f"  Skipping '{korean_text}' (not EUC-KR compatible)")
+                print(f"  Skipping {korean_text!r} (not EUC-KR compatible)")
         
         print("="*60)
         
@@ -3315,10 +3315,10 @@ def test_latin1_encoding_western_european(db_connection):
                 cursor.execute("INSERT INTO #test_latin1 VALUES (?, ?)", 1, text)
                 cursor.execute("SELECT data FROM #test_latin1 WHERE id = 1")
                 result = cursor.fetchone()
-                match = "✓" if result[0] == text else "✗"
-                print(f"  {match} {description:15} | '{text}' -> '{result[0]}'")
+                match = "PASS" if result[0] == text else "FAIL"
+                print(f"  {match} {description:15} | {text!r} -> {result[0]!r}")
             else:
-                print(f"  ✗ {description:15} | Not Latin-1 compatible")
+                print(f"  SKIP {description:15} | Not Latin-1 compatible")
         
         print("="*60)
         
@@ -3353,10 +3353,10 @@ def test_cp1252_encoding_windows_western(db_connection):
                 cursor.execute("INSERT INTO #test_cp1252 VALUES (?, ?)", 1, text)
                 cursor.execute("SELECT data FROM #test_cp1252 WHERE id = 1")
                 result = cursor.fetchone()
-                match = "✓" if result[0] == text else "✗"
-                print(f"  {match} {description:15} | '{text}' -> '{result[0]}'")
+                match = "PASS" if result[0] == text else "FAIL"
+                print(f"  {match} {description:15} | {text!r} -> {result[0]!r}")
             else:
-                print(f"  ✗ {description:15} | Not CP1252 compatible")
+                print(f"  SKIP {description:15} | Not CP1252 compatible")
         
         print("="*60)
         
@@ -3504,8 +3504,9 @@ def test_utf16_unicode_preservation(db_connection):
             cursor.execute("INSERT INTO #test_utf16 VALUES (?, ?)", 1, text)
             cursor.execute("SELECT data FROM #test_utf16 WHERE id = 1")
             result = cursor.fetchone()
-            match = "✓" if result[0] == text else "✗"
-            print(f"  {match} {description:10} | '{text}' -> '{result[0]}'")
+            match = "PASS" if result[0] == text else "FAIL"
+            # Use repr() to avoid console encoding issues on Windows
+            print(f"  {match} {description:10} | {text!r} -> {result[0]!r}")
             assert result[0] == text, f"UTF-16 should preserve {description}"
         
         print("="*60)
@@ -3540,7 +3541,7 @@ def test_encoding_error_strict_mode(db_connection):
         print("="*60)
         
         for text, description in non_ascii_strings:
-            print(f"\nTesting ASCII encoding with '{text}' ({description})...")
+            print(f"\nTesting ASCII encoding with {description!r}...")
             try:
                 cursor.execute("INSERT INTO #test_strict VALUES (?, ?)", 1, text)
                 cursor.execute("SELECT data FROM #test_strict WHERE id = 1")

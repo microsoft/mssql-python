@@ -205,7 +205,7 @@ static py::str DecodingString(const char* data, size_t length,
                               const std::string& errors = "strict") {
     try {
         py::gil_scoped_acquire gil;
-        py::bytes byte_data = py::bytes(std::string(data, length));
+        py::bytes byte_data = py::bytes(data, length);
         
         // Direct decoding - let Python handle errors strictly
         py::str decoded = byte_data.attr("decode")(encoding, errors);
@@ -410,28 +410,37 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 std::string strValue;
                 
                 // Check if we have encoding settings and this is SQL_C_CHAR (not SQL_C_WCHAR)
-                if (encoding_settings && !encoding_settings.is_none() && 
-                    encoding_settings.contains("ctype") && 
-                    encoding_settings.contains("encoding")) {
-                    
-                    SQLSMALLINT ctype = encoding_settings["ctype"].cast<SQLSMALLINT>();
-                    
-                    // Only use dynamic encoding for SQL_C_CHAR, keep SQL_C_WCHAR unchanged
-                    if (ctype == SQL_C_CHAR) {
-                        try {
-                            py::dict settings_dict = encoding_settings.cast<py::dict>();
-                            auto [encoding, errors] = extract_encoding_settings(settings_dict);
+                if (encoding_settings && !encoding_settings.is_none()) {
+                    try {
+                        // SECURITY: Use extract_encoding_settings for full validation
+                        // This validates encoding against allowlist and error mode
+                        py::dict settings_dict = encoding_settings.cast<py::dict>();
+                        auto [encoding, errors] = extract_encoding_settings(settings_dict);
+                        
+                        // Validate ctype against allowlist
+                        if (settings_dict.contains("ctype")) {
+                            SQLSMALLINT ctype = settings_dict["ctype"].cast<SQLSMALLINT>();
                             
-                            // Use our safe encoding function
-                            py::bytes encoded_bytes = EncodingString(param.cast<std::string>(), encoding, errors);
-                            strValue = encoded_bytes.cast<std::string>();
-                            
-                        } catch (const std::exception& e) {
-                            LOG("Encoding failed for parameter {}: {}", paramIndex, e.what());
-                            ThrowStdException("Failed to encode parameter " + std::to_string(paramIndex) + ": " + e.what());
+                            // Only SQL_C_CHAR and SQL_C_WCHAR are allowed
+                            if (ctype != SQL_C_CHAR && ctype != SQL_C_WCHAR) {
+                                LOG("Invalid ctype {} for parameter {}, using default", ctype, paramIndex);
+                                // Fall through to default behavior
+                                strValue = param.cast<std::string>();
+                            } else if (ctype == SQL_C_CHAR) {
+                                // Only use dynamic encoding for SQL_C_CHAR
+                                py::bytes encoded_bytes = EncodingString(param.cast<std::string>(), encoding, errors);
+                                strValue = encoded_bytes.cast<std::string>();
+                            } else {
+                                // SQL_C_WCHAR - use default behavior
+                                strValue = param.cast<std::string>();
+                            }
+                        } else {
+                            // No ctype specified, use default behavior
+                            strValue = param.cast<std::string>();
                         }
-                    } else {
-                        // Default behavior for other types
+                    } catch (const std::exception& e) {
+                        LOG("Encoding settings processing failed for parameter {}: {}. Using default.", paramIndex, e.what());
+                        // Fall back to safe default behavior
                         strValue = param.cast<std::string>();
                     }
                 } else {
