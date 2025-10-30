@@ -180,19 +180,26 @@ jobs:
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
-  - task: PublishBuildArtifacts@1
+  - task: CopyFiles@2
     inputs:
-      PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pyd'
-      ArtifactName: 'ddbc_bindings'
-      publishLocation: 'Container'
-    displayName: 'Publish pyd file as artifact'
+      SourceFolder: 'mssql_python'
+      Contents: 'ddbc_bindings.cp*-amd64.pyd'
+      TargetFolder: '$(Build.ArtifactStagingDirectory)'
+    displayName: 'Copy pyd file to staging'
+
+  - task: CopyFiles@2
+    inputs:
+      SourceFolder: 'mssql_python'
+      Contents: 'ddbc_bindings.cp*-amd64.pdb'
+      TargetFolder: '$(Build.ArtifactStagingDirectory)'
+    displayName: 'Copy pdb file to staging'
 
   - task: PublishBuildArtifacts@1
     inputs:
-      PathtoPublish: 'mssql_python/ddbc_bindings.cp313-amd64.pdb'
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
       ArtifactName: 'ddbc_bindings'
       publishLocation: 'Container'
-    displayName: 'Publish pdb file as artifact'
+    displayName: 'Publish build artifacts'
 
   - task: PublishTestResults@2
     condition: succeededOrFailed()
