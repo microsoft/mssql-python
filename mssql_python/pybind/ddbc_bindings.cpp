@@ -2403,7 +2403,9 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
                 // Wide characters
                 size_t wcharSize = sizeof(SQLWCHAR);
                 if (bytesRead >= wcharSize) {
-                    auto sqlwBuf = reinterpret_cast<const SQLWCHAR*>(chunk.data());
+                    auto sqlwBuf = reinterpret_cast<const SQLWCHAR*>(chunk.data()); // CodeQL [SM02986] This cast is safe because 1. std::vector guarantees proper alignment for its allocations
+                    // 2. SQLGetData writes complete SQLWCHAR units to the buffer
+                    // 3. bytesRead is controlled by the ODBC driver to be SQLWCHAR-aligned
                     size_t wcharCount = bytesRead / wcharSize;
                     while (wcharCount > 0 && sqlwBuf[wcharCount - 1] == 0) {
                         --wcharCount;
@@ -2434,13 +2436,17 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
     }
     if (isWideChar) {
 #if defined(_WIN32)
-        std::wstring wstr(reinterpret_cast<const wchar_t*>(buffer.data()), buffer.size() / sizeof(wchar_t));
+        std::wstring wstr(reinterpret_cast<const wchar_t*>(buffer.data()), buffer.size() / sizeof(wchar_t)); // CodeQL [SM02986] This cast is safe because 1. std::vector guarantees proper alignment for its allocations
+                    // 2. SQLGetData writes complete SQLWCHAR units to the buffer
+                    // 3. bytesRead is controlled by the ODBC driver to be SQLWCHAR-aligned
         std::string utf8str = WideToUTF8(wstr);
         return py::str(utf8str);
 #else
         // Linux/macOS handling
         size_t wcharCount = buffer.size() / sizeof(SQLWCHAR);
-        const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(buffer.data());
+        const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(buffer.data()); // CodeQL [SM02986] This cast is safe because 1. std::vector guarantees proper alignment for its allocations
+                    // 2. SQLGetData writes complete SQLWCHAR units to the buffer
+                    // 3. bytesRead is controlled by the ODBC driver to be SQLWCHAR-aligned
         std::wstring wstr = SQLWCHARToWString(sqlwBuf, wcharCount);
         std::string utf8str = WideToUTF8(wstr);
         return py::str(utf8str);
