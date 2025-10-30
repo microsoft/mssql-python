@@ -104,7 +104,6 @@ class Cursor:
         self._next_row_index = 0  # internal: index of the next row the driver will return (0-based)
         self._has_result_set = False  # Track if we have an active result set
         self._skip_increment_for_next_fetch = False  # Track if we need to skip incrementing the row index
-
         self.messages = []  # Store diagnostic messages
 
     def _is_unicode_string(self, param):
@@ -2028,9 +2027,6 @@ class Cursor:
           - absolute(-1): before first (rownumber = -1), no data consumed.
           - absolute(0): position so next fetch returns first row; rownumber stays 0 even after that fetch.
           - absolute(k>0): next fetch returns row index k (0-based); rownumber == k after scroll.
-          
-        Note: Scrolling is not supported with fast forward-only cursors (default).
-        To use scrolling, create connection with fast_forward_cursor=False.
         """
         self._check_closed()
         
@@ -2046,14 +2042,6 @@ class Cursor:
         if not isinstance(value, int):
             raise ProgrammingError("Invalid scroll value type",
                                    f"scroll value must be an integer, got {type(value).__name__}")
-    
-        # Check if cursor is configured for scrolling
-        if not self._is_scrollable:
-            raise NotSupportedError(
-                "Scrolling not supported with fast forward cursors",
-                "To enable scrolling, create connection with fast_forward_cursor=False. "
-                "Note: This will reduce performance for non-scrolling operations."
-            )
     
         # Relative backward not supported
         if mode == 'relative' and value < 0:
