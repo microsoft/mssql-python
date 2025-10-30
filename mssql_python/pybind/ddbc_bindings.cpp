@@ -72,8 +72,10 @@ struct NumericData {
         if (valueBytes.size() > SQL_MAX_NUMERIC_LEN) {
             throw std::runtime_error("NumericData valueBytes size exceeds SQL_MAX_NUMERIC_LEN (16)");
         }
-        // Copy binary data to buffer, remaining bytes stay zero-padded
-        std::memcpy(&val[0], valueBytes.data(), valueBytes.size());
+        // Secure copy: bounds already validated, but using std::copy_n for safety
+        if (valueBytes.size() > 0) {
+            std::copy_n(valueBytes.data(), valueBytes.size(), &val[0]);
+        }
     }
 };
 
@@ -768,8 +770,9 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 // Convert the integer decimalParam.val to char array
                 std::memset(static_cast<void*>(decimalPtr->val), 0, sizeof(decimalPtr->val));
                 size_t copyLen = std::min(decimalParam.val.size(), sizeof(decimalPtr->val));
+                // Secure copy: bounds already validated with std::min
                 if (copyLen > 0) {
-                    std::memcpy(decimalPtr->val, decimalParam.val.data(), copyLen);
+                    std::copy_n(decimalParam.val.data(), copyLen, decimalPtr->val);
                 }
                 dataPtr = static_cast<void*>(decimalPtr);
                 break;
@@ -796,7 +799,8 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 guid_data_ptr->Data3 =
                     (static_cast<uint16_t>(uuid_data[7]) << 8) |
                     (static_cast<uint16_t>(uuid_data[6]));
-                std::memcpy(guid_data_ptr->Data4, &uuid_data[8], 8);
+                // Secure copy: Fixed 8-byte copy for GUID Data4 field
+                std::copy_n(&uuid_data[8], 8, guid_data_ptr->Data4);
                 dataPtr = static_cast<void*>(guid_data_ptr);
                 bufferLength = sizeof(SQLGUID);
                 strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
@@ -1992,15 +1996,34 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                                 ThrowStdException("Input string UTF-16 length exceeds allowed column size at parameter index " + std::to_string(paramIndex) + 
                                     ". UTF-16 length: " + std::to_string(utf16Buf.size() - 1) + ", Column size: " + std::to_string(info.columnSize));
                             }
-                            // If we reach here, the UTF-16 string fits - copy it completely
-                            std::memcpy(wcharArray + i * (info.columnSize + 1), utf16Buf.data(), utf16Buf.size() * sizeof(SQLWCHAR));
+                            // Secure copy: use validated bounds for defense-in-depth
+                            size_t copyBytes = utf16Buf.size() * sizeof(SQLWCHAR);
+                            size_t bufferBytes = (info.columnSize + 1) * sizeof(SQLWCHAR);
+                            SQLWCHAR* destPtr = wcharArray + i * (info.columnSize + 1);
+                            
+                            if (copyBytes > bufferBytes) {
+                                ThrowStdException("Buffer overflow prevented in WCHAR array binding at parameter index " + std::to_string(paramIndex) +
+                                    ", array element " + std::to_string(i));
+                            }
+                            if (copyBytes > 0) {
+                                std::copy_n(reinterpret_cast<const char*>(utf16Buf.data()), copyBytes, reinterpret_cast<char*>(destPtr));
+                            }
 #else
                             // On Windows, wchar_t is already UTF-16, so the original check is sufficient
                             if (wstr.length() > info.columnSize) {
                                 std::string offending = WideToUTF8(wstr);
                                 ThrowStdException("Input string exceeds allowed column size at parameter index " + std::to_string(paramIndex));
                             }
-                            std::memcpy(wcharArray + i * (info.columnSize + 1), wstr.c_str(), (wstr.length() + 1) * sizeof(SQLWCHAR));
+                            // Secure copy with bounds checking
+                            size_t copyBytes = (wstr.length() + 1) * sizeof(SQLWCHAR);
+                            size_t bufferBytes = (info.columnSize + 1) * sizeof(SQLWCHAR);
+                            SQLWCHAR* destPtr = wcharArray + i * (info.columnSize + 1);
+                            
+                            errno_t err = memcpy_s(destPtr, bufferBytes, wstr.c_str(), copyBytes);
+                            if (err != 0) {
+                                ThrowStdException("Secure memory copy failed in WCHAR array binding at parameter index " + std::to_string(paramIndex) +
+                                    ", array element " + std::to_string(i) + ", error code: " + std::to_string(err));
+                            }
 #endif
                             strLenOrIndArray[i] = SQL_NTS;
                         }
@@ -2097,8 +2120,30 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                                 ThrowStdException("Input exceeds column size at index " + std::to_string(i));
                             }
                             
-                            std::memcpy(charArray + i * (info.columnSize + 1), str.c_str(), str.size());
-                            strLenOrIndArray[i] = static_cast<SQLLEN>(str.size());
+                            // SECURITY: Use secure copy with bounds checking
+                            size_t destOffset = i * (info.columnSize + 1);
+                            size_t destBufferSize = info.columnSize + 1;
+                            size_t copyLength = str.size();
+                            
+                            // Validate bounds to prevent buffer overflow
+                            if (copyLength >= destBufferSize) {
+                                ThrowStdException("Buffer overflow prevented at parameter array index " + std::to_string(i));
+                            }
+                            
+                            #ifdef _WIN32
+                                // Windows: Use memcpy_s for secure copy
+                                errno_t err = memcpy_s(charArray + destOffset, destBufferSize, str.data(), copyLength);
+                                if (err != 0) {
+                                    ThrowStdException("Secure memory copy failed with error code " + std::to_string(err) + " at array index " + std::to_string(i));
+                                }
+                            #else
+                                // POSIX: Use std::copy_n with explicit bounds checking
+                                if (copyLength > 0) {
+                                    std::copy_n(str.data(), copyLength, charArray + destOffset);
+                                }
+                            #endif
+                            
+                            strLenOrIndArray[i] = static_cast<SQLLEN>(copyLength);
                         }
                     }
                     dataPtr = charArray;
@@ -2303,8 +2348,9 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                         target.scale = decimalParam.scale;
                         target.sign = decimalParam.sign;
                         size_t copyLen = std::min(decimalParam.val.size(), sizeof(target.val));
+                        // Secure copy: bounds already validated with std::min
                         if (copyLen > 0) {
-                            std::memcpy(target.val, decimalParam.val.data(), copyLen);
+                            std::copy_n(decimalParam.val.data(), copyLen, target.val);
                         }
                         strLenOrIndArray[i] = sizeof(SQL_NUMERIC_STRUCT);
                     }
@@ -2333,11 +2379,13 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                             if (PyBytes_GET_SIZE(b.ptr()) != 16) {
                                 ThrowStdException("UUID binary data must be exactly 16 bytes long.");
                             }
-                            std::memcpy(uuid_bytes.data(), PyBytes_AS_STRING(b.ptr()), 16);
+                            // Secure copy: Fixed 16-byte copy, size validated above
+                            std::copy_n(reinterpret_cast<const unsigned char*>(PyBytes_AS_STRING(b.ptr())), 16, uuid_bytes.data());
                         }
                         else if (py::isinstance(element, uuid_class)) {
                             py::bytes b = element.attr("bytes_le").cast<py::bytes>();
-                            std::memcpy(uuid_bytes.data(), PyBytes_AS_STRING(b.ptr()), 16);
+                            // Secure copy: Fixed 16-byte copy from UUID bytes_le attribute
+                            std::copy_n(reinterpret_cast<const unsigned char*>(PyBytes_AS_STRING(b.ptr())), 16, uuid_bytes.data());
                         }
                         else {
                             ThrowStdException(MakeParamMismatchErrorStr(info.paramCType, paramIndex));
@@ -2350,7 +2398,8 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                                             (static_cast<uint16_t>(uuid_bytes[4]));
                         guidArray[i].Data3 = (static_cast<uint16_t>(uuid_bytes[7]) << 8) |
                                             (static_cast<uint16_t>(uuid_bytes[6]));
-                        std::memcpy(guidArray[i].Data4, uuid_bytes.data() + 8, 8);
+                        // Secure copy: Fixed 8-byte copy for GUID Data4 field
+                        std::copy_n(uuid_bytes.data() + 8, 8, guidArray[i].Data4);
                         strLenOrIndArray[i] = sizeof(SQLGUID);
                     }
                     dataPtr = guidArray;
@@ -3181,7 +3230,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     guid_bytes[5] = ((char*)&guidValue.Data2)[0];
                     guid_bytes[6] = ((char*)&guidValue.Data3)[1];
                     guid_bytes[7] = ((char*)&guidValue.Data3)[0];
-                    std::memcpy(&guid_bytes[8], guidValue.Data4, sizeof(guidValue.Data4));
+                    // Secure copy: Fixed 8-byte copy for GUID Data4 field
+                    std::copy_n(guidValue.Data4, sizeof(guidValue.Data4), &guid_bytes[8]);
 
                     py::bytes py_guid_bytes(guid_bytes.data(), guid_bytes.size());
                     py::object uuid_module = py::module_::import("uuid");
@@ -3655,7 +3705,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     reordered[5] = ((char*)&guidValue->Data2)[0];
                     reordered[6] = ((char*)&guidValue->Data3)[1];
                     reordered[7] = ((char*)&guidValue->Data3)[0];
-                    std::memcpy(reordered + 8, guidValue->Data4, 8);
+                    // Secure copy: Fixed 8-byte copy for GUID Data4 field
+                    std::copy_n(guidValue->Data4, 8, reordered + 8);
 
                     py::bytes py_guid_bytes(reinterpret_cast<char*>(reordered), 16);
                     py::dict kwargs;

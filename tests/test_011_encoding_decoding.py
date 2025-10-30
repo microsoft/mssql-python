@@ -2961,9 +2961,10 @@ def safe_display(text, max_len=50):
     if text is None:
         return "NULL"
     try:
+        # Use ascii() to ensure CP1252 console compatibility on Windows
         display = text[:max_len] if len(text) > max_len else text
-        return display.encode('ascii', 'replace').decode('ascii')
-    except (UnicodeError, AttributeError):
+        return ascii(display)
+    except (AttributeError, TypeError):
         return repr(text)[:max_len]
 
 
@@ -3505,8 +3506,8 @@ def test_utf16_unicode_preservation(db_connection):
             cursor.execute("SELECT data FROM #test_utf16 WHERE id = 1")
             result = cursor.fetchone()
             match = "PASS" if result[0] == text else "FAIL"
-            # Use repr() to avoid console encoding issues on Windows
-            print(f"  {match} {description:10} | {text!r} -> {result[0]!r}")
+            # Use ascii() to force ASCII-safe output on Windows CP1252 console
+            print(f"  {match} {description:10} | {ascii(text)} -> {ascii(result[0])}")
             assert result[0] == text, f"UTF-16 should preserve {description}"
         
         print("="*60)
