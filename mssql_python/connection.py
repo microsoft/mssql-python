@@ -56,18 +56,35 @@ UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16", "utf-16le", "utf-16be"])
 
 def _validate_encoding(encoding: str) -> bool:
     """
-    Cached encoding validation using codecs.lookup().
-
+    Validate encoding name for security and correctness.
+    
+    This function performs two-layer validation:
+    1. Security check: Ensures only safe characters are in the encoding name
+    2. Codec check: Verifies it's a valid Python codec
+    
     Args:
         encoding (str): The encoding name to validate.
 
     Returns:
-        bool: True if encoding is valid, False otherwise.
+        bool: True if encoding is valid and safe, False otherwise.
 
     Note:
-        Uses LRU cache to avoid repeated expensive codecs.lookup() calls.
-        Cache size is limited to 128 entries which should cover most use cases.
+        Rejects encodings with:
+        - Empty or too long names (>100 chars)
+        - Suspicious characters (only alphanumeric, hyphen, underscore, dot allowed)
+        - Invalid Python codecs
     """
+    # Security validation: Check length and characters
+    if not encoding or len(encoding) > 100:
+        return False
+    
+    # Only allow safe characters in encoding names
+    # Valid codec names contain: letters, numbers, hyphens, underscores, dots
+    for char in encoding:
+        if not (char.isalnum() or char in ('-', '_', '.')):
+            return False
+    
+    # Verify it's a valid Python codec
     try:
         codecs.lookup(encoding)
         return True
