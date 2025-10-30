@@ -630,7 +630,7 @@ class TestConnectAPIIntegration:
         assert "reserved and controlled by the driver" in str(exc_info.value)
         assert "APP" in str(exc_info.value) or "app" in str(exc_info.value).lower()
         
-        print("\n✅ APP in kwargs correctly raised ValueError before connecting to SQL Server")
+        print("\n APP in kwargs correctly raised ValueError before connecting to SQL Server")
     
     @patch('mssql_python.connection.ddbc_bindings.Connection')
     def test_connect_empty_value_raises_error(self, mock_ddbc_conn):

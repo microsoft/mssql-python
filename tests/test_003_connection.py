@@ -124,11 +124,12 @@ def test_connection(db_connection):
 
 def test_construct_connection_string(db_connection):
     # Check if the connection string is constructed correctly with kwargs
-    conn_str = db_connection._construct_connection_string(host="localhost", user="me", password="mypwd", database="mydb", encrypt="yes", trust_server_certificate="yes")
-    # With the new allow-list implementation, parameters are sorted
+    # Using official ODBC parameter names
+    conn_str = db_connection._construct_connection_string(Server="localhost", UID="me", PWD="mypwd", Database="mydb", Encrypt="yes", TrustServerCertificate="yes")
+    # With the new allow-list implementation, parameters are normalized and validated
     assert "Server=localhost" in conn_str, "Connection string should contain 'Server=localhost'"
-    assert "Uid=me" in conn_str, "Connection string should contain 'Uid=me'"
-    assert "Pwd=mypwd" in conn_str, "Connection string should contain 'Pwd=mypwd'"
+    assert "UID=me" in conn_str, "Connection string should contain 'UID=me'"
+    assert "PWD=mypwd" in conn_str, "Connection string should contain 'PWD=mypwd'"
     assert "Database=mydb" in conn_str, "Connection string should contain 'Database=mydb'"
     assert "Encrypt=yes" in conn_str, "Connection string should contain 'Encrypt=yes'"
     assert "TrustServerCertificate=yes" in conn_str, "Connection string should contain 'TrustServerCertificate=yes'"
@@ -137,11 +138,12 @@ def test_construct_connection_string(db_connection):
 
 def test_connection_string_with_attrs_before(db_connection):
     # Check if the connection string is constructed correctly with attrs_before
-    conn_str = db_connection._construct_connection_string(host="localhost", user="me", password="mypwd", database="mydb", encrypt="yes", trust_server_certificate="yes", attrs_before={1256: "token"})
-    # With the new allow-list implementation, parameters are sorted
+    # Using official ODBC parameter names
+    conn_str = db_connection._construct_connection_string(Server="localhost", UID="me", PWD="mypwd", Database="mydb", Encrypt="yes", TrustServerCertificate="yes", attrs_before={1256: "token"})
+    # With the new allow-list implementation, parameters are normalized and validated
     assert "Server=localhost" in conn_str, "Connection string should contain 'Server=localhost'"
-    assert "Uid=me" in conn_str, "Connection string should contain 'Uid=me'"
-    assert "Pwd=mypwd" in conn_str, "Connection string should contain 'Pwd=mypwd'"
+    assert "UID=me" in conn_str, "Connection string should contain 'UID=me'"
+    assert "PWD=mypwd" in conn_str, "Connection string should contain 'PWD=mypwd'"
     assert "Database=mydb" in conn_str, "Connection string should contain 'Database=mydb'"
     assert "Encrypt=yes" in conn_str, "Connection string should contain 'Encrypt=yes'"
     assert "TrustServerCertificate=yes" in conn_str, "Connection string should contain 'TrustServerCertificate=yes'"
@@ -151,11 +153,12 @@ def test_connection_string_with_attrs_before(db_connection):
 
 def test_connection_string_with_odbc_param(db_connection):
     # Check if the connection string is constructed correctly with ODBC parameters
+    # Using lowercase synonyms that normalize to uppercase (uid->UID, pwd->PWD)
     conn_str = db_connection._construct_connection_string(server="localhost", uid="me", pwd="mypwd", database="mydb", encrypt="yes", trust_server_certificate="yes")
-    # With the new allow-list implementation, parameters are sorted
+    # With the new allow-list implementation, parameters are normalized and validated
     assert "Server=localhost" in conn_str, "Connection string should contain 'Server=localhost'"
-    assert "Uid=me" in conn_str, "Connection string should contain 'Uid=me'"
-    assert "Pwd=mypwd" in conn_str, "Connection string should contain 'Pwd=mypwd'"
+    assert "UID=me" in conn_str, "Connection string should contain 'UID=me'"
+    assert "PWD=mypwd" in conn_str, "Connection string should contain 'PWD=mypwd'"
     assert "Database=mydb" in conn_str, "Connection string should contain 'Database=mydb'"
     assert "Encrypt=yes" in conn_str, "Connection string should contain 'Encrypt=yes'"
     assert "TrustServerCertificate=yes" in conn_str, "Connection string should contain 'TrustServerCertificate=yes'"

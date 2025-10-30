@@ -56,6 +56,7 @@ class _ConnectionStringAllowList:
         # Encryption and Security
         'encrypt': 'Encrypt',
         'trustservercertificate': 'TrustServerCertificate',
+        'trust_server_certificate': 'TrustServerCertificate',  # Snake_case synonym
         'hostnameincertificate': 'HostnameInCertificate',  # v18.0+
         'servercertificate': 'ServerCertificate',  # v18.1+
         'serverspn': 'ServerSPN',
@@ -72,6 +73,8 @@ class _ConnectionStringAllowList:
         
         # IP Address Preference (v18.1+)
         'ipaddresspreference': 'IpAddressPreference',
+
+        'packet size': 'Packet Size',
     }
     
     @classmethod
