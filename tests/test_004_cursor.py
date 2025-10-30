@@ -16,16 +16,7 @@ from contextlib import closing
 import mssql_python
 import uuid
 import re
-
-
-def is_azure_sql_connection(conn_str):
-    """Helper function to detect if connection string is for Azure SQL Database"""
-    if not conn_str:
-        return False
-    # Check if database.windows.net appears in the Server parameter
-    conn_str_lower = conn_str.lower()
-    server_match = re.search(r'server\s*=\s*[^;]*database\.windows\.net', conn_str_lower)
-    return server_match is not None
+from conftest import is_azure_sql_connection
 
 
 # Setup test table
