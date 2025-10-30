@@ -220,8 +220,6 @@ def test_setencoding_persistence_across_cursors(db_connection):
     cursor1.close()
     cursor2.close()
 
-
-@pytest.mark.skip("Skipping Unicode data tests till we have support for Unicode")
 def test_setencoding_with_unicode_data(db_connection):
     """Test setencoding with actual Unicode data operations."""
     # Test UTF-8 encoding with Unicode data
@@ -1047,10 +1045,14 @@ def test_setdecoding_security_logging(db_connection):
         with pytest.raises(ProgrammingError):
             db_connection.setdecoding(sqltype, encoding=encoding, ctype=ctype)
 
-
-@pytest.mark.skip("Skipping Unicode data tests till we have support for Unicode")
 def test_setdecoding_with_unicode_data(db_connection):
-    """Test setdecoding with actual Unicode data operations."""
+    """Test setdecoding with actual Unicode data operations.
+    
+    Note: VARCHAR columns in SQL Server use the database's default collation
+    (typically Latin1/CP1252) and cannot reliably store Unicode characters.
+    Only NVARCHAR columns properly support Unicode. This test focuses on
+    NVARCHAR columns and ASCII-safe data for VARCHAR columns.
+    """
 
     # Test different decoding configurations with Unicode data
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8")
@@ -1059,51 +1061,66 @@ def test_setdecoding_with_unicode_data(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        # Create test table with both CHAR and NCHAR columns
+        # Create test table with NVARCHAR columns for Unicode support
         cursor.execute(
             """
             CREATE TABLE #test_decoding_unicode (
-                char_col VARCHAR(100),
-                nchar_col NVARCHAR(100)
+                id INT IDENTITY(1,1),
+                ascii_col VARCHAR(100),
+                unicode_col NVARCHAR(100)
             )
         """
         )
 
-        # Test various Unicode strings
-        test_strings = [
+        # Test ASCII strings in VARCHAR (safe)
+        ascii_strings = [
             "Hello, World!",
+            "Simple ASCII text",
+            "Numbers: 12345",
+        ]
+
+        for test_string in ascii_strings:
+            cursor.execute(
+                "INSERT INTO #test_decoding_unicode (ascii_col, unicode_col) VALUES (?, ?)",
+                test_string,
+                test_string,
+            )
+
+        # Test Unicode strings in NVARCHAR only
+        unicode_strings = [
             "Hello, 世界!",  # Chinese
             "Привет, мир!",  # Russian
             "مرحبا بالعالم",  # Arabic
+            "🌍🌎🌏",  # Emoji
         ]
 
-        for test_string in test_strings:
-            # Insert data
+        for test_string in unicode_strings:
             cursor.execute(
-                "INSERT INTO #test_decoding_unicode (char_col, nchar_col) VALUES (?, ?)",
-                test_string,
+                "INSERT INTO #test_decoding_unicode (unicode_col) VALUES (?)",
                 test_string,
             )
 
-            # Retrieve and verify
-            cursor.execute(
-                "SELECT char_col, nchar_col FROM #test_decoding_unicode WHERE char_col = ?",
-                test_string,
-            )
-            result = cursor.fetchone()
+        # Verify ASCII data in VARCHAR
+        cursor.execute("SELECT ascii_col FROM #test_decoding_unicode WHERE ascii_col IS NOT NULL ORDER BY id")
+        ascii_results = cursor.fetchall()
+        assert len(ascii_results) == len(ascii_strings), "ASCII string count mismatch"
+        for i, result in enumerate(ascii_results):
+            assert result[0] == ascii_strings[i], f"ASCII string mismatch: expected {ascii_strings[i]}, got {result[0]}"
 
-            assert (
-                result is not None
-            ), f"Failed to retrieve Unicode string: {test_string}"
-            assert (
-                result[0] == test_string
-            ), f"CHAR column mismatch: expected {test_string}, got {result[0]}"
-            assert (
-                result[1] == test_string
-            ), f"NCHAR column mismatch: expected {test_string}, got {result[1]}"
+        # Verify Unicode data in NVARCHAR
+        cursor.execute("SELECT unicode_col FROM #test_decoding_unicode WHERE unicode_col IS NOT NULL ORDER BY id")
+        unicode_results = cursor.fetchall()
+        
+        # First 3 are ASCII (also in unicode_col), next 4 are Unicode-only
+        all_expected = ascii_strings + unicode_strings
+        assert len(unicode_results) == len(all_expected), f"Unicode string count mismatch: expected {len(all_expected)}, got {len(unicode_results)}"
+        
+        for i, result in enumerate(unicode_results):
+            expected = all_expected[i]
+            assert result[0] == expected, f"Unicode string mismatch at index {i}: expected {expected!r}, got {result[0]!r}"
 
-            # Clear for next test
-            cursor.execute("DELETE FROM #test_decoding_unicode")
+        print(f"[OK] Successfully tested {len(ascii_strings)} ASCII strings in VARCHAR")
+        print(f"[OK] Successfully tested {len(all_expected)} strings in NVARCHAR (including {len(unicode_strings)} Unicode-only)")
 
     except Exception as e:
         pytest.fail(f"Unicode data test failed with custom decoding: {e}")
@@ -3006,8 +3023,6 @@ def test_decoding_injection_attacks(db_connection):
     print(f"\n{'='*80}")
     print("[OK] All decoding injection attacks prevented")
 
-
-@pytest.mark.skip(reason="Python's codec lookup accepts these encodings and returns LookupError later, not at validation time")
 def test_encoding_validation_security(db_connection):
     """Test Python-layer encoding validation using is_valid_encoding."""
     print("\n" + "="*80)
@@ -3645,7 +3660,6 @@ def test_null_value_encoding_decoding(db_connection):
 # C++ LAYER TESTS (ddbc_bindings)
 # ====================================================================================
 
-@pytest.mark.skip(reason="Python's codec lookup accepts these strings and validates later, not at setencoding time")
 def test_cpp_encoding_validation(db_connection):
     """Test C++ layer encoding validation (is_valid_encoding function)."""
     print("\n" + "="*70)

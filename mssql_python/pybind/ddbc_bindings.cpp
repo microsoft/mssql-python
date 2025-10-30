@@ -240,10 +240,18 @@ static bool is_valid_encoding(const std::string& enc) {
         codecs.attr("lookup")(enc);
         
         return true;  // Codec exists and is valid
-    } catch (const py::error_already_set&) {
+    } catch (const py::error_already_set& e) {
+        // Expected: LookupError for invalid codec names
+        LOG("Codec validation failed for '{}': {}", enc, e.what());
         return false;  // Invalid codec name
+    } catch (const std::exception& e) {
+        // Unexpected C++ exception during validation
+        LOG("Unexpected exception validating encoding '{}': {}", enc, e.what());
+        return false;
     } catch (...) {
-        return false;  // Any other error
+        // Last resort: unknown exception type
+        LOG("Unknown exception validating encoding '{}'", enc);
+        return false;
     }
 }
 
@@ -293,7 +301,17 @@ static std::pair<std::string, std::string> extract_encoding_settings(const py::d
         }
         
         return std::make_pair(encoding, errors);
+    } catch (const py::error_already_set& e) {
+        // Log Python exceptions (KeyError, TypeError, etc.)
+        LOG("Python exception while extracting encoding settings: {}. Using defaults (utf-8, strict)", e.what());
+        return std::make_pair("utf-8", "strict");
+    } catch (const std::exception& e) {
+        // Log C++ standard exceptions
+        LOG("Exception while extracting encoding settings: {}. Using defaults (utf-8, strict)", e.what());
+        return std::make_pair("utf-8", "strict");
     } catch (...) {
+        // Last resort: unknown exception type
+        LOG("Unknown exception while extracting encoding settings. Using defaults (utf-8, strict)");
         return std::make_pair("utf-8", "strict");
     }
 }
