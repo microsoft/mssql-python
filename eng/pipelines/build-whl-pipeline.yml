@@ -340,7 +340,7 @@ jobs:
         python -m pytest -v
       displayName: 'Run Pytest to validate bindings'
       env:
-        DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+        DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
     # Build wheel package for universal2
     - script: |
@@ -801,7 +801,7 @@ jobs:
 
       displayName: 'Test wheel installation and basic functionality on $(BASE_IMAGE)'
       env:
-        DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+        DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
     # Run pytest with source code while testing installed wheel
     - script: |
@@ -856,7 +856,7 @@ jobs:
         "
       displayName: 'Run pytest suite on $(BASE_IMAGE) $(ARCH)'
       env:
-        DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+        DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
       continueOnError: true  # Don't fail pipeline if tests fail
 
     # Cleanup

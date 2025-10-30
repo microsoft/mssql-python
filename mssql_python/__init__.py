@@ -26,6 +26,9 @@ from .exceptions import (
     NotSupportedError,
 )
 
+# Connection string parser exceptions
+from .exceptions import ConnectionStringParseError
+
 # Type Objects
 from .type import (
     Date,

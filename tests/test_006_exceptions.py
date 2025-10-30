@@ -15,6 +15,7 @@ from mssql_python.exceptions import (
     raise_exception,
     truncate_error_message,
 )
+from mssql_python import ConnectionStringParseError
 
 
 def drop_table_if_exists(cursor, table_name):
@@ -193,15 +194,11 @@ def test_foreign_key_constraint_error(cursor, db_connection):
 
 
 def test_connection_error():
-    # RuntimeError is raised on Windows, while on MacOS it raises OperationalError
-    # In  MacOS the error goes by "Client unable to establish connection"
-    # In Windows it goes by "Neither DSN nor SERVER keyword supplied"
-    # TODO: Make this test platform independent
-    with pytest.raises((RuntimeError, OperationalError)) as excinfo:
+    # The new connection string parser now validates the connection string before passing to ODBC
+    # Invalid strings like "InvalidConnectionString" (missing key=value format) will raise ConnectionStringParseError
+    with pytest.raises(ConnectionStringParseError) as excinfo:
         connect("InvalidConnectionString")
-    assert "Client unable to establish connection" in str(
-        excinfo.value
-    ) or "Neither DSN nor SERVER keyword supplied" in str(excinfo.value)
+    assert "Incomplete specification" in str(excinfo.value) or "has no value" in str(excinfo.value)
 
 
 def test_truncate_error_message_successful_cases():
