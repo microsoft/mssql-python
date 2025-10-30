@@ -32,6 +32,11 @@ class _ConnectionStringAllowList:
     # Core connection parameters with synonym mapping
     # Maps lowercase parameter names to their canonical form
     # Based on ODBC Driver 18 for SQL Server supported parameters
+    # A new connection string key to be supported in Python, should be added
+    # to the dictionary below. the value is the canonical name used in the 
+    # final connection string sent to ODBC driver.
+    # The left side is what Python connection string supports, the right side 
+    # is the canonical ODBC key name.
     ALLOWED_PARAMS = {
         # Server identification - addr, address, and server are synonyms
         'server': 'Server',
@@ -74,7 +79,10 @@ class _ConnectionStringAllowList:
         # IP Address Preference (v18.1+)
         'ipaddresspreference': 'IpAddressPreference',
 
-        'packet size': 'Packet Size',
+        'packet size': 'PacketSize', # From the tests it looks like pyodbc users use Packet Size
+                                     # (with spaces) ODBC only honors "PacketSize" without spaces
+                                     # internally.
+        'packetsize': 'PacketSize',
     }
     
     @classmethod
