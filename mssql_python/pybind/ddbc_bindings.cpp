@@ -200,7 +200,7 @@ static py::bytes EncodingString(const std::string& text, const std::string& enco
                 // UTF-8 failed, try latin-1 for Western European characters
                 try {
                     py::bytes encoded = unicode_str.attr("encode")("latin-1", "strict");
-                    LOG("EncodingString: UTF-8 failed, successfully encoded with latin-1 fallback for text: {}", text.substr(0, 50));
+                    LOG("EncodingString: UTF-8 failed, successfully encoded with latin-1 fallback for {} characters", text.length());
                     return encoded;
                 } catch (const py::error_already_set&) {
                     // Both failed, use original approach with error handling
@@ -262,6 +262,48 @@ static py::str DecodingString(const char* data, size_t length, const std::string
     }
 }
 
+// Helper function to validate that an encoding string is a legitimate Python codec
+// This prevents injection attacks while allowing all valid encodings
+static bool is_valid_encoding(const std::string& enc) {
+    if (enc.empty() || enc.length() > 100) {  // Reasonable length limit
+        return false;
+    }
+    
+    // Check for potentially dangerous characters that shouldn't be in codec names
+    for (char c : enc) {
+        if (!std::isalnum(c) && c != '-' && c != '_' && c != '.') {
+            return false;  // Reject suspicious characters
+        }
+    }
+    
+    // Verify it's a valid Python codec by attempting a test lookup
+    try {
+        py::gil_scoped_acquire gil;
+        py::module_ codecs = py::module_::import("codecs");
+        
+        // This will raise LookupError if the codec doesn't exist
+        codecs.attr("lookup")(enc);
+        
+        return true;  // Codec exists and is valid
+    } catch (const py::error_already_set&) {
+        return false;  // Invalid codec name
+    } catch (...) {
+        return false;  // Any other error
+    }
+}
+
+// Helper function to validate error handling mode against an allowlist
+static bool is_valid_error_mode(const std::string& mode) {
+    static const std::unordered_set<std::string> allowed = {
+        "strict",
+        "ignore",
+        "replace",
+        "xmlcharrefreplace",
+        "backslashreplace"
+    };
+    return allowed.find(mode) != allowed.end();
+}
+
 // Helper function to safely extract encoding settings from Python dict
 static std::pair<std::string, std::string> extract_encoding_settings(const py::dict& settings) {
     try {
@@ -269,11 +311,30 @@ static std::pair<std::string, std::string> extract_encoding_settings(const py::d
         std::string errors = "strict";   // Default
         
         if (settings.contains("encoding") && !settings["encoding"].is_none()) {
-            encoding = settings["encoding"].cast<std::string>();
+            std::string proposed_encoding = settings["encoding"].cast<std::string>();
+            
+            // SECURITY: Validate encoding to prevent injection attacks
+            // Allows any valid Python codec (including SQL Server-supported encodings)
+            if (is_valid_encoding(proposed_encoding)) {
+                encoding = proposed_encoding;
+            } else {
+                LOG("Invalid or unsafe encoding '{}' rejected, using default 'utf-8'", proposed_encoding);
+                // Fall back to safe default
+                encoding = "utf-8";
+            }
         }
         
         if (settings.contains("errors") && !settings["errors"].is_none()) {
-            errors = settings["errors"].cast<std::string>();
+            std::string proposed_errors = settings["errors"].cast<std::string>();
+            
+            // SECURITY: Validate error mode against allowlist
+            if (is_valid_error_mode(proposed_errors)) {
+                errors = proposed_errors;
+            } else {
+                LOG("Invalid error mode '{}' rejected, using default 'strict'", proposed_errors);
+                // Fall back to safe default
+                errors = "strict";
+            }
         }
         
         return std::make_pair(encoding, errors);
