@@ -79,7 +79,9 @@ std::string LoggerBridge::formatMessage(const char* format, va_list args) {
     // Use a stack buffer for most messages (4KB should be enough)
     char buffer[4096];
     
-    // Format the message using safe vsnprintf (always null-terminates)
+    // Format the message using safe std::vsnprintf (C++11 standard)
+    // std::vsnprintf is safe: always null-terminates, never overflows buffer
+    // DevSkim warning is false positive - this is the recommended safe alternative
     va_list args_copy;
     va_copy(args_copy, args);
     int result = std::vsnprintf(buffer, sizeof(buffer), format, args_copy);
@@ -99,6 +101,7 @@ std::string LoggerBridge::formatMessage(const char* format, va_list args) {
     // (This should be rare for typical log messages)
     std::vector<char> large_buffer(result + 1);
     va_copy(args_copy, args);
+    // std::vsnprintf is safe here too - proper bounds checking with buffer size
     std::vsnprintf(large_buffer.data(), large_buffer.size(), format, args_copy);
     va_end(args_copy);
     
@@ -148,7 +151,9 @@ void LoggerBridge::log(int level, const char* file, int line,
     // Extract filename from path
     const char* filename = extractFilename(file);
     
-    // Format the complete log message with file:line prefix using safe snprintf
+    // Format the complete log message with file:line prefix using safe std::snprintf
+    // std::snprintf is safe: always null-terminates, never overflows buffer
+    // DevSkim warning is false positive - this is the recommended safe alternative
     char complete_message[4096];
     int written = std::snprintf(complete_message, sizeof(complete_message), 
                                "[DDBC] %s [%s:%d]", message.c_str(), filename, line);
