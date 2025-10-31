@@ -8603,7 +8603,9 @@ def test_connection_context_manager_with_cursor_cleanup(conn_str):
 
         # Perform operations
         cursor1.execute("SELECT 1")
+        cursor1.fetchall()  # Consume the result set to free the connection
         cursor2.execute("SELECT 2")
+        cursor2.fetchall()  # Consume the result set
 
         # Verify cursors are tracked
         assert len(conn._cursors) == 2, "Should track both cursors"
