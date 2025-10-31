@@ -26,13 +26,13 @@ namespace mssql_python {
 namespace logging {
 
 // Log level constants (matching Python levels)
-constexpr int FINEST = 5;   // Ultra-detailed trace
-constexpr int FINER = 15;   // Detailed diagnostics
-constexpr int FINE = 25;    // Standard diagnostics
-constexpr int INFO = 20;    // Informational
-constexpr int WARNING = 30; // Warnings
-constexpr int ERROR = 40;   // Errors
-constexpr int CRITICAL = 50; // Critical errors
+const int FINEST = 5;   // Ultra-detailed trace
+const int FINER = 15;   // Detailed diagnostics
+const int FINE = 25;    // Standard diagnostics
+const int INFO = 20;    // Informational
+const int WARNING = 30; // Warnings
+const int ERROR = 40;   // Errors
+const int CRITICAL = 50; // Critical errors
 
 /**
  * LoggerBridge - Bridge between C++ and Python logging

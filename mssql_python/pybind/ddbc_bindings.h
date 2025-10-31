@@ -501,7 +501,7 @@ inline std::wstring Utf8ToWString(const std::string& str) {
                                           static_cast<int>(str.size()),
                                           nullptr, 0);
     if (size_needed == 0) {
-        LOG("MultiByteToWideChar failed.");
+        LOG_ERROR("MultiByteToWideChar failed for UTF8 to wide string conversion");
         return {};
     }
     std::wstring result(size_needed, 0);
