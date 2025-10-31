@@ -574,6 +574,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             log("debug", "SQLFreeHandle succeeded")
 
         self._clear_rownumber()
+        
+        # Clear pre-computed metadata
+        self._column_name_map = None
+        self._settings_snapshot = None
+        self._uuid_indices = None
+        self._converter_map = None
 
         # Reinitialize the statement handle
         self._initialize_cursor()
@@ -822,6 +828,65 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 )
             )
         self.description = description
+        
+        # Pre-compute shared metadata for Row optimization
+        self._precompute_row_metadata()
+
+    def _precompute_row_metadata(self) -> None:
+        """
+        Pre-compute metadata shared across all Row instances for performance.
+        This avoids expensive per-row computations in Row.__init__.
+        """
+        if not self.description:
+            self._column_name_map = None
+            self._settings_snapshot = None
+            self._uuid_indices = None
+            self._converter_map = None
+            return
+            
+        # Pre-compute settings snapshot
+        settings = get_settings()
+        self._settings_snapshot = {
+            "lowercase": settings.lowercase,
+            "native_uuid": settings.native_uuid,
+        }
+        
+        # Pre-compute column name to index mapping
+        self._column_name_map = {}
+        self._uuid_indices = []
+        self._converter_map = {}  # Column index -> converter function
+        
+        for i, col_desc in enumerate(self.description):
+            if col_desc:  # Ensure column description exists
+                col_name = col_desc[0]  # Name is first item in description tuple
+                if self._settings_snapshot.get("lowercase"):
+                    col_name = col_name.lower()
+                self._column_name_map[col_name] = i
+                
+                # Pre-identify UUID columns (SQL_GUID = -11)
+                if len(col_desc) > 1 and col_desc[1] == -11:
+                    self._uuid_indices.append(i)
+                
+                # Pre-compute output converters for each column
+                if len(col_desc) > 1:
+                    sql_type = col_desc[1]  # type_code is at index 1
+                    
+                    # Check if we have output converters configured
+                    if (hasattr(self.connection, "_output_converters") 
+                        and self.connection._output_converters):
+                        
+                        converter = self.connection.get_output_converter(sql_type)
+                        
+                        # If no converter found but it might be string/bytes, try WVARCHAR
+                        if converter is None:
+                            converter = self.connection.get_output_converter(-9)  # SQL_WVARCHAR
+                        
+                        # Store converter if found
+                        if converter is not None:
+                            self._converter_map[i] = {
+                                'converter': converter,
+                                'sql_type': sql_type
+                            }
 
     def _map_data_type(self, sql_type: int) -> type:
         """
@@ -1972,7 +2037,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Create and return a Row object, passing column name map if available
             column_map = getattr(self, "_column_name_map", None)
             settings_snapshot = getattr(self, "_settings_snapshot", None)
-            return Row(self, self.description, row_data, column_map, settings_snapshot)
+            converter_map = getattr(self, "_converter_map", None)
+            return Row(self, self.description, row_data, column_map, settings_snapshot, converter_map)
         except Exception as e:  # pylint: disable=broad-exception-caught
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -2017,13 +2083,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             else:
                 self.rowcount = self._next_row_index
 
-            # Convert raw data to Row objects
-            column_map = getattr(self, "_column_name_map", None)
-            settings_snapshot = getattr(self, "_settings_snapshot", None)
-            return [
-                Row(self, self.description, row_data, column_map, settings_snapshot)
-                for row_data in rows_data
-            ]
+            # Convert raw data to Row objects using pre-computed metadata
+            if rows_data:
+                column_map = getattr(self, "_column_name_map", None)
+                settings_snapshot = getattr(self, "_settings_snapshot", None)
+                converter_map = getattr(self, "_converter_map", None)
+                
+                # Batch create Row objects with optimized metadata
+                return [
+                    Row(self, self.description, row_data, column_map, settings_snapshot, converter_map)
+                    for row_data in rows_data
+                ]
+            else:
+                return []
         except Exception as e:  # pylint: disable=broad-exception-caught
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -2058,16 +2130,51 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             else:
                 self.rowcount = self._next_row_index
 
-            # Convert raw data to Row objects
-            column_map = getattr(self, "_column_name_map", None)
-            settings_snapshot = getattr(self, "_settings_snapshot", None)
-            return [
-                Row(self, self.description, row_data, column_map, settings_snapshot)
-                for row_data in rows_data
-            ]
+            # Convert raw data to Row objects using pre-computed metadata
+            if rows_data:
+                column_map = getattr(self, "_column_name_map", None)
+                settings_snapshot = getattr(self, "_settings_snapshot", None)
+                
+                # Get pre-computed converter map
+                converter_map = getattr(self, "_converter_map", None)
+                
+                # Use optimized Row creation for large datasets
+                if len(rows_data) > 10000:
+                    return self._create_rows_optimized(rows_data, column_map, settings_snapshot, converter_map)
+                else:
+                    # Regular path for smaller datasets
+                    return [
+                        Row(self, self.description, row_data, column_map, settings_snapshot, converter_map)
+                        for row_data in rows_data
+                    ]
+            else:
+                return []
         except Exception as e:  # pylint: disable=broad-exception-caught
             # On error, don't increment rownumber - rethrow the error
             raise e
+
+    def _create_rows_optimized(self, rows_data, column_map, settings_snapshot, converter_map):
+        """
+        Optimized Row creation for large datasets using batch processing.
+        """
+        # For very large datasets, minimize object creation overhead
+        Row_class = Row
+        description = self.description
+        cursor_ref = self
+        
+        # Use more efficient approach for very large datasets  
+        if len(rows_data) > 50000:
+            # Pre-allocate result list to avoid multiple reallocations
+            result = [None] * len(rows_data)
+            for i, row_data in enumerate(rows_data):
+                result[i] = Row_class(cursor_ref, description, row_data, column_map, settings_snapshot, converter_map)
+            return result
+        else:
+            # Standard list comprehension for medium-large datasets
+            return [
+                Row_class(cursor_ref, description, row_data, column_map, settings_snapshot, converter_map)
+                for row_data in rows_data
+            ]
 
     def nextset(self) -> Union[bool, None]:
         """

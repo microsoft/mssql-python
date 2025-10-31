@@ -2530,7 +2530,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
     // Cache decimal separator to avoid repeated system calls
     static const std::string defaultSeparator = ".";
     std::string decimalSeparator = GetDecimalSeparator();
-    bool isDefaultDecimalSeparator = (decimalSeparator == defaultSeparator);
     
     for (SQLSMALLINT i = 1; i <= colCount; ++i) {
         SQLWCHAR columnName[256];
@@ -3197,7 +3196,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     
     static const std::string defaultSeparator = ".";
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
-    bool isDefaultDecimalSeparator = (decimalSeparator == defaultSeparator);
     
     size_t initialSize = rows.size();
     for (SQLULEN i = 0; i < numRowsFetched; i++) {

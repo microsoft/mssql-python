@@ -37,6 +37,7 @@ class Row:
         values: List[Any],
         column_map: Optional[Dict[str, int]] = None,
         settings_snapshot: Optional[Dict[str, Any]] = None,
+        converter_map: Optional[Dict[int, Dict[str, Any]]] = None,
     ) -> None:
         """
         Initialize a Row object with values and description.
@@ -47,37 +48,26 @@ class Row:
             values: List of values for this row
             column_map: Optional pre-built column map (for optimization)
             settings_snapshot: Settings snapshot from cursor to ensure consistency
+            converter_map: Optional pre-built converter map (for optimization)
         """
         self._cursor = cursor
         self._description = description
+        self._converter_map = converter_map
 
-        # Use settings snapshot if provided, otherwise fallback to global settings
-        if settings_snapshot is not None:
-            self._settings = settings_snapshot
-        else:
-            settings = get_settings()
-            self._settings = {
-                "lowercase": settings.lowercase,
-                "native_uuid": settings.native_uuid,
-            }
-        # Create mapping of column names to indices first
-        # If column_map is not provided, build it from description
-        if column_map is None:
-            self._column_map = {}
-            for i, col_desc in enumerate(description):
-                if col_desc:  # Ensure column description exists
-                    col_name = col_desc[0]  # Name is first item in description tuple
-                    if self._settings.get("lowercase"):
-                        col_name = col_name.lower()
-                    self._column_map[col_name] = i
-        else:
-            self._column_map = column_map
+        # Use pre-computed settings and column map for performance
+        self._settings = settings_snapshot or {
+            "lowercase": get_settings().lowercase,
+            "native_uuid": get_settings().native_uuid,
+        }
+        self._column_map = column_map or self._build_column_map(description)
 
         # First make a mutable copy of values
         processed_values = list(values)
 
-        # Apply output converters if available
-        if (
+        # Apply output converters if available (use shared converter map for efficiency)
+        if converter_map:
+            processed_values = self._apply_output_converters_optimized(processed_values)
+        elif (
             hasattr(cursor.connection, "_output_converters")
             and cursor.connection._output_converters
         ):
@@ -85,6 +75,17 @@ class Row:
 
         # Process UUID values using the snapshotted setting
         self._values = self._process_uuid_values(processed_values, description)
+
+    def _build_column_map(self, description):
+        """Build column name to index mapping (fallback when not pre-computed)."""
+        column_map = {}
+        for i, col_desc in enumerate(description):
+            if col_desc:  # Ensure column description exists
+                col_name = col_desc[0]  # Name is first item in description tuple
+                if self._settings.get("lowercase"):
+                    col_name = col_name.lower()
+                column_map[col_name] = i
+        return column_map
 
     def _process_uuid_values(
         self,
@@ -115,44 +116,105 @@ class Row:
 
         # Get pre-identified UUID indices from cursor if available
         uuid_indices = getattr(self._cursor, "_uuid_indices", None)
-        processed_values = list(values)  # Create a copy to modify
+        
+        # Fast path: use pre-computed UUID indices
+        if uuid_indices is not None and native_uuid:
+            processed_values = list(values)  # Create a copy to modify
+            for i in uuid_indices:
+                if i < len(processed_values) and processed_values[i] is not None:
+                    value = processed_values[i]
+                    if isinstance(value, str):
+                        try:
+                            # Remove braces if present
+                            clean_value = value.strip("{}")
+                            processed_values[i] = uuid.UUID(clean_value)
+                        except (ValueError, AttributeError):
+                            pass  # Keep original if conversion fails
+        # Slow path: scan all columns (fallback)
+        elif native_uuid:
+            processed_values = list(values)  # Create a copy to modify
+            for i, value in enumerate(processed_values):
+                if value is None:
+                    continue
 
-        # Process only UUID columns when native_uuid is True
-        if native_uuid:
-            # If we have pre-identified UUID columns
-            if uuid_indices is not None:
-                for i in uuid_indices:
-                    if i < len(processed_values) and processed_values[i] is not None:
-                        value = processed_values[i]
+                if i < len(description) and description[i]:
+                    # Check SQL type for UNIQUEIDENTIFIER (-11)
+                    sql_type = description[i][1]
+                    if sql_type == -11:  # SQL_GUID
                         if isinstance(value, str):
                             try:
-                                # Remove braces if present
-                                clean_value = value.strip("{}")
-                                processed_values[i] = uuid.UUID(clean_value)
+                                processed_values[i] = uuid.UUID(value.strip("{}"))
                             except (ValueError, AttributeError):
-                                pass  # Keep original if conversion fails
-            # Fallback to scanning all columns if indices weren't pre-identified
-            else:
-                for i, value in enumerate(processed_values):
-                    if value is None:
-                        continue
-
-                    if i < len(description) and description[i]:
-                        # Check SQL type for UNIQUEIDENTIFIER (-11)
-                        sql_type = description[i][1]
-                        if sql_type == -11:  # SQL_GUID
-                            if isinstance(value, str):
-                                try:
-                                    processed_values[i] = uuid.UUID(value.strip("{}"))
-                                except (ValueError, AttributeError):
-                                    pass
-        # When native_uuid is False, convert UUID objects to strings
+                                pass
         else:
+            processed_values = list(values)  # Create a copy to modify
+
+        # When native_uuid is False, convert UUID objects to strings  
+        if not native_uuid:
             for i, value in enumerate(processed_values):
                 if isinstance(value, uuid.UUID):
                     processed_values[i] = str(value)
 
         return processed_values
+
+    def _apply_output_converters_optimized(self, values: List[Any]) -> List[Any]:
+        """
+        Apply pre-computed output converters using shared converter map for performance.
+        
+        Args:
+            values: Raw values from the database
+            
+        Returns:
+            List of converted values
+        """
+        if not self._converter_map:
+            return values
+            
+        converted_values = list(values)
+        
+        # Map SQL type codes to appropriate byte sizes (cached for performance)
+        int_size_map = {
+            -6: 1,   # SQL_TINYINT
+            5: 2,    # SQL_SMALLINT
+            4: 4,    # SQL_INTEGER
+            -5: 8,   # SQL_BIGINT
+        }
+        
+        # Apply converters only to columns that have them pre-computed
+        for col_idx, converter_info in self._converter_map.items():
+            if col_idx >= len(values) or values[col_idx] is None:
+                continue
+                
+            converter = converter_info['converter']
+            sql_type = converter_info['sql_type']
+            value = values[col_idx]
+            
+            try:
+                # Handle different value types efficiently
+                if isinstance(value, str):
+                    # Encode as UTF-16LE for string values (SQL_WVARCHAR format)
+                    value_bytes = value.encode("utf-16-le")
+                    converted_values[col_idx] = converter(value_bytes)
+                elif isinstance(value, int):
+                    # Get appropriate byte size for this integer type
+                    byte_size = int_size_map.get(sql_type, 8)
+                    try:
+                        # Use signed=True to properly handle negative values
+                        value_bytes = value.to_bytes(
+                            byte_size, byteorder="little", signed=True
+                        )
+                        converted_values[col_idx] = converter(value_bytes)
+                    except OverflowError:
+                        # Keep original value on overflow
+                        pass
+                else:
+                    # Pass the value directly for other types
+                    converted_values[col_idx] = converter(value)
+            except Exception:
+                # If conversion fails, keep the original value
+                pass
+        
+        return converted_values
 
     def _apply_output_converters(self, values: List[Any]) -> List[Any]:
         """
