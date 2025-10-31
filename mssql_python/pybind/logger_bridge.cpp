@@ -16,7 +16,7 @@ namespace logging {
 
 // Initialize static members
 PyObject* LoggerBridge::cached_logger_ = nullptr;
-std::atomic<int> LoggerBridge::cached_level_(CRITICAL);  // Disabled by default
+std::atomic<int> LoggerBridge::cached_level_(LOG_LEVEL_CRITICAL);  // Disabled by default
 std::mutex LoggerBridge::mutex_;
 bool LoggerBridge::initialized_ = false;
 

@@ -32,6 +32,9 @@ using py::literals::operator""_a;
 #include <sql.h>
 #include <sqlext.h>
 
+// Include logger bridge for LOG macros
+#include "logger_bridge.hpp"
+
 #if defined(_WIN32)
 inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
     std::vector<SQLWCHAR> result(str.begin(), str.end());

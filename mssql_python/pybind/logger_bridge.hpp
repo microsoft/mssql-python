@@ -26,13 +26,14 @@ namespace mssql_python {
 namespace logging {
 
 // Log level constants (matching Python levels)
-const int FINEST = 5;   // Ultra-detailed trace
-const int FINER = 15;   // Detailed diagnostics
-const int FINE = 25;    // Standard diagnostics
-const int INFO = 20;    // Informational
-const int WARNING = 30; // Warnings
-const int ERROR = 40;   // Errors
-const int CRITICAL = 50; // Critical errors
+// Note: Avoid using ERROR as it conflicts with Windows.h macro
+const int LOG_LEVEL_FINEST = 5;   // Ultra-detailed trace
+const int LOG_LEVEL_FINER = 15;   // Detailed diagnostics
+const int LOG_LEVEL_FINE = 25;    // Standard diagnostics
+const int LOG_LEVEL_INFO = 20;    // Informational
+const int LOG_LEVEL_WARNING = 30; // Warnings
+const int LOG_LEVEL_ERROR = 40;   // Errors
+const int LOG_LEVEL_CRITICAL = 50; // Critical errors
 
 /**
  * LoggerBridge - Bridge between C++ and Python logging
@@ -145,49 +146,49 @@ private:
 
 #define LOG_FINEST(fmt, ...) \
     do { \
-        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::FINEST)) { \
+        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::LOG_LEVEL_FINEST)) { \
             mssql_python::logging::LoggerBridge::log( \
-                mssql_python::logging::FINEST, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
+                mssql_python::logging::LOG_LEVEL_FINEST, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
         } \
     } while(0)
 
 #define LOG_FINER(fmt, ...) \
     do { \
-        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::FINER)) { \
+        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::LOG_LEVEL_FINER)) { \
             mssql_python::logging::LoggerBridge::log( \
-                mssql_python::logging::FINER, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
+                mssql_python::logging::LOG_LEVEL_FINER, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
         } \
     } while(0)
 
 #define LOG_FINE(fmt, ...) \
     do { \
-        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::FINE)) { \
+        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::LOG_LEVEL_FINE)) { \
             mssql_python::logging::LoggerBridge::log( \
-                mssql_python::logging::FINE, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
+                mssql_python::logging::LOG_LEVEL_FINE, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
         } \
     } while(0)
 
 #define LOG_INFO(fmt, ...) \
     do { \
-        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::INFO)) { \
+        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::LOG_LEVEL_INFO)) { \
             mssql_python::logging::LoggerBridge::log( \
-                mssql_python::logging::INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
+                mssql_python::logging::LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
         } \
     } while(0)
 
 #define LOG_WARNING(fmt, ...) \
     do { \
-        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::WARNING)) { \
+        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::LOG_LEVEL_WARNING)) { \
             mssql_python::logging::LoggerBridge::log( \
-                mssql_python::logging::WARNING, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
+                mssql_python::logging::LOG_LEVEL_WARNING, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
         } \
     } while(0)
 
 #define LOG_ERROR(fmt, ...) \
     do { \
-        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::ERROR)) { \
+        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::LOG_LEVEL_ERROR)) { \
             mssql_python::logging::LoggerBridge::log( \
-                mssql_python::logging::ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
+                mssql_python::logging::LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
         } \
     } while(0)
 
