@@ -74,6 +74,10 @@ def _validate_encoding(encoding: str) -> bool:
         - Suspicious characters (only alphanumeric, hyphen, underscore, dot allowed)
         - Invalid Python codecs
     """
+    # Type check: encoding must be a string
+    if not isinstance(encoding, str):
+        return False
+    
     # Security validation: Check length and characters
     if not encoding or len(encoding) > 100:
         return False

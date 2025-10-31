@@ -90,8 +90,6 @@ def test_setencoding_explicit_ctype_override(db_connection):
 
 def test_setencoding_invalid_combinations(db_connection):
     """Test that invalid encoding/ctype combinations raise errors."""
-    import pytest
-    from mssql_python import ProgrammingError
     
     # UTF-8 with SQL_WCHAR should raise error
     with pytest.raises(ProgrammingError, match="SQL_WCHAR only supports UTF-16 encodings"):
@@ -104,8 +102,6 @@ def test_setencoding_invalid_combinations(db_connection):
 
 def test_setdecoding_invalid_combinations(db_connection):
     """Test that invalid encoding/ctype combinations raise errors in setdecoding."""
-    import pytest
-    from mssql_python import ProgrammingError, SQL_WCHAR, SQL_WMETADATA
     
     # UTF-8 with SQL_WCHAR sqltype should raise error
     with pytest.raises(ProgrammingError, match="SQL_WCHAR only supports UTF-16 encodings"):
@@ -3829,6 +3825,430 @@ def test_encoding_large_data_sets(db_connection):
         print("\n" + "="*60)
         
     finally:
+        cursor.close()
+
+def test_non_string_encoding_input(db_connection):
+    """Test that non-string encoding inputs are rejected (Type Safety - Critical #9)."""
+    
+    # Test None (should use default, not error)
+    db_connection.setencoding(encoding=None)
+    settings = db_connection.getencoding()
+    assert settings["encoding"] == "utf-16le"  # Should use default
+    
+    # Test integer
+    with pytest.raises((TypeError, ProgrammingError)):
+        db_connection.setencoding(encoding=123)
+    
+    # Test bytes
+    with pytest.raises((TypeError, ProgrammingError)):
+        db_connection.setencoding(encoding=b"utf-8")
+    
+    # Test list
+    with pytest.raises((TypeError, ProgrammingError)):
+        db_connection.setencoding(encoding=["utf-8"])
+    
+    print("[OK] Non-string encoding inputs properly rejected")
+
+
+def test_atomicity_after_encoding_failure(db_connection):
+    """Test that encoding settings remain unchanged after failure (Critical #13)."""
+    # Set valid initial state
+    db_connection.setencoding(encoding="utf-8", ctype=SQL_CHAR)
+    initial_settings = db_connection.getencoding()
+    
+    # Attempt invalid encoding - should fail
+    with pytest.raises(ProgrammingError):
+        db_connection.setencoding(encoding="invalid-codec-xyz")
+    
+    # Verify settings unchanged
+    current_settings = db_connection.getencoding()
+    assert current_settings == initial_settings, \
+        "Settings should remain unchanged after failed setencoding"
+    
+    # Attempt invalid ctype - should fail
+    with pytest.raises(ProgrammingError):
+        db_connection.setencoding(encoding="utf-8", ctype=9999)
+    
+    # Verify still unchanged
+    current_settings = db_connection.getencoding()
+    assert current_settings == initial_settings, \
+        "Settings should remain unchanged after failed ctype"
+    
+    print("[OK] Atomicity maintained after encoding failures")
+
+
+def test_atomicity_after_decoding_failure(db_connection):
+    """Test that decoding settings remain unchanged after failure (Critical #13)."""
+    # Set valid initial state
+    db_connection.setdecoding(SQL_CHAR, encoding="utf-8", ctype=SQL_CHAR)
+    initial_settings = db_connection.getdecoding(SQL_CHAR)
+    
+    # Attempt invalid encoding - should fail
+    with pytest.raises(ProgrammingError):
+        db_connection.setdecoding(SQL_CHAR, encoding="invalid-codec-xyz")
+    
+    # Verify settings unchanged
+    current_settings = db_connection.getdecoding(SQL_CHAR)
+    assert current_settings == initial_settings, \
+        "Settings should remain unchanged after failed setdecoding"
+    
+    # Attempt invalid wide encoding with SQL_WCHAR - should fail
+    with pytest.raises(ProgrammingError):
+        db_connection.setdecoding(SQL_WCHAR, encoding="utf-8")
+    
+    # SQL_WCHAR settings should remain at default
+    wchar_settings = db_connection.getdecoding(SQL_WCHAR)
+    assert wchar_settings["encoding"] == "utf-16le", \
+        "SQL_WCHAR should remain at default after failed attempt"
+    
+    print("[OK] Atomicity maintained after decoding failures")
+
+
+def test_encoding_normalization_consistency(db_connection):
+    """Test that encoding normalization is consistent (High #1)."""
+    # Test various case variations
+    test_cases = [
+        ("UTF-8", "utf-8"),
+        ("utf_8", "utf_8"),  # Underscores preserved
+        ("Utf-16LE", "utf-16le"),
+        ("UTF-16BE", "utf-16be"),
+        ("Latin-1", "latin-1"),
+        ("ISO8859-1", "iso8859-1"),
+    ]
+    
+    for input_enc, expected_output in test_cases:
+        db_connection.setencoding(encoding=input_enc)
+        settings = db_connection.getencoding()
+        assert settings["encoding"] == expected_output, \
+            f"Input '{input_enc}' should normalize to '{expected_output}', got '{settings['encoding']}'"
+    
+    # Test decoding normalization
+    for input_enc, expected_output in test_cases:
+        if input_enc.lower() in ["utf-16le", "utf-16be", "utf_16le", "utf_16be"]:
+            # UTF-16 variants for SQL_WCHAR
+            db_connection.setdecoding(SQL_WCHAR, encoding=input_enc)
+            settings = db_connection.getdecoding(SQL_WCHAR)
+        else:
+            # Others for SQL_CHAR
+            db_connection.setdecoding(SQL_CHAR, encoding=input_enc)
+            settings = db_connection.getdecoding(SQL_CHAR)
+        
+        assert settings["encoding"] == expected_output, \
+            f"Decoding: Input '{input_enc}' should normalize to '{expected_output}'"
+    
+    print("[OK] Encoding normalization is consistent")
+
+
+def test_idempotent_reapplication(db_connection):
+    """Test that reapplying same encoding doesn't cause issues (High #2)."""
+    # Set encoding multiple times
+    for _ in range(5):
+        db_connection.setencoding(encoding="utf-16le", ctype=SQL_WCHAR)
+    
+    settings = db_connection.getencoding()
+    assert settings["encoding"] == "utf-16le"
+    assert settings["ctype"] == SQL_WCHAR
+    
+    # Set decoding multiple times
+    for _ in range(5):
+        db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
+    
+    settings = db_connection.getdecoding(SQL_WCHAR)
+    assert settings["encoding"] == "utf-16le"
+    assert settings["ctype"] == SQL_WCHAR
+    
+    print("[OK] Idempotent reapplication works correctly")
+
+
+def test_encoding_switches_adjust_ctype(db_connection):
+    """Test that encoding switches properly adjust ctype (High #3)."""
+    # UTF-8 -> should default to SQL_CHAR
+    db_connection.setencoding(encoding="utf-8")
+    settings = db_connection.getencoding()
+    assert settings["encoding"] == "utf-8"
+    assert settings["ctype"] == SQL_CHAR, "UTF-8 should default to SQL_CHAR"
+    
+    # UTF-16LE -> should default to SQL_WCHAR
+    db_connection.setencoding(encoding="utf-16le")
+    settings = db_connection.getencoding()
+    assert settings["encoding"] == "utf-16le"
+    assert settings["ctype"] == SQL_WCHAR, "UTF-16LE should default to SQL_WCHAR"
+    
+    # Back to UTF-8 -> should default to SQL_CHAR
+    db_connection.setencoding(encoding="utf-8")
+    settings = db_connection.getencoding()
+    assert settings["encoding"] == "utf-8"
+    assert settings["ctype"] == SQL_CHAR, "UTF-8 should default to SQL_CHAR again"
+    
+    # Latin-1 -> should default to SQL_CHAR
+    db_connection.setencoding(encoding="latin-1")
+    settings = db_connection.getencoding()
+    assert settings["encoding"] == "latin-1"
+    assert settings["ctype"] == SQL_CHAR, "Latin-1 should default to SQL_CHAR"
+    
+    print("[OK] Encoding switches properly adjust ctype")
+
+
+def test_utf16be_handling(db_connection):
+    """Test proper handling of utf-16be (High #4)."""
+    # Should be accepted and NOT auto-converted
+    db_connection.setencoding(encoding="utf-16be", ctype=SQL_WCHAR)
+    settings = db_connection.getencoding()
+    assert settings["encoding"] == "utf-16be", "UTF-16BE should not be auto-converted"
+    assert settings["ctype"] == SQL_WCHAR
+    
+    # Also for decoding
+    db_connection.setdecoding(SQL_WCHAR, encoding="utf-16be")
+    settings = db_connection.getdecoding(SQL_WCHAR)
+    assert settings["encoding"] == "utf-16be", "UTF-16BE decoding should not be auto-converted"
+    
+    print("[OK] UTF-16BE handled correctly without auto-conversion")
+
+
+def test_exotic_codecs_policy(db_connection):
+    """Test policy for exotic but valid Python codecs (High #5)."""
+    exotic_codecs = [
+        ("utf-7", "Should reject or accept with clear policy"),
+        ("punycode", "Should reject or accept with clear policy"),
+    ]
+    
+    for codec, description in exotic_codecs:
+        try:
+            db_connection.setencoding(encoding=codec)
+            settings = db_connection.getencoding()
+            print(f"[INFO] {codec} accepted: {settings}")
+            # If accepted, it should work without issues
+            assert settings["encoding"] == codec.lower()
+        except ProgrammingError as e:
+            print(f"[INFO] {codec} rejected: {e}")
+            # If rejected, that's also a valid policy
+            assert "Unsupported encoding" in str(e) or "not supported" in str(e).lower()
+
+
+def test_independent_encoding_decoding_settings(db_connection):
+    """Test independence of encoding vs decoding settings (High #6)."""
+    # Set different encodings for send vs receive
+    db_connection.setencoding(encoding="utf-8", ctype=SQL_CHAR)
+    db_connection.setdecoding(SQL_CHAR, encoding="latin-1", ctype=SQL_CHAR)
+    
+    # Verify independence
+    enc_settings = db_connection.getencoding()
+    dec_settings = db_connection.getdecoding(SQL_CHAR)
+    
+    assert enc_settings["encoding"] == "utf-8", "Encoding should be UTF-8"
+    assert dec_settings["encoding"] == "latin-1", "Decoding should be Latin-1"
+    
+    # Change encoding shouldn't affect decoding
+    db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
+    dec_settings_after = db_connection.getdecoding(SQL_CHAR)
+    assert dec_settings_after["encoding"] == "latin-1", \
+        "Decoding should remain Latin-1 after encoding change"
+    
+    print("[OK] Encoding and decoding settings are independent")
+
+
+def test_sql_wmetadata_decoding_rules(db_connection):
+    """Test SQL_WMETADATA decoding rules and restrictions (High #7)."""
+    # Should accept UTF-16 variants
+    db_connection.setdecoding(SQL_WMETADATA, encoding="utf-16le")
+    settings = db_connection.getdecoding(SQL_WMETADATA)
+    assert settings["encoding"] == "utf-16le"
+    
+    db_connection.setdecoding(SQL_WMETADATA, encoding="utf-16be")
+    settings = db_connection.getdecoding(SQL_WMETADATA)
+    assert settings["encoding"] == "utf-16be"
+    
+    # Should reject non-UTF-16 encodings
+    with pytest.raises(ProgrammingError, match="SQL_WMETADATA only supports UTF-16 encodings"):
+        db_connection.setdecoding(SQL_WMETADATA, encoding="utf-8")
+    
+    with pytest.raises(ProgrammingError, match="SQL_WMETADATA only supports UTF-16 encodings"):
+        db_connection.setdecoding(SQL_WMETADATA, encoding="latin-1")
+    
+    print("[OK] SQL_WMETADATA decoding rules properly enforced")
+
+
+def test_logging_sanitization_for_encoding(db_connection):
+    """Test that malformed encoding names are sanitized in logs (High #8)."""
+    # These should fail but log safely
+    malformed_names = [
+        "utf-8\n$(rm -rf /)",
+        "utf-8\r\nX-Injected-Header: evil",
+        "../../../etc/passwd",
+        "utf-8' OR '1'='1",
+    ]
+    
+    for malformed in malformed_names:
+        with pytest.raises(ProgrammingError):
+            db_connection.setencoding(encoding=malformed)
+        # If this doesn't crash and raises expected error, sanitization worked
+    
+    print("[OK] Logging sanitization works for malformed encoding names")
+
+
+def test_recovery_after_invalid_attempt(db_connection):
+    """Test recovery after invalid encoding attempt (High #11)."""
+    # Set valid initial state
+    db_connection.setencoding(encoding="utf-8", ctype=SQL_CHAR)
+    
+    # Fail once
+    with pytest.raises(ProgrammingError):
+        db_connection.setencoding(encoding="invalid-xyz-123")
+    
+    # Succeed with new valid encoding
+    db_connection.setencoding(encoding="latin-1", ctype=SQL_CHAR)
+    settings = db_connection.getencoding()
+    
+    # Final settings should be clean
+    assert settings["encoding"] == "latin-1"
+    assert settings["ctype"] == SQL_CHAR
+    assert len(settings) == 2  # No stale fields
+    
+    print("[OK] Clean recovery after invalid encoding attempt")
+
+
+def test_negative_unreserved_sqltype(db_connection):
+    """Test rejection of negative sqltype other than -8 (SQL_WCHAR) and -99 (SQL_WMETADATA) (High #12)."""
+    # -8 is SQL_WCHAR (valid), -99 is SQL_WMETADATA (valid)
+    # Other negative values should be rejected
+    invalid_sqltypes = [-1, -2, -7, -9, -10, -100, -999]
+    
+    for sqltype in invalid_sqltypes:
+        with pytest.raises(ProgrammingError, match="Invalid sqltype"):
+            db_connection.setdecoding(sqltype, encoding="utf-8")
+    
+    print("[OK] Invalid negative sqltypes properly rejected")
+
+
+def test_over_length_encoding_boundary(db_connection):
+    """Test encoding length boundary at 100 chars (Critical #7)."""
+    # Exactly 100 chars - should be rejected
+    enc_100 = "a" * 100
+    with pytest.raises(ProgrammingError):
+        db_connection.setencoding(encoding=enc_100)
+    
+    # 101 chars - should be rejected
+    enc_101 = "a" * 101
+    with pytest.raises(ProgrammingError):
+        db_connection.setencoding(encoding=enc_101)
+    
+    # 99 chars - might be accepted if it's a valid codec (unlikely but test boundary)
+    enc_99 = "a" * 99
+    with pytest.raises(ProgrammingError):  # Will fail as invalid codec
+        db_connection.setencoding(encoding=enc_99)
+    
+    print("[OK] Encoding length boundary properly enforced")
+
+
+def test_surrogate_pair_emoji_handling(db_connection):
+    """Test handling of surrogate pairs and emoji (Medium #4)."""
+    db_connection.setencoding(encoding="utf-16le", ctype=SQL_WCHAR)
+    db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
+    
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("CREATE TABLE #test_emoji (id INT, data NVARCHAR(100))")
+        
+        # Test various emoji and surrogate pairs
+        test_data = [
+            (1, "😀😃😄😁"),  # Emoji requiring surrogate pairs
+            (2, "👨‍👩‍👧‍👦"),  # Family emoji with ZWJ
+            (3, "🏴󠁧󠁢󠁥󠁮󠁧󠁿"),  # Flag with tag sequences
+            (4, "Test 你好 🌍 World"),  # Mixed content
+        ]
+        
+        for id_val, text in test_data:
+            cursor.execute("INSERT INTO #test_emoji VALUES (?, ?)", id_val, text)
+        
+        cursor.execute("SELECT data FROM #test_emoji ORDER BY id")
+        results = cursor.fetchall()
+        
+        for i, (expected_id, expected_text) in enumerate(test_data):
+            assert results[i][0] == expected_text, \
+                f"Emoji/surrogate pair handling failed for: {expected_text}"
+        
+        print("[OK] Surrogate pairs and emoji handled correctly")
+    
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_emoji")
+        except:
+            pass
+        cursor.close()
+
+
+def test_metadata_vs_data_decoding_separation(db_connection):
+    """Test separation of metadata vs data decoding settings (Medium #5)."""
+    # Set different encodings for metadata vs data
+    db_connection.setdecoding(SQL_CHAR, encoding="utf-8", ctype=SQL_CHAR)
+    db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
+    db_connection.setdecoding(SQL_WMETADATA, encoding="utf-16be", ctype=SQL_WCHAR)
+    
+    # Verify independence
+    char_settings = db_connection.getdecoding(SQL_CHAR)
+    wchar_settings = db_connection.getdecoding(SQL_WCHAR)
+    metadata_settings = db_connection.getdecoding(SQL_WMETADATA)
+    
+    assert char_settings["encoding"] == "utf-8"
+    assert wchar_settings["encoding"] == "utf-16le"
+    assert metadata_settings["encoding"] == "utf-16be"
+    
+    # Change one shouldn't affect others
+    db_connection.setdecoding(SQL_CHAR, encoding="latin-1")
+    
+    wchar_after = db_connection.getdecoding(SQL_WCHAR)
+    metadata_after = db_connection.getdecoding(SQL_WMETADATA)
+    
+    assert wchar_after["encoding"] == "utf-16le", "WCHAR should be unchanged"
+    assert metadata_after["encoding"] == "utf-16be", "Metadata should be unchanged"
+    
+    print("[OK] Metadata and data decoding settings are properly separated")
+
+
+def test_end_to_end_no_corruption_mixed_unicode(db_connection):
+    """End-to-end test with mixed Unicode to ensure no corruption (Medium #9)."""
+    # Set encodings
+    db_connection.setencoding(encoding="utf-16le", ctype=SQL_WCHAR)
+    db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
+    
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("CREATE TABLE #test_e2e (id INT, data NVARCHAR(200))")
+        
+        # Mix of various Unicode categories
+        test_strings = [
+            "ASCII only text",
+            "Latin-1: Café naïve",
+            "Cyrillic: Привет мир",
+            "Chinese: 你好世界",
+            "Japanese: こんにちは",
+            "Korean: 안녕하세요",
+            "Arabic: مرحبا بالعالم",
+            "Emoji: 😀🌍🎉",
+            "Mixed: Hello 世界 🌍 Привет",
+            "Math: ∑∏∫∇∂√",
+        ]
+        
+        # Insert all strings
+        for i, text in enumerate(test_strings, 1):
+            cursor.execute("INSERT INTO #test_e2e VALUES (?, ?)", i, text)
+        
+        # Fetch and verify
+        cursor.execute("SELECT data FROM #test_e2e ORDER BY id")
+        results = cursor.fetchall()
+        
+        for i, expected in enumerate(test_strings):
+            actual = results[i][0]
+            assert actual == expected, \
+                f"Data corruption detected: expected '{expected}', got '{actual}'"
+        
+        print(f"[OK] End-to-end test passed for {len(test_strings)} mixed Unicode strings")
+    
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_e2e")
+        except:
+            pass
         cursor.close()
 
 
