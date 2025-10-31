@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
+#include <vector>
 
 namespace mssql_python {
 namespace logging {
@@ -77,8 +78,11 @@ std::string LoggerBridge::formatMessage(const char* format, va_list args) {
     // Use a stack buffer for most messages (4KB should be enough)
     char buffer[4096];
     
-    // Format the message
-    int result = vsnprintf(buffer, sizeof(buffer), format, args);
+    // Format the message using safe vsnprintf (always null-terminates)
+    va_list args_copy;
+    va_copy(args_copy, args);
+    int result = std::vsnprintf(buffer, sizeof(buffer), format, args_copy);
+    va_end(args_copy);
     
     if (result < 0) {
         // Error during formatting
@@ -86,30 +90,34 @@ std::string LoggerBridge::formatMessage(const char* format, va_list args) {
     }
     
     if (result < static_cast<int>(sizeof(buffer))) {
-        // Message fit in buffer
-        return std::string(buffer);
+        // Message fit in buffer (vsnprintf guarantees null-termination)
+        return std::string(buffer, std::min(static_cast<size_t>(result), sizeof(buffer) - 1));
     }
     
     // Message was truncated - allocate larger buffer
     // (This should be rare for typical log messages)
-    std::string large_buffer(result + 1, '\0');
-    va_list args_copy;
+    std::vector<char> large_buffer(result + 1);
     va_copy(args_copy, args);
-    vsnprintf(&large_buffer[0], large_buffer.size(), format, args_copy);
+    std::vsnprintf(large_buffer.data(), large_buffer.size(), format, args_copy);
     va_end(args_copy);
     
-    return large_buffer;
+    return std::string(large_buffer.data());
 }
 
 const char* LoggerBridge::extractFilename(const char* path) {
-    // Extract just the filename from full path
-    const char* filename = strrchr(path, '/');
+    // Extract just the filename from full path using safer C++ string search
+    if (!path) {
+        return "";
+    }
+    
+    // Find last occurrence of Unix path separator
+    const char* filename = std::strrchr(path, '/');
     if (filename) {
         return filename + 1;
     }
     
     // Try Windows path separator
-    filename = strrchr(path, '\\');
+    filename = std::strrchr(path, '\\');
     if (filename) {
         return filename + 1;
     }
@@ -139,10 +147,15 @@ void LoggerBridge::log(int level, const char* file, int line,
     // Extract filename from path
     const char* filename = extractFilename(file);
     
-    // Format the complete log message with file:line prefix
+    // Format the complete log message with file:line prefix using safe snprintf
     char complete_message[4096];
-    snprintf(complete_message, sizeof(complete_message), 
-             "[DDBC] %s [%s:%d]", message.c_str(), filename, line);
+    int written = std::snprintf(complete_message, sizeof(complete_message), 
+                               "[DDBC] %s [%s:%d]", message.c_str(), filename, line);
+    
+    // Ensure null-termination (snprintf guarantees this, but be explicit)
+    if (written >= static_cast<int>(sizeof(complete_message))) {
+        complete_message[sizeof(complete_message) - 1] = '\0';
+    }
     
     // Lock for Python call (minimize critical section)
     std::lock_guard<std::mutex> lock(mutex_);
