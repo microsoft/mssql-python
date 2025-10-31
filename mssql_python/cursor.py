@@ -16,7 +16,8 @@ import datetime
 import warnings
 from typing import List, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
-from mssql_python.helpers import check_error, log
+from mssql_python.helpers import check_error
+from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
 from mssql_python.exceptions import InterfaceError, NotSupportedError, ProgrammingError
 from mssql_python.row import Row
@@ -306,7 +307,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Returns:
             - A tuple containing the SQL type, C type, column size, and decimal digits.
         """
+        logger.finest('_map_sql_type: Mapping param index=%d, type=%s', i, type(param).__name__)
         if param is None:
+            logger.finest('_map_sql_type: NULL parameter - index=%d', i)
             return (
                 ddbc_sql_const.SQL_VARCHAR.value,
                 ddbc_sql_const.SQL_C_DEFAULT.value,
@@ -316,6 +319,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             )
 
         if isinstance(param, bool):
+            logger.finest('_map_sql_type: BOOL detected - index=%d', i)
             return (
                 ddbc_sql_const.SQL_BIT.value,
                 ddbc_sql_const.SQL_C_BIT.value,
@@ -328,8 +332,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Use min_val/max_val if available
             value_to_check = max_val if max_val is not None else param
             min_to_check = min_val if min_val is not None else param
+            logger.finest('_map_sql_type: INT detected - index=%d, min=%s, max=%s', 
+                i, str(min_to_check)[:50], str(value_to_check)[:50])
 
             if 0 <= min_to_check and value_to_check <= 255:
+                logger.finest('_map_sql_type: INT -> TINYINT - index=%d', i)
                 return (
                     ddbc_sql_const.SQL_TINYINT.value,
                     ddbc_sql_const.SQL_C_TINYINT.value,
@@ -338,6 +345,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     False,
                 )
             if -32768 <= min_to_check and value_to_check <= 32767:
+                logger.finest('_map_sql_type: INT -> SMALLINT - index=%d', i)
                 return (
                     ddbc_sql_const.SQL_SMALLINT.value,
                     ddbc_sql_const.SQL_C_SHORT.value,
@@ -346,6 +354,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     False,
                 )
             if -2147483648 <= min_to_check and value_to_check <= 2147483647:
+                logger.finest('_map_sql_type: INT -> INTEGER - index=%d', i)
                 return (
                     ddbc_sql_const.SQL_INTEGER.value,
                     ddbc_sql_const.SQL_C_LONG.value,
@@ -353,6 +362,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     0,
                     False,
                 )
+            logger.finest('_map_sql_type: INT -> BIGINT - index=%d', i)
             return (
                 ddbc_sql_const.SQL_BIGINT.value,
                 ddbc_sql_const.SQL_C_SBIGINT.value,
@@ -362,6 +372,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             )
 
         if isinstance(param, float):
+            logger.finest('_map_sql_type: FLOAT detected - index=%d', i)
             return (
                 ddbc_sql_const.SQL_DOUBLE.value,
                 ddbc_sql_const.SQL_C_DOUBLE.value,
@@ -371,6 +382,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             )
 
         if isinstance(param, decimal.Decimal):
+            logger.finest('_map_sql_type: DECIMAL detected - index=%d', i)
             # First check precision limit for all decimal values
             decimal_as_tuple = param.as_tuple()
             digits_tuple = decimal_as_tuple.digits
@@ -379,6 +391,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Handle special values (NaN, Infinity, etc.)
             if isinstance(exponent, str):
+                logger.finer('_map_sql_type: DECIMAL special value - index=%d, exponent=%s', i, exponent)
                 # For special values like 'n' (NaN), 'N' (sNaN), 'F' (Infinity)
                 # Return default precision and scale
                 precision = 38  # SQL Server default max precision
@@ -390,8 +403,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     precision = num_digits
                 else:
                     precision = exponent * -1
+                logger.finest('_map_sql_type: DECIMAL precision calculated - index=%d, precision=%d', i, precision)
 
             if precision > 38:
+                logger.finer('_map_sql_type: DECIMAL precision too high - index=%d, precision=%d', i, precision)
                 raise ValueError(
                     f"Precision of the numeric value is too high. "
                     f"The maximum precision supported by SQL Server is 38, but got {precision}."
@@ -399,6 +414,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Detect MONEY / SMALLMONEY range
             if SMALLMONEY_MIN <= param <= SMALLMONEY_MAX:
+                logger.finest('_map_sql_type: DECIMAL -> SMALLMONEY - index=%d', i)
                 # smallmoney
                 parameters_list[i] = str(param)
                 return (
@@ -409,6 +425,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     False,
                 )
             if MONEY_MIN <= param <= MONEY_MAX:
+                logger.finest('_map_sql_type: DECIMAL -> MONEY - index=%d', i)
                 # money
                 parameters_list[i] = str(param)
                 return (
@@ -419,7 +436,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     False,
                 )
             # fallback to generic numeric binding
+            logger.finest('_map_sql_type: DECIMAL -> NUMERIC - index=%d', i)
             parameters_list[i] = self._get_numeric_data(param)
+            logger.finest('_map_sql_type: NUMERIC created - index=%d, precision=%d, scale=%d', 
+                i, parameters_list[i].precision, parameters_list[i].scale)
             return (
                 ddbc_sql_const.SQL_NUMERIC.value,
                 ddbc_sql_const.SQL_C_NUMERIC.value,
@@ -429,6 +449,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             )
 
         if isinstance(param, uuid.UUID):
+            logger.finest('_map_sql_type: UUID detected - index=%d', i)
             parameters_list[i] = param.bytes_le
             return (
                 ddbc_sql_const.SQL_GUID.value,
@@ -439,11 +460,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             )
 
         if isinstance(param, str):
+            logger.finest('_map_sql_type: STR detected - index=%d, length=%d', i, len(param))
             if (
                 param.startswith("POINT")
                 or param.startswith("LINESTRING")
                 or param.startswith("POLYGON")
             ):
+                logger.finest('_map_sql_type: STR is geometry type - index=%d', i)
                 return (
                     ddbc_sql_const.SQL_WVARCHAR.value,
                     ddbc_sql_const.SQL_C_WCHAR.value,
@@ -457,7 +480,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Computes UTF-16 code units (handles surrogate pairs)
             utf16_len = sum(2 if ord(c) > 0xFFFF else 1 for c in param)
+            logger.finest('_map_sql_type: STR analysis - index=%d, is_unicode=%s, utf16_len=%d', 
+                i, str(is_unicode), utf16_len)
             if utf16_len > MAX_INLINE_CHAR:  # Long strings -> DAE
+                logger.finer('_map_sql_type: STR exceeds MAX_INLINE_CHAR, using DAE - index=%d', i)
                 if is_unicode:
                     return (
                         ddbc_sql_const.SQL_WVARCHAR.value,
@@ -571,7 +597,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if self.hstmt:
             self.hstmt.free()
             self.hstmt = None
-            log("debug", "SQLFreeHandle succeeded")
+            logger.debug( "SQLFreeHandle succeeded")
 
         self._clear_rownumber()
 
@@ -603,12 +629,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             try:
                 self.connection._cursors.discard(self)
             except Exception as e:  # pylint: disable=broad-exception-caught
-                log("warning", "Error removing cursor from connection tracking: %s", e)
+                logger.warning( "Error removing cursor from connection tracking: %s", e)
 
         if self.hstmt:
             self.hstmt.free()
             self.hstmt = None
-            log("debug", "SQLFreeHandle succeeded")
+            logger.debug( "SQLFreeHandle succeeded")
         self._clear_rownumber()
         self.closed = True
 
@@ -877,7 +903,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             database modules.
         """
         # Use mssql_python logging system instead of standard warnings
-        log("warning", "DB-API extension cursor.rownumber used")
+        logger.warning( "DB-API extension cursor.rownumber used")
 
         # Return None if cursor is closed or no result set is available
         if self.closed or not self._has_result_set:
@@ -1011,9 +1037,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             use_prepare: Whether to use SQLPrepareW (default) or SQLExecDirectW.
             reset_cursor: Whether to reset the cursor before execution.
         """
+        logger.fine('execute: Starting - operation_length=%d, param_count=%d, use_prepare=%s', 
+            len(operation), len(parameters), str(use_prepare))
 
         # Restore original fetch methods if they exist
         if hasattr(self, "_original_fetchone"):
+            logger.finest('execute: Restoring original fetch methods')
             self.fetchone = self._original_fetchone
             self.fetchmany = self._original_fetchmany
             self.fetchall = self._original_fetchall
@@ -1023,6 +1052,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         self._check_closed()  # Check if the cursor is closed
         if reset_cursor:
+            logger.finest('execute: Resetting cursor state')
             self._reset_cursor()
 
         # Clear any previous messages
@@ -1030,6 +1060,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Apply timeout if set (non-zero)
         if self._timeout > 0:
+            logger.finer('execute: Setting query timeout=%d seconds', self._timeout)
             try:
                 timeout_value = int(self._timeout)
                 ret = ddbc_bindings.DDBCSQLSetStmtAttr(
@@ -1038,10 +1069,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     timeout_value,
                 )
                 check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-                log("debug", f"Set query timeout to {timeout_value} seconds")
+                logger.debug("Set query timeout to %d seconds", timeout_value)
             except Exception as e:  # pylint: disable=broad-exception-caught
-                log("warning", f"Failed to set query timeout: {e}")
+                logger.warning("Failed to set query timeout: %s", str(e))
 
+        logger.finest('execute: Creating parameter type list')
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
 
@@ -1077,9 +1109,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Executing a new statement. Reset is_stmt_prepared to false
             self.is_stmt_prepared = [False]
 
-        log("debug", "Executing query: %s", operation)
+        logger.debug( "Executing query: %s", operation)
         for i, param in enumerate(parameters):
-            log(
+            logger.debug(
                 "debug",
                 """Parameter number: %s, Parameter: %s,
                 Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
@@ -1107,7 +1139,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Check for errors but don't raise exceptions for info/warning messages
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
         except Exception as e:  # pylint: disable=broad-exception-caught
-            log("warning", "Execute failed, resetting cursor: %s", e)
+            logger.warning( "Execute failed, resetting cursor: %s", e)
             self._reset_cursor()
             raise
 
@@ -1149,7 +1181,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     self._uuid_indices.append(i)
                 # Verify we have complete description tuples (7 items per PEP-249)
                 elif desc and len(desc) != 7:
-                    log(
+                    logger.debug(
                         "warning",
                         f"Column description at index {i} has incorrect tuple length: {len(desc)}",
                     )
@@ -1189,10 +1221,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             try:
                 ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
             except InterfaceError as e:
-                log("error", f"Driver interface error during metadata retrieval: {e}")
+                logger.error( f"Driver interface error during metadata retrieval: {e}")
             except Exception as e:  # pylint: disable=broad-exception-caught
                 # Log the exception with appropriate context
-                log(
+                logger.debug(
                     "error",
                     f"Failed to retrieve column metadata: {e}. "
                     f"Using standard ODBC column definitions instead.",
@@ -1698,9 +1730,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Raises:
             Error: If the operation fails.
         """
+        logger.fine( 'executemany: Starting - operation_length=%d, batch_count=%d', 
+            len(operation), len(seq_of_parameters))
         self._check_closed()
         self._reset_cursor()
         self.messages = []
+        logger.finest( 'executemany: Cursor reset complete')
 
         if not seq_of_parameters:
             self.rowcount = 0
@@ -1716,9 +1751,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     timeout_value,
                 )
                 check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-                log("debug", f"Set query timeout to {self._timeout} seconds")
+                logger.debug( f"Set query timeout to {self._timeout} seconds")
             except Exception as e:  # pylint: disable=broad-exception-caught
-                log("warning", f"Failed to set query timeout: {e}")
+                logger.warning( f"Failed to set query timeout: {e}")
 
         # Get sample row for parameter type detection and validation
         sample_row = (
@@ -1860,7 +1895,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     any_dae = True
 
         if any_dae:
-            log(
+            logger.debug(
                 "debug",
                 "DAE parameters detected. Falling back to row-by-row execution with streaming.",
             )
@@ -1902,7 +1937,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         )
 
         # Add debug logging
-        log(
+        logger.debug(
             "debug",
             "Executing batch query with %d parameter sets:\n%s",
             len(seq_of_parameters),
@@ -2223,7 +2258,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 if sys and sys._is_finalizing():
                     # Suppress logging during interpreter shutdown
                     return
-                log("debug", "Exception during cursor cleanup in __del__: %s", e)
+                logger.debug( "Exception during cursor cleanup in __del__: %s", e)
 
     def scroll(self, value: int, mode: str = "relative") -> None:  # pylint: disable=too-many-branches
         """
@@ -2432,7 +2467,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             # Log the error and re-raise
-            log("error", f"Error executing tables query: {e}")
+            logger.error( f"Error executing tables query: {e}")
             raise
 
     def callproc(

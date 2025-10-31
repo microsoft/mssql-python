@@ -8,6 +8,8 @@ import sys
 import types
 from typing import Dict
 
+from mssql_python.logging import logger
+
 # Import settings from helpers to avoid circular imports
 from .helpers import Settings, get_settings, _settings, _settings_lock
 
@@ -48,8 +50,8 @@ from .db_connection import connect, Connection
 # Cursor Objects
 from .cursor import Cursor
 
-# Logging Configuration
-from .logging_config import setup_logging, get_logger
+# Logging Configuration (New enhanced logging system)
+from .logging import logger, FINE, FINER, FINEST, setup_logging, get_logger
 
 # Constants
 from .constants import ConstantsDDBC, GetInfoConstants
