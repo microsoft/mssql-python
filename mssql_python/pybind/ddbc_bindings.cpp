@@ -9,12 +9,13 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
-#include <filesystem>
+#include <filesystem>  // NOLINT(build/c++17)
 #include <iomanip>  // std::setw, std::setfill
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <utility>  // std::forward
 #include <vector>
 
@@ -87,8 +88,11 @@ struct NumericData {
             throw std::runtime_error(
                 "NumericData valueBytes size exceeds SQL_MAX_NUMERIC_LEN (16)");
         }
-        // Copy binary data to buffer, remaining bytes stay zero-padded
-        std::memcpy(&val[0], valueBytes.data(), valueBytes.size());
+        // Secure copy: bounds already validated, but using std::copy_n for
+        // safety
+        if (valueBytes.size() > 0) {
+            std::copy_n(valueBytes.data(), valueBytes.size(), &val[0]);
+        }
     }
 };
 
@@ -200,45 +204,14 @@ static py::bytes EncodingString(const std::string& text,
                                 const std::string& errors = "strict") {
     try {
         py::gil_scoped_acquire gil;
-
-        // Create unicode string from input text
         py::str unicode_str = py::str(text);
 
-        // Encoding strategy: try the specified encoding first,
-        // but fallback to latin-1 for Western European characters if UTF-8
-        // fails
-        if (encoding == "utf-8" && errors == "strict") {
-            try {
-                // Try UTF-8 first
-                py::bytes encoded =
-                    unicode_str.attr("encode")(encoding, "strict");
-                return encoded;
-            } catch (const py::error_already_set&) {
-                // UTF-8 failed, try latin-1 for Western European characters
-                try {
-                    py::bytes encoded =
-                        unicode_str.attr("encode")("latin-1", "strict");
-                    LOG("EncodingString: UTF-8 failed, successfully encoded "
-                        "with latin-1 fallback for text: {}",
-                        text.substr(0, 50));
-                    return encoded;
-                } catch (const py::error_already_set&) {
-                    // Both failed, use original approach with error handling
-                    py::bytes encoded =
-                        unicode_str.attr("encode")(encoding, errors);
-                    return encoded;
-                }
-            }
-        } else {
-            // Use specified encoding directly for non-UTF-8 or non-strict cases
-            py::bytes encoded = unicode_str.attr("encode")(encoding, errors);
-            return encoded;
-        }
+        // Direct encoding - let Python handle errors strictly
+        py::bytes encoded = unicode_str.attr("encode")(encoding, errors);
+        return encoded;
     } catch (const py::error_already_set& e) {
-        // Re-raise Python exceptions as C++ exceptions
+        // Re-raise Python exceptions (UnicodeEncodeError, etc.)
         throw std::runtime_error("Encoding failed: " + std::string(e.what()));
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Encoding error: " + std::string(e.what()));
     }
 }
 
@@ -247,45 +220,61 @@ static py::str DecodingString(const char* data, size_t length,
                               const std::string& errors = "strict") {
     try {
         py::gil_scoped_acquire gil;
+        py::bytes byte_data = py::bytes(data, length);
 
-        // Create bytes object from input data
-        py::bytes byte_data = py::bytes(std::string(data, length));
-
-        // Decoding strategy: try the specified encoding first,
-        // but fallback to latin-1 for Western European characters if UTF-8
-        // fails
-        if (encoding == "utf-8" && errors == "strict") {
-            try {
-                // Try UTF-8 first
-                py::str decoded = byte_data.attr("decode")(encoding, "strict");
-                return decoded;
-            } catch (const py::error_already_set&) {
-                // UTF-8 failed, try latin-1 for Western European characters
-                try {
-                    py::str decoded =
-                        byte_data.attr("decode")("latin-1", "strict");
-                    LOG("DecodingString: UTF-8 failed, successfully decoded "
-                        "with latin-1 fallback for {} bytes",
-                        length);
-                    return decoded;
-                } catch (const py::error_already_set&) {
-                    // Both failed, use original approach with error handling
-                    py::str decoded =
-                        byte_data.attr("decode")(encoding, errors);
-                    return decoded;
-                }
-            }
-        } else {
-            // Use specified encoding directly for non-UTF-8 or non-strict cases
-            py::str decoded = byte_data.attr("decode")(encoding, errors);
-            return decoded;
-        }
+        // Direct decoding - let Python handle errors strictly
+        py::str decoded = byte_data.attr("decode")(encoding, errors);
+        return decoded;
     } catch (const py::error_already_set& e) {
-        // Re-raise Python exceptions as C++ exceptions
+        // Re-raise Python exceptions (UnicodeDecodeError, etc.)
         throw std::runtime_error("Decoding failed: " + std::string(e.what()));
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Decoding error: " + std::string(e.what()));
     }
+}
+
+// Helper function to validate that an encoding string is a legitimate Python
+// codec This prevents injection attacks while allowing all valid encodings
+static bool is_valid_encoding(const std::string& enc) {
+    if (enc.empty() || enc.length() > 100) {  // Reasonable length limit
+        return false;
+    }
+
+    // Check for potentially dangerous characters that shouldn't be in codec
+    // names
+    for (char c : enc) {
+        if (!std::isalnum(c) && c != '-' && c != '_' && c != '.') {
+            return false;  // Reject suspicious characters
+        }
+    }
+
+    // Verify it's a valid Python codec by attempting a test lookup
+    try {
+        py::gil_scoped_acquire gil;
+        py::module_ codecs = py::module_::import("codecs");
+
+        // This will raise LookupError if the codec doesn't exist
+        codecs.attr("lookup")(enc);
+
+        return true;  // Codec exists and is valid
+    } catch (const py::error_already_set& e) {
+        // Expected: LookupError for invalid codec names
+        LOG("Codec validation failed for '{}': {}", enc, e.what());
+        return false;  // Invalid codec name
+    } catch (const std::exception& e) {
+        // Unexpected C++ exception during validation
+        LOG("Unexpected exception validating encoding '{}': {}", enc, e.what());
+        return false;
+    } catch (...) {
+        // Last resort: unknown exception type
+        LOG("Unknown exception validating encoding '{}'", enc);
+        return false;
+    }
+}
+
+// Helper function to validate error handling mode against an allowlist
+static bool is_valid_error_mode(const std::string& mode) {
+    static const std::unordered_set<std::string> allowed = {
+        "strict", "ignore", "replace", "xmlcharrefreplace", "backslashreplace"};
+    return allowed.find(mode) != allowed.end();
 }
 
 // Helper function to safely extract encoding settings from Python dict
@@ -296,15 +285,56 @@ static std::pair<std::string, std::string> extract_encoding_settings(
         std::string errors = "strict";   // Default
 
         if (settings.contains("encoding") && !settings["encoding"].is_none()) {
-            encoding = settings["encoding"].cast<std::string>();
+            std::string proposed_encoding =
+                settings["encoding"].cast<std::string>();
+
+            // SECURITY: Validate encoding to prevent injection attacks
+            // Allows any valid Python codec (including SQL Server-supported
+            // encodings)
+            if (is_valid_encoding(proposed_encoding)) {
+                encoding = proposed_encoding;
+            } else {
+                LOG("Invalid or unsafe encoding '{}' rejected, using default "
+                    "'utf-8'",
+                    proposed_encoding);
+                // Fall back to safe default
+                encoding = "utf-8";
+            }
         }
 
         if (settings.contains("errors") && !settings["errors"].is_none()) {
-            errors = settings["errors"].cast<std::string>();
+            std::string proposed_errors =
+                settings["errors"].cast<std::string>();
+
+            // SECURITY: Validate error mode against allowlist
+            if (is_valid_error_mode(proposed_errors)) {
+                errors = proposed_errors;
+            } else {
+                LOG("Invalid error mode '{}' rejected, using default 'strict'",
+                    proposed_errors);
+                // Fall back to safe default
+                errors = "strict";
+            }
         }
 
         return std::make_pair(encoding, errors);
+    } catch (const py::error_already_set& e) {
+        // Log Python exceptions (KeyError, TypeError, etc.)
+        LOG("Python exception while extracting encoding settings: {}. Using "
+            "defaults (utf-8, "
+            "strict)",
+            e.what());
+        return std::make_pair("utf-8", "strict");
+    } catch (const std::exception& e) {
+        // Log C++ standard exceptions
+        LOG("Exception while extracting encoding settings: {}. Using defaults "
+            "(utf-8, strict)",
+            e.what());
+        return std::make_pair("utf-8", "strict");
     } catch (...) {
+        // Last resort: unknown exception type
+        LOG("Unknown exception while extracting encoding settings. Using "
+            "defaults (utf-8, strict)");
         return std::make_pair("utf-8", "strict");
     }
 }
@@ -411,34 +441,48 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
 
                 // Check if we have encoding settings and this is SQL_C_CHAR
                 // (not SQL_C_WCHAR)
-                if (encoding_settings && !encoding_settings.is_none() &&
-                    encoding_settings.contains("ctype") &&
-                    encoding_settings.contains("encoding")) {
-                    SQLSMALLINT ctype =
-                        encoding_settings["ctype"].cast<SQLSMALLINT>();
+                if (encoding_settings && !encoding_settings.is_none()) {
+                    try {
+                        // SECURITY: Use extract_encoding_settings for full
+                        // validation This validates encoding against allowlist
+                        // and error mode
+                        py::dict settings_dict =
+                            encoding_settings.cast<py::dict>();
+                        auto [encoding, errors] =
+                            extract_encoding_settings(settings_dict);
 
-                    // Only use dynamic encoding for SQL_C_CHAR, keep
-                    // SQL_C_WCHAR unchanged
-                    if (ctype == SQL_C_CHAR) {
-                        try {
-                            py::dict settings_dict =
-                                encoding_settings.cast<py::dict>();
-                            auto [encoding, errors] =
-                                extract_encoding_settings(settings_dict);
+                        // Validate ctype against allowlist
+                        if (settings_dict.contains("ctype")) {
+                            SQLSMALLINT ctype =
+                                settings_dict["ctype"].cast<SQLSMALLINT>();
 
-                            // Use our safe encoding function
-                            py::bytes encoded_bytes = EncodingString(
-                                param.cast<std::string>(), encoding, errors);
-                            strValue = encoded_bytes.cast<std::string>();
-                        } catch (const std::exception& e) {
-                            LOG("Encoding failed for parameter {}: {}",
-                                paramIndex, e.what());
-                            ThrowStdException("Failed to encode parameter " +
-                                              std::to_string(paramIndex) +
-                                              ": " + e.what());
+                            // Only SQL_C_CHAR and SQL_C_WCHAR are allowed
+                            if (ctype != SQL_C_CHAR && ctype != SQL_C_WCHAR) {
+                                LOG("Invalid ctype {} for parameter {}, using "
+                                    "default",
+                                    ctype, paramIndex);
+                                // Fall through to default behavior
+                                strValue = param.cast<std::string>();
+                            } else if (ctype == SQL_C_CHAR) {
+                                // Only use dynamic encoding for SQL_C_CHAR
+                                py::bytes encoded_bytes =
+                                    EncodingString(param.cast<std::string>(),
+                                                   encoding, errors);
+                                strValue = encoded_bytes.cast<std::string>();
+                            } else {
+                                // SQL_C_WCHAR - use default behavior
+                                strValue = param.cast<std::string>();
+                            }
+                        } else {
+                            // No ctype specified, use default behavior
+                            strValue = param.cast<std::string>();
                         }
-                    } else {
-                        // Default behavior for other types
+                    } catch (const std::exception& e) {
+                        LOG("Encoding settings processing failed for parameter "
+                            "{}: {}. Using "
+                            "default.",
+                            paramIndex, e.what());
+                        // Fall back to safe default behavior
                         strValue = param.cast<std::string>();
                     }
                 } else {
@@ -459,10 +503,38 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                         std::to_string(paramIndex));
                 }
 
-                std::memcpy(buffer, strValue.c_str(), strValue.length());
-                buffer[strValue.length()] = '\0';  // Ensure null termination
+                // SECURITY: Validate size before copying to prevent buffer
+                // overflow
+                size_t copyLength = strValue.length();
+                if (copyLength >= bufferSize) {
+                    ThrowStdException(
+                        "Buffer overflow prevented: string length exceeds "
+                        "allocated buffer at "
+                        "index " +
+                        std::to_string(paramIndex));
+                }
 
-                paramInfo.strLenOrInd = strValue.length();
+// Use secure copy with bounds checking
+#ifdef _WIN32
+                // Windows: Use memcpy_s for secure copy
+                errno_t err =
+                    memcpy_s(buffer, bufferSize, strValue.data(), copyLength);
+                if (err != 0) {
+                    ThrowStdException(
+                        "Secure memory copy failed with error code " +
+                        std::to_string(err) + " at index " +
+                        std::to_string(paramIndex));
+                }
+#else
+                // POSIX: Use std::copy_n with explicit bounds checking
+                if (copyLength > 0) {
+                    std::copy_n(strValue.data(), copyLength, buffer);
+                }
+#endif
+
+                buffer[copyLength] = '\0';  // Ensure null termination
+
+                paramInfo.strLenOrInd = copyLength;
 
                 LOG("Binding SQL_C_CHAR parameter at index {} with encoded "
                     "length {}",
@@ -840,9 +912,10 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                             sizeof(decimalPtr->val));
                 size_t copyLen =
                     std::min(decimalParam.val.size(), sizeof(decimalPtr->val));
+                // Secure copy: bounds already validated with std::min
                 if (copyLen > 0) {
-                    std::memcpy(decimalPtr->val, decimalParam.val.data(),
-                                copyLen);
+                    std::copy_n(decimalParam.val.data(), copyLen,
+                                decimalPtr->val);
                 }
                 dataPtr = static_cast<void*>(decimalPtr);
                 break;
@@ -877,7 +950,8 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 guid_data_ptr->Data3 =
                     (static_cast<uint16_t>(uuid_data[7]) << 8) |
                     (static_cast<uint16_t>(uuid_data[6]));
-                std::memcpy(guid_data_ptr->Data4, &uuid_data[8], 8);
+                // Secure copy: Fixed 8-byte copy for GUID Data4 field
+                std::copy_n(&uuid_data[8], 8, guid_data_ptr->Data4);
                 dataPtr = static_cast<void*>(guid_data_ptr);
                 bufferLength = sizeof(SQLGUID);
                 strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
@@ -2232,11 +2306,29 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                                     ", Column size: " +
                                     std::to_string(info.columnSize));
                             }
-                            // If we reach here, the UTF-16 string fits - copy
-                            // it completely
-                            std::memcpy(wcharArray + i * (info.columnSize + 1),
-                                        utf16Buf.data(),
-                                        utf16Buf.size() * sizeof(SQLWCHAR));
+                            // Secure copy: use validated bounds for
+                            // defense-in-depth
+                            size_t copyBytes =
+                                utf16Buf.size() * sizeof(SQLWCHAR);
+                            size_t bufferBytes =
+                                (info.columnSize + 1) * sizeof(SQLWCHAR);
+                            SQLWCHAR* destPtr =
+                                wcharArray + i * (info.columnSize + 1);
+
+                            if (copyBytes > bufferBytes) {
+                                ThrowStdException(
+                                    "Buffer overflow prevented in WCHAR array "
+                                    "binding at parameter "
+                                    "index " +
+                                    std::to_string(paramIndex) +
+                                    ", array element " + std::to_string(i));
+                            }
+                            if (copyBytes > 0) {
+                                std::copy_n(reinterpret_cast<const char*>(
+                                                utf16Buf.data()),
+                                            copyBytes,
+                                            reinterpret_cast<char*>(destPtr));
+                            }
 #else
                             // On Windows, wchar_t is already UTF-16, so the
                             // original check is sufficient
@@ -2247,9 +2339,25 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                                     "at parameter index " +
                                     std::to_string(paramIndex));
                             }
-                            std::memcpy(wcharArray + i * (info.columnSize + 1),
-                                        wstr.c_str(),
-                                        (wstr.length() + 1) * sizeof(SQLWCHAR));
+                            // Secure copy with bounds checking
+                            size_t copyBytes =
+                                (wstr.length() + 1) * sizeof(SQLWCHAR);
+                            size_t bufferBytes =
+                                (info.columnSize + 1) * sizeof(SQLWCHAR);
+                            SQLWCHAR* destPtr =
+                                wcharArray + i * (info.columnSize + 1);
+
+                            errno_t err = memcpy_s(destPtr, bufferBytes,
+                                                   wstr.c_str(), copyBytes);
+                            if (err != 0) {
+                                ThrowStdException(
+                                    "Secure memory copy failed in WCHAR array "
+                                    "binding at parameter "
+                                    "index " +
+                                    std::to_string(paramIndex) +
+                                    ", array element " + std::to_string(i) +
+                                    ", error code: " + std::to_string(err));
+                            }
 #endif
                             strLenOrIndArray[i] = SQL_NTS;
                         }
@@ -2368,14 +2476,46 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                             }
                             if (str.size() > info.columnSize) {
                                 ThrowStdException(
-                                    "Input exceeds column size "
-                                    "at index " +
+                                    "Input exceeds column size at index " +
                                     std::to_string(i));
                             }
-                            std::memcpy(charArray + i * (info.columnSize + 1),
-                                        str.c_str(), str.size());
+
+                            // SECURITY: Use secure copy with bounds checking
+                            size_t destOffset = i * (info.columnSize + 1);
+                            size_t destBufferSize = info.columnSize + 1;
+                            size_t copyLength = str.size();
+
+                            // Validate bounds to prevent buffer overflow
+                            if (copyLength >= destBufferSize) {
+                                ThrowStdException(
+                                    "Buffer overflow prevented at parameter "
+                                    "array index " +
+                                    std::to_string(i));
+                            }
+
+#ifdef _WIN32
+                            // Windows: Use memcpy_s for secure copy
+                            errno_t err =
+                                memcpy_s(charArray + destOffset, destBufferSize,
+                                         str.data(), copyLength);
+                            if (err != 0) {
+                                ThrowStdException(
+                                    "Secure memory copy failed with error "
+                                    "code " +
+                                    std::to_string(err) + " at array index " +
+                                    std::to_string(i));
+                            }
+#else
+                            // POSIX: Use std::copy_n with explicit bounds
+                            // checking
+                            if (copyLength > 0) {
+                                std::copy_n(str.data(), copyLength,
+                                            charArray + destOffset);
+                            }
+#endif
+
                             strLenOrIndArray[i] =
-                                static_cast<SQLLEN>(str.size());
+                                static_cast<SQLLEN>(copyLength);
                         }
                     }
                     dataPtr = charArray;
@@ -2647,9 +2787,10 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                         target.sign = decimalParam.sign;
                         size_t copyLen = std::min(decimalParam.val.size(),
                                                   sizeof(target.val));
+                        // Secure copy: bounds already validated with std::min
                         if (copyLen > 0) {
-                            std::memcpy(target.val, decimalParam.val.data(),
-                                        copyLen);
+                            std::copy_n(decimalParam.val.data(), copyLen,
+                                        target.val);
                         }
                         strLenOrIndArray[i] = sizeof(SQL_NUMERIC_STRUCT);
                     }
@@ -2683,13 +2824,19 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                                     "UUID binary data must be exactly "
                                     "16 bytes long.");
                             }
-                            std::memcpy(uuid_bytes.data(),
-                                        PyBytes_AS_STRING(b.ptr()), 16);
+                            // Secure copy: Fixed 16-byte copy, size validated
+                            // above
+                            std::copy_n(reinterpret_cast<const unsigned char*>(
+                                            PyBytes_AS_STRING(b.ptr())),
+                                        16, uuid_bytes.data());
                         } else if (py::isinstance(element, uuid_class)) {
                             py::bytes b =
                                 element.attr("bytes_le").cast<py::bytes>();
-                            std::memcpy(uuid_bytes.data(),
-                                        PyBytes_AS_STRING(b.ptr()), 16);
+                            // Secure copy: Fixed 16-byte copy from UUID
+                            // bytes_le attribute
+                            std::copy_n(reinterpret_cast<const unsigned char*>(
+                                            PyBytes_AS_STRING(b.ptr())),
+                                        16, uuid_bytes.data());
                         } else {
                             ThrowStdException(MakeParamMismatchErrorStr(
                                 info.paramCType, paramIndex));
@@ -2705,8 +2852,9 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                         guidArray[i].Data3 =
                             (static_cast<uint16_t>(uuid_bytes[7]) << 8) |
                             (static_cast<uint16_t>(uuid_bytes[6]));
-                        std::memcpy(guidArray[i].Data4, uuid_bytes.data() + 8,
-                                    8);
+                        // Secure copy: Fixed 8-byte copy for GUID Data4 field
+                        std::copy_n(uuid_bytes.data() + 8, 8,
+                                    guidArray[i].Data4);
                         strLenOrIndArray[i] = sizeof(SQLGUID);
                     }
                     dataPtr = guidArray;
@@ -3627,8 +3775,9 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount,
                         reinterpret_cast<char*>(&guidValue.Data3)[1];
                     guid_bytes[7] =
                         reinterpret_cast<char*>(&guidValue.Data3)[0];
-                    std::memcpy(&guid_bytes[8], guidValue.Data4,
-                                sizeof(guidValue.Data4));
+                    // Secure copy: Fixed 8-byte copy for GUID Data4 field
+                    std::copy_n(guidValue.Data4, sizeof(guidValue.Data4),
+                                &guid_bytes[8]);
 
                     py::bytes py_guid_bytes(guid_bytes.data(),
                                             guid_bytes.size());
@@ -4205,7 +4354,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers,
                         reinterpret_cast<char*>(&guidValue->Data3)[1];
                     reordered[7] =
                         reinterpret_cast<char*>(&guidValue->Data3)[0];
-                    std::memcpy(reordered + 8, guidValue->Data4, 8);
+                    // Secure copy: Fixed 8-byte copy for GUID Data4 field
+                    std::copy_n(guidValue->Data4, 8, reordered + 8);
 
                     py::bytes py_guid_bytes(reinterpret_cast<char*>(reordered),
                                             16);

@@ -51,23 +51,44 @@ SQL_WMETADATA: int = -99  # Special flag for column name decoding
 INFO_TYPE_STRING_THRESHOLD: int = 10000
 
 # UTF-16 encoding variants that should use SQL_WCHAR by default
-UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16", "utf-16le", "utf-16be"])
+UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16le", "utf-16be"])
 
 
 def _validate_encoding(encoding: str) -> bool:
     """
-    Cached encoding validation using codecs.lookup().
-
+    Validate encoding name for security and correctness.
+    
+    This function performs two-layer validation:
+    1. Security check: Ensures only safe characters are in the encoding name
+    2. Codec check: Verifies it's a valid Python codec
+    
     Args:
         encoding (str): The encoding name to validate.
 
     Returns:
-        bool: True if encoding is valid, False otherwise.
+        bool: True if encoding is valid and safe, False otherwise.
 
     Note:
-        Uses LRU cache to avoid repeated expensive codecs.lookup() calls.
-        Cache size is limited to 128 entries which should cover most use cases.
+        Rejects encodings with:
+        - Empty or too long names (>100 chars)
+        - Suspicious characters (only alphanumeric, hyphen, underscore, dot allowed)
+        - Invalid Python codecs
     """
+    # Type check: encoding must be a string
+    if not isinstance(encoding, str):
+        return False
+    
+    # Security validation: Check length and characters
+    if not encoding or len(encoding) > 100:
+        return False
+    
+    # Only allow safe characters in encoding names
+    # Valid codec names contain: letters, numbers, hyphens, underscores, dots
+    for char in encoding:
+        if not (char.isalnum() or char in ('-', '_', '.')):
+            return False
+    
+    # Verify it's a valid Python codec
     try:
         codecs.lookup(encoding)
         return True
@@ -400,6 +421,19 @@ class Connection:
         # Normalize encoding to casefold for more robust Unicode handling
         encoding = encoding.casefold()
 
+        # Explicitly reject 'utf-16' with BOM - require explicit endianness
+        if encoding == 'utf-16' and ctype == ConstantsDDBC.SQL_WCHAR.value:
+            error_msg = (
+                "The 'utf-16' codec includes a Byte Order Mark (BOM) which is incompatible with SQL_WCHAR. "
+                "Use 'utf-16le' (little-endian) or 'utf-16be' (big-endian) instead. "
+                "SQL Server's NVARCHAR/NCHAR types expect UTF-16LE without BOM."
+            )
+            log('error', "Attempted to use 'utf-16' with BOM for SQL_WCHAR")
+            raise ProgrammingError(
+                driver_error=error_msg,
+                ddbc_error=error_msg,
+            )
+
         # Set default ctype based on encoding if not provided
         if ctype is None:
             if encoding in UTF16_ENCODINGS:
@@ -426,9 +460,17 @@ class Connection:
 
         # Enforce UTF-16 encoding restriction for SQL_WCHAR
         if ctype == ConstantsDDBC.SQL_WCHAR.value and encoding not in UTF16_ENCODINGS:
-            log('warning', "SQL_WCHAR only supports UTF-16 encodings. Attempted encoding '%s' is not allowed. Using default 'utf-16le' instead.", 
+            error_msg = (
+                f"SQL_WCHAR only supports UTF-16 encodings (utf-16, utf-16le, utf-16be). "
+                f"Encoding '{encoding}' is not compatible with SQL_WCHAR. "
+                f"Either use a UTF-16 encoding, or use SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) instead."
+            )
+            log('error', "Invalid encoding/ctype combination: %s with SQL_WCHAR", 
                 sanitize_user_input(encoding))
-            encoding = 'utf-16le'
+            raise ProgrammingError(
+                driver_error=error_msg,
+                ddbc_error=error_msg,
+            )
         
         # Store the encoding settings
         self._encoding_settings = {"encoding": encoding, "ctype": ctype}
@@ -552,9 +594,17 @@ class Connection:
         # Enforce UTF-16 encoding restriction for SQL_WCHAR and SQL_WMETADATA
         if (sqltype == ConstantsDDBC.SQL_WCHAR.value or sqltype == SQL_WMETADATA) and encoding not in UTF16_ENCODINGS:
             sqltype_name = "SQL_WCHAR" if sqltype == ConstantsDDBC.SQL_WCHAR.value else "SQL_WMETADATA"
-            log('warning', "%s only supports UTF-16 encodings. Attempted encoding '%s' is not allowed. Using default 'utf-16le' instead.", 
-                sqltype_name, sanitize_user_input(encoding))
-            encoding = 'utf-16le'
+            error_msg = (
+                f"{sqltype_name} only supports UTF-16 encodings (utf-16, utf-16le, utf-16be). "
+                f"Encoding '{encoding}' is not compatible with {sqltype_name}. "
+                f"Either use a UTF-16 encoding, or use SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) "
+                f"for the ctype parameter."
+            )
+            log('error', "Invalid encoding for %s: %s", sqltype_name, sanitize_user_input(encoding))
+            raise ProgrammingError(
+                driver_error=error_msg,
+                ddbc_error=error_msg,
+            )
         
         # Set default ctype based on encoding if not provided
         if ctype is None:
@@ -565,9 +615,17 @@ class Connection:
 
         # Additional validation: if user explicitly sets ctype to SQL_WCHAR but encoding is not UTF-16
         if ctype == ConstantsDDBC.SQL_WCHAR.value and encoding not in UTF16_ENCODINGS:
-            log('warning', "SQL_WCHAR ctype only supports UTF-16 encodings. Attempted encoding '%s' is not compatible. Using default 'utf-16le' instead.", 
-                sanitize_user_input(encoding))
-            encoding = 'utf-16le'
+            error_msg = (
+                f"SQL_WCHAR ctype only supports UTF-16 encodings (utf-16, utf-16le, utf-16be). "
+                f"Encoding '{encoding}' is not compatible with SQL_WCHAR ctype. "
+                f"Either use a UTF-16 encoding, or use SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) "
+                f"for the ctype parameter."
+            )
+            log('error', "Invalid encoding for SQL_WCHAR ctype: %s", sanitize_user_input(encoding))
+            raise ProgrammingError(
+                driver_error=error_msg,
+                ddbc_error=error_msg,
+            )
         
         # Validate ctype
         valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
