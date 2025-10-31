@@ -443,9 +443,17 @@ class Connection:
 
         # Enforce UTF-16 encoding restriction for SQL_WCHAR
         if ctype == ConstantsDDBC.SQL_WCHAR.value and encoding not in UTF16_ENCODINGS:
-            log('warning', "SQL_WCHAR only supports UTF-16 encodings. Attempted encoding '%s' is not allowed. Using default 'utf-16le' instead.", 
+            error_msg = (
+                f"SQL_WCHAR only supports UTF-16 encodings (utf-16, utf-16le, utf-16be). "
+                f"Encoding '{encoding}' is not compatible with SQL_WCHAR. "
+                f"Either use a UTF-16 encoding, or use SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) instead."
+            )
+            log('error', "Invalid encoding/ctype combination: %s with SQL_WCHAR", 
                 sanitize_user_input(encoding))
-            encoding = 'utf-16le'
+            raise ProgrammingError(
+                driver_error=error_msg,
+                ddbc_error=error_msg,
+            )
         
         # Store the encoding settings
         self._encoding_settings = {"encoding": encoding, "ctype": ctype}
@@ -569,9 +577,17 @@ class Connection:
         # Enforce UTF-16 encoding restriction for SQL_WCHAR and SQL_WMETADATA
         if (sqltype == ConstantsDDBC.SQL_WCHAR.value or sqltype == SQL_WMETADATA) and encoding not in UTF16_ENCODINGS:
             sqltype_name = "SQL_WCHAR" if sqltype == ConstantsDDBC.SQL_WCHAR.value else "SQL_WMETADATA"
-            log('warning', "%s only supports UTF-16 encodings. Attempted encoding '%s' is not allowed. Using default 'utf-16le' instead.", 
-                sqltype_name, sanitize_user_input(encoding))
-            encoding = 'utf-16le'
+            error_msg = (
+                f"{sqltype_name} only supports UTF-16 encodings (utf-16, utf-16le, utf-16be). "
+                f"Encoding '{encoding}' is not compatible with {sqltype_name}. "
+                f"Either use a UTF-16 encoding, or use SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) "
+                f"for the ctype parameter."
+            )
+            log('error', "Invalid encoding for %s: %s", sqltype_name, sanitize_user_input(encoding))
+            raise ProgrammingError(
+                driver_error=error_msg,
+                ddbc_error=error_msg,
+            )
         
         # Set default ctype based on encoding if not provided
         if ctype is None:
@@ -582,9 +598,17 @@ class Connection:
 
         # Additional validation: if user explicitly sets ctype to SQL_WCHAR but encoding is not UTF-16
         if ctype == ConstantsDDBC.SQL_WCHAR.value and encoding not in UTF16_ENCODINGS:
-            log('warning', "SQL_WCHAR ctype only supports UTF-16 encodings. Attempted encoding '%s' is not compatible. Using default 'utf-16le' instead.", 
-                sanitize_user_input(encoding))
-            encoding = 'utf-16le'
+            error_msg = (
+                f"SQL_WCHAR ctype only supports UTF-16 encodings (utf-16, utf-16le, utf-16be). "
+                f"Encoding '{encoding}' is not compatible with SQL_WCHAR ctype. "
+                f"Either use a UTF-16 encoding, or use SQL_CHAR ({ConstantsDDBC.SQL_CHAR.value}) "
+                f"for the ctype parameter."
+            )
+            log('error', "Invalid encoding for SQL_WCHAR ctype: %s", sanitize_user_input(encoding))
+            raise ProgrammingError(
+                driver_error=error_msg,
+                ddbc_error=error_msg,
+            )
         
         # Validate ctype
         valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]

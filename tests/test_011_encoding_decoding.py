@@ -75,21 +75,49 @@ def test_setencoding_automatic_ctype_detection(db_connection):
 
 
 def test_setencoding_explicit_ctype_override(db_connection):
-    """Test that explicit ctype parameter overrides automatic detection, with SQL_WCHAR restrictions."""
-    # Set UTF-8 with SQL_WCHAR - should be forced to UTF-16LE due to restriction
-    db_connection.setencoding(encoding="utf-8", ctype=-8)
-    settings = db_connection.getencoding()
-    assert (
-        settings["encoding"] == "utf-16le"
-    ), "Encoding should be forced to utf-16le for SQL_WCHAR"
-    assert settings["ctype"] == -8, "ctype should be SQL_WCHAR (-8) when explicitly set"
-
-    # Set UTF-16LE with SQL_CHAR (override default)
+    """Test that explicit ctype parameter overrides automatic detection."""
+    # Set UTF-16LE with SQL_CHAR (valid override)
     db_connection.setencoding(encoding="utf-16le", ctype=1)
     settings = db_connection.getencoding()
     assert settings["encoding"] == "utf-16le", "Encoding should be utf-16le"
     assert settings["ctype"] == 1, "ctype should be SQL_CHAR (1) when explicitly set"
+    
+    # Set UTF-8 with SQL_CHAR (valid combination)
+    db_connection.setencoding(encoding="utf-8", ctype=1)
+    settings = db_connection.getencoding()
+    assert settings["encoding"] == "utf-8", "Encoding should be utf-8"
+    assert settings["ctype"] == 1, "ctype should be SQL_CHAR (1)"
 
+def test_setencoding_invalid_combinations(db_connection):
+    """Test that invalid encoding/ctype combinations raise errors."""
+    import pytest
+    from mssql_python import ProgrammingError
+    
+    # UTF-8 with SQL_WCHAR should raise error
+    with pytest.raises(ProgrammingError, match="SQL_WCHAR only supports UTF-16 encodings"):
+        db_connection.setencoding(encoding="utf-8", ctype=-8)
+    
+    # latin1 with SQL_WCHAR should raise error
+    with pytest.raises(ProgrammingError, match="SQL_WCHAR only supports UTF-16 encodings"):
+        db_connection.setencoding(encoding="latin1", ctype=-8)
+
+
+def test_setdecoding_invalid_combinations(db_connection):
+    """Test that invalid encoding/ctype combinations raise errors in setdecoding."""
+    import pytest
+    from mssql_python import ProgrammingError, SQL_WCHAR, SQL_WMETADATA
+    
+    # UTF-8 with SQL_WCHAR sqltype should raise error
+    with pytest.raises(ProgrammingError, match="SQL_WCHAR only supports UTF-16 encodings"):
+        db_connection.setdecoding(SQL_WCHAR, encoding="utf-8")
+    
+    # UTF-8 with SQL_WMETADATA should raise error
+    with pytest.raises(ProgrammingError, match="SQL_WMETADATA only supports UTF-16 encodings"):
+        db_connection.setdecoding(SQL_WMETADATA, encoding="utf-8")
+    
+    # UTF-8 with SQL_WCHAR ctype should raise error
+    with pytest.raises(ProgrammingError, match="SQL_WCHAR ctype only supports UTF-16 encodings"):
+        db_connection.setdecoding(SQL_CHAR, encoding="utf-8", ctype=-8)
 
 def test_setencoding_none_parameters(db_connection):
     """Test setencoding with None parameters."""
@@ -586,35 +614,23 @@ def test_setdecoding_automatic_ctype_detection(db_connection):
             settings["ctype"] == mssql_python.SQL_WCHAR
         ), f"SQL_CHAR with {encoding} should auto-detect SQL_WCHAR ctype"
 
-    # Other encodings with SQL_WCHAR should be forced to UTF-16LE and use SQL_WCHAR ctype
+    # Other encodings with SQL_CHAR should use SQL_CHAR ctype
     other_encodings = ["utf-8", "latin-1", "ascii", "cp1252"]
     for encoding in other_encodings:
-        db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding=encoding)
-        settings = db_connection.getdecoding(mssql_python.SQL_WCHAR)
+        db_connection.setdecoding(mssql_python.SQL_CHAR, encoding=encoding)
+        settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
         assert (
-            settings["encoding"] == "utf-16le"
-        ), f"SQL_WCHAR with {encoding} should be forced to utf-16le"
+            settings["encoding"] == encoding
+        ), f"SQL_CHAR with {encoding} should keep {encoding}"
         assert (
-            settings["ctype"] == mssql_python.SQL_WCHAR
-        ), f"SQL_WCHAR should maintain SQL_WCHAR ctype"
+            settings["ctype"] == mssql_python.SQL_CHAR
+        ), f"SQL_CHAR with {encoding} should use SQL_CHAR ctype"
 
 
 def test_setdecoding_explicit_ctype_override(db_connection):
-    """Test that explicit ctype parameter overrides automatic detection, with SQL_WCHAR restrictions."""
+    """Test that explicit ctype parameter works correctly with valid combinations."""
 
-    # Set SQL_CHAR with UTF-8 encoding but explicit SQL_WCHAR ctype - should be forced to UTF-16LE
-    db_connection.setdecoding(
-        mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_WCHAR
-    )
-    settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert (
-        settings["encoding"] == "utf-16le"
-    ), "Encoding should be forced to utf-16le for SQL_WCHAR ctype"
-    assert (
-        settings["ctype"] == mssql_python.SQL_WCHAR
-    ), "ctype should be SQL_WCHAR when explicitly set"
-
-    # Set SQL_WCHAR with UTF-16LE encoding but explicit SQL_CHAR ctype
+    # Set SQL_WCHAR with UTF-16LE encoding and explicit SQL_CHAR ctype (valid override)
     db_connection.setdecoding(
         mssql_python.SQL_WCHAR, encoding="utf-16le", ctype=mssql_python.SQL_CHAR
     )
@@ -623,6 +639,16 @@ def test_setdecoding_explicit_ctype_override(db_connection):
     assert (
         settings["ctype"] == mssql_python.SQL_CHAR
     ), "ctype should be SQL_CHAR when explicitly set"
+
+    # Set SQL_CHAR with UTF-8 and SQL_CHAR ctype (valid combination)
+    db_connection.setdecoding(
+        mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_CHAR
+    )
+    settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
+    assert settings["encoding"] == "utf-8", "Encoding should be utf-8"
+    assert (
+        settings["ctype"] == mssql_python.SQL_CHAR
+    ), "ctype should be SQL_CHAR"
 
 
 def test_setdecoding_none_parameters(db_connection):
@@ -758,44 +784,42 @@ def test_setdecoding_with_constants(db_connection):
 
 
 def test_setdecoding_common_encodings(db_connection):
-    """Test setdecoding with various common encodings, accounting for SQL_WCHAR restrictions."""
+    """Test setdecoding with various common encodings, only valid combinations."""
 
     utf16_encodings = ["utf-16le", "utf-16be", "utf-16"]
     other_encodings = ["utf-8", "latin-1", "ascii", "cp1252"]
 
-    # Test UTF-16 encodings - should work with both SQL_CHAR and SQL_WCHAR
+    # Test UTF-16 encodings with both SQL_CHAR and SQL_WCHAR (all valid)
     for encoding in utf16_encodings:
         try:
+            # UTF-16 with SQL_CHAR is valid
             db_connection.setdecoding(mssql_python.SQL_CHAR, encoding=encoding)
             settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-            assert (
-                settings["encoding"] == encoding
-            ), f"Failed to set SQL_CHAR decoding to {encoding}"
-
+            assert settings["encoding"] == encoding.lower()
+            
+            # UTF-16 with SQL_WCHAR is valid
             db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding=encoding)
             settings = db_connection.getdecoding(mssql_python.SQL_WCHAR)
-            assert (
-                settings["encoding"] == encoding
-            ), f"Failed to set SQL_WCHAR decoding to {encoding}"
+            assert settings["encoding"] == encoding.lower()
         except Exception as e:
-            pytest.fail(f"Failed to set valid UTF-16 encoding {encoding}: {e}")
+            pytest.fail(f"Failed to set valid encoding {encoding}: {e}")
 
-    # Test other encodings - should work with SQL_CHAR but be forced to UTF-16LE with SQL_WCHAR
+    # Test other encodings - only with SQL_CHAR (SQL_WCHAR would raise error)
     for encoding in other_encodings:
         try:
+            # These work fine with SQL_CHAR
             db_connection.setdecoding(mssql_python.SQL_CHAR, encoding=encoding)
             settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-            assert (
-                settings["encoding"] == encoding
-            ), f"Failed to set SQL_CHAR decoding to {encoding}"
-
-            db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding=encoding)
-            settings = db_connection.getdecoding(mssql_python.SQL_WCHAR)
-            assert (
-                settings["encoding"] == "utf-16le"
-            ), f"SQL_WCHAR should force {encoding} to utf-16le"
+            assert settings["encoding"] == encoding.lower()
+            
+            # But should raise error with SQL_WCHAR
+            with pytest.raises(ProgrammingError, match="SQL_WCHAR only supports UTF-16 encodings"):
+                db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding=encoding)
+        except ProgrammingError:
+            # Expected for SQL_WCHAR with non-UTF-16
+            pass
         except Exception as e:
-            pytest.fail(f"Failed to set encoding {encoding}: {e}")
+            pytest.fail(f"Unexpected error for encoding {encoding}: {e}")
 
 
 def test_setdecoding_case_insensitive_encoding(db_connection):
@@ -836,7 +860,7 @@ def test_setdecoding_independent_sql_types(db_connection):
 
 
 def test_setdecoding_override_previous(db_connection):
-    """Test setdecoding overrides previous settings for the same SQL type, with SQL_WCHAR restrictions."""
+    """Test setdecoding overrides previous settings for the same SQL type."""
 
     # Set initial decoding
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8")
@@ -846,17 +870,17 @@ def test_setdecoding_override_previous(db_connection):
         settings["ctype"] == mssql_python.SQL_CHAR
     ), "Initial ctype should be SQL_CHAR"
 
-    # Override with different settings - latin-1 with SQL_WCHAR should be forced to utf-16le
+    # Override with different valid settings
     db_connection.setdecoding(
-        mssql_python.SQL_CHAR, encoding="latin-1", ctype=mssql_python.SQL_WCHAR
+        mssql_python.SQL_CHAR, encoding="latin-1", ctype=mssql_python.SQL_CHAR
     )
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
     assert (
-        settings["encoding"] == "utf-16le"
-    ), "Encoding should be forced to utf-16le for SQL_WCHAR ctype"
+        settings["encoding"] == "latin-1"
+    ), "Encoding should be overridden to latin-1"
     assert (
-        settings["ctype"] == mssql_python.SQL_WCHAR
-    ), "ctype should be overridden to SQL_WCHAR"
+        settings["ctype"] == mssql_python.SQL_CHAR
+    ), "ctype should remain SQL_CHAR"
 
 
 def test_getdecoding_invalid_sqltype(db_connection):
@@ -909,17 +933,12 @@ def test_getdecoding_returns_copy(db_connection):
 
 
 def test_setdecoding_getdecoding_consistency(db_connection):
-    """Test that setdecoding and getdecoding work consistently together, with SQL_WCHAR restrictions."""
+    """Test that setdecoding and getdecoding work consistently together."""
 
     test_cases = [
         (mssql_python.SQL_CHAR, "utf-8", mssql_python.SQL_CHAR, "utf-8"),
         (mssql_python.SQL_CHAR, "utf-16le", mssql_python.SQL_WCHAR, "utf-16le"),
-        (
-            mssql_python.SQL_WCHAR,
-            "latin-1",
-            mssql_python.SQL_WCHAR,
-            "utf-16le",
-        ),  # latin-1 forced to utf-16le
+        (mssql_python.SQL_WCHAR, "utf-16le", mssql_python.SQL_WCHAR, "utf-16le"),
         (mssql_python.SQL_WCHAR, "utf-16be", mssql_python.SQL_WCHAR, "utf-16be"),
         (mssql_python.SQL_WMETADATA, "utf-16le", mssql_python.SQL_WCHAR, "utf-16le"),
     ]
@@ -1238,29 +1257,23 @@ def test_encoding_decoding_comprehensive_unicode_characters(db_connection):
 
 
 def test_encoding_decoding_sql_wchar_restriction_enforcement(db_connection):
-    """Test that SQL_WCHAR restrictions are properly enforced."""
+    """Test that SQL_WCHAR restrictions are properly enforced with errors."""
     
-    # Test cases that should trigger the SQL_WCHAR restriction
+    # Test cases that should raise errors for SQL_WCHAR
     non_utf16_encodings = ["utf-8", "latin-1", "ascii", "cp1252", "iso-8859-1"]
     
     for encoding in non_utf16_encodings:
-        # Test setencoding with SQL_WCHAR ctype should force UTF-16LE
-        db_connection.setencoding(encoding=encoding, ctype=SQL_WCHAR)
-        settings = db_connection.getencoding()
-        assert settings["encoding"] == "utf-16le", (
-            f"setencoding with {encoding} and SQL_WCHAR should force utf-16le, "
-            f"got {settings['encoding']}"
-        )
-        assert settings["ctype"] == SQL_WCHAR, "ctype should remain SQL_WCHAR"
+        # Test setencoding with SQL_WCHAR ctype should raise error
+        with pytest.raises(ProgrammingError, match="SQL_WCHAR only supports UTF-16 encodings"):
+            db_connection.setencoding(encoding=encoding, ctype=SQL_WCHAR)
         
-        # Test setdecoding with SQL_WCHAR and non-UTF-16 encoding
-        db_connection.setdecoding(SQL_WCHAR, encoding=encoding, ctype=SQL_WCHAR)
-        decode_settings = db_connection.getdecoding(SQL_WCHAR)
-        assert decode_settings["encoding"] == "utf-16le", (
-            f"setdecoding SQL_WCHAR with {encoding} should force utf-16le, "
-            f"got {decode_settings['encoding']}"
-        )
-        assert decode_settings["ctype"] == SQL_WCHAR, "ctype should remain SQL_WCHAR"
+        # Test setdecoding with SQL_WCHAR and non-UTF-16 encoding should raise error
+        with pytest.raises(ProgrammingError, match="SQL_WCHAR only supports UTF-16 encodings"):
+            db_connection.setdecoding(SQL_WCHAR, encoding=encoding)
+        
+        # Test setdecoding with SQL_WCHAR ctype should raise error
+        with pytest.raises(ProgrammingError, match="SQL_WCHAR ctype only supports UTF-16 encodings"):
+            db_connection.setdecoding(SQL_CHAR, encoding=encoding, ctype=SQL_WCHAR)
 
 
 def test_encoding_decoding_error_scenarios(db_connection):
@@ -1571,39 +1584,29 @@ def test_encoding_decoding_parameter_binding_edge_cases(db_connection):
 def test_encoding_decoding_sql_wchar_error_enforcement(conn_str):
     """Test that attempts to use SQL_WCHAR with non-UTF-16 encodings raise appropriate errors."""
     
-    # This should test the error handling when users try to use SQL_WCHAR incorrectly
-    
-    # Note: Based on the connection.py implementation, SQL_WCHAR with non-UTF-16 
-    # encodings should be forced to UTF-16LE rather than raising an error,
-    # but we should test the documented behavior
-    
     conn = connect(conn_str)
     
     try:
-        # Test that SQL_WCHAR restrictions are enforced consistently
-        non_utf16_encodings = ["utf-8", "latin-1", "ascii", "cp1252"]
+        # These should all raise ProgrammingError
+        with pytest.raises(ProgrammingError, match="SQL_WCHAR only supports UTF-16 encodings"):
+            conn.setencoding("utf-8", SQL_WCHAR)
         
-        for encoding in non_utf16_encodings:
-            # According to connection.py, this should force the encoding to utf-16le
-            # rather than raise an error
-            conn.setencoding(encoding=encoding, ctype=mssql_python.SQL_WCHAR)
-            settings = conn.getencoding()
-            
-            # Verify forced conversion to UTF-16LE
-            assert settings["encoding"] == "utf-16le", (
-                f"SQL_WCHAR with {encoding} should force utf-16le, got {settings['encoding']}"
-            )
-            assert settings["ctype"] == mssql_python.SQL_WCHAR
-            
-            # Test the same for setdecoding
-            conn.setdecoding(mssql_python.SQL_WCHAR, encoding=encoding, ctype=mssql_python.SQL_WCHAR)
-            decode_settings = conn.getdecoding(mssql_python.SQL_WCHAR)
-            
-            assert decode_settings["encoding"] == "utf-16le", (
-                f"setdecoding SQL_WCHAR with {encoding} should force utf-16le"
-            )
-            
-        print("[OK] SQL_WCHAR restriction enforcement passed")
+        with pytest.raises(ProgrammingError, match="SQL_WCHAR only supports UTF-16 encodings"):
+            conn.setdecoding(SQL_WCHAR, encoding="utf-8")
+        
+        with pytest.raises(ProgrammingError, match="SQL_WCHAR ctype only supports UTF-16 encodings"):
+            conn.setdecoding(SQL_CHAR, encoding="utf-8", ctype=SQL_WCHAR)
+        
+        # These should succeed (valid UTF-16 combinations)
+        conn.setencoding("utf-16le", SQL_WCHAR)
+        settings = conn.getencoding()
+        assert settings["encoding"] == "utf-16le"
+        assert settings["ctype"] == SQL_WCHAR
+        
+        conn.setdecoding(SQL_WCHAR, encoding="utf-16le")
+        settings = conn.getdecoding(SQL_WCHAR)
+        assert settings["encoding"] == "utf-16le"
+        assert settings["ctype"] == SQL_WCHAR
         
     finally:
         conn.close()
@@ -1752,45 +1755,36 @@ def test_encoding_decoding_connection_isolation(conn_str):
 def test_encoding_decoding_sql_wchar_explicit_error_validation(db_connection):
     """Test explicit validation that SQL_WCHAR restrictions work correctly."""
     
-    # Test that trying to use SQL_WCHAR with non-UTF-16 encodings 
-    # gets handled appropriately (either error or forced conversion)
-    
+    # Non-UTF-16 encodings should raise errors with SQL_WCHAR
     non_utf16_encodings = [
         "utf-8", "latin-1", "ascii", "cp1252", "iso-8859-1"
     ]
     
+    # Test 1: Verify non-UTF-16 encodings with SQL_WCHAR raise errors
+    for encoding in non_utf16_encodings:
+        # setencoding should raise error
+        with pytest.raises(ProgrammingError, match="SQL_WCHAR only supports UTF-16 encodings"):
+            db_connection.setencoding(encoding=encoding, ctype=SQL_WCHAR)
+        
+        # setdecoding with SQL_WCHAR sqltype should raise error
+        with pytest.raises(ProgrammingError, match="SQL_WCHAR only supports UTF-16 encodings"):
+            db_connection.setdecoding(SQL_WCHAR, encoding=encoding)
+        
+        # setdecoding with SQL_WCHAR ctype should raise error
+        with pytest.raises(ProgrammingError, match="SQL_WCHAR ctype only supports UTF-16 encodings"):
+            db_connection.setdecoding(SQL_CHAR, encoding=encoding, ctype=SQL_WCHAR)
+    
+    # Test 2: Verify UTF-16 encodings work correctly with SQL_WCHAR
     utf16_encodings = [
         "utf-16", "utf-16le", "utf-16be"
     ]
     
-    # Test 1: Verify non-UTF-16 encodings with SQL_WCHAR are handled
-    for encoding in non_utf16_encodings:
-        # According to connection.py, this should force to utf-16le
-        original_encoding = encoding
-        db_connection.setencoding(encoding=encoding, ctype=SQL_WCHAR)
-        
-        result = db_connection.getencoding()
-        assert result["encoding"] == "utf-16le", (
-            f"Expected {original_encoding} with SQL_WCHAR to be forced to utf-16le, "
-            f"but got {result['encoding']}"
-        )
-        assert result["ctype"] == SQL_WCHAR
-        
-        # Test setdecoding as well
-        db_connection.setdecoding(SQL_WCHAR, encoding=encoding, ctype=SQL_WCHAR)
-        decode_result = db_connection.getdecoding(SQL_WCHAR)
-        assert decode_result["encoding"] == "utf-16le", (
-            f"Expected setdecoding {original_encoding} with SQL_WCHAR to be forced to utf-16le"
-        )
-    
-    # Test 2: Verify UTF-16 encodings work correctly with SQL_WCHAR
     for encoding in utf16_encodings:
+        # All of these should succeed
         db_connection.setencoding(encoding=encoding, ctype=SQL_WCHAR)
-        result = db_connection.getencoding()
-        assert result["encoding"] == encoding, (
-            f"UTF-16 encoding {encoding} should be preserved with SQL_WCHAR"
-        )
-        assert result["ctype"] == SQL_WCHAR
+        settings = db_connection.getencoding()
+        assert settings["encoding"] == encoding.lower()
+        assert settings["ctype"] == SQL_WCHAR
     
     print("[OK] SQL_WCHAR explicit validation passed")
 
@@ -3434,12 +3428,12 @@ def test_iso8859_family_encodings(db_connection):
 # ====================================================================================
 
 def test_utf16_enforcement_for_sql_wchar(db_connection):
-    """Test that SQL_WCHAR with non-UTF-16 encodings gets forced to UTF-16LE."""
+    """Test that SQL_WCHAR with non-UTF-16 encodings raises errors."""
     print("\n" + "="*60)
     print("UTF-16 ENFORCEMENT FOR SQL_WCHAR TEST")
     print("="*60)
     
-    # These should be FORCED to UTF-16LE (not fail)
+    # These should RAISE ERRORS (not be forced to UTF-16LE)
     non_utf16_encodings = [
         ("utf-8", "UTF-8 with SQL_WCHAR"),
         ("latin-1", "Latin-1 with SQL_WCHAR"),
@@ -3449,13 +3443,9 @@ def test_utf16_enforcement_for_sql_wchar(db_connection):
     
     for encoding, description in non_utf16_encodings:
         print(f"\nTesting {description}...")
-        db_connection.setencoding(encoding=encoding, ctype=SQL_WCHAR)
-        settings = db_connection.getencoding()
-        # Should be forced to UTF-16LE
-        assert settings['encoding'] == 'utf-16le', \
-            f"SQL_WCHAR should force non-UTF-16 encodings to utf-16le, got: {settings['encoding']}"
-        assert settings['ctype'] == SQL_WCHAR, "ctype should be SQL_WCHAR"
-        print(f"  [OK] Forced to UTF-16LE as expected")
+        with pytest.raises(ProgrammingError, match="SQL_WCHAR only supports UTF-16 encodings"):
+            db_connection.setencoding(encoding=encoding, ctype=SQL_WCHAR)
+        print(f"  ✓ Correctly raised error for {encoding}")
     
     # These should SUCCEED (UTF-16 variants)
     valid_combinations = [
@@ -3468,12 +3458,11 @@ def test_utf16_enforcement_for_sql_wchar(db_connection):
         print(f"\nTesting {description}...")
         db_connection.setencoding(encoding=encoding, ctype=SQL_WCHAR)
         settings = db_connection.getencoding()
-        assert settings['encoding'] == encoding.casefold(), f"Encoding should be {encoding}"
-        assert settings['ctype'] == SQL_WCHAR, "ctype should be SQL_WCHAR"
-        print(f"  [OK] Properly accepted")
+        assert settings["encoding"] == encoding.lower()
+        assert settings["ctype"] == SQL_WCHAR
+        print(f"  ✓ Successfully set {encoding} with SQL_WCHAR")
     
     print("\n" + "="*60)
-
 
 def test_utf16_unicode_preservation(db_connection):
     """Test that UTF-16LE preserves all Unicode characters correctly."""
