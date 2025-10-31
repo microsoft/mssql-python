@@ -21,6 +21,7 @@
 #define SQL_SS_TIMESTAMPOFFSET (-155)
 #define SQL_C_SS_TIMESTAMPOFFSET (0x4001)
 #define MAX_DIGITS_IN_NUMERIC 64
+#define SQL_MAX_NUMERIC_LEN 16
 
 #define STRINGIFY_FOR_CASE(x) \
     case x:                   \
@@ -118,12 +119,18 @@ struct NumericData {
     SQLCHAR precision;
     SQLSCHAR scale;
     SQLCHAR sign;  // 1=pos, 0=neg
-    std::uint64_t val; // 123.45 -> 12345
+    std::string val; // 123.45 -> 12345
 
-    NumericData() : precision(0), scale(0), sign(0), val(0) {}
+    NumericData() : precision(0), scale(0), sign(0), val(SQL_MAX_NUMERIC_LEN, '\0') {}
 
-    NumericData(SQLCHAR precision, SQLSCHAR scale, SQLCHAR sign, std::uint64_t value)
-        : precision(precision), scale(scale), sign(sign), val(value) {}
+    NumericData(SQLCHAR precision, SQLSCHAR scale, SQLCHAR sign, const std::string& valueBytes)
+        : precision(precision), scale(scale), sign(sign), val(SQL_MAX_NUMERIC_LEN, '\0') {
+        if (valueBytes.size() > SQL_MAX_NUMERIC_LEN) {
+            throw std::runtime_error("NumericData valueBytes size exceeds SQL_MAX_NUMERIC_LEN (16)");
+        }
+        // Copy binary data to buffer, remaining bytes stay zero-padded
+        std::memcpy(&val[0], valueBytes.data(), valueBytes.size());
+    }
 };
 
 // Struct to hold the DateTimeOffset structure
@@ -619,9 +626,10 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 decimalPtr->sign = decimalParam.sign;
                 // Convert the integer decimalParam.val to char array
                 std::memset(static_cast<void*>(decimalPtr->val), 0, sizeof(decimalPtr->val));
-                std::memcpy(static_cast<void*>(decimalPtr->val),
-			    reinterpret_cast<char*>(&decimalParam.val),
-                            sizeof(decimalParam.val));
+                size_t copyLen = std::min(decimalParam.val.size(), sizeof(decimalPtr->val));
+                if (copyLen > 0) {
+                    std::memcpy(decimalPtr->val, decimalParam.val.data(), copyLen);
+                }
                 dataPtr = static_cast<void*>(decimalPtr);
                 break;
             }
@@ -2112,15 +2120,16 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                             throw std::runtime_error(MakeParamMismatchErrorStr(info.paramCType, paramIndex));
                         }
                         NumericData decimalParam = element.cast<NumericData>();
-                        LOG("Received numeric parameter at [%zu]: precision=%d, scale=%d, sign=%d, val=%lld",
-                            i, decimalParam.precision, decimalParam.scale, decimalParam.sign, decimalParam.val);
+                        LOG("Received numeric parameter at [%zu]: precision=%d, scale=%d, sign=%d, val=%s",
+                            i, decimalParam.precision, decimalParam.scale, decimalParam.sign, decimalParam.val.c_str());
                         numericArray[i].precision = decimalParam.precision;
                         numericArray[i].scale = decimalParam.scale;
                         numericArray[i].sign = decimalParam.sign;
                         std::memset(numericArray[i].val, 0, sizeof(numericArray[i].val));
-                        std::memcpy(numericArray[i].val,
-                                    reinterpret_cast<const char*>(&decimalParam.val),
-                                    std::min(sizeof(decimalParam.val), sizeof(numericArray[i].val)));
+                        size_t copyLen = std::min(decimalParam.val.size(), sizeof(numericArray[i].val));
+                        if (copyLen > 0) {
+                            std::memcpy(numericArray[i].val, decimalParam.val.data(), copyLen);
+                        }
                         strLenOrIndArray[i] = sizeof(SQL_NUMERIC_STRUCT);
                     }
                     dataPtr = numericArray;
@@ -3869,7 +3878,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Define numeric data class
     py::class_<NumericData>(m, "NumericData")
         .def(py::init<>())
-        .def(py::init<SQLCHAR, SQLSCHAR, SQLCHAR, std::uint64_t>())
+        .def(py::init<SQLCHAR, SQLSCHAR, SQLCHAR, const std::string&>())
         .def_readwrite("precision", &NumericData::precision)
         .def_readwrite("scale", &NumericData::scale)
         .def_readwrite("sign", &NumericData::sign)
