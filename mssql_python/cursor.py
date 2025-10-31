@@ -649,7 +649,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Ensure column map, converter map, and settings snapshot are cached.
         Called before fetching rows to optimize row creation performance.
         """
-        # Only build settings snapshot - keep other optimizations minimal for now
+        # Build settings snapshot
         if self._settings_snapshot is None:
             self._settings_snapshot = self._build_settings_snapshot()
             
@@ -660,6 +660,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 if col_desc:  # Ensure column description exists
                     col_name = col_desc[0]  # Name is first item in description tuple
                     self._cached_column_map[col_name] = i
+        
+        # Build converter map if needed
+        if self._cached_converter_map is None:
+            self._cached_converter_map = self._build_shared_converter_map()
 
     def close(self) -> None:
         """

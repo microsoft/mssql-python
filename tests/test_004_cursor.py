@@ -14766,7 +14766,7 @@ def test_row_uuid_processing_exception_handling(cursor, db_connection):
 
         # Create Row directly with the data and modified description
         # This should trigger exception handling in lines 101-102 and 116-117
-        row = Row(cursor, modified_description, list(row_data))
+        row = Row(list(row_data), cursor, modified_description)
 
         # The invalid GUID should be kept as original value due to exception handling
         # Lines 101-102: except (ValueError, AttributeError): pass  # Keep original if conversion fails
@@ -15009,7 +15009,7 @@ def test_row_uuid_attribute_error_handling(cursor, db_connection):
 
         # Create Row directly with the data and modified description
         # This should trigger AttributeError handling in lines 101-102 and 116-117
-        row = Row(cursor, modified_description, list(row_data))
+        row = Row(list(row_data), cursor, modified_description)
 
         # The integer value should be kept as original due to AttributeError handling
         # Lines 101-102: except (ValueError, AttributeError): pass  # Keep original if conversion fails

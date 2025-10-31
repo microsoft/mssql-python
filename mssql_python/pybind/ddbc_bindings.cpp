@@ -2704,46 +2704,18 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, numericStr, sizeof(numericStr), &indicator);
 
                 if (SQL_SUCCEEDED(ret)) {
-                    try {
-                        // Validate 'indicator' to avoid buffer overflow and fallback to a safe
-                        // null-terminated read when length is unknown or out-of-range.
-                        const char* cnum = reinterpret_cast<const char*>(numericStr);
-                        size_t bufSize = sizeof(numericStr);
-                        size_t safeLen = 0;
-
-                        if (indicator > 0 && indicator <= static_cast<SQLLEN>(bufSize)) {
-                            // indicator appears valid and within the buffer size
-                            safeLen = static_cast<size_t>(indicator);
-                        } else {
-                            // indicator is unknown, zero, negative, or too large; determine length
-                            // by searching for a terminating null (safe bounded scan)
-                            for (size_t j = 0; j < bufSize; ++j) {
-                                if (cnum[j] == '\0') {
-                                    safeLen = j;
-                                    break;
-                                }
-                            }
-                            // if no null found, use the full buffer size as a conservative fallback
-                            if (safeLen == 0 && bufSize > 0 && cnum[0] != '\0') {
-                                safeLen = bufSize;
-                            }
-                        }
-                        if (isDefaultDecimalSeparator) {
-                            py::object decimalObj = PythonObjectCache::get_decimal_class()(py::str(cnum, safeLen));
-                            row.append(decimalObj);
-                        } else {
-                            std::string numStr(cnum, safeLen);
-                            size_t pos = numStr.find('.');
-                            if (pos != std::string::npos) {
-                                numStr.replace(pos, 1, decimalSeparator);
-                            }
-                            py::object decimalObj = PythonObjectCache::get_decimal_class()(numStr);
-                            row.append(decimalObj);
-                        }
-                    } catch (const py::error_already_set& e) {
-                        // If conversion fails, append None
-                        LOG("Error converting to decimal: {}", e.what());
+                    if (indicator == SQL_NULL_DATA) {
                         row.append(py::none());
+                    } else {
+                        try {
+                            const char* cnum = reinterpret_cast<const char*>(numericStr);
+                            py::object decimalObj = PythonObjectCache::get_decimal_class()(py::str(cnum));
+                            row.append(decimalObj);
+                        } catch (const py::error_already_set& e) {
+                            // If conversion fails, append None
+                            LOG("Error converting to decimal: {}", e.what());
+                            row.append(py::none());
+                        }
                     }
                 }
                 else {
@@ -3340,16 +3312,15 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         const char* rawData = reinterpret_cast<const char*>(
                             &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]);
                         
-                        // Use pre-cached decimal separator
-                        if (isDefaultDecimalSeparator) {
-                            row[col - 1] = PythonObjectCache::get_decimal_class()(py::str(rawData, decimalDataLen));
+                        if (decimalDataLen == SQL_NULL_DATA) {
+                            row[col - 1] = py::none();
+                        } else if (decimalDataLen > 0) {
+                            SQLLEN safeLen = std::min(decimalDataLen, static_cast<SQLLEN>(MAX_DIGITS_IN_NUMERIC));
+                            // Always create Decimal with dot notation (Python standard)
+                            // The custom separator is only for display formatting, not internal representation
+                            row[col - 1] = PythonObjectCache::get_decimal_class()(py::str(rawData, safeLen));
                         } else {
-                            std::string numStr(rawData, decimalDataLen);
-                            size_t pos = numStr.find('.');
-                            if (pos != std::string::npos) {
-                                numStr.replace(pos, 1, decimalSeparator);
-                            }
-                            row[col - 1] = PythonObjectCache::get_decimal_class()(numStr);
+                            row[col - 1] = py::none();
                         }
                     } catch (const py::error_already_set& e) {
                         // Handle the exception, e.g., log the error and set py::none()
