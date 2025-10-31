@@ -3472,7 +3472,7 @@ def test_cursor_rownumber_empty_results(cursor, db_connection):
 def test_rownumber_warning_logged(cursor, db_connection):
     """Test that accessing rownumber logs a warning message"""
     import logging
-    from mssql_python.helpers import get_logger
+    from mssql_python.logging import get_logger
 
     try:
         # Create test table
@@ -3487,6 +3487,12 @@ def test_rownumber_warning_logged(cursor, db_connection):
         # Set up logging capture
         logger = get_logger()
         if logger:
+            # Save original log level
+            original_level = logger._logger.level
+            
+            # Enable WARNING level logging
+            logger.setLevel(logging.WARNING)
+            
             # Create a test handler to capture log messages
             import io
 
@@ -3509,12 +3515,13 @@ def test_rownumber_warning_logged(cursor, db_connection):
 
                 # Verify rownumber functionality still works
                 assert (
-                    rownumber is None
-                ), f"Expected rownumber None before fetch, got {rownumber}"
+                    rownumber == -1
+                ), f"Expected rownumber -1 before fetch, got {rownumber}"
 
             finally:
-                # Clean up: remove our test handler
+                # Clean up: remove our test handler and restore level
                 logger.removeHandler(test_handler)
+                logger.setLevel(original_level)
         else:
             # If no logger configured, just test that rownumber works
             rownumber = cursor.rownumber

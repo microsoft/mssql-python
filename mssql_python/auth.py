@@ -7,6 +7,8 @@ This module handles authentication for the mssql_python package.
 import platform
 import struct
 from typing import Tuple, Dict, Optional, List
+
+from mssql_python.logging import logger
 from mssql_python.constants import AuthType
 
 

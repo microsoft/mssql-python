@@ -6,6 +6,9 @@
 #include <memory>
 #include <vector>
 
+// LOG() migration complete - using LOG_FINE/FINER/FINEST from logger_bridge.hpp
+#include "logger_bridge.hpp"
+
 ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
     : _max_size(max_size), _idle_timeout_secs(idle_timeout_secs),
       _current_size(0) {}
@@ -69,7 +72,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(
         try {
             conn->disconnect();
         } catch (const std::exception& ex) {
-            LOG("Disconnect bad/expired connections failed: {}", ex.what());
+            LOG_FINER("Disconnect bad/expired connections failed: %s", ex.what());
         }
     }
     return valid_conn;
@@ -100,8 +103,7 @@ void ConnectionPool::close() {
         try {
             conn->disconnect();
         } catch (const std::exception& ex) {
-            LOG("ConnectionPool::close: disconnect failed: {}",
-                ex.what());
+            LOG_FINER("ConnectionPool::close: disconnect failed: %s", ex.what());
         }
     }
 }
@@ -117,7 +119,7 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(
 
     auto& pool = _pools[connStr];
     if (!pool) {
-        LOG("Creating new connection pool");
+        LOG_FINER("Creating new connection pool");
         pool = std::make_shared<ConnectionPool>(_default_max_size,
                                                 _default_idle_secs);
     }

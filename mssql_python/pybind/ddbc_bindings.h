@@ -362,10 +362,6 @@ extern SQLDescribeParamFunc SQLDescribeParam_ptr;
 extern SQLParamDataFunc SQLParamData_ptr;
 extern SQLPutDataFunc SQLPutData_ptr;
 
-// Logging utility
-template <typename... Args>
-void LOG(const std::string& formatString, Args&&... args);
-
 // Throws a std::runtime_error with the given message
 void ThrowStdException(const std::string& message);
 

@@ -86,6 +86,31 @@ The driver offers a suite of Pythonic enhancements that streamline database inte
 ### Connection Pooling
  
 The Microsoft mssql_python driver provides built-in support for connection pooling, which helps improve performance and scalability by reusing active database connections instead of creating a new connection for every request. This feature is enabled by default. For more information, refer [Connection Pooling Wiki](https://github.com/microsoft/mssql-python/wiki/Connection#connection-pooling).
+
+### Logging
+
+The driver includes a comprehensive logging system with JDBC-style custom log levels (FINEST, FINER, FINE) for detailed SQL diagnostics. Features include:
+
+- **Custom Log Levels**: FINEST (most detailed), FINER, FINE for granular SQL operation logging
+- **Automatic Sanitization**: Passwords and sensitive data automatically redacted in logs
+- **Trace IDs**: Unique identifiers for tracking related operations
+- **File Rotation**: Automatic log file rotation to prevent disk space issues
+- **Thread-Safe**: Safe for multi-threaded applications
+
+Quick example:
+
+```python
+from mssql_python import logger, FINE
+
+# Enable detailed SQL logging
+logger.setLevel(FINE)
+logger.enable_file_logging(log_dir='./logs')
+
+# Use the driver - all SQL operations will be logged
+conn = mssql_python.connect(connection_string)
+```
+
+For complete logging documentation, see [LOGGING.md](LOGGING.md).
  
 ## Getting Started Examples
 Connect to SQL Server and execute a simple query:
