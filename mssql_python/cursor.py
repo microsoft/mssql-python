@@ -14,7 +14,7 @@ import decimal
 import uuid
 import datetime
 import warnings
-from typing import List, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Dict, Callable
+from typing import List, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error, log
 from mssql_python import ddbc_bindings
@@ -131,9 +131,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._skip_increment_for_next_fetch: bool = (
             False  # Track if we need to skip incrementing the row index
         )
-        self._cached_column_map: Optional[Dict[str, int]] = None
-        self._cached_converter_map: Optional[List[Optional[Callable[[Any], Any]]]] = None
-        self._settings_snapshot: Optional[Dict[str, Any]] = None
 
         self.messages: List[str] = []  # Store diagnostic messages
 
@@ -577,93 +574,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             log("debug", "SQLFreeHandle succeeded")
 
         self._clear_rownumber()
-        
-        # Clear cached optimizations when resetting cursor
-        self._cached_column_map = None
-        self._cached_converter_map = None
-        self._settings_snapshot = None
 
         # Reinitialize the statement handle
         self._initialize_cursor()
-
-    def _build_shared_converter_map(self) -> Optional[List[Optional[Callable[[Any], Any]]]]:
-        """
-        Build a shared converter map for all rows in this result set.
-        This optimization avoids repeated converter lookups for each row.
-        
-        Returns:
-            List of converters (one per column, None if no converter needed)
-        """
-        if not self.description or not hasattr(self.connection, '_output_converters'):
-            return None
-            
-        if not self.connection._output_converters:
-            return None
-            
-        converter_map = []
-        
-        # Map SQL type codes to appropriate byte sizes for integer conversion
-        int_size_map = {
-            ddbc_sql_const.SQL_TINYINT.value: 1,
-            ddbc_sql_const.SQL_SMALLINT.value: 2,
-            ddbc_sql_const.SQL_INTEGER.value: 4,
-            ddbc_sql_const.SQL_BIGINT.value: 8,
-        }
-        
-        for desc in self.description:
-            if desc is None:
-                converter_map.append(None)
-                continue
-                
-            sql_type = desc[1]  # type_code is at index 1 in description tuple
-            
-            # Try to get a converter for this type
-            converter = self.connection.get_output_converter(sql_type)
-            
-            # If no converter found for the SQL type but we expect string/bytes,
-            # try the WVARCHAR converter as a fallback
-            if converter is None:
-                converter = self.connection.get_output_converter(
-                    ddbc_sql_const.SQL_WVARCHAR.value
-                )
-            
-            converter_map.append(converter)
-            
-        return converter_map
-
-    def _build_settings_snapshot(self) -> Dict[str, Any]:
-        """
-        Build a settings snapshot to avoid repeated get_settings() calls for each row.
-        
-        Returns:
-            Dictionary with current settings values
-        """
-        settings = get_settings()
-        return {
-            "lowercase": settings.lowercase,
-            "native_uuid": settings.native_uuid,
-        }
-
-    def _ensure_cached_optimizations(self) -> None:
-        """
-        Ensure column map, converter map, and settings snapshot are cached.
-        Called before fetching rows to optimize row creation performance.
-        """
-        # Build settings snapshot
-        if self._settings_snapshot is None:
-            self._settings_snapshot = self._build_settings_snapshot()
-            
-        # Build basic column map if description exists
-        if self._cached_column_map is None and self.description:
-            self._cached_column_map = {}
-            for i, col_desc in enumerate(self.description):
-                if col_desc:  # Ensure column description exists
-                    col_name = col_desc[0]  # Name is first item in description tuple
-                    self._cached_column_map[col_name] = i
-        
-        # Build converter map if needed
-        if self._cached_converter_map is None:
-            self._cached_converter_map = self._build_shared_converter_map()
 
     def close(self) -> None:
         """
@@ -1246,15 +1159,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
             self._clear_rownumber()
 
-        # After successful execution, initialize description if there are results
-        column_metadata = []
-        try:
-            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
-            self._initialize_description(column_metadata)
-        except Exception as e:
-            # If describe fails, it's likely there are no results (e.g., for INSERT)
-            self.description = None
-        
         self._reset_inputsizes()  # Reset input sizes after execution
         # Return self for method chaining
         return self
@@ -2009,11 +1913,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         )
 
         ret = ddbc_bindings.SQLExecuteMany(
-            self.hstmt,
-            operation,
-            columnwise_params,
-            parameters_type,
-            row_count
+            self.hstmt, operation, columnwise_params, parameters_type, row_count
         )
 
         # Capture any diagnostic messages after execution
@@ -2068,17 +1968,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self._increment_rownumber()
 
             self.rowcount = self._next_row_index
-            self._ensure_cached_optimizations()
-            
-            return Row(
-                values=row_data,
-                cursor=self,
-                description=self.description,
-                column_map=self._cached_column_map,
-                converter_map=self._cached_converter_map,
-                settings_snapshot=self._settings_snapshot
-            )
-        except Exception as e:
+
+            # Create and return a Row object, passing column name map if available
+            column_map = getattr(self, "_column_name_map", None)
+            settings_snapshot = getattr(self, "_settings_snapshot", None)
+            return Row(self, self.description, row_data, column_map, settings_snapshot)
+        except Exception as e:  # pylint: disable=broad-exception-caught
             # On error, don't increment rownumber - rethrow the error
             raise e
 
@@ -2105,7 +2000,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         rows_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
+            _ = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
@@ -2121,20 +2016,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.rowcount = 0
             else:
                 self.rowcount = self._next_row_index
-            self._ensure_cached_optimizations()
-            
-            # Convert raw data to Row objects using shared cached optimizations
+
+            # Convert raw data to Row objects
+            column_map = getattr(self, "_column_name_map", None)
+            settings_snapshot = getattr(self, "_settings_snapshot", None)
             return [
-                Row(
-                    values=row_data,
-                    cursor=self,
-                    description=self.description,
-                    column_map=self._cached_column_map,
-                    converter_map=self._cached_converter_map,
-                    settings_snapshot=self._settings_snapshot
-                ) for row_data in rows_data
+                Row(self, self.description, row_data, column_map, settings_snapshot)
+                for row_data in rows_data
             ]
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             # On error, don't increment rownumber - rethrow the error
             raise e
 
@@ -2152,7 +2042,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         rows_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+            _ = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
@@ -2167,20 +2057,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.rowcount = 0
             else:
                 self.rowcount = self._next_row_index
-            self._ensure_cached_optimizations()
-            
-            # Convert raw data to Row objects using shared cached optimizations
+
+            # Convert raw data to Row objects
+            column_map = getattr(self, "_column_name_map", None)
+            settings_snapshot = getattr(self, "_settings_snapshot", None)
             return [
-                Row(
-                    values=row_data,
-                    cursor=self,
-                    description=self.description,
-                    column_map=self._cached_column_map,
-                    converter_map=self._cached_converter_map,
-                    settings_snapshot=self._settings_snapshot
-                ) for row_data in rows_data
+                Row(self, self.description, row_data, column_map, settings_snapshot)
+                for row_data in rows_data
             ]
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             # On error, don't increment rownumber - rethrow the error
             raise e
 
@@ -2225,7 +2110,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """Closes the cursor when exiting the context, ensuring proper resource cleanup."""
         if not self.closed:
             self.close()
-        return None
 
     def fetchval(self):
         """
@@ -2406,30 +2290,46 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             if mode == "relative":
                 if value == 0:
                     return
-                ret = ddbc_bindings.DDBCSQLFetchScroll(
-                    self.hstmt, ddbc_sql_const.SQL_FETCH_RELATIVE.value, value, row_data
-                )
-                if ret == ddbc_sql_const.SQL_NO_DATA.value:
-                    raise IndexError(
-                        "Cannot scroll to specified position: end of result set reached"
-                    )
-                # Consume N rows; last-returned index advances by N
-                self._rownumber = self._rownumber + value
-                self._next_row_index = self._rownumber + 1
+                
+                # For forward-only cursor, use SQLFetchOne repeatedly instead of SQLFetchScroll
+                for i in range(value):
+                    ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
+                    if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                        raise IndexError(
+                            f"Cannot scroll to specified position: end of result set reached at position {i+1}/{value}"
+                        )
+                    # Clear row_data for next iteration to avoid accumulating data
+                    row_data.clear()
+                
+                # Consume N rows; advance next_row_index by N
+                self._next_row_index += value  
+                self._rownumber = self._next_row_index - 1
                 return
 
-            # absolute(k>0): map Python k (0-based next row) to ODBC ABSOLUTE k (1-based),
-            # intentionally passing k so ODBC fetches row #k (1-based), i.e., 0-based (k-1),
-            # leaving the NEXT fetch to return 0-based index k.
-            ret = ddbc_bindings.DDBCSQLFetchScroll(
-                self.hstmt, ddbc_sql_const.SQL_FETCH_ABSOLUTE.value, value, row_data
-            )
-            if ret == ddbc_sql_const.SQL_NO_DATA.value:
-                raise IndexError(
-                    f"Cannot scroll to position {value}: end of result set reached"
+            # For forward-only cursor, implement absolute positioning using relative scrolling
+            # absolute(k): position so next fetch returns row at 0-based index k
+            current_next_index = self._next_row_index  # Where we would fetch next
+            
+            if value < current_next_index:
+                # Can't go backward with forward-only cursor
+                raise NotSupportedError(
+                    "Backward absolute positioning not supported",
+                    f"Cannot move from next position {current_next_index} back to {value} on a forward-only cursor"
                 )
+            elif value > current_next_index:
+                # Move forward: skip rows from current_next_index to value
+                rows_to_skip = value - current_next_index
+                for i in range(rows_to_skip):
+                    ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
+                    if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                        raise IndexError(
+                            f"Cannot scroll to position {value}: end of result set reached at position {current_next_index + i}"
+                        )
+                    # Clear row_data for next iteration
+                    row_data.clear()
+            # else value == current_next_index: no movement needed
 
-            # Tests expect rownumber == value after absolute(value)
+            # Tests expect rownumber == value after absolute(value)  
             # Next fetch should return row index 'value'
             self._rownumber = value
             self._next_row_index = value
