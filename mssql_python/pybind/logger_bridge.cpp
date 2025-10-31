@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <algorithm>
 #include <vector>
+#include <iostream>
 
 namespace mssql_python {
 namespace logging {
@@ -52,10 +53,10 @@ void LoggerBridge::initialize() {
     } catch (const py::error_already_set& e) {
         // Failed to initialize - log to stderr and continue
         // (logging will be disabled but won't crash)
-        fprintf(stderr, "LoggerBridge initialization failed: %s\n", e.what());
+        std::cerr << "LoggerBridge initialization failed: " << e.what() << std::endl;
         initialized_ = false;
     } catch (const std::exception& e) {
-        fprintf(stderr, "LoggerBridge initialization failed: %s\n", e.what());
+        std::cerr << "LoggerBridge initialization failed: " << e.what() << std::endl;
         initialized_ = false;
     }
 }
