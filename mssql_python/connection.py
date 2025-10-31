@@ -51,7 +51,7 @@ SQL_WMETADATA: int = -99  # Special flag for column name decoding
 INFO_TYPE_STRING_THRESHOLD: int = 10000
 
 # UTF-16 encoding variants that should use SQL_WCHAR by default
-UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16", "utf-16le", "utf-16be"])
+UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16le", "utf-16be"])
 
 
 def _validate_encoding(encoding: str) -> bool:
@@ -416,6 +416,19 @@ class Connection:
 
         # Normalize encoding to casefold for more robust Unicode handling
         encoding = encoding.casefold()
+
+        # Explicitly reject 'utf-16' with BOM - require explicit endianness
+        if encoding == 'utf-16' and ctype == ConstantsDDBC.SQL_WCHAR.value:
+            error_msg = (
+                "The 'utf-16' codec includes a Byte Order Mark (BOM) which is incompatible with SQL_WCHAR. "
+                "Use 'utf-16le' (little-endian) or 'utf-16be' (big-endian) instead. "
+                "SQL Server's NVARCHAR/NCHAR types expect UTF-16LE without BOM."
+            )
+            log('error', "Attempted to use 'utf-16' with BOM for SQL_WCHAR")
+            raise ProgrammingError(
+                driver_error=error_msg,
+                ddbc_error=error_msg,
+            )
 
         # Set default ctype based on encoding if not provided
         if ctype is None:
