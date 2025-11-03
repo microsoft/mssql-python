@@ -1,3 +1,9 @@
+"""
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+This module contains the Row class, which represents a single row of data 
+from a cursor fetch operation.
+"""
 import decimal
 from typing import Any
 
@@ -6,14 +12,13 @@ class Row:
     A row of data from a cursor fetch operation. Provides both tuple-like indexing
     and attribute access to column values.
 
-    Column attribute access behavior depends on the global 'lowercase' setting:
-    - When enabled: Case-insensitive attribute access
-    - When disabled (default): Case-sensitive attribute access matching original column names
+if TYPE_CHECKING:
+    from mssql_python.cursor import Cursor
 
-    Example:
-        row = cursor.fetchone()
-        print(row[0])           # Access by index
-        print(row.column_name)  # Access by column name (case sensitivity varies)
+
+class Row:
+    """
+    A row of data from a cursor fetch operation.
     """
     
     def __init__(self, values, column_map, cursor=None, converter_map=None):
@@ -54,7 +59,6 @@ class Row:
         converted_values = list(values)
         
         for i, (value, desc) in enumerate(zip(values, cursor.description)):
-
             if desc is None or value is None:
                 continue
 
@@ -69,24 +73,41 @@ class Row:
             if converter is None and isinstance(value, (str, bytes)):
                 from mssql_python.constants import ConstantsDDBC
                 converter = cursor.connection.get_output_converter(ConstantsDDBC.SQL_WVARCHAR.value)
-            
             # If we found a converter, apply it
             if converter:
                 try:
-                    # If value is already a Python type (str, int, etc.), 
-                    # we need to convert it to bytes for our converters
+                    # If value is already a Python type (str, int, etc.),
+                    # we need to handle it appropriately
                     if isinstance(value, str):
                         # Encode as UTF-16LE for string values (SQL_WVARCHAR format)
                         value_bytes = value.encode("utf-16-le")
                         converted_values[i] = converter(value_bytes)
+                    elif isinstance(value, int):
+                        # Get appropriate byte size for this integer type
+                        byte_size = int_size_map.get(sql_type, 8)
+                        try:
+                            # Use signed=True to properly handle negative values
+                            value_bytes = value.to_bytes(
+                                byte_size, byteorder="little", signed=True
+                            )
+                            converted_values[i] = converter(value_bytes)
+                        except OverflowError:
+                            # Log specific overflow error with details to help diagnose the issue
+                            if hasattr(self._cursor, "log"):
+                                self._cursor.log(
+                                    "warning",
+                                    f"Integer overflow: value {value} does not fit in "
+                                    f"{byte_size} bytes for SQL type {sql_type}",
+                                )
+                            # Keep the original value in this case
                     else:
+                        # Pass the value directly for other types
                         converted_values[i] = converter(value)
                 except Exception:
                     if hasattr(cursor, 'log'):
                         cursor.log('debug', 'Exception occurred in output converter', exc_info=True)
                     # If conversion fails, keep the original value
-                    pass
-        
+
         return converted_values
 
     def _apply_output_converters_optimized(self, values, converter_map):
@@ -114,7 +135,7 @@ class Row:
                     pass
         
         return converted_values
-
+        
     def __getitem__(self, index: int) -> Any:
         """Allow accessing by numeric index: row[0]"""
         return self._values[index]
@@ -122,25 +143,22 @@ class Row:
     def __getattr__(self, name: str) -> Any:
         """
         Allow accessing by column name as attribute: row.column_name
-        
-        Note: Case sensitivity depends on the global 'lowercase' setting:
-        - When lowercase=True: Column names are stored in lowercase, enabling
-          case-insensitive attribute access (e.g., row.NAME, row.name, row.Name all work).
-        - When lowercase=False (default): Column names preserve original casing,
-          requiring exact case matching for attribute access.
         """
-        # Handle lowercase attribute access - if lowercase is enabled,
-        # try to match attribute names case-insensitively
+        # _column_map should already be set in __init__, but check to be safe
+        if not hasattr(self, "_column_map"):
+            self._column_map = {}
+
+        # Try direct lookup first
         if name in self._column_map:
             return self._values[self._column_map[name]]
-        
-        # If lowercase is enabled on the cursor, try case-insensitive lookup
-        if hasattr(self._cursor, 'lowercase') and self._cursor.lowercase:
+
+        # Use the snapshot lowercase setting instead of global
+        if self._settings.get("lowercase"):
+            # If lowercase is enabled, try case-insensitive lookup
             name_lower = name.lower()
-            for col_name in self._column_map:
-                if col_name.lower() == name_lower:
-                    return self._values[self._column_map[col_name]]
-        
+            if name_lower in self._column_map:
+                return self._values[self._column_map[name_lower]]
+
         raise AttributeError(f"Row has no attribute '{name}'")
 
     def __eq__(self, other: Any) -> bool:

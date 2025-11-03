@@ -769,3 +769,52 @@ def test_decimal_separator_concurrent_db_operations(db_connection):
         # Always make sure to clean up
         stop_event.set()
         setDecimalSeparator(original_separator)
+
+
+def test_native_uuid_type_validation():
+    """Test that native_uuid only accepts boolean values"""
+    # Save original value
+    original = mssql_python.native_uuid
+
+    try:
+        # Test valid values
+        mssql_python.native_uuid = True
+        assert mssql_python.native_uuid is True
+
+        mssql_python.native_uuid = False
+        assert mssql_python.native_uuid is False
+
+        # Test invalid types
+        invalid_values = [1, 0, "True", "False", None, [], {}, "yes", "no", "t", "f"]
+
+        for value in invalid_values:
+            with pytest.raises(ValueError, match="native_uuid must be a boolean value"):
+                mssql_python.native_uuid = value
+
+    finally:
+        # Restore original value
+        mssql_python.native_uuid = original
+
+
+def test_lowercase_type_validation():
+    """Test that lowercase only accepts boolean values"""
+    # Save original value
+    original = mssql_python.lowercase
+
+    try:
+        # Test valid values
+        mssql_python.lowercase = True
+        assert mssql_python.lowercase is True
+
+        mssql_python.lowercase = False
+        assert mssql_python.lowercase is False
+
+        # Test invalid types
+        invalid_values = [1, 0, "True", "False", None, [], {}, "yes", "no", "t", "f"]
+
+        for value in invalid_values:
+            with pytest.raises(ValueError, match="lowercase must be a boolean value"):
+                mssql_python.lowercase = value
+    finally:
+        # Restore original value
+        mssql_python.lowercase = original
