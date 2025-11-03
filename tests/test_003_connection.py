@@ -8601,9 +8601,10 @@ def test_connection_context_manager_with_cursor_cleanup(conn_str):
         cursor1 = conn.cursor()
         cursor2 = conn.cursor()
 
-        # Perform operations
         cursor1.execute("SELECT 1")
+        cursor1.fetchone()
         cursor2.execute("SELECT 2")
+        cursor2.fetchone()
 
         # Verify cursors are tracked
         assert len(conn._cursors) == 2, "Should track both cursors"

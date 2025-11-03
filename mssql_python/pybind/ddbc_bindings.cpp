@@ -2527,9 +2527,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
     SQLHSTMT hStmt = StatementHandle->get();
     
     // Cache decimal separator to avoid repeated system calls
-    static const std::string defaultSeparator = ".";
     std::string decimalSeparator = GetDecimalSeparator();
-    bool isDefaultDecimalSeparator = (decimalSeparator == defaultSeparator);
     
     for (SQLSMALLINT i = 1; i <= colCount; ++i) {
         SQLWCHAR columnName[256];
@@ -2727,18 +2725,10 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 safeLen = bufSize;
                             }
                         }
-                        if (isDefaultDecimalSeparator) {
-                            py::object decimalObj = PythonObjectCache::get_decimal_class()(py::str(cnum, safeLen));
-                            row.append(decimalObj);
-                        } else {
-                            std::string numStr(cnum, safeLen);
-                            size_t pos = numStr.find('.');
-                            if (pos != std::string::npos) {
-                                numStr.replace(pos, 1, decimalSeparator);
-                            }
-                            py::object decimalObj = PythonObjectCache::get_decimal_class()(numStr);
-                            row.append(decimalObj);
-                        }
+                        // Always use standard decimal point for Python Decimal parsing
+                        // The decimal separator only affects display formatting, not parsing
+                        py::object decimalObj = PythonObjectCache::get_decimal_class()(py::str(cnum, safeLen));
+                        row.append(decimalObj);
                     } catch (const py::error_already_set& e) {
                         // If conversion fails, append None
                         LOG("Error converting to decimal: {}", e.what());
@@ -3222,9 +3212,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize + 1; // +1 for null terminator
     }
     
-    static const std::string defaultSeparator = ".";
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
-    bool isDefaultDecimalSeparator = (decimalSeparator == defaultSeparator);
     
     size_t initialSize = rows.size();
     for (SQLULEN i = 0; i < numRowsFetched; i++) {
@@ -3339,17 +3327,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         const char* rawData = reinterpret_cast<const char*>(
                             &buffers.charBuffers[col - 1][i * MAX_DIGITS_IN_NUMERIC]);
                         
-                        // Use pre-cached decimal separator
-                        if (isDefaultDecimalSeparator) {
-                            row[col - 1] = PythonObjectCache::get_decimal_class()(py::str(rawData, decimalDataLen));
-                        } else {
-                            std::string numStr(rawData, decimalDataLen);
-                            size_t pos = numStr.find('.');
-                            if (pos != std::string::npos) {
-                                numStr.replace(pos, 1, decimalSeparator);
-                            }
-                            row[col - 1] = PythonObjectCache::get_decimal_class()(numStr);
-                        }
+                        // Always use standard decimal point for Python Decimal parsing  
+                        // The decimal separator only affects display formatting, not parsing
+                        row[col - 1] = PythonObjectCache::get_decimal_class()(py::str(rawData, decimalDataLen));
                     } catch (const py::error_already_set& e) {
                         // Handle the exception, e.g., log the error and set py::none()
                         LOG("Error converting to decimal: {}", e.what());

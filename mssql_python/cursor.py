@@ -2045,7 +2045,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
             column_map = self._cached_column_map or getattr(self, '_column_name_map', None)
             converter_map = getattr(self, '_cached_converter_map', None)
-            return Row(row_data, column_map, self, converter_map)
+            return Row(row_data, column_map, cursor=self, converter_map=converter_map)
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -2096,7 +2096,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             
             # Convert raw data to Row objects
             column_map = self._cached_column_map or getattr(self, '_column_name_map', None)
-            return [Row(row_data, column_map, self) for row_data in rows_data]
+            converter_map = getattr(self, '_cached_converter_map', None)
+            return [Row(row_data, column_map, cursor=self, converter_map=converter_map) for row_data in rows_data]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -2137,7 +2138,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             
             # Convert raw data to Row objects
             column_map = self._cached_column_map or getattr(self, '_column_name_map', None)
-            return [Row(row_data, column_map, self) for row_data in rows_data]
+            converter_map = getattr(self, '_cached_converter_map', None)
+            return [Row(row_data, column_map, cursor=self, converter_map=converter_map) for row_data in rows_data]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
@@ -2339,57 +2341,33 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         row_data: list = []
 
-        # Absolute special cases
+        # Absolute positioning not supported with forward-only cursors
         if mode == "absolute":
-            if value == -1:
-                # Before first
-                ddbc_bindings.DDBCSQLFetchScroll(
-                    self.hstmt, ddbc_sql_const.SQL_FETCH_ABSOLUTE.value, 0, row_data
-                )
-                self._rownumber = -1
-                self._next_row_index = 0
-                return
-            if value == 0:
-                # Before first, but tests want rownumber==0 pre and post the next fetch
-                ddbc_bindings.DDBCSQLFetchScroll(
-                    self.hstmt, ddbc_sql_const.SQL_FETCH_ABSOLUTE.value, 0, row_data
-                )
-                self._rownumber = 0
-                self._next_row_index = 0
-                self._skip_increment_for_next_fetch = True
-                return
+            raise NotSupportedError(
+                "Absolute positioning not supported",
+                "Forward-only cursors do not support absolute positioning"
+            )
 
         try:
             if mode == "relative":
                 if value == 0:
                     return
-                ret = ddbc_bindings.DDBCSQLFetchScroll(
-                    self.hstmt, ddbc_sql_const.SQL_FETCH_RELATIVE.value, value, row_data
-                )
-                if ret == ddbc_sql_const.SQL_NO_DATA.value:
-                    raise IndexError(
-                        "Cannot scroll to specified position: end of result set reached"
+                
+                # For forward-only cursors, use multiple SQL_FETCH_NEXT calls
+                # This matches pyodbc's approach for skip operations
+                for i in range(value):
+                    ret = ddbc_bindings.DDBCSQLFetchScroll(
+                        self.hstmt, ddbc_sql_const.SQL_FETCH_NEXT.value, 0, row_data
                     )
-                # Consume N rows; last-returned index advances by N
+                    if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                        raise IndexError(
+                            "Cannot scroll to specified position: end of result set reached"
+                        )
+                
+                # Update position tracking
                 self._rownumber = self._rownumber + value
                 self._next_row_index = self._rownumber + 1
                 return
-
-            # absolute(k>0): map Python k (0-based next row) to ODBC ABSOLUTE k (1-based),
-            # intentionally passing k so ODBC fetches row #k (1-based), i.e., 0-based (k-1),
-            # leaving the NEXT fetch to return 0-based index k.
-            ret = ddbc_bindings.DDBCSQLFetchScroll(
-                self.hstmt, ddbc_sql_const.SQL_FETCH_ABSOLUTE.value, value, row_data
-            )
-            if ret == ddbc_sql_const.SQL_NO_DATA.value:
-                raise IndexError(
-                    f"Cannot scroll to position {value}: end of result set reached"
-                )
-
-            # Tests expect rownumber == value after absolute(value)
-            # Next fetch should return row index 'value'
-            self._rownumber = value
-            self._next_row_index = value
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             if isinstance(e, (IndexError, NotSupportedError)):
