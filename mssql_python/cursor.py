@@ -399,7 +399,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Detect MONEY / SMALLMONEY range
             if SMALLMONEY_MIN <= param <= SMALLMONEY_MAX:
-                parameters_list[i] = format(param, 'f')
+                # Ensure exactly 4 decimal places for SMALLMONEY with deterministic rounding
+                quantized_param = param.quantize(decimal.Decimal('0.0001'), rounding=decimal.ROUND_HALF_UP)
+                parameters_list[i] = f"{quantized_param:.4f}"
                 return (
                     ddbc_sql_const.SQL_VARCHAR.value,
                     ddbc_sql_const.SQL_C_CHAR.value,
@@ -408,7 +410,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     False,
                 )
             if MONEY_MIN <= param <= MONEY_MAX:
-                parameters_list[i] = format(param, 'f')
+                # Ensure exactly 4 decimal places for MONEY with deterministic rounding  
+                quantized_param = param.quantize(decimal.Decimal('0.0001'), rounding=decimal.ROUND_HALF_UP)
+                parameters_list[i] = f"{quantized_param:.4f}"
                 return (
                     ddbc_sql_const.SQL_VARCHAR.value,
                     ddbc_sql_const.SQL_C_CHAR.value,

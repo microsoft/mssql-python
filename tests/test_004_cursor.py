@@ -8022,6 +8022,84 @@ def test_money_smallmoney_insert_fetch(cursor, db_connection):
         db_connection.commit()
 
 
+def test_money_smallmoney_precision_handling(cursor, db_connection):
+    """Test MONEY/SMALLMONEY precision handling with >4 fractional digits and scientific notation"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_money_precision")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_money_precision (
+                id INT IDENTITY PRIMARY KEY,
+                m MONEY,
+                sm SMALLMONEY,
+                description VARCHAR(100)
+            )
+        """
+        )
+        db_connection.commit()
+
+        # Test cases for precision issues mentioned in code review
+        test_cases = [
+            # Input with >4 fractional digits should be rounded to exactly 4
+            (decimal.Decimal("1.234567"), decimal.Decimal("1.234567"), decimal.Decimal("1.2346"), "More than 4 digits - ROUND_HALF_UP"),
+            (decimal.Decimal("100.12345"), decimal.Decimal("100.12345"), decimal.Decimal("100.1235"), "Rounding case 1 - HALF_UP rounds up"),
+            (decimal.Decimal("100.12355"), decimal.Decimal("100.12355"), decimal.Decimal("100.1236"), "Rounding case 2 - HALF_UP rounds up"),
+            
+            # Scientific notation should expand and be limited to 4 decimal places
+            (decimal.Decimal("1E-3"), decimal.Decimal("1E-3"), decimal.Decimal("0.0010"), "Scientific notation 1E-3"),
+            (decimal.Decimal("1.23E-2"), decimal.Decimal("1.23E-2"), decimal.Decimal("0.0123"), "Scientific notation 1.23E-2"),
+            
+            # Boundary values with extra fractional digits
+            (decimal.Decimal("214748.36471234"), None, decimal.Decimal("214748.3647"), "SMALLMONEY_MAX with extra digits"),
+            (decimal.Decimal("922337203685477.58071234"), decimal.Decimal("214748.0000"), decimal.Decimal("922337203685477.5807"), "MONEY_MAX with extra digits"),
+        ]
+
+        for i, (money_val, smallmoney_val, expected_val, description) in enumerate(test_cases):
+            # Skip MONEY test for SMALLMONEY boundary case and vice versa
+            if smallmoney_val is None:
+                smallmoney_val = decimal.Decimal("0.0000")
+            if money_val > decimal.Decimal("214748.3647"):
+                # For MONEY_MAX case, use a smaller SMALLMONEY value
+                pass
+                
+            cursor.execute(
+                "INSERT INTO #pytest_money_precision (m, sm, description) VALUES (?, ?, ?)",
+                (money_val, smallmoney_val, description)
+            )
+            db_connection.commit()
+            
+            # Retrieve and verify the stored value has exactly 4 decimal places
+            cursor.execute("SELECT m, sm FROM #pytest_money_precision WHERE id = ?", (i+1,))
+            result = cursor.fetchone()
+            
+            stored_money, stored_smallmoney = result
+            
+            # Verify both values have exactly 4 decimal places when converted to string
+            money_str = str(stored_money)
+            smallmoney_str = str(stored_smallmoney)
+            
+            # Both should have exactly 4 decimal places
+            assert '.' in money_str, f"MONEY value should have decimal point: {money_str}"
+            assert '.' in smallmoney_str, f"SMALLMONEY value should have decimal point: {smallmoney_str}"
+            
+            money_decimals = len(money_str.split('.')[1])
+            smallmoney_decimals = len(smallmoney_str.split('.')[1])
+            
+            assert money_decimals == 4, f"MONEY should have exactly 4 decimal places, got {money_decimals}: {money_str}"
+            assert smallmoney_decimals == 4, f"SMALLMONEY should have exactly 4 decimal places, got {smallmoney_decimals}: {smallmoney_str}"
+            
+            # For the expected rounding cases, verify the exact values
+            if expected_val:
+                if smallmoney_val == money_val:  # Same input for both columns
+                    assert stored_smallmoney == expected_val, f"Expected {expected_val}, got {stored_smallmoney} for {description}"
+
+    except Exception as e:
+        pytest.fail(f"MONEY/SMALLMONEY precision test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_money_precision")
+        db_connection.commit()
+
+
 def test_money_smallmoney_null_handling(cursor, db_connection):
     """Test that NULL values for MONEY and SMALLMONEY are stored and retrieved correctly"""
     try:
