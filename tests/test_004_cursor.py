@@ -15,6 +15,9 @@ import decimal
 from contextlib import closing
 import mssql_python
 import uuid
+import re
+from conftest import is_azure_sql_connection
+
 
 # Setup test table
 TEST_TABLE = """
@@ -4928,8 +4931,12 @@ def test_cursor_commit_performance_patterns(cursor, db_connection):
             pass
 
 
-def test_cursor_rollback_error_scenarios(cursor, db_connection):
+def test_cursor_rollback_error_scenarios(cursor, db_connection, conn_str):
     """Test cursor rollback error scenarios and recovery"""
+    # Skip this test for Azure SQL Database
+    if is_azure_sql_connection(conn_str):
+        pytest.skip("Skipping for Azure SQL - transaction-heavy tests may cause timeouts")
+    
     try:
         # Set autocommit to False
         original_autocommit = db_connection.autocommit
@@ -5005,8 +5012,12 @@ def test_cursor_rollback_error_scenarios(cursor, db_connection):
             pass
 
 
-def test_cursor_rollback_with_method_chaining(cursor, db_connection):
+def test_cursor_rollback_with_method_chaining(cursor, db_connection, conn_str):
     """Test cursor rollback in method chaining scenarios"""
+    # Skip this test for Azure SQL Database
+    if is_azure_sql_connection(conn_str):
+        pytest.skip("Skipping for Azure SQL - transaction-heavy tests may cause timeouts")
+    
     try:
         # Set autocommit to False
         original_autocommit = db_connection.autocommit
@@ -5493,8 +5504,12 @@ def test_cursor_rollback_data_consistency(cursor, db_connection):
             pass
 
 
-def test_cursor_rollback_large_transaction(cursor, db_connection):
+def test_cursor_rollback_large_transaction(cursor, db_connection, conn_str):
     """Test cursor rollback with large transaction"""
+    # Skip this test for Azure SQL Database
+    if is_azure_sql_connection(conn_str):
+        pytest.skip("Skipping for Azure SQL - large transaction tests may cause timeouts")
+    
     try:
         # Set autocommit to False
         original_autocommit = db_connection.autocommit
