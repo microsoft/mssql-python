@@ -226,8 +226,9 @@ BOTH = 'both'      # Log to both file and stdout
 - Higher number = higher priority (standard convention)
 
 **File Handler Configuration**
-- **Location**: Current working directory (not package directory)
-- **Naming**: `mssql_python_trace_YYYYMMDD_HHMMSS_PID.log`
+- **Location**: Current working directory by default (or custom path if specified)
+- **Naming**: `mssql_python_trace_YYYYMMDD_HHMMSS_PID.log` (auto-generated)
+- **Custom Path**: Users can specify via `log_file_path` parameter
 - **Rotation**: 512MB max, 5 backup files
 - **Format**: `%(asctime)s [%(trace_id)s] - %(levelname)s - %(filename)s:%(lineno)d - %(message)s`
 
@@ -268,11 +269,12 @@ Trace IDs enable correlation of log messages across multi-threaded applications,
    CURS-12345-67890-2    (Cursor)
    TASK-12345-67890-3    (Custom - background task)
    REQ-12345-67890-4     (Custom - web request)
+   T1-12345-67890-5      (Custom - thread identifier, concise)
    
-   Note: Prefix should be concise (3-5 chars). The PID and ThreadID 
-   already provide context, so avoid redundant prefixes like:
-   ❌ THREAD-T1-12345-67890-1  (redundant "THREAD")
-   ✅ T1-12345-67890-1          (concise, thread ID already in format)
+   Note: Prefix should be concise (2-4 chars recommended). The PID and 
+   ThreadID already provide context, so avoid redundant prefixes:
+   ❌ THREAD-T1-12345-67890-1  (redundant - "THREAD" adds no value)
+   ✅ T1-12345-67890-1          (concise - thread ID already in format)
    ```
 
 3. **Automatic Injection:**
@@ -430,6 +432,10 @@ logger.output = BOTH    # Both file and stdout
 # Or set output when setting level
 logger.setLevel(FINE, output=BOTH)
 
+# Custom log file path
+logger.setLevel(FINE, log_file_path="/var/log/myapp.log")
+logger.setLevel(FINE, output=BOTH, log_file_path="/tmp/debug.log")
+
 # Python Standard API (Also Available for Compatibility)
 # ======================================================
 import logging
@@ -461,6 +467,7 @@ class MSSQLLogger:
         self._output_mode = FILE  # Default to file only
         self._file_handler = None
         self._stdout_handler = None
+        self._custom_log_path = None  # Custom log file path (optional)
         self._setup_handlers()
         self._trace_counter = 0
         self._trace_lock = threading.Lock()

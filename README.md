@@ -96,6 +96,7 @@ The driver includes a comprehensive logging system with JDBC-style custom log le
 - **Trace IDs**: Unique identifiers for tracking related operations
 - **File Rotation**: Automatic log file rotation to prevent disk space issues
 - **Thread-Safe**: Safe for multi-threaded applications
+- **Flexible Logging**: Custom log file paths, rotation, and output control
 
 Quick example:
 

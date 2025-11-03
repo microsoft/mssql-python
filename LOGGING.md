@@ -49,6 +49,9 @@ logging.setLevel(logging.FINE, logging.STDOUT)
 
 # Output to both file and stdout
 logging.setLevel(logging.FINE, logging.BOTH)
+
+# Custom log file path
+logging.setLevel(logging.FINE, log_file_path="/var/log/myapp.log")
 ```
 
 ## Log Levels
@@ -77,9 +80,9 @@ DEBUG (10)
     ↓
 FINER (15)
     ↓
-INFO (20)
+FINE (18)
     ↓
-FINE (25)
+INFO (20)
     ↓
 WARNING (30)
     ↓
@@ -133,6 +136,23 @@ logging.setLevel(logging.FINE, logging.BOTH)
 
 # Logs appear in both console and file
 conn = mssql_python.connect(server='localhost', database='testdb')
+```
+
+### Custom Log File Path
+
+```python
+import mssql_python
+from mssql_python import logging
+
+# Specify custom log file path
+logging.setLevel(logging.FINE, log_file_path="/var/log/myapp/mssql.log")
+
+# Or with both file and stdout
+logging.setLevel(logging.FINE, logging.BOTH, log_file_path="/tmp/debug.log")
+
+conn = mssql_python.connect(server='localhost', database='testdb')
+print(f"Logging to: {logging.logger.log_file}")
+# Output: Logging to: /var/log/myapp/mssql.log
 ```
 
 ## Output Destinations
@@ -263,6 +283,10 @@ cursor.execute("SELECT * FROM users")
 
 # Different thread/connection:
 # [CONN-12345-98765-3] - Connection established  (different ThreadID)
+
+# Custom trace IDs (note: use concise prefixes):
+# ✅ Good: "T1" → [T1-12345-67890-4]
+# ❌ Redundant: "THREAD-T1" → [THREAD-T1-12345-67890-4]
 ```
 
 **Why Trace IDs Matter:**
@@ -276,11 +300,16 @@ cursor.execute("SELECT * FROM users")
 from mssql_python import logging
 
 # Generate custom trace ID (e.g., for background tasks)
-trace_id = logging.logger.generate_trace_id("TASK")
+# Use concise prefixes that clearly identify the operation
+trace_id = logging.logger.generate_trace_id("TASK")  # ✅ Good
 logging.logger.set_trace_id(trace_id)
 
 logging.logger.info("Task started")
 # Output: [TASK-12345-67890-1] - Task started
+
+# Thread-specific operations (use just "T1", "T2", etc.)
+trace_id = logging.logger.generate_trace_id("T1")  # ✅ Good
+# NOT: "THREAD-T1" ❌ (redundant since format already shows ThreadID)
 
 # Clear when done
 logging.logger.clear_trace_id()
@@ -289,11 +318,11 @@ logging.logger.clear_trace_id()
 ### Programmatic Log Access
 
 ```python
-from mssql_python import logger
-import logging
+from mssql_python import logging
+import logging as py_logging
 
 # Add custom handler to process logs programmatically
-class MyLogHandler(logging.Handler):
+class MyLogHandler(py_logging.Handler):
     def emit(self, record):
         # Process log record
         print(f"Custom handler: {record.getMessage()}")
@@ -304,7 +333,7 @@ class MyLogHandler(logging.Handler):
             print(f"  Trace ID: {trace_id}")
 
 handler = MyLogHandler()
-logger.addHandler(handler)
+logging.logger.addHandler(handler)
 ```
 
 ### Reset Handlers
@@ -312,13 +341,13 @@ logger.addHandler(handler)
 Remove all configured handlers:
 
 ```python
-from mssql_python import logger
+from mssql_python import logging
 
 # Remove all handlers (useful for reconfiguration)
-logger.reset_handlers()
+logging.logger.reset_handlers()
 
 # Reconfigure from scratch
-logger.setLevel('INFO')
+logging.setLevel(logging.INFO)
 # Add new handlers...
 ```
 
@@ -330,12 +359,12 @@ logger.setLevel('INFO')
 from mssql_python import logging
 ```
 
-**`logging.setLevel(level: int, output: str = None) -> None`**
+**`logging.setLevel(level: int, output: str = None, log_file_path: str = None) -> None`**
 
-Set the logging threshold level and optionally configure output destination.
+Set the logging threshold level and optionally configure output destination and log file path.
 
 ```python
-# Basic usage - file logging (default)
+# Basic usage - file logging (default, auto-generated path)
 logging.setLevel(logging.FINEST)
 logging.setLevel(logging.FINER)
 logging.setLevel(logging.FINE)
@@ -343,6 +372,12 @@ logging.setLevel(logging.FINE)
 # With output control
 logging.setLevel(logging.FINE, logging.STDOUT)  # Stdout only
 logging.setLevel(logging.FINE, logging.BOTH)    # Both file and stdout
+
+# Custom log file path
+logging.setLevel(logging.FINE, log_file_path="/var/log/myapp.log")
+
+# Custom path with both outputs
+logging.setLevel(logging.FINE, logging.BOTH, log_file_path="/tmp/debug.log")
 ```
 
 **`logging.getLevel() -> int`**
@@ -630,6 +665,9 @@ logging.setLevel(logging.FINER)
 
 # Debug internal operations: use FINEST to see everything
 logging.setLevel(logging.FINEST)
+
+# Save debug logs to specific location for analysis
+logging.setLevel(logging.FINEST, log_file_path="/tmp/mssql_debug.log")
 ```
 
 ### Integrate with Application Logging

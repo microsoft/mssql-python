@@ -97,6 +97,7 @@ class MSSQLLogger:
         self._file_handler = None
         self._stdout_handler = None
         self._log_file = None
+        self._custom_log_path = None  # Custom log file path (if specified)
         self._handlers_initialized = False
         
         # Don't setup handlers yet - do it lazily when setLevel is called
@@ -123,13 +124,17 @@ class MSSQLLogger:
         
         # Setup file handler if needed
         if self._output_mode in (FILE, BOTH):
-            # Create log file in current working directory
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            pid = os.getpid()
-            self._log_file = os.path.join(
-                os.getcwd(),
-                f"mssql_python_trace_{timestamp}_{pid}.log"
-            )
+            # Use custom path or auto-generate
+            if self._custom_log_path:
+                self._log_file = self._custom_log_path
+            else:
+                # Create log file in current working directory
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                pid = os.getpid()
+                self._log_file = os.path.join(
+                    os.getcwd(),
+                    f"mssql_python_trace_{timestamp}_{pid}.log"
+                )
             
             # Create rotating file handler (512MB, 5 backups)
             self._file_handler = RotatingFileHandler(
@@ -313,21 +318,24 @@ class MSSQLLogger:
     
     # Level control
     
-    def setLevel(self, level: int, output: Optional[str] = None):
+    def setLevel(self, level: int, output: Optional[str] = None, log_file_path: Optional[str] = None):
         """
-        Set the logging level and optionally the output mode.
+        Set the logging level and optionally the output mode and log file path.
         
         Args:
             level: Logging level (FINEST, FINER, FINE, logging.INFO, etc.)
                    Use logging.CRITICAL to disable all logging
             output: Optional output mode (FILE, STDOUT, BOTH)
                     If not specified, defaults to FILE on first call
+            log_file_path: Optional custom path for log file. If not specified,
+                          auto-generates: mssql_python_trace_{timestamp}_{pid}.log
+                          in current working directory
         
         Raises:
             ValueError: If output mode is invalid
         
         Examples:
-            # File only (default)
+            # File only (default, auto-generated path)
             logger.setLevel(FINE)
             
             # Stdout only
@@ -335,6 +343,12 @@ class MSSQLLogger:
             
             # Both file and stdout
             logger.setLevel(FINE, output=BOTH)
+            
+            # Custom log file path
+            logger.setLevel(FINE, log_file_path="/var/log/myapp.log")
+            
+            # Custom path with both outputs
+            logger.setLevel(FINE, output=BOTH, log_file_path="/tmp/debug.log")
         """
         # Validate and set output mode if specified
         if output is not None:
@@ -345,8 +359,12 @@ class MSSQLLogger:
                 )
             self._output_mode = output
         
-        # Setup handlers if not yet initialized or if output mode changed
-        if not self._handlers_initialized or output is not None:
+        # Store custom log file path if provided
+        if log_file_path is not None:
+            self._custom_log_path = log_file_path
+        
+        # Setup handlers if not yet initialized or if output mode/path changed
+        if not self._handlers_initialized or output is not None or log_file_path is not None:
             self._setup_handlers()
             self._handlers_initialized = True
         
@@ -464,20 +482,21 @@ class MSSQLLogger:
 logger = MSSQLLogger()
 
 # Module-level convenience functions (Pythonic API)
-def setLevel(level: int, output: Optional[str] = None):
+def setLevel(level: int, output: Optional[str] = None, log_file_path: Optional[str] = None):
     """
-    Set the logging level and optionally the output mode.
+    Set the logging level and optionally the output mode and log file path.
     
     This is a convenience function that delegates to logger.setLevel().
     
     Args:
         level: Logging level (FINEST, FINER, FINE, logging.INFO, etc.)
         output: Optional output mode (FILE, STDOUT, BOTH)
+        log_file_path: Optional custom path for log file
     
     Examples:
         from mssql_python import logging
         
-        # File only (default)
+        # File only (default, auto-generated path)
         logging.setLevel(logging.FINE)
         
         # Stdout only
@@ -485,8 +504,14 @@ def setLevel(level: int, output: Optional[str] = None):
         
         # Both file and stdout
         logging.setLevel(logging.FINE, logging.BOTH)
+        
+        # Custom log file path
+        logging.setLevel(logging.FINE, log_file_path="/var/log/myapp.log")
+        
+        # Custom path with both outputs
+        logging.setLevel(logging.FINE, logging.BOTH, "/tmp/debug.log")
     """
-    logger.setLevel(level, output)
+    logger.setLevel(level, output, log_file_path)
 
 
 def getLevel() -> int:
