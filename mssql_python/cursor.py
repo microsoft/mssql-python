@@ -1125,40 +1125,29 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # After successful execution, initialize description if there are results
         column_metadata = []
         try:
-            # ODBC specification guarantees that column metadata is available immediately after
-            # a successful SQLExecute/SQLExecDirect for the first result set
             ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
             self._initialize_description(column_metadata)
         except Exception as e:  # pylint: disable=broad-exception-caught
             # If describe fails, it's likely there are no results (e.g., for INSERT)
             self.description = None
-
+        
         # Reset rownumber for new result set (only for SELECT statements)
         if self.description:  # If we have column descriptions, it's likely a SELECT
-            # Capture settings snapshot for this result set
-            settings = get_settings()
-            self._settings_snapshot = {  # pylint: disable=attribute-defined-outside-init
-                "lowercase": settings.lowercase,
-                "native_uuid": settings.native_uuid,
-            }
-            # Identify UUID columns based on Python type in description[1]
-            # This relies on _map_data_type correctly mapping SQL_GUID to uuid.UUID
-            self._uuid_indices = []  # pylint: disable=attribute-defined-outside-init
-            for i, desc in enumerate(self.description):
-                if desc and desc[1] == uuid.UUID:  # Column type code at index 1
-                    self._uuid_indices.append(i)
-                # Verify we have complete description tuples (7 items per PEP-249)
-                elif desc and len(desc) != 7:
-                    log(
-                        "warning",
-                        f"Column description at index {i} has incorrect tuple length: {len(desc)}",
-                    )
             self.rowcount = -1
             self._reset_rownumber()
         else:
             self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
             self._clear_rownumber()
 
+        # After successful execution, initialize description if there are results
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except Exception as e:
+            # If describe fails, it's likely there are no results (e.g., for INSERT)
+            self.description = None
+        
         self._reset_inputsizes()  # Reset input sizes after execution
         # Return self for method chaining
         return self
@@ -1970,10 +1959,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.rowcount = self._next_row_index
 
             # Create and return a Row object, passing column name map if available
-            column_map = getattr(self, "_column_name_map", None)
-            settings_snapshot = getattr(self, "_settings_snapshot", None)
-            return Row(self, self.description, row_data, column_map, settings_snapshot)
-        except Exception as e:  # pylint: disable=broad-exception-caught
+            column_map = getattr(self, '_column_name_map', None)
+            return Row(self, self.description, row_data, column_map)
+        except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
 
@@ -2019,9 +2007,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Convert raw data to Row objects
             column_map = getattr(self, "_column_name_map", None)
-            settings_snapshot = getattr(self, "_settings_snapshot", None)
             return [
-                Row(self, self.description, row_data, column_map, settings_snapshot)
+                Row(self, self.description, row_data, column_map)
                 for row_data in rows_data
             ]
         except Exception as e:  # pylint: disable=broad-exception-caught
@@ -2060,9 +2047,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Convert raw data to Row objects
             column_map = getattr(self, "_column_name_map", None)
-            settings_snapshot = getattr(self, "_settings_snapshot", None)
             return [
-                Row(self, self.description, row_data, column_map, settings_snapshot)
+                Row(self, self.description, row_data, column_map)
                 for row_data in rows_data
             ]
         except Exception as e:  # pylint: disable=broad-exception-caught
