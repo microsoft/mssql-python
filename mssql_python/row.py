@@ -6,6 +6,7 @@ from a cursor fetch operation.
 """
 import decimal
 from typing import Any
+from mssql_python.helpers import get_settings
 
 class Row:
     """

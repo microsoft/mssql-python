@@ -1130,7 +1130,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         except Exception as e:  # pylint: disable=broad-exception-caught
             # If describe fails, it's likely there are no results (e.g., for INSERT)
             self.description = None
-        
+
         # Reset rownumber for new result set (only for SELECT statements)
         if self.description:  # If we have column descriptions, it's likely a SELECT
             self.rowcount = -1
@@ -1147,7 +1147,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         except Exception as e:
             # If describe fails, it's likely there are no results (e.g., for INSERT)
             self.description = None
-        
+
         self._reset_inputsizes()  # Reset input sizes after execution
         # Return self for method chaining
         return self
@@ -1959,9 +1959,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.rowcount = self._next_row_index
 
             # Create and return a Row object, passing column name map if available
-            column_map = getattr(self, '_column_name_map', None)
+            column_map = getattr(self, "_column_name_map", None)
             return Row(self, self.description, row_data, column_map)
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             # On error, don't increment rownumber - rethrow the error
             raise e
 
