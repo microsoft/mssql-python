@@ -26,7 +26,7 @@
 
 This document describes a **simplified, high-performance logging system** for mssql-python that:
 
-- ✅ Follows JDBC logging patterns (FINE/FINER/FINEST levels)
+- ✅ Uses Driver Levels (FINE/FINER/FINEST) for granular diagnostics
 - ✅ Provides **zero-overhead** when logging is disabled
 - ✅ Uses **single Python logger** with cached C++ access
 - ✅ Maintains **log sequence integrity** (single writer)
@@ -37,7 +37,7 @@ This document describes a **simplified, high-performance logging system** for ms
 
 | Aspect | Current System | New System |
 | --- | --- | --- |
-| **Levels** | INFO/DEBUG | FINE/FINER/FINEST (3-tier) |
+| **Levels** | INFO/DEBUG | **FINE/FINER/FINEST** (Driver Levels, primary)<br>INFO/WARNING/ERROR (Python standard, compatible) |
 | **User API** | `setup_logging(mode)` | `logger.setLevel(level)` |
 | **C++ Integration** | Always callback | Cached + level check |
 | **Performance** | Minor overhead | Zero overhead when OFF |
@@ -52,7 +52,7 @@ This document describes a **simplified, high-performance logging system** for ms
 
 1. **Performance First**: Zero overhead when logging disabled
 2. **Simplicity**: Minimal components, clear data flow
-3. **JDBC Compatibility**: Match proven enterprise logging patterns
+3. **Granular Diagnostics**: Driver Levels (FINE/FINER/FINEST) for detailed troubleshooting
 4. **Maintainability**: Easy for future developers to understand
 5. **Flexibility**: Users control logging without code changes
 
@@ -179,7 +179,7 @@ This document describes a **simplified, high-performance logging system** for ms
 ### Component 1: Python Logger (`logging.py`)
 
 #### Purpose
-Single source of truth for all logging. Provides JDBC-style levels and manages file output.
+Single source of truth for all logging. Provides Driver Levels and manages file output.
 
 #### Key Responsibilities
 1. Define custom log levels (FINE/FINER/FINEST)
@@ -198,54 +198,251 @@ Single source of truth for all logging. Provides JDBC-style levels and manages f
 
 **Custom Log Levels**
 ```python
-# Mapping to standard logging levels
-FINEST = 5    # Most detailed (below DEBUG)
-FINER  = 15   # Detailed (between DEBUG and INFO)
-FINE   = 25   # Standard diagnostics (between INFO and WARNING)
-INFO   = 20   # Standard level
-WARNING = 30
-ERROR = 40
+# Driver Levels (Primary API - Recommended)
+FINEST = 5    # Ultra-detailed trace (most verbose)
+FINER  = 15   # Detailed diagnostics
+FINE   = 18   # Standard diagnostics (recommended default)
+
+# Python Standard Levels (Also Available - For Compatibility)
+# DEBUG  = 10  # Python standard debug level
+# INFO   = 20  # Python standard info level
+# WARNING = 30 # Python standard warning level
+# ERROR  = 40  # Python standard error level
+# CRITICAL = 50 # Python standard critical level
+```
+
+**Output Destination Constants**
+```python
+# Output destinations (flat namespace, like log levels)
+FILE = 'file'      # Log to file only (default)
+STDOUT = 'stdout'  # Log to stdout only
+BOTH = 'both'      # Log to both file and stdout
 ```
 
 **Why these numbers?**
-- Python's logging uses: DEBUG=10, INFO=20, WARNING=30
-- Our levels fit between them for natural filtering
+- Driver Levels (FINEST/FINER/FINE) are **recommended** for driver diagnostics
+- Standard Python levels (DEBUG/INFO/WARNING/ERROR) also work for compatibility
+- FINE=18 < INFO=20, so FINE level includes INFO and above
 - Higher number = higher priority (standard convention)
 
 **File Handler Configuration**
 - **Location**: Current working directory (not package directory)
 - **Naming**: `mssql_python_trace_YYYYMMDD_HHMMSS_PID.log`
 - **Rotation**: 512MB max, 5 backup files
-- **Format**: `%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s`
+- **Format**: `%(asctime)s [%(trace_id)s] - %(levelname)s - %(filename)s:%(lineno)d - %(message)s`
+
+**Output Handler Configuration**
+- **Default**: File only (using `FILE` constant)
+- **File Handler**: RotatingFileHandler with 512MB max, 5 backup files
+- **Stdout Handler**: StreamHandler to sys.stdout (optional)
+- **Both Mode**: Adds both file and stdout handlers simultaneously
+- **Format**: Same format for both file and stdout handlers
 
 **Trace ID System**
-- Format: `PID_ThreadID_Counter`
-- Example: `12345_67890_1`
-- Generated per connection/cursor
-- Thread-safe counter using `threading.Lock()`
+
+Trace IDs enable correlation of log messages across multi-threaded applications, connection pools, and distributed operations.
+
+**Use Cases:**
+- Multi-threaded applications with multiple concurrent connections
+- Connection pooling scenarios (track connection lifecycle)
+- Multiple cursors per connection (distinguish operations)
+- Performance profiling (measure operation duration)
+- Production debugging (filter logs by specific operation)
+- Distributed tracing (correlate with request IDs)
+
+**Design:**
+
+1. **Context Variables (Python 3.7+)**
+   - Use `contextvars.ContextVar` for automatic propagation
+   - Trace ID is set when Connection/Cursor is created
+   - Automatically inherited by child contexts (threads, async tasks)
+   - Thread-safe without locks
+
+2. **Trace ID Format:**
+   ```
+   Connection: CONN-<PID>-<ThreadID>-<Counter>
+   Cursor:     CURS-<PID>-<ThreadID>-<Counter>
+   
+   Examples:
+   CONN-12345-67890-1    (Connection)
+   CURS-12345-67890-2    (Cursor)
+   TASK-12345-67890-3    (Custom - background task)
+   REQ-12345-67890-4     (Custom - web request)
+   
+   Note: Prefix should be concise (3-5 chars). The PID and ThreadID 
+   already provide context, so avoid redundant prefixes like:
+   ❌ THREAD-T1-12345-67890-1  (redundant "THREAD")
+   ✅ T1-12345-67890-1          (concise, thread ID already in format)
+   ```
+
+3. **Automatic Injection:**
+   - Custom `logging.Filter` adds trace_id to LogRecord
+   - Formatter includes `%(trace_id)s` in output
+   - No manual trace ID passing required
+
+4. **Implementation Components:**
+   ```python
+   import contextvars
+   import logging
+   
+   # Module-level context var
+   _trace_id_var = contextvars.ContextVar('trace_id', default=None)
+   
+   class TraceIDFilter(logging.Filter):
+       """Adds trace_id to log records"""
+       def filter(self, record):
+           trace_id = _trace_id_var.get()
+           record.trace_id = trace_id if trace_id else '-'
+           return True
+   
+   # Updated formatter
+   formatter = logging.Formatter(
+       '%(asctime)s [%(trace_id)s] - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
+   )
+   ```
+
+5. **Connection/Cursor Integration:**
+   ```python
+   class Connection:
+       def __init__(self, ...):
+           # Generate and set trace ID
+           trace_id = logger.generate_trace_id("CONN")
+           logger.set_trace_id(trace_id)
+           logger.fine("Connection initialized")  # Includes trace ID automatically
+   
+   class Cursor:
+       def __init__(self, connection):
+           # Generate cursor trace ID (inherits connection context)
+           trace_id = logger.generate_trace_id("CURS")
+           logger.set_trace_id(trace_id)
+           logger.fine("Cursor created")  # Includes trace ID automatically
+   ```
+
+6. **Thread Safety:**
+   - `contextvars` is thread-safe by design
+   - Each thread maintains its own context
+   - No locks needed for trace ID access
+   - Counter uses `threading.Lock()` for generation only
+
+7. **Performance:**
+   - Zero overhead when logging disabled
+   - Minimal overhead when enabled (~1 μs per log call)
+   - No dictionary lookups or thread-local storage
+   - Context variable access is optimized in CPython
+
+**Example Log Output:**
+```
+2025-11-03 10:15:22,100 [CONN-12345-67890-1] - FINE - connection.py:42 - [Python] Connection opened
+2025-11-03 10:15:22,150 [CURS-12345-67890-2] - FINE - cursor.py:28 - [Python] Cursor created
+2025-11-03 10:15:22,200 [CURS-12345-67890-2] - FINE - cursor.py:89 - [Python] Executing query
+2025-11-03 10:15:22,250 [CURS-12345-67890-2] - FINE - cursor.py:145 - [Python] Fetched 42 rows
+2025-11-03 10:15:22,300 [CONN-12345-67890-1] - FINE - connection.py:234 - [Python] Connection closed
+```
+
+**Multi-Connection Example:**
+```
+# Thread 1 logs:
+[CONN-12345-11111-1] Connection opened
+[CURS-12345-11111-2] Query: SELECT * FROM users
+[CURS-12345-11111-2] Fetched 100 rows
+
+# Thread 2 logs (interleaved, but distinguishable):
+[CONN-12345-22222-3] Connection opened
+[CURS-12345-22222-4] Query: SELECT * FROM orders
+[CURS-12345-22222-4] Fetched 50 rows
+```
+
+**Hybrid API Approach**
+
+The logger supports both Driver Levels and Python standard logging levels:
+
+1. **Driver Levels (FINE/FINER/FINEST)** - **Recommended**
+   - Use in driver internal code (connection.py, cursor.py, etc.)
+   - Provides granular control specific to database operations
+   - Inspired by proven enterprise logging patterns
+   - Clear semantic meaning for database diagnostics
+
+2. **Python Standard Levels (DEBUG/INFO/WARNING/ERROR)** - **Compatible**
+   - Available for users familiar with Python logging
+   - Works seamlessly alongside Driver levels
+   - Good for application-level code using the driver
+   - No learning curve for Python developers
+
+**When to Use Which:**
+- **Driver internals**: Prefer `logger.fine()`, `logger.finer()`, `logger.finest()`
+- **Application code**: Either style works; use what's familiar
+- **Error logging**: `logger.error()` or `logger.critical()` work well (Python standard)
+- **Production**: Set `logger.setLevel(CRITICAL)` to minimize overhead
+
+**🔑 KEY COMPATIBILITY GUARANTEE:**
+
+**Existing code using Python standard levels will continue to work when Driver Levels are enabled!**
+
+```python
+# User's existing code (Python standard levels)
+logger.info("Connected to database")
+logger.warning("Query took 5 seconds")
+logger.error("Connection timeout")
+
+# Enable driver diagnostics with Driver Levels
+logger.setLevel(FINE)  # FINE = 18
+
+# ✅ Result: ALL messages above will appear in logs!
+# Because: INFO (20), WARNING (30), ERROR (40) are all > FINE (18)
+# The level hierarchy ensures backward compatibility
+```
+
+**Level Filtering Rules:**
+- `setLevel(FINE)` (18) → Shows: FINE, INFO, WARNING, ERROR, CRITICAL
+- `setLevel(FINER)` (15) → Shows: FINER, FINE, INFO, WARNING, ERROR, CRITICAL  
+- `setLevel(FINEST)` (5) → Shows: Everything (all levels)
+- `setLevel(logging.INFO)` (20) → Shows: INFO, WARNING, ERROR, CRITICAL (hides FINE/FINER/FINEST)
 
 #### Public API
 
 ```python
-from mssql_python.logging import logger, FINE, FINER, FINEST
+from mssql_python.logging import logger, FINE, FINER, FINEST, FILE, STDOUT, BOTH
+
+# Driver Levels API (Recommended for mssql-python)
+# =================================================
 
 # Check if level enabled
 if logger.isEnabledFor(FINER):
     expensive_data = compute_diagnostics()
     logger.finer(f"Diagnostics: {expensive_data}")
 
-# Log at different levels
-logger.fine("Standard diagnostic message")
-logger.finer("Detailed diagnostic message")
-logger.finest("Ultra-detailed trace message")
-logger.info("Informational message")
-logger.warning("Warning message")
-logger.error("Error message")
+# Log at Driver Levels (recommended)
+logger.fine("Standard diagnostic message")      # Primary diagnostic level
+logger.finer("Detailed diagnostic message")     # Detailed troubleshooting
+logger.finest("Ultra-detailed trace message")   # Deep debugging
 
-# Change level (also updates C++)
-logger.setLevel(FINEST)  # Enable all logging
-logger.setLevel(FINE)    # Enable FINE and above
-logger.setLevel(logging.CRITICAL)  # Disable all (effectively OFF)
+# Change level with Driver Level constants (recommended)
+logger.setLevel(FINE)      # Standard diagnostics
+logger.setLevel(FINER)     # Detailed diagnostics
+logger.setLevel(FINEST)    # Ultra-detailed (all diagnostics)
+logger.setLevel(CRITICAL)  # Errors only (production)
+
+# Configure output destination
+logger.output = FILE    # File only (default)
+logger.output = STDOUT  # Stdout only
+logger.output = BOTH    # Both file and stdout
+
+# Or set output when setting level
+logger.setLevel(FINE, output=BOTH)
+
+# Python Standard API (Also Available for Compatibility)
+# ======================================================
+import logging
+
+# Also works - standard Python logging methods
+logger.info("Informational message")      # Python standard
+logger.warning("Warning message")         # Python standard
+logger.error("Error message")             # Python standard
+logger.debug("Debug message")             # Python standard
+
+# Can also use Python standard level constants
+logger.setLevel(logging.DEBUG)    # Python standard
+logger.setLevel(logging.INFO)     # Python standard
 
 # Get log file location
 print(f"Logging to: {logger.log_file}")
@@ -261,23 +458,78 @@ class MSSQLLogger:
     def __init__(self):
         self._logger = logging.getLogger('mssql_python')
         self._logger.setLevel(logging.CRITICAL)  # OFF by default
-        self._setup_file_handler()
+        self._output_mode = FILE  # Default to file only
+        self._file_handler = None
+        self._stdout_handler = None
+        self._setup_handlers()
         self._trace_counter = 0
         self._trace_lock = threading.Lock()
+        
+        # Trace ID support (contextvars for automatic propagation)
+        import contextvars
+        self._trace_id_var = contextvars.ContextVar('trace_id', default=None)
+        
+        # Add trace ID filter to logger
+        self._logger.addFilter(self._TraceIDFilter(self._trace_id_var))
     
-    def _setup_file_handler(self):
-        # Create timestamped log file
-        # Setup RotatingFileHandler
-        # Configure formatter
+    class _TraceIDFilter(logging.Filter):
+        """Filter that adds trace_id to log records"""
+        def __init__(self, trace_id_var):
+            super().__init__()
+            self._trace_id_var = trace_id_var
+        
+        def filter(self, record):
+            trace_id = self._trace_id_var.get()
+            record.trace_id = trace_id if trace_id else '-'
+            return True
+    
+    def _setup_handlers(self):
+        # Setup handlers based on output mode
+        # File handler: RotatingFileHandler
+        # Stdout handler: StreamHandler(sys.stdout)
         pass
+    
+    def _reconfigure_handlers(self):
+        # Remove existing handlers and add new ones based on output mode
+        pass
+    
+    @property
+    def output(self):
+        return self._output_mode
+    
+    @output.setter
+    def output(self, mode):
+        # Validate mode and reconfigure handlers
+        if mode not in (FILE, STDOUT, BOTH):
+            raise ValueError(f"Invalid output mode: {mode}")
+        self._output_mode = mode
+        self._reconfigure_handlers()
     
     def _sanitize_message(self, msg: str) -> str:
         # Remove PWD=..., Password=..., etc.
         pass
     
-    def _generate_trace_id(self) -> str:
-        # Return PID_ThreadID_Counter
-        pass
+    def generate_trace_id(self, prefix: str = "TRACE") -> str:
+        """Generate unique trace ID: PREFIX-PID-ThreadID-Counter"""
+        with self._trace_lock:
+            self._trace_counter += 1
+            counter = self._trace_counter
+        
+        pid = os.getpid()
+        thread_id = threading.get_ident()
+        return f"{prefix}-{pid}-{thread_id}-{counter}"
+    
+    def set_trace_id(self, trace_id: str):
+        """Set trace ID for current context (auto-propagates to child contexts)"""
+        self._trace_id_var.set(trace_id)
+    
+    def get_trace_id(self) -> Optional[str]:
+        """Get current trace ID (None if not set)"""
+        return self._trace_id_var.get()
+    
+    def clear_trace_id(self):
+        """Clear trace ID for current context"""
+        self._trace_id_var.set(None)
     
     def _notify_cpp_level_change(self):
         # Call C++ to update cached level
@@ -495,6 +747,39 @@ void LoggerBridge::initialize() {
 
 **Time Complexity**: O(1)  
 **Thread Safety**: Atomic store, lock-free for readers
+
+**Level Hierarchy** (lower number = more verbose):
+```
+FINEST (5)    ← Driver Levels: Ultra-detailed
+DEBUG (10)    ← Python standard
+FINER (15)    ← Driver Levels: Detailed
+FINE (18)     ← Driver Levels: Standard (default for troubleshooting)
+INFO (20)     ← Python standard
+WARNING (30)  ← Python standard
+ERROR (40)    ← Python standard
+CRITICAL (50) ← Python standard
+
+Example: Setting FINE (18) will show:
+  ✓ FINE (18), INFO (20), WARNING (30), ERROR (40), CRITICAL (50)
+  ✗ FINER (15), DEBUG (10), FINEST (5) - too verbose, filtered out
+```
+
+**⚠️ IMPORTANT - Backward Compatibility:**
+
+When you enable Driver Levels with `logger.setLevel(FINE)`, **all Python standard levels that are higher than FINE will still appear in logs:**
+
+| Your Code Uses | Will Appear at FINE? | Will Appear at FINER? | Will Appear at FINEST? |
+|----------------|---------------------|----------------------|------------------------|
+| `logger.finest()` (5) | ❌ No (5 < 18) | ❌ No (5 < 15) | ✅ Yes (5 ≥ 5) |
+| `logger.debug()` (10) | ❌ No (10 < 18) | ❌ No (10 < 15) | ✅ Yes (10 ≥ 5) |
+| `logger.finer()` (15) | ❌ No (15 < 18) | ✅ Yes (15 ≥ 15) | ✅ Yes (15 ≥ 5) |
+| `logger.fine()` (18) | ✅ Yes (18 ≥ 18) | ✅ Yes (18 ≥ 15) | ✅ Yes (18 ≥ 5) |
+| `logger.info()` (20) | ✅ **Yes** (20 ≥ 18) | ✅ **Yes** (20 ≥ 15) | ✅ **Yes** (20 ≥ 5) |
+| `logger.warning()` (30) | ✅ **Yes** (30 ≥ 18) | ✅ **Yes** (30 ≥ 15) | ✅ **Yes** (30 ≥ 5) |
+| `logger.error()` (40) | ✅ **Yes** (40 ≥ 18) | ✅ **Yes** (40 ≥ 15) | ✅ **Yes** (40 ≥ 5) |
+| `logger.critical()` (50) | ✅ **Yes** (50 ≥ 18) | ✅ **Yes** (50 ≥ 15) | ✅ **Yes** (50 ≥ 5) |
+
+**Bottom Line:** Existing code using `info()`, `warning()`, `error()` continues to work! No migration needed! 🎉
 
 ---
 
@@ -887,18 +1172,44 @@ if (LoggerBridge::isLoggable(FINEST)) {
 
 ## Code Examples
 
-### Example 1: Basic Usage (User Perspective)
+### Example 1: Minimal Usage
 
 ```python
 """
-User enables logging and uses the driver
+Minimal example - just enable driver diagnostics
 """
 import mssql_python
-from mssql_python.logging import logger, FINE, FINER, FINEST
+from mssql_python import logging
 
-# Enable logging at FINE level
-logger.setLevel(FINE)
-print(f"Logging to: {logger.log_file}")
+# Enable driver diagnostics (one line)
+logging.setLevel(logging.FINER)
+
+# Use the driver - all internals are now logged
+conn = mssql_python.connect("Server=localhost;Database=test")
+cursor = conn.cursor()
+cursor.execute("SELECT 1")
+conn.close()
+
+# That's it! Logs are in mssql_python_trace_*.log
+```
+
+### Example 2: With Output Control
+
+```python
+"""
+Control output destination
+"""
+import mssql_python
+from mssql_python import logging
+
+# Option 1: File only (default)
+logging.setLevel(logging.FINE)
+
+# Option 2: Stdout only (for CI/CD)
+logging.setLevel(logging.FINE, logging.STDOUT)
+
+# Option 3: Both file and stdout (for development)
+logging.setLevel(logging.FINE, logging.BOTH)
 
 # Use the driver normally
 connection_string = (
@@ -940,17 +1251,135 @@ conn.close()
 
 ---
 
-### Example 2: Python Code Using Logger
+### Example 3: Integrate with Your Application Logging
 
 ```python
 """
-connection.py - Example of using logger in Python code
+Extensibility - plug driver logging into your application's logger
 """
-from .logging import logger, FINER, FINEST
+import logging
+import mssql_python
+from mssql_python import logging as mssql_logging
+
+# Setup your application's logging
+app_logger = logging.getLogger('myapp')
+app_logger.setLevel(logging.INFO)
+
+# Add console handler to your logger
+console = logging.StreamHandler()
+console.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(message)s'))
+app_logger.addHandler(console)
+
+# Now plug mssql-python logger into your logging
+mssql_driver_logger = mssql_logging.logger  # Get driver's logger instance
+mssql_driver_logger.addHandler(console)     # Same handler as your app
+mssql_driver_logger.setLevel(mssql_logging.FINE)
+
+# Both your app and driver logs go to same destination
+app_logger.info("Starting application")
+conn = mssql_python.connect("Server=localhost;Database=test")
+app_logger.info("Database connected")
+
+# Output shows both application and driver logs:
+# 2025-11-03 10:15:22 - myapp - Starting application
+# 2025-11-03 10:15:22 - mssql_python - [Python] Connecting to server
+# 2025-11-03 10:15:22 - mssql_python - [Python] Connection established
+# 2025-11-03 10:15:22 - myapp - Database connected
+```
+
+---
+
+### Example 4: Mixed Driver Levels and Python Standard Levels (Backward Compatibility)
+
+```python
+"""
+Example showing existing Python standard logging code works seamlessly
+when Driver Levels are enabled - NO CODE CHANGES NEEDED!
+"""
+import mssql_python
+from mssql_python.logging import logger, FINE, FINER, FINEST
+import logging
+
+# ===================================================================
+# SCENARIO: User has existing code with Python standard levels
+# ===================================================================
+
+class DatabaseManager:
+    """Existing user code using Python standard logging"""
+    
+    def connect(self, connection_string):
+        # User's existing code - uses INFO (level 20)
+        logger.info("Attempting database connection...")
+        
+        try:
+            conn = mssql_python.connect(connection_string)
+            # User's existing code - uses INFO (level 20)
+            logger.info("Successfully connected to database")
+            return conn
+        except Exception as e:
+            # User's existing code - uses ERROR (level 40)
+            logger.error(f"Connection failed: {e}")
+            raise
+    
+    def execute_query(self, conn, sql):
+        # User's existing code - uses WARNING (level 30)
+        if len(sql) > 1000:
+            logger.warning("Query is very long, may impact performance")
+        
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        return cursor.fetchall()
+
+# ===================================================================
+# USER ENABLES DRIVER LEVELS DIAGNOSTICS (NO CHANGES TO CODE ABOVE!)
+# ===================================================================
+
+logger.setLevel(FINE)  # FINE = 18, enables driver diagnostics
+
+# Now run the existing code
+db = DatabaseManager()
+conn = db.connect("Server=localhost;Database=test;...")
+results = db.execute_query(conn, "SELECT * FROM users")
+
+# ===================================================================
+# RESULT: ALL MESSAGES APPEAR IN LOG! ✅
+# ===================================================================
+# Log output will show:
+# - Driver diagnostics: logger.fine() from connection.py (FINE = 18)
+# - Driver diagnostics: logger.finer() from C++ bridge (FINER = 15) ❌ Hidden (15 < 18)
+# - User's code: logger.info() messages (INFO = 20) ✅ Visible (20 ≥ 18)
+# - User's code: logger.warning() messages (WARNING = 30) ✅ Visible (30 ≥ 18)
+# - User's code: logger.error() messages (ERROR = 40) ✅ Visible (40 ≥ 18)
+```
+
+**Expected Log Output:**
+```
+2025-11-03 10:15:22,100 - INFO - app.py:12 - [Python] Attempting database connection...
+2025-11-03 10:15:22,101 - FINE - connection.py:42 - [Python] Initializing connection
+2025-11-03 10:15:22,102 - FINE - connection.py:56 - [Python] Connection string: Server=localhost;Database=test;...
+2025-11-03 10:15:22,110 - FINE - connection.py:89 - [Python] Connection established
+2025-11-03 10:15:22,111 - INFO - app.py:16 - [Python] Successfully connected to database
+2025-11-03 10:15:22,120 - WARNING - app.py:24 - [Python] Query is very long, may impact performance
+2025-11-03 10:15:22,121 - FINE - cursor.py:28 - [Python] Creating cursor
+2025-11-03 10:15:22,122 - FINE - cursor.py:89 - [Python] Executing query: SELECT * FROM users
+```
+
+**Key Takeaway:** Setting `logger.setLevel(FINE)` enables driver diagnostics WITHOUT breaking existing application code that uses `logger.info()`, `logger.warning()`, `logger.error()`! 🎯
+
+---
+
+### Example 5: Python Code Using Logger (Driver Levels - Recommended)
+
+```python
+"""
+connection.py - Example of using Driver Levels logger (recommended for driver code)
+"""
+from .logging import logger, FINE, FINER, FINEST
 from . import ddbc_bindings
 
 class Connection:
     def __init__(self, connection_string: str):
+        # Use Driver Levels in driver code
         logger.fine("Initializing connection")
         
         # Log sanitized connection string
@@ -989,7 +1418,7 @@ class Connection:
 
 ---
 
-### Example 3: C++ Code Using Logger Bridge
+### Example 6: C++ Code Using Logger Bridge
 
 ```cpp
 /**
@@ -1081,7 +1510,7 @@ private:
 
 ---
 
-### Example 4: Advanced - Trace ID Usage
+### Example 7: Advanced - Trace ID Usage
 
 ```python
 """
@@ -1475,10 +1904,12 @@ Should I log this message?
 ### B. C++ Macro Reference
 
 ```cpp
-// Basic logging macros
-LOG_FINE(fmt, ...)    // Standard diagnostics (level 25)
+// Driver levels logging macros (used in C++ driver code)
+LOG_FINE(fmt, ...)    // Standard diagnostics (level 18)
 LOG_FINER(fmt, ...)   // Detailed diagnostics (level 15)
 LOG_FINEST(fmt, ...)  // Ultra-detailed trace (level 5)
+
+// Note: Python standard levels (DEBUG/INFO/WARNING/ERROR) are Python-only.
 
 // Manual level check for expensive operations
 if (LoggerBridge::isLoggable(FINEST)) {
@@ -1495,27 +1926,47 @@ LOG_FINEST("Memory state: %s", dump_memory().c_str());
 
 ```python
 from mssql_python.logging import logger, FINE, FINER, FINEST
+import logging
 
-# Logging methods
-logger.fine(msg)      # Standard diagnostics (level 25)
+# Driver levels Logging Methods (Recommended for Driver Code)
+# =========================================================
+logger.fine(msg)      # Standard diagnostics (level 18)
 logger.finer(msg)     # Detailed diagnostics (level 15)
 logger.finest(msg)    # Ultra-detailed trace (level 5)
+
+# Python Standard Logging Methods (Also Available)
+# =================================================
+logger.debug(msg)     # Debug messages (level 10)
 logger.info(msg)      # Informational (level 20)
 logger.warning(msg)   # Warnings (level 30)
 logger.error(msg)     # Errors (level 40)
+logger.critical(msg)  # Critical failures (level 50)
 
-# Level control
-logger.setLevel(FINE)     # Enable FINE and above
-logger.setLevel(FINER)    # Enable FINER and above
-logger.setLevel(FINEST)   # Enable everything
-logger.setLevel(logging.CRITICAL)  # Disable all
+# Level Control
+# ======================================
+logger.setLevel(FINE)      # Enable FINE and above (includes INFO/WARNING/ERROR)
+logger.setLevel(FINER)     # Enable FINER and above (includes DEBUG/FINE/INFO/...)
+logger.setLevel(FINEST)    # Enable everything (most verbose)
+logger.setLevel(CRITICAL)  # Only critical errors (production default)
 
-# Level checking
+# Level Control (Python standard also works)
+# ==========================================
+logger.setLevel(logging.DEBUG)     # Enable DEBUG and above
+logger.setLevel(logging.INFO)      # Enable INFO and above
+logger.setLevel(logging.WARNING)   # Enable WARNING and above
+
+# Level Checking (for expensive operations)
+# =========================================
 if logger.isEnabledFor(FINEST):
     expensive_data = compute()
     logger.finest(f"Data: {expensive_data}")
 
+if logger.isEnabledFor(logging.DEBUG):
+    debug_info = analyze()
+    logger.debug(f"Info: {debug_info}")
+
 # Properties
+# ==========
 logger.log_file           # Get current log file path
 logger.generate_trace_id(name)  # Generate trace ID
 ```

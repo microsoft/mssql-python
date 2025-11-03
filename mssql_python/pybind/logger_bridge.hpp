@@ -29,7 +29,7 @@ namespace logging {
 // Note: Avoid using ERROR as it conflicts with Windows.h macro
 const int LOG_LEVEL_FINEST = 5;   // Ultra-detailed trace
 const int LOG_LEVEL_FINER = 15;   // Detailed diagnostics
-const int LOG_LEVEL_FINE = 25;    // Standard diagnostics
+const int LOG_LEVEL_FINE = 18;    // Standard diagnostics (below INFO to include INFO messages)
 const int LOG_LEVEL_INFO = 20;    // Informational
 const int LOG_LEVEL_WARNING = 30; // Warnings
 const int LOG_LEVEL_ERROR = 40;   // Errors

@@ -11,25 +11,44 @@ This guide explains how to use the enhanced logging system in mssql-python, whic
 - [Log Output Examples](#log-output-examples)
 - [Advanced Features](#advanced-features)
 - [API Reference](#api-reference)
-- [Migration from Old Logging](#migration-from-old-logging)
+- [Extensibility](#extensibility)
 
 ## Quick Start
 
+### Minimal Usage (Recommended)
+
 ```python
 import mssql_python
-from mssql_python import logger, FINE, FINER, FINEST
+from mssql_python import logging
 
-# Enable logging at INFO level (default Python level)
-logger.setLevel('INFO')
+# Enable driver diagnostics (one line)
+logging.setLevel(logging.FINE)
+
+# Use the driver - all operations are now logged
+conn = mssql_python.connect("Server=localhost;Database=test")
+# Check the log file: mssql_python_trace_*.log
+```
+
+### With More Control
+
+```python
+import mssql_python
+from mssql_python import logging
 
 # Enable detailed SQL logging
-logger.setLevel(FINE)  # Logs SQL statements
+logging.setLevel(logging.FINE)  # Logs SQL statements
 
 # Enable very detailed logging
-logger.setLevel(FINER)  # Logs SQL + parameters
+logging.setLevel(logging.FINER)  # Logs SQL + parameters
 
 # Enable maximum detail logging
-logger.setLevel(FINEST)  # Logs everything including internal operations
+logging.setLevel(logging.FINEST)  # Logs everything including internal operations
+
+# Output to stdout instead of file
+logging.setLevel(logging.FINE, logging.STDOUT)
+
+# Output to both file and stdout
+logging.setLevel(logging.FINE, logging.BOTH)
 ```
 
 ## Log Levels
@@ -39,9 +58,9 @@ The logging system uses both standard Python levels and custom JDBC-style levels
 | Level | Value | Description | Use Case |
 |-------|-------|-------------|----------|
 | **FINEST** | 5 | Most detailed logging | Deep debugging, tracing all operations |
+| **DEBUG** | 10 | Standard debug | General debugging (Python standard) |
 | **FINER** | 15 | Very detailed logging | SQL with parameters, connection details |
-| **FINE** | 25 | Detailed logging | SQL statements, major operations |
-| **DEBUG** | 10 | Standard debug | General debugging (between FINEST and FINER) |
+| **FINE** | 18 | Detailed logging | SQL statements, major operations |
 | **INFO** | 20 | Informational | Connection status, important events |
 | **WARNING** | 30 | Warnings | Recoverable errors, deprecations |
 | **ERROR** | 40 | Errors | Operation failures |
@@ -71,22 +90,31 @@ CRITICAL (50) ← Least detailed
 
 ## Basic Usage
 
-### Enable Console Logging
+### Default - File Logging
 
 ```python
 import mssql_python
-from mssql_python import logger, FINE, FINER, FINEST
+from mssql_python import logging
 
-# Set logging level
-logger.setLevel(FINE)
+# Enable logging (logs to file by default)
+logging.setLevel(logging.FINE)
 
-# Add console handler (logs to stdout)
-import logging
-console_handler = logging.StreamHandler()
-console_handler.setLevel(FINE)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
+# Use the library - logs will appear in file
+conn = mssql_python.connect(server='localhost', database='testdb')
+cursor = conn.cursor()
+cursor.execute("SELECT * FROM users")
+
+print(f"Logs written to: {logging.logger.log_file}")
+```
+
+### Console Logging
+
+```python
+import mssql_python
+from mssql_python import logging
+
+# Enable logging to stdout
+logging.setLevel(logging.FINE, logging.STDOUT)
 
 # Now use the library - logs will appear in console
 conn = mssql_python.connect(server='localhost', database='testdb')
@@ -94,64 +122,58 @@ cursor = conn.cursor()
 cursor.execute("SELECT * FROM users")
 ```
 
-### Using Standard Level Names
+### Both File and Console
 
 ```python
-# You can use string names for standard levels
-logger.setLevel('DEBUG')   # Sets to DEBUG (10)
-logger.setLevel('INFO')    # Sets to INFO (20)
-logger.setLevel('WARNING') # Sets to WARNING (30)
+import mssql_python
+from mssql_python import logging
 
-# Or use numeric values directly
-logger.setLevel(5)   # FINEST
-logger.setLevel(15)  # FINER
-logger.setLevel(25)  # FINE
-```
+# Enable logging to both file and stdout
+logging.setLevel(logging.FINE, logging.BOTH)
 
-## File Logging
-
-### Enable File Logging with Rotation
-
-```python
-from mssql_python import logger, FINEST
-
-# Enable file logging (automatically rotates at 10MB, keeps 5 backups)
-log_file = logger.enable_file_logging(
-    log_dir='./logs',           # Directory for log files
-    log_level=FINEST,           # Log level for file
-    max_bytes=10*1024*1024,     # 10MB per file
-    backup_count=5              # Keep 5 backup files
-)
-
-print(f"Logging to: {log_file}")
-
-# Use the library - all operations logged to file
+# Logs appear in both console and file
 conn = mssql_python.connect(server='localhost', database='testdb')
 ```
 
-### Custom File Handler
+## Output Destinations
+
+### File Only (Default)
 
 ```python
-import logging
-from logging.handlers import RotatingFileHandler
-from mssql_python import logger, FINER
+from mssql_python import logging
 
-# Create custom rotating file handler
-file_handler = RotatingFileHandler(
-    'my_app.log',
-    maxBytes=50*1024*1024,  # 50MB
-    backupCount=10           # Keep 10 backups
-)
-file_handler.setLevel(FINER)
+# File logging is enabled by default
+logging.setLevel(logging.FINE)
 
-# Add custom formatter with trace IDs
-formatter = logging.Formatter(
-    '%(asctime)s [%(trace_id)s] - %(name)s - %(levelname)s - %(message)s'
-)
-file_handler.setFormatter(formatter)
+# Files are automatically rotated at 512MB, keeps 5 backups
+# File location: ./mssql_python_trace_YYYYMMDD_HHMMSS_PID.log
 
-logger.addHandler(file_handler)
-logger.setLevel(FINER)
+conn = mssql_python.connect(server='localhost', database='testdb')
+print(f"Logging to: {logging.logger.log_file}")
+```
+
+### Stdout Only
+
+```python
+from mssql_python import logging
+
+# Log to stdout only (useful for CI/CD, Docker containers)
+logging.setLevel(logging.FINE, logging.STDOUT)
+
+conn = mssql_python.connect(server='localhost', database='testdb')
+# Logs appear in console, no file created
+```
+
+### Both File and Stdout
+
+```python
+from mssql_python import logging
+
+# Log to both destinations (useful for development)
+logging.setLevel(logging.FINE, logging.BOTH)
+
+conn = mssql_python.connect(server='localhost', database='testdb')
+# Logs appear in both console and file
 ```
 
 ## Log Output Examples
@@ -161,9 +183,9 @@ logger.setLevel(FINER)
 Shows SQL statements and major operations:
 
 ```
-2024-10-31 10:30:15,123 [TR-abc123] - mssql_python.connection - FINE - Connecting to server: localhost
-2024-10-31 10:30:15,456 [TR-abc123] - mssql_python.cursor - FINE - Executing query: SELECT * FROM users WHERE id = ?
-2024-10-31 10:30:15,789 [TR-abc123] - mssql_python.cursor - FINE - Query completed, 42 rows fetched
+2024-10-31 10:30:15,123 [CONN-12345-67890-1] - FINE - connection.py:42 - [Python] Connecting to server: localhost
+2024-10-31 10:30:15,456 [CURS-12345-67890-2] - FINE - cursor.py:28 - [Python] Executing query: SELECT * FROM users WHERE id = ?
+2024-10-31 10:30:15,789 [CURS-12345-67890-2] - FINE - cursor.py:89 - [Python] Query completed, 42 rows fetched
 ```
 
 ### FINER Level Output
@@ -171,10 +193,10 @@ Shows SQL statements and major operations:
 Shows SQL statements with parameters:
 
 ```
-2024-10-31 10:30:15,123 [TR-abc123] - mssql_python.connection - FINER - Connection parameters: {'server': 'localhost', 'database': 'testdb', 'trusted_connection': 'yes'}
-2024-10-31 10:30:15,456 [TR-abc123] - mssql_python.cursor - FINER - Executing query: SELECT * FROM users WHERE id = ?
-2024-10-31 10:30:15,457 [TR-abc123] - mssql_python.cursor - FINER - Query parameters: [42]
-2024-10-31 10:30:15,789 [TR-abc123] - mssql_python.cursor - FINER - Fetched 1 row
+2024-10-31 10:30:15,123 [CONN-12345-67890-1] - FINER - connection.py:42 - [Python] Connection parameters: {'server': 'localhost', 'database': 'testdb', 'trusted_connection': 'yes'}
+2024-10-31 10:30:15,456 [CURS-12345-67890-2] - FINER - cursor.py:28 - [Python] Executing query: SELECT * FROM users WHERE id = ?
+2024-10-31 10:30:15,457 [CURS-12345-67890-2] - FINER - cursor.py:89 - [Python] Query parameters: [42]
+2024-10-31 10:30:15,789 [CURS-12345-67890-2] - FINER - cursor.py:145 - [Python] Fetched 1 row
 ```
 
 ### FINEST Level Output
@@ -182,12 +204,12 @@ Shows SQL statements with parameters:
 Shows all internal operations:
 
 ```
-2024-10-31 10:30:15,100 [TR-abc123] - mssql_python.connection - FINEST - Allocating environment handle
-2024-10-31 10:30:15,101 [TR-abc123] - mssql_python.connection - FINEST - Setting ODBC version to 3.8
-2024-10-31 10:30:15,123 [TR-abc123] - mssql_python.connection - FINEST - Building connection string
-2024-10-31 10:30:15,456 [TR-abc123] - mssql_python.cursor - FINEST - Preparing statement handle
-2024-10-31 10:30:15,457 [TR-abc123] - mssql_python.cursor - FINEST - Binding parameter 1: type=int, value=42
-2024-10-31 10:30:15,789 [TR-abc123] - mssql_python.cursor - FINEST - Row buffer allocated
+2024-10-31 10:30:15,100 [CONN-12345-67890-1] - FINEST - connection.py:156 - [Python] Allocating environment handle
+2024-10-31 10:30:15,101 [CONN-12345-67890-1] - FINEST - connection.py:178 - [Python] Setting ODBC version to 3.8
+2024-10-31 10:30:15,123 [CONN-12345-67890-1] - FINEST - connection.py:201 - [Python] Building connection string
+2024-10-31 10:30:15,456 [CURS-12345-67890-2] - FINEST - cursor.py:89 - [Python] Preparing statement handle
+2024-10-31 10:30:15,457 [CURS-12345-67890-2] - FINEST - cursor.py:134 - [Python] Binding parameter 1: type=int, value=42
+2024-10-31 10:30:15,789 [CURS-12345-67890-2] - FINEST - cursor.py:201 - [Python] Row buffer allocated
 ```
 
 ## Advanced Features
@@ -216,18 +238,52 @@ Keywords automatically sanitized:
 
 ### Trace IDs
 
-Each connection/operation gets a unique trace ID for tracking:
+Each connection and cursor gets a unique trace ID for tracking in multi-threaded applications:
 
+**Trace ID Format:**
+- Connection: `CONN-<PID>-<ThreadID>-<Counter>`
+- Cursor: `CURS-<PID>-<ThreadID>-<Counter>`
+
+**Example:**
 ```python
-from mssql_python import logger
+from mssql_python import logging
 
-# Trace IDs are automatically included in log records
-# Access via: log_record.trace_id
+# Enable logging
+logging.setLevel(logging.FINE, logging.STDOUT)
 
-# Example output:
-# [TR-a1b2c3d4] - Connection established
-# [TR-a1b2c3d4] - Query executed
-# [TR-e5f6g7h8] - New connection from different context
+# Trace IDs are automatically included in all log records
+conn = mssql_python.connect("Server=localhost;Database=test")
+cursor = conn.cursor()
+cursor.execute("SELECT * FROM users")
+
+# Log output shows:
+# [CONN-12345-67890-1] - Connection established
+# [CURS-12345-67890-2] - Cursor created
+# [CURS-12345-67890-2] - Executing query: SELECT * FROM users
+
+# Different thread/connection:
+# [CONN-12345-98765-3] - Connection established  (different ThreadID)
+```
+
+**Why Trace IDs Matter:**
+- **Multi-threading**: Distinguish logs from different threads writing to the same file
+- **Connection pools**: Track which connection performed which operation
+- **Debugging**: Filter logs with `grep "CONN-12345-67890-1" logfile.log`
+- **Performance analysis**: Measure duration of specific operations
+
+**Custom Trace IDs** (Advanced):
+```python
+from mssql_python import logging
+
+# Generate custom trace ID (e.g., for background tasks)
+trace_id = logging.logger.generate_trace_id("TASK")
+logging.logger.set_trace_id(trace_id)
+
+logging.logger.info("Task started")
+# Output: [TASK-12345-67890-1] - Task started
+
+# Clear when done
+logging.logger.clear_trace_id()
 ```
 
 ### Programmatic Log Access
@@ -268,230 +324,337 @@ logger.setLevel('INFO')
 
 ## API Reference
 
-### Logger Object
+### Module-Level Functions (Recommended)
 
 ```python
-from mssql_python import logger
+from mssql_python import logging
 ```
 
-#### Methods
+**`logging.setLevel(level: int, output: str = None) -> None`**
 
-**`setLevel(level: Union[int, str]) -> None`**
-
-Set the logging threshold level.
+Set the logging threshold level and optionally configure output destination.
 
 ```python
-logger.setLevel(FINEST)        # Most detailed
-logger.setLevel('DEBUG')       # Standard debug
-logger.setLevel(20)            # INFO level
+# Basic usage - file logging (default)
+logging.setLevel(logging.FINEST)
+logging.setLevel(logging.FINER)
+logging.setLevel(logging.FINE)
+
+# With output control
+logging.setLevel(logging.FINE, logging.STDOUT)  # Stdout only
+logging.setLevel(logging.FINE, logging.BOTH)    # Both file and stdout
 ```
 
-**`enable_file_logging(log_dir: str = './logs', log_level: int = FINE, max_bytes: int = 10485760, backup_count: int = 5) -> str`**
+**`logging.getLevel() -> int`**
 
-Enable file logging with automatic rotation.
-
-- **log_dir**: Directory for log files (created if doesn't exist)
-- **log_level**: Minimum level to log to file
-- **max_bytes**: Maximum size per log file (default 10MB)
-- **backup_count**: Number of backup files to keep (default 5)
-- **Returns**: Path to the log file
+Get the current logging level.
 
 ```python
-log_file = logger.enable_file_logging(
-    log_dir='./my_logs',
-    log_level=FINER,
-    max_bytes=50*1024*1024,  # 50MB
-    backup_count=10
-)
+current_level = logging.getLevel()
+print(f"Current level: {current_level}")
 ```
 
-**`addHandler(handler: logging.Handler) -> None`**
+**`logging.isEnabledFor(level: int) -> bool`**
 
-Add a custom log handler.
-
-```python
-import logging
-
-handler = logging.StreamHandler()
-handler.setLevel(FINE)
-logger.addHandler(handler)
-```
-
-**`removeHandler(handler: logging.Handler) -> None`**
-
-Remove a specific handler.
+Check if a specific log level is enabled.
 
 ```python
-logger.removeHandler(handler)
-```
-
-**`reset_handlers() -> None`**
-
-Remove all configured handlers.
-
-```python
-logger.reset_handlers()
-```
-
-**`log(level: int, message: str, *args, **kwargs) -> None`**
-
-Log a message at specified level.
-
-```python
-logger.log(FINE, "Processing %d records", record_count)
-```
-
-**`debug(message: str, *args, **kwargs) -> None`**
-
-Log a debug message.
-
-```python
-logger.debug("Debug information: %s", debug_data)
+if logging.isEnabledFor(logging.FINEST):
+    expensive_data = compute_diagnostics()
+    logging.logger.finest(f"Diagnostics: {expensive_data}")
 ```
 
 ### Log Level Constants
 
 ```python
-from mssql_python import FINEST, FINER, FINE
+from mssql_python import logging
 
-# Use in your code
-logger.setLevel(FINEST)  # Value: 5
-logger.setLevel(FINER)   # Value: 15
-logger.setLevel(FINE)    # Value: 25
+# Driver Levels (use these for driver diagnostics)
+logging.FINEST  # Value: 5  - Ultra-detailed
+logging.FINER   # Value: 15 - Detailed
+logging.FINE    # Value: 18 - Standard (recommended default)
+
+# Python standard levels (also available)
+logging.INFO    # Value: 20
+logging.WARNING # Value: 30
+logging.ERROR   # Value: 40
 ```
 
-### Log Levels Property
-
-Access the level values:
+### Output Destination Constants
 
 ```python
-from mssql_python.logging import LOG_LEVELS
+from mssql_python import logging
 
-print(LOG_LEVELS)
-# Output: {'FINEST': 5, 'FINER': 15, 'FINE': 25}
+logging.FILE    # 'file'   - Log to file only (default)
+logging.STDOUT  # 'stdout' - Log to stdout only
+logging.BOTH    # 'both'   - Log to both destinations
 ```
 
-## Migration from Old Logging
+### Logger Instance (Advanced)
 
-### Old System (Deprecated)
+For advanced use cases, you can access the logger instance directly:
 
 ```python
-# Old way - DO NOT USE
-from mssql_python.logging_config import setup_logging
+from mssql_python import logging
 
-setup_logging(level='DEBUG', log_file='app.log')
+# Access the logger instance
+logger = logging.logger
+
+# Direct method calls
+logger.fine("Standard diagnostic message")
+logger.finer("Detailed diagnostic message")
+logger.finest("Ultra-detailed trace message")
+
+# Get log file path
+print(f"Logging to: {logger.log_file}")
+
+# Add custom handlers (for integration)
+import logging as py_logging
+custom_handler = py_logging.StreamHandler()
+logger.addHandler(custom_handler)
 ```
 
-### New System
+## Extensibility
+
+### Pattern 1: Use Driver Logger Across Your Application
+
+If you want to use the driver's logger for your own application logging:
 
 ```python
-# New way - RECOMMENDED
-from mssql_python import logger, FINE
+import mssql_python
+from mssql_python import logging
 
-# Console logging
-logger.setLevel(FINE)
+# Enable driver logging
+logging.setLevel(logging.FINE, logging.STDOUT)
+
+# Get the logger instance for your app code
+logger = logging.logger
+
+# Use it in your application
+class MyApp:
+    def __init__(self):
+        logger.info("Application starting")
+        self.db = self._connect_db()
+        logger.info("Application ready")
+    
+    def _connect_db(self):
+        logger.fine("Connecting to database")
+        conn = mssql_python.connect("Server=localhost;Database=test")
+        logger.info("Database connected successfully")
+        return conn
+    
+    def process_data(self):
+        logger.info("Processing data")
+        cursor = self.db.cursor()
+        cursor.execute("SELECT COUNT(*) FROM users")
+        count = cursor.fetchone()[0]
+        logger.info(f"Processed {count} users")
+        return count
+
+if __name__ == '__main__':
+    app = MyApp()
+    result = app.process_data()
+```
+
+**Output shows unified logging:**
+```
+2025-11-03 10:15:22 - mssql_python - INFO - Application starting
+2025-11-03 10:15:22 - mssql_python - FINE - Connecting to database
+2025-11-03 10:15:22 - mssql_python - FINE - [Python] Initializing connection
+2025-11-03 10:15:22 - mssql_python - INFO - Database connected successfully
+2025-11-03 10:15:22 - mssql_python - INFO - Application ready
+2025-11-03 10:15:22 - mssql_python - INFO - Processing data
+2025-11-03 10:15:22 - mssql_python - FINE - [Python] Executing query
+2025-11-03 10:15:22 - mssql_python - INFO - Processed 1000 users
+```
+
+### Pattern 2: Plug Driver Logger Into Your Existing Logger
+
+If you already have application logging configured and want to integrate driver logs:
+
+```python
 import logging
-console = logging.StreamHandler()
-console.setLevel(FINE)
-logger.addHandler(console)
+import mssql_python
+from mssql_python import logging as mssql_logging
 
-# File logging
-logger.enable_file_logging(log_dir='./logs', log_level=FINE)
+# Your existing application logger setup
+app_logger = logging.getLogger('myapp')
+app_logger.setLevel(logging.INFO)
+
+# Your existing handler and formatter
+handler = logging.StreamHandler()
+formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+handler.setFormatter(formatter)
+app_logger.addHandler(handler)
+
+# Now plug the driver logger into your handler
+mssql_driver_logger = mssql_logging.logger
+mssql_driver_logger.addHandler(handler)  # Use your handler
+mssql_driver_logger.setLevel(mssql_logging.FINE)  # Enable driver diagnostics
+
+# Use your app logger as normal
+app_logger.info("Application starting")
+
+# Driver logs go to the same destination
+conn = mssql_python.connect("Server=localhost;Database=test")
+
+app_logger.info("Querying database")
+cursor = conn.cursor()
+cursor.execute("SELECT * FROM users")
+
+app_logger.info("Application complete")
 ```
 
-### Key Differences
+**Output shows both app and driver logs in your format:**
+```
+2025-11-03 10:15:22 - myapp - INFO - Application starting
+2025-11-03 10:15:22 - mssql_python - FINE - [Python] Initializing connection
+2025-11-03 10:15:22 - mssql_python - FINE - [Python] Connection established
+2025-11-03 10:15:22 - myapp - INFO - Querying database
+2025-11-03 10:15:22 - mssql_python - FINE - [Python] Executing query
+2025-11-03 10:15:22 - myapp - INFO - Application complete
+```
 
-1. **Import**: Use `from mssql_python import logger` instead of `logging_config`
-2. **Custom Levels**: Use `FINEST`, `FINER`, `FINE` for detailed SQL logging
-3. **Handlers**: Directly add handlers via `logger.addHandler()`
-4. **File Logging**: Use `enable_file_logging()` method
-5. **Singleton**: Logger is a singleton, configure once and use throughout
+**Key Benefits:**
+- All logs go to your existing handlers (file, console, cloud, etc.)
+- Use your existing formatters and filters
+- Centralized log management
+- No separate log files to manage
+
+### Pattern 3: Advanced - Custom Log Processing
+
+For advanced scenarios where you want to process driver logs programmatically:
+
+```python
+import logging
+import mssql_python
+from mssql_python import logging as mssql_logging
+
+class DatabaseAuditHandler(logging.Handler):
+    """Custom handler that audits database operations."""
+    
+    def __init__(self):
+        super().__init__()
+        self.queries = []
+        self.connections = []
+    
+    def emit(self, record):
+        msg = record.getMessage()
+        
+        # Track queries
+        if 'Executing query' in msg:
+            self.queries.append({
+                'time': record.created,
+                'query': msg
+            })
+        
+        # Track connections
+        if 'Connection established' in msg:
+            self.connections.append({
+                'time': record.created,
+                'level': record.levelname
+            })
+
+# Setup audit handler
+audit_handler = DatabaseAuditHandler()
+mssql_logging.logger.addHandler(audit_handler)
+mssql_logging.setLevel(mssql_logging.FINE)
+
+# Use the driver
+conn = mssql_python.connect("Server=localhost;Database=test")
+cursor = conn.cursor()
+cursor.execute("SELECT * FROM users")
+cursor.execute("SELECT * FROM orders")
+conn.close()
+
+# Access audit data
+print(f"Total queries executed: {len(audit_handler.queries)}")
+print(f"Total connections: {len(audit_handler.connections)}")
+for query in audit_handler.queries:
+    print(f"  - {query['query']}")
+```
 
 ## Common Patterns
 
 ### Development Setup
 
 ```python
-from mssql_python import logger, FINEST
-import logging
+from mssql_python import logging
 
-# Console logging with full details
-logger.setLevel(FINEST)
-console = logging.StreamHandler()
-console.setLevel(FINEST)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-console.setFormatter(formatter)
-logger.addHandler(console)
+# Both console and file with full details
+logging.setLevel(logging.FINEST, logging.BOTH)
+
+# Use the driver - see everything in console and file
+conn = mssql_python.connect("Server=localhost;Database=test")
 ```
 
 ### Production Setup
 
 ```python
-from mssql_python import logger, FINE
-import logging
+from mssql_python import logging
 
-# File logging with rotation, only warnings/errors to console
-logger.setLevel(FINE)
+# File logging only (default), standard detail level
+logging.setLevel(logging.FINE)
 
-# File: detailed logs
-logger.enable_file_logging(
-    log_dir='/var/log/myapp',
-    log_level=FINE,
-    max_bytes=100*1024*1024,  # 100MB
-    backup_count=10
-)
-
-# Console: only warnings and above
-console = logging.StreamHandler()
-console.setLevel(logging.WARNING)
-formatter = logging.Formatter('%(levelname)s - %(message)s')
-console.setFormatter(formatter)
-logger.addHandler(console)
+# Or disable logging entirely for production
+logging.setLevel(logging.CRITICAL)  # Effectively OFF
 ```
 
-### Testing Setup
+### CI/CD Pipeline Setup
 
 ```python
-from mssql_python import logger, FINEST
-import logging
+from mssql_python import logging
 
-# Capture all logs for test assertions
-logger.setLevel(FINEST)
+# Stdout only (captured by CI system, no files)
+logging.setLevel(logging.FINE, logging.STDOUT)
 
-# Memory handler for test assertions
-class TestLogHandler(logging.Handler):
-    def __init__(self):
-        super().__init__()
-        self.logs = []
-    
-    def emit(self, record):
-        self.logs.append(self.format(record))
-    
-    def reset(self):
-        self.logs = []
-
-test_handler = TestLogHandler()
-logger.addHandler(test_handler)
-
-# Run tests, then assert on test_handler.logs
+# CI will capture all driver logs
+conn = mssql_python.connect(connection_string)
 ```
 
 ### Debugging Specific Issues
 
 ```python
-from mssql_python import logger, FINEST, FINER, FINE
+from mssql_python import logging
 
 # Debug connection issues: use FINER to see connection parameters
-logger.setLevel(FINER)
+logging.setLevel(logging.FINER)
 
 # Debug SQL execution: use FINE to see SQL statements
-logger.setLevel(FINE)
+logging.setLevel(logging.FINE)
 
 # Debug parameter binding: use FINER to see parameters
-logger.setLevel(FINER)
+logging.setLevel(logging.FINER)
 
 # Debug internal operations: use FINEST to see everything
-logger.setLevel(FINEST)
+logging.setLevel(logging.FINEST)
+```
+
+### Integrate with Application Logging
+
+```python
+import logging as py_logging
+from mssql_python import logging as mssql_logging
+
+# Setup your application logger
+app_logger = py_logging.getLogger('myapp')
+app_logger.setLevel(py_logging.INFO)
+
+# Setup handler
+handler = py_logging.StreamHandler()
+handler.setFormatter(py_logging.Formatter('%(name)s - %(message)s'))
+app_logger.addHandler(handler)
+
+# Plug driver logger into your handler
+mssql_logging.logger.addHandler(handler)
+mssql_logging.setLevel(mssql_logging.FINE)
+
+# Both logs go to same destination
+app_logger.info("App started")
+conn = mssql_python.connect("Server=localhost;Database=test")
+app_logger.info("Database connected")
 ```
 
 ## Troubleshooting
@@ -499,55 +662,75 @@ logger.setLevel(FINEST)
 ### No Log Output
 
 ```python
-from mssql_python import logger
-import logging
+from mssql_python import logging
 
-# Check if logger has handlers
-print(f"Handlers: {logger.handlers}")
+# Check if logging is enabled
+print(f"Current level: {logging.getLevel()}")
+print(f"Is FINE enabled? {logging.isEnabledFor(logging.FINE)}")
 
-# Check current level
-print(f"Level: {logger.level}")
-
-# Add a handler if none exist
-if not logger.handlers:
-    console = logging.StreamHandler()
-    console.setLevel(logging.DEBUG)
-    logger.addHandler(console)
-    logger.setLevel(logging.DEBUG)
+# Make sure you called setLevel
+logging.setLevel(logging.FINE, logging.STDOUT)  # Force stdout output
 ```
 
 ### Too Much Output
 
 ```python
-# Reduce logging level
-logger.setLevel('WARNING')  # Only warnings and above
+from mssql_python import logging
 
-# Or use INFO for important events only
-logger.setLevel('INFO')
+# Reduce logging level
+logging.setLevel(logging.ERROR)  # Only errors
+logging.setLevel(logging.CRITICAL)  # Effectively OFF
 ```
 
-### Check Handler Configuration
+### Where is the Log File?
 
 ```python
-from mssql_python import logger
+from mssql_python import logging
 
-for handler in logger.handlers:
-    print(f"Handler: {handler.__class__.__name__}")
-    print(f"  Level: {handler.level}")
-    print(f"  Formatter: {handler.formatter}")
+# Enable logging first
+logging.setLevel(logging.FINE)
+
+# Then check location
+print(f"Log file: {logging.logger.log_file}")
+# Output: ./mssql_python_trace_20251103_101522_12345.log
+```
+
+### Logs Not Showing in CI/CD
+
+```python
+# Use STDOUT for CI/CD systems
+from mssql_python import logging
+
+logging.setLevel(logging.FINE, logging.STDOUT)
+# Now logs go to stdout and CI can capture them
 ```
 
 ## Best Practices
 
 1. **Set Level Early**: Configure logging before creating connections
+   ```python
+   logging.setLevel(logging.FINE)  # Do this first
+   conn = mssql_python.connect(...)  # Then connect
+   ```
+
 2. **Use Appropriate Levels**: 
-   - Production: `WARNING` or `INFO`
-   - Development: `FINE` or `FINER`
-   - Deep debugging: `FINEST`
-3. **Rotate Log Files**: Always use rotation in production to prevent disk space issues
-4. **Sanitization is Automatic**: Passwords are automatically redacted, but review logs before sharing
-5. **Trace IDs**: Use trace IDs to correlate related log entries
-6. **One Logger**: The logger is a singleton; configure once at application startup
+   - **Production**: `logging.CRITICAL` (effectively OFF) or `logging.ERROR`
+   - **Troubleshooting**: `logging.FINE` (standard diagnostics)
+   - **Deep debugging**: `logging.FINER` or `logging.FINEST`
+
+3. **Choose Right Output Destination**:
+   - **Development**: `logging.BOTH` (see logs immediately + keep file)
+   - **Production**: Default file logging
+   - **CI/CD**: `logging.STDOUT` (no file clutter)
+
+4. **Log Files Auto-Rotate**: Files automatically rotate at 512MB, keeps 5 backups
+
+5. **Sanitization is Automatic**: Passwords are automatically redacted in logs
+
+6. **One-Line Setup**: The new API is designed for simplicity:
+   ```python
+   logging.setLevel(logging.FINE, logging.STDOUT)  # That's it!
+   ```
 
 ## Examples
 
@@ -558,39 +741,24 @@ for handler in logger.handlers:
 """Example application with comprehensive logging."""
 
 import sys
-import logging
-from mssql_python import logger, FINE, connect
+import mssql_python
+from mssql_python import logging
 
-def setup_logging(verbose: bool = False):
-    """Configure logging for the application."""
-    level = FINE if verbose else logging.INFO
-    logger.setLevel(level)
+def main(verbose: bool = False):
+    """Run the application with optional verbose logging."""
     
-    # Console output
-    console = logging.StreamHandler(sys.stdout)
-    console.setLevel(level)
-    formatter = logging.Formatter(
-        '%(asctime)s [%(trace_id)s] - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    console.setFormatter(formatter)
-    logger.addHandler(console)
+    # Setup logging based on verbosity
+    if verbose:
+        # Development: both file and console, detailed
+        logging.setLevel(logging.FINEST, logging.BOTH)
+    else:
+        # Production: file only, standard detail
+        logging.setLevel(logging.FINE)
     
-    # File output with rotation
-    log_file = logger.enable_file_logging(
-        log_dir='./logs',
-        log_level=FINE,  # Always detailed in files
-        max_bytes=50*1024*1024,
-        backup_count=10
-    )
-    print(f"Logging to: {log_file}")
-
-def main():
-    # Setup logging (verbose mode)
-    setup_logging(verbose=True)
+    print(f"Logging to: {logging.logger.log_file}")
     
     # Connect to database
-    conn = connect(
+    conn = mssql_python.connect(
         server='localhost',
         database='testdb',
         trusted_connection='yes'
@@ -609,25 +777,73 @@ def main():
     conn.close()
 
 if __name__ == '__main__':
-    main()
+    import sys
+    verbose = '--verbose' in sys.argv
+    main(verbose=verbose)
 ```
 
 ## Performance Considerations
 
-- **Level Checking**: Logging checks are very fast when level is disabled
-- **String Formatting**: Use `%` formatting in log calls for lazy evaluation:
+- **Zero Overhead When Disabled**: When logging is not enabled, there is virtually no performance impact
   ```python
-  # Good: String only formatted if level is enabled
-  logger.debug("Processing %d items", count)
+  # Logging disabled by default - no overhead
+  conn = mssql_python.connect(...)  # No logging cost
   
-  # Bad: String formatted even if level is disabled
-  logger.debug(f"Processing {count} items")
+  # Enable only when needed
+  logging.setLevel(logging.FINE)  # Now logging has ~2-5% overhead
   ```
+
+- **Lazy Initialization**: Handlers are only created when `setLevel()` is called
+
 - **File I/O**: File logging has minimal overhead with buffering
-- **Rotation**: Automatic rotation prevents performance degradation from large files
+
+- **Automatic Rotation**: Files rotate at 512MB to prevent disk space issues and maintain performance
+
+## Design Philosophy
+
+The logging API is designed to match Python's standard library patterns:
+
+### Pythonic Module Pattern
+
+```python
+# Just like Python's logging module
+import logging
+logging.info("message")
+logging.DEBUG
+
+# mssql-python follows the same pattern
+from mssql_python import logging
+logging.setLevel(logging.FINE)
+logging.FINE
+```
+
+### Flat Namespace
+
+Constants are at the module level, not nested in classes:
+
+```python
+# ✅ Good (flat, Pythonic)
+logging.FINE
+logging.STDOUT
+logging.BOTH
+
+# ❌ Not used (nested, verbose)
+logging.OutputMode.STDOUT  # We don't do this
+logging.LogLevel.FINE      # We don't do this
+```
+
+This follows the [Zen of Python](https://www.python.org/dev/peps/pep-0020/): "Flat is better than nested."
+
+### Minimal API Surface
+
+Most users only need one line:
+
+```python
+logging.setLevel(logging.FINE)  # That's it!
+```
 
 ## Support
 
 For issues or questions:
 - GitHub Issues: [microsoft/mssql-python](https://github.com/microsoft/mssql-python)
-- Documentation: See `Enhanced_Logging_Design.md` for technical details
+- Documentation: See `MSSQL-Python-Logging-Design.md` for technical details

@@ -12,6 +12,7 @@ import os
 import threading
 import datetime
 import re
+import contextvars
 from typing import Optional
 
 
@@ -20,12 +21,31 @@ from typing import Optional
 # JDBC hierarchy (most to least detailed): FINEST < FINER < FINE < INFO < WARNING < ERROR < CRITICAL
 FINEST = 5   # Ultra-detailed trace (most detailed, below DEBUG=10)
 FINER = 15   # Very detailed diagnostics (between DEBUG=10 and INFO=20)
-FINE = 25    # General diagnostics (between INFO=20 and WARNING=30)
+FINE = 18    # General diagnostics (below INFO=20, shows INFO and above)
+
+STDOUT = 'stdout'  # Log to stdout only
+FILE = 'file'      # Log to file only (default)
+BOTH = 'both'      # Log to both file and stdout
 
 # Register custom level names
 logging.addLevelName(FINEST, 'FINEST')
 logging.addLevelName(FINER, 'FINER')
 logging.addLevelName(FINE, 'FINE')
+
+# Module-level context variable for trace IDs (thread-safe, async-safe)
+_trace_id_var = contextvars.ContextVar('trace_id', default=None)
+
+
+class TraceIDFilter(logging.Filter):
+    """Filter that adds trace_id to all log records."""
+    
+    def filter(self, record):
+        """Add trace_id attribute to log record."""
+        trace_id = _trace_id_var.get()
+        record.trace_id = trace_id if trace_id else '-'
+        return True
+
+
 
 
 class MSSQLLogger:
@@ -33,10 +53,10 @@ class MSSQLLogger:
     Singleton logger for mssql_python with JDBC-style logging levels.
     
     Features:
-    - Custom levels: FINE (25), FINER (15), FINEST (5)
+    - Custom levels: FINE (18), FINER (15), FINEST (5)
     - Automatic file rotation (512MB, 5 backups)
     - Password sanitization
-    - Trace ID generation (PID_ThreadID_Counter format)
+    - Trace ID support with contextvars (automatic propagation)
     - Thread-safe operation
     - Zero overhead when disabled (level check only)
     """
@@ -65,49 +85,77 @@ class MSSQLLogger:
         self._logger.setLevel(logging.CRITICAL)  # Disabled by default
         self._logger.propagate = False  # Don't propagate to root logger
         
+        # Add trace ID filter (injects trace_id into every log record)
+        self._logger.addFilter(TraceIDFilter())
+        
         # Trace ID counter (thread-safe)
         self._trace_counter = 0
         self._trace_lock = threading.Lock()
         
-        # Setup file handler
-        self._log_file = self._setup_file_handler()
-    
-    def _setup_file_handler(self) -> str:
-        """
-        Setup rotating file handler for logging.
+        # Output mode and handlers
+        self._output_mode = FILE  # Default to file only
+        self._file_handler = None
+        self._stdout_handler = None
+        self._log_file = None
+        self._handlers_initialized = False
         
-        Returns:
-            str: Path to the log file
+        # Don't setup handlers yet - do it lazily when setLevel is called
+        # This prevents creating log files when user changes output mode before enabling logging
+    
+    def _setup_handlers(self):
+        """
+        Setup handlers based on output mode.
+        Creates file handler and/or stdout handler as needed.
         """
         # Clear any existing handlers
         if self._logger.handlers:
-            self._logger.handlers.clear()
+            for handler in self._logger.handlers[:]:
+                handler.close()
+                self._logger.removeHandler(handler)
         
-        # Create log file in current working directory (not package directory)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        pid = os.getpid()
-        log_file = os.path.join(
-            os.getcwd(),
-            f"mssql_python_trace_{timestamp}_{pid}.log"
-        )
+        self._file_handler = None
+        self._stdout_handler = None
         
-        # Create rotating file handler (512MB, 5 backups)
-        file_handler = RotatingFileHandler(
-            log_file,
-            maxBytes=512 * 1024 * 1024,  # 512MB
-            backupCount=5
-        )
-        
-        # Set formatter
+        # Create formatter (same for all handlers)
         formatter = logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
+            '%(asctime)s [%(trace_id)s] - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
         )
-        file_handler.setFormatter(formatter)
         
-        # Add handler to logger
-        self._logger.addHandler(file_handler)
+        # Setup file handler if needed
+        if self._output_mode in (FILE, BOTH):
+            # Create log file in current working directory
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            pid = os.getpid()
+            self._log_file = os.path.join(
+                os.getcwd(),
+                f"mssql_python_trace_{timestamp}_{pid}.log"
+            )
+            
+            # Create rotating file handler (512MB, 5 backups)
+            self._file_handler = RotatingFileHandler(
+                self._log_file,
+                maxBytes=512 * 1024 * 1024,  # 512MB
+                backupCount=5
+            )
+            self._file_handler.setFormatter(formatter)
+            self._logger.addHandler(self._file_handler)
+        else:
+            # No file logging - clear the log file path
+            self._log_file = None
         
-        return log_file
+        # Setup stdout handler if needed
+        if self._output_mode in (STDOUT, BOTH):
+            import sys
+            self._stdout_handler = logging.StreamHandler(sys.stdout)
+            self._stdout_handler.setFormatter(formatter)
+            self._logger.addHandler(self._stdout_handler)
+    
+    def _reconfigure_handlers(self):
+        """
+        Reconfigure handlers when output mode changes.
+        Closes existing handlers and creates new ones based on current output mode.
+        """
+        self._setup_handlers()
     
     @staticmethod
     def _sanitize_message(msg: str) -> str:
@@ -140,18 +188,20 @@ class MSSQLLogger:
         
         return sanitized
     
-    def generate_trace_id(self, prefix: str = "") -> str:
+    def generate_trace_id(self, prefix: str = "TRACE") -> str:
         """
         Generate a unique trace ID for correlating log messages.
         
-        Format: PID_ThreadID_Counter or Prefix_PID_ThreadID_Counter
-        Example: 12345_67890_1 or Connection_12345_67890_1
+        Format: PREFIX-PID-ThreadID-Counter
+        Examples: 
+            CONN-12345-67890-1
+            CURS-12345-67890-2
         
         Args:
-            prefix: Optional prefix for the trace ID (e.g., "Connection", "Cursor")
+            prefix: Prefix for the trace ID (e.g., "CONN", "CURS", "TRACE")
             
         Returns:
-            str: Unique trace ID
+            str: Unique trace ID in format PREFIX-PID-ThreadID-Counter
         """
         with self._trace_lock:
             self._trace_counter += 1
@@ -160,9 +210,44 @@ class MSSQLLogger:
         pid = os.getpid()
         thread_id = threading.get_ident()
         
-        if prefix:
-            return f"{prefix}_{pid}_{thread_id}_{counter}"
-        return f"{pid}_{thread_id}_{counter}"
+        return f"{prefix}-{pid}-{thread_id}-{counter}"
+    
+    def set_trace_id(self, trace_id: str):
+        """
+        Set the trace ID for the current context.
+        
+        This uses contextvars, so the trace ID automatically propagates to:
+        - Child threads created within this context
+        - Async tasks spawned from this context
+        - All log calls made within this context
+        
+        Args:
+            trace_id: Trace ID to set (typically from generate_trace_id())
+        
+        Example:
+            trace_id = logger.generate_trace_id("CONN")
+            logger.set_trace_id(trace_id)
+            logger.fine("Connection opened")  # Includes trace ID automatically
+        """
+        _trace_id_var.set(trace_id)
+    
+    def get_trace_id(self) -> Optional[str]:
+        """
+        Get the trace ID for the current context.
+        
+        Returns:
+            str or None: Current trace ID, or None if not set
+        """
+        return _trace_id_var.get()
+    
+    def clear_trace_id(self):
+        """
+        Clear the trace ID for the current context.
+        
+        Typically called when closing a connection/cursor to avoid
+        trace ID leaking to subsequent operations.
+        """
+        _trace_id_var.set(None)
     
     def _log(self, level: int, msg: str, *args, **kwargs):
         """
@@ -178,11 +263,15 @@ class MSSQLLogger:
         if not self._logger.isEnabledFor(level):
             return
         
+        # Format message with args if provided
+        if args:
+            msg = msg % args
+        
         # Sanitize message
         sanitized_msg = self._sanitize_message(msg)
         
-        # Log the message
-        self._logger.log(level, sanitized_msg, *args, **kwargs)
+        # Log the message (no args since already formatted)
+        self._logger.log(level, sanitized_msg, **kwargs)
     
     # Convenience methods for each level
     
@@ -224,14 +313,44 @@ class MSSQLLogger:
     
     # Level control
     
-    def setLevel(self, level: int):
+    def setLevel(self, level: int, output: Optional[str] = None):
         """
-        Set the logging level.
+        Set the logging level and optionally the output mode.
         
         Args:
             level: Logging level (FINEST, FINER, FINE, logging.INFO, etc.)
                    Use logging.CRITICAL to disable all logging
+            output: Optional output mode (FILE, STDOUT, BOTH)
+                    If not specified, defaults to FILE on first call
+        
+        Raises:
+            ValueError: If output mode is invalid
+        
+        Examples:
+            # File only (default)
+            logger.setLevel(FINE)
+            
+            # Stdout only
+            logger.setLevel(FINE, output=STDOUT)
+            
+            # Both file and stdout
+            logger.setLevel(FINE, output=BOTH)
         """
+        # Validate and set output mode if specified
+        if output is not None:
+            if output not in (FILE, STDOUT, BOTH):
+                raise ValueError(
+                    f"Invalid output mode: {output}. "
+                    f"Must be one of: {FILE}, {STDOUT}, {BOTH}"
+                )
+            self._output_mode = output
+        
+        # Setup handlers if not yet initialized or if output mode changed
+        if not self._handlers_initialized or output is not None:
+            self._setup_handlers()
+            self._handlers_initialized = True
+        
+        # Set level
         self._logger.setLevel(level)
         
         # Notify C++ bridge of level change
@@ -275,16 +394,10 @@ class MSSQLLogger:
     
     def reset_handlers(self):
         """
-        Reset/recreate file handler.
+        Reset/recreate handlers.
         Useful when log file has been deleted or needs to be recreated.
         """
-        # Close existing handlers
-        for handler in self._logger.handlers[:]:
-            handler.close()
-            self._logger.removeHandler(handler)
-        
-        # Recreate file handler
-        self._log_file = self._setup_file_handler()
+        self._setup_handlers()
     
     def _notify_cpp_level_change(self, level: int):
         """
@@ -306,8 +419,35 @@ class MSSQLLogger:
     # Properties
     
     @property
-    def log_file(self) -> str:
-        """Get the current log file path"""
+    def output(self) -> str:
+        """Get the current output mode"""
+        return self._output_mode
+    
+    @output.setter
+    def output(self, mode: str):
+        """
+        Set the output mode.
+        
+        Args:
+            mode: Output mode (FILE, STDOUT, or BOTH)
+        
+        Raises:
+            ValueError: If mode is not a valid OutputMode value
+        """
+        if mode not in (FILE, STDOUT, BOTH):
+            raise ValueError(
+                f"Invalid output mode: {mode}. "
+                f"Must be one of: {FILE}, {STDOUT}, {BOTH}"
+            )
+        self._output_mode = mode
+        
+        # Only reconfigure if handlers were already initialized
+        if self._handlers_initialized:
+            self._reconfigure_handlers()
+    
+    @property
+    def log_file(self) -> Optional[str]:
+        """Get the current log file path (None if file output is disabled)"""
         return self._log_file
     
     @property
@@ -316,8 +456,47 @@ class MSSQLLogger:
         return self._logger.level
 
 
-# Create singleton instance
+# ============================================================================
+# Module-level exports (Primary API)
+# ============================================================================
+
+# Singleton logger instance
 logger = MSSQLLogger()
+
+# Module-level convenience functions (Pythonic API)
+def setLevel(level: int, output: Optional[str] = None):
+    """
+    Set the logging level and optionally the output mode.
+    
+    This is a convenience function that delegates to logger.setLevel().
+    
+    Args:
+        level: Logging level (FINEST, FINER, FINE, logging.INFO, etc.)
+        output: Optional output mode (FILE, STDOUT, BOTH)
+    
+    Examples:
+        from mssql_python import logging
+        
+        # File only (default)
+        logging.setLevel(logging.FINE)
+        
+        # Stdout only
+        logging.setLevel(logging.FINE, logging.STDOUT)
+        
+        # Both file and stdout
+        logging.setLevel(logging.FINE, logging.BOTH)
+    """
+    logger.setLevel(level, output)
+
+
+def getLevel() -> int:
+    """Get the current logging level."""
+    return logger.getLevel()
+
+
+def isEnabledFor(level: int) -> bool:
+    """Check if a given log level is enabled."""
+    return logger.isEnabledFor(level)
 
 
 # Backward compatibility function (deprecated)

@@ -1386,10 +1386,7 @@ class Connection:
                     # This is important to ensure no partial transactions remain
                     # For autocommit True, this is not necessary as each statement is
                     # committed immediately
-                    logger.debug(
-                        "info",
-                        "Rolling back uncommitted changes before closing connection.",
-                    )
+                    logger.debug("Rolling back uncommitted changes before closing connection.")
                     self._conn.rollback()
                 # TODO: Check potential race conditions in case of multithreaded scenarios
                 # Close the connection

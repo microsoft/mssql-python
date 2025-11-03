@@ -1,15 +1,14 @@
 from mssql_python import connect
-from mssql_python import setup_logging
+from mssql_python.logging import logger
 import os
-import decimal
 
-setup_logging('stdout')
+# Clean one-liner: set level and output mode together
+# logger.setLevel(FINEST, output=OutputMode.BOTH)
+
+print(f"Logging to: {logger.log_file}")
 
 conn_str = os.getenv("DB_CONNECTION_STRING")
 conn = connect(conn_str)
-
-# conn.autocommit = True
-
 cursor = conn.cursor()
 cursor.execute("SELECT database_id, name from sys.databases;")
 rows = cursor.fetchall()
