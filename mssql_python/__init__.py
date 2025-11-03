@@ -3,8 +3,10 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 This module initializes the mssql_python package.
 """
+import sys
 import threading
 import locale
+from typing import Dict
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions

@@ -1,3 +1,6 @@
+import decimal
+from typing import Any
+
 class Row:
     """
     A row of data from a cursor fetch operation. Provides both tuple-like indexing
