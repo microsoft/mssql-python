@@ -46,7 +46,6 @@ from mssql_python.constants import ConstantsDDBC
 from conftest import is_azure_sql_connection
 
 
-
 @pytest.fixture(autouse=True)
 def clean_connection_state(db_connection):
     """Ensure connection is in a clean state before each test"""
@@ -1740,24 +1739,6 @@ def test_connection_exception_instantiation(db_connection):
         error, db_connection.Error
     ), "Should be able to create Error instance"
     assert "Test error" in str(error), "Error should contain driver error message"
-
-    interface_error = db_connection.InterfaceError(
-        "Interface error", "DDBC interface error"
-    )
-    assert isinstance(
-        interface_error, db_connection.InterfaceError
-    ), "Should be able to create InterfaceError instance"
-    assert "Interface error" in str(
-        interface_error
-    ), "InterfaceError should contain driver error message"
-
-    db_error = db_connection.DatabaseError("Database error", "DDBC database error")
-    assert isinstance(
-        db_error, db_connection.DatabaseError
-    ), "Should be able to create DatabaseError instance"
-    assert "Database error" in str(
-        db_error
-    ), "DatabaseError should contain driver error message"
 
     interface_error = db_connection.InterfaceError(
         "Interface error", "DDBC interface error"
