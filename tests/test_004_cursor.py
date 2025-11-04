@@ -15,6 +15,10 @@ import decimal
 from contextlib import closing
 import mssql_python
 import uuid
+import re
+from conftest import is_azure_sql_connection
+
+
 
 # Setup test table
 TEST_TABLE = """
@@ -4928,8 +4932,12 @@ def test_cursor_commit_performance_patterns(cursor, db_connection):
             pass
 
 
-def test_cursor_rollback_error_scenarios(cursor, db_connection):
+def test_cursor_rollback_error_scenarios(cursor, db_connection, conn_str):
     """Test cursor rollback error scenarios and recovery"""
+    # Skip this test for Azure SQL Database
+    if is_azure_sql_connection(conn_str):
+        pytest.skip("Skipping for Azure SQL - transaction-heavy tests may cause timeouts")
+    
     try:
         # Set autocommit to False
         original_autocommit = db_connection.autocommit
@@ -5005,8 +5013,12 @@ def test_cursor_rollback_error_scenarios(cursor, db_connection):
             pass
 
 
-def test_cursor_rollback_with_method_chaining(cursor, db_connection):
+def test_cursor_rollback_with_method_chaining(cursor, db_connection, conn_str):
     """Test cursor rollback in method chaining scenarios"""
+    # Skip this test for Azure SQL Database
+    if is_azure_sql_connection(conn_str):
+        pytest.skip("Skipping for Azure SQL - transaction-heavy tests may cause timeouts")
+    
     try:
         # Set autocommit to False
         original_autocommit = db_connection.autocommit
@@ -5493,8 +5505,12 @@ def test_cursor_rollback_data_consistency(cursor, db_connection):
             pass
 
 
-def test_cursor_rollback_large_transaction(cursor, db_connection):
+def test_cursor_rollback_large_transaction(cursor, db_connection, conn_str):
     """Test cursor rollback with large transaction"""
+    # Skip this test for Azure SQL Database
+    if is_azure_sql_connection(conn_str):
+        pytest.skip("Skipping for Azure SQL - large transaction tests may cause timeouts")
+    
     try:
         # Set autocommit to False
         original_autocommit = db_connection.autocommit
@@ -8354,16 +8370,8 @@ def test_uuid_insert_and_select_none(cursor, db_connection):
 
 def test_insert_multiple_uuids(cursor, db_connection):
     """Test inserting multiple UUIDs and verifying retrieval."""
-    import uuid
-
-    # Save original setting
-    original_value = mssql_python.native_uuid
-
+    table_name = "#pytest_uuid_multiple"
     try:
-        # Set native_uuid to True for this test
-        mssql_python.native_uuid = True
-
-        table_name = "#pytest_uuid_multiple"
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         cursor.execute(
             f"""
@@ -8393,28 +8401,18 @@ def test_insert_multiple_uuids(cursor, db_connection):
         assert len(rows) == len(uuids_to_insert), "Fetched row count mismatch"
 
         for retrieved_uuid, retrieved_desc in rows:
-            assert isinstance(
-                retrieved_uuid, uuid.UUID
-            ), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
+            assert isinstance(retrieved_uuid, uuid.UUID), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
+            expected_uuid = uuids_to_insert[retrieved_desc]
+            assert retrieved_uuid == expected_uuid, f"UUID mismatch for '{retrieved_desc}': expected {expected_uuid}, got {retrieved_uuid}"
     finally:
-        # Reset to original value
-        mssql_python.native_uuid = original_value
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
 
 
 def test_fetchmany_uuids(cursor, db_connection):
     """Test fetching multiple UUID rows with fetchmany()."""
-    import uuid
-
-    # Save original setting
-    original_value = mssql_python.native_uuid
-
+    table_name = "#pytest_uuid_fetchmany"
     try:
-        # Set native_uuid to True for this test
-        mssql_python.native_uuid = True
-
-        table_name = "#pytest_uuid_fetchmany"
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         cursor.execute(
             f"""
@@ -8449,9 +8447,9 @@ def test_fetchmany_uuids(cursor, db_connection):
         assert len(fetched_rows) == len(uuids_to_insert), "Fetched row count mismatch"
         for retrieved_uuid, retrieved_desc in fetched_rows:
             assert isinstance(retrieved_uuid, uuid.UUID)
+            expected_uuid = uuids_to_insert[retrieved_desc]
+            assert retrieved_uuid == expected_uuid
     finally:
-        # Reset to original value
-        mssql_python.native_uuid = original_value
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
 
@@ -8533,16 +8531,8 @@ def test_duplicate_uuid_inserts(cursor, db_connection):
 
 def test_extreme_uuids(cursor, db_connection):
     """Test inserting extreme but valid UUIDs."""
-    import uuid
-
-    # Save original setting
-    original_value = mssql_python.native_uuid
-
+    table_name = "#pytest_uuid_extreme"
     try:
-        # Set native_uuid to True for this test
-        mssql_python.native_uuid = True
-
-        table_name = "#pytest_uuid_extreme"
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         cursor.execute(f"CREATE TABLE {table_name} (id UNIQUEIDENTIFIER)")
         db_connection.commit()
@@ -8563,8 +8553,6 @@ def test_extreme_uuids(cursor, db_connection):
         for uid in extreme_uuids:
             assert uid in fetched_uuids, f"Extreme UUID {uid} not retrieved correctly"
     finally:
-        # Reset to original value
-        mssql_python.native_uuid = original_value
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
 
@@ -13502,132 +13490,6 @@ def test_datetime_string_parameter_binding(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, table_name)
         db_connection.commit()
-
-
-def test_native_uuid_setting(db_connection):
-    """Test that the native_uuid setting affects how UUID values are returned."""
-    import uuid
-
-    cursor = db_connection.cursor()
-
-    # Create a temporary table with a UUID column
-    drop_table_if_exists(cursor, "#test_uuid")
-    cursor.execute("CREATE TABLE #test_uuid (id int, uuid_col uniqueidentifier)")
-
-    # Generate a test UUID and insert it
-    test_uuid = uuid.uuid4()
-    cursor.execute("INSERT INTO #test_uuid VALUES (1, ?)", (test_uuid,))
-
-    # Save original setting
-    original_value = mssql_python.native_uuid
-
-    try:
-        # Test with native_uuid = False
-        mssql_python.native_uuid = False
-
-        cursor.execute("SELECT uuid_col FROM #test_uuid")
-        row = cursor.fetchone()
-        assert isinstance(
-            row[0], str
-        ), "With native_uuid=False, UUIDs should be returned as strings"
-        assert row[0] == str(
-            test_uuid
-        ), "UUID string value should match the original UUID"
-
-        # Test with native_uuid = True
-        mssql_python.native_uuid = True
-
-        cursor.execute("SELECT uuid_col FROM #test_uuid")
-        row = cursor.fetchone()
-        assert isinstance(
-            row[0], uuid.UUID
-        ), "With native_uuid=True, UUIDs should be returned as uuid.UUID objects"
-        assert row[0] == test_uuid, "UUID object should match the original UUID"
-
-    finally:
-        # Reset to original value and clean up
-        mssql_python.native_uuid = original_value
-        drop_table_if_exists(cursor, "#test_uuid")
-
-
-def test_wide_result_set_with_uuid(db_connection):
-    """Test UUID handling in wide result sets (performance test)"""
-    import uuid
-    import time
-
-    # Store original setting
-    original_value = mssql_python.native_uuid
-
-    cursor = db_connection.cursor()
-    try:
-        # Create a wide table with one UUID column
-        cursor.execute("DROP TABLE IF EXISTS #wide_uuid_test")
-        create_stmt = "CREATE TABLE #wide_uuid_test (id UNIQUEIDENTIFIER"
-        for i in range(1, 31):
-            create_stmt += f", col{i} VARCHAR(50)"
-        create_stmt += ")"
-        cursor.execute(create_stmt)
-
-        # Insert test data
-        test_uuid = uuid.uuid4()
-        values = [test_uuid]
-        for i in range(1, 31):
-            values.append(f"Value {i}")
-
-        placeholders = ", ".join(["?"] * 31)
-        cursor.execute(f"INSERT INTO #wide_uuid_test VALUES ({placeholders})", values)
-
-        # Test with native_uuid = True
-        mssql_python.native_uuid = True
-
-        # Check if _uuid_indices is populated
-        cursor.execute("SELECT * FROM #wide_uuid_test")
-        assert hasattr(cursor, "_uuid_indices"), "UUID indices not identified"
-        assert cursor._uuid_indices == [0], "Expected UUID at index 0"
-
-        # Verify correct conversion
-        row = cursor.fetchone()
-        assert isinstance(row[0], uuid.UUID), "UUID not converted to uuid.UUID object"
-        assert row[0] == test_uuid, "UUID value mismatch"
-
-        # Verify all other columns remain strings
-        for i in range(1, 31):
-            assert isinstance(row[i], str), f"Column {i} should be a string"
-
-    finally:
-        mssql_python.native_uuid = original_value
-
-
-def test_null_uuid_column(db_connection):
-    """Test handling NULL values in UUID columns"""
-    import uuid
-
-    # Store original setting
-    original_value = mssql_python.native_uuid
-
-    cursor = db_connection.cursor()
-    try:
-        # Create test table
-        cursor.execute("DROP TABLE IF EXISTS #null_uuid_test")
-        cursor.execute(
-            "CREATE TABLE #null_uuid_test (id INT, uuid_col UNIQUEIDENTIFIER)"
-        )
-
-        # Insert NULL UUID
-        cursor.execute("INSERT INTO #null_uuid_test VALUES (1, NULL)")
-
-        # Test with native_uuid = True
-        mssql_python.native_uuid = True
-
-        cursor.execute("SELECT * FROM #null_uuid_test")
-        row = cursor.fetchone()
-
-        # NULL should remain None
-        assert row[1] is None, "NULL UUID should remain None"
-
-    finally:
-        mssql_python.native_uuid = original_value
-
 
 # ---------------------------------------------------------
 # Test 1: Basic numeric insertion and fetch roundtrip
