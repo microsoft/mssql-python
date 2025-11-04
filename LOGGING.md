@@ -26,7 +26,7 @@ logging.setLevel(logging.FINE)
 
 # Use the driver - all operations are now logged
 conn = mssql_python.connect("Server=localhost;Database=test")
-# Check the log file: mssql_python_trace_*.log
+# Check the log file: ./mssql_python_logs/mssql_python_trace_*.log
 ```
 
 ### With More Control
@@ -166,7 +166,8 @@ from mssql_python import logging
 logging.setLevel(logging.FINE)
 
 # Files are automatically rotated at 512MB, keeps 5 backups
-# File location: ./mssql_python_trace_YYYYMMDD_HHMMSS_PID.log
+# File location: ./mssql_python_logs/mssql_python_trace_YYYYMMDD_HHMMSS_PID.log
+# (mssql_python_logs folder is created automatically if it doesn't exist)
 
 conn = mssql_python.connect(server='localhost', database='testdb')
 print(f"Logging to: {logging.logger.log_file}")
@@ -730,7 +731,7 @@ logging.setLevel(logging.FINE)
 
 # Then check location
 print(f"Log file: {logging.logger.log_file}")
-# Output: ./mssql_python_trace_20251103_101522_12345.log
+# Output: ./mssql_python_logs/mssql_python_trace_20251103_101522_12345.log
 ```
 
 ### Logs Not Showing in CI/CD

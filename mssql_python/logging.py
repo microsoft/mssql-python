@@ -127,12 +127,20 @@ class MSSQLLogger:
             # Use custom path or auto-generate
             if self._custom_log_path:
                 self._log_file = self._custom_log_path
+                # Ensure directory exists for custom path
+                log_dir = os.path.dirname(self._custom_log_path)
+                if log_dir and not os.path.exists(log_dir):
+                    os.makedirs(log_dir, exist_ok=True)
             else:
-                # Create log file in current working directory
+                # Create log file in mssql_python_logs folder
+                log_dir = os.path.join(os.getcwd(), "mssql_python_logs")
+                if not os.path.exists(log_dir):
+                    os.makedirs(log_dir, exist_ok=True)
+                
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 pid = os.getpid()
                 self._log_file = os.path.join(
-                    os.getcwd(),
+                    log_dir,
                     f"mssql_python_trace_{timestamp}_{pid}.log"
                 )
             
@@ -329,7 +337,7 @@ class MSSQLLogger:
                     If not specified, defaults to FILE on first call
             log_file_path: Optional custom path for log file. If not specified,
                           auto-generates: mssql_python_trace_{timestamp}_{pid}.log
-                          in current working directory
+                          in mssql_python_logs folder (created if doesn't exist)
         
         Raises:
             ValueError: If output mode is invalid
@@ -496,7 +504,7 @@ def setLevel(level: int, output: Optional[str] = None, log_file_path: Optional[s
     Examples:
         from mssql_python import logging
         
-        # File only (default, auto-generated path)
+        # File only (default, in mssql_python_logs folder)
         logging.setLevel(logging.FINE)
         
         # Stdout only

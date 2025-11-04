@@ -149,7 +149,7 @@ This document describes a **simplified, high-performance logging system** for ms
 ┌────────────────────────────────────────────────────────────────┐
 │                          LOG FILE                              │
 │                                                                │
-│  mssql_python_trace_20251031_143022_12345.log                  │
+│ mssql_python_logs/mssql_python_trace_20251031_143022_12345.log │
 │                                                                │
 │  2025-10-31 14:30:22,145 - FINE - connection.py:42 -           │
 │      [Python] Connecting to server: localhost                  │
@@ -226,9 +226,9 @@ BOTH = 'both'      # Log to both file and stdout
 - Higher number = higher priority (standard convention)
 
 **File Handler Configuration**
-- **Location**: Current working directory by default (or custom path if specified)
+- **Location**: `./mssql_python_logs/` folder (created automatically if doesn't exist)
 - **Naming**: `mssql_python_trace_YYYYMMDD_HHMMSS_PID.log` (auto-generated)
-- **Custom Path**: Users can specify via `log_file_path` parameter
+- **Custom Path**: Users can specify via `log_file_path` parameter (creates parent directories if needed)
 - **Rotation**: 512MB max, 5 backup files
 - **Format**: `%(asctime)s [%(trace_id)s] - %(levelname)s - %(filename)s:%(lineno)d - %(message)s`
 
