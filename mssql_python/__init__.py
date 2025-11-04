@@ -4,105 +4,14 @@ Licensed under the MIT license.
 This module initializes the mssql_python package.
 """
 import sys
-import threading
-import locale
+import types
 from typing import Dict
+
+# Import settings from helpers to avoid circular imports
+from .helpers import Settings, get_settings, _settings, _settings_lock
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
-
-# GLOBALS
-# Read-Only
-apilevel = "2.0"
-paramstyle = "qmark"
-threadsafety = 1
-
-# Initialize the locale setting only once at module import time
-# This avoids thread-safety issues with locale
-_DEFAULT_DECIMAL_SEPARATOR = "."
-try:
-    # Get the locale setting once during module initialization
-    _locale_separator = locale.localeconv()['decimal_point']
-    if _locale_separator and len(_locale_separator) == 1:
-        _DEFAULT_DECIMAL_SEPARATOR = _locale_separator
-except (AttributeError, KeyError, TypeError, ValueError):
-    pass  # Keep the default "." if locale access fails
-
-class Settings:
-    def __init__(self):
-        self.lowercase = False
-        # Use the pre-determined separator - no locale access here
-        self.decimal_separator = _DEFAULT_DECIMAL_SEPARATOR
-
-# Global settings instance
-_settings = Settings()
-_settings_lock = threading.Lock()
-
-def get_settings():
-    """Return the global settings object"""
-    with _settings_lock:
-        _settings.lowercase = lowercase
-        return _settings
-
-lowercase = _settings.lowercase  # Default is False
-
-# Set the initial decimal separator in C++
-from .ddbc_bindings import DDBCSetDecimalSeparator
-DDBCSetDecimalSeparator(_settings.decimal_separator)
-
-# New functions for decimal separator control
-def setDecimalSeparator(separator):
-    """
-    Sets the decimal separator character used when parsing NUMERIC/DECIMAL values 
-    from the database, e.g. the "." in "1,234.56".
-    
-    The default is to use the current locale's "decimal_point" value when the module
-    was first imported, or "." if the locale is not available. This function overrides 
-    the default.
-    
-    Args:
-        separator (str): The character to use as decimal separator
-        
-    Raises:
-        ValueError: If the separator is not a single character string
-    """
-    # Type validation
-    if not isinstance(separator, str):
-        raise ValueError("Decimal separator must be a string")
-    
-    # Length validation
-    if len(separator) == 0:
-        raise ValueError("Decimal separator cannot be empty")
-        
-    if len(separator) > 1:
-        raise ValueError("Decimal separator must be a single character")
-    
-    # Character validation
-    if separator.isspace():
-        raise ValueError("Whitespace characters are not allowed as decimal separators")
-        
-    # Check for specific disallowed characters
-    if separator in ['\t', '\n', '\r', '\v', '\f']:
-        raise ValueError(f"Control character '{repr(separator)}' is not allowed as a decimal separator")
-    
-    # Set in Python side settings
-    _settings.decimal_separator = separator
-    
-    # Update the C++ side
-    from .ddbc_bindings import DDBCSetDecimalSeparator
-    DDBCSetDecimalSeparator(separator)
-
-def getDecimalSeparator():
-    """
-    Returns the decimal separator character used when parsing NUMERIC/DECIMAL values
-    from the database.
-    
-    Returns:
-        str: The current decimal separator character
-    """
-    return _settings.decimal_separator
-
-# Import necessary modules
 from .exceptions import (
     Warning,
     Error,
@@ -264,21 +173,7 @@ def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) 
     else:
         PoolingManager.enable(max_size, idle_timeout)
 
-
 _original_module_setattr = sys.modules[__name__].__setattr__
-
-def _custom_setattr(name, value):
-    if name == 'lowercase':
-        with _settings_lock:
-            _settings.lowercase = bool(value)
-            # Update the module's lowercase variable
-            _original_module_setattr(name, _settings.lowercase)
-    else:
-        _original_module_setattr(name, value)
-
-# Replace the module's __setattr__ with our custom version
-sys.modules[__name__].__setattr__ = _custom_setattr
-
 
 # Export SQL constants at module level
 SQL_VARCHAR: int = ConstantsDDBC.SQL_VARCHAR.value
@@ -353,3 +248,37 @@ def get_info_constants() -> Dict[str, int]:
         dict: Dictionary mapping constant names to their integer values
     """
     return {name: member.value for name, member in GetInfoConstants.__members__.items()}
+
+# Create a custom module class that uses properties instead of __setattr__
+class _MSSQLModule(types.ModuleType):
+    @property
+    def lowercase(self) -> bool:
+        """Get the lowercase setting."""
+        return _settings.lowercase
+
+    @lowercase.setter
+    def lowercase(self, value: bool) -> None:
+        """Set the lowercase setting."""
+        if not isinstance(value, bool):
+            raise ValueError("lowercase must be a boolean value")
+        with _settings_lock:
+            _settings.lowercase = value
+
+
+# Replace the current module with our custom module class
+old_module: types.ModuleType = sys.modules[__name__]
+new_module: _MSSQLModule = _MSSQLModule(__name__)
+
+# Copy all existing attributes to the new module
+for attr_name in dir(old_module):
+    if attr_name != "__class__":
+        try:
+            setattr(new_module, attr_name, getattr(old_module, attr_name))
+        except AttributeError:
+            pass
+
+# Replace the module in sys.modules
+sys.modules[__name__] = new_module
+
+# Initialize property values
+lowercase: bool = _settings.lowercase

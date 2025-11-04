@@ -1,5 +1,12 @@
+"""
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+This module contains the Row class, which represents a single row of data 
+from a cursor fetch operation.
+"""
 import decimal
 from typing import Any
+from mssql_python.helpers import get_settings
 
 class Row:
     """
@@ -44,6 +51,7 @@ class Row:
         Args:
             values: Raw values from the database
             cursor: Cursor object with connection and description
+
 
         Returns:
             List of converted values

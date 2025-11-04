@@ -208,62 +208,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             except ValueError:
                 continue
         return None
-    
-    # def _get_numeric_data(self, param):
-    #     """
-    #     Get the data for a numeric parameter.
 
-    #     Args:
-    #         param: The numeric parameter.
-
-    #     Returns:
-    #         numeric_data: A NumericData struct containing 
-    #         the numeric data.
-    #     """
-    #     decimal_as_tuple = param.as_tuple()
-    #     num_digits = len(decimal_as_tuple.digits)
-    #     exponent = decimal_as_tuple.exponent
-
-    #     # Calculate the SQL precision & scale
-    #     #   precision = no. of significant digits
-    #     #   scale     = no. digits after decimal point
-    #     if exponent >= 0:
-    #         # digits=314, exp=2 ---> '31400' --> precision=5, scale=0
-    #         precision = num_digits + exponent
-    #         scale = 0
-    #     elif (-1 * exponent) <= num_digits:
-    #         # digits=3140, exp=-3 ---> '3.140' --> precision=4, scale=3
-    #         precision = num_digits
-    #         scale = exponent * -1
-    #     else:
-    #         # digits=3140, exp=-5 ---> '0.03140' --> precision=5, scale=5
-    #         # TODO: double check the precision calculation here with SQL documentation
-    #         precision = exponent * -1
-    #         scale = exponent * -1
-
-    #     # TODO: Revisit this check, do we want this restriction?
-    #     if precision > 15:
-    #         raise ValueError(
-    #             "Precision of the numeric value is too high - "
-    #             + str(param)
-    #             + ". Should be less than or equal to 15"
-    #         )
-    #     Numeric_Data = ddbc_bindings.NumericData
-    #     numeric_data = Numeric_Data()
-    #     numeric_data.scale = scale
-    #     numeric_data.precision = precision
-    #     numeric_data.sign = 1 if decimal_as_tuple.sign == 0 else 0
-    #     # strip decimal point from param & convert the significant digits to integer
-    #     # Ex: 12.34 ---> 1234
-    #     val = str(param)
-    #     if "." in val or "-" in val:
-    #         val = val.replace(".", "")
-    #         val = val.replace("-", "")
-    #     val = int(val)
-    #     numeric_data.val = val
-    #     return numeric_data
-
-    def _get_numeric_data(self, param):
+    def _get_numeric_data(self, param: decimal.Decimal) -> Any:
         """
         Get the data for a numeric parameter.
 
@@ -1206,7 +1152,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         except Exception as e:  # pylint: disable=broad-exception-caught
             # If describe fails, it's likely there are no results (e.g., for INSERT)
             self.description = None
-        
+
         # Reset rownumber for new result set (only for SELECT statements)
         if self.description:  # If we have column descriptions, it's likely a SELECT
             
@@ -1229,7 +1175,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         except Exception as e:
             # If describe fails, it's likely there are no results (e.g., for INSERT)
             self.description = None
-        
+
         self._reset_inputsizes()  # Reset input sizes after execution
         # Return self for method chaining
         return self
@@ -2523,3 +2469,4 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             are managed automatically by the underlying driver.
         """
         # This is a no-op - buffer sizes are managed automatically
+

@@ -15,6 +15,9 @@ import decimal
 from contextlib import closing
 import mssql_python
 import uuid
+import re
+from conftest import is_azure_sql_connection
+
 
 
 # Setup test table
@@ -4929,8 +4932,12 @@ def test_cursor_commit_performance_patterns(cursor, db_connection):
             pass
 
 
-def test_cursor_rollback_error_scenarios(cursor, db_connection):
+def test_cursor_rollback_error_scenarios(cursor, db_connection, conn_str):
     """Test cursor rollback error scenarios and recovery"""
+    # Skip this test for Azure SQL Database
+    if is_azure_sql_connection(conn_str):
+        pytest.skip("Skipping for Azure SQL - transaction-heavy tests may cause timeouts")
+    
     try:
         # Set autocommit to False
         original_autocommit = db_connection.autocommit
@@ -5006,8 +5013,12 @@ def test_cursor_rollback_error_scenarios(cursor, db_connection):
             pass
 
 
-def test_cursor_rollback_with_method_chaining(cursor, db_connection):
+def test_cursor_rollback_with_method_chaining(cursor, db_connection, conn_str):
     """Test cursor rollback in method chaining scenarios"""
+    # Skip this test for Azure SQL Database
+    if is_azure_sql_connection(conn_str):
+        pytest.skip("Skipping for Azure SQL - transaction-heavy tests may cause timeouts")
+    
     try:
         # Set autocommit to False
         original_autocommit = db_connection.autocommit
@@ -5494,8 +5505,12 @@ def test_cursor_rollback_data_consistency(cursor, db_connection):
             pass
 
 
-def test_cursor_rollback_large_transaction(cursor, db_connection):
+def test_cursor_rollback_large_transaction(cursor, db_connection, conn_str):
     """Test cursor rollback with large transaction"""
+    # Skip this test for Azure SQL Database
+    if is_azure_sql_connection(conn_str):
+        pytest.skip("Skipping for Azure SQL - large transaction tests may cause timeouts")
+    
     try:
         # Set autocommit to False
         original_autocommit = db_connection.autocommit
@@ -5577,6 +5592,7 @@ def _drop_if_exists_scroll(cursor, name):
         cursor.commit()
     except Exception:
         pass
+
 
 def test_cursor_skip_past_end(cursor, db_connection):
     """Test skip past end of result set"""
@@ -14036,19 +14052,6 @@ def test_foreignkeys_parameter_validation(cursor):
         cursor.foreignKeys(table=None, foreignTable=None)
 
 
-# def test_scroll_absolute_end_of_result_set(cursor):
-#     """Test scroll absolute to end of result set (Lines 2269-2277)."""
-
-#     # Create a small result set
-#     cursor.execute("SELECT 1 UNION SELECT 2 UNION SELECT 3")
-
-#     # Try to scroll to a position beyond the result set
-#     with pytest.raises(
-#         IndexError, match="Cannot scroll to position.*end of result set reached"
-#     ):
-#         cursor.scroll(100, mode="absolute")
-
-
 def test_tables_error_handling(cursor):
     """Test tables method error handling (Lines 2396-2404)."""
 
@@ -14225,6 +14228,7 @@ def test_row_uuid_processing_sql_guid_type(cursor, db_connection):
         drop_table_if_exists(cursor, "#pytest_sql_guid_type")
         db_connection.commit()
 
+
 def test_row_output_converter_overflow_error(cursor, db_connection):
     """Test Row output converter OverflowError handling (Lines 186-195)."""
 
@@ -14387,6 +14391,7 @@ def test_row_cursor_log_method_availability(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, "#pytest_log_check")
         db_connection.commit()
+
 
 def test_close(db_connection):
     """Test closing the cursor"""

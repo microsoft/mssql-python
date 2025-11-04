@@ -2123,13 +2123,14 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                         NumericData decimalParam = element.cast<NumericData>();
                         LOG("Received numeric parameter at [%zu]: precision=%d, scale=%d, sign=%d, val=%s",
                             i, decimalParam.precision, decimalParam.scale, decimalParam.sign, decimalParam.val.c_str());
-                        numericArray[i].precision = decimalParam.precision;
-                        numericArray[i].scale = decimalParam.scale;
-                        numericArray[i].sign = decimalParam.sign;
-                        std::memset(numericArray[i].val, 0, sizeof(numericArray[i].val));
-                        size_t copyLen = std::min(decimalParam.val.size(), sizeof(numericArray[i].val));
+                        SQL_NUMERIC_STRUCT& target = numericArray[i];
+                        std::memset(&target, 0, sizeof(SQL_NUMERIC_STRUCT));
+                        target.precision = decimalParam.precision;
+                        target.scale = decimalParam.scale;
+                        target.sign = decimalParam.sign;
+                        size_t copyLen = std::min(decimalParam.val.size(), sizeof(target.val));
                         if (copyLen > 0) {
-                            std::memcpy(numericArray[i].val, decimalParam.val.data(), copyLen);
+                            std::memcpy(target.val, decimalParam.val.data(), copyLen);
                         }
                         strLenOrIndArray[i] = sizeof(SQL_NUMERIC_STRUCT);
                     }
