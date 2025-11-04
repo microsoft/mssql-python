@@ -313,11 +313,12 @@ jobs:
         distroName: 'Ubuntu-SQL2025'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         useAzureSQL: 'false'
-      Ubuntu_AzureSQL:
-        dockerImage: 'ubuntu:22.04'
-        distroName: 'Ubuntu-AzureSQL'
-        sqlServerImage: ''
-        useAzureSQL: 'true'
+      ${{ if ne(variables['AZURE_CONNECTION_STRING'], '') }}:
+        Ubuntu_AzureSQL:
+          dockerImage: 'ubuntu:22.04'
+          distroName: 'Ubuntu-AzureSQL'
+          sqlServerImage: ''
+          useAzureSQL: 'true'
       Debian:
         dockerImage: 'debian:12'
         distroName: 'Debian'
