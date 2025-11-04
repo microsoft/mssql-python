@@ -46,7 +46,6 @@ from mssql_python.constants import ConstantsDDBC
 from conftest import is_azure_sql_connection
 
 
-
 @pytest.fixture(autouse=True)
 def clean_connection_state(db_connection):
     """Ensure connection is in a clean state before each test"""
@@ -3653,7 +3652,6 @@ def test_execute_multiple_simultaneous_cursors(db_connection, conn_str):
     5. Results may vary based on system resources, SQL Server version, and ODBC driver
     6. Skipped for Azure SQL due to connection pool and throttling limitations
 
-
     The test verifies that:
     - Multiple cursors can be created and used simultaneously
     - Connection tracks created cursors appropriately
@@ -3737,7 +3735,6 @@ def test_execute_with_large_parameters(db_connection, conn_str):
     - Working with parameters near but under the size limit
     - Processing large result sets
     """
-
     # Skip this test for Azure SQL Database
     if is_azure_sql_connection(conn_str):
         pytest.skip("Skipping for Azure SQL - large parameter tests may cause timeouts")
@@ -7882,13 +7879,12 @@ def test_set_attr_access_mode_after_connect(db_connection):
     result = cursor.fetchall()
     assert result[0][0] == 1
 
-
 def test_set_attr_current_catalog_after_connect(db_connection, conn_str):
     """Test setting current catalog after connection via set_attr."""
     # Skip this test for Azure SQL Database - it doesn't support changing database after connection
     if is_azure_sql_connection(conn_str):
         pytest.skip("Skipping for Azure SQL - SQL_ATTR_CURRENT_CATALOG not supported after connection")
-    
+
     # Get current database name
     cursor = db_connection.cursor()
     cursor.execute("SELECT DB_NAME()")

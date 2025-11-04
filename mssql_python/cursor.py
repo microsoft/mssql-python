@@ -1155,7 +1155,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Reset rownumber for new result set (only for SELECT statements)
         if self.description:  # If we have column descriptions, it's likely a SELECT
-            
             self.rowcount = -1
             self._reset_rownumber()
             # Pre-build column map and converter map

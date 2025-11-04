@@ -5593,7 +5593,6 @@ def _drop_if_exists_scroll(cursor, name):
     except Exception:
         pass
 
-
 def test_cursor_skip_past_end(cursor, db_connection):
     """Test skip past end of result set"""
     try:
@@ -14227,7 +14226,6 @@ def test_row_uuid_processing_sql_guid_type(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, "#pytest_sql_guid_type")
         db_connection.commit()
-
 
 def test_row_output_converter_overflow_error(cursor, db_connection):
     """Test Row output converter OverflowError handling (Lines 186-195)."""

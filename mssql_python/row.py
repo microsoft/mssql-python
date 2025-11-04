@@ -52,7 +52,6 @@ class Row:
             values: Raw values from the database
             cursor: Cursor object with connection and description
 
-
         Returns:
             List of converted values
         """
@@ -62,7 +61,6 @@ class Row:
         converted_values = list(values)
         
         for i, (value, desc) in enumerate(zip(values, cursor.description)):
-
             if desc is None or value is None:
                 continue
 
@@ -77,7 +75,7 @@ class Row:
             if converter is None and isinstance(value, (str, bytes)):
                 from mssql_python.constants import ConstantsDDBC
                 converter = cursor.connection.get_output_converter(ConstantsDDBC.SQL_WVARCHAR.value)
-            
+
             # If we found a converter, apply it
             if converter:
                 try:

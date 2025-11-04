@@ -14,6 +14,7 @@ import re
 from mssql_python import connect
 import time
 
+
 def is_azure_sql_connection(conn_str):
     """Helper function to detect if connection string is for Azure SQL Database"""
     if not conn_str:
