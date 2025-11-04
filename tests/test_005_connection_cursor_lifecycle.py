@@ -610,18 +610,19 @@ def test_concurrent_cursor_operations_no_segfault(conn_str):
 import threading
 from mssql_python import connect
 
-conn = connect("{escaped_conn_str}")
 results = []
 exceptions = []
 
 def worker(thread_id):
     try:
+        conn = connect("{escaped_conn_str}")
         for i in range(15):
             cursor = conn.cursor()
             cursor.execute(f"SELECT {{thread_id * 100 + i}} as value")
             result = cursor.fetchone()
             results.append(result[0])
             # Don't explicitly close cursor - test concurrent destructors
+        conn.close()
     except Exception as e:
         exceptions.append(f"Thread {{thread_id}}: {{e}}")
 

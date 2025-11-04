@@ -2822,7 +2822,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                      sizeof(timestampValue), NULL);
                 if (SQL_SUCCEEDED(ret)) {
                     row.append(
-                        PythonObjectCache::datetime_class(
+                        PythonObjectCache::get_datetime_class()(
                             timestampValue.year,
                             timestampValue.month,
                             timestampValue.day,
@@ -3649,7 +3649,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
     }
 
     // Define a memory limit (1 GB)
-    const size_t memoryLimit = 1ULL * 1024 * 1024;
+    const size_t memoryLimit = 1ULL * 1024 * 1024 * 1024;
     size_t totalRowSize = calculateRowSize(columnNames, numCols);
 
     // Calculate fetch size based on the total row size and memory limit
@@ -3677,6 +3677,9 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
         // If the row size is larger than the memory limit, fetch one row at a time
         fetchSize = 1;
     } else if (numRowsInMemLimit > 0 && numRowsInMemLimit <= 100) {
+        // If between 1-100 rows fit in memoryLimit, fetch 10 rows at a time
+        fetchSize = 10;
+    } else if (numRowsInMemLimit > 100 && numRowsInMemLimit <= 1000) {
         // If between 100-1000 rows fit in memoryLimit, fetch 100 rows at a time
         fetchSize = 100;
     } else {
