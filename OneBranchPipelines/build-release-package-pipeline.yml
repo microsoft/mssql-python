@@ -138,6 +138,7 @@ extends:
     featureFlags:
       WindowsHostVersion:
         Version: '2022'
+      binskimScanAllExtensions: true  # Enable scanning of all supported file types including .pyd
 
     # Global SDL Configuration
     # See: https://aka.ms/obpipelines/sdl
@@ -145,10 +146,10 @@ extends:
       # ApiScan - Scans APIs for security vulnerabilities
       apiscan:
         enabled: ${{ parameters.runSdlTasks }}
-        softwareFolder: '$(apiScanDllPath)'
+        softwareFolder: $(apiScanDllPath)
         softwareName: 'mssql-python'
-        softwareVersionNum: '$(packageVersion)'
-        symbolsFolder: '$(apiScanPdbPath)'
+        softwareVersionNum: $(packageVersion)
+        symbolsFolder: $(apiScanPdbPath)
 
       # Armory - Security scanning for binaries
       armory:
@@ -163,7 +164,8 @@ extends:
       binskim:
         enabled: ${{ parameters.runSdlTasks }}
         break: true
-        analyzeTarget: '$(Build.SourcesDirectory)/mssql_python/ddbc_bindings.**.{so,pyd}'
+        # Scan all binary types: .pyd (Python), .dll/.exe (Windows), .so (Linux), .dylib (macOS)
+        analyzeTarget: '$(Build.SourcesDirectory)/**/*.{pyd,dll,exe,so,dylib}'
         analyzeRecurse: true
         logFile: '$(Build.ArtifactStagingDirectory)/BinSkimResults.sarif'
 
