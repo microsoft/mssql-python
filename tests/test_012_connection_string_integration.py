@@ -11,7 +11,7 @@ import pytest
 import os
 from unittest.mock import patch, MagicMock
 from mssql_python.connection_string_parser import _ConnectionStringParser, ConnectionStringParseError
-from mssql_python.connection_string_allowlist import _ConnectionStringAllowList
+from mssql_python.constants import _ConnectionStringAllowList
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
 from mssql_python import connect
 

@@ -7,7 +7,7 @@ Unit tests for _ConnectionStringParser (internal).
 
 import pytest
 from mssql_python.connection_string_parser import _ConnectionStringParser, ConnectionStringParseError
-from mssql_python.connection_string_allowlist import _ConnectionStringAllowList
+from mssql_python.constants import _ConnectionStringAllowList
 
 
 class TestConnectionStringParser:

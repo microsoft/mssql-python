@@ -5,7 +5,7 @@ Licensed under the MIT license.
 Unit tests for _ConnectionStringAllowList.
 """
 
-from mssql_python.connection_string_allowlist import _ConnectionStringAllowList
+from mssql_python.constants import _ConnectionStringAllowList
 
 
 class Test_ConnectionStringAllowList:

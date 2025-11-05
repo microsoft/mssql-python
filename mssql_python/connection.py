@@ -260,7 +260,7 @@ class Connection:
             str: The constructed and validated connection string.
         """
         from mssql_python.connection_string_parser import _ConnectionStringParser, RESERVED_PARAMETERS
-        from mssql_python.connection_string_allowlist import _ConnectionStringAllowList
+        from mssql_python.constants import _ConnectionStringAllowList
         from mssql_python.connection_string_builder import _ConnectionStringBuilder
         
         # Step 1: Parse base connection string with allowlist validation
