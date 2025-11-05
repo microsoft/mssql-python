@@ -845,6 +845,30 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         
         return converter_map
 
+    def _get_column_and_converter_maps(self):
+        """
+        Get column map and converter map for Row construction (thread-safe).
+        This centralizes the column map building logic to eliminate duplication
+        and ensure thread-safe lazy initialization.
+        
+        Returns:
+            tuple: (column_map, converter_map)
+        """
+        # Thread-safe lazy initialization of column map
+        column_map = self._cached_column_map
+        if column_map is None and self.description:
+            # Build column map locally first, then assign to cache
+            column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
+            self._cached_column_map = column_map
+        
+        # Fallback to legacy column name map if no cached map
+        column_map = column_map or getattr(self, '_column_name_map', None)
+        
+        # Get cached converter map
+        converter_map = getattr(self, '_cached_converter_map', None)
+        
+        return column_map, converter_map
+
     def _map_data_type(self, sql_type):
         """
         Map SQL data type to Python data type.
@@ -1985,11 +2009,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             self.rowcount = self._next_row_index
             
-            # Build column map once and cache it
-            if self._cached_column_map is None and self.description:
-                self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
-            column_map = self._cached_column_map or getattr(self, '_column_name_map', None)
-            converter_map = getattr(self, '_cached_converter_map', None)
+            # Get column and converter maps
+            column_map, converter_map = self._get_column_and_converter_maps()
             return Row(row_data, column_map, cursor=self, converter_map=converter_map)
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
@@ -2035,13 +2056,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             else:
                 self.rowcount = self._next_row_index
             
-            # Build column map once and cache it
-            if self._cached_column_map is None and self.description:
-                self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
+            # Get column and converter maps
+            column_map, converter_map = self._get_column_and_converter_maps()
             
             # Convert raw data to Row objects
-            column_map = self._cached_column_map or getattr(self, '_column_name_map', None)
-            converter_map = getattr(self, '_cached_converter_map', None)
             return [Row(row_data, column_map, cursor=self, converter_map=converter_map) for row_data in rows_data]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
@@ -2077,13 +2095,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             else:
                 self.rowcount = self._next_row_index
             
-            # Build column map once and cache it
-            if self._cached_column_map is None and self.description:
-                self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
+            # Get column and converter maps
+            column_map, converter_map = self._get_column_and_converter_maps()
             
             # Convert raw data to Row objects
-            column_map = self._cached_column_map or getattr(self, '_column_name_map', None)
-            converter_map = getattr(self, '_cached_converter_map', None)
             return [Row(row_data, column_map, cursor=self, converter_map=converter_map) for row_data in rows_data]
         except Exception as e:
             # On error, don't increment rownumber - rethrow the error
