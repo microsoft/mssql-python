@@ -269,7 +269,7 @@ def main():
     benchmarks = [
         (COMPLEX_JOIN_AGGREGATION, "Complex Join Aggregation"),
         (LARGE_DATASET, "Large Dataset Retrieval"),
-        # (VERY_LARGE_DATASET, "Very Large Dataset (1.2M rows)"),
+        (VERY_LARGE_DATASET, "Very Large Dataset (1.2M rows)"),
         (SUBQUERY_WITH_CTE, "Subquery with CTE"),
     ]
     
