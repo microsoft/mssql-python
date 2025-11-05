@@ -220,15 +220,15 @@ jobs:
 
   # Run performance benchmarks on SQL Server 2022
   - powershell: |
-      Write-Host "Installing ODBC Driver 18 for SQL Server if not present..."
+      Write-Host "Checking and installing ODBC Driver 18 for SQL Server..."
       
-      # Check if ODBC Driver 18 is already installed
-      $odbcDrivers = Get-OdbcDriver -Name "ODBC Driver 18 for SQL Server" -ErrorAction SilentlyContinue
+      # Check if ODBC Driver 18 is registered
+      $odbcCheck = odbcinst -q -d -n "ODBC Driver 18 for SQL Server"
       
-      if ($odbcDrivers) {
-        Write-Host "ODBC Driver 18 for SQL Server is already installed"
+      if ($LASTEXITCODE -eq 0 -and $odbcCheck) {
+        Write-Host "ODBC Driver 18 for SQL Server is already installed and registered"
       } else {
-        Write-Host "ODBC Driver 18 for SQL Server not found, installing..."
+        Write-Host "ODBC Driver 18 for SQL Server not found or not registered, installing..."
         
         # Download and install ODBC Driver 18
         $ProgressPreference = 'SilentlyContinue'
@@ -239,26 +239,51 @@ jobs:
         Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath
         
         Write-Host "Installing ODBC Driver 18..."
-        Start-Process msiexec.exe -ArgumentList "/i", $installerPath, "/quiet", "/qn", "/norestart", "IACCEPTMSODBCSQLLICENSETERMS=YES" -Wait -NoNewWindow
+        $installArgs = @(
+          "/i"
+          $installerPath
+          "/quiet"
+          "/qn"
+          "/norestart"
+          "IACCEPTMSODBCSQLLICENSETERMS=YES"
+          "/l*v"
+          "$env:TEMP\odbc_install.log"
+        )
         
-        Write-Host "ODBC Driver 18 installation complete"
+        $process = Start-Process msiexec.exe -ArgumentList $installArgs -Wait -PassThru -NoNewWindow
+        
+        if ($process.ExitCode -eq 0) {
+          Write-Host "ODBC Driver 18 installation completed successfully"
+        } else {
+          Write-Host "ODBC Driver 18 installation returned exit code: $($process.ExitCode)"
+          Write-Host "Check log at: $env:TEMP\odbc_install.log"
+        }
+        
+        # Wait a moment for registration
+        Start-Sleep -Seconds 3
         
         # Clean up
         Remove-Item $installerPath -ErrorAction SilentlyContinue
       }
       
-      # Verify installation
-      $verifyDriver = Get-OdbcDriver -Name "ODBC Driver 18 for SQL Server" -ErrorAction SilentlyContinue
-      if ($verifyDriver) {
-        Write-Host "✓ ODBC Driver 18 verified and ready"
+      # Verify installation using odbcinst (more reliable than Get-OdbcDriver)
+      Write-Host "`nVerifying ODBC Driver installation..."
+      $verifyResult = odbcinst -q -d -n "ODBC Driver 18 for SQL Server"
+      
+      if ($LASTEXITCODE -eq 0 -and $verifyResult) {
+        Write-Host "SUCCESS: ODBC Driver 18 for SQL Server is registered and ready"
+        Write-Host "Driver details:"
+        Write-Host $verifyResult
       } else {
-        Write-Warning "ODBC Driver 18 may not be properly installed"
+        Write-Host "WARNING: ODBC Driver 18 verification failed"
+        Write-Host "Listing all installed ODBC drivers:"
+        odbcinst -q -d
       }
       
-      Write-Host "Installing pyodbc..."
+      Write-Host "`nInstalling pyodbc..."
       pip install pyodbc
       
-      Write-Host "Running performance benchmarks..."
+      Write-Host "`nRunning performance benchmarks..."
       python benchmarks/perf-benchmarking.py
     displayName: 'Run performance benchmarks on SQL Server 2022'
     condition: eq(variables['sqlVersion'], 'SQL2022')
