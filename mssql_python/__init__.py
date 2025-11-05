@@ -3,7 +3,6 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 This module initializes the mssql_python package.
 """
-
 import sys
 import types
 from typing import Dict
@@ -177,7 +176,6 @@ def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) 
     else:
         PoolingManager.enable(max_size, idle_timeout)
 
-
 _original_module_setattr = sys.modules[__name__].__setattr__
 
 # Export SQL constants at module level
@@ -254,22 +252,8 @@ def get_info_constants() -> Dict[str, int]:
     """
     return {name: member.value for name, member in GetInfoConstants.__members__.items()}
 
-
 # Create a custom module class that uses properties instead of __setattr__
 class _MSSQLModule(types.ModuleType):
-    @property
-    def native_uuid(self) -> bool:
-        """Get the native UUID setting."""
-        return _settings.native_uuid
-
-    @native_uuid.setter
-    def native_uuid(self, value: bool) -> None:
-        """Set the native UUID setting."""
-        if not isinstance(value, bool):
-            raise ValueError("native_uuid must be a boolean value")
-        with _settings_lock:
-            _settings.native_uuid = value
-
     @property
     def lowercase(self) -> bool:
         """Get the lowercase setting."""
@@ -301,4 +285,3 @@ sys.modules[__name__] = new_module
 
 # Initialize property values
 lowercase: bool = _settings.lowercase
-native_uuid: bool = _settings.native_uuid
