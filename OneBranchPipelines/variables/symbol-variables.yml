@@ -4,11 +4,12 @@ variables:
   # Symbol paths for ApiScan
   # Must use Build.SourcesDirectory (not ob_outputDirectory) so files persist for globalSdl
   # Files are copied here during build stages, before ApiScan runs
+  # Note: Use backslashes for Windows compatibility (APIScanCmd.exe requires proper Windows paths)
   - name: apiScanDllPath
-    value: '$(Build.SourcesDirectory)/apiScan/dlls'
+    value: '$(Build.SourcesDirectory)\apiScan\dlls'
   
   - name: apiScanPdbPath
-    value: '$(Build.SourcesDirectory)/apiScan/pdbs'
+    value: '$(Build.SourcesDirectory)\apiScan\pdbs'
 
   # Symbol server variables come from 'Symbols Publishing' variable group:
   # - SymbolServer: Symbol publishing server hostname

@@ -163,6 +163,9 @@ extends:
       binskim:
         enabled: ${{ parameters.runSdlTasks }}
         break: true
+        analyzeTarget: '$(Build.SourcesDirectory)/mssql_python/ddbc_bindings.**.{so,pyd}'
+        analyzeRecurse: true
+        logFile: '$(Build.ArtifactStagingDirectory)/BinSkimResults.sarif'
 
       # CodeInspector - Source code security analysis
       codeinspector:
