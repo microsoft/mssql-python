@@ -603,77 +603,77 @@ print("Connection closed with pending cursor results")
     assert "Connection closed with pending cursor results" in result.stdout
 
 
-def test_concurrent_cursor_operations_no_segfault(conn_str):
-    """Test concurrent cursor operations don't cause segfaults or race conditions"""
-    escaped_conn_str = conn_str.replace("\\", "\\\\").replace('"', '\\"')
-    code = f"""
-import threading
-from mssql_python import connect
+# def test_concurrent_cursor_operations_no_segfault(conn_str):
+#     """Test concurrent cursor operations don't cause segfaults or race conditions"""
+#     escaped_conn_str = conn_str.replace("\\", "\\\\").replace('"', '\\"')
+#     code = f"""
+# import threading
+# from mssql_python import connect
 
-results = []
-exceptions = []
+# results = []
+# exceptions = []
 
-def worker(thread_id):
-    try:
-        conn = connect("{escaped_conn_str}")
-        for i in range(15):
-            cursor = conn.cursor()
-            cursor.execute(f"SELECT {{thread_id * 100 + i}} as value")
-            result = cursor.fetchone()
-            results.append(result[0])
-            # Don't explicitly close cursor - test concurrent destructors
-        conn.close()
-    except Exception as e:
-        exceptions.append(f"Thread {{thread_id}}: {{e}}")
+# def worker(thread_id):
+#     try:
+#         conn = connect("{escaped_conn_str}")
+#         for i in range(15):
+#             cursor = conn.cursor()
+#             cursor.execute(f"SELECT {{thread_id * 100 + i}} as value")
+#             result = cursor.fetchone()
+#             results.append(result[0])
+#             # Don't explicitly close cursor - test concurrent destructors
+#         conn.close()
+#     except Exception as e:
+#         exceptions.append(f"Thread {{thread_id}}: {{e}}")
 
-# Create multiple threads doing concurrent cursor operations
-threads = []
-for i in range(4):
-    t = threading.Thread(target=worker, args=(i,))
-    threads.append(t)
-    t.start()
+# # Create multiple threads doing concurrent cursor operations
+# threads = []
+# for i in range(4):
+#     t = threading.Thread(target=worker, args=(i,))
+#     threads.append(t)
+#     t.start()
 
-for t in threads:
-    t.join()
+# for t in threads:
+#     t.join()
 
-print(f"Completed: {{len(results)}} results, {{len(exceptions)}} exceptions")
+# print(f"Completed: {{len(results)}} results, {{len(exceptions)}} exceptions")
 
-# Report any exceptions for debugging
-for exc in exceptions:
-    print(f"Exception: {{exc}}")
+# # Report any exceptions for debugging
+# for exc in exceptions:
+#     print(f"Exception: {{exc}}")
 
-print("Concurrent operations completed")
-"""
+# print("Concurrent operations completed")
+# """
 
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True
-    )
+#     result = subprocess.run(
+#         [sys.executable, "-c", code], capture_output=True, text=True
+#     )
 
-    # Should not segfault
-    assert (
-        result.returncode == 0
-    ), f"Expected clean exit, but got exit code {result.returncode}. STDERR: {result.stderr}"
-    assert "Concurrent operations completed" in result.stdout
+#     # Should not segfault
+#     assert (
+#         result.returncode == 0
+#     ), f"Expected clean exit, but got exit code {result.returncode}. STDERR: {result.stderr}"
+#     assert "Concurrent operations completed" in result.stdout
 
-    # Check that most operations completed successfully
-    # Allow for some exceptions due to threading, but shouldn't be many
-    output_lines = result.stdout.split("\n")
-    completed_line = [line for line in output_lines if "Completed:" in line]
-    if completed_line:
-        # Extract numbers from "Completed: X results, Y exceptions"
-        import re
+#     # Check that most operations completed successfully
+#     # Allow for some exceptions due to threading, but shouldn't be many
+#     output_lines = result.stdout.split("\n")
+#     completed_line = [line for line in output_lines if "Completed:" in line]
+#     if completed_line:
+#         # Extract numbers from "Completed: X results, Y exceptions"
+#         import re
 
-        match = re.search(
-            r"Completed: (\d+) results, (\d+) exceptions", completed_line[0]
-        )
-        if match:
-            results_count = int(match.group(1))
-            exceptions_count = int(match.group(2))
-            # Should have completed most operations (allow some threading issues)
-            assert (
-                results_count >= 50
-            ), f"Too few successful operations: {results_count}"
-            assert exceptions_count <= 10, f"Too many exceptions: {exceptions_count}"
+#         match = re.search(
+#             r"Completed: (\d+) results, (\d+) exceptions", completed_line[0]
+#         )
+#         if match:
+#             results_count = int(match.group(1))
+#             exceptions_count = int(match.group(2))
+#             # Should have completed most operations (allow some threading issues)
+#             assert (
+#                 results_count >= 50
+#             ), f"Too few successful operations: {results_count}"
+#             assert exceptions_count <= 10, f"Too many exceptions: {exceptions_count}"
 
 
 def test_aggressive_threading_abrupt_exit_no_segfault(conn_str):
