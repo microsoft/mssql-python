@@ -5,8 +5,13 @@ project(ddbc_bindings)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Enable verbose output to see actual compiler/linker commands
+set(CMAKE_VERBOSE_MAKEFILE ON CACHE BOOL "Verbose output" FORCE)
+
 if (MSVC)
     # Security compiler options for OneBranch compliance
+    message(STATUS "Applying MSVC security compiler options for OneBranch compliance")
+    
     add_compile_options(
         /GS          # Buffer security check - detects buffer overruns
         /guard:cf    # Control Flow Guard - protects against control flow hijacking
@@ -20,12 +25,17 @@ if (MSVC)
     
     # SAFESEH only for x86 (32-bit) builds
     if(CMAKE_SIZEOF_VOID_P EQUAL 4)  # 32-bit
+        message(STATUS "Applying /SAFESEH for 32-bit build")
         add_link_options(/SAFESEH)  # Safe Structured Exception Handling
+    else()
+        message(STATUS "Skipping /SAFESEH (not applicable for 64-bit builds)")
     endif()
     
     # Enable PDB generation for all target types
     add_compile_options("$<$<CONFIG:Release>:/Zi>")
     add_link_options("$<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>")
+    
+    message(STATUS "Security flags applied: /GS /guard:cf /DYNAMICBASE /NXCOMPAT /GUARD:CF")
 endif()
 
 # Detect platform
