@@ -219,8 +219,46 @@ jobs:
       DB_PASSWORD: $(DB_PASSWORD)
 
   # Run performance benchmarks on SQL Server 2022
-  - script: |
+  - powershell: |
+      Write-Host "Installing ODBC Driver 18 for SQL Server if not present..."
+      
+      # Check if ODBC Driver 18 is already installed
+      $odbcDrivers = Get-OdbcDriver -Name "ODBC Driver 18 for SQL Server" -ErrorAction SilentlyContinue
+      
+      if ($odbcDrivers) {
+        Write-Host "ODBC Driver 18 for SQL Server is already installed"
+      } else {
+        Write-Host "ODBC Driver 18 for SQL Server not found, installing..."
+        
+        # Download and install ODBC Driver 18
+        $ProgressPreference = 'SilentlyContinue'
+        $installerUrl = "https://go.microsoft.com/fwlink/?linkid=2249004"
+        $installerPath = "$env:TEMP\msodbcsql.msi"
+        
+        Write-Host "Downloading ODBC Driver 18 installer..."
+        Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath
+        
+        Write-Host "Installing ODBC Driver 18..."
+        Start-Process msiexec.exe -ArgumentList "/i", $installerPath, "/quiet", "/qn", "/norestart", "IACCEPTMSODBCSQLLICENSETERMS=YES" -Wait -NoNewWindow
+        
+        Write-Host "ODBC Driver 18 installation complete"
+        
+        # Clean up
+        Remove-Item $installerPath -ErrorAction SilentlyContinue
+      }
+      
+      # Verify installation
+      $verifyDriver = Get-OdbcDriver -Name "ODBC Driver 18 for SQL Server" -ErrorAction SilentlyContinue
+      if ($verifyDriver) {
+        Write-Host "✓ ODBC Driver 18 verified and ready"
+      } else {
+        Write-Warning "ODBC Driver 18 may not be properly installed"
+      }
+      
+      Write-Host "Installing pyodbc..."
       pip install pyodbc
+      
+      Write-Host "Running performance benchmarks..."
       python benchmarks/perf-benchmarking.py
     displayName: 'Run performance benchmarks on SQL Server 2022'
     condition: eq(variables['sqlVersion'], 'SQL2022')
@@ -598,15 +636,26 @@ jobs:
           rm -f /etc/apt/sources.list.d/microsoft-prod.list
           
           # Add Microsoft repository
-          curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
-          curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | tee /etc/apt/sources.list.d/mssql-release.list
-          apt-get update
+          curl -sSL https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
+          curl -sSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list > /etc/apt/sources.list.d/mssql-release.list
           
-          # Install unixodbc first (provides libodbcinst.so.2 needed by msodbcsql18)
-          apt-get install -y unixodbc unixodbc-dev
+          # Update package lists
+          apt-get update -qq
+          
+          # Install unixodbc and its dependencies first (provides libodbcinst.so.2 needed by msodbcsql18)
+          echo 'Installing unixODBC dependencies...'
+          apt-get install -y --no-install-recommends unixodbc unixodbc-dev libodbc1 odbcinst odbcinst1debian2
+          
+          # Verify libodbcinst.so.2 is available
+          ldconfig
+          ls -la /usr/lib/x86_64-linux-gnu/libodbcinst.so.2 || echo 'Warning: libodbcinst.so.2 not found'
           
           # Install ODBC Driver 18
+          echo 'Installing msodbcsql18...'
           ACCEPT_EULA=Y apt-get install -y msodbcsql18
+          
+          # Verify ODBC driver installation
+          odbcinst -q -d -n 'ODBC Driver 18 for SQL Server' || echo 'Warning: ODBC Driver 18 not registered'
           
           echo 'Installing pyodbc for benchmarking...'
           pip install pyodbc
