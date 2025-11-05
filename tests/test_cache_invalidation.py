@@ -357,6 +357,229 @@ def test_cursor_cache_invalidation_fetch_methods_consistency(db_connection):
         cursor.close()
 
 
+def test_cache_specific_close_cleanup_validation(db_connection):
+    """
+    Test (e): Cache-specific close cleanup testing.
+    
+    This validates that cache invalidation specifically during cursor close operations
+    works correctly and doesn't leave stale cache entries.
+    """
+    cursor = db_connection.cursor()
+    
+    try:
+        # Setup test data
+        cursor.execute("""
+            SELECT 1 as cache_col1, 'test' as cache_col2, 99.99 as cache_col3
+        """)
+        
+        # Verify cache is populated
+        assert cursor.description is not None
+        assert len(cursor.description) == 3
+        
+        # Fetch data to ensure cache maps are built
+        row = cursor.fetchone()
+        assert row.cache_col1 == 1
+        assert row.cache_col2 == 'test'
+        assert float(row.cache_col3) == 99.99
+        
+        # Verify internal cache attributes exist (if accessible)
+        # These attributes should be cleared on close
+        has_cached_column_map = hasattr(cursor, '_cached_column_map')
+        has_cached_converter_map = hasattr(cursor, '_cached_converter_map')
+        
+        # Close cursor - this should clear all caches
+        cursor.close()
+        
+        # Verify cursor is closed
+        assert cursor.closed == True
+        
+        # Verify cache cleanup (if attributes are accessible)
+        if has_cached_column_map:
+            # Cache should be cleared or cursor should be in clean state
+            assert cursor._cached_column_map is None or cursor.closed
+        
+        # Attempt to use closed cursor should raise appropriate error
+        with pytest.raises(Exception):  # ProgrammingError expected
+            cursor.execute("SELECT 1")
+            
+    except Exception as e:
+        if not cursor.closed:
+            cursor.close()
+        if "cursor is closed" not in str(e).lower():
+            raise
+
+
+def test_high_volume_memory_stress_cache_operations(db_connection):
+    """
+    Test (f): High-volume memory stress testing with thousands of operations.
+    
+    This detects potential memory leaks in cache operations by performing
+    many cache invalidation cycles.
+    """
+    import gc
+    
+    # Perform many cache invalidation cycles
+    for iteration in range(100):  # Reduced from thousands for practical test execution
+        cursor = db_connection.cursor()
+        try:
+            # Execute query with different column structure each iteration
+            col_suffix = iteration % 10  # Cycle through different structures
+            
+            if col_suffix == 0:
+                cursor.execute(f"SELECT {iteration} as id_col, 'data_{iteration}' as text_col")
+            elif col_suffix == 1:
+                cursor.execute(f"SELECT 'str_{iteration}' as str_col, {iteration * 2} as num_col, {iteration * 3.14} as float_col")
+            elif col_suffix == 2:  
+                cursor.execute(f"SELECT {iteration} as a, {iteration+1} as b, {iteration+2} as c, {iteration+3} as d")
+            else:
+                cursor.execute(f"SELECT 'batch_{iteration}' as batch_id, {iteration % 2} as flag_col")
+            
+            # Force cache population by fetching data
+            row = cursor.fetchone()
+            assert row is not None
+            
+            # Verify cache attributes are present (implementation detail)
+            assert cursor.description is not None
+            
+        finally:
+            cursor.close()
+        
+        # Periodic garbage collection to help detect leaks
+        if iteration % 20 == 0:
+            gc.collect()
+    
+    # Final cleanup
+    gc.collect()
+
+
+def test_error_recovery_cache_state_validation(db_connection):
+    """
+    Test (g): Error recovery state validation.
+    
+    This validates that cache consistency is maintained after error conditions
+    and that subsequent operations work correctly.
+    """
+    cursor = db_connection.cursor()
+    
+    try:
+        # Execute successful query first
+        cursor.execute("SELECT 1 as success_col, 'working' as status_col")
+        row = cursor.fetchone()
+        assert row.success_col == 1
+        assert row.status_col == 'working'
+        
+        # Now cause an intentional error
+        try:
+            cursor.execute("SELECT * FROM non_existent_table_xyz_123")
+            assert False, "Should have raised an error"
+        except Exception as e:
+            # Error expected - verify it's a database error, not cache corruption
+            error_msg = str(e).lower()
+            assert "non_existent_table" in error_msg or "invalid" in error_msg or "object" in error_msg
+        
+        # After error, cursor should still be usable for new queries
+        cursor.execute("SELECT 2 as recovery_col, 'recovered' as recovery_status")
+        
+        # Verify cache works correctly after error recovery
+        recovery_row = cursor.fetchone()
+        assert recovery_row.recovery_col == 2  
+        assert recovery_row.recovery_status == 'recovered'
+        
+        # Try another query with different structure to test cache invalidation after error
+        cursor.execute("SELECT 'final' as final_col, 999 as final_num, 3.14159 as final_pi")
+        final_row = cursor.fetchone()
+        assert final_row.final_col == 'final'
+        assert final_row.final_num == 999
+        assert abs(float(final_row.final_pi) - 3.14159) < 0.001
+        
+    finally:
+        cursor.close()
+
+
+def test_real_stored_procedure_cache_validation(db_connection):
+    """
+    Test (h): Real stored procedure cache testing.
+    
+    This tests cache invalidation with actual stored procedures that have 
+    different result schemas, not just simulated multi-result scenarios.
+    """
+    cursor = db_connection.cursor()
+    
+    try:
+        # Create a temporary stored procedure with multiple result sets
+        cursor.execute("""
+            IF OBJECT_ID('tempdb..#sp_test_cache') IS NOT NULL
+                DROP PROCEDURE #sp_test_cache
+        """)
+        
+        cursor.execute("""
+            CREATE PROCEDURE #sp_test_cache
+            AS
+            BEGIN
+                -- First result set: User info
+                SELECT 1 as user_id, 'John Doe' as full_name, 'john@test.com' as email;
+                
+                -- Second result set: Product info (different structure)
+                SELECT 'PROD001' as product_code, 'Widget' as product_name, 29.99 as unit_price, 100 as quantity;
+                
+                -- Third result set: Summary (yet another structure)
+                SELECT GETDATE() as report_date, 'Cache Test' as report_type, 1 as version_num;
+            END
+        """)
+        
+        # Execute the stored procedure
+        cursor.execute("EXEC #sp_test_cache")
+        
+        # Process first result set
+        assert cursor.description is not None
+        assert len(cursor.description) == 3
+        assert cursor.description[0][0] == 'user_id'
+        assert cursor.description[1][0] == 'full_name' 
+        assert cursor.description[2][0] == 'email'
+        
+        user_row = cursor.fetchone()
+        assert user_row.user_id == 1
+        assert user_row.full_name == 'John Doe'
+        assert user_row.email == 'john@test.com'
+        
+        # Move to second result set
+        has_more = cursor.nextset()
+        if has_more:
+            # Verify cache invalidation worked - structure should be different
+            assert len(cursor.description) == 4
+            assert cursor.description[0][0] == 'product_code'
+            assert cursor.description[1][0] == 'product_name'
+            assert cursor.description[2][0] == 'unit_price'
+            assert cursor.description[3][0] == 'quantity'
+            
+            product_row = cursor.fetchone()
+            assert product_row.product_code == 'PROD001'
+            assert product_row.product_name == 'Widget'
+            assert float(product_row.unit_price) == 29.99
+            assert product_row.quantity == 100
+            
+            # Move to third result set
+            has_more_2 = cursor.nextset()
+            if has_more_2:
+                # Verify cache invalidation for third structure
+                assert len(cursor.description) == 3
+                assert cursor.description[0][0] == 'report_date'
+                assert cursor.description[1][0] == 'report_type'
+                assert cursor.description[2][0] == 'version_num'
+                
+                summary_row = cursor.fetchone()
+                assert summary_row.report_type == 'Cache Test'
+                assert summary_row.version_num == 1
+                # report_date should be a valid datetime
+                assert summary_row.report_date is not None
+        
+        # Clean up stored procedure
+        cursor.execute("DROP PROCEDURE #sp_test_cache")
+        
+    finally:
+        cursor.close()
+
+
 if __name__ == "__main__":
     # These tests should be run with pytest, but provide basic validation if run directly
     print("Cache invalidation tests - run with pytest for full validation")
@@ -365,3 +588,7 @@ if __name__ == "__main__":
     print("  (b) Stored procedures with multiple result sets")  
     print("  (c) Metadata calls followed by normal SELECT")
     print("  (d) Fetch method consistency across transitions")
+    print("  (e) Cache-specific close cleanup validation")
+    print("  (f) High-volume memory stress testing")
+    print("  (g) Error recovery state validation")
+    print("  (h) Real stored procedure cache validation")

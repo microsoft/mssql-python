@@ -2119,15 +2119,34 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Clear messages per DBAPI
         self.messages = []
 
+        # Clear cached column and converter maps for the new result set
+        self._cached_column_map = None
+        self._cached_converter_map = None
+
         # Skip to the next result set
         ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             self._clear_rownumber()
+            self.description = None
             return False
 
         self._reset_rownumber()
+
+        # Initialize description for the new result set
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+            
+            # Pre-build column map and converter map for the new result set
+            if self.description:
+                self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
+                self._cached_converter_map = self._build_converter_map()
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            # If describe fails, there might be no results in this result set
+            self.description = None
 
         return True
 
