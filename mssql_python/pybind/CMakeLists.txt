@@ -6,6 +6,23 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if (MSVC)
+    # Security compiler options for OneBranch compliance
+    add_compile_options(
+        /GS          # Buffer security check - detects buffer overruns
+        /guard:cf    # Control Flow Guard - protects against control flow hijacking
+    )
+    
+    add_link_options(
+        /DYNAMICBASE # ASLR - Address Space Layout Randomization
+        /NXCOMPAT    # DEP - Data Execution Prevention
+        /GUARD:CF    # Control Flow Guard (linker)
+    )
+    
+    # SAFESEH only for x86 (32-bit) builds
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)  # 32-bit
+        add_link_options(/SAFESEH)  # Safe Structured Exception Handling
+    endif()
+    
     # Enable PDB generation for all target types
     add_compile_options("$<$<CONFIG:Release>:/Zi>")
     add_link_options("$<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>")
