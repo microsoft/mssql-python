@@ -229,6 +229,11 @@ class Connection:
         # Initialize search escape character
         self._searchescape = None
 
+        # Generate and set trace ID for this connection BEFORE establishing connection
+        # This ensures all connection establishment logs have the trace ID
+        self._trace_id = logger.generate_trace_id("CONN")
+        logger.set_trace_id(self._trace_id)
+
         # Auto-enable pooling if user never called
         if not PoolingManager.is_initialized():
             PoolingManager.enable()
@@ -1399,6 +1404,8 @@ class Connection:
         finally:
             # Always mark as closed, even if there were errors
             self._closed = True
+            # Clear the trace ID context when connection closes
+            logger.clear_trace_id()
 
         logger.info( "Connection closed successfully.")
 

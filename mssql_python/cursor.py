@@ -134,6 +134,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         )
 
         self.messages: List[str] = []  # Store diagnostic messages
+        
+        # Generate and set trace ID for this cursor
+        self._trace_id = logger.generate_trace_id("CURS")
+        logger.set_trace_id(self._trace_id)
 
     def _is_unicode_string(self, param: str) -> bool:
         """
@@ -637,6 +641,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             logger.debug( "SQLFreeHandle succeeded")
         self._clear_rownumber()
         self.closed = True
+        
+        # Clear the trace ID context when cursor closes
+        logger.clear_trace_id()
 
     def _check_closed(self) -> None:
         """
@@ -1112,7 +1119,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         logger.debug( "Executing query: %s", operation)
         for i, param in enumerate(parameters):
             logger.debug(
-                "debug",
                 """Parameter number: %s, Parameter: %s,
                 Param Python Type: %s, ParamInfo: %s, %s, %s, %s, %s""",
                 i + 1,
@@ -1181,8 +1187,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     self._uuid_indices.append(i)
                 # Verify we have complete description tuples (7 items per PEP-249)
                 elif desc and len(desc) != 7:
-                    logger.debug(
-                        "warning",
+                    logger.warning(
                         f"Column description at index {i} has incorrect tuple length: {len(desc)}",
                     )
             self.rowcount = -1
@@ -1224,8 +1229,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 logger.error( f"Driver interface error during metadata retrieval: {e}")
             except Exception as e:  # pylint: disable=broad-exception-caught
                 # Log the exception with appropriate context
-                logger.debug(
-                    "error",
+                logger.error(
                     f"Failed to retrieve column metadata: {e}. "
                     f"Using standard ODBC column definitions instead.",
                 )
@@ -1896,7 +1900,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         if any_dae:
             logger.debug(
-                "debug",
                 "DAE parameters detected. Falling back to row-by-row execution with streaming.",
             )
             for row in seq_of_parameters:
@@ -1938,7 +1941,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Add debug logging
         logger.debug(
-            "debug",
             "Executing batch query with %d parameter sets:\n%s",
             len(seq_of_parameters),
             "\n".join(

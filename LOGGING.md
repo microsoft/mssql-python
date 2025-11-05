@@ -44,6 +44,9 @@ logging.setLevel(logging.FINER)  # Logs SQL + parameters
 # Enable maximum detail logging
 logging.setLevel(logging.FINEST)  # Logs everything including internal operations
 
+# Disable logging (production mode)
+logging.disable()  # Turn off all logging
+
 # Output to stdout instead of file
 logging.setLevel(logging.FINE, logging.STDOUT)
 
@@ -400,6 +403,20 @@ if logging.isEnabledFor(logging.FINEST):
     logging.logger.finest(f"Diagnostics: {expensive_data}")
 ```
 
+**`logging.disable() -> None`**
+
+Disable all logging (sets level to CRITICAL).
+
+```python
+# Enable for troubleshooting
+logging.setLevel(logging.FINE)
+
+# ... troubleshoot ...
+
+# Disable when done
+logging.disable()
+```
+
 ### Log Level Constants
 
 ```python
@@ -411,9 +428,11 @@ logging.FINER   # Value: 15 - Detailed
 logging.FINE    # Value: 18 - Standard (recommended default)
 
 # Python standard levels (also available)
-logging.INFO    # Value: 20
-logging.WARNING # Value: 30
-logging.ERROR   # Value: 40
+logging.DEBUG    # Value: 10
+logging.INFO     # Value: 20
+logging.WARNING  # Value: 30
+logging.ERROR    # Value: 40
+logging.CRITICAL # Value: 50
 ```
 
 ### Output Destination Constants
@@ -635,7 +654,7 @@ from mssql_python import logging
 logging.setLevel(logging.FINE)
 
 # Or disable logging entirely for production
-logging.setLevel(logging.CRITICAL)  # Effectively OFF
+logging.disable()  # Zero overhead
 ```
 
 ### CI/CD Pipeline Setup

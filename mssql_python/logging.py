@@ -23,6 +23,14 @@ FINEST = 5   # Ultra-detailed trace (most detailed, below DEBUG=10)
 FINER = 15   # Very detailed diagnostics (between DEBUG=10 and INFO=20)
 FINE = 18    # General diagnostics (below INFO=20, shows INFO and above)
 
+# Export Python standard logging levels for convenience
+# Users can use either custom levels (FINE/FINER/FINEST) or standard levels
+DEBUG = logging.DEBUG        # 10
+INFO = logging.INFO          # 20
+WARNING = logging.WARNING    # 30
+ERROR = logging.ERROR        # 40
+CRITICAL = logging.CRITICAL  # 50
+
 STDOUT = 'stdout'  # Log to stdout only
 FILE = 'file'      # Log to file only (default)
 BOTH = 'both'      # Log to both file and stdout
@@ -530,6 +538,30 @@ def getLevel() -> int:
 def isEnabledFor(level: int) -> bool:
     """Check if a given log level is enabled."""
     return logger.isEnabledFor(level)
+
+
+def disable():
+    """
+    Disable all logging.
+    
+    This is a convenience function that sets the log level to CRITICAL,
+    effectively turning off all diagnostic logging (FINE/FINER/FINEST/INFO/etc).
+    Only CRITICAL messages will be logged.
+    
+    Use this in production when you don't need any logging overhead.
+    
+    Example:
+        from mssql_python import logging
+        
+        # Enable logging for troubleshooting
+        logging.setLevel(logging.FINE)
+        
+        # ... troubleshoot issue ...
+        
+        # Disable logging when done
+        logging.disable()
+    """
+    logger.setLevel(logging.CRITICAL)
 
 
 # Backward compatibility function (deprecated)

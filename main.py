@@ -1,11 +1,9 @@
 from mssql_python import connect
-from mssql_python.logging import logger
+from mssql_python.logging import logger, FINE, BOTH
 import os
 
 # Clean one-liner: set level and output mode together
-# logger.setLevel(FINEST, output=OutputMode.BOTH)
-
-print(f"Logging to: {logger.log_file}")
+logger.setLevel(FINE, output=BOTH)
 
 conn_str = os.getenv("DB_CONNECTION_STRING")
 conn = connect(conn_str)
