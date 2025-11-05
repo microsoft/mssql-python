@@ -28,6 +28,11 @@ from mssql_python import connect
 
 # Configuration
 CONN_STR = os.getenv("DB_CONNECTION_STRING")
+
+# Ensure pyodbc connection string has ODBC driver specified
+if CONN_STR and 'Driver=' not in CONN_STR:
+    CONN_STR = f"Driver={{ODBC Driver 18 for SQL Server}};{CONN_STR}"
+
 NUM_ITERATIONS = 5  # Number of times to run each test for averaging
 
 # SQL Queries
@@ -284,11 +289,11 @@ def main():
         print(f"\nRunning: {name}")
         print(f"  Testing with pyodbc... ", end="", flush=True)
         pyodbc_result = run_benchmark_pyodbc(query, name, NUM_ITERATIONS)
-        print(f"✓ (avg: {pyodbc_result.avg_time:.4f}s)")
+        print(f"OK (avg: {pyodbc_result.avg_time:.4f}s)")
         
         print(f"  Testing with mssql-python... ", end="", flush=True)
         mssql_python_result = run_benchmark_mssql_python(query, name, NUM_ITERATIONS)
-        print(f"✓ (avg: {mssql_python_result.avg_time:.4f}s)")
+        print(f"OK (avg: {mssql_python_result.avg_time:.4f}s)")
         
         all_results.append((pyodbc_result, mssql_python_result))
     
