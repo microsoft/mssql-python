@@ -146,10 +146,10 @@ extends:
       # ApiScan - Scans APIs for security vulnerabilities
       apiscan:
         enabled: ${{ parameters.runSdlTasks }}
-        softwareFolder: $(apiScanDllPath)
+        softwareFolder: '${{ variables.apiScanDllPath }}'
         softwareName: 'mssql-python'
-        softwareVersionNum: $(packageVersion)
-        symbolsFolder: $(apiScanPdbPath)
+        softwareVersionNum: '${{ variables.packageVersion }}'
+        symbolsFolder: '${{ variables.apiScanPdbPath }}'
 
       # Armory - Security scanning for binaries
       armory:
