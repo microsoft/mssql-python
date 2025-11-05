@@ -29,6 +29,9 @@ from mssql_python import connect
 # Configuration
 CONN_STR = os.getenv("DB_CONNECTION_STRING")
 
+if not CONN_STR:
+    print("Error: The environment variable DB_CONNECTION_STRING is not set. Please set it to a valid SQL Server connection string and try again.")
+    sys.exit(1)
 # Ensure pyodbc connection string has ODBC driver specified
 if CONN_STR and 'Driver=' not in CONN_STR:
     CONN_STR = f"Driver={{ODBC Driver 18 for SQL Server}};{CONN_STR}"
