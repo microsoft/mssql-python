@@ -593,7 +593,7 @@ class TestConnectAPIIntegration:
             assert app_name_received == 'MSSQL-Python', \
                 f"Expected SQL Server to receive 'MSSQL-Python', but got '{app_name_received}'"
             
-            print(f"\n SQL Server correctly received APP_NAME: '{app_name_received}'")
+            # SQL Server correctly received APP_NAME: '{app_name_received}'
         finally:
             conn.close()
     
