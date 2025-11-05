@@ -590,6 +590,19 @@ jobs:
           -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
           test-container-$(distroName) bash -c "
           source /opt/venv/bin/activate
+          
+          echo 'Reinstalling ODBC Driver for benchmarking...'
+          export DEBIAN_FRONTEND=noninteractive
+          
+          # Add Microsoft repository
+          curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
+          curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | tee /etc/apt/sources.list.d/mssql-release.list
+          apt-get update
+          
+          # Install ODBC Driver 18
+          ACCEPT_EULA=Y apt-get install -y msodbcsql18
+          apt-get install -y unixodbc-dev
+          
           echo 'Installing pyodbc for benchmarking...'
           pip install pyodbc
           echo 'Running performance benchmarks on $(distroName)'
