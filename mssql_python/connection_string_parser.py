@@ -15,8 +15,7 @@ Parser behavior:
 - Collects all errors and reports them together
 """
 
-from typing import Dict, Tuple, List
-import logging
+from typing import Dict, Tuple
 from mssql_python.exceptions import ConnectionStringParseError
 
 

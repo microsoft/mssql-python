@@ -14,8 +14,6 @@ from mssql_python.connection_string_parser import _ConnectionStringParser, Conne
 from mssql_python.connection_string_allowlist import _ConnectionStringAllowList
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
 from mssql_python import connect
-from mssql_python.connection import Connection
-from mssql_python.exceptions import DatabaseError, InterfaceError
 
 
 class TestConnectionStringIntegration:
@@ -512,12 +510,6 @@ class TestConnectAPIIntegration:
                         reason="Requires database connection string")
     def test_connect_kwargs_override_with_real_database(self, conn_str):
         """Test that kwargs override works with a real database connection."""
-        # Parse the original connection string to extract server
-        parser = _ConnectionStringParser()
-        original_params = parser._parse(conn_str)
-        
-        # Get the server from original connection for reconnection
-        server = original_params.get('server', 'localhost')
         
         # Create connection with overridden autocommit
         conn = connect(conn_str, autocommit=True)
@@ -576,9 +568,7 @@ class TestConnectAPIIntegration:
     def test_app_name_received_by_sql_server(self, conn_str):
         """Test that SQL Server receives the driver-controlled APP name 'MSSQL-Python'."""
         # Connect to SQL Server
-        conn = connect(conn_str)
-        
-        try:
+        with connect(conn_str) as conn:
             # Query SQL Server to get the application name it received
             cursor = conn.cursor()
             cursor.execute("SELECT APP_NAME() AS app_name")
@@ -592,10 +582,6 @@ class TestConnectAPIIntegration:
             # SQL Server should have received 'MSSQL-Python', not any user-provided value
             assert app_name_received == 'MSSQL-Python', \
                 f"Expected SQL Server to receive 'MSSQL-Python', but got '{app_name_received}'"
-            
-            # SQL Server correctly received APP_NAME: '{app_name_received}'
-        finally:
-            conn.close()
     
     @pytest.mark.skipif(not os.getenv('DB_CONNECTION_STRING'), 
                         reason="Requires database connection string")
@@ -614,8 +600,6 @@ class TestConnectAPIIntegration:
         assert "reserved keyword" in error_lower
         assert "'app'" in error_lower
         assert "controlled by the driver" in error_lower
-        
-        print("\n APP in connection string correctly raised ConnectionStringParseError")
     
     @pytest.mark.skipif(not os.getenv('DB_CONNECTION_STRING'), 
                         reason="Requires database connection string")
@@ -629,8 +613,6 @@ class TestConnectAPIIntegration:
         
         assert "reserved and controlled by the driver" in str(exc_info.value)
         assert "APP" in str(exc_info.value) or "app" in str(exc_info.value).lower()
-        
-        print("\n APP in kwargs correctly raised ValueError before connecting to SQL Server")
     
     @patch('mssql_python.connection.ddbc_bindings.Connection')
     def test_connect_empty_value_raises_error(self, mock_ddbc_conn):

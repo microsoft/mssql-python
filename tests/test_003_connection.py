@@ -21,11 +21,9 @@ Functions:
 
 from mssql_python.exceptions import InterfaceError, ProgrammingError, DatabaseError
 import mssql_python
-import sys
 import pytest
 import time
-from mssql_python import connect, Connection, pooling, SQL_CHAR, SQL_WCHAR
-import threading
+from mssql_python import connect, Connection, SQL_CHAR, SQL_WCHAR
 
 # Import all exception classes for testing
 from mssql_python.exceptions import (
@@ -3597,7 +3595,6 @@ def test_execute_multiple_simultaneous_cursors(db_connection):
     - Connection remains stable after intensive cursor operations
     """
     import gc
-    import sys
 
     # Start with a clean connection state
     cursor = db_connection.execute("SELECT 1")
@@ -7679,7 +7676,7 @@ def test_set_attr_login_timeout_effect(conn_str):
         conn = connect(invalid_conn_str)  # Don't use the login_timeout parameter
         conn.close()
         pytest.fail("Connection to invalid server should have failed")
-    except Exception as e:
+    except Exception:
         end_time = time.time()
         elapsed = end_time - start_time
 
