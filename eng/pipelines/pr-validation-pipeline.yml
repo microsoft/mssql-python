@@ -570,9 +570,9 @@ jobs:
           echo "Failed to restore AdventureWorks2022 database"
         fi
         
-        # Clean up
-        rm -f /tmp/AdventureWorks2022.bak
-        docker exec sqlserver-$(distroName) rm -f /tmp/AdventureWorks2022.bak
+        # Clean up (ignore errors if files are locked)
+        rm -f /tmp/AdventureWorks2022.bak || true
+        docker exec sqlserver-$(distroName) rm -f /tmp/AdventureWorks2022.bak || true
       fi
     displayName: 'Download and restore AdventureWorks2022 database in $(distroName)'
     condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
@@ -594,14 +594,19 @@ jobs:
           echo 'Reinstalling ODBC Driver for benchmarking...'
           export DEBIAN_FRONTEND=noninteractive
           
+          # Remove duplicate repository sources if they exist
+          rm -f /etc/apt/sources.list.d/microsoft-prod.list
+          
           # Add Microsoft repository
           curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
           curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list | tee /etc/apt/sources.list.d/mssql-release.list
           apt-get update
           
+          # Install unixodbc first (provides libodbcinst.so.2 needed by msodbcsql18)
+          apt-get install -y unixodbc unixodbc-dev
+          
           # Install ODBC Driver 18
           ACCEPT_EULA=Y apt-get install -y msodbcsql18
-          apt-get install -y unixodbc-dev
           
           echo 'Installing pyodbc for benchmarking...'
           pip install pyodbc
