@@ -222,62 +222,83 @@ jobs:
   - powershell: |
       Write-Host "Checking and installing ODBC Driver 18 for SQL Server..."
       
-      # Check if ODBC Driver 18 is registered
-      $odbcCheck = odbcinst -q -d -n "ODBC Driver 18 for SQL Server"
+      # Check if ODBC Driver 18 is registered in Windows registry
+      $odbcDriverKey = "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Driver 18 for SQL Server"
+      $driverExists = Test-Path $odbcDriverKey
       
-      if ($LASTEXITCODE -eq 0 -and $odbcCheck) {
-        Write-Host "ODBC Driver 18 for SQL Server is already installed and registered"
+      if ($driverExists) {
+        Write-Host "✓ ODBC Driver 18 for SQL Server is already installed and registered"
+        $driverPath = (Get-ItemProperty -Path $odbcDriverKey -Name "Driver" -ErrorAction SilentlyContinue).Driver
+        if ($driverPath) {
+          Write-Host "  Driver location: $driverPath"
+        }
       } else {
-        Write-Host "ODBC Driver 18 for SQL Server not found or not registered, installing..."
+        Write-Host "ODBC Driver 18 for SQL Server not found, installing..."
         
-        # Download and install ODBC Driver 18
+        # Download ODBC Driver 18.5.2.1 (x64) from official Microsoft link
         $ProgressPreference = 'SilentlyContinue'
-        $installerUrl = "https://go.microsoft.com/fwlink/?linkid=2249004"
-        $installerPath = "$env:TEMP\msodbcsql.msi"
+        $installerUrl = "https://go.microsoft.com/fwlink/?linkid=2335671"
+        $installerPath = "$env:TEMP\msodbcsql_18.5.2.1_x64.msi"
         
-        Write-Host "Downloading ODBC Driver 18 installer..."
-        Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath
+        Write-Host "Downloading ODBC Driver 18 (x64) from Microsoft..."
+        Write-Host "  URL: $installerUrl"
+        try {
+          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+          Write-Host "✓ Download completed: $installerPath"
+        } catch {
+          Write-Error "Failed to download ODBC driver: $_"
+          exit 1
+        }
         
         Write-Host "Installing ODBC Driver 18..."
         $installArgs = @(
           "/i"
-          $installerPath
+          "`"$installerPath`""
           "/quiet"
           "/qn"
           "/norestart"
           "IACCEPTMSODBCSQLLICENSETERMS=YES"
           "/l*v"
-          "$env:TEMP\odbc_install.log"
+          "`"$env:TEMP\odbc_install.log`""
         )
+        
+        $installCmd = "msiexec.exe $($installArgs -join ' ')"
+        Write-Host "  Command: $installCmd"
         
         $process = Start-Process msiexec.exe -ArgumentList $installArgs -Wait -PassThru -NoNewWindow
         
         if ($process.ExitCode -eq 0) {
-          Write-Host "ODBC Driver 18 installation completed successfully"
+          Write-Host "✓ ODBC Driver 18 installation completed successfully"
+        } elseif ($process.ExitCode -eq 3010) {
+          Write-Host "✓ ODBC Driver 18 installed (reboot recommended but not required)"
         } else {
-          Write-Host "ODBC Driver 18 installation returned exit code: $($process.ExitCode)"
-          Write-Host "Check log at: $env:TEMP\odbc_install.log"
+          Write-Error "ODBC Driver 18 installation failed with exit code: $($process.ExitCode)"
+          Write-Host "Check installation log: $env:TEMP\odbc_install.log"
+          Get-Content "$env:TEMP\odbc_install.log" -Tail 50 -ErrorAction SilentlyContinue
+          exit 1
         }
         
-        # Wait a moment for registration
-        Start-Sleep -Seconds 3
+        # Wait for registry update
+        Start-Sleep -Seconds 2
         
-        # Clean up
+        # Clean up installer
         Remove-Item $installerPath -ErrorAction SilentlyContinue
       }
       
-      # Verify installation using odbcinst (more reliable than Get-OdbcDriver)
-      Write-Host "`nVerifying ODBC Driver installation..."
-      $verifyResult = odbcinst -q -d -n "ODBC Driver 18 for SQL Server"
+      # Final verification using registry
+      Write-Host "`nVerifying ODBC Driver 18 installation..."
+      $verifyKey = Test-Path "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Driver 18 for SQL Server"
       
-      if ($LASTEXITCODE -eq 0 -and $verifyResult) {
-        Write-Host "SUCCESS: ODBC Driver 18 for SQL Server is registered and ready"
-        Write-Host "Driver details:"
-        Write-Host $verifyResult
+      if ($verifyKey) {
+        $driverInfo = Get-ItemProperty -Path "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Driver 18 for SQL Server" -ErrorAction SilentlyContinue
+        Write-Host "✓ SUCCESS: ODBC Driver 18 for SQL Server is registered"
+        Write-Host "  Driver: $($driverInfo.Driver)"
+        Write-Host "  Setup: $($driverInfo.Setup)"
       } else {
-        Write-Host "WARNING: ODBC Driver 18 verification failed"
-        Write-Host "Listing all installed ODBC drivers:"
-        odbcinst -q -d
+        Write-Error "ODBC Driver 18 for SQL Server is not registered in ODBC"
+        Write-Host "`nListing all installed ODBC drivers from registry:"
+        Get-ChildItem "HKLM:\SOFTWARE\ODBC\ODBCINST.INI" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  - $($_.PSChildName)" }
+        exit 1
       }
       
       Write-Host "`nInstalling pyodbc..."
