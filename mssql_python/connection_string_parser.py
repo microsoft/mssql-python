@@ -15,8 +15,9 @@ Parser behavior:
 - Collects all errors and reports them together
 """
 
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 from mssql_python.exceptions import ConnectionStringParseError
+from mssql_python.constants import _ConnectionStringAllowList
 
 
 # Reserved connection string parameters that are controlled by the driver
@@ -39,7 +40,7 @@ class _ConnectionStringParser:
     Reference: https://learn.microsoft.com/en-us/openspecs/sql_server_protocols/ms-odbcstr/55953f0e-2d30-4ad4-8e56-b4207e491409
     """
     
-    def __init__(self, allowlist=None):
+    def __init__(self, allowlist: Optional['_ConnectionStringAllowList'] = None) -> None:
         """
         Initialize the parser.
         

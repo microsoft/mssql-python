@@ -5,7 +5,7 @@ This module contains the constants used in the DDBC module.
 """
 
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 
 class ConstantsDDBC(Enum):
@@ -447,7 +447,7 @@ def get_attribute_set_timing(attribute):
 
 
 # Import RESERVED_PARAMETERS from parser module to maintain single source of truth
-def _get_reserved_parameters():
+def _get_reserved_parameters() -> Tuple[str, ...]:
     """Lazy import to avoid circular dependency."""
     from mssql_python.connection_string_parser import RESERVED_PARAMETERS
     return RESERVED_PARAMETERS
