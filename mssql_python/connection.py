@@ -379,10 +379,10 @@ class Connection:
             # For explicitly using SQL_CHAR
             cnxn.setencoding(encoding='utf-8', ctype=mssql_python.SQL_CHAR)
         """
-        logger.finer( 'setencoding: Configuring encoding=%s, ctype=%s', 
+        logger.debug( 'setencoding: Configuring encoding=%s, ctype=%s', 
             str(encoding) if encoding else 'default', str(ctype) if ctype else 'auto')
         if self._closed:
-            logger.finer( 'setencoding: Connection is closed')
+            logger.debug( 'setencoding: Connection is closed')
             raise InterfaceError(
                 driver_error="Connection is closed",
                 ddbc_error="Connection is closed",
@@ -391,7 +391,7 @@ class Connection:
         # Set default encoding if not provided
         if encoding is None:
             encoding = "utf-16le"
-            logger.finest( 'setencoding: Using default encoding=utf-16le')
+            logger.debug( 'setencoding: Using default encoding=utf-16le')
 
         # Validate encoding using cached validation for better performance
         if not _validate_encoding(encoding):
@@ -408,16 +408,16 @@ class Connection:
 
         # Normalize encoding to casefold for more robust Unicode handling
         encoding = encoding.casefold()
-        logger.finest( 'setencoding: Encoding normalized to %s', encoding)
+        logger.debug( 'setencoding: Encoding normalized to %s', encoding)
 
         # Set default ctype based on encoding if not provided
         if ctype is None:
             if encoding in UTF16_ENCODINGS:
                 ctype = ConstantsDDBC.SQL_WCHAR.value
-                logger.finest( 'setencoding: Auto-selected SQL_WCHAR for UTF-16')
+                logger.debug( 'setencoding: Auto-selected SQL_WCHAR for UTF-16')
             else:
                 ctype = ConstantsDDBC.SQL_CHAR.value
-                logger.finest( 'setencoding: Auto-selected SQL_CHAR for non-UTF-16')
+                logger.debug( 'setencoding: Auto-selected SQL_CHAR for non-UTF-16')
 
         # Validate ctype
         valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]

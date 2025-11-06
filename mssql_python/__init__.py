@@ -50,8 +50,8 @@ from .db_connection import connect, Connection
 # Cursor Objects
 from .cursor import Cursor
 
-# Logging Configuration (New enhanced logging system)
-from .logging import logger, FINE, FINER, FINEST, setup_logging, get_logger
+# Logging Configuration (Simplified single-level DEBUG system)
+from .logging import logger, setup_logging
 
 # Constants
 from .constants import ConstantsDDBC, GetInfoConstants

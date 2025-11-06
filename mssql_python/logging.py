@@ -16,29 +16,14 @@ import contextvars
 from typing import Optional
 
 
-# Define custom log levels (JDBC-style)
-# In Python logging: LOWER number = MORE detailed, HIGHER number = LESS detailed
-# JDBC hierarchy (most to least detailed): FINEST < FINER < FINE < INFO < WARNING < ERROR < CRITICAL
-FINEST = 5   # Ultra-detailed trace (most detailed, below DEBUG=10)
-FINER = 15   # Very detailed diagnostics (between DEBUG=10 and INFO=20)
-FINE = 18    # General diagnostics (below INFO=20, shows INFO and above)
-
-# Export Python standard logging levels for convenience
-# Users can use either custom levels (FINE/FINER/FINEST) or standard levels
+# Single DEBUG level - all or nothing philosophy
+# If you need logging, you need to see everything
 DEBUG = logging.DEBUG        # 10
-INFO = logging.INFO          # 20
-WARNING = logging.WARNING    # 30
-ERROR = logging.ERROR        # 40
-CRITICAL = logging.CRITICAL  # 50
 
+# Output destination constants
 STDOUT = 'stdout'  # Log to stdout only
 FILE = 'file'      # Log to file only (default)
 BOTH = 'both'      # Log to both file and stdout
-
-# Register custom level names
-logging.addLevelName(FINEST, 'FINEST')
-logging.addLevelName(FINER, 'FINER')
-logging.addLevelName(FINE, 'FINE')
 
 # Module-level context variable for trace IDs (thread-safe, async-safe)
 _trace_id_var = contextvars.ContextVar('trace_id', default=None)
@@ -58,15 +43,20 @@ class TraceIDFilter(logging.Filter):
 
 class MSSQLLogger:
     """
-    Singleton logger for mssql_python with JDBC-style logging levels.
+    Singleton logger for mssql_python with single DEBUG level.
+    
+    Philosophy: All or nothing - if you enable logging, you see EVERYTHING.
+    Logging is a troubleshooting tool, not a production feature.
     
     Features:
-    - Custom levels: FINE (18), FINER (15), FINEST (5)
+    - Single DEBUG level (no categorization)
     - Automatic file rotation (512MB, 5 backups)
     - Password sanitization
     - Trace ID support with contextvars (automatic propagation)
     - Thread-safe operation
     - Zero overhead when disabled (level check only)
+    
+    ⚠️ Performance Warning: Logging adds ~2-5% overhead. Only enable when troubleshooting.
     """
     
     _instance: Optional['MSSQLLogger'] = None
@@ -248,7 +238,7 @@ class MSSQLLogger:
         Example:
             trace_id = logger.generate_trace_id("CONN")
             logger.set_trace_id(trace_id)
-            logger.fine("Connection opened")  # Includes trace ID automatically
+            logger.debug("Connection opened")  # Includes trace ID automatically
         """
         _trace_id_var.set(trace_id)
     
@@ -294,22 +284,10 @@ class MSSQLLogger:
         # Log the message (no args since already formatted)
         self._logger.log(level, sanitized_msg, **kwargs)
     
-    # Convenience methods for each level
-    
-    def finest(self, msg: str, *args, **kwargs):
-        """Log at FINEST level (most detailed)"""
-        self._log(FINEST, f"[Python] {msg}", *args, **kwargs)
-    
-    def finer(self, msg: str, *args, **kwargs):
-        """Log at FINER level (detailed)"""
-        self._log(FINER, f"[Python] {msg}", *args, **kwargs)
-    
-    def fine(self, msg: str, *args, **kwargs):
-        """Log at FINE level (standard diagnostics)"""
-        self._log(FINE, f"[Python] {msg}", *args, **kwargs)
+    # Convenience methods for logging
     
     def debug(self, msg: str, *args, **kwargs):
-        """Log at DEBUG level (alias for compatibility)"""
+        """Log at DEBUG level (all diagnostic messages)"""
         self._log(logging.DEBUG, f"[Python] {msg}", *args, **kwargs)
     
     def info(self, msg: str, *args, **kwargs):
@@ -334,37 +312,17 @@ class MSSQLLogger:
     
     # Level control
     
-    def setLevel(self, level: int, output: Optional[str] = None, log_file_path: Optional[str] = None):
+    def _setLevel(self, level: int, output: Optional[str] = None, log_file_path: Optional[str] = None):
         """
-        Set the logging level and optionally the output mode and log file path.
+        Internal method to set logging level (use setup_logging() instead).
         
         Args:
-            level: Logging level (FINEST, FINER, FINE, logging.INFO, etc.)
-                   Use logging.CRITICAL to disable all logging
+            level: Logging level (typically DEBUG)
             output: Optional output mode (FILE, STDOUT, BOTH)
-                    If not specified, defaults to FILE on first call
-            log_file_path: Optional custom path for log file. If not specified,
-                          auto-generates: mssql_python_trace_{timestamp}_{pid}.log
-                          in mssql_python_logs folder (created if doesn't exist)
+            log_file_path: Optional custom path for log file
         
         Raises:
             ValueError: If output mode is invalid
-        
-        Examples:
-            # File only (default, auto-generated path)
-            logger.setLevel(FINE)
-            
-            # Stdout only
-            logger.setLevel(FINE, output=STDOUT)
-            
-            # Both file and stdout
-            logger.setLevel(FINE, output=BOTH)
-            
-            # Custom log file path
-            logger.setLevel(FINE, log_file_path="/var/log/myapp.log")
-            
-            # Custom path with both outputs
-            logger.setLevel(FINE, output=BOTH, log_file_path="/tmp/debug.log")
         """
         # Validate and set output mode if specified
         if output is not None:
@@ -497,103 +455,47 @@ class MSSQLLogger:
 # Singleton logger instance
 logger = MSSQLLogger()
 
-# Module-level convenience functions (Pythonic API)
-def setLevel(level: int, output: Optional[str] = None, log_file_path: Optional[str] = None):
+# ============================================================================
+# Primary API - setup_logging()
+# ============================================================================
+
+def setup_logging(output: str = 'file', log_file_path: Optional[str] = None):
     """
-    Set the logging level and optionally the output mode and log file path.
+    Enable DEBUG logging for troubleshooting.
     
-    This is a convenience function that delegates to logger.setLevel().
+    ⚠️ PERFORMANCE WARNING: Logging adds ~2-5% overhead.
+    Only enable when investigating issues. Do NOT enable in production without reason.
+    
+    Philosophy: All or nothing - if you need logging, you need to see EVERYTHING.
+    Logging is a troubleshooting tool, not a production monitoring solution.
     
     Args:
-        level: Logging level (FINEST, FINER, FINE, logging.INFO, etc.)
-        output: Optional output mode (FILE, STDOUT, BOTH)
+        output: Where to send logs (default: 'file')
+                Options: 'file', 'stdout', 'both'
         log_file_path: Optional custom path for log file
+                      If not specified, auto-generates in ./mssql_python_logs/
     
     Examples:
-        from mssql_python import logging
+        import mssql_python
         
         # File only (default, in mssql_python_logs folder)
-        logging.setLevel(logging.FINE)
+        mssql_python.setup_logging()
         
-        # Stdout only
-        logging.setLevel(logging.FINE, logging.STDOUT)
+        # Stdout only (for CI/CD)
+        mssql_python.setup_logging(output='stdout')
         
-        # Both file and stdout
-        logging.setLevel(logging.FINE, logging.BOTH)
+        # Both file and stdout (for development)
+        mssql_python.setup_logging(output='both')
         
         # Custom log file path
-        logging.setLevel(logging.FINE, log_file_path="/var/log/myapp.log")
+        mssql_python.setup_logging(log_file_path="/var/log/myapp.log")
         
         # Custom path with both outputs
-        logging.setLevel(logging.FINE, logging.BOTH, "/tmp/debug.log")
-    """
-    logger.setLevel(level, output, log_file_path)
-
-
-def getLevel() -> int:
-    """Get the current logging level."""
-    return logger.getLevel()
-
-
-def isEnabledFor(level: int) -> bool:
-    """Check if a given log level is enabled."""
-    return logger.isEnabledFor(level)
-
-
-def disable():
-    """
-    Disable all logging.
+        mssql_python.setup_logging(output='both', log_file_path="/tmp/debug.log")
     
-    This is a convenience function that sets the log level to CRITICAL,
-    effectively turning off all diagnostic logging (FINE/FINER/FINEST/INFO/etc).
-    Only CRITICAL messages will be logged.
-    
-    Use this in production when you don't need any logging overhead.
-    
-    Example:
-        from mssql_python import logging
-        
-        # Enable logging for troubleshooting
-        logging.setLevel(logging.FINE)
-        
-        # ... troubleshoot issue ...
-        
-        # Disable logging when done
-        logging.disable()
+    Future Enhancement:
+        For performance analysis, use the universal profiler (coming soon)
+        instead of logging. Logging is not designed for performance measurement.
     """
-    logger.setLevel(logging.CRITICAL)
-
-
-# Backward compatibility function (deprecated)
-def setup_logging(mode: str = 'file', log_level: int = logging.DEBUG):
-    """
-    DEPRECATED: Use logger.setLevel() instead.
-    
-    This function is provided for backward compatibility only.
-    New code should use: logger.setLevel(FINE)
-    
-    Args:
-        mode: Ignored (always logs to file)
-        log_level: Logging level (maps to closest FINE/FINER/FINEST)
-    """
-    # Map old levels to new levels
-    if log_level <= FINEST:
-        logger.setLevel(FINEST)
-    elif log_level <= FINER:
-        logger.setLevel(FINER)
-    elif log_level <= FINE:
-        logger.setLevel(FINE)
-    else:
-        logger.setLevel(log_level)
-    
-    return logger
-
-
-def get_logger():
-    """
-    DEPRECATED: Use 'from mssql_python.logging import logger' instead.
-    
-    Returns:
-        MSSQLLogger: The logger instance
-    """
+    logger._setLevel(logging.DEBUG, output, log_file_path)
     return logger

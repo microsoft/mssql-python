@@ -27,12 +27,10 @@ namespace logging {
 
 // Log level constants (matching Python levels)
 // Note: Avoid using ERROR as it conflicts with Windows.h macro
-const int LOG_LEVEL_FINEST = 5;   // Ultra-detailed trace
-const int LOG_LEVEL_FINER = 15;   // Detailed diagnostics
-const int LOG_LEVEL_FINE = 18;    // Standard diagnostics (below INFO to include INFO messages)
-const int LOG_LEVEL_INFO = 20;    // Informational
-const int LOG_LEVEL_WARNING = 30; // Warnings
-const int LOG_LEVEL_ERROR = 40;   // Errors
+const int LOG_LEVEL_DEBUG = 10;    // Debug/diagnostic logging
+const int LOG_LEVEL_INFO = 20;     // Informational
+const int LOG_LEVEL_WARNING = 30;  // Warnings
+const int LOG_LEVEL_ERROR = 40;    // Errors
 const int LOG_LEVEL_CRITICAL = 50; // Critical errors
 
 /**
@@ -141,30 +139,14 @@ private:
 } // namespace logging
 } // namespace mssql_python
 
-// Convenience macros for logging at different levels
-// These macros include the level check inline for zero overhead
+// Convenience macros for logging
+// Single LOG() macro for all diagnostic logging (DEBUG level)
 
-#define LOG_FINEST(fmt, ...) \
+#define LOG(fmt, ...) \
     do { \
-        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::LOG_LEVEL_FINEST)) { \
+        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::LOG_LEVEL_DEBUG)) { \
             mssql_python::logging::LoggerBridge::log( \
-                mssql_python::logging::LOG_LEVEL_FINEST, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
-        } \
-    } while(0)
-
-#define LOG_FINER(fmt, ...) \
-    do { \
-        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::LOG_LEVEL_FINER)) { \
-            mssql_python::logging::LoggerBridge::log( \
-                mssql_python::logging::LOG_LEVEL_FINER, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
-        } \
-    } while(0)
-
-#define LOG_FINE(fmt, ...) \
-    do { \
-        if (mssql_python::logging::LoggerBridge::isLoggable(mssql_python::logging::LOG_LEVEL_FINE)) { \
-            mssql_python::logging::LoggerBridge::log( \
-                mssql_python::logging::LOG_LEVEL_FINE, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
+                mssql_python::logging::LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__); \
         } \
     } while(0)
 

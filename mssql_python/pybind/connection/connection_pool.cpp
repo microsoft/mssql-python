@@ -6,7 +6,7 @@
 #include <memory>
 #include <vector>
 
-// LOG() migration complete - using LOG_FINE/FINER/FINEST from logger_bridge.hpp
+// Logging uses LOG() macro for all diagnostic output
 #include "logger_bridge.hpp"
 
 ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
@@ -72,7 +72,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(
         try {
             conn->disconnect();
         } catch (const std::exception& ex) {
-            LOG_FINER("Disconnect bad/expired connections failed: %s", ex.what());
+            LOG("Disconnect bad/expired connections failed: %s", ex.what());
         }
     }
     return valid_conn;
@@ -103,7 +103,7 @@ void ConnectionPool::close() {
         try {
             conn->disconnect();
         } catch (const std::exception& ex) {
-            LOG_FINER("ConnectionPool::close: disconnect failed: %s", ex.what());
+            LOG("ConnectionPool::close: disconnect failed: %s", ex.what());
         }
     }
 }
@@ -119,7 +119,7 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(
 
     auto& pool = _pools[connStr];
     if (!pool) {
-        LOG_FINER("Creating new connection pool");
+        LOG("Creating new connection pool");
         pool = std::make_shared<ConnectionPool>(_default_max_size,
                                                 _default_idle_secs);
     }

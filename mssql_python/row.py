@@ -110,19 +110,19 @@ class Row:
 
         # Use the snapshot setting for native_uuid
         native_uuid = self._settings.get("native_uuid")
-        logger.finest( '_process_uuid_values: Processing - native_uuid=%s, value_count=%d', 
+        logger.debug( '_process_uuid_values: Processing - native_uuid=%s, value_count=%d', 
             str(native_uuid), len(values))
 
         # Early return if no conversion needed
         uuid_count = sum(1 for v in values if isinstance(v, uuid.UUID))
         if not native_uuid and uuid_count == 0:
-            logger.finest( '_process_uuid_values: No conversion needed - early return')
+            logger.debug( '_process_uuid_values: No conversion needed - early return')
             return values
 
         # Get pre-identified UUID indices from cursor if available
         uuid_indices = getattr(self._cursor, "_uuid_indices", None)
         processed_values = list(values)  # Create a copy to modify
-        logger.finest( '_process_uuid_values: uuid_indices=%s', 
+        logger.debug( '_process_uuid_values: uuid_indices=%s', 
             str(uuid_indices) if uuid_indices else 'None (will scan)')
 
         # Process only UUID columns when native_uuid is True
@@ -130,7 +130,7 @@ class Row:
             conversion_count = 0
             # If we have pre-identified UUID columns
             if uuid_indices is not None:
-                logger.finest( '_process_uuid_values: Using pre-identified indices - count=%d', len(uuid_indices))
+                logger.debug( '_process_uuid_values: Using pre-identified indices - count=%d', len(uuid_indices))
                 for i in uuid_indices:
                     if i < len(processed_values) and processed_values[i] is not None:
                         value = processed_values[i]
@@ -141,12 +141,12 @@ class Row:
                                 processed_values[i] = uuid.UUID(clean_value)
                                 conversion_count += 1
                             except (ValueError, AttributeError):
-                                logger.finer( '_process_uuid_values: Conversion failed for index=%d', i)
+                                logger.debug( '_process_uuid_values: Conversion failed for index=%d', i)
                                 pass  # Keep original if conversion fails
-                logger.finest( '_process_uuid_values: Converted %d UUID strings to UUID objects', conversion_count)
+                logger.debug( '_process_uuid_values: Converted %d UUID strings to UUID objects', conversion_count)
             # Fallback to scanning all columns if indices weren't pre-identified
             else:
-                logger.finest( '_process_uuid_values: Scanning all columns for GUID type')
+                logger.debug( '_process_uuid_values: Scanning all columns for GUID type')
                 for i, value in enumerate(processed_values):
                     if value is None:
                         continue
@@ -160,9 +160,9 @@ class Row:
                                     processed_values[i] = uuid.UUID(value.strip("{}"))
                                     conversion_count += 1
                                 except (ValueError, AttributeError):
-                                    logger.finer( '_process_uuid_values: Scan conversion failed for index=%d', i)
+                                    logger.debug( '_process_uuid_values: Scan conversion failed for index=%d', i)
                                     pass
-                logger.finest( '_process_uuid_values: Scan converted %d UUID strings', conversion_count)
+                logger.debug( '_process_uuid_values: Scan converted %d UUID strings', conversion_count)
         # When native_uuid is False, convert UUID objects to strings
         else:
             string_conversion_count = 0
@@ -170,7 +170,7 @@ class Row:
                 if isinstance(value, uuid.UUID):
                     processed_values[i] = str(value)
                     string_conversion_count += 1
-            logger.finest( '_process_uuid_values: Converted %d UUID objects to strings', string_conversion_count)
+            logger.debug( '_process_uuid_values: Converted %d UUID objects to strings', string_conversion_count)
 
         return processed_values
 
@@ -187,10 +187,10 @@ class Row:
         from mssql_python.logging import logger
         
         if not self._description:
-            logger.finest( '_apply_output_converters: No description - returning values as-is')
+            logger.debug( '_apply_output_converters: No description - returning values as-is')
             return values
 
-        logger.finest( '_apply_output_converters: Applying converters - value_count=%d', len(values))
+        logger.debug( '_apply_output_converters: Applying converters - value_count=%d', len(values))
 
         converted_values = list(values)
 

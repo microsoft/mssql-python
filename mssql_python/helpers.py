@@ -28,7 +28,7 @@ def add_driver_to_connection_str(connection_str: str) -> str:
     Raises:
         Exception: If the connection string is invalid.
     """
-    logger.finest('add_driver_to_connection_str: Processing connection string (length=%d)', len(connection_str))
+    logger.debug('add_driver_to_connection_str: Processing connection string (length=%d)', len(connection_str))
     driver_name = "Driver={ODBC Driver 18 for SQL Server}"
     try:
         # Strip any leading or trailing whitespace from the connection string
@@ -44,7 +44,7 @@ def add_driver_to_connection_str(connection_str: str) -> str:
         for attribute in connection_attributes:
             if attribute.lower().split("=")[0] == "driver":
                 driver_found = True
-                logger.finest('add_driver_to_connection_str: Existing driver attribute found, removing')
+                logger.debug('add_driver_to_connection_str: Existing driver attribute found, removing')
                 continue
             final_connection_attributes.append(attribute)
 
@@ -54,11 +54,11 @@ def add_driver_to_connection_str(connection_str: str) -> str:
         # Insert the driver attribute at the beginning of the connection string
         final_connection_attributes.insert(0, driver_name)
         connection_str = ";".join(final_connection_attributes)
-        logger.finest('add_driver_to_connection_str: Driver added (had_existing=%s, attr_count=%d)', 
+        logger.debug('add_driver_to_connection_str: Driver added (had_existing=%s, attr_count=%d)', 
             str(driver_found), len(final_connection_attributes))
 
     except Exception as e:
-        logger.finer('add_driver_to_connection_str: Failed to process connection string - %s', str(e))
+        logger.debug('add_driver_to_connection_str: Failed to process connection string - %s', str(e))
         raise ValueError(
             "Invalid connection string, Please follow the format: "
             "Server=server_name;Database=database_name;UID=user_name;PWD=password"
@@ -80,10 +80,10 @@ def check_error(handle_type: int, handle: Any, ret: int) -> None:
         RuntimeError: If an error is found.
     """
     if ret < 0:
-        logger.finer('check_error: Error detected - handle_type=%d, return_code=%d', handle_type, ret)
+        logger.debug('check_error: Error detected - handle_type=%d, return_code=%d', handle_type, ret)
         error_info = ddbc_bindings.DDBCSQLCheckError(handle_type, handle, ret)
         logger.error("Error: %s", error_info.ddbcErrorMsg)
-        logger.finer('check_error: SQL state=%s', error_info.sqlState)
+        logger.debug('check_error: SQL state=%s', error_info.sqlState)
         raise_exception(error_info.sqlState, error_info.ddbcErrorMsg)
 
 
@@ -97,7 +97,7 @@ def add_driver_name_to_app_parameter(connection_string: str) -> str:
     Returns:
         str: The modified connection string.
     """
-    logger.finest('add_driver_name_to_app_parameter: Processing connection string')
+    logger.debug('add_driver_name_to_app_parameter: Processing connection string')
     # Split the input string into key-value pairs
     parameters = connection_string.split(";")
 
@@ -112,7 +112,7 @@ def add_driver_name_to_app_parameter(connection_string: str) -> str:
             app_found = True
             key, _ = param.split("=", 1)
             modified_parameters.append(f"{key}=MSSQL-Python")
-            logger.finest('add_driver_name_to_app_parameter: Existing APP parameter overwritten')
+            logger.debug('add_driver_name_to_app_parameter: Existing APP parameter overwritten')
         else:
             # Keep other parameters as is
             modified_parameters.append(param)
@@ -120,7 +120,7 @@ def add_driver_name_to_app_parameter(connection_string: str) -> str:
     # If APP key is not found, append it
     if not app_found:
         modified_parameters.append("APP=MSSQL-Python")
-        logger.finest('add_driver_name_to_app_parameter: APP parameter added')
+        logger.debug('add_driver_name_to_app_parameter: APP parameter added')
 
     # Join the parameters back into a connection string
     return ";".join(modified_parameters) + ";"
@@ -134,11 +134,11 @@ def sanitize_connection_string(conn_str: str) -> str:
     Returns:
         str: The sanitized connection string.
     """
-    logger.finest('sanitize_connection_string: Sanitizing connection string (length=%d)', len(conn_str))
+    logger.debug('sanitize_connection_string: Sanitizing connection string (length=%d)', len(conn_str))
     # Remove sensitive information from the connection string, Pwd section
     # Replace Pwd=...; or Pwd=... (end of string) with Pwd=***;
     sanitized = re.sub(r"(Pwd\s*=\s*)[^;]*", r"\1***", conn_str, flags=re.IGNORECASE)
-    logger.finest('sanitize_connection_string: Password fields masked')
+    logger.debug('sanitize_connection_string: Password fields masked')
     return sanitized
 
 
@@ -154,10 +154,10 @@ def sanitize_user_input(user_input: str, max_length: int = 50) -> str:
     Returns:
         str: The sanitized string safe for logging.
     """
-    logger.finest('sanitize_user_input: Sanitizing input (type=%s, length=%d)', 
+    logger.debug('sanitize_user_input: Sanitizing input (type=%s, length=%d)', 
         type(user_input).__name__, len(user_input) if isinstance(user_input, str) else 0)
     if not isinstance(user_input, str):
-        logger.finest('sanitize_user_input: Non-string input detected')
+        logger.debug('sanitize_user_input: Non-string input detected')
         return "<non-string>"
 
     # Remove control characters and non-printable characters
@@ -172,7 +172,7 @@ def sanitize_user_input(user_input: str, max_length: int = 50) -> str:
 
     # Return placeholder if nothing remains after sanitization
     result = sanitized if sanitized else "<invalid>"
-    logger.finest('sanitize_user_input: Result length=%d, truncated=%s', len(result), str(was_truncated))
+    logger.debug('sanitize_user_input: Result length=%d, truncated=%s', len(result), str(was_truncated))
     return result
 
 
@@ -198,7 +198,7 @@ def validate_attribute_value(
     Returns:
         tuple: (is_valid, error_message, sanitized_attribute, sanitized_value)
     """
-    logger.finer('validate_attribute_value: Validating attribute=%s, value_type=%s, is_connected=%s',
+    logger.debug('validate_attribute_value: Validating attribute=%s, value_type=%s, is_connected=%s',
         str(attribute), type(value).__name__, str(is_connected))
 
     # Sanitize a value for logging
@@ -226,7 +226,7 @@ def validate_attribute_value(
 
     # Basic attribute validation - must be an integer
     if not isinstance(attribute, int):
-        logger.finer('validate_attribute_value: Attribute not an integer - type=%s', type(attribute).__name__)
+        logger.debug('validate_attribute_value: Attribute not an integer - type=%s', type(attribute).__name__)
         return (
             False,
             f"Attribute must be an integer, got {type(attribute).__name__}",
@@ -246,7 +246,7 @@ def validate_attribute_value(
 
     # Check if attribute is supported
     if attribute not in supported_attributes:
-        logger.finer('validate_attribute_value: Unsupported attribute - attr=%d', attribute)
+        logger.debug('validate_attribute_value: Unsupported attribute - attr=%d', attribute)
         return (
             False,
             f"Unsupported attribute: {attribute}",
@@ -316,7 +316,7 @@ def validate_attribute_value(
         )
 
     # All basic validations passed
-    logger.finest('validate_attribute_value: Validation passed - attr=%d, value_type=%s', attribute, type(value).__name__)
+    logger.debug('validate_attribute_value: Validation passed - attr=%d, value_type=%s', attribute, type(value).__name__)
     return True, None, sanitized_attr, sanitized_val
 
 
