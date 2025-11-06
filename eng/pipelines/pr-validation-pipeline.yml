@@ -180,6 +180,138 @@ jobs:
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
+  # Download and restore AdventureWorks2022 database for benchmarking
+  - powershell: |
+      Write-Host "Downloading AdventureWorks2022.bak..."
+      $ProgressPreference = 'SilentlyContinue'
+      Invoke-WebRequest -Uri "https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak" -OutFile "$env:TEMP\AdventureWorks2022.bak"
+      
+      Write-Host "Restoring AdventureWorks2022 database..."
+      # Get the default data and log paths
+      $dataPath = sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('InstanceDefaultDataPath') AS DataPath" -h -1 -C | Out-String
+      $logPath = sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "SET NOCOUNT ON; SELECT SERVERPROPERTY('InstanceDefaultLogPath') AS LogPath" -h -1 -C | Out-String
+      
+      $dataPath = $dataPath.Trim()
+      $logPath = $logPath.Trim()
+      
+      Write-Host "Data path: $dataPath"
+      Write-Host "Log path: $logPath"
+      
+      # Restore the database
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -C -Q @"
+        RESTORE DATABASE AdventureWorks2022
+        FROM DISK = '$env:TEMP\AdventureWorks2022.bak'
+        WITH 
+          MOVE 'AdventureWorks2022' TO '${dataPath}AdventureWorks2022.mdf',
+          MOVE 'AdventureWorks2022_log' TO '${logPath}AdventureWorks2022_log.ldf',
+          REPLACE
+      "@
+      
+      if ($LASTEXITCODE -eq 0) {
+        Write-Host "AdventureWorks2022 database restored successfully"
+      } else {
+        Write-Error "Failed to restore AdventureWorks2022 database"
+        exit 1
+      }
+    displayName: 'Download and restore AdventureWorks2022 database'
+    condition: eq(variables['sqlVersion'], 'SQL2022')
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  # Run performance benchmarks on SQL Server 2022
+  - powershell: |
+      Write-Host "Checking and installing ODBC Driver 18 for SQL Server..."
+      
+      # Check if ODBC Driver 18 is registered in Windows registry
+      $odbcDriverKey = "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Driver 18 for SQL Server"
+      $driverExists = Test-Path $odbcDriverKey
+      
+      if ($driverExists) {
+        Write-Host "✓ ODBC Driver 18 for SQL Server is already installed and registered"
+        $driverPath = (Get-ItemProperty -Path $odbcDriverKey -Name "Driver" -ErrorAction SilentlyContinue).Driver
+        if ($driverPath) {
+          Write-Host "  Driver location: $driverPath"
+        }
+      } else {
+        Write-Host "ODBC Driver 18 for SQL Server not found, installing..."
+        
+        # Download ODBC Driver 18.5.2.1 (x64) from official Microsoft link
+        $ProgressPreference = 'SilentlyContinue'
+        $installerUrl = "https://go.microsoft.com/fwlink/?linkid=2335671"
+        $installerPath = "$env:TEMP\msodbcsql_18.5.2.1_x64.msi"
+        
+        Write-Host "Downloading ODBC Driver 18 (x64) from Microsoft..."
+        Write-Host "  URL: $installerUrl"
+        try {
+          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+          Write-Host "✓ Download completed: $installerPath"
+        } catch {
+          Write-Error "Failed to download ODBC driver: $_"
+          exit 1
+        }
+        
+        Write-Host "Installing ODBC Driver 18..."
+        $installArgs = @(
+          "/i"
+          "`"$installerPath`""
+          "/quiet"
+          "/qn"
+          "/norestart"
+          "IACCEPTMSODBCSQLLICENSETERMS=YES"
+          "/l*v"
+          "`"$env:TEMP\odbc_install.log`""
+        )
+        
+        $installCmd = "msiexec.exe $($installArgs -join ' ')"
+        Write-Host "  Command: $installCmd"
+        
+        $process = Start-Process msiexec.exe -ArgumentList $installArgs -Wait -PassThru -NoNewWindow
+        
+        if ($process.ExitCode -eq 0) {
+          Write-Host "✓ ODBC Driver 18 installation completed successfully"
+        } elseif ($process.ExitCode -eq 3010) {
+          Write-Host "✓ ODBC Driver 18 installed (reboot recommended but not required)"
+        } else {
+          Write-Error "ODBC Driver 18 installation failed with exit code: $($process.ExitCode)"
+          Write-Host "Check installation log: $env:TEMP\odbc_install.log"
+          Get-Content "$env:TEMP\odbc_install.log" -Tail 50 -ErrorAction SilentlyContinue
+          exit 1
+        }
+        
+        # Wait for registry update
+        Start-Sleep -Seconds 2
+        
+        # Clean up installer
+        Remove-Item $installerPath -ErrorAction SilentlyContinue
+      }
+      
+      # Final verification using registry
+      Write-Host "`nVerifying ODBC Driver 18 installation..."
+      $verifyKey = Test-Path "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Driver 18 for SQL Server"
+      
+      if ($verifyKey) {
+        $driverInfo = Get-ItemProperty -Path "HKLM:\SOFTWARE\ODBC\ODBCINST.INI\ODBC Driver 18 for SQL Server" -ErrorAction SilentlyContinue
+        Write-Host "✓ SUCCESS: ODBC Driver 18 for SQL Server is registered"
+        Write-Host "  Driver: $($driverInfo.Driver)"
+        Write-Host "  Setup: $($driverInfo.Setup)"
+      } else {
+        Write-Error "ODBC Driver 18 for SQL Server is not registered in ODBC"
+        Write-Host "`nListing all installed ODBC drivers from registry:"
+        Get-ChildItem "HKLM:\SOFTWARE\ODBC\ODBCINST.INI" -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  - $($_.PSChildName)" }
+        exit 1
+      }
+      
+      Write-Host "`nInstalling pyodbc..."
+      pip install pyodbc
+      
+      Write-Host "`nRunning performance benchmarks..."
+      python benchmarks/perf-benchmarking.py
+    displayName: 'Run performance benchmarks on SQL Server 2022'
+    condition: eq(variables['sqlVersion'], 'SQL2022')
+    continueOnError: true
+    env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
   - task: CopyFiles@2
     inputs:
       SourceFolder: 'mssql_python'
@@ -496,6 +628,92 @@ jobs:
       fi
     displayName: 'Run pytest with coverage in $(distroName) container'
     condition: or(eq(variables['useAzureSQL'], 'false'), and(eq(variables['useAzureSQL'], 'true'), ne(variables['AZURE_CONNECTION_STRING'], '')))
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Download and restore AdventureWorks2022 database for benchmarking on Ubuntu only
+      if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
+        echo "Downloading AdventureWorks2022.bak..."
+        wget -q https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak -O /tmp/AdventureWorks2022.bak
+        
+        echo "Copying backup file into SQL Server container..."
+        docker cp /tmp/AdventureWorks2022.bak sqlserver-$(distroName):/tmp/AdventureWorks2022.bak
+        
+        echo "Restoring AdventureWorks2022 database..."
+        docker exec sqlserver-$(distroName) /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost \
+          -U SA \
+          -P "$(DB_PASSWORD)" \
+          -C \
+          -Q "RESTORE DATABASE AdventureWorks2022 FROM DISK = '/tmp/AdventureWorks2022.bak' WITH MOVE 'AdventureWorks2022' TO '/var/opt/mssql/data/AdventureWorks2022.mdf', MOVE 'AdventureWorks2022_log' TO '/var/opt/mssql/data/AdventureWorks2022_log.ldf', REPLACE"
+        
+        if [ $? -eq 0 ]; then
+          echo "AdventureWorks2022 database restored successfully"
+        else
+          echo "Failed to restore AdventureWorks2022 database"
+        fi
+        
+        # Clean up (ignore errors if files are locked)
+        rm -f /tmp/AdventureWorks2022.bak || true
+        docker exec sqlserver-$(distroName) rm -f /tmp/AdventureWorks2022.bak || true
+      fi
+    displayName: 'Download and restore AdventureWorks2022 database in $(distroName)'
+    condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    continueOnError: true
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      # Run performance benchmarks on Ubuntu with SQL Server 2022 only
+      if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
+        SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+        echo "Running performance benchmarks on Ubuntu with SQL Server IP: $SQLSERVER_IP"
+        
+        docker exec \
+          -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+          test-container-$(distroName) bash -c "
+          source /opt/venv/bin/activate
+          
+          echo 'Reinstalling ODBC Driver for benchmarking...'
+          export DEBIAN_FRONTEND=noninteractive
+          
+          # Remove duplicate repository sources if they exist
+          rm -f /etc/apt/sources.list.d/microsoft-prod.list
+          
+          # Add Microsoft repository
+          curl -sSL https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
+          curl -sSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list > /etc/apt/sources.list.d/mssql-release.list
+          
+          # Update package lists
+          apt-get update -qq
+          
+          # Install unixodbc and its dependencies first (provides libodbcinst.so.2 needed by msodbcsql18)
+          echo 'Installing unixODBC dependencies...'
+          apt-get install -y --no-install-recommends unixodbc unixodbc-dev libodbc1 odbcinst odbcinst1debian2
+          
+          # Verify libodbcinst.so.2 is available
+          ldconfig
+          ls -la /usr/lib/x86_64-linux-gnu/libodbcinst.so.2 || echo 'Warning: libodbcinst.so.2 not found'
+          
+          # Install ODBC Driver 18
+          echo 'Installing msodbcsql18...'
+          ACCEPT_EULA=Y apt-get install -y msodbcsql18
+          
+          # Verify ODBC driver installation
+          odbcinst -q -d -n 'ODBC Driver 18 for SQL Server' || echo 'Warning: ODBC Driver 18 not registered'
+          
+          echo 'Installing pyodbc for benchmarking...'
+          pip install pyodbc
+          echo 'Running performance benchmarks on $(distroName)'
+          python benchmarks/perf-benchmarking.py || echo 'Performance benchmark failed or database not available'
+        "
+      else
+        echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"
+      fi
+    displayName: 'Run performance benchmarks in $(distroName) container'
+    condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+    continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
