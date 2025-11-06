@@ -151,12 +151,13 @@ void LoggerBridge::log(int level, const char* file, int line,
     // Extract filename from path
     const char* filename = extractFilename(file);
     
-    // Format the complete log message with file:line prefix using safe std::snprintf
+    // Format the complete log message with [DDBC] prefix for CSV parsing
+    // File and line number are handled by the Python formatter (in Location column)
     // std::snprintf is safe: always null-terminates, never overflows buffer
     // DevSkim warning is false positive - this is the recommended safe alternative
     char complete_message[4096];
     int written = std::snprintf(complete_message, sizeof(complete_message), 
-                               "[DDBC] %s [%s:%d]", message.c_str(), filename, line);
+                               "[DDBC] %s", message.c_str());
     
     // Ensure null-termination (snprintf guarantees this, but be explicit)
     if (written >= static_cast<int>(sizeof(complete_message))) {
@@ -170,12 +171,28 @@ void LoggerBridge::log(int level, const char* file, int line,
         // Acquire GIL for Python API call
         py::gil_scoped_acquire gil;
         
-        // Call Python logger's log method
-        // logger.log(level, message)
+        // Get the logger object
         py::handle logger_handle(cached_logger_);
         py::object logger_obj = py::reinterpret_borrow<py::object>(logger_handle);
         
-        logger_obj.attr("_log")(level, complete_message);
+        // Get the underlying Python logger to create LogRecord with correct filename/lineno
+        py::object py_logger = logger_obj.attr("_logger");
+        
+        // Call makeRecord to create a LogRecord with correct attributes
+        py::object record = py_logger.attr("makeRecord")(
+            py_logger.attr("name"),           // name
+            py::int_(level),                  // level
+            py::str(filename),                // pathname (just filename)
+            py::int_(line),                   // lineno
+            py::str(complete_message),        // msg
+            py::tuple(),                      // args
+            py::none(),                       // exc_info
+            py::str(filename),                // func (use filename as func name)
+            py::none()                        // extra
+        );
+        
+        // Call handle() to process the record through filters and handlers
+        py_logger.attr("handle")(record);
         
     } catch (const py::error_already_set& e) {
         // Python error during logging - ignore to prevent cascading failures

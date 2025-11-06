@@ -9,10 +9,12 @@ This module provides fine-grained logging control with zero overhead when disabl
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import sys
 import threading
 import datetime
 import re
 import contextvars
+import platform
 from typing import Optional
 
 
@@ -30,12 +32,17 @@ _trace_id_var = contextvars.ContextVar('trace_id', default=None)
 
 
 class TraceIDFilter(logging.Filter):
-    """Filter that adds trace_id to all log records."""
+    """Filter that adds thread_id to all log records."""
     
     def filter(self, record):
-        """Add trace_id attribute to log record."""
-        trace_id = _trace_id_var.get()
-        record.trace_id = trace_id if trace_id else '-'
+        """Add thread_id (OS native) attribute to log record."""
+        # Use OS native thread ID for debugging compatibility
+        try:
+            thread_id = threading.get_native_id()
+        except AttributeError:
+            # Fallback for Python < 3.8
+            thread_id = threading.current_thread().ident
+        record.thread_id = thread_id
         return True
 
 
@@ -115,10 +122,37 @@ class MSSQLLogger:
         self._file_handler = None
         self._stdout_handler = None
         
-        # Create formatter (same for all handlers)
-        formatter = logging.Formatter(
-            '%(asctime)s [%(trace_id)s] - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
-        )
+        # Create CSV formatter
+        # Custom formatter to extract source from message and format as CSV
+        class CSVFormatter(logging.Formatter):
+            def format(self, record):
+                # Extract source from message (e.g., [Python] or [DDBC])
+                msg = record.getMessage()
+                if msg.startswith('[') and ']' in msg:
+                    end_bracket = msg.index(']')
+                    source = msg[1:end_bracket]
+                    message = msg[end_bracket+2:].strip()  # Skip '] '
+                else:
+                    source = 'Unknown'
+                    message = msg
+                
+                # Format timestamp with milliseconds using period separator
+                timestamp = self.formatTime(record, '%Y-%m-%d %H:%M:%S')
+                timestamp_with_ms = f"{timestamp}.{int(record.msecs):03d}"
+                
+                # Get thread ID
+                thread_id = getattr(record, 'thread_id', 0)
+                
+                # Build CSV row
+                location = f"{record.filename}:{record.lineno}"
+                csv_row = f"{timestamp_with_ms}, {thread_id}, {record.levelname}, {location}, {source}, {message}"
+                
+                return csv_row
+        
+        formatter = CSVFormatter()
+        
+        # Override format to use milliseconds with period separator
+        formatter.default_msec_format = '%s.%03d'
         
         # Setup file handler if needed
         if self._output_mode in (FILE, BOTH):
@@ -135,7 +169,7 @@ class MSSQLLogger:
                 if not os.path.exists(log_dir):
                     os.makedirs(log_dir, exist_ok=True)
                 
-                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
                 pid = os.getpid()
                 self._log_file = os.path.join(
                     log_dir,
@@ -150,6 +184,9 @@ class MSSQLLogger:
             )
             self._file_handler.setFormatter(formatter)
             self._logger.addHandler(self._file_handler)
+            
+            # Write CSV header to new log file
+            self._write_log_header()
         else:
             # No file logging - clear the log file path
             self._log_file = None
@@ -167,6 +204,52 @@ class MSSQLLogger:
         Closes existing handlers and creates new ones based on current output mode.
         """
         self._setup_handlers()
+    
+    def _write_log_header(self):
+        """
+        Write CSV header and metadata to the log file.
+        Called once when log file is created.
+        """
+        if not self._log_file or not self._file_handler:
+            return
+        
+        try:
+            # Get script name from sys.argv or __main__
+            script_name = os.path.basename(sys.argv[0]) if sys.argv else '<interactive>'
+            
+            # Get Python version
+            python_version = platform.python_version()
+            
+            # Get driver version (try to import from package)
+            try:
+                from mssql_python import __version__
+                driver_version = __version__
+            except:
+                driver_version = 'unknown'
+            
+            # Get current time
+            start_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Get PID
+            pid = os.getpid()
+            
+            # Get OS info
+            os_info = platform.platform()
+            
+            # Build header comment line
+            header_line = f"# MSSQL-Python Driver Log | Script: {script_name} | PID: {pid} | Log Level: DEBUG | Python: {python_version} | Driver: {driver_version} | Start: {start_time} | OS: {os_info}\n"
+            
+            # CSV column headers
+            csv_header = "Timestamp, ThreadID, Level, Location, Source, Message\n"
+            
+            # Write directly to file (bypass formatter)
+            with open(self._log_file, 'a') as f:
+                f.write(header_line)
+                f.write(csv_header)
+                
+        except Exception as e:
+            # Don't fail if header writing fails
+            pass
     
     @staticmethod
     def _sanitize_message(msg: str) -> str:
