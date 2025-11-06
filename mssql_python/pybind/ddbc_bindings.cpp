@@ -2306,6 +2306,7 @@ SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle) {
 
 // Wrap SQLDescribeCol
 SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMetadata) {
+    PROFILE_SCOPE("SQLDescribeCol_wrap");
     LOG("Get column description");
     if (!SQLDescribeCol_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -2521,6 +2522,7 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
 
 // Helper function to retrieve column data
 SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, py::list& row) {
+    PROFILE_SCOPE("SQLGetData_wrap");
     LOG("Get data from columns");
     if (!SQLGetData_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -3030,6 +3032,7 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
 // TODO: Move to anonymous namespace, since it is not used outside this file
 SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
                         SQLUSMALLINT numCols, int fetchSize) {
+    PROFILE_SCOPE("SQLBindColums");
     SQLRETURN ret = SQL_SUCCESS;
     // Bind columns based on their data types
     for (SQLUSMALLINT col = 1; col <= numCols; col++) {
@@ -3186,8 +3189,14 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
 // TODO: Move to anonymous namespace, since it is not used outside this file
 SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
                          py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched, const std::vector<SQLUSMALLINT>& lobColumns) {
+    PROFILE_SCOPE("FetchBatchData");
     LOG("Fetching data in batches");
-    SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
+    
+    SQLRETURN ret;
+    {
+        PROFILE_SCOPE("SQLFetchScroll");
+        ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
+    }
     if (ret == SQL_NO_DATA) {
         LOG("No data to fetch");
         return ret;
@@ -3222,9 +3231,11 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         rows.append(py::none());
     }
     
-    for (SQLULEN i = 0; i < numRowsFetched; i++) {
-        // Create row container pre-allocated with known column count
-        py::list row(numCols);
+    {
+        PROFILE_SCOPE("RowConstruction");
+        for (SQLULEN i = 0; i < numRowsFetched; i++) {
+            // Create row container pre-allocated with known column count
+            py::list row(numCols);
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
             const ColumnInfo& colInfo = columnInfos[col - 1];
             SQLSMALLINT dataType = colInfo.dataType;
@@ -3450,7 +3461,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
             }
         }
-        rows[initialSize + i] = row;
+            rows[initialSize + i] = row;
+        }
     }
     return ret;
 }
