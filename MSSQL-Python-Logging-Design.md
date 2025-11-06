@@ -243,7 +243,7 @@ BOTH = 'both'      # Log to both file and stdout
 - **Naming**: `mssql_python_trace_YYYYMMDDHHMMSS_PID.log` (timestamp with no separators)
 - **Custom Path**: Users can specify via `log_file_path` parameter (creates parent directories if needed)
 - **Rotation**: 512MB max, 5 backup files
-- **Format**: CSV with columns: `Timestamp, ThreadID, Level, Location, Source, Message`
+- **Format**: Comma-separated fields: `Timestamp, ThreadID, Level, Location, Source, Message` (importable as CSV)
 - **Header**: File includes metadata header with PID, script name, Python version, driver version, start time, OS info
 
 **Output Handler Configuration**
@@ -274,7 +274,7 @@ The logging system uses **OS native thread IDs** to track operations across mult
    - Compatible with system monitoring tools
    - Thread-safe, no locks required
 
-2. **CSV Format Benefits:**
+2. **Log Format:**
    ```
    Timestamp, ThreadID, Level, Location, Source, Message
    2025-11-06 10:30:15.100, 8581947520, DEBUG, connection.py:156, Python, Allocating environment handle
@@ -282,12 +282,12 @@ The logging system uses **OS native thread IDs** to track operations across mult
    2025-11-06 10:30:15.200, 8582001664, DEBUG, connection.py:42, Python, Different thread operation
    ```
    
-   **Advantages:**
-   - Easy parsing with pandas, Excel, or other CSV tools
-   - ThreadID column for filtering by thread
-   - Source column distinguishes Python vs DDBC (C++) operations
-   - Location column shows exact file:line
-   - Timestamp with milliseconds (period separator: `.100` not `,100`)
+   **Structure:**
+   - ThreadID for filtering by thread
+   - Source distinguishes Python vs DDBC (C++) operations
+   - Location shows exact file:line
+   - Timestamp with milliseconds
+   - Comma-separated fields (importable as CSV if needed)
 
 3. **Automatic Injection:**
    - Custom `logging.Filter` adds thread_id to LogRecord using `threading.get_native_id()`
@@ -306,7 +306,7 @@ The logging system uses **OS native thread IDs** to track operations across mult
            return True
    
    class CSVFormatter(logging.Formatter):
-       """Formats logs as CSV with Source extraction"""
+       """Formats logs with structured fields"""
        def format(self, record):
            # Extract source from message prefix [Python] or [DDBC]
            source = 'Python'
@@ -365,23 +365,7 @@ Timestamp, ThreadID, Level, Location, Source, Message
 2025-11-06 20:42:39.711, 1347850, DEBUG, connection.py:234, Python, Connection closed
 ```
 
-**CSV Parsing Example:**
-```python
-import pandas as pd
 
-# Read log file (skip header line with #)
-df = pd.read_csv('mssql_python_logs/mssql_python_trace_20251106204011_80677.log', comment='#')
-
-# Filter by thread
-thread_logs = df[df['ThreadID'] == 1347850]
-
-# Find all queries
-queries = df[df['Message'].str.contains('Executing query', na=False)]
-
-# Analyze by source
-python_ops = df[df['Source'] == 'Python']
-ddbc_ops = df[df['Source'] == 'DDBC']
-```
 
 
 **Multi-Threaded Example:**
@@ -1242,7 +1226,6 @@ cursor.execute("SELECT 1")
 conn.close()
 
 # That's it! Logs are in ./mssql_python_logs/mssql_python_trace_*.log
-# CSV format for easy analysis in Excel/pandas
 ```
 
 ### Example 2: With Output Control
@@ -1284,7 +1267,7 @@ conn.close()
 # Passwords will be automatically sanitized in logs
 ```
 
-**Expected Log Output (CSV format)**:
+**Expected Log Output**:
 ```
 # MSSQL-Python Driver Log | Script: app.py | PID: 12345 | Log Level: DEBUG | Python: 3.13.7 | Start: 2025-11-06 14:30:22
 Timestamp, ThreadID, Level, Location, Source, Message

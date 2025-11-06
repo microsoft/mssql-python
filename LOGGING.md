@@ -145,7 +145,6 @@ mssql_python.setup_logging()
 # Files are automatically rotated at 512MB, keeps 5 backups
 # File location: ./mssql_python_logs/mssql_python_trace_YYYYMMDDHHMMSS_PID.log
 # (mssql_python_logs folder is created automatically if it doesn't exist)
-# Logs are in CSV format for easy analysis in Excel/pandas
 
 conn = mssql_python.connect(server='localhost', database='testdb')
 
@@ -179,11 +178,9 @@ conn = mssql_python.connect(server='localhost', database='testdb')
 
 ## Log Output Examples
 
-### Standard Output (CSV Format)
+### Standard Output
 
 When logging is enabled, you see EVERYTHING - SQL statements, parameters, internal operations.
-
-Logs are in **CSV format** for easy parsing and analysis:
 
 **File Header:**
 ```
@@ -202,8 +199,8 @@ Timestamp, ThreadID, Level, Location, Source, Message
 2025-11-06 10:30:15.790, 8581947520, DEBUG, cursor.py:201, Python, Row buffer allocated
 ```
 
-**CSV Columns:**
-- **Timestamp**: Date and time with milliseconds (period separator)
+**Log Format:**
+- **Timestamp**: Date and time with milliseconds
 - **ThreadID**: OS native thread ID (matches debugger thread IDs)
 - **Level**: DEBUG, INFO, WARNING, ERROR
 - **Location**: filename:line_number
@@ -278,27 +275,23 @@ cursor.execute("SELECT * FROM users")
 **Why Thread IDs Matter:**
 - **Multi-threading**: Distinguish logs from different threads writing to the same file
 - **Connection pools**: Track which thread is handling which connection
-- **Debugging**: Filter logs with `awk -F, '$2 == 8581947520' logfile.log` (filter by thread ID)
+- **Debugging**: Filter logs by thread ID using text tools (grep, awk, etc.)
 - **Performance analysis**: Measure duration of specific operations per thread
 - **Debugger Correlation**: Thread ID matches debugger views for easy debugging
 
-**CSV Format Benefits:**
+### Importing Logs as CSV (Optional)
+
+Log files use comma-separated format and can be imported into spreadsheet tools:
+
 ```python
 import pandas as pd
 
-# Easy log analysis
+# Import log file (skip header lines starting with #)
 df = pd.read_csv('mssql_python_logs/mssql_python_trace_20251106103015_12345.log', 
-                 comment='#')  # Skip header
-                 
-# Filter by thread
+                 comment='#')
+
+# Filter by thread, analyze queries, etc.
 thread_logs = df[df['ThreadID'] == 8581947520]
-
-# Find slow queries
-queries = df[df['Message'].str.contains('Executing query')]
-
-# Analyze by source (Python vs DDBC)
-python_ops = df[df['Source'] == 'Python']
-ddbc_ops = df[df['Source'] == 'DDBC']
 ```
 
 ### Programmatic Log Access (Advanced)
