@@ -3192,11 +3192,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     PROFILE_SCOPE("FetchBatchData");
     LOG("Fetching data in batches");
     
-    SQLRETURN ret;
-    {
-        PROFILE_SCOPE("SQLFetchScroll");
-        ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
-    }
+    SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
     if (ret == SQL_NO_DATA) {
         LOG("No data to fetch");
         return ret;
@@ -3231,11 +3227,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         rows.append(py::none());
     }
     
-    {
-        PROFILE_SCOPE("RowConstruction");
-        for (SQLULEN i = 0; i < numRowsFetched; i++) {
-            // Create row container pre-allocated with known column count
-            py::list row(numCols);
+    for (SQLULEN i = 0; i < numRowsFetched; i++) {
+        // Create row container pre-allocated with known column count
+        py::list row(numCols);
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
             const ColumnInfo& colInfo = columnInfos[col - 1];
             SQLSMALLINT dataType = colInfo.dataType;
@@ -3461,8 +3455,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
             }
         }
-            rows[initialSize + i] = row;
-        }
+        rows[initialSize + i] = row;
     }
     return ret;
 }
