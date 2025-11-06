@@ -1,10 +1,30 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM Usage: build.bat [ARCH], If ARCH is not specified, it defaults to x64.
+REM Usage: build.bat [ARCH] [MODE], If ARCH is not specified, it defaults to x64.
+REM MODE can be 'profile' or '--profile' to enable profiling instrumentation
 set ARCH=%1
 if "%ARCH%"=="" set ARCH=x64
+
+REM Check for profiling mode
+set PROFILING_MODE=0
+if /i "%2"=="profile" set PROFILING_MODE=1
+if /i "%2"=="--profile" set PROFILING_MODE=1
+if /i "%1"=="profile" (
+    set PROFILING_MODE=1
+    set ARCH=x64
+)
+if /i "%1"=="--profile" (
+    set PROFILING_MODE=1
+    set ARCH=x64
+)
+
 echo [DIAGNOSTIC] Target Architecture set to: %ARCH%
+if %PROFILING_MODE%==1 (
+    echo [MODE] C++ Profiling: ENABLED
+) else (
+    echo [MODE] C++ Profiling: DISABLED
+)
 
 REM Clean up main build directory if it exists
 echo Checking for main build directory...
@@ -109,8 +129,13 @@ if errorlevel 1 (
 )
 
 REM Now invoke CMake with correct source path (options first, path last!)
-echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
-cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
+if %PROFILING_MODE%==1 (
+    echo [DIAGNOSTIC] Running CMake configure with profiling: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% -DCMAKE_CXX_FLAGS="/DENABLE_PROFILING" -DCMAKE_C_FLAGS="/DENABLE_PROFILING" "%SOURCE_DIR:~0,-1%"
+    cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% -DCMAKE_CXX_FLAGS="/DENABLE_PROFILING" -DCMAKE_C_FLAGS="/DENABLE_PROFILING" "%SOURCE_DIR:~0,-1%"
+) else (
+    echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
+    cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
+)
 echo [DIAGNOSTIC] CMake configure exit code: %errorlevel%
 if errorlevel 1 (
     echo [ERROR] CMake configuration failed

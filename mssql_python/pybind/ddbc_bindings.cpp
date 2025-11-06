@@ -4,6 +4,7 @@
 // INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
 //             taken up in beta release
 #include "ddbc_bindings.h"
+#include "profiling.h"
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
 
@@ -3636,6 +3637,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 // row data. If there are no more rows to fetch, it returns SQL_NO_DATA. If an error occurs during
 // fetching, it throws a runtime error.
 SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
+    PROFILE_SCOPE("FetchAll_wrap");
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
@@ -3987,6 +3989,15 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
+    
+    // Add profiling functions
+    m.def("print_profiling_stats", []() {
+        PROFILE_PRINT();
+    }, "Print C++ profiling statistics (only if compiled with ENABLE_PROFILING)");
+    
+    m.def("reset_profiling_stats", []() {
+        PROFILE_RESET();
+    }, "Reset C++ profiling statistics (only if compiled with ENABLE_PROFILING)");
     
     try {
         // Try loading the ODBC driver when the module is imported

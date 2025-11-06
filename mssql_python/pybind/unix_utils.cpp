@@ -7,6 +7,7 @@
 // differences specific to macOS.
 
 #include "unix_utils.h"
+#include "profiling.h"
 #include <iostream>
 #include <string>
 #include <utility>
@@ -43,6 +44,7 @@ void LOG(const std::string& formatString, Args&&... args) {
 // OPTIMIZED: Convert SQLWCHAR (UTF-16LE) to std::wstring (UTF-32) using Python C API
 // This replaces the broken std::wstring_convert implementation
 std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
+    PROFILE_SCOPE("SQLWCHARToWString");
     if (!sqlwStr) return std::wstring();
 
     if (length == SQL_NTS) {
@@ -197,6 +199,7 @@ std::string SQLWCHARToUTF8String(const SQLWCHAR* buffer) {
 // 3. Avoids expensive UTF-16 -> UTF-32 -> Python conversion chain
 // 4. No std::wstring_convert overhead
 py::object SQLWCHARToPyString(const SQLWCHAR* sqlwStr, size_t length) {
+    PROFILE_SCOPE("SQLWCHARToPyString");
     if (!sqlwStr || length == 0) {
         return py::str("");
     }

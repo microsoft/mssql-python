@@ -26,11 +26,16 @@ else
     exit 1
 fi
 
-# Check for coverage mode and set flags accordingly
+# Check for coverage mode and profiling mode
 COVERAGE_MODE=false
+PROFILING_MODE=false
+
 if [[ "${1:-}" == "codecov" || "${1:-}" == "--coverage" ]]; then
     COVERAGE_MODE=true
     echo "[MODE] Enabling Clang coverage instrumentation"
+elif [[ "${1:-}" == "profile" || "${1:-}" == "--profile" ]]; then
+    PROFILING_MODE=true
+    echo "[MODE] Enabling C++ performance profiling instrumentation"
 fi
 
 # Get Python version from active interpreter
@@ -60,7 +65,7 @@ mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 echo "[DIAGNOSTIC] Changed to build directory: ${BUILD_DIR}"
 
-# Configure CMake (with Clang coverage instrumentation on Linux only - codecov is not supported for macOS)
+# Configure CMake (with Clang coverage instrumentation or profiling)
 echo "[DIAGNOSTIC] Running CMake configure"
 if [[ "$COVERAGE_MODE" == "true" && "$OS" == "Linux" ]]; then
     echo "[ACTION] Configuring for Linux with Clang coverage instrumentation"
@@ -70,6 +75,19 @@ if [[ "$COVERAGE_MODE" == "true" && "$OS" == "Linux" ]]; then
           -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
           -DCMAKE_C_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
           "${SOURCE_DIR}"
+elif [[ "$PROFILING_MODE" == "true" ]]; then
+    echo "[ACTION] Configuring with C++ profiling enabled (ENABLE_PROFILING flag)"
+    if [[ "$OS" == "macOS" ]]; then
+        cmake -DMACOS_STRING_FIX=ON \
+              -DCMAKE_CXX_FLAGS="-DENABLE_PROFILING" \
+              -DCMAKE_C_FLAGS="-DENABLE_PROFILING" \
+              "${SOURCE_DIR}"
+    else
+        cmake -DARCHITECTURE="$DETECTED_ARCH" \
+              -DCMAKE_CXX_FLAGS="-DENABLE_PROFILING" \
+              -DCMAKE_C_FLAGS="-DENABLE_PROFILING" \
+              "${SOURCE_DIR}"
+    fi
 else
     if [[ "$OS" == "macOS" ]]; then
         echo "[ACTION] Configuring for macOS (default build)"
