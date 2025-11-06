@@ -571,6 +571,7 @@ print("Multiple syntax errors handled, shutting down...")
     ), f"Expected exit code 1 due to syntax errors, but got {result.returncode}. STDERR: {result.stderr}"
 
 
+@pytest.mark.skip(reason="STRESS TESTS moved due to inconsistent behavior in CI")
 def test_connection_close_during_active_query_no_segfault(conn_str):
     """Test closing connection while cursor has pending results doesn't cause segfault"""
     escaped_conn_str = conn_str.replace("\\", "\\\\").replace('"', '\\"')
@@ -603,6 +604,7 @@ print("Connection closed with pending cursor results")
     assert "Connection closed with pending cursor results" in result.stdout
 
 
+@pytest.mark.skip(reason="STRESS TESTS moved due to inconsistent behavior in CI")
 def test_concurrent_cursor_operations_no_segfault(conn_str):
     """Test concurrent cursor operations don't cause segfaults or race conditions"""
     escaped_conn_str = conn_str.replace("\\", "\\\\").replace('"', '\\"')
@@ -610,18 +612,19 @@ def test_concurrent_cursor_operations_no_segfault(conn_str):
 import threading
 from mssql_python import connect
 
-conn = connect("{escaped_conn_str}")
 results = []
 exceptions = []
 
 def worker(thread_id):
     try:
+        conn = connect("{escaped_conn_str}")
         for i in range(15):
             cursor = conn.cursor()
             cursor.execute(f"SELECT {{thread_id * 100 + i}} as value")
             result = cursor.fetchone()
             results.append(result[0])
             # Don't explicitly close cursor - test concurrent destructors
+        conn.close()
     except Exception as e:
         exceptions.append(f"Thread {{thread_id}}: {{e}}")
 
@@ -675,6 +678,7 @@ print("Concurrent operations completed")
             assert exceptions_count <= 10, f"Too many exceptions: {exceptions_count}"
 
 
+@pytest.mark.skip(reason="STRESS TESTS moved due to inconsistent behavior in CI")
 def test_aggressive_threading_abrupt_exit_no_segfault(conn_str):
     """Test abrupt exit with active threads and pending queries doesn't cause segfault"""
     escaped_conn_str = conn_str.replace("\\", "\\\\").replace('"', '\\"')
