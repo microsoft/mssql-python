@@ -3227,11 +3227,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         rows.append(py::none());
     }
     
-    {
-        PROFILE_SCOPE("RowProcessing_Total");
-        for (SQLULEN i = 0; i < numRowsFetched; i++) {
-            // Create row container pre-allocated with known column count
-            py::list row(numCols);
+    for (SQLULEN i = 0; i < numRowsFetched; i++) {
+        // Create row container pre-allocated with known column count
+        py::list row(numCols);
             for (SQLUSMALLINT col = 1; col <= numCols; col++) {
             const ColumnInfo& colInfo = columnInfos[col - 1];
             SQLSMALLINT dataType = colInfo.dataType;
@@ -3459,7 +3457,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         }
         rows[initialSize + i] = row;
     }
-    }  // End RowProcessing_Total scope
     return ret;
 }
 
