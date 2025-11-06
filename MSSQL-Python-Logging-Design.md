@@ -1,7 +1,7 @@
-# Enhanced Logging System Design for mssql-python
+# Simplified Logging System Design for mssql-python
 
-**Version:** 1.0  
-**Date:** October 31, 2025  
+**Version:** 2.0  
+**Date:** November 6, 2025  
 **Status:** Design Document  
 
 ---
@@ -24,25 +24,35 @@
 
 ## Executive Summary
 
-This document describes a **simplified, high-performance logging system** for mssql-python that:
+This document describes a **simplified, single-level logging system** for mssql-python that:
 
-- ✅ Uses Driver Levels (FINE/FINER/FINEST) for granular diagnostics
-- ✅ Provides **zero-overhead** when logging is disabled
+- ✅ Uses **DEBUG level only** - no categorization
+- ✅ Provides **all-or-nothing** logging (if enabled, see everything)
 - ✅ Uses **single Python logger** with cached C++ access
 - ✅ Maintains **log sequence integrity** (single writer)
 - ✅ Simplifies architecture (2 components only)
-- ✅ Enables granular debugging without performance penalty
+- ✅ Clear performance warning (don't enable without reason)
+- ✅ Future: Universal profiler for performance analysis (separate from logging)
 
-### Key Differences from Current System
+### Key Philosophy
 
-| Aspect | Current System | New System |
+**"If you need logging, you need to see what's broken"**
+
+- No partial information through level filtering
+- Logging is a troubleshooting tool, not a production feature
+- Enable when debugging, disable otherwise
+- Performance analysis will be handled by a future profiler enhancement
+
+### Key Differences from Previous System
+
+| Aspect | Previous System | New System |
 | --- | --- | --- |
-| **Levels** | INFO/DEBUG | **FINE/FINER/FINEST** (Driver Levels, primary)<br>INFO/WARNING/ERROR (Python standard, compatible) |
-| **User API** | `setup_logging(mode)` | `logger.setLevel(level)` |
-| **C++ Integration** | Always callback | Cached + level check |
-| **Performance** | Minor overhead | Zero overhead when OFF |
-| **Complexity** | LoggingManager singleton | Simple Python logger |
-| **Files** | `logging_config.py` | `logging.py` + C++ bridge |
+| **Levels** | FINE/FINER/FINEST | **DEBUG only** (all or nothing) |
+| **User API** | `logger.setLevel(level)` | `setup_logging()` |
+| **Philosophy** | Granular control | All or nothing - see everything or nothing |
+| **Performance** | Minor overhead | Same overhead, but clearer warning |
+| **Use Case** | Diagnostics at different levels | Troubleshooting only (profiler for perf) |
+| **Complexity** | Multiple levels | Single level - simpler |
 
 ---
 
@@ -50,17 +60,18 @@ This document describes a **simplified, high-performance logging system** for ms
 
 ### Primary Goals
 
-1. **Performance First**: Zero overhead when logging disabled
-2. **Simplicity**: Minimal components, clear data flow
-3. **Granular Diagnostics**: Driver Levels (FINE/FINER/FINEST) for detailed troubleshooting
-4. **Maintainability**: Easy for future developers to understand
-5. **Flexibility**: Users control logging without code changes
+1. **Simplicity First**: Single level (DEBUG) - all or nothing
+2. **Clear Purpose**: Logging is for troubleshooting, not production monitoring
+3. **Performance Warning**: Explicit that logging has overhead (~2-5%)
+4. **Future-Proof**: Profiler (future) handles performance analysis separately
+5. **Easy to Use**: One function call: `setup_logging()`
 
 ### Non-Goals
 
-- ❌ Multiple logger instances (keep it simple)
+- ❌ Multiple log levels (defeats "see everything" philosophy)
+- ❌ Production monitoring (use proper monitoring tools)
+- ❌ Performance measurement (use profiler, coming soon)
 - ❌ Complex configuration files
-- ❌ Custom formatters/handlers (use Python's)
 - ❌ Async logging (synchronous is fine for diagnostics)
 
 ---
@@ -73,12 +84,12 @@ This document describes a **simplified, high-performance logging system** for ms
 ┌─────────────────────────────────────────────────────────────────┐
 │                          USER CODE                              │
 │                                                                 │
-│  from mssql_python.logging import logger, FINE, FINER           │
+│  import mssql_python                                            │
 │                                                                 │
-│  # Turn on logging                                              │
-│  logger.setLevel(FINE)                                          │
+│  # Enable logging - see EVERYTHING                              │
+│  mssql_python.setup_logging()                                   │
 │                                                                 │
-│  # Use the driver                                               │
+│  # Use the driver - all operations logged at DEBUG level        │
 │  conn = mssql_python.connect(...)                               │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
@@ -87,19 +98,17 @@ This document describes a **simplified, high-performance logging system** for ms
 │                        PYTHON LAYER                            │ 
 │                                                                │
 │  ┌───────────────────────────────────────────────────────┐     │
-│  │  logging.py (NEW - replaces logging_config.py)        │     │
+│  │  logging.py (Single logger, DEBUG level only)         │     │
 │  │                                                       │     │
 │  │  • Single Python logger instance                      │     │
-│  │  • Custom levels: FINE(25), FINER(15), FINEST(5)      │     │
+│  │  • DEBUG level only (no FINE/FINER/FINEST)            │     │
 │  │  • File handler with rotation                         │     │
 │  │  • Credential sanitization                            │     │
 │  │  • Thread-safe                                        │     │
 │  │                                                       │     │
 │  │  class MSSQLLogger:                                   │     │
-│  │      def fine(msg): ...                               │     │
-│  │      def finer(msg): ...                              │     │
-│  │      def finest(msg): ...                             │     │
-│  │      def setLevel(level): ...                         │     │
+│  │      def debug(msg): ...                              │     │
+│  │      def setup_logging(output, path): ...             │     │
 │  │                                                       │     │
 │  │  logger = MSSQLLogger()  # Singleton                  │     │
 │  └───────────────────────────────────────────────────────┘     │
@@ -109,7 +118,9 @@ This document describes a **simplified, high-performance logging system** for ms
 │  │  connection.py, cursor.py, etc.                       │     │
 │  │                                                       │     │
 │  │  from .logging import logger                          │     │
-│  │  logger.fine("Connecting...")                         │     │
+│  │  logger.debug("Connecting...")                        │     │
+│  │  logger.debug("Executing query: %s", sql)             │     │
+│  │  logger.debug("Parameters: %s", params)               │     │
 │  └───────────────────────────────────────────────────────┘     │
 └────────────────────────────────────────────────────────────────┘
                                 ↑
@@ -121,15 +132,15 @@ This document describes a **simplified, high-performance logging system** for ms
 │  │  logger_bridge.hpp / logger_bridge.cpp                │     │
 │  │                                                       │     │
 │  │  • Caches Python logger on first use                  │     │
-│  │  • Caches current log level                           │     │
+│  │  • Caches current log level (DEBUG or OFF)            │     │
 │  │  • Fast level check before ANY work                   │     │
-│  │  • Macros: LOG_FINE(), LOG_FINER(), LOG_FINEST()      │     │
+│  │  • Single macro: LOG_DEBUG()                          │     │
 │  │                                                       │     │
 │  │  class LoggerBridge:                                  │     │
 │  │      static PyObject* cached_logger                   │     │
 │  │      static int cached_level                          │     │
-│  │      static bool isLoggable(level)                    │     │
-│  │      static void log(level, msg)                      │     │
+│  │      static bool isLoggable()                         │     │
+│  │      static void log(msg)                             │     │
 │  └───────────────────────────────────────────────────────┘     │
 │                                ↑                               │
 │                                │                               │
@@ -138,25 +149,27 @@ This document describes a **simplified, high-performance logging system** for ms
 │  │                                                       │     │
 │  │  #include "logger_bridge.hpp"                         │     │
 │  │                                                       │     │
-│  │  LOG_FINE("Executing query: %s", sql);                │     │
-│  │  if (isLoggable(FINER)) {                             │     │
-│  │      auto details = expensive_operation();            │     │
-│  │      LOG_FINER("Details: %s", details.c_str());       │     │
-│  │  }                                                    │     │
+│  │  LOG_DEBUG("Executing query: %s", sql);               │     │
+│  │  LOG_DEBUG("Binding parameter: %d", param_index);     │     │
+│  │  LOG_DEBUG("Fetched %d rows", row_count);             │     │
 │  └───────────────────────────────────────────────────────┘     │
 └────────────────────────────────────────────────────────────────┘
                                 ↓
 ┌────────────────────────────────────────────────────────────────┐
 │                          LOG FILE                              │
 │                                                                │
-│ mssql_python_logs/mssql_python_trace_20251031_143022_12345.log │
+│ mssql_python_logs/mssql_python_trace_20251106_143022_12345.log │
 │                                                                │
-│  2025-10-31 14:30:22,145 - FINE - connection.py:42 -           │
+│  2025-11-06 14:30:22,145 - DEBUG - connection.py:42 -          │
 │      [Python] Connecting to server: localhost                  │
-│  2025-10-31 14:30:22,146 - FINER - logger_bridge.cpp:89 -      │
+│  2025-11-06 14:30:22,146 - DEBUG - logger_bridge.cpp:89 -      │
 │      [DDBC] Allocating connection handle                       │
-│  2025-10-31 14:30:22,150 - FINE - cursor.py:28 -               │
+│  2025-11-06 14:30:22,150 - DEBUG - cursor.py:28 -              │
 │      [Python] Executing query: SELECT * FROM users             │
+│  2025-11-06 14:30:22,151 - DEBUG - cursor.py:45 -              │
+│      [Python] Parameters: [42, 'test@example.com']             │
+│  2025-11-06 14:30:22,200 - DEBUG - cursor.py:89 -              │
+│      [Python] Fetched 10 rows                                  │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -227,10 +240,11 @@ BOTH = 'both'      # Log to both file and stdout
 
 **File Handler Configuration**
 - **Location**: `./mssql_python_logs/` folder (created automatically if doesn't exist)
-- **Naming**: `mssql_python_trace_YYYYMMDD_HHMMSS_PID.log` (auto-generated)
+- **Naming**: `mssql_python_trace_YYYYMMDDHHMMSS_PID.log` (timestamp with no separators)
 - **Custom Path**: Users can specify via `log_file_path` parameter (creates parent directories if needed)
 - **Rotation**: 512MB max, 5 backup files
-- **Format**: `%(asctime)s [%(trace_id)s] - %(levelname)s - %(filename)s:%(lineno)d - %(message)s`
+- **Format**: CSV with columns: `Timestamp, ThreadID, Level, Location, Source, Message`
+- **Header**: File includes metadata header with PID, script name, Python version, driver version, start time, OS info
 
 **Output Handler Configuration**
 - **Default**: File only (using `FILE` constant)
@@ -239,120 +253,151 @@ BOTH = 'both'      # Log to both file and stdout
 - **Both Mode**: Adds both file and stdout handlers simultaneously
 - **Format**: Same format for both file and stdout handlers
 
-**Trace ID System**
+**Thread Tracking System**
 
-Trace IDs enable correlation of log messages across multi-threaded applications, connection pools, and distributed operations.
+The logging system uses **OS native thread IDs** to track operations across multi-threaded applications.
 
 **Use Cases:**
 - Multi-threaded applications with multiple concurrent connections
-- Connection pooling scenarios (track connection lifecycle)
-- Multiple cursors per connection (distinguish operations)
-- Performance profiling (measure operation duration)
-- Production debugging (filter logs by specific operation)
-- Distributed tracing (correlate with request IDs)
+- Connection pooling scenarios (track which thread handles which connection)
+- Multiple cursors per connection (distinguish operations by thread)
+- Performance profiling (measure operation duration per thread)
+- Debugger correlation (thread IDs match debugger thread views)
+- Production debugging (filter logs by specific thread)
 
 **Design:**
 
-1. **Context Variables (Python 3.7+)**
-   - Use `contextvars.ContextVar` for automatic propagation
-   - Trace ID is set when Connection/Cursor is created
-   - Automatically inherited by child contexts (threads, async tasks)
-   - Thread-safe without locks
+1. **OS Native Thread ID**
+   - Uses `threading.get_native_id()` (Python 3.8+)
+   - Returns OS-level thread identifier
+   - Matches thread IDs shown in debuggers (Visual Studio, gdb, lldb)
+   - Compatible with system monitoring tools
+   - Thread-safe, no locks required
 
-2. **Trace ID Format:**
+2. **CSV Format Benefits:**
    ```
-   Connection: CONN-<PID>-<ThreadID>-<Counter>
-   Cursor:     CURS-<PID>-<ThreadID>-<Counter>
-   
-   Examples:
-   CONN-12345-67890-1    (Connection)
-   CURS-12345-67890-2    (Cursor)
-   TASK-12345-67890-3    (Custom - background task)
-   REQ-12345-67890-4     (Custom - web request)
-   T1-12345-67890-5      (Custom - thread identifier, concise)
-   
-   Note: Prefix should be concise (2-4 chars recommended). The PID and 
-   ThreadID already provide context, so avoid redundant prefixes:
-   ❌ THREAD-T1-12345-67890-1  (redundant - "THREAD" adds no value)
-   ✅ T1-12345-67890-1          (concise - thread ID already in format)
+   Timestamp, ThreadID, Level, Location, Source, Message
+   2025-11-06 10:30:15.100, 8581947520, DEBUG, connection.py:156, Python, Allocating environment handle
+   2025-11-06 10:30:15.101, 8581947520, DEBUG, connection.cpp:22, DDBC, Allocating ODBC environment handle
+   2025-11-06 10:30:15.200, 8582001664, DEBUG, connection.py:42, Python, Different thread operation
    ```
+   
+   **Advantages:**
+   - Easy parsing with pandas, Excel, or other CSV tools
+   - ThreadID column for filtering by thread
+   - Source column distinguishes Python vs DDBC (C++) operations
+   - Location column shows exact file:line
+   - Timestamp with milliseconds (period separator: `.100` not `,100`)
 
 3. **Automatic Injection:**
-   - Custom `logging.Filter` adds trace_id to LogRecord
-   - Formatter includes `%(trace_id)s` in output
-   - No manual trace ID passing required
+   - Custom `logging.Filter` adds thread_id to LogRecord using `threading.get_native_id()`
+   - CSVFormatter extracts Source from message prefix `[Python]` or `[DDBC]`
+   - No manual thread ID passing required
 
 4. **Implementation Components:**
    ```python
-   import contextvars
+   import threading
    import logging
    
-   # Module-level context var
-   _trace_id_var = contextvars.ContextVar('trace_id', default=None)
-   
    class TraceIDFilter(logging.Filter):
-       """Adds trace_id to log records"""
+       """Adds OS native thread ID to log records"""
        def filter(self, record):
-           trace_id = _trace_id_var.get()
-           record.trace_id = trace_id if trace_id else '-'
+           record.trace_id = threading.get_native_id()
            return True
    
-   # Updated formatter
-   formatter = logging.Formatter(
-       '%(asctime)s [%(trace_id)s] - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
-   )
+   class CSVFormatter(logging.Formatter):
+       """Formats logs as CSV with Source extraction"""
+       def format(self, record):
+           # Extract source from message prefix [Python] or [DDBC]
+           source = 'Python'
+           message = record.getMessage()
+           if message.startswith('[DDBC]'):
+               source = 'DDBC'
+               message = message[7:].strip()
+           elif message.startswith('[Python]'):
+               source = 'Python'
+               message = message[9:].strip()
+           
+           # Format as CSV
+           timestamp = self.formatTime(record, '%Y-%m-%d %H:%M:%S')
+           ms = f"{record.msecs:03.0f}"
+           location = f"{record.filename}:{record.lineno}"
+           thread_id = getattr(record, 'trace_id', '-')
+           
+           return f"{timestamp}.{ms}, {thread_id}, {record.levelname}, {location}, {source}, {message}"
    ```
 
-5. **Connection/Cursor Integration:**
+5. **File Header:**
    ```python
-   class Connection:
-       def __init__(self, ...):
-           # Generate and set trace ID
-           trace_id = logger.generate_trace_id("CONN")
-           logger.set_trace_id(trace_id)
-           logger.fine("Connection initialized")  # Includes trace ID automatically
-   
-   class Cursor:
-       def __init__(self, connection):
-           # Generate cursor trace ID (inherits connection context)
-           trace_id = logger.generate_trace_id("CURS")
-           logger.set_trace_id(trace_id)
-           logger.fine("Cursor created")  # Includes trace ID automatically
-   ```
+   def _write_log_header(self):
+       \"\"\"Write metadata header to log file\"\"\"
+       with open(self.log_file_path, 'w') as f:
+           f.write(f\"# MSSQL-Python Driver Log | \"
+                   f\"Script: {os.path.basename(sys.argv[0])} | \"
+                   f\"PID: {os.getpid()} | \"
+                   f\"Log Level: DEBUG | \"
+                   f\"Python: {sys.version.split()[0]} | \"
+                   f\"Driver: {driver_version} | \"
+                   f\"Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | \"
+                   f\"OS: {platform.platform()}\\n\")\n           f.write(\"Timestamp, ThreadID, Level, Location, Source, Message\\n\")\n   ```
 
 6. **Thread Safety:**
-   - `contextvars` is thread-safe by design
-   - Each thread maintains its own context
-   - No locks needed for trace ID access
-   - Counter uses `threading.Lock()` for generation only
+   - `threading.get_native_id()` is thread-safe
+   - Each thread gets its own unique OS-level ID
+   - No locks needed for thread ID access
+   - CSV formatter is stateless and thread-safe
 
 7. **Performance:**
    - Zero overhead when logging disabled
    - Minimal overhead when enabled (~1 μs per log call)
-   - No dictionary lookups or thread-local storage
-   - Context variable access is optimized in CPython
+   - CSV formatting is simple string concatenation
+   - No complex parsing or regex operations
 
 **Example Log Output:**
 ```
-2025-11-03 10:15:22,100 [CONN-12345-67890-1] - FINE - connection.py:42 - [Python] Connection opened
-2025-11-03 10:15:22,150 [CURS-12345-67890-2] - FINE - cursor.py:28 - [Python] Cursor created
-2025-11-03 10:15:22,200 [CURS-12345-67890-2] - FINE - cursor.py:89 - [Python] Executing query
-2025-11-03 10:15:22,250 [CURS-12345-67890-2] - FINE - cursor.py:145 - [Python] Fetched 42 rows
-2025-11-03 10:15:22,300 [CONN-12345-67890-1] - FINE - connection.py:234 - [Python] Connection closed
+# MSSQL-Python Driver Log | Script: main.py | PID: 80677 | Log Level: DEBUG | Python: 3.13.7 | Driver: unknown | Start: 2025-11-06 20:40:11 | OS: macOS-26.1-arm64-arm-64bit-Mach-O
+Timestamp, ThreadID, Level, Location, Source, Message
+2025-11-06 20:42:39.704, 1347850, DEBUG, connection.cpp:22, DDBC, Allocating ODBC environment handle
+2025-11-06 20:42:39.705, 1347850, DEBUG, connection.py:156, Python, Connection opened
+2025-11-06 20:42:39.706, 1347850, DEBUG, cursor.py:28, Python, Cursor created
+2025-11-06 20:42:39.707, 1347850, DEBUG, cursor.py:89, Python, Executing query: SELECT * FROM users
+2025-11-06 20:42:39.710, 1347850, DEBUG, cursor.py:145, Python, Fetched 42 rows
+2025-11-06 20:42:39.711, 1347850, DEBUG, connection.py:234, Python, Connection closed
 ```
 
-**Multi-Connection Example:**
-```
-# Thread 1 logs:
-[CONN-12345-11111-1] Connection opened
-[CURS-12345-11111-2] Query: SELECT * FROM users
-[CURS-12345-11111-2] Fetched 100 rows
+**CSV Parsing Example:**
+```python
+import pandas as pd
 
-# Thread 2 logs (interleaved, but distinguishable):
-[CONN-12345-22222-3] Connection opened
-[CURS-12345-22222-4] Query: SELECT * FROM orders
-[CURS-12345-22222-4] Fetched 50 rows
+# Read log file (skip header line with #)
+df = pd.read_csv('mssql_python_logs/mssql_python_trace_20251106204011_80677.log', comment='#')
+
+# Filter by thread
+thread_logs = df[df['ThreadID'] == 1347850]
+
+# Find all queries
+queries = df[df['Message'].str.contains('Executing query', na=False)]
+
+# Analyze by source
+python_ops = df[df['Source'] == 'Python']
+ddbc_ops = df[df['Source'] == 'DDBC']
 ```
+
+
+**Multi-Threaded Example:**
+```
+# Thread 8581947520 logs:
+2025-11-06 10:30:15.100, 8581947520, DEBUG, connection.py:156, Python, Connection opened
+2025-11-06 10:30:15.102, 8581947520, DEBUG, cursor.py:28, Python, Cursor created
+2025-11-06 10:30:15.103, 8581947520, DEBUG, cursor.py:89, Python, Query: SELECT * FROM users
+2025-11-06 10:30:15.105, 8581947520, DEBUG, cursor.py:145, Python, Fetched 100 rows
+
+# Thread 8582001664 logs (interleaved, but distinguishable by ThreadID):
+2025-11-06 10:30:15.104, 8582001664, DEBUG, connection.py:156, Python, Connection opened
+2025-11-06 10:30:15.106, 8582001664, DEBUG, cursor.py:89, Python, Query: SELECT * FROM orders
+2025-11-06 10:30:15.108, 8582001664, DEBUG, cursor.py:145, Python, Fetched 50 rows
+```
+
 
 **Hybrid API Approach**
 
@@ -1186,10 +1231,9 @@ if (LoggerBridge::isLoggable(FINEST)) {
 Minimal example - just enable driver diagnostics
 """
 import mssql_python
-from mssql_python import logging
 
 # Enable driver diagnostics (one line)
-logging.setLevel(logging.FINER)
+mssql_python.setup_logging()
 
 # Use the driver - all internals are now logged
 conn = mssql_python.connect("Server=localhost;Database=test")
@@ -1197,7 +1241,8 @@ cursor = conn.cursor()
 cursor.execute("SELECT 1")
 conn.close()
 
-# That's it! Logs are in mssql_python_trace_*.log
+# That's it! Logs are in ./mssql_python_logs/mssql_python_trace_*.log
+# CSV format for easy analysis in Excel/pandas
 ```
 
 ### Example 2: With Output Control
@@ -1207,16 +1252,15 @@ conn.close()
 Control output destination
 """
 import mssql_python
-from mssql_python import logging
 
 # Option 1: File only (default)
-logging.setLevel(logging.FINE)
+mssql_python.setup_logging()
 
 # Option 2: Stdout only (for CI/CD)
-logging.setLevel(logging.FINE, logging.STDOUT)
+mssql_python.setup_logging(output='stdout')
 
 # Option 3: Both file and stdout (for development)
-logging.setLevel(logging.FINE, logging.BOTH)
+mssql_python.setup_logging(output='both')
 
 # Use the driver normally
 connection_string = (
@@ -1240,20 +1284,22 @@ conn.close()
 # Passwords will be automatically sanitized in logs
 ```
 
-**Expected Log Output**:
+**Expected Log Output (CSV format)**:
 ```
-2025-10-31 14:30:22,100 - FINE - connection.py:42 - [Python] Initializing connection
-2025-10-31 14:30:22,101 - FINE - connection.py:56 - [Python] Connection string: Server=myserver.database.windows.net;Database=mydb;UID=admin;PWD=***;Encrypt=yes;
-2025-10-31 14:30:22,105 - FINER - logger_bridge.cpp:89 - [DDBC] Allocating connection handle [ddbc_connection.cpp:123]
-2025-10-31 14:30:22,110 - FINE - logger_bridge.cpp:89 - [DDBC] Connection established [ddbc_connection.cpp:145]
-2025-10-31 14:30:22,115 - FINE - cursor.py:28 - [Python] Creating cursor
-2025-10-31 14:30:22,120 - FINER - logger_bridge.cpp:89 - [DDBC] Allocating statement handle [ddbc_statement.cpp:67]
-2025-10-31 14:30:22,125 - FINE - cursor.py:89 - [Python] Executing query: SELECT * FROM users WHERE active = 1
-2025-10-31 14:30:22,130 - FINER - logger_bridge.cpp:89 - [DDBC] SQLExecDirect called [ddbc_statement.cpp:234]
-2025-10-31 14:30:22,250 - FINER - logger_bridge.cpp:89 - [DDBC] Query completed, rows affected: 42 [ddbc_statement.cpp:267]
-2025-10-31 14:30:22,255 - FINE - cursor.py:145 - [Python] Fetching results
-2025-10-31 14:30:22,350 - FINE - cursor.py:178 - [Python] Fetched 42 rows
-2025-10-31 14:30:22,355 - FINE - connection.py:234 - [Python] Closing connection
+# MSSQL-Python Driver Log | Script: app.py | PID: 12345 | Log Level: DEBUG | Python: 3.13.7 | Start: 2025-11-06 14:30:22
+Timestamp, ThreadID, Level, Location, Source, Message
+2025-11-06 14:30:22.100, 8581947520, DEBUG, connection.py:42, Python, Initializing connection
+2025-11-06 14:30:22.101, 8581947520, DEBUG, connection.py:56, Python, Connection string: Server=myserver.database.windows.net;Database=mydb;UID=admin;PWD=***;Encrypt=yes;
+2025-11-06 14:30:22.105, 8581947520, DEBUG, connection.cpp:123, DDBC, Allocating connection handle
+2025-11-06 14:30:22.110, 8581947520, DEBUG, connection.cpp:145, DDBC, Connection established
+2025-11-06 14:30:22.115, 8581947520, DEBUG, cursor.py:28, Python, Creating cursor
+2025-11-06 14:30:22.120, 8581947520, DEBUG, statement.cpp:67, DDBC, Allocating statement handle
+2025-11-06 14:30:22.125, 8581947520, DEBUG, cursor.py:89, Python, Executing query: SELECT * FROM users WHERE active = 1
+2025-11-06 14:30:22.130, 8581947520, DEBUG, statement.cpp:234, DDBC, SQLExecDirect called
+2025-11-06 14:30:22.250, 8581947520, DEBUG, statement.cpp:267, DDBC, Query completed, rows affected: 42
+2025-11-06 14:30:22.255, 8581947520, DEBUG, cursor.py:145, Python, Fetching results
+2025-11-06 14:30:22.350, 8581947520, DEBUG, cursor.py:178, Python, Fetched 42 rows
+2025-11-06 14:30:22.355, 8581947520, DEBUG, connection.py:234, Python, Closing connection
 ```
 
 ---
