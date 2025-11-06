@@ -439,8 +439,18 @@ class SqlHandle {
 // This struct is used to relay error info obtained from SQLDiagRec API to the
 // Python module
 struct ErrorInfo {
+#if defined(_WIN32)
     std::wstring sqlState;
     std::wstring ddbcErrorMsg;
+#else
+    // On Unix, store as UTF-8 std::string to avoid wstring conversion issues
+    std::string sqlState_utf8;
+    std::string ddbcErrorMsg_utf8;
+    
+    // Provide accessor methods for Python bindings
+    std::string get_sqlState() const { return sqlState_utf8; }
+    std::string get_ddbcErrorMsg() const { return ddbcErrorMsg_utf8; }
+#endif
 };
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle,
                               SQLRETURN retcode);

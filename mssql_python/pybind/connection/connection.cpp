@@ -111,7 +111,11 @@ void Connection::disconnect() {
 void Connection::checkError(SQLRETURN ret) const {
     if (!SQL_SUCCEEDED(ret)) {
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
+#if defined(_WIN32)
         std::string errorMsg = WideToUTF8(err.ddbcErrorMsg);
+#else
+        std::string errorMsg = err.ddbcErrorMsg_utf8;
+#endif
         ThrowStdException(errorMsg);
     }
 }
@@ -509,12 +513,18 @@ void ConnectionHandle::setAttr(int attribute, py::object value) {
 
             std::string errorMsg = "Failed to set connection attribute " +
                                    std::to_string(attribute);
+#if defined(_WIN32)
             if (!errorInfo.ddbcErrorMsg.empty()) {
                 // Convert wstring to string for concatenation
                 std::string ddbcErrorStr = WideToUTF8(
                     errorInfo.ddbcErrorMsg);
                 errorMsg += ": " + ddbcErrorStr;
             }
+#else
+            if (!errorInfo.ddbcErrorMsg_utf8.empty()) {
+                errorMsg += ": " + errorInfo.ddbcErrorMsg_utf8;
+            }
+#endif
 
             LOG("Connection setAttribute failed: {}", errorMsg);
             ThrowStdException(errorMsg);

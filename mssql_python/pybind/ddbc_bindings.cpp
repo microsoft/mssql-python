@@ -1374,7 +1374,11 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
     ErrorInfo errorInfo;
     if (retcode == SQL_INVALID_HANDLE) {
         LOG("Invalid handle received");
+#if defined(_WIN32)
         errorInfo.ddbcErrorMsg = std::wstring( L"Invalid handle!");
+#else
+        errorInfo.ddbcErrorMsg_utf8 = "Invalid handle!";
+#endif
         return errorInfo;
     }
     assert(handle != 0);
@@ -1399,9 +1403,9 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
             errorInfo.sqlState = std::wstring(sqlState);
             errorInfo.ddbcErrorMsg = std::wstring(message);
 #else
-            // On macOS/Linux, need to convert SQLWCHAR (usually unsigned short) to wchar_t
-            errorInfo.sqlState = SQLWCHARToWString(sqlState);
-            errorInfo.ddbcErrorMsg = SQLWCHARToWString(message, messageLen);
+            // On macOS/Linux, convert SQLWCHAR directly to UTF-8 std::string
+            errorInfo.sqlState_utf8 = SQLWCHARToUTF8String(sqlState);
+            errorInfo.ddbcErrorMsg_utf8 = SQLWCHARToUTF8String(message);
 #endif
         }
     }
@@ -1455,9 +1459,9 @@ py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
             py::str(msgBuffer.data())
         ));
 #else
-        // On Unix, use the SQLWCHARToWString utility and then convert to UTF-8
-        std::string stateStr = WideToUTF8(SQLWCHARToWString(sqlState));
-        std::string msgStr = WideToUTF8(SQLWCHARToWString(message, messageLen));
+        // On Unix, use SQLWCHARToUTF8String to convert directly from SQLWCHAR to UTF-8
+        std::string stateStr = SQLWCHARToUTF8String(sqlState);
+        std::string msgStr = SQLWCHARToUTF8String(message);
         
         // Format the state string
         std::string stateWithError = "[" + stateStr + "] (" + std::to_string(nativeError) + ")";
@@ -2331,7 +2335,7 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
             // Append a named py::dict to ColumnMetadata
             // TODO: Should we define a struct for this task instead of dict?
 #if defined(__APPLE__) || defined(__linux__)
-            ColumnMetadata.append(py::dict("ColumnName"_a = SQLWCHARToWString(ColumnName, SQL_NTS),
+            ColumnMetadata.append(py::dict("ColumnName"_a = SQLWCHARToPyString(ColumnName, NameLength),
 #else
             ColumnMetadata.append(py::dict("ColumnName"_a = std::wstring(ColumnName),
 #endif
@@ -3873,8 +3877,13 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     // Define error info class
     py::class_<ErrorInfo>(m, "ErrorInfo")
+#if defined(_WIN32)
         .def_readwrite("sqlState", &ErrorInfo::sqlState)
         .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);
+#else
+        .def_property_readonly("sqlState", &ErrorInfo::get_sqlState)
+        .def_property_readonly("ddbcErrorMsg", &ErrorInfo::get_ddbcErrorMsg);
+#endif
         
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle");
