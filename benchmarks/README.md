@@ -23,7 +23,7 @@ Standalone script that tests real-world queries against AdventureWorks2022 datab
    - Ensure you have a running SQL Server instance.
    - Set the `DB_CONNECTION_STRING` environment variable with the connection string to your database. For example:
      ```bash
-     export DB_CONNECTION_STRING="Server=your_server;Database=your_database;UID=your_user;PWD=your_password;"
+     export DB_CONNECTION_STRING="Server=your_server;Database=AdventureWorks2022;UID=your_user;PWD=your_password;"
      ```
 
 2. **Install Richbench - Benchmarking Tool**:
