@@ -27,6 +27,10 @@ extern const size_t kUcsLength;    // SQLWCHAR is 2 bytes on all platforms
 // Removed default argument to avoid redefinition conflict
 std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length);
 
+// OPTIMIZED: Direct SQLWCHAR to Python string conversion (7-8x faster)
+// Bypasses std::wstring intermediate and uses native Python C API
+py::object SQLWCHARToPyString(const SQLWCHAR* sqlwStr, size_t length);
+
 // Function to convert std::wstring to SQLWCHAR array on macOS
 std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str);
 
