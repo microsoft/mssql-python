@@ -40,9 +40,9 @@ void LOG(const std::string& formatString, Args&&... args) {
     }
 }
 
-// Function to convert SQLWCHAR strings to std::wstring on macOS
-std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
-                               size_t length = SQL_NTS) {
+// OPTIMIZED: Convert SQLWCHAR (UTF-16LE) to std::wstring (UTF-32) using Python C API
+// This replaces the broken std::wstring_convert implementation
+std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
     if (!sqlwStr) return std::wstring();
 
     if (length == SQL_NTS) {
@@ -51,29 +51,20 @@ std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
         while (sqlwStr[i] != 0) ++i;
         length = i;
     }
+    
+    if (length == 0) return std::wstring();
 
-    // Create a UTF-16LE byte array from the SQLWCHAR array
-    std::vector<char> utf16Bytes(length * kUcsLength);
-    for (size_t i = 0; i < length; ++i) {
-        // Copy each SQLWCHAR (2 bytes) to the byte array
-        memcpy(&utf16Bytes[i * kUcsLength], &sqlwStr[i], kUcsLength);
-    }
-
-    // Convert UTF-16LE to std::wstring (UTF-32 on macOS)
-    try {
-        // Use C++11 codecvt to convert between UTF-16LE and wstring
-        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t, 0x10ffff,
-                                                     std::little_endian>>
-            converter;
-        return converter.from_bytes(
-            reinterpret_cast<const char*>(utf16Bytes.data()),
-            reinterpret_cast<const char*>(utf16Bytes.data() +
-                                          utf16Bytes.size()));
-    } catch (const std::exception& e) {
-        // Log a warning about using fallback conversion
-        LOG("Warning: Using fallback string conversion on macOS. "
-            "Character data might be inexact.");
-        // Fallback to character-by-character conversion if codecvt fails
+    // Use Python C API for proper UTF-16 → UTF-32 conversion
+    PyObject* pyStr = PyUnicode_DecodeUTF16(
+        reinterpret_cast<const char*>(sqlwStr),
+        length * sizeof(SQLWCHAR),
+        "strict",
+        nullptr
+    );
+    
+    if (!pyStr) {
+        PyErr_Clear();
+        // Fallback: simple cast (BMP characters only, loses surrogates)
         std::wstring result;
         result.reserve(length);
         for (size_t i = 0; i < length; ++i) {
@@ -81,10 +72,27 @@ std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
         }
         return result;
     }
+    
+    // Convert Python Unicode to wchar_t array
+    Py_ssize_t wchar_size = PyUnicode_GET_LENGTH(pyStr);
+    std::wstring result(wchar_size, L'\0');
+    Py_ssize_t copied = PyUnicode_AsWideChar(pyStr, &result[0], wchar_size);
+    Py_DECREF(pyStr);
+    
+    if (copied < 0) {
+        PyErr_Clear();
+        return std::wstring();
+    }
+    
+    return result;
 }
 
-// Function to convert std::wstring to SQLWCHAR array on macOS
+// OPTIMIZED: Convert std::wstring (UTF-32) to SQLWCHAR array (UTF-16LE) using Python C API
 std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
+    if (str.empty()) {
+        return std::vector<SQLWCHAR>(1, 0);  // Just null terminator
+    }
+    
     // Use Python C API for proper UTF-32 → UTF-16 conversion
     PyObject* pyStr = PyUnicode_FromWideChar(str.c_str(), str.size());
     if (!pyStr) {
