@@ -22,6 +22,7 @@ class Row:
         print(row[0])           # Access by index
         print(row.column_name)  # Access by column name (case sensitivity varies)
     """
+    __slots__ = ('_values', '_column_map', '_cursor')
     
     def __init__(self, values, column_map, cursor=None, converter_map=None):
         """
