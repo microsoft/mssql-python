@@ -13,17 +13,16 @@
 
 #ifdef ENABLE_PROFILING
 
+// Forward declaration
+class ProfileStats;
+
 class ScopedTimer {
 public:
     ScopedTimer(const char* name) : name_(name) {
         start_ = std::chrono::high_resolution_clock::now();
     }
     
-    ~ScopedTimer() {
-        auto end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start_).count();
-        ProfileStats::instance().record(name_, duration);
-    }
+    ~ScopedTimer(); // Defined after ProfileStats
 
 private:
     const char* name_;
@@ -86,6 +85,13 @@ private:
     
     std::unordered_map<std::string, Stat> stats_;
 };
+
+// ScopedTimer destructor implementation
+inline ScopedTimer::~ScopedTimer() {
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start_).count();
+    ProfileStats::instance().record(name_, duration);
+}
 
 #define PROFILE_SCOPE(name) ScopedTimer timer_##__LINE__(name)
 #define PROFILE_PRINT() ProfileStats::instance().print_stats()
