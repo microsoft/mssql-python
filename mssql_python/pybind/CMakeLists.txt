@@ -13,6 +13,7 @@ if (MSVC)
     message(STATUS "Applying MSVC security compiler options for OneBranch compliance")
     
     add_compile_options(
+        /EHsc        # Enable C++ exception handling
         /GS          # Buffer security check - detects buffer overruns
         /guard:cf    # Control Flow Guard - protects against control flow hijacking
     )
@@ -213,8 +214,17 @@ message(STATUS "Final Python library directory: ${PYTHON_LIB_DIR}")
 
 set(DDBC_SOURCE "ddbc_bindings.cpp")
 message(STATUS "Using standard source file: ${DDBC_SOURCE}")
-# Include connection module for Windows
-add_library(ddbc_bindings MODULE ${DDBC_SOURCE} connection/connection.cpp connection/connection_pool.cpp unix_utils.cpp)
+
+# Platform-specific source files
+if(WIN32)
+    # Windows build - exclude unix_utils.cpp
+    message(STATUS "Building for Windows - excluding unix_utils.cpp")
+    add_library(ddbc_bindings MODULE ${DDBC_SOURCE} connection/connection.cpp connection/connection_pool.cpp)
+else()
+    # Unix/Linux/macOS build - include unix_utils.cpp
+    message(STATUS "Building for Unix/Linux/macOS - including unix_utils.cpp")
+    add_library(ddbc_bindings MODULE ${DDBC_SOURCE} connection/connection.cpp connection/connection_pool.cpp unix_utils.cpp)
+endif()
 
 # Set the output name to include Python version and architecture
 # Use appropriate file extension based on platform
