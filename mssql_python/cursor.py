@@ -998,6 +998,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._rownumber = -1
         self._has_result_set = False
         self._skip_increment_for_next_fetch = False
+        # Internal buffer for optimized iteration (batch fetching)
+        self._iter_buffer = []
+        self._iter_buffer_size = 1000  # Fetch 1000 rows at a time for streaming
 
     def __iter__(self):
         """
@@ -1009,11 +1012,16 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             print(row)
         """
         self._check_closed()
+        # Reset iteration buffer when starting new iteration
+        self._iter_buffer = []
         return self
 
     def __next__(self):
         """
         Fetch the next row when iterating over the cursor.
+        
+        Uses internal batching to avoid per-row C++ call overhead.
+        Fetches rows in batches of _iter_buffer_size but returns one at a time.
 
         Returns:
             The next Row object.
@@ -1022,10 +1030,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             StopIteration: When no more rows are available.
         """
         self._check_closed()
-        row = self.fetchone()
-        if row is None:
-            raise StopIteration
-        return row
+        
+        # If buffer is empty, fetch next batch
+        if not self._iter_buffer:
+            batch = self.fetchmany(self._iter_buffer_size)
+            if not batch:
+                # No more data available
+                raise StopIteration
+            self._iter_buffer = batch
+        
+        # Return next row from buffer
+        return self._iter_buffer.pop(0)
 
     def next(self):
         """
@@ -1990,7 +2005,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         try:
             ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
 
-            if self.hstmt:
+            # Only check diagnostics if there's an error or warning
+            # SQL_SUCCESS (0) and SQL_NO_DATA (100) don't need diagnostic checks
+            if self.hstmt and ret not in (ddbc_sql_const.SQL_SUCCESS.value, ddbc_sql_const.SQL_NO_DATA.value):
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             if ret == ddbc_sql_const.SQL_NO_DATA.value:
@@ -2039,9 +2056,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         rows_data = []
         try:
-            _ = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
+            ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
 
-            if self.hstmt:
+            # Only check diagnostics if there's an error or warning (not on success)
+            if self.hstmt and ret not in (ddbc_sql_const.SQL_SUCCESS.value, ddbc_sql_const.SQL_NO_DATA.value):
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
             # Update rownumber for the number of rows actually fetched
