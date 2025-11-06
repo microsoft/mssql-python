@@ -279,6 +279,33 @@ cursor.execute("SELECT * FROM users")
 - **Performance analysis**: Measure duration of specific operations per thread
 - **Debugger Correlation**: Thread ID matches debugger views for easy debugging
 
+### Using mssql-python's Logger in Your Application
+
+You can access the same logger used by mssql-python in your application code:
+
+```python
+import mssql_python
+from mssql_python.logging import driver_logger
+
+# Enable logging first
+mssql_python.setup_logging()
+
+# Now use driver_logger in your application
+driver_logger.debug("[App] Starting data processing")
+driver_logger.info("[App] Processing complete")
+driver_logger.warning("[App] Resource usage high")
+driver_logger.error("[App] Failed to process record")
+
+# Your logs will appear in the same file as driver logs,
+# with the same format and thread tracking
+```
+
+**Benefits:**
+- Unified logging - all logs in one place
+- Same format and structure as driver logs
+- Automatic thread ID tracking
+- No need to configure separate loggers
+
 ### Importing Logs as CSV (Optional)
 
 Log files use comma-separated format and can be imported into spreadsheet tools:
@@ -329,7 +356,10 @@ Enable comprehensive DEBUG logging for troubleshooting.
 
 **Parameters:**
 - `output` (str, optional): Where to send logs. Options: `'file'` (default), `'stdout'`, `'both'`
-- `log_file_path` (str, optional): Custom log file path. If not specified, auto-generates path in `./mssql_python_logs/`
+- `log_file_path` (str, optional): Custom log file path. Must have extension: `.txt`, `.log`, or `.csv`. If not specified, auto-generates path in `./mssql_python_logs/`
+
+**Raises:**
+- `ValueError`: If `log_file_path` has an invalid extension (only `.txt`, `.log`, `.csv` are allowed)
 
 **Examples:**
 
@@ -345,11 +375,39 @@ mssql_python.setup_logging(output='stdout')
 # Output to both file and stdout
 mssql_python.setup_logging(output='both')
 
-# Custom log file path
+# Custom log file path (must use .txt, .log, or .csv extension)
 mssql_python.setup_logging(log_file_path="/var/log/myapp.log")
+mssql_python.setup_logging(log_file_path="/tmp/debug.txt")
+mssql_python.setup_logging(log_file_path="/tmp/data.csv")
 
 # Custom path with both outputs
 mssql_python.setup_logging(output='both', log_file_path="/tmp/debug.log")
+
+# Invalid extensions will raise ValueError
+try:
+    mssql_python.setup_logging(log_file_path="/tmp/debug.json")  # ✗ Error
+except ValueError as e:
+    print(e)  # "Invalid log file extension '.json'. Allowed extensions: .csv, .log, .txt"
+```
+
+### Advanced - Using driver_logger in Your Code
+
+Access the same logger used by mssql-python in your application:
+
+```python
+from mssql_python.logging import driver_logger
+import mssql_python
+
+# Enable logging
+mssql_python.setup_logging()
+
+# Use driver_logger in your application
+driver_logger.debug("[App] Starting data processing")
+driver_logger.info("[App] Processing complete")
+driver_logger.warning("[App] Resource usage high")
+driver_logger.error("[App] Failed to process record")
+
+# Your logs appear in the same file with same format
 ```
 
 ### Advanced - Logger Instance

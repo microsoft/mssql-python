@@ -27,6 +27,9 @@ STDOUT = 'stdout'  # Log to stdout only
 FILE = 'file'      # Log to file only (default)
 BOTH = 'both'      # Log to both file and stdout
 
+# Allowed log file extensions
+ALLOWED_LOG_EXTENSIONS = {'.txt', '.log', '.csv'}
+
 # Module-level context variable for trace IDs (thread-safe, async-safe)
 _trace_id_var = contextvars.ContextVar('trace_id', default=None)
 
@@ -204,6 +207,26 @@ class MSSQLLogger:
         Closes existing handlers and creates new ones based on current output mode.
         """
         self._setup_handlers()
+    
+    def _validate_log_file_extension(self, file_path: str) -> None:
+        """
+        Validate that the log file has an allowed extension.
+        
+        Args:
+            file_path: Path to the log file
+            
+        Raises:
+            ValueError: If the file extension is not allowed
+        """
+        _, ext = os.path.splitext(file_path)
+        ext_lower = ext.lower()
+        
+        if ext_lower not in ALLOWED_LOG_EXTENSIONS:
+            allowed = ', '.join(sorted(ALLOWED_LOG_EXTENSIONS))
+            raise ValueError(
+                f"Invalid log file extension '{ext}'. "
+                f"Allowed extensions: {allowed}"
+            )
     
     def _write_log_header(self):
         """
@@ -418,6 +441,7 @@ class MSSQLLogger:
         
         # Store custom log file path if provided
         if log_file_path is not None:
+            self._validate_log_file_extension(log_file_path)
             self._custom_log_path = log_file_path
         
         # Setup handlers if not yet initialized or if output mode/path changed
@@ -538,6 +562,11 @@ class MSSQLLogger:
 # Singleton logger instance
 logger = MSSQLLogger()
 
+# Expose the underlying Python logger for use in application code
+# This allows applications to access the same logger used by the driver
+# Usage: from mssql_python.logging import driver_logger
+driver_logger = logger._logger
+
 # ============================================================================
 # Primary API - setup_logging()
 # ============================================================================
@@ -556,6 +585,7 @@ def setup_logging(output: str = 'file', log_file_path: Optional[str] = None):
         output: Where to send logs (default: 'file')
                 Options: 'file', 'stdout', 'both'
         log_file_path: Optional custom path for log file
+                      Must have extension: .txt, .log, or .csv
                       If not specified, auto-generates in ./mssql_python_logs/
     
     Examples:
@@ -570,8 +600,10 @@ def setup_logging(output: str = 'file', log_file_path: Optional[str] = None):
         # Both file and stdout (for development)
         mssql_python.setup_logging(output='both')
         
-        # Custom log file path
+        # Custom log file path (must use .txt, .log, or .csv extension)
         mssql_python.setup_logging(log_file_path="/var/log/myapp.log")
+        mssql_python.setup_logging(log_file_path="/tmp/debug.txt")
+        mssql_python.setup_logging(log_file_path="/tmp/data.csv")
         
         # Custom path with both outputs
         mssql_python.setup_logging(output='both', log_file_path="/tmp/debug.log")

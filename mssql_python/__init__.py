@@ -51,7 +51,7 @@ from .db_connection import connect, Connection
 from .cursor import Cursor
 
 # Logging Configuration (Simplified single-level DEBUG system)
-from .logging import logger, setup_logging
+from .logging import logger, setup_logging, driver_logger
 
 # Constants
 from .constants import ConstantsDDBC, GetInfoConstants
