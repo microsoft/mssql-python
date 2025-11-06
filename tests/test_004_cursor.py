@@ -13477,20 +13477,6 @@ def test_numeric_leading_zeros_precision_loss(
             actual == expected
         ), f"Leading zeros precision loss for {value}, expected {expected}, got {actual}"
 
-    except Exception as e:
-        # Handle cases where values get converted to scientific notation and cause SQL Server conversion errors
-        error_msg = str(e).lower()
-        if (
-            "converting" in error_msg
-            and "varchar" in error_msg
-            and "numeric" in error_msg
-        ):
-            pytest.skip(
-                f"Value {value} converted to scientific notation, causing expected SQL Server conversion error: {e}"
-            )
-        else:
-            raise  # Re-raise unexpected errors
-
     finally:
         try:
             cursor.execute(f"DROP TABLE {table_name}")
@@ -13538,31 +13524,12 @@ def test_numeric_extreme_exponents_precision_loss(
             "1E-18"
         ), f"Extreme exponent value not preserved for {description}: {value} -> {actual}"
 
-    except Exception as e:
-        # Handle expected SQL Server validation errors for scientific notation values
-        error_msg = str(e).lower()
-        if "scale" in error_msg and "range" in error_msg:
-            # This is expected - SQL Server rejects invalid scale/precision combinations
-            pytest.skip(
-                f"Expected SQL Server scale/precision validation for {description}: {e}"
-            )
-        elif any(
-            keyword in error_msg
-            for keyword in ["converting", "overflow", "precision", "varchar", "numeric"]
-        ):
-            # Other expected precision/conversion issues
-            pytest.skip(
-                f"Expected SQL Server precision limits or VARCHAR conversion for {description}: {e}"
-            )
-        else:
-            raise  # Re-raise if it's not a precision-related error
     finally:
         try:
             cursor.execute(f"DROP TABLE {table_name}")
             db_connection.commit()
         except:
             pass  # Table might not exist if creation failed
-
 
 # ---------------------------------------------------------
 # Test 12: 38-digit precision boundary limits
@@ -13658,6 +13625,72 @@ def test_numeric_beyond_38_digit_precision_negative(
         "maximum precision supported by SQL Server is 38" in error_msg
     ), f"Expected SQL Server precision limit message for {description}, got: {error_msg}"
 
+
+@pytest.mark.parametrize(
+    "values, description",
+    [
+        # Small decimal values with scientific notation
+        (
+            [
+                decimal.Decimal('0.70000000000696'),
+                decimal.Decimal('1E-7'),
+                decimal.Decimal('0.00001'),
+                decimal.Decimal('6.96E-12'),
+            ],
+            "Small decimals with scientific notation"
+        ),
+        # Large decimal values with scientific notation
+        (
+            [
+                decimal.Decimal('4E+8'),
+                decimal.Decimal('1.521E+15'),
+                decimal.Decimal('5.748E+18'),
+                decimal.Decimal('1E+11')
+            ],
+            "Large decimals with positive exponents"
+        ),
+        # Medium-sized decimals
+        (
+            [
+                decimal.Decimal('123.456'),
+                decimal.Decimal('9999.9999'),
+                decimal.Decimal('1000000.50')
+            ],
+            "Medium-sized decimals"
+        ),
+    ],
+)
+def test_decimal_scientific_notation_to_varchar(cursor, db_connection, values, description):
+    """
+    Test that Decimal values with scientific notation are properly converted
+    to VARCHAR without triggering 'varchar to numeric' conversion errors.
+    This verifies that the driver correctly handles Decimal to VARCHAR conversion
+    """
+    table_name = "#pytest_decimal_varchar_conversion"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT IDENTITY(1,1), val VARCHAR(50))")
+        
+        for val in values:
+            cursor.execute(f"INSERT INTO {table_name} (val) VALUES (?)", (val,))
+        db_connection.commit()
+        
+        cursor.execute(f"SELECT val FROM {table_name} ORDER BY id")
+        rows = cursor.fetchall()
+        
+        assert len(rows) == len(values), f"Expected {len(values)} rows, got {len(rows)}"
+        
+        for i, (row, expected_val) in enumerate(zip(rows, values)):
+            stored_val = decimal.Decimal(row[0])
+            assert stored_val == expected_val, (
+                f"{description}: Row {i} mismatch - expected {expected_val}, got {stored_val}"
+            )
+        
+    finally:
+        try:
+            cursor.execute(f"DROP TABLE {table_name}")
+            db_connection.commit()
+        except:
+            pass
 
 SMALL_XML = "<root><item>1</item></root>"
 LARGE_XML = "<root>" + "".join(f"<item>{i}</item>" for i in range(10000)) + "</root>"

@@ -395,8 +395,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Detect MONEY / SMALLMONEY range
             if SMALLMONEY_MIN <= param <= SMALLMONEY_MAX:
-                # smallmoney
-                parameters_list[i] = str(param)
+                parameters_list[i] = format(param, 'f')
                 return (
                     ddbc_sql_const.SQL_VARCHAR.value,
                     ddbc_sql_const.SQL_C_CHAR.value,
@@ -405,8 +404,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     False,
                 )
             if MONEY_MIN <= param <= MONEY_MAX:
-                # money
-                parameters_list[i] = str(param)
+                parameters_list[i] = format(param, 'f')
                 return (
                     ddbc_sql_const.SQL_VARCHAR.value,
                     ddbc_sql_const.SQL_C_CHAR.value,
@@ -1916,13 +1914,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             for i, val in enumerate(processed_row):
                 if val is None:
                     continue
-                # Convert Decimals for money/smallmoney to string
                 if (
                     isinstance(val, decimal.Decimal)
                     and parameters_type[i].paramSQLType
                     == ddbc_sql_const.SQL_VARCHAR.value
                 ):
-                    processed_row[i] = str(val)
+                    processed_row[i] = format(val, 'f')
                 # Existing numeric conversion
                 elif parameters_type[i].paramSQLType in (
                     ddbc_sql_const.SQL_DECIMAL.value,
