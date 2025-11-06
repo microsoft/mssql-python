@@ -14,11 +14,11 @@ Expected rows: 1000
 
 Results:
   Rows fetched: 1000 (expected: 1000)
-  Execute time: 0.79 ms
-  Fetchall time: 4.33 ms
-  Total time: 5.12 ms
-  Time per row: 4.33 �s
-  Throughput: 230,894 rows/sec
+  Execute time: 0.82 ms
+  Fetchall time: 4.55 ms
+  Total time: 5.38 ms
+  Time per row: 4.55 �s
+  Throughput: 219,616 rows/sec
   First row size: 11 bytes
   Est. total data: 10.7 KB
 
@@ -29,11 +29,11 @@ Expected rows: 5000
 
 Results:
   Rows fetched: 5000 (expected: 5000)
-  Execute time: 0.63 ms
-  Fetchall time: 7.41 ms
-  Total time: 8.04 ms
-  Time per row: 1.48 �s
-  Throughput: 674,636 rows/sec
+  Execute time: 0.67 ms
+  Fetchall time: 7.68 ms
+  Total time: 8.34 ms
+  Time per row: 1.54 �s
+  Throughput: 651,135 rows/sec
   First row size: 11 bytes
   Est. total data: 53.7 KB
 
@@ -44,11 +44,11 @@ Expected rows: 20000
 
 Results:
   Rows fetched: 19972 (expected: 20000)
-  Execute time: 0.62 ms
-  Fetchall time: 28.29 ms
-  Total time: 28.91 ms
-  Time per row: 1.42 �s
-  Throughput: 705,944 rows/sec
+  Execute time: 0.65 ms
+  Fetchall time: 29.97 ms
+  Total time: 30.62 ms
+  Time per row: 1.50 �s
+  Throughput: 666,324 rows/sec
   First row size: 11 bytes
   Est. total data: 214.5 KB
 
@@ -59,11 +59,11 @@ Expected rows: 1000
 
 Results:
   Rows fetched: 1000 (expected: 1000)
-  Execute time: 0.74 ms
-  Fetchall time: 28.32 ms
-  Total time: 29.05 ms
-  Time per row: 28.32 �s
-  Throughput: 35,316 rows/sec
+  Execute time: 0.69 ms
+  Fetchall time: 29.68 ms
+  Total time: 30.37 ms
+  Time per row: 29.68 �s
+  Throughput: 33,693 rows/sec
   First row size: 239 bytes
   Est. total data: 233.4 KB
 
@@ -74,11 +74,11 @@ Expected rows: 5000
 
 Results:
   Rows fetched: 5000 (expected: 5000)
-  Execute time: 0.68 ms
-  Fetchall time: 6.37 ms
-  Total time: 7.05 ms
-  Time per row: 1.27 �s
-  Throughput: 785,312 rows/sec
+  Execute time: 0.69 ms
+  Fetchall time: 6.83 ms
+  Total time: 7.51 ms
+  Time per row: 1.37 �s
+  Throughput: 732,375 rows/sec
   First row size: 21 bytes
   Est. total data: 102.5 KB
 
@@ -89,11 +89,11 @@ Expected rows: 10000
 
 Results:
   Rows fetched: 10000 (expected: 10000)
-  Execute time: 0.67 ms
-  Fetchall time: 16.47 ms
-  Total time: 17.14 ms
-  Time per row: 1.65 �s
-  Throughput: 607,168 rows/sec
+  Execute time: 0.58 ms
+  Fetchall time: 18.53 ms
+  Total time: 19.12 ms
+  Time per row: 1.85 �s
+  Throughput: 539,566 rows/sec
   First row size: 31 bytes
   Est. total data: 302.7 KB
 
@@ -102,12 +102,12 @@ SUMMARY TABLE
 ================================================================================
 Query                Rows     Total(ms)    Fetch(ms)    �s/row     rows/sec    
 --------------------------------------------------------------------------------
-small_strings        1000     5.12         4.33         4.33       230,894     
-medium_strings       5000     8.04         7.41         1.48       674,636     
-large_strings        20000    28.91        28.29        1.42       705,944     
-wide_row             1000     29.05        28.32        28.32      35,316      
-numeric_heavy        5000     7.05         6.37         1.27       785,312     
-mixed_types          10000    17.14        16.47        1.65       607,168     
+small_strings        1000     5.38         4.55         4.55       219,616     
+medium_strings       5000     8.34         7.68         1.54       651,135     
+large_strings        20000    30.62        29.97        1.50       666,324     
+wide_row             1000     30.37        29.68        29.68      33,693      
+numeric_heavy        5000     7.51         6.83         1.37       732,375     
+mixed_types          10000    19.12        18.53        1.85       539,566     
 
 ================================================================================
 STRING CONVERSION OVERHEAD ANALYSIS
@@ -117,9 +117,9 @@ String Data:
   Rows: 5000
   Columns per row: 3
   Total string values: 15000
-  Fetch time: 6.55 ms
-  Time per string: 0.44 �s
-  Row access time: 0.55 ms
+  Fetch time: 6.82 ms
+  Time per string: 0.45 �s
+  Row access time: 0.63 ms
   Access per string: 0.04 �s
 
 ================================================================================
@@ -128,60 +128,60 @@ ROW OBJECT CREATION OVERHEAD
 
 Row Object Metrics:
   Rows created: 10000
-  Total fetch time: 11.90 ms
-  Time per Row: 1.19 �s
-  Index access (row[i]): 1.31 ms (0.04 �s per access)
-  Attribute access (row.col): 4.05 ms (0.14 �s per access)
-  Attribute vs Index overhead: 208.3%
+  Total fetch time: 11.47 ms
+  Time per Row: 1.15 �s
+  Index access (row[i]): 1.26 ms (0.04 �s per access)
+  Attribute access (row.col): 3.86 ms (0.13 �s per access)
+  Attribute vs Index overhead: 206.8%
 
 ================================================================================
 C++ API CALL OVERHEAD
 ================================================================================
 
 C++ API Metrics (100 iterations):
-  Total time: 20.33 ms
-  Per iteration: 0.20 ms
-  Per execute: 203.30 �s
+  Total time: 21.48 ms
+  Per iteration: 0.21 ms
+  Per execute: 214.75 �s
 
 ================================================================================
 DETAILED cProfile ANALYSIS
 ================================================================================
 
 --- Top 30 functions by cumulative time ---
-         531812 function calls in 0.486 seconds
+         531812 function calls in 0.476 seconds
 
    Ordered by: cumulative time
    List reduced from 75 to 30 due to restriction <30>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-        2    0.009    0.005    0.485    0.242 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:2086(fetchall)
-        2    0.345    0.173    0.462    0.231 {built-in method ddbc_bindings.DDBCSQLFetchAll}
-   140074    0.042    0.000    0.089    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:172(get_logger)
-   140074    0.034    0.000    0.047    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:142(get_logger)
+        2    0.009    0.004    0.473    0.237 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:2086(fetchall)
+        2    0.337    0.169    0.453    0.226 {built-in method ddbc_bindings.DDBCSQLFetchAll}
+   140074    0.041    0.000    0.087    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:172(get_logger)
+   140074    0.033    0.000    0.045    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:142(get_logger)
     10000    0.021    0.000    0.029    0.000 C:\Users\sharmag\AppData\Local\Programs\Python\Python313\Lib\uuid.py:142(__init__)
-    15000    0.009    0.000    0.013    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\row.py:27(__init__)
    140074    0.013    0.000    0.013    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:44(enabled)
+    15000    0.008    0.000    0.012    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\row.py:27(__init__)
     10000    0.003    0.000    0.003    0.000 {method 'count' of 'list' objects}
-    30008    0.003    0.000    0.003    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:934(connection)
+    30008    0.002    0.000    0.002    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:934(connection)
     10000    0.002    0.000    0.002    0.000 {built-in method from_bytes}
     15007    0.002    0.000    0.002    0.000 {built-in method builtins.hasattr}
-    10002    0.002    0.000    0.002    0.000 {built-in method builtins.isinstance}
     10008    0.002    0.000    0.002    0.000 {built-in method builtins.len}
+    10002    0.002    0.000    0.002    0.000 {built-in method builtins.isinstance}
         2    0.001    0.000    0.001    0.000 {built-in method ddbc_bindings.DDBCSQLExecute}
         4    0.000    0.000    0.001    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:793(_initialize_description)
-       30    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:872(_map_data_type)
-      640    0.000    0.000    0.000    0.000 C:\Users\sharmag\AppData\Local\Programs\Python\Python313\Lib\enum.py:199(__get__)
+       30    0.000    0.000    0.001    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:872(_map_data_type)
         1    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\connection.py:133(__init__)
         1    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\connection.py:334(setautocommit)
-        3    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:551(_initialize_cursor)
+      640    0.000    0.000    0.000    0.000 C:\Users\sharmag\AppData\Local\Programs\Python\Python313\Lib\enum.py:199(__get__)
         1    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\connection.py:241(_construct_connection_string)
+        3    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:551(_initialize_cursor)
         4    0.000    0.000    0.000    0.000 {built-in method ddbc_bindings.DDBCSQLDescribeCol}
       640    0.000    0.000    0.000    0.000 C:\Users\sharmag\AppData\Local\Programs\Python\Python313\Lib\enum.py:1337(value)
-        3    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:557(_allocate_statement_handle)
         1    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\helpers.py:20(add_driver_to_connection_str)
         1    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\connection.py:313(autocommit)
         4    0.000    0.000    0.000    0.000 {built-in method ddbc_bindings.DDBCSQLGetAllDiagRecords}
         1    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\helpers.py:120(sanitize_connection_string)
+        3    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:557(_allocate_statement_handle)
         1    0.000    0.000    0.000    0.000 C:\Users\sharmag\AppData\Local\Programs\Python\Python313\Lib\re\__init__.py:183(sub)
        30    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\helpers.py:343(get_settings)
 
@@ -191,68 +191,68 @@ DETAILED cProfile ANALYSIS
 ====================================================================================================
 Function                                Calls     Total(ms)      Avg(µs)       Min(µs)    Max(µs)    
 ----------------------------------------------------------------------------------------------------
-FetchBatchData                          269       61.09          227.10         2           3087        
-SQLDescribeCol_wrap                     330       0.99           3.00           2           21          
-SQLBindColums                           108       0.53           4.94           1           140         
-FetchAll_wrap                           110       546.82         4971.05        17          456135      
-SQLGetData_wrap                         11000     474.40         43.13          23          1071        
+SQLDescribeCol_wrap                     330       1.03           3.12           2           29          
+SQLBindColums                           108       0.48           4.49           1           126         
+FetchBatchData_Total                    269       64.79          240.86         2           2862        
+FetchAll_wrap                           110       542.10         4928.15        17          446341      
+SQLGetData_wrap                         11000     466.02         42.37          23          2230        
 ====================================================================================================
 
 
 --- Top 30 functions by total time ---
-         531812 function calls in 0.486 seconds
+         531812 function calls in 0.476 seconds
 
    Ordered by: internal time
    List reduced from 75 to 30 due to restriction <30>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-        2    0.345    0.173    0.462    0.231 {built-in method ddbc_bindings.DDBCSQLFetchAll}
-   140074    0.042    0.000    0.089    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:172(get_logger)
-   140074    0.034    0.000    0.047    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:142(get_logger)
+        2    0.337    0.169    0.453    0.226 {built-in method ddbc_bindings.DDBCSQLFetchAll}
+   140074    0.041    0.000    0.087    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:172(get_logger)
+   140074    0.033    0.000    0.045    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:142(get_logger)
     10000    0.021    0.000    0.029    0.000 C:\Users\sharmag\AppData\Local\Programs\Python\Python313\Lib\uuid.py:142(__init__)
    140074    0.013    0.000    0.013    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:44(enabled)
-        2    0.009    0.005    0.485    0.242 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:2086(fetchall)
-    15000    0.009    0.000    0.013    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\row.py:27(__init__)
+        2    0.009    0.004    0.473    0.237 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:2086(fetchall)
+    15000    0.008    0.000    0.012    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\row.py:27(__init__)
     10000    0.003    0.000    0.003    0.000 {method 'count' of 'list' objects}
-    30008    0.003    0.000    0.003    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:934(connection)
+    30008    0.002    0.000    0.002    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:934(connection)
     10000    0.002    0.000    0.002    0.000 {built-in method from_bytes}
     15007    0.002    0.000    0.002    0.000 {built-in method builtins.hasattr}
-    10002    0.002    0.000    0.002    0.000 {built-in method builtins.isinstance}
     10008    0.002    0.000    0.002    0.000 {built-in method builtins.len}
+    10002    0.002    0.000    0.002    0.000 {built-in method builtins.isinstance}
         2    0.001    0.000    0.001    0.000 {built-in method ddbc_bindings.DDBCSQLExecute}
-       30    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:872(_map_data_type)
-      640    0.000    0.000    0.000    0.000 C:\Users\sharmag\AppData\Local\Programs\Python\Python313\Lib\enum.py:199(__get__)
         1    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\connection.py:334(setautocommit)
+       30    0.000    0.000    0.001    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:872(_map_data_type)
+      640    0.000    0.000    0.000    0.000 C:\Users\sharmag\AppData\Local\Programs\Python\Python313\Lib\enum.py:199(__get__)
         4    0.000    0.000    0.000    0.000 {built-in method ddbc_bindings.DDBCSQLDescribeCol}
-      640    0.000    0.000    0.000    0.000 C:\Users\sharmag\AppData\Local\Programs\Python\Python313\Lib\enum.py:1337(value)
         4    0.000    0.000    0.001    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:793(_initialize_description)
+      640    0.000    0.000    0.000    0.000 C:\Users\sharmag\AppData\Local\Programs\Python\Python313\Lib\enum.py:1337(value)
         3    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:551(_initialize_cursor)
-        3    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:557(_allocate_statement_handle)
         4    0.000    0.000    0.000    0.000 {built-in method ddbc_bindings.DDBCSQLGetAllDiagRecords}
-        1    0.000    0.000    0.000    0.000 {method 'disable' of '_lsprof.Profiler' objects}
+        3    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:557(_allocate_statement_handle)
        30    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\helpers.py:343(get_settings)
-        1    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\connection.py:313(autocommit)
         1    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\helpers.py:20(add_driver_to_connection_str)
+        1    0.000    0.000    0.000    0.000 {method 'disable' of '_lsprof.Profiler' objects}
+        1    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\connection.py:313(autocommit)
         1    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\helpers.py:84(add_driver_name_to_app_parameter)
-        1    0.000    0.000    0.000    0.000 {method 'sub' of 're.Pattern' objects}
         2    0.000    0.000    0.000    0.000 {built-in method ddbc_bindings.DDBCSQLRowCount}
+        1    0.000    0.000    0.000    0.000 {method 'sub' of 're.Pattern' objects}
 
 
 
 
 --- Most called functions (top 30) ---
-         531812 function calls in 0.486 seconds
+         531812 function calls in 0.476 seconds
 
    Ordered by: call count
    List reduced from 75 to 30 due to restriction <30>
 
    ncalls  tottime  percall  cumtime  percall filename:lineno(function)
-   140074    0.034    0.000    0.047    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:142(get_logger)
+   140074    0.033    0.000    0.045    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:142(get_logger)
    140074    0.013    0.000    0.013    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:44(enabled)
-   140074    0.042    0.000    0.089    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:172(get_logger)
-    30008    0.003    0.000    0.003    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:934(connection)
+   140074    0.041    0.000    0.087    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\logging_config.py:172(get_logger)
+    30008    0.002    0.000    0.002    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:934(connection)
     15007    0.002    0.000    0.002    0.000 {built-in method builtins.hasattr}
-    15000    0.009    0.000    0.013    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\row.py:27(__init__)
+    15000    0.008    0.000    0.012    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\row.py:27(__init__)
     10008    0.002    0.000    0.002    0.000 {built-in method builtins.len}
     10002    0.002    0.000    0.002    0.000 {built-in method builtins.isinstance}
     10000    0.021    0.000    0.029    0.000 C:\Users\sharmag\AppData\Local\Programs\Python\Python313\Lib\uuid.py:142(__init__)
@@ -262,7 +262,7 @@ SQLGetData_wrap                         11000     474.40         43.13          
       640    0.000    0.000    0.000    0.000 C:\Users\sharmag\AppData\Local\Programs\Python\Python313\Lib\enum.py:199(__get__)
        43    0.000    0.000    0.000    0.000 {method 'append' of 'list' objects}
        30    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\helpers.py:343(get_settings)
-       30    0.000    0.000    0.000    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:872(_map_data_type)
+       30    0.000    0.000    0.001    0.000 C:\Users\sharmag\OneDrive - Microsoft\Desktop\gh-mssql-python\mssql_python\cursor.py:872(_map_data_type)
        30    0.000    0.000    0.000    0.000 {method '__exit__' of '_thread.lock' objects}
        30    0.000    0.000    0.000    0.000 {method 'get' of 'dict' objects}
        12    0.000    0.000    0.000    0.000 {method 'lower' of 'str' objects}
