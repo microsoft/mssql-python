@@ -2562,11 +2562,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
                     std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
                     SQLLEN dataLen;
-                    {
-                        PROFILE_SCOPE("ODBC_SQLGetData_CHAR");
-                        ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(),
-                                            &dataLen);
-                    }
+                    ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(),
+                                        &dataLen);
                     if (SQL_SUCCEEDED(ret)) {
                         // columnSize is in chars, dataLen is in bytes
                         if (dataLen > 0) {
@@ -2575,16 +2572,10 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 // SQLGetData will null-terminate the data
     #if defined(__APPLE__) || defined(__linux__)
                                 std::string fullStr(reinterpret_cast<char*>(dataBuffer.data()));
-                                {
-                                    PROFILE_SCOPE("PyStr_FromCHAR_NonBatch");
-                                    row.append(fullStr);
-                                }
+                                row.append(fullStr);
                                 LOG("macOS/Linux: Appended CHAR string of length {} to result row", fullStr.length());
     #else
-                                {
-                                    PROFILE_SCOPE("PyStr_FromCHAR_NonBatch");
-                                    row.append(std::string(reinterpret_cast<char*>(dataBuffer.data())));
-                                }
+                                row.append(std::string(reinterpret_cast<char*>(dataBuffer.data())));
     #endif
                             } else {
                                 // Buffer too small, fallback to streaming
@@ -2631,27 +2622,18 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     uint64_t fetchBufferSize = (columnSize + 1) * sizeof(SQLWCHAR);  // +1 for null terminator
                     std::vector<SQLWCHAR> dataBuffer(columnSize + 1);
                     SQLLEN dataLen;
-                    {
-                        PROFILE_SCOPE("ODBC_SQLGetData_WCHAR");
-                        ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(), fetchBufferSize, &dataLen);
-                    }
+                    ret = SQLGetData_ptr(hStmt, i, SQL_C_WCHAR, dataBuffer.data(), fetchBufferSize, &dataLen);
                     if (SQL_SUCCEEDED(ret)) {
                         if (dataLen > 0) {
                             uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
                             if (numCharsInData < dataBuffer.size()) {
 #if defined(__APPLE__) || defined(__linux__)
-                                {
-                                    PROFILE_SCOPE("SQLWCHARToPyString_NonBatch");
-                                    // OPTIMIZED: Direct Python string creation
-                                    const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(dataBuffer.data());
-                                    row.append(SQLWCHARToPyString(sqlwBuf, numCharsInData));
-                                }
+                                // OPTIMIZED: Direct Python string creation
+                                const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(dataBuffer.data());
+                                row.append(SQLWCHARToPyString(sqlwBuf, numCharsInData));
 #else
-                                {
-                                    PROFILE_SCOPE("PyStr_FromWCHAR_NonBatch");
-                                    std::wstring wstr(reinterpret_cast<wchar_t*>(dataBuffer.data()));
-                                    row.append(py::cast(wstr));
-                                }
+                                std::wstring wstr(reinterpret_cast<wchar_t*>(dataBuffer.data()));
+                                row.append(py::cast(wstr));
 #endif
                                 LOG("Appended NVARCHAR string of length {} to result row", numCharsInData);
                             }  else {
@@ -3210,11 +3192,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     PROFILE_SCOPE("FetchBatchData_Total");
     LOG("Fetching data in batches");
     
-    SQLRETURN ret;
-    {
-        PROFILE_SCOPE("ODBC_SQLFetchScroll");
-        ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
-    }
+    SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
     if (ret == SQL_NO_DATA) {
         LOG("No data to fetch");
         return ret;
@@ -3245,11 +3223,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
     
     size_t initialSize = rows.size();
-    {
-        PROFILE_SCOPE("PyList_Preallocate");
-        for (SQLULEN i = 0; i < numRowsFetched; i++) {
-            rows.append(py::none());
-        }
+    for (SQLULEN i = 0; i < numRowsFetched; i++) {
+        rows.append(py::none());
     }
     
     {
@@ -3295,7 +3270,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_CHAR:
                 case SQL_VARCHAR:
                 case SQL_LONGVARCHAR: {
-                    PROFILE_SCOPE("Type_CHAR");
                     SQLULEN columnSize = colInfo.columnSize;
                     HandleZeroColumnSizeAtFetch(columnSize);
                     uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
@@ -3303,12 +3277,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     bool isLob = colInfo.isLob;
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
-                        PROFILE_SCOPE("PyStr_FromCHAR");
                         row[col - 1] = py::str(
                             reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * fetchBufferSize]),
                             numCharsInData);
                     } else {
-                        PROFILE_SCOPE("LOB_Fetch_CHAR");
                         row[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false);
                     }
                     break;
@@ -3316,7 +3288,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_WCHAR:
                 case SQL_WVARCHAR:
                 case SQL_WLONGVARCHAR: {
-                    PROFILE_SCOPE("Type_WCHAR");
                     // TODO: variable length data needs special handling, this logic wont suffice
                     SQLULEN columnSize = colInfo.columnSize;
                     HandleZeroColumnSizeAtFetch(columnSize);
@@ -3327,40 +3298,31 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     if (!isLob && numCharsInData < fetchBufferSize) {
 #if defined(__APPLE__) || defined(__linux__)
                         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
-                        {
-                            PROFILE_SCOPE("SQLWCHARToPyString");
-                            // OPTIMIZED: Direct Python string creation (7-8x faster than std::wstring conversion)
-                            row[col - 1] = SQLWCHARToPyString(wcharData, numCharsInData);
-                        }
+                        // OPTIMIZED: Direct Python string creation (7-8x faster than std::wstring conversion)
+                        row[col - 1] = SQLWCHARToPyString(wcharData, numCharsInData);
 #else
-                        PROFILE_SCOPE("PyStr_FromWCHAR");
                         row[col - 1] = std::wstring(
                             reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]),
                             numCharsInData);
 #endif
                     } else {
-                        PROFILE_SCOPE("LOB_Fetch_WCHAR");
                         row[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false);
                     }
                     break;
                 }
                 case SQL_INTEGER: {
-                    PROFILE_SCOPE("Type_INTEGER");
                     row[col - 1] = buffers.intBuffers[col - 1][i];
                     break;
                 }
                 case SQL_SMALLINT: {
-                    PROFILE_SCOPE("Type_SMALLINT");
                     row[col - 1] = buffers.smallIntBuffers[col - 1][i];
                     break;
                 }
                 case SQL_TINYINT: {
-                    PROFILE_SCOPE("Type_TINYINT");
                     row[col - 1] = buffers.charBuffers[col - 1][i];
                     break;
                 }
                 case SQL_BIT: {
-                    PROFILE_SCOPE("Type_BIT");
                     row[col - 1] = static_cast<bool>(buffers.charBuffers[col - 1][i]);
                     break;
                 }
