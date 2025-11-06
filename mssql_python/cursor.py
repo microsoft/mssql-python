@@ -1046,6 +1046,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         logger.debug('execute: Starting - operation_length=%d, param_count=%d, use_prepare=%s', 
             len(operation), len(parameters), str(use_prepare))
+        
+        # Log the actual query being executed
+        logger.debug('Executing query: %s', operation)
 
         # Restore original fetch methods if they exist
         if hasattr(self, "_original_fetchone"):
@@ -1116,7 +1119,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Executing a new statement. Reset is_stmt_prepared to false
             self.is_stmt_prepared = [False]
 
-        logger.debug( "Executing query: %s", operation)
         for i, param in enumerate(parameters):
             logger.debug(
                 """Parameter number: %s, Parameter: %s,
@@ -1736,6 +1738,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         logger.debug( 'executemany: Starting - operation_length=%d, batch_count=%d', 
             len(operation), len(seq_of_parameters))
+        
         self._check_closed()
         self._reset_cursor()
         self.messages = []
