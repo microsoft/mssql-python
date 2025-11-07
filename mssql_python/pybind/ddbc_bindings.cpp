@@ -6,6 +6,7 @@
 #include "ddbc_bindings.h"
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
+#include "performance_counter.hpp"
 
 #include <cstdint>
 #include <iomanip>  // std::setw, std::setfill
@@ -1074,6 +1075,7 @@ DriverLoader& DriverLoader::getInstance() {
 }
 
 void DriverLoader::loadDriver() {
+    PERF_TIMER("DriverLoader::loadDriver");
     std::call_once(m_onceFlag, [this]() {
         LoadDriverOrThrowException();
         m_driverLoaded = true;
@@ -1106,6 +1108,7 @@ SQLSMALLINT SqlHandle::type() const {
  * If you need destruction logs, use explicit close() methods instead.
  */
 void SqlHandle::free() {
+    PERF_TIMER("SqlHandle::free");
     if (_handle && SQLFreeHandle_ptr) {
         // Check if Python is shutting down using centralized helper function
         bool pythonShuttingDown = is_python_finalizing();
@@ -1370,6 +1373,7 @@ SQLRETURN SQLColumns_wrap(SqlHandlePtr StatementHandle,
 
 // Helper function to check for driver errors
 ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRETURN retcode) {
+    PERF_TIMER("SQLCheckError_Wrap");
     LOG("Checking errors for retcode - {}" , retcode);
     ErrorInfo errorInfo;
     if (retcode == SQL_INVALID_HANDLE) {
@@ -1409,6 +1413,7 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
 }
 
 py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
+    PERF_TIMER("SQLGetAllDiagRecords");
     LOG("Retrieving all diagnostic records");
     if (!SQLGetDiagRec_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -1475,22 +1480,27 @@ py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
 
 // Wrap SQLExecDirect
 SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Query) {
+    PERF_TIMER("SQLExecDirect_wrap");
     LOG("Execute SQL query directly - {}", Query.c_str());
+    
     if (!SQLExecDirect_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
     // Configure forward-only cursor
-    if (SQLSetStmtAttr_ptr && StatementHandle && StatementHandle->get()) {
-        SQLSetStmtAttr_ptr(StatementHandle->get(),
-                           SQL_ATTR_CURSOR_TYPE,
-                           (SQLPOINTER)SQL_CURSOR_FORWARD_ONLY,
-                           0);
-        SQLSetStmtAttr_ptr(StatementHandle->get(),
-                           SQL_ATTR_CONCURRENCY,
-                           (SQLPOINTER)SQL_CONCUR_READ_ONLY,
-                           0);
+    {
+        PERF_TIMER("SQLExecDirect_wrap::configure_cursor");
+        if (SQLSetStmtAttr_ptr && StatementHandle && StatementHandle->get()) {
+            SQLSetStmtAttr_ptr(StatementHandle->get(),
+                               SQL_ATTR_CURSOR_TYPE,
+                               (SQLPOINTER)SQL_CURSOR_FORWARD_ONLY,
+                               0);
+            SQLSetStmtAttr_ptr(StatementHandle->get(),
+                               SQL_ATTR_CONCURRENCY,
+                               (SQLPOINTER)SQL_CONCUR_READ_ONLY,
+                               0);
+        }
     }
 
     SQLWCHAR* queryPtr;
@@ -1500,7 +1510,14 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Q
 #else
     queryPtr = const_cast<SQLWCHAR*>(Query.c_str());
 #endif
-    SQLRETURN ret = SQLExecDirect_ptr(StatementHandle->get(), queryPtr, SQL_NTS);
+    
+    // Execute query
+    SQLRETURN ret;
+    {
+        PERF_TIMER("SQLExecDirect_wrap::SQLExecDirect_call");
+        ret = SQLExecDirect_ptr(StatementHandle->get(), queryPtr, SQL_NTS);
+    }
+    
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to execute query directly");
     }
@@ -2287,6 +2304,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
 
 // Wrap SQLNumResultCols
 SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle) {
+    PERF_TIMER("SQLNumResultCols_wrap");
     LOG("Get number of columns in result set");
     if (!SQLNumResultCols_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -2301,6 +2319,7 @@ SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle) {
 
 // Wrap SQLDescribeCol
 SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMetadata) {
+    PERF_TIMER("SQLDescribeCol_wrap");
     LOG("Get column description");
     if (!SQLDescribeCol_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -2316,6 +2335,7 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
     }
 
     for (SQLUSMALLINT i = 1; i <= ColumnCount; ++i) {
+        PERF_TIMER("SQLDescribeCol_wrap::per_column");
         SQLWCHAR ColumnName[256];
         SQLSMALLINT NameLength;
         SQLSMALLINT DataType;
@@ -2395,6 +2415,7 @@ SQLRETURN SQLSpecialColumns_wrap(SqlHandlePtr StatementHandle,
 
 // Wrap SQLFetch to retrieve rows
 SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
+    PERF_TIMER("SQLFetch_wrap");
     LOG("Fetch next row");
     if (!SQLFetch_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -2410,6 +2431,7 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
                                      bool isWideChar,
                                      bool isBinary)
 {
+    PERF_TIMER("FetchLobColumnData");
     std::vector<char> buffer;
     SQLRETURN ret = SQL_SUCCESS_WITH_INFO;
     int loopCount = 0;
@@ -2518,6 +2540,7 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
 
 // Helper function to retrieve column data
 SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, py::list& row) {
+    PERF_TIMER("SQLGetData_wrap");
     LOG("Get data from columns");
     if (!SQLGetData_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -3028,6 +3051,7 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
 // TODO: Move to anonymous namespace, since it is not used outside this file
 SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
                         SQLUSMALLINT numCols, int fetchSize) {
+    PERF_TIMER("SQLBindColums");
     SQLRETURN ret = SQL_SUCCESS;
     // Bind columns based on their data types
     for (SQLUSMALLINT col = 1; col <= numCols; col++) {
@@ -3184,8 +3208,15 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
 // TODO: Move to anonymous namespace, since it is not used outside this file
 SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
                          py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched, const std::vector<SQLUSMALLINT>& lobColumns) {
+    PERF_TIMER("FetchBatchData");
     LOG("Fetching data in batches");
-    SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
+    
+    // Fetch data from ODBC
+    SQLRETURN ret;
+    {
+        PERF_TIMER("FetchBatchData::SQLFetchScroll_call");
+        ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
+    }
     if (ret == SQL_NO_DATA) {
         LOG("No data to fetch");
         return ret;
@@ -3203,15 +3234,19 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         bool isLob;
     };
     std::vector<ColumnInfo> columnInfos(numCols);
-    for (SQLUSMALLINT col = 0; col < numCols; col++) {
-        const auto& columnMeta = columnNames[col].cast<py::dict>();
-        columnInfos[col].dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
-        columnInfos[col].columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
-        columnInfos[col].isLob = std::find(lobColumns.begin(), lobColumns.end(), col + 1) != lobColumns.end();
-        columnInfos[col].processedColumnSize = columnInfos[col].columnSize;
-        HandleZeroColumnSizeAtFetch(columnInfos[col].processedColumnSize);
-        columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize + 1; // +1 for null terminator
-    }
+    
+    {
+        PERF_TIMER("FetchBatchData::cache_column_metadata");
+        for (SQLUSMALLINT col = 0; col < numCols; col++) {
+            const auto& columnMeta = columnNames[col].cast<py::dict>();
+            columnInfos[col].dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
+            columnInfos[col].columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+            columnInfos[col].isLob = std::find(lobColumns.begin(), lobColumns.end(), col + 1) != lobColumns.end();
+            columnInfos[col].processedColumnSize = columnInfos[col].columnSize;
+            HandleZeroColumnSizeAtFetch(columnInfos[col].processedColumnSize);
+            columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize + 1; // +1 for null terminator
+        }
+    } // End cache_column_metadata timer
     
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
     
@@ -3220,7 +3255,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         rows.append(py::none());
     }
     
-    for (SQLULEN i = 0; i < numRowsFetched; i++) {
+    // Convert fetched data to Python objects
+    {
+        PERF_TIMER("FetchBatchData::construct_rows");
+        for (SQLULEN i = 0; i < numRowsFetched; i++) {
         // Create row container pre-allocated with known column count
         py::list row(numCols);
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
@@ -3450,6 +3488,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         }
         rows[initialSize + i] = row;
     }
+    } // End construct_rows timer
     return ret;
 }
 
@@ -3635,6 +3674,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 // row data. If there are no more rows to fetch, it returns SQL_NO_DATA. If an error occurs during
 // fetching, it throws a runtime error.
 SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
+    PERF_TIMER("FetchAll_wrap");
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
@@ -3775,6 +3815,7 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row) {
 
 // Wrap SQLMoreResults
 SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
+    PERF_TIMER("SQLMoreResults_wrap");
     LOG("Check for more results");
     if (!SQLMoreResults_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -3786,6 +3827,7 @@ SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
 
 // Wrap SQLFreeHandle
 SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
+    PERF_TIMER("SQLFreeHandle_wrap");
     LOG("Free SQL handle");
     if (!SQLAllocHandle_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -3802,6 +3844,7 @@ SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
 
 // Wrap SQLRowCount
 SQLLEN SQLRowCount_wrap(SqlHandlePtr StatementHandle) {
+    PERF_TIMER("SQLRowCount_wrap");
     LOG("Get number of row affected by last execute");
     if (!SQLRowCount_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -3981,6 +4024,14 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
+    
+    // Add profiling submodule
+    auto profiling = m.def_submodule("profiling", "Performance profiling");
+    profiling.def("enable", []() { mssql_profiling::PerformanceCounter::instance().enable(); }, "Enable performance profiling");
+    profiling.def("disable", []() { mssql_profiling::PerformanceCounter::instance().disable(); }, "Disable performance profiling");
+    profiling.def("get_stats", []() { return mssql_profiling::PerformanceCounter::instance().get_stats(); }, "Get profiling statistics");
+    profiling.def("reset", []() { mssql_profiling::PerformanceCounter::instance().reset(); }, "Reset profiling statistics");
+    profiling.def("is_enabled", []() { return mssql_profiling::PerformanceCounter::instance().is_enabled(); }, "Check if profiling is enabled");
     
     try {
         // Try loading the ODBC driver when the module is imported

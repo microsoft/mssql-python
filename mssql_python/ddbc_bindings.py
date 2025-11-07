@@ -136,3 +136,7 @@ spec.loader.exec_module(module)
 for attr in dir(module):
     if not attr.startswith("__"):
         globals()[attr] = getattr(module, attr)
+
+# Explicitly expose the profiling submodule since pybind11 submodules  
+# don't always get copied correctly with getattr
+profiling = module.profiling

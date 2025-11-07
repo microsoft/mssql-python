@@ -3,6 +3,7 @@
 
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
+#include "../performance_counter.hpp"
 #include <pybind11/pybind11.h>
 #include <algorithm>
 #include <memory>
@@ -46,6 +47,7 @@ static SqlHandlePtr getEnvHandle() {
 //-------------------------------------------------------------------------------------------------
 Connection::Connection(const std::wstring& conn_str, bool use_pool)
     : _connStr(conn_str), _autocommit(false), _fromPool(use_pool) {
+    PERF_TIMER("Connection::Connection");
     allocateDbcHandle();
 }
 
@@ -55,6 +57,7 @@ Connection::~Connection() {
 
 // Allocates connection handle
 void Connection::allocateDbcHandle() {
+    PERF_TIMER("Connection::allocateDbcHandle");
     auto _envHandle = getEnvHandle();
     SQLHANDLE dbc = nullptr;
     LOG("Allocate SQL Connection Handle");
@@ -66,6 +69,7 @@ void Connection::allocateDbcHandle() {
 }
 
 void Connection::connect(const py::dict& attrs_before) {
+    PERF_TIMER("Connection::connect");
     LOG("Connecting to database");
     // Apply access token before connect
     if (!attrs_before.is_none() && py::len(attrs_before) > 0) {
@@ -86,15 +90,22 @@ void Connection::connect(const py::dict& attrs_before) {
 #else
     connStrPtr = const_cast<SQLWCHAR*>(_connStr.c_str());
 #endif
-    SQLRETURN ret = SQLDriverConnect_ptr(
-        _dbcHandle->get(), nullptr,
-        connStrPtr, SQL_NTS,
-        nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    
+    // Call ODBC SQLDriverConnect
+    SQLRETURN ret;
+    {
+        PERF_TIMER("Connection::connect::SQLDriverConnect_call");
+        ret = SQLDriverConnect_ptr(
+            _dbcHandle->get(), nullptr,
+            connStrPtr, SQL_NTS,
+            nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    }
     checkError(ret);
     updateLastUsed();
 }
 
 void Connection::disconnect() {
+    PERF_TIMER("Connection::disconnect");
     if (_dbcHandle) {
         LOG("Disconnecting from database");
         SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
@@ -117,6 +128,7 @@ void Connection::checkError(SQLRETURN ret) const {
 }
 
 void Connection::commit() {
+    PERF_TIMER("Connection::commit");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -128,6 +140,7 @@ void Connection::commit() {
 }
 
 void Connection::rollback() {
+    PERF_TIMER("Connection::rollback");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -139,6 +152,7 @@ void Connection::rollback() {
 }
 
 void Connection::setAutocommit(bool enable) {
+    PERF_TIMER("Connection::setAutocommit");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
@@ -171,6 +185,7 @@ bool Connection::getAutocommit() const {
 }
 
 SqlHandlePtr Connection::allocStatementHandle() {
+    PERF_TIMER("Connection::allocStatementHandle");
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
