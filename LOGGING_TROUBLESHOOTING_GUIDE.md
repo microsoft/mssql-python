@@ -9,14 +9,15 @@
 ## Table of Contents
 
 1. [Quick Reference](#quick-reference)
-2. [Common Customer Issues](#common-customer-issues)
-3. [Step-by-Step Troubleshooting Workflows](#step-by-step-troubleshooting-workflows)
-4. [Permission Issues](#permission-issues)
-5. [Log Collection Guide](#log-collection-guide)
-6. [Log Analysis](#log-analysis)
-7. [Escalation Criteria](#escalation-criteria)
-8. [FAQ](#faq)
-9. [Scripts & Commands](#scripts--commands)
+2. [Enable Debug Logging](#enable-debug-logging)
+3. [Common Customer Issues](#common-customer-issues)
+4. [Step-by-Step Troubleshooting Workflows](#step-by-step-troubleshooting-workflows)
+5. [Permission Issues](#permission-issues)
+6. [Log Collection Guide](#log-collection-guide)
+7. [Log Analysis](#log-analysis)
+8. [Escalation Criteria](#escalation-criteria)
+9. [FAQ](#faq)
+10. [Scripts & Commands](#scripts--commands)
 
 ---
 
@@ -25,33 +26,164 @@
 ### Fastest Way to Enable Logging
 
 ```python
-from mssql_python import logging
-logging.setLevel(logging.FINE, logging.BOTH)
+import mssql_python
+
+# Enable logging - shows everything
+mssql_python.setup_logging(output='both')
 ```
 
 This enables logging with:
 - ✅ File output (in `./mssql_python_logs/` folder)
 - ✅ Console output (immediate visibility)
-- ✅ Standard detail level (SQL statements)
+- ✅ Debug level (everything)
 
-### Log Levels at a Glance
+### Logging Philosophy
 
-| Level | Value | What Customer Sees | When to Use |
-|-------|-------|-------------------|-------------|
-| **FINE** | 18 | SQL statements, connections | 90% of cases - start here |
-| **FINER** | 15 | SQL + parameter values | Parameter binding issues |
-| **FINEST** | 5 | Everything (very verbose) | Driver bugs, escalations |
-| **CRITICAL** | 50 | Logging OFF | When not troubleshooting |
-
-**Note:** You can also use `logging.disable()` as a convenience function to turn off all logging.
+mssql-python uses an **all-or-nothing** approach:
+- **One Level**: DEBUG level only - no level categorization
+- **All or Nothing**: When enabled, you see EVERYTHING
+- **Troubleshooting Focus**: Turn on when something breaks, off otherwise
 
 ### Output Modes
 
-| Mode | Constant | Behavior | Use Case |
-|------|----------|----------|----------|
-| **File** | `logging.FILE` | Logs to file only | Default, production |
-| **Stdout** | `logging.STDOUT` | Logs to console only | No file access |
-| **Both** | `logging.BOTH` | Logs to file + console | Active troubleshooting |
+| Mode | Value | Behavior | Use Case |
+|------|-------|----------|----------|
+| **File** | `'file'` | Logs to file only | Default, production |
+| **Stdout** | `'stdout'` | Logs to console only | No file access |
+| **Both** | `'both'` | Logs to file + console | Active troubleshooting |
+
+---
+
+## Enable Debug Logging
+
+The mssql-python driver includes a comprehensive logging system that captures detailed information about driver operations, SQL queries, parameters, and internal state.
+
+### Quick Start
+
+Enable logging with one line before creating connections:
+
+```python
+import mssql_python
+
+# Enable logging - shows EVERYTHING
+mssql_python.setup_logging()
+
+# Use the driver - all operations are now logged
+conn = mssql_python.connect("Server=localhost;Database=test")
+# Log file: ./mssql_python_logs/mssql_python_trace_*.log
+```
+
+### Output Options
+
+Control where logs are written:
+
+```python
+# File only (default) - logs saved to file
+mssql_python.setup_logging()
+
+# Console only - logs printed to stdout
+mssql_python.setup_logging(output='stdout')
+
+# Both file and console
+mssql_python.setup_logging(output='both')
+
+# Custom file path (must use .txt, .log, or .csv extension)
+mssql_python.setup_logging(log_file_path="/var/log/myapp/debug.log")
+```
+
+### What Gets Logged
+
+When enabled, logging shows **everything** at DEBUG level:
+
+- ✅ **Connection operations**: Opening, closing, configuration
+- ✅ **SQL queries**: Full query text and parameters
+- ✅ **Internal operations**: ODBC calls, handle management, memory allocations
+- ✅ **Error details**: Exceptions with stack traces and error codes
+- ✅ **Thread tracking**: OS native thread IDs for multi-threaded debugging
+
+### Log Format
+
+Logs use comma-separated format with structured fields:
+
+```
+# MSSQL-Python Driver Log | Script: main.py | PID: 12345 | Log Level: DEBUG | Python: 3.13.7 | Start: 2025-11-06 10:30:15
+Timestamp, ThreadID, Level, Location, Source, Message
+2025-11-06 10:30:15.100, 8581947520, DEBUG, connection.py:156, Python, Connection opened
+2025-11-06 10:30:15.101, 8581947520, DEBUG, connection.cpp:22, DDBC, Allocating ODBC environment handle
+2025-11-06 10:30:15.102, 8581947520, DEBUG, cursor.py:89, Python, Executing query: SELECT * FROM users WHERE id = ?
+2025-11-06 10:30:15.103, 8581947520, DEBUG, cursor.py:90, Python, Query parameters: [42]
+```
+
+**Field Descriptions:**
+- **Timestamp**: Precise time with milliseconds
+- **ThreadID**: OS native thread ID (matches debugger thread IDs)
+- **Level**: Always DEBUG when logging enabled
+- **Location**: Source file and line number
+- **Source**: Python (Python layer) or DDBC (C++ layer)
+- **Message**: Operation details, queries, parameters, etc.
+
+**Why Thread IDs?**
+- Track operations in multi-threaded applications
+- Distinguish concurrent connections/queries
+- Correlate with debugger thread views
+- Filter logs by specific thread
+
+### Performance Notes
+
+⚠️ **Important**: Logging adds ~2-5% overhead. Enable only when troubleshooting.
+
+```python
+# ❌ DON'T enable by default in production
+# ✅ DO enable only when diagnosing issues
+```
+
+### Using Driver Logger in Your Application
+
+Integrate the driver's logger into your own code:
+
+```python
+import mssql_python
+from mssql_python.logging import driver_logger
+
+# Enable logging
+mssql_python.setup_logging()
+
+# Use driver_logger in your application
+driver_logger.debug("[App] Starting data processing")
+driver_logger.info("[App] Processing complete")
+driver_logger.warning("[App] Resource usage high")
+driver_logger.error("[App] Failed to process record")
+
+# Your logs appear in the same file as driver logs
+```
+
+### Common Troubleshooting
+
+**No log output?**
+```python
+# Force stdout to verify logging works
+mssql_python.setup_logging(output='stdout')
+```
+
+**Where is the log file?**
+```python
+from mssql_python import driver_logger
+mssql_python.setup_logging()
+# Access log file path from driver_logger handlers if needed
+```
+
+**Logs not showing in CI/CD?**
+```python
+# Use stdout for CI/CD pipelines
+mssql_python.setup_logging(output='stdout')
+```
+
+**Invalid file extension error?**
+```python
+# Only .txt, .log, or .csv extensions allowed
+mssql_python.setup_logging(log_file_path="/tmp/debug.log")  # ✓
+mssql_python.setup_logging(log_file_path="/tmp/debug.json") # ✗ ValueError
+```
 
 ---
 
@@ -66,11 +198,13 @@ This enables logging with:
 
 **Solution Steps:**
 
-1. **Enable FINE logging to see connection attempts:**
+1. **Enable logging to see connection attempts:**
 
 ```python
-from mssql_python import logging
-logging.setLevel(logging.FINE, logging.BOTH)
+import mssql_python
+
+# Enable logging
+mssql_python.setup_logging(output='both')
 
 # Then run customer's connection code
 conn = mssql_python.connect(connection_string)
@@ -85,13 +219,13 @@ conn = mssql_python.connect(connection_string)
 
 **Success:**
 ```
-2025-11-04 10:30:15 [CONN-12345-67890-1] - FINE - connection.py:42 - [Python] Connecting to server: localhost
-2025-11-04 10:30:15 [CONN-12345-67890-1] - FINE - connection.py:89 - [Python] Connection established
+2025-11-04 10:30:15 [CONN-12345-67890-1] - DEBUG - connection.py:42 - [Python] Connecting to server: localhost
+2025-11-04 10:30:15 [CONN-12345-67890-1] - DEBUG - connection.py:89 - [Python] Connection established
 ```
 
 **Failure (wrong server):**
 ```
-2025-11-04 10:30:15 [CONN-12345-67890-1] - FINE - connection.py:42 - [Python] Connecting to server: wrongserver
+2025-11-04 10:30:15 [CONN-12345-67890-1] - DEBUG - connection.py:42 - [Python] Connecting to server: wrongserver
 2025-11-04 10:30:20 [CONN-12345-67890-1] - ERROR - connection.py:156 - [Python] Connection failed: timeout
 ```
 
@@ -108,11 +242,13 @@ conn = mssql_python.connect(connection_string)
 
 **Solution Steps:**
 
-1. **Enable FINER to see SQL + parameters:**
+1. **Enable logging to see SQL + parameters:**
 
 ```python
-from mssql_python import logging
-logging.setLevel(logging.FINER, logging.BOTH)
+import mssql_python
+
+# Enable logging
+mssql_python.setup_logging(output='both')
 
 # Run customer's query
 cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
@@ -141,13 +277,13 @@ cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
 
 **Solution Steps:**
 
-1. **Enable FINE logging with timing:**
+1. **Enable logging with timing:**
 
 ```python
-from mssql_python import logging
+import mssql_python
 import time
 
-logging.setLevel(logging.FINE, logging.BOTH)
+mssql_python.setup_logging(output='both')
 
 start = time.time()
 cursor.execute("SELECT * FROM large_table WHERE ...")
@@ -166,8 +302,8 @@ print(f"Query took {end - start:.2f} seconds")
 
 **Inefficient query:**
 ```
-2025-11-04 10:30:15 - FINE - cursor.py:28 - [Python] Executing query: SELECT * FROM huge_table
-2025-11-04 10:35:20 - FINE - cursor.py:89 - [Python] Query completed, 5000000 rows fetched
+2025-11-04 10:30:15 - DEBUG - cursor.py:28 - [Python] Executing query: SELECT * FROM huge_table
+2025-11-04 10:35:20 - DEBUG - cursor.py:89 - [Python] Query completed, 5000000 rows fetched
 ```
 
 **Action:** Check if query can be optimized, add WHERE clause, use pagination
@@ -183,11 +319,12 @@ print(f"Query took {end - start:.2f} seconds")
 
 **Solution Steps:**
 
-1. **Enable FINEST to see type mapping:**
+1. **Enable logging to see parameter binding:**
 
 ```python
-from mssql_python import logging
-logging.setLevel(logging.FINEST, logging.BOTH)
+import mssql_python
+
+mssql_python.setup_logging(output='both')
 
 cursor.execute("SELECT * FROM table WHERE col = ?", (param,))
 ```
@@ -200,9 +337,9 @@ cursor.execute("SELECT * FROM table WHERE col = ?", (param,))
 3. **Example log output:**
 
 ```
-2025-11-04 10:30:15 - FINEST - cursor.py:310 - _map_sql_type: Mapping param index=0, type=Decimal
-2025-11-04 10:30:15 - FINEST - cursor.py:385 - _map_sql_type: DECIMAL detected - index=0
-2025-11-04 10:30:15 - FINEST - cursor.py:406 - _map_sql_type: DECIMAL precision calculated - index=0, precision=18
+2025-11-04 10:30:15 - DEBUG - cursor.py:310 - _map_sql_type: Mapping param index=0, type=Decimal
+2025-11-04 10:30:15 - DEBUG - cursor.py:385 - _map_sql_type: DECIMAL detected - index=0
+2025-11-04 10:30:15 - DEBUG - cursor.py:406 - _map_sql_type: DECIMAL precision calculated - index=0, precision=18
 ```
 
 **Action:** Verify parameter type matches database column type, convert if needed
@@ -218,11 +355,11 @@ cursor.execute("SELECT * FROM table WHERE col = ?", (param,))
 
 **Solution Steps:**
 
-1. **Enable FINER to see batch operations:**
+1. **Enable logging to see batch operations:**
 
 ```python
-from mssql_python import logging
-logging.setLevel(logging.FINER, logging.BOTH)
+import mssql_python
+mssql_python.setup_logging(output='both')
 
 data = [(1, 'Alice'), (2, 'Bob'), (3, 'Charlie')]
 cursor.executemany("INSERT INTO users (id, name) VALUES (?, ?)", data)
@@ -245,8 +382,8 @@ cursor.executemany("INSERT INTO users (id, name) VALUES (?, ?)", data)
 
 **Step 1: Enable logging**
 ```python
-from mssql_python import logging
-logging.setLevel(logging.FINE, logging.BOTH)
+import mssql_python
+mssql_python.setup_logging(output='both')
 ```
 
 **Step 2: Attempt connection**
@@ -294,10 +431,10 @@ Open the file and search for "ERROR" or "Connection"
 
 **Customer says:** "My query doesn't work"
 
-**Step 1: Enable parameter logging**
+**Step 1: Enable logging**
 ```python
-from mssql_python import logging
-logging.setLevel(logging.FINER, logging.BOTH)
+import mssql_python
+mssql_python.setup_logging(output='both')
 ```
 
 **Step 2: Run the query**
@@ -342,10 +479,10 @@ Ask:
 
 **Step 1: Enable timing measurements**
 ```python
-from mssql_python import logging
+import mssql_python
 import time
 
-logging.setLevel(logging.FINE, logging.BOTH)
+mssql_python.setup_logging(output='both')
 
 start = time.time()
 cursor.execute("SELECT * FROM large_table")
@@ -369,7 +506,7 @@ Look for:
 
 Run with logging disabled:
 ```python
-logging.disable()  # Disable all logging
+# Don't call setup_logging() - logging disabled by default
 start = time.time()
 cursor.execute("SELECT * FROM large_table")
 rows = cursor.fetchall()
@@ -395,7 +532,7 @@ Ask customer to run same query in SSMS or Azure Data Studio:
 **Escalate if:**
 - Query is fast in SSMS but slow with driver
 - Same query was fast before, slow now
-- Logging overhead exceeds 10% at FINE level
+- Logging overhead exceeds 10% with logging enabled
 
 ---
 
@@ -415,10 +552,10 @@ PermissionError: [Errno 13] Permission denied: './mssql_python_logs/mssql_python
 #### Solution 1: Use STDOUT Only (No File Access Needed)
 
 ```python
-from mssql_python import logging
+import mssql_python
 
 # Console output only - no file created
-logging.setLevel(logging.FINE, logging.STDOUT)
+mssql_python.setup_logging(output='stdout')
 
 # Customer can copy console output to share with you
 ```
@@ -439,13 +576,13 @@ logging.setLevel(logging.FINE, logging.STDOUT)
 ```python
 import tempfile
 import os
-from mssql_python import logging
+import mssql_python
 
 # Get temp directory (usually writable by all users)
 temp_dir = tempfile.gettempdir()
 log_file = os.path.join(temp_dir, "mssql_python_debug.log")
 
-logging.setLevel(logging.FINE, log_file_path=log_file)
+mssql_python.setup_logging(log_file_path=log_file)
 print(f"Logging to: {log_file}")
 
 # On Windows: Usually C:\Users\<username>\AppData\Local\Temp\mssql_python_debug.log
@@ -464,7 +601,7 @@ print(f"Logging to: {log_file}")
 ```python
 import os
 from pathlib import Path
-from mssql_python import logging
+import mssql_python
 
 # User home directory - always writable by user
 home_dir = Path.home()
@@ -472,7 +609,7 @@ log_dir = home_dir / "mssql_python_logs"
 log_dir.mkdir(exist_ok=True)
 
 log_file = log_dir / "debug.log"
-logging.setLevel(logging.FINE, log_file_path=str(log_file))
+mssql_python.setup_logging(log_file_path=str(log_file))
 print(f"Logging to: {log_file}")
 
 # On Windows: C:\Users\<username>\mssql_python_logs\debug.log
@@ -491,7 +628,7 @@ print(f"Logging to: {log_file}")
 Ask customer where they have write access:
 
 ```python
-from mssql_python import logging
+import mssql_python
 
 # Ask customer: "Where can you create files?"
 # Example paths:
@@ -500,7 +637,7 @@ from mssql_python import logging
 # - Network share: "//server/share/logs"
 
 custom_path = "C:/Users/john/Desktop/mssql_debug.log"
-logging.setLevel(logging.FINE, log_file_path=custom_path)
+mssql_python.setup_logging(log_file_path=custom_path)
 print(f"Logging to: {custom_path}")
 ```
 
@@ -513,13 +650,13 @@ Best of both worlds:
 ```python
 import tempfile
 import os
-from mssql_python import logging
+import mssql_python
 
 temp_dir = tempfile.gettempdir()
 log_file = os.path.join(temp_dir, "mssql_python_debug.log")
 
 # Both console (immediate) and file (persistent)
-logging.setLevel(logging.FINE, logging.BOTH, log_file_path=log_file)
+mssql_python.setup_logging(output='both', log_file_path=log_file)
 
 print(f"✅ Logging to console AND file: {log_file}")
 print("You can see logs immediately, and share the file later!")
@@ -567,17 +704,14 @@ print(f"Home directory ({home_dir}): {msg}")
 
 **Symptom:** Log files consuming too much disk space
 
-**Solution 1: Use Higher Log Level**
+**Solution 1: Logging is All-or-Nothing**
 
 ```python
-# Instead of FINEST (very verbose)
-logging.setLevel(logging.FINEST)  # ❌ Generates massive logs
-
-# Use FINE (standard detail)
-logging.setLevel(logging.FINE)  # ✅ Much smaller logs
+# Logging shows everything when enabled
+mssql_python.setup_logging()  # All operations logged at DEBUG level
 ```
 
-**FINEST** can generate 100x more log data than **FINE**!
+Logging in mssql-python uses a simple DEBUG level - no granular levels to choose from.
 
 **Solution 2: Check Rotation Settings**
 
@@ -585,25 +719,27 @@ Log files automatically rotate at 512MB with 5 backups. This means max ~2.5GB to
 
 If customer needs smaller files:
 ```python
-# After enabling logging, modify the handler
 import logging as py_logging
+from mssql_python import driver_logger
 
-for handler in logging.logger.handlers:
+# After enabling logging, modify the handler
+mssql_python.setup_logging()
+
+for handler in driver_logger.handlers:
     if isinstance(handler, py_logging.handlers.RotatingFileHandler):
         handler.maxBytes = 50 * 1024 * 1024  # 50MB instead of 512MB
         handler.backupCount = 2  # 2 backups instead of 5
 ```
 
-**Solution 3: Disable Logging When Not Needed**
+**Solution 3: Don't Enable Logging Unless Troubleshooting**
 
 ```python
-# Enable only when troubleshooting
-logging.setLevel(logging.FINE)
+# ❌ DON'T enable by default
+# mssql_python.setup_logging()  # Comment out when not needed
 
-# ... troubleshoot issue ...
-
-# Disable when done
-logging.disable()  # Zero overhead
+# ✅ DO enable only when troubleshooting
+if debugging:
+    mssql_python.setup_logging()
 ```
 
 ---
@@ -616,13 +752,13 @@ logging.disable()  # Zero overhead
 
 Send them this code:
 ```python
-from mssql_python import logging
+import mssql_python
 import tempfile
 import os
 
 # Use temp directory (always writable)
 log_file = os.path.join(tempfile.gettempdir(), "mssql_python_debug.log")
-logging.setLevel(logging.FINE, logging.BOTH, log_file_path=log_file)
+mssql_python.setup_logging(output='both', log_file_path=log_file)
 
 print(f"✅ Logging enabled")
 print(f"📂 Log file: {log_file}")
@@ -652,7 +788,7 @@ Options:
 ### What to Ask For
 
 **Minimum information:**
-1. ✅ Log file (with FINE or FINER level)
+1. ✅ Log file (with logging enabled)
 2. ✅ Code snippet that reproduces issue (sanitized)
 3. ✅ Error message (if any)
 4. ✅ Expected vs actual behavior
@@ -676,12 +812,12 @@ To help troubleshoot your issue, please enable logging and send us the log file.
 
 1. Add these lines at the start of your code:
 
-from mssql_python import logging
+import mssql_python
 import tempfile
 import os
 
 log_file = os.path.join(tempfile.gettempdir(), "mssql_python_debug.log")
-logging.setLevel(logging.FINE, logging.BOTH, log_file_path=log_file)
+mssql_python.setup_logging(output='both', log_file_path=log_file)
 print(f"Log file: {log_file}")
 
 2. Run your code that reproduces the issue
@@ -706,11 +842,11 @@ Thanks!
 
 **Log Format:**
 ```
-2025-11-04 10:30:15,123 [CONN-12345-67890-1] - FINE - connection.py:42 - [Python] Message
-│                        │                      │       │                  │
-│                        │                      │       │                  └─ Log message
+2025-11-04 10:30:15,123 [CONN-12345-67890-1] - DEBUG - connection.py:42 - [Python] Message
+│                        │                      │       │                   │
+│                        │                      │       │                   └─ Log message
 │                        │                      │       └─ Source file:line
-│                        │                      └─ Log level
+│                        │                      └─ Log level (always DEBUG)
 │                        └─ Trace ID (PREFIX-PID-ThreadID-Counter)
 └─ Timestamp (YYYY-MM-DD HH:MM:SS,milliseconds)
 ```
@@ -731,8 +867,8 @@ Thanks!
 #### Pattern 1: Successful Connection
 
 ```
-2025-11-04 10:30:15,100 [CONN-12345-67890-1] - FINE - connection.py:42 - [Python] Connecting to server: localhost
-2025-11-04 10:30:15,250 [CONN-12345-67890-1] - FINE - connection.py:89 - [Python] Connection established
+2025-11-04 10:30:15,100 [CONN-12345-67890-1] - DEBUG - connection.py:42 - [Python] Connecting to server: localhost
+2025-11-04 10:30:15,250 [CONN-12345-67890-1] - DEBUG - connection.py:89 - [Python] Connection established
 ```
 
 **Interpretation:** Connection succeeded in ~150ms
@@ -742,8 +878,8 @@ Thanks!
 #### Pattern 2: Query Execution
 
 ```
-2025-11-04 10:30:16,100 [CURS-12345-67890-2] - FINE - cursor.py:1040 - execute: Starting - operation_length=45, param_count=2, use_prepare=False
-2025-11-04 10:30:16,350 [CURS-12345-67890-2] - FINE - cursor.py:1200 - [Python] Query completed, 42 rows fetched
+2025-11-04 10:30:16,100 [CURS-12345-67890-2] - DEBUG - cursor.py:1040 - execute: Starting - operation_length=45, param_count=2, use_prepare=False
+2025-11-04 10:30:16,350 [CURS-12345-67890-2] - DEBUG - cursor.py:1200 - [Python] Query completed, 42 rows fetched
 ```
 
 **Interpretation:** 
@@ -753,13 +889,13 @@ Thanks!
 
 ---
 
-#### Pattern 3: Parameter Binding (FINER level)
+#### Pattern 3: Parameter Binding
 
 ```
-2025-11-04 10:30:16,100 [CURS-12345-67890-2] - FINER - cursor.py:1063 - execute: Setting query timeout=30 seconds
-2025-11-04 10:30:16,105 [CURS-12345-67890-2] - FINEST - cursor.py:310 - _map_sql_type: Mapping param index=0, type=int
-2025-11-04 10:30:16,106 [CURS-12345-67890-2] - FINEST - cursor.py:335 - _map_sql_type: INT detected - index=0, min=100, max=100
-2025-11-04 10:30:16,107 [CURS-12345-67890-2] - FINEST - cursor.py:339 - _map_sql_type: INT -> TINYINT - index=0
+2025-11-04 10:30:16,100 [CURS-12345-67890-2] - DEBUG - cursor.py:1063 - execute: Setting query timeout=30 seconds
+2025-11-04 10:30:16,105 [CURS-12345-67890-2] - DEBUG - cursor.py:310 - _map_sql_type: Mapping param index=0, type=int
+2025-11-04 10:30:16,106 [CURS-12345-67890-2] - DEBUG - cursor.py:335 - _map_sql_type: INT detected - index=0, min=100, max=100
+2025-11-04 10:30:16,107 [CURS-12345-67890-2] - DEBUG - cursor.py:339 - _map_sql_type: INT -> TINYINT - index=0
 ```
 
 **Interpretation:**
@@ -771,7 +907,7 @@ Thanks!
 #### Pattern 4: Error
 
 ```
-2025-11-04 10:30:16,100 [CURS-12345-67890-2] - FINE - cursor.py:1040 - execute: Starting - operation_length=45, param_count=2, use_prepare=False
+2025-11-04 10:30:16,100 [CURS-12345-67890-2] - DEBUG - cursor.py:1040 - execute: Starting - operation_length=45, param_count=2, use_prepare=False
 2025-11-04 10:30:16,200 [CURS-12345-67890-2] - ERROR - cursor.py:1500 - [Python] Query failed: Invalid object name 'users'
 ```
 
@@ -800,7 +936,7 @@ grep "Query completed" mssql_python_trace_*.log
 
 **Find parameter issues:**
 ```bash
-grep "_map_sql_type" mssql_python_trace_*.log | grep "FINER\|ERROR"
+grep "_map_sql_type" mssql_python_trace_*.log | grep "DEBUG\|ERROR"
 ```
 
 **On Windows PowerShell:**
@@ -837,7 +973,7 @@ Select-String -Path "mssql_python_trace_*.log" -Pattern "ERROR"
 
 🚩 **Type conversion warnings:**
 ```
-10:30:15 - FINER - _map_sql_type: DECIMAL precision too high - index=0, precision=50
+10:30:15 - DEBUG - _map_sql_type: DECIMAL precision too high - index=0, precision=50
 ```
 → Customer passing Decimal with precision exceeding SQL Server limits (38)
 
@@ -871,7 +1007,7 @@ Select-String -Path "mssql_python_trace_*.log" -Pattern "ERROR"
 3. **Performance Regression**
    - Query is fast in SSMS, slow in driver
    - Same query was fast before, slow now
-   - Logging overhead exceeds 10% at FINE level
+   - Logging overhead exceeds 10% with logging enabled
 
 4. **Security Issues**
    - Passwords not sanitized in logs
@@ -892,7 +1028,7 @@ Select-String -Path "mssql_python_trace_*.log" -Pattern "ERROR"
 
 When escalating, include:
 
-1. ✅ **Log files** (FINE or FINER level minimum)
+1. ✅ **Log files** (logging enabled)
 2. ✅ **Minimal reproduction code** (sanitized)
 3. ✅ **Customer environment:**
    - Python version
@@ -932,37 +1068,27 @@ When escalating, include:
 
 **Checklist:**
 
-1. Did they call `logging.setLevel()`?
+1. Did they call `setup_logging()`?
    ```python
    # ❌ Won't work - logging not enabled
-   from mssql_python import logging
+   import mssql_python
    conn = mssql_python.connect(...)
    
    # ✅ Will work - logging enabled
-   from mssql_python import logging
-   logging.setLevel(logging.FINE)
+   import mssql_python
+   mssql_python.setup_logging()
    conn = mssql_python.connect(...)
    ```
 
-2. Is the log level high enough?
-   ```python
-   # ❌ Won't see FINE messages
-   logging.setLevel(logging.CRITICAL)
-   
-   # ✅ Will see FINE messages
-   logging.setLevel(logging.FINE)
-   ```
+2. Are they looking in the right place?
+   - Default: `./mssql_python_logs/` directory
+   - Custom path if specified with `log_file_path`
 
-3. Are they looking in the right place?
-   ```python
-   # Print log file location
-   print(f"Log file: {logging.logger.log_file}")
-   ```
-
-4. Do they have write permissions?
+3. Do they have write permissions?
+3. Do they have write permissions?
    ```python
    # Try STDOUT instead
-   logging.setLevel(logging.FINE, logging.STDOUT)
+   mssql_python.setup_logging(output='stdout')
    ```
 
 ---
@@ -974,27 +1100,23 @@ When escalating, include:
 1. **Logging enabled after operations:** Must enable BEFORE operations
    ```python
    # ❌ Wrong order
-   conn = mssql_python.connect(...)  # Not logged
-   logging.setLevel(logging.FINE)     # Too late!
+   conn = mssql_python.connect(...)     # Not logged
+   mssql_python.setup_logging()         # Too late!
    
    # ✅ Correct order
-   logging.setLevel(logging.FINE)     # Enable first
-   conn = mssql_python.connect(...)  # Now logged
+   mssql_python.setup_logging()         # Enable first
+   conn = mssql_python.connect(...)     # Now logged
    ```
 
 2. **Python buffering:** Logs may not flush until script ends
    ```python
    # Force flush after operations
-   import logging as py_logging
-   for handler in logging.logger.handlers:
+   from mssql_python import driver_logger
+   for handler in driver_logger.handlers:
        handler.flush()
    ```
 
 3. **Wrong log file:** Customer looking at old file
-   ```python
-   # Show current log file
-   print(f"Current log file: {logging.logger.log_file}")
-   ```
 
 ---
 
@@ -1005,11 +1127,9 @@ When escalating, include:
 | Level | Overhead | File Size (1000 queries) |
 |-------|----------|-------------------------|
 | DISABLED | 0% | 0 KB |
-| FINE | 2-5% | ~100 KB |
-| FINER | 5-10% | ~500 KB |
-| FINEST | 15-25% | ~5 MB |
+| DEBUG (enabled) | 2-10% | ~100-500 KB |
 
-**Recommendation:** Use FINE in production, FINER for debugging, FINEST only for escalations
+**Note:** Logging is all-or-nothing in mssql-python - when enabled, all operations are logged at DEBUG level.
 
 ---
 
@@ -1019,13 +1139,13 @@ When escalating, include:
 
 ```python
 # Custom name in default folder
-logging.setLevel(logging.FINE, log_file_path="./mssql_python_logs/my_app.log")
+mssql_python.setup_logging(log_file_path="./mssql_python_logs/my_app.log")
 
 # Completely custom path
-logging.setLevel(logging.FINE, log_file_path="C:/Logs/database_debug.log")
+mssql_python.setup_logging(log_file_path="C:/Logs/database_debug.log")
 
-# Any extension
-logging.setLevel(logging.FINE, log_file_path="./mssql_python_logs/debug.txt")
+# Only .txt, .log, .csv extensions allowed
+mssql_python.setup_logging(log_file_path="./mssql_python_logs/debug.csv")
 ```
 
 ---
@@ -1048,15 +1168,15 @@ Connection string: Server=localhost;Database=test;UID=admin;PWD=***REDACTED***
 **A:** Yes! The driver uses standard Python logging, so you can add custom handlers:
 
 ```python
-from mssql_python import logging
-import logging as py_logging
+import mssql_python
+from mssql_python import driver_logger
 
 # Add Splunk/DataDog/CloudWatch handler
 custom_handler = MySplunkHandler(...)
-logging.logger.addHandler(custom_handler)
+driver_logger.addHandler(custom_handler)
 
 # Now logs go to both file and your system
-logging.setLevel(logging.FINE)
+mssql_python.setup_logging()
 ```
 
 ---
@@ -1091,8 +1211,8 @@ Trace IDs also include PID for correlation.
 **Solution:** Use STDOUT mode so logs go to container logs:
 
 ```python
-from mssql_python import logging
-logging.setLevel(logging.FINE, logging.STDOUT)
+import mssql_python
+mssql_python.setup_logging(output='stdout')
 
 # Logs appear in: docker logs <container_id>
 # or: kubectl logs <pod_name>
@@ -1141,20 +1261,17 @@ print()
 # Test logging
 print("🔧 Testing Logging:")
 
-from mssql_python import logging
-
-# Test temp directory
 temp_dir = tempfile.gettempdir()
 log_file = os.path.join(temp_dir, "mssql_python_diagnostic.log")
 
 try:
-    logging.setLevel(logging.FINE, logging.BOTH, log_file_path=log_file)
+    mssql_python.setup_logging(output='both', log_file_path=log_file)
     print(f"  ✅ Logging enabled successfully")
     print(f"  📂 Log file: {log_file}")
 except Exception as e:
     print(f"  ❌ Logging failed: {e}")
     print(f"  Try STDOUT mode instead:")
-    print(f"     logging.setLevel(logging.FINE, logging.STDOUT)")
+    print(f"     mssql_python.setup_logging(output='stdout')")
 print()
 
 # Test connection (if connection string provided)
@@ -1272,9 +1389,7 @@ with open(log_file) as f:
 total_lines = len(lines)
 error_count = sum(1 for line in lines if '- ERROR -' in line)
 warning_count = sum(1 for line in lines if '- WARNING -' in line)
-fine_count = sum(1 for line in lines if '- FINE -' in line)
-finer_count = sum(1 for line in lines if '- FINER -' in line)
-finest_count = sum(1 for line in lines if '- FINEST -' in line)
+debug_count = sum(1 for line in lines if '- DEBUG -' in line)
 
 # Connection count
 conn_count = sum(1 for line in lines if 'Connecting to server' in line)
@@ -1284,14 +1399,9 @@ print(f"📈 Statistics:")
 print(f"  Total log lines: {total_lines:,}")
 print(f"  Errors: {error_count}")
 print(f"  Warnings: {warning_count}")
+print(f"  Debug messages: {debug_count:,}")
 print(f"  Connections: {conn_count}")
 print(f"  Queries: {query_count}")
-print()
-
-print(f"📊 Log Level Distribution:")
-print(f"  FINE: {fine_count:,}")
-print(f"  FINER: {finer_count:,}")
-print(f"  FINEST: {finest_count:,}")
 print()
 
 # Show errors
@@ -1338,9 +1448,9 @@ This guide provides CSS team with:
 
 **Key Principles:**
 
-- 🎯 **Start with FINE level** (90% of issues)
-- 🎯 **Use BOTH mode** for active troubleshooting (console + file)
-- 🎯 **Use STDOUT** when file access is restricted
+- 🎯 **Enable logging for troubleshooting** (simple one-line setup)
+- 🎯 **Use 'both' mode** for active troubleshooting (console + file)
+- 🎯 **Use 'stdout'** when file access is restricted
 - 🎯 **Always sanitize** customer data before escalation
 - 🎯 **Escalate early** if security or data corruption suspected
 
