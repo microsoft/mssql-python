@@ -3260,43 +3260,60 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
     
-    size_t initialSize = rows.size();
-    
     // Convert fetched data to Python objects
     {
         PERF_TIMER("FetchBatchData::construct_rows");
         for (SQLULEN i = 0; i < numRowsFetched; i++) {
-        py::list row(numCols);
+        // Allocate array of PyObject pointers (pyodbc-style)
+        PyObject** apValues = (PyObject**)PyMem_Malloc(sizeof(PyObject*) * numCols);
+        if (!apValues) {
+            PyErr_NoMemory();
+            return SQL_ERROR;
+        }
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
             const ColumnInfo& colInfo = columnInfos[col - 1];
             SQLSMALLINT dataType = colInfo.dataType;
             SQLLEN dataLen = buffers.indicators[col - 1][i];
             
+            PyObject* value = nullptr;
+            
             if (dataLen == SQL_NULL_DATA) {
-                row[col - 1] = py::none();
+                value = Py_None;
+                Py_INCREF(value);
+                apValues[col - 1] = value;
                 continue;
-            } else if (dataLen == SQL_NO_TOTAL) {
+            }
+            if (dataLen == SQL_NO_TOTAL) {
                 LOG("Cannot determine the length of the data. Returning NULL value instead."
                     "Column ID - {}", col);
-                row[col - 1] = py::none();
+                value = Py_None;
+                Py_INCREF(value);
+                apValues[col - 1] = value;
                 continue;
             } else if (dataLen == 0) {
                 // Handle zero-length (non-NULL) data
                 if (dataType == SQL_CHAR || dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR) {
-                    row[col - 1] = std::string("");
+                    value = PyUnicode_FromStringAndSize("", 0);
                 } else if (dataType == SQL_WCHAR || dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR) {
-                    row[col - 1] = std::wstring(L"");
+                    value = PyUnicode_FromWideChar(L"", 0);
                 } else if (dataType == SQL_BINARY || dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY) {
-                    row[col - 1] = py::bytes("", 0);
+                    value = PyBytes_FromStringAndSize("", 0);
                 } else {
                     // For other datatypes, 0 length is unexpected. Log & set None
                     LOG("Column data length is 0 for non-string/binary datatype. Setting None to the result row. Column ID - {}", col);
-                    row[col - 1] = py::none();
+                    value = Py_None;
+                    Py_INCREF(value);
                 }
+                apValues[col - 1] = value;
                 continue;
             } else if (dataLen < 0) {
                 // Negative value is unexpected, log column index, SQL type & raise exception
                 LOG("Unexpected negative data length. Column ID - {}, SQL Type - {}, Data Length - {}", col, dataType, dataLen);
+                // Free allocated values before throwing
+                for (SQLUSMALLINT cleanup = 0; cleanup < col - 1; cleanup++) {
+                    Py_XDECREF(apValues[cleanup]);
+                }
+                PyMem_Free(apValues);
                 ThrowStdException("Unexpected negative data length, check logs for details");
             }
             
@@ -3313,11 +3330,12 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     bool isLob = colInfo.isLob;
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
-                        row[col - 1] = py::str(
+                        value = PyUnicode_FromStringAndSize(
                             reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * fetchBufferSize]),
                             numCharsInData);
                     } else {
-                        row[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false);
+                        py::object lob_data = FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false);
+                        value = lob_data.release().ptr();
                     }
                     break;
                 }
@@ -3335,46 +3353,46 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
 #if defined(__APPLE__) || defined(__linux__)
                         PERF_TIMER("construct_rows::wstring_conversion");
                         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
-                        PyObject* pyStr = PyUnicode_DecodeUTF16(
+                        value = PyUnicode_DecodeUTF16(
                             reinterpret_cast<const char*>(wcharData),
                             numCharsInData * sizeof(SQLWCHAR),
                             NULL,
                             NULL
                         );
-                        if (pyStr) {
-                            row[col - 1] = py::reinterpret_steal<py::str>(pyStr);
-                        } else {
+                        if (!value) {
                             PyErr_Clear();
-                            row[col - 1] = py::str("");
+                            value = PyUnicode_FromStringAndSize("", 0);
                         }
 #else
-                        row[col - 1] = std::wstring(
+                        py::object wstr_obj = py::cast(std::wstring(
                             reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]),
-                            numCharsInData);
+                            numCharsInData));
+                        value = wstr_obj.release().ptr();
 #endif
                     } else {
-                        row[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false);
+                        py::object lob_data = FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false);
+                        value = lob_data.release().ptr();
                     }
                     break;
                 }
                 case SQL_INTEGER: {
-                    row[col - 1] = buffers.intBuffers[col - 1][i];
+                    value = PyLong_FromLong(buffers.intBuffers[col - 1][i]);
                     break;
                 }
                 case SQL_SMALLINT: {
-                    row[col - 1] = buffers.smallIntBuffers[col - 1][i];
+                    value = PyLong_FromLong(buffers.smallIntBuffers[col - 1][i]);
                     break;
                 }
                 case SQL_TINYINT: {
-                    row[col - 1] = buffers.charBuffers[col - 1][i];
+                    value = PyLong_FromLong(buffers.charBuffers[col - 1][i]);
                     break;
                 }
                 case SQL_BIT: {
-                    row[col - 1] = static_cast<bool>(buffers.charBuffers[col - 1][i]);
+                    value = PyBool_FromLong(buffers.charBuffers[col - 1][i]);
                     break;
                 }
                 case SQL_REAL: {
-                    row[col - 1] = buffers.realBuffers[col - 1][i];
+                    value = PyFloat_FromDouble(buffers.realBuffers[col - 1][i]);
                     break;
                 }
                 case SQL_DECIMAL:
@@ -3386,44 +3404,49 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         
                         // Always use standard decimal point for Python Decimal parsing  
                         // The decimal separator only affects display formatting, not parsing
-                        row[col - 1] = PythonObjectCache::get_decimal_class()(py::str(rawData, decimalDataLen));
+                        py::object decimal_obj = PythonObjectCache::get_decimal_class()(py::str(rawData, decimalDataLen));
+                        value = decimal_obj.release().ptr();
                     } catch (const py::error_already_set& e) {
                         // Handle the exception, e.g., log the error and set py::none()
                         LOG("Error converting to decimal: {}", e.what());
-                        row[col - 1] = py::none();
+                        value = Py_None;
+                        Py_INCREF(value);
                     }
                     break;
                 }
                 case SQL_DOUBLE:
                 case SQL_FLOAT: {
-                    row[col - 1] = buffers.doubleBuffers[col - 1][i];
+                    value = PyFloat_FromDouble(buffers.doubleBuffers[col - 1][i]);
                     break;
                 }
                 case SQL_TIMESTAMP:
                 case SQL_TYPE_TIMESTAMP:
                 case SQL_DATETIME: {
                     const SQL_TIMESTAMP_STRUCT& ts = buffers.timestampBuffers[col - 1][i];
-                    row[col - 1] = PythonObjectCache::get_datetime_class()(ts.year, ts.month, ts.day,
+                    py::object datetime_obj = PythonObjectCache::get_datetime_class()(ts.year, ts.month, ts.day,
                                                                            ts.hour, ts.minute, ts.second,
                                                                            ts.fraction / 1000);
+                    value = datetime_obj.release().ptr();
                     break;
                 }
                 case SQL_BIGINT: {
-                    row[col - 1] = buffers.bigIntBuffers[col - 1][i];
+                    value = PyLong_FromLongLong(buffers.bigIntBuffers[col - 1][i]);
                     break;
                 }
                 case SQL_TYPE_DATE: {
-                    row[col - 1] = PythonObjectCache::get_date_class()(buffers.dateBuffers[col - 1][i].year,
+                    py::object date_obj = PythonObjectCache::get_date_class()(buffers.dateBuffers[col - 1][i].year,
                                                                        buffers.dateBuffers[col - 1][i].month,
                                                                        buffers.dateBuffers[col - 1][i].day);
+                    value = date_obj.release().ptr();
                     break;
                 }
                 case SQL_TIME:
                 case SQL_TYPE_TIME:
                 case SQL_SS_TIME2: {
-                    row[col - 1] = PythonObjectCache::get_time_class()(buffers.timeBuffers[col - 1][i].hour,
+                    py::object time_obj = PythonObjectCache::get_time_class()(buffers.timeBuffers[col - 1][i].hour,
                                                                        buffers.timeBuffers[col - 1][i].minute,
                                                                        buffers.timeBuffers[col - 1][i].second);
+                    value = time_obj.release().ptr();
                     break;
                 }
                 case SQL_SS_TIMESTAMPOFFSET: {
@@ -3446,16 +3469,18 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                             dtoValue.fraction / 1000,  // ns → µs
                             tzinfo
                         );
-                        row[col - 1] = py_dt;
+                        value = py_dt.release().ptr();
                     } else {
-                        row[col - 1] = py::none();
+                        value = Py_None;
+                        Py_INCREF(value);
                     }
                     break;
                 }
                 case SQL_GUID: {
                     SQLLEN indicator = buffers.indicators[col - 1][i];
                     if (indicator == SQL_NULL_DATA) {
-                        row[col - 1] = py::none();
+                        value = Py_None;
+                        Py_INCREF(value);
                         break;
                     }
                     SQLGUID* guidValue = &buffers.guidBuffers[col - 1][i];
@@ -3474,7 +3499,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     py::dict kwargs;
                     kwargs["bytes"] = py_guid_bytes;
                     py::object uuid_obj = PythonObjectCache::get_uuid_class()(**kwargs);
-                    row[col - 1] = uuid_obj;
+                    value = uuid_obj.release().ptr();
                     break;
                 }
                 case SQL_BINARY:
@@ -3484,11 +3509,12 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     HandleZeroColumnSizeAtFetch(columnSize);
                     bool isLob = colInfo.isLob;
                     if (!isLob && static_cast<size_t>(dataLen) <= columnSize) {
-                        row[col - 1] = py::bytes(reinterpret_cast<const char*>(
+                        value = PyBytes_FromStringAndSize(reinterpret_cast<const char*>(
                                                      &buffers.charBuffers[col - 1][i * columnSize]),
                                                  dataLen);
                     } else {
-                        row[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true);
+                        py::object lob_data = FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true);
+                        value = lob_data.release().ptr();
                     }
                     break;
                 }
@@ -3499,14 +3525,30 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     errorString << "Unsupported data type for column - " << columnName.c_str()
                                 << ", Type - " << dataType << ", column ID - " << col;
                     LOG(errorString.str());
+                    // Free allocated values before throwing
+                    for (SQLUSMALLINT cleanup = 0; cleanup < col - 1; cleanup++) {
+                        Py_XDECREF(apValues[cleanup]);
+                    }
+                    PyMem_Free(apValues);
                     ThrowStdException(errorString.str());
                     break;
                 }
             }
+            
+            // Store the value in the array (all switch cases should have set 'value')
+            apValues[col - 1] = value;
         }
+        
+        // Construct tuple from array in one shot (pyodbc-style)
         {
             PERF_TIMER("construct_rows::row_store");
-            rows[initialSize + i] = row;
+            py::tuple row = py::reinterpret_steal<py::tuple>(PyTuple_New(numCols));
+            for (SQLUSMALLINT col = 0; col < numCols; col++) {
+                PyTuple_SET_ITEM(row.ptr(), col, apValues[col]);
+                // PyTuple_SET_ITEM steals the reference, no DECREF needed
+            }
+            PyMem_Free(apValues);
+            rows.append(row);
         }
     }
     } // End construct_rows timer
