@@ -3828,19 +3828,44 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
     // This matches pyodbc's approach: SQLFetch (one row) + per-column SQLGetData
     LOG("Using optimized row-by-row fetch with direct C API");
     
-    while (true) {
-        ret = SQLFetch_ptr(hStmt);
-        if (ret == SQL_NO_DATA) break;
-        if (!SQL_SUCCEEDED(ret)) return ret;
+    // Pre-cache column metadata to avoid repeated dictionary lookups (CRITICAL optimization)
+    struct ColumnMetadata {
+        SQLSMALLINT dataType;
+        SQLULEN columnSize;
+    };
+    std::vector<ColumnMetadata> colMetadata(numCols);
+    {
+        PERF_TIMER("FetchAll_wrap::cache_column_metadata");
+        for (SQLSMALLINT i = 0; i < numCols; i++) {
+            auto colMeta = columnNames[i].cast<py::dict>();
+            colMetadata[i].dataType = colMeta["DataType"].cast<SQLSMALLINT>();
+            colMetadata[i].columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
+        }
+    }
+    
+    {
+        PERF_TIMER("FetchAll_wrap::row_by_row_fetch_loop");
+        while (true) {
+            PERF_TIMER("FetchAll_wrap::per_row_iteration");
+            
+            SQLRETURN fetchRet;
+            {
+                PERF_TIMER("FetchAll_wrap::SQLFetch_call");
+                fetchRet = SQLFetch_ptr(hStmt);
+            }
+            if (fetchRet == SQL_NO_DATA) break;
+            if (!SQL_SUCCEEDED(fetchRet)) return fetchRet;
 
-        // Create row with pre-allocated size for better performance
-        py::list row(numCols);
-        
-        // Fetch each column using SQLGetData with type-specific direct C API
-        for (SQLSMALLINT col = 1; col <= numCols; col++) {
-            auto colMeta = columnNames[col - 1].cast<py::dict>();
-            SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
-            SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
+            // Create row with pre-allocated size for better performance
+            py::list row(numCols);
+            
+            {
+                PERF_TIMER("FetchAll_wrap::process_all_columns");
+                // Fetch each column using SQLGetData with type-specific direct C API
+                for (SQLSMALLINT col = 1; col <= numCols; col++) {
+                    const ColumnMetadata& meta = colMetadata[col - 1];
+                    SQLSMALLINT dataType = meta.dataType;
+                    SQLULEN columnSize = meta.columnSize;
             
             SQLLEN indicator = 0;
             
@@ -4006,10 +4031,12 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
                     break;
                 }
             }
-        }
+                }  // End process_all_columns
+            }
         
-        rows.append(row);
-    }
+            rows.append(row);
+        }  // End per_row_iteration
+    }  // End row_by_row_fetch_loop
     
     return SQL_SUCCESS;
     

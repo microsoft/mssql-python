@@ -87,18 +87,19 @@ public:
 // RAII timer - automatically records on destruction
 class ScopedTimer {
 private:
-    std::string name_;
+    const char* name_;
     std::chrono::time_point<std::chrono::high_resolution_clock> start_;
+    bool enabled_;
     
 public:
-    explicit ScopedTimer(const char* name) : name_(name) {
-        if (PerformanceCounter::instance().is_enabled()) {
+    explicit ScopedTimer(const char* name) : name_(name), enabled_(name != nullptr) {
+        if (enabled_) {
             start_ = std::chrono::high_resolution_clock::now();
         }
     }
     
     ~ScopedTimer() {
-        if (PerformanceCounter::instance().is_enabled()) {
+        if (enabled_) {
             auto end = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start_).count();
             PerformanceCounter::instance().record(name_, duration);
@@ -113,11 +114,8 @@ public:
 #define PERF_TIMER_CONCAT_IMPL(x, y) x##y
 #define PERF_TIMER_CONCAT(x, y) PERF_TIMER_CONCAT_IMPL(x, y)
 
-// Conditional timer - only creates timer objects when profiling is enabled
-// This eliminates ALL overhead when profiling is disabled
+// Conditional timer - timer lives for full scope, enabled check via nullptr
+// When profiling disabled, passes nullptr so timer does nothing
 #define PERF_TIMER(name) \
-    do { \
-        if (mssql_profiling::PerformanceCounter::instance().is_enabled()) { \
-            mssql_profiling::ScopedTimer PERF_TIMER_CONCAT(_perf_timer_, __COUNTER__)(name); \
-        } \
-    } while(0)
+    mssql_profiling::ScopedTimer PERF_TIMER_CONCAT(_perf_timer_, __COUNTER__)(mssql_profiling::PerformanceCounter::instance().is_enabled() ? name : nullptr)
+
