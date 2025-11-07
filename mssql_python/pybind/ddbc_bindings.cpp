@@ -3261,7 +3261,11 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         PERF_TIMER("FetchBatchData::construct_rows");
         for (SQLULEN i = 0; i < numRowsFetched; i++) {
         // Create row container pre-allocated with known column count
-        py::list row(numCols);
+        py::list row;
+        {
+            PERF_TIMER("construct_rows::pylist_creation");
+            row = py::list(numCols);
+        }
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
             const ColumnInfo& colInfo = columnInfos[col - 1];
             SQLSMALLINT dataType = colInfo.dataType;
@@ -3354,13 +3358,27 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
                 case SQL_INTEGER: {
-                    PERF_TIMER("construct_rows::pybind11_int_conversion");
-                    row[col - 1] = buffers.intBuffers[col - 1][i];
+                    SQLINTEGER intVal;
+                    {
+                        PERF_TIMER("construct_rows::int_buffer_read");
+                        intVal = buffers.intBuffers[col - 1][i];
+                    }
+                    {
+                        PERF_TIMER("construct_rows::int_pybind11_assign");
+                        row[col - 1] = intVal;
+                    }
                     break;
                 }
                 case SQL_SMALLINT: {
-                    PERF_TIMER("construct_rows::pybind11_smallint_conversion");
-                    row[col - 1] = buffers.smallIntBuffers[col - 1][i];
+                    SQLSMALLINT smallIntVal;
+                    {
+                        PERF_TIMER("construct_rows::smallint_buffer_read");
+                        smallIntVal = buffers.smallIntBuffers[col - 1][i];
+                    }
+                    {
+                        PERF_TIMER("construct_rows::smallint_pybind11_assign");
+                        row[col - 1] = smallIntVal;
+                    }
                     break;
                 }
                 case SQL_TINYINT: {
@@ -3394,8 +3412,15 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
                 case SQL_DOUBLE:
                 case SQL_FLOAT: {
-                    PERF_TIMER("construct_rows::pybind11_double_conversion");
-                    row[col - 1] = buffers.doubleBuffers[col - 1][i];
+                    double doubleVal;
+                    {
+                        PERF_TIMER("construct_rows::double_buffer_read");
+                        doubleVal = buffers.doubleBuffers[col - 1][i];
+                    }
+                    {
+                        PERF_TIMER("construct_rows::double_pybind11_assign");
+                        row[col - 1] = doubleVal;
+                    }
                     break;
                 }
                 case SQL_TIMESTAMP:
@@ -3408,8 +3433,15 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
                 case SQL_BIGINT: {
-                    PERF_TIMER("construct_rows::pybind11_bigint_conversion");
-                    row[col - 1] = buffers.bigIntBuffers[col - 1][i];
+                    SQLBIGINT bigIntVal;
+                    {
+                        PERF_TIMER("construct_rows::bigint_buffer_read");
+                        bigIntVal = buffers.bigIntBuffers[col - 1][i];
+                    }
+                    {
+                        PERF_TIMER("construct_rows::bigint_pybind11_assign");
+                        row[col - 1] = bigIntVal;
+                    }
                     break;
                 }
                 case SQL_TYPE_DATE: {
@@ -3504,7 +3536,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
             }
         }
-        rows[initialSize + i] = row;
+        {\n            PERF_TIMER(\"construct_rows::rows_append\");\n            rows[initialSize + i] = row;\n        }
     }
     } // End construct_rows timer
     return ret;
