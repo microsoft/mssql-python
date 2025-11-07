@@ -100,21 +100,24 @@ def test_mssql_python():
     print("TOP PERFORMANCE BOTTLENECKS")
     print("=" * 60)
     
-    sorted_results = sorted(profiling_results.items(), key=lambda x: x[1]['total_time'], reverse=True)
-    
-    for operation, stats in sorted_results[:10]:  # Top 10
-        total_time_ms = stats['total_time'] / 1000.0
-        count = stats['count']
-        avg_time_us = stats['total_time'] / count if count > 0 else 0
+    if profiling_results:
+        sorted_results = sorted(profiling_results.items(), key=lambda x: x[1]['total_us'], reverse=True)
         
-        print(f"{operation:<40} {total_time_ms:>8.1f}ms ({count:>8} calls)")
-    
-    total_measured = sum(stats['total_time'] for stats in profiling_results.values()) / 1000.0
-    query_time_ms = (query_end - query_start) * 1000
-    unmeasured = query_time_ms - total_measured
-    
-    print("-" * 60)
-    print(f"Total measured: {total_measured:.1f}ms | Unmeasured: {unmeasured:.1f}ms ({unmeasured/query_time_ms*100:.1f}%)")
+        for operation, stats in sorted_results[:10]:  # Top 10
+            total_time_ms = stats['total_us'] / 1000.0
+            calls = stats['calls']
+            avg_time_us = stats['total_us'] / calls if calls > 0 else 0
+            
+            print(f"{operation:<40} {total_time_ms:>8.1f}ms ({calls:>8} calls)")
+        
+        total_measured = sum(stats['total_us'] for stats in profiling_results.values()) / 1000.0
+        query_time_ms = (query_end - query_start) * 1000
+        unmeasured = query_time_ms - total_measured
+        
+        print("-" * 60)
+        print(f"Total measured: {total_measured:.1f}ms | Unmeasured: {unmeasured:.1f}ms ({unmeasured/query_time_ms*100:.1f}%)")
+    else:
+        print("No profiling data collected")
     
     return end_time - start_time
 
