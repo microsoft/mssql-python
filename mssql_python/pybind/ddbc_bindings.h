@@ -55,6 +55,7 @@ inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
+#include "performance_counter.hpp"
 
 // Unicode constants for surrogate ranges and max scalar value
 constexpr uint32_t UNICODE_SURROGATE_HIGH_START = 0xD800;
@@ -74,6 +75,7 @@ inline bool IsValidUnicodeScalar(uint32_t cp) {
 
 inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
                                       size_t length = SQL_NTS) {
+    PERF_TIMER("SQLWCHARToWString");
     if (!sqlwStr) return std::wstring();
     if (length == SQL_NTS) {
         size_t i = 0;
@@ -128,6 +130,7 @@ inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
 }
 
 inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
+    PERF_TIMER("WStringToSQLWCHAR");
     std::vector<SQLWCHAR> result;
     result.reserve(str.size() + 2);
     if constexpr (sizeof(SQLWCHAR) == 2) {
@@ -446,6 +449,7 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle,
                               SQLRETURN retcode);
 
 inline std::string WideToUTF8(const std::wstring& wstr) {
+    PERF_TIMER("WideToUTF8");
     if (wstr.empty()) return {};
 
 #if defined(_WIN32)

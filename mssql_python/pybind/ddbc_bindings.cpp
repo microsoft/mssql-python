@@ -2646,6 +2646,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
                             if (numCharsInData < dataBuffer.size()) {
 #if defined(__APPLE__) || defined(__linux__)
+                                PERF_TIMER("SQLGetData_wrap::wstring_conversion");
                                 const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(dataBuffer.data());
                                 std::wstring wstr = SQLWCHARToWString(sqlwBuf, numCharsInData);
                                 std::string utf8str = WideToUTF8(wstr);
@@ -3326,6 +3327,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
 #if defined(__APPLE__) || defined(__linux__)
+                        PERF_TIMER("construct_rows::wstring_conversion");
                         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
                         std::wstring wstr = SQLWCHARToWString(wcharData, numCharsInData);
                         row[col - 1] = wstr;
