@@ -219,10 +219,15 @@ class Test_ConnectionStringAllowList:
         handler.setLevel(logging.WARNING)
         logger.addHandler(handler)
         
-        # Temporarily replace the get_logger function
+        # Temporarily replace the get_logger function in both modules
         import mssql_python.logging_config as logging_config
-        original_get_logger = logging_config.get_logger
+        import mssql_python.helpers as helpers
+        
+        original_get_logger_config = logging_config.get_logger
+        original_get_logger_helpers = helpers.get_logger
+        
         logging_config.get_logger = lambda: logger
+        helpers.get_logger = lambda: logger
         
         try:
             # Test with unknown parameters and warn_rejected=True
@@ -239,6 +244,7 @@ class Test_ConnectionStringAllowList:
             assert 'badparam2' in log_output
             assert 'not in allow-list' in log_output
         finally:
-            # Restore original get_logger
-            logging_config.get_logger = original_get_logger
+            # Restore original get_logger in both modules
+            logging_config.get_logger = original_get_logger_config
+            helpers.get_logger = original_get_logger_helpers
             logger.removeHandler(handler)

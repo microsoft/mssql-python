@@ -18,6 +18,7 @@ Parser behavior:
 from typing import Dict, Tuple, Optional
 from mssql_python.exceptions import ConnectionStringParseError
 from mssql_python.constants import _ALLOWED_CONNECTION_STRING_PARAMS, _RESERVED_PARAMETERS
+from mssql_python.helpers import sanitize_user_input, log
 
 
 class _ConnectionStringParser:
@@ -91,15 +92,6 @@ class _ConnectionStringParser:
             Driver and APP parameters are filtered here but will be set by
             the driver in _construct_connection_string to maintain control.
         """
-        # Import here to avoid circular dependency issues
-        try:
-            from mssql_python.logging_config import get_logger
-            from mssql_python.helpers import sanitize_user_input
-            logger = get_logger()
-        except ImportError:
-            logger = None
-            sanitize_user_input = lambda x: str(x)[:50]  # Simple fallback
-        
         filtered = {}
 
         # The rejected list should ideally be empty when used in the normal connection
@@ -123,9 +115,9 @@ class _ConnectionStringParser:
                 rejected.append(key)
         
         # Log all rejected parameters together if any were found
-        if rejected and warn_rejected and logger:
+        if rejected and warn_rejected:
             safe_keys = [sanitize_user_input(key) for key in rejected]
-            logger.warning(
+            log('warning',
                 f"Connection string parameters not in allow-list and will be ignored: {', '.join(safe_keys)}"
             )
         
