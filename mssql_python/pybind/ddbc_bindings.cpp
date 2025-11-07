@@ -3260,23 +3260,19 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     {
         PERF_TIMER("FetchBatchData::construct_rows");
         for (SQLULEN i = 0; i < numRowsFetched; i++) {
-        PERF_TIMER("construct_rows::per_row_iteration");
         // Create row container pre-allocated with known column count
         py::list row;
         {
             PERF_TIMER("construct_rows::pylist_creation");
             row = py::list(numCols);
         }
-        {
-            PERF_TIMER("construct_rows::column_loop_total");
-            for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-                PERF_TIMER("construct_rows::per_column_iteration");
-                const ColumnInfo& colInfo = columnInfos[col - 1];
-                SQLSMALLINT dataType = colInfo.dataType;
-                SQLLEN dataLen = buffers.indicators[col - 1][i];
-                if (dataLen == SQL_NULL_DATA) {
-                    row[col - 1] = py::none();
-                    continue;
+        for (SQLUSMALLINT col = 1; col <= numCols; col++) {
+            const ColumnInfo& colInfo = columnInfos[col - 1];
+            SQLSMALLINT dataType = colInfo.dataType;
+            SQLLEN dataLen = buffers.indicators[col - 1][i];
+            if (dataLen == SQL_NULL_DATA) {
+                row[col - 1] = py::none();
+                continue;
             }
             if (dataLen == SQL_NO_TOTAL) {
                 LOG("Cannot determine the length of the data. Returning NULL value instead."
@@ -3368,17 +3364,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         intVal = buffers.intBuffers[col - 1][i];
                     }
                     {
-                        PERF_TIMER("construct_rows::int_pybind11_total");
-                        // Measure the entire pybind11 assignment
-                        py::object pyObj;
-                        {
-                            PERF_TIMER("construct_rows::int_pybind11_cast");
-                            pyObj = py::cast(intVal);  // C++ -> Python conversion
-                        }
-                        {
-                            PERF_TIMER("construct_rows::int_list_setitem");
-                            row[col - 1] = pyObj;  // List __setitem__ operator
-                        }
+                        PERF_TIMER("construct_rows::int_c_api_assign");
+                        // Direct Python C API - bypass pybind11 overhead
+                        PyObject* pyInt = PyLong_FromLong(intVal);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyInt);  // Steals reference
                     }
                     break;
                 }
@@ -3389,16 +3378,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         smallIntVal = buffers.smallIntBuffers[col - 1][i];
                     }
                     {
-                        PERF_TIMER("construct_rows::smallint_pybind11_total");
-                        py::object pyObj;
-                        {
-                            PERF_TIMER("construct_rows::smallint_pybind11_cast");
-                            pyObj = py::cast(smallIntVal);
-                        }
-                        {
-                            PERF_TIMER("construct_rows::smallint_list_setitem");
-                            row[col - 1] = pyObj;
-                        }
+                        PERF_TIMER("construct_rows::smallint_c_api_assign");
+                        PyObject* pyInt = PyLong_FromLong(smallIntVal);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyInt);
                     }
                     break;
                 }
@@ -3460,16 +3442,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         bigIntVal = buffers.bigIntBuffers[col - 1][i];
                     }
                     {
-                        PERF_TIMER("construct_rows::bigint_pybind11_total");
-                        py::object pyObj;
-                        {
-                            PERF_TIMER("construct_rows::bigint_pybind11_cast");
-                            pyObj = py::cast(bigIntVal);
-                        }
-                        {
-                            PERF_TIMER("construct_rows::bigint_list_setitem");
-                            row[col - 1] = pyObj;
-                        }
+                        PERF_TIMER("construct_rows::bigint_c_api_assign");
+                        PyObject* pyInt = PyLong_FromLongLong(bigIntVal);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyInt);
                     }
                     break;
                 }
@@ -3564,7 +3539,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
             }
-        }  // End column_loop_total timer
         }
         {
             PERF_TIMER("construct_rows::rows_append");
