@@ -73,7 +73,7 @@ def test_mssql_python():
     
     # Enable profiling
     ddbc_bindings.profiling.enable()
-    ddbc_bindings.profiling.clear()
+    ddbc_bindings.profiling.reset()
     
     start_time = time.time()
     
@@ -89,7 +89,7 @@ def test_mssql_python():
     end_time = time.time()
     
     # Get profiling results
-    profiling_results = ddbc_bindings.profiling.get_results()
+    profiling_results = ddbc_bindings.profiling.get_stats()
     
     print(f"  Rows fetched: {len(rows):,}")
     print(f"  Total time: {end_time - start_time:.3f}s")
