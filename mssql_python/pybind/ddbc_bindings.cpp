@@ -3824,21 +3824,197 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
         }
     }
 
-    // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
-    if (!lobColumns.empty()) {
-        LOG("LOB columns detected, using per-row SQLGetData path");
-        while (true) {
-            ret = SQLFetch_ptr(hStmt);
-            if (ret == SQL_NO_DATA) break;
-            if (!SQL_SUCCEEDED(ret)) return ret;
+    // Use row-by-row fetching with optimized direct C API for all data types
+    // This matches pyodbc's approach: SQLFetch (one row) + per-column SQLGetData
+    LOG("Using optimized row-by-row fetch with direct C API");
+    
+    while (true) {
+        ret = SQLFetch_ptr(hStmt);
+        if (ret == SQL_NO_DATA) break;
+        if (!SQL_SUCCEEDED(ret)) return ret;
 
-            py::list row;
-            SQLGetData_wrap(StatementHandle, numCols, row);  // <-- streams LOBs correctly
-            rows.append(row);
+        // Create row with pre-allocated size for better performance
+        py::list row(numCols);
+        
+        // Fetch each column using SQLGetData with type-specific direct C API
+        for (SQLSMALLINT col = 1; col <= numCols; col++) {
+            auto colMeta = columnNames[col - 1].cast<py::dict>();
+            SQLSMALLINT dataType = colMeta["DataType"].cast<SQLSMALLINT>();
+            SQLULEN columnSize = colMeta["ColumnSize"].cast<SQLULEN>();
+            
+            SQLLEN indicator = 0;
+            
+            switch (dataType) {
+                case SQL_INTEGER: {
+                    SQLINTEGER val;
+                    ret = SQLGetData_ptr(hStmt, col, SQL_C_LONG, &val, sizeof(val), &indicator);
+                    if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
+                        // Direct C API - bypass pybind11
+                        PyObject* pyInt = PyLong_FromLong(val);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyInt);  // Steals reference
+                    } else {
+                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                        Py_INCREF(Py_None);
+                    }
+                    break;
+                }
+                
+                case SQL_SMALLINT: {
+                    SQLSMALLINT val;
+                    ret = SQLGetData_ptr(hStmt, col, SQL_C_SHORT, &val, sizeof(val), &indicator);
+                    if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
+                        PyObject* pyInt = PyLong_FromLong(val);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyInt);
+                    } else {
+                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                        Py_INCREF(Py_None);
+                    }
+                    break;
+                }
+                
+                case SQL_BIGINT: {
+                    SQLBIGINT val;
+                    ret = SQLGetData_ptr(hStmt, col, SQL_C_SBIGINT, &val, sizeof(val), &indicator);
+                    if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
+                        PyObject* pyInt = PyLong_FromLongLong(val);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyInt);
+                    } else {
+                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                        Py_INCREF(Py_None);
+                    }
+                    break;
+                }
+                
+                case SQL_REAL: {
+                    SQLREAL val;
+                    ret = SQLGetData_ptr(hStmt, col, SQL_C_FLOAT, &val, sizeof(val), &indicator);
+                    if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
+                        PyObject* pyFloat = PyFloat_FromDouble(val);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyFloat);
+                    } else {
+                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                        Py_INCREF(Py_None);
+                    }
+                    break;
+                }
+                
+                case SQL_DOUBLE:
+                case SQL_FLOAT: {
+                    SQLDOUBLE val;
+                    ret = SQLGetData_ptr(hStmt, col, SQL_C_DOUBLE, &val, sizeof(val), &indicator);
+                    if (SQL_SUCCEEDED(ret) && indicator != SQL_NULL_DATA) {
+                        PyObject* pyFloat = PyFloat_FromDouble(val);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyFloat);
+                    } else {
+                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                        Py_INCREF(Py_None);
+                    }
+                    break;
+                }
+                
+                case SQL_WCHAR:
+                case SQL_WVARCHAR:
+                case SQL_WLONGVARCHAR: {
+                    // For NVARCHAR, use direct PyUnicode_DecodeUTF16
+                    if (columnSize == SQL_NO_TOTAL || columnSize > 4000) {
+                        // LOB - use existing streaming logic
+                        row[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false);
+                    } else {
+                        uint64_t fetchBufferSize = (columnSize + 1) * sizeof(SQLWCHAR);
+                        std::vector<SQLWCHAR> dataBuffer(columnSize + 1);
+                        ret = SQLGetData_ptr(hStmt, col, SQL_C_WCHAR, dataBuffer.data(), fetchBufferSize, &indicator);
+                        
+                        if (SQL_SUCCEEDED(ret)) {
+                            if (indicator > 0) {
+                                uint64_t numCharsInData = indicator / sizeof(SQLWCHAR);
+                                // Direct C API - PyUnicode_DecodeUTF16
+                                PyObject* pyStr = PyUnicode_DecodeUTF16(
+                                    reinterpret_cast<const char*>(dataBuffer.data()),
+                                    numCharsInData * sizeof(SQLWCHAR),
+                                    NULL,
+                                    NULL
+                                );
+                                if (pyStr) {
+                                    PyList_SET_ITEM(row.ptr(), col - 1, pyStr);
+                                } else {
+                                    PyErr_Clear();
+                                    PyList_SET_ITEM(row.ptr(), col - 1, PyUnicode_FromString(""));
+                                }
+                            } else if (indicator == SQL_NULL_DATA) {
+                                PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                                Py_INCREF(Py_None);
+                            } else if (indicator == 0) {
+                                PyList_SET_ITEM(row.ptr(), col - 1, PyUnicode_FromString(""));
+                            }
+                        } else {
+                            PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                            Py_INCREF(Py_None);
+                        }
+                    }
+                    break;
+                }
+                
+                case SQL_DECIMAL:
+                case SQL_NUMERIC: {
+                    // Fetch as string, then convert to Python Decimal
+                    SQLCHAR numericStr[MAX_DIGITS_IN_NUMERIC] = {0};
+                    ret = SQLGetData_ptr(hStmt, col, SQL_C_CHAR, numericStr, sizeof(numericStr), &indicator);
+                    
+                    if (SQL_SUCCEEDED(ret) && indicator > 0 && indicator != SQL_NULL_DATA) {
+                        try {
+                            const char* cnum = reinterpret_cast<const char*>(numericStr);
+                            size_t bufSize = sizeof(numericStr);
+                            size_t safeLen = 0;
+                            
+                            if (indicator > 0 && indicator <= static_cast<SQLLEN>(bufSize)) {
+                                safeLen = static_cast<size_t>(indicator);
+                            } else {
+                                for (size_t j = 0; j < bufSize; ++j) {
+                                    if (cnum[j] == '\0') {
+                                        safeLen = j;
+                                        break;
+                                    }
+                                }
+                                if (safeLen == 0 && bufSize > 0 && cnum[0] != '\0') {
+                                    safeLen = bufSize;
+                                }
+                            }
+                            
+                            py::object decimalObj = PythonObjectCache::get_decimal_class()(py::str(cnum, safeLen));
+                            PyList_SET_ITEM(row.ptr(), col - 1, decimalObj.release().ptr());
+                        } catch (const py::error_already_set& e) {
+                            LOG("Error converting to decimal: {}", e.what());
+                            PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                            Py_INCREF(Py_None);
+                        }
+                    } else {
+                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                        Py_INCREF(Py_None);
+                    }
+                    break;
+                }
+                
+                default: {
+                    // For other types, fall back to SQLGetData_wrap
+                    py::list tempRow;
+                    SQLGetData_wrap(StatementHandle, 1, tempRow);  // Fetch single column
+                    if (tempRow.size() > 0) {
+                        row[col - 1] = tempRow[0];
+                    } else {
+                        row[col - 1] = py::none();
+                    }
+                    break;
+                }
+            }
         }
-        return SQL_SUCCESS;
+        
+        rows.append(row);
     }
-
+    
+    return SQL_SUCCESS;
+    
+    // OLD BATCH FETCHING CODE - REMOVED
+    /*
     ColumnBuffers buffers(numCols, fetchSize);
 
     // Bind columns
@@ -3865,6 +4041,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
 
     return ret;
+    */
 }
 
 // FetchOne_wrap - Fetches a single row of data from the result set.
