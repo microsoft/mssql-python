@@ -31,6 +31,7 @@ using py::literals::operator""_a;
 
 #include <sql.h>
 #include <sqlext.h>
+#include "performance_counter.hpp"
 
 #if defined(_WIN32)
 inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
@@ -55,7 +56,6 @@ inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
-#include "performance_counter.hpp"
 
 // Unicode constants for surrogate ranges and max scalar value
 constexpr uint32_t UNICODE_SURROGATE_HIGH_START = 0xD800;
