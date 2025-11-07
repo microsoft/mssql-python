@@ -1,8 +1,7 @@
-# mssql-python Logging Troubleshooting Guide for Customer Support
+# mssql-python Logging Troubleshooting Guide
 
 **Version:** 1.0  
 **Last Updated:** November 4, 2025  
-**Audience:** Customer Support Team (CSS)
 
 ---
 
@@ -1431,25 +1430,3 @@ if total_lines > 0:
 
 print("=" * 70)
 ```
-
----
-
-## Summary
-
-This guide provides CSS team with:
-
-1. ✅ **Quick reference** for common issues
-2. ✅ **Step-by-step workflows** for systematic troubleshooting
-3. ✅ **Permission solutions** for restricted environments
-4. ✅ **Log collection** templates and instructions
-5. ✅ **Log analysis** techniques and patterns
-6. ✅ **Escalation criteria** and procedures
-7. ✅ **Scripts** for common tasks
-
-**Key Principles:**
-
-- 🎯 **Enable logging for troubleshooting** (simple one-line setup)
-- 🎯 **Use 'both' mode** for active troubleshooting (console + file)
-- 🎯 **Use 'stdout'** when file access is restricted
-- 🎯 **Always sanitize** customer data before escalation
-- 🎯 **Escalate early** if security or data corruption suspected
