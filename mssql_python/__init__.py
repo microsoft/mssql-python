@@ -25,6 +25,7 @@ from .exceptions import (
     InternalError,
     ProgrammingError,
     NotSupportedError,
+    ConnectionStringParseError,
 )
 
 # Type Objects
@@ -45,6 +46,10 @@ from .type import (
 
 # Connection Objects
 from .db_connection import connect, Connection
+
+# Connection String Handling
+from .connection_string_parser import _ConnectionStringParser
+from .connection_string_builder import _ConnectionStringBuilder
 
 # Cursor Objects
 from .cursor import Cursor
