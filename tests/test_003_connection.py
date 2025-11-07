@@ -7818,13 +7818,12 @@ def test_set_attr_access_mode_after_connect(db_connection):
     result = cursor.fetchall()
     assert result[0][0] == 1
 
-
 def test_set_attr_current_catalog_after_connect(db_connection, conn_str):
     """Test setting current catalog after connection via set_attr."""
     # Skip this test for Azure SQL Database - it doesn't support changing database after connection
     if is_azure_sql_connection(conn_str):
         pytest.skip("Skipping for Azure SQL - SQL_ATTR_CURRENT_CATALOG not supported after connection")
-    
+
     # Get current database name
     cursor = db_connection.cursor()
     cursor.execute("SELECT DB_NAME()")
@@ -8499,7 +8498,9 @@ def test_connection_context_manager_with_cursor_cleanup(conn_str):
 
         # Perform operations
         cursor1.execute("SELECT 1")
+        cursor1.fetchone()
         cursor2.execute("SELECT 2")
+        cursor2.fetchone()
 
         # Verify cursors are tracked
         assert len(conn._cursors) == 2, "Should track both cursors"

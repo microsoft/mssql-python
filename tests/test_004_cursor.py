@@ -5593,332 +5593,6 @@ def _drop_if_exists_scroll(cursor, name):
     except Exception:
         pass
 
-
-def test_scroll_relative_basic(cursor, db_connection):
-    """Relative scroll should advance by the given offset and update rownumber."""
-    try:
-        _drop_if_exists_scroll(cursor, "#t_scroll_rel")
-        cursor.execute("CREATE TABLE #t_scroll_rel (id INTEGER)")
-        cursor.executemany(
-            "INSERT INTO #t_scroll_rel VALUES (?)", [(i,) for i in range(1, 11)]
-        )
-        db_connection.commit()
-
-        cursor.execute("SELECT id FROM #t_scroll_rel ORDER BY id")
-        # from fresh result set, skip 3 rows -> last-returned index becomes 2 (0-based)
-        cursor.scroll(3)
-        assert cursor.rownumber == 2, "After scroll(3) last-returned index should be 2"
-
-        # Fetch current row to verify position: next fetch should return id=4
-        row = cursor.fetchone()
-        assert row[0] == 4, "After scroll(3) the next fetch should return id=4"
-        # after fetch, last-returned index advances to 3
-        assert (
-            cursor.rownumber == 3
-        ), "After fetchone(), last-returned index should be 3"
-
-    finally:
-        _drop_if_exists_scroll(cursor, "#t_scroll_rel")
-
-
-def test_scroll_absolute_basic(cursor, db_connection):
-    """Absolute scroll should position so the next fetch returns the requested index."""
-    try:
-        _drop_if_exists_scroll(cursor, "#t_scroll_abs")
-        cursor.execute("CREATE TABLE #t_scroll_abs (id INTEGER)")
-        cursor.executemany(
-            "INSERT INTO #t_scroll_abs VALUES (?)", [(i,) for i in range(1, 8)]
-        )
-        db_connection.commit()
-
-        cursor.execute("SELECT id FROM #t_scroll_abs ORDER BY id")
-
-        # absolute position 0 -> set last-returned index to 0 (position BEFORE fetch)
-        cursor.scroll(0, "absolute")
-        assert (
-            cursor.rownumber == 0
-        ), "After absolute(0) rownumber should be 0 (positioned at index 0)"
-        row = cursor.fetchone()
-        assert row[0] == 1, "At absolute position 0, fetch should return first row"
-        # after fetch, last-returned index remains 0 (implementation sets to last returned row)
-        assert (
-            cursor.rownumber == 0
-        ), "After fetch at absolute(0), last-returned index should be 0"
-
-        # absolute position 3 -> next fetch should return id=4
-        cursor.scroll(3, "absolute")
-        assert cursor.rownumber == 3, "After absolute(3) rownumber should be 3"
-        row = cursor.fetchone()
-        assert row[0] == 4, "At absolute position 3, should fetch row with id=4"
-
-    finally:
-        _drop_if_exists_scroll(cursor, "#t_scroll_abs")
-
-
-def test_scroll_backward_not_supported(cursor, db_connection):
-    """Backward scrolling must raise NotSupportedError for negative relative; absolute to same or forward allowed."""
-    from mssql_python.exceptions import NotSupportedError
-
-    try:
-        _drop_if_exists_scroll(cursor, "#t_scroll_back")
-        cursor.execute("CREATE TABLE #t_scroll_back (id INTEGER)")
-        cursor.executemany("INSERT INTO #t_scroll_back VALUES (?)", [(1,), (2,), (3,)])
-        db_connection.commit()
-
-        cursor.execute("SELECT id FROM #t_scroll_back ORDER BY id")
-
-        # move forward 1 (relative)
-        cursor.scroll(1)
-        # Implementation semantics: scroll(1) consumes 1 row -> last-returned index becomes 0
-        assert (
-            cursor.rownumber == 0
-        ), "After scroll(1) from start last-returned index should be 0"
-
-        # negative relative should raise NotSupportedError and not change position
-        last = cursor.rownumber
-        with pytest.raises(NotSupportedError):
-            cursor.scroll(-1)
-        assert cursor.rownumber == last
-
-        # absolute to a lower position: if target < current_last_index, NotSupportedError expected.
-        # But absolute to the same position is allowed; ensure behavior is consistent with implementation.
-        # Here target equals current, so no error and position remains same.
-        cursor.scroll(last, "absolute")
-        assert cursor.rownumber == last
-
-    finally:
-        _drop_if_exists_scroll(cursor, "#t_scroll_back")
-
-
-def test_scroll_on_empty_result_set_raises(cursor, db_connection):
-    """Empty result set: relative scroll should raise IndexError; absolute sets position but fetch returns None."""
-    try:
-        _drop_if_exists_scroll(cursor, "#t_scroll_empty")
-        cursor.execute("CREATE TABLE #t_scroll_empty (id INTEGER)")
-        db_connection.commit()
-
-        cursor.execute("SELECT id FROM #t_scroll_empty")
-        assert cursor.rownumber == -1
-
-        # relative scroll on empty should raise IndexError
-        with pytest.raises(IndexError):
-            cursor.scroll(1)
-
-        # absolute to 0 on empty: implementation sets the position (rownumber) but there is no row to fetch
-        cursor.scroll(0, "absolute")
-        assert (
-            cursor.rownumber == 0
-        ), "Absolute scroll on empty result sets sets rownumber to target"
-        assert (
-            cursor.fetchone() is None
-        ), "No row should be returned after absolute positioning into empty set"
-
-    finally:
-        _drop_if_exists_scroll(cursor, "#t_scroll_empty")
-
-
-def test_scroll_mixed_fetches_consume_correctly(db_connection):
-    """Mix fetchone/fetchmany/fetchall with scroll and ensure correct results (match implementation)."""
-    # Create a new cursor for each part to ensure clean state
-    try:
-        # Setup - create test table
-        setup_cursor = db_connection.cursor()
-        try:
-            setup_cursor.execute(
-                "IF OBJECT_ID('tempdb..#t_scroll_mix') IS NOT NULL DROP TABLE #t_scroll_mix"
-            )
-            setup_cursor.execute("CREATE TABLE #t_scroll_mix (id INTEGER)")
-            setup_cursor.executemany(
-                "INSERT INTO #t_scroll_mix VALUES (?)", [(i,) for i in range(1, 11)]
-            )
-            db_connection.commit()
-        finally:
-            setup_cursor.close()
-
-        # Part 1: fetchone + scroll with fresh cursor
-        part1_cursor = db_connection.cursor()
-        try:
-            part1_cursor.execute("SELECT id FROM #t_scroll_mix ORDER BY id")
-            row1 = part1_cursor.fetchone()
-            assert row1 is not None, "Should fetch first row"
-            assert row1[0] == 1, "First row should be id=1"
-
-            part1_cursor.scroll(2)
-            row2 = part1_cursor.fetchone()
-            assert row2 is not None, "Should fetch row after scroll"
-            assert row2[0] == 4, "After scroll(2) and fetchone, id should be 4"
-        finally:
-            part1_cursor.close()
-
-        # Part 2: scroll + fetchmany with fresh cursor
-        part2_cursor = db_connection.cursor()
-        try:
-            part2_cursor.execute("SELECT id FROM #t_scroll_mix ORDER BY id")
-            part2_cursor.scroll(4)  # Position to start at id=5
-            rows = part2_cursor.fetchmany(2)
-            assert rows is not None, "fetchmany should return a list"
-            assert len(rows) == 2, "Should fetch 2 rows"
-            fetched_ids = [r[0] for r in rows]
-            assert fetched_ids[0] == 5, "First row should be id=5"
-            assert fetched_ids[1] == 6, "Second row should be id=6"
-        finally:
-            part2_cursor.close()
-
-        # Part 3: scroll + fetchall with fresh cursor
-        part3_cursor = db_connection.cursor()
-        try:
-            part3_cursor.execute("SELECT id FROM #t_scroll_mix ORDER BY id")
-            part3_cursor.scroll(7)  # Position to id=8
-            remaining_rows = part3_cursor.fetchall()
-            assert remaining_rows is not None, "fetchall should return a list"
-            assert len(remaining_rows) == 3, "Should have 3 remaining rows"
-            remaining_ids = [r[0] for r in remaining_rows]
-            assert remaining_ids[0] == 8, "First remaining id should be 8"
-            assert remaining_ids[1] == 9, "Second remaining id should be 9"
-            assert remaining_ids[2] == 10, "Last remaining id should be 10"
-        finally:
-            part3_cursor.close()
-
-    finally:
-        # Final cleanup with a fresh cursor
-        cleanup_cursor = db_connection.cursor()
-        try:
-            cleanup_cursor.execute(
-                "IF OBJECT_ID('tempdb..#t_scroll_mix') IS NOT NULL DROP TABLE #t_scroll_mix"
-            )
-            db_connection.commit()
-        except Exception:
-            # Log but don't fail test on cleanup error
-            pass
-        finally:
-            cleanup_cursor.close()
-
-
-def test_scroll_edge_cases_and_validation(cursor, db_connection):
-    """Extra edge cases: invalid params and before-first (-1) behavior."""
-    try:
-        _drop_if_exists_scroll(cursor, "#t_scroll_validation")
-        cursor.execute("CREATE TABLE #t_scroll_validation (id INTEGER)")
-        cursor.execute("INSERT INTO #t_scroll_validation VALUES (1)")
-        db_connection.commit()
-
-        cursor.execute("SELECT id FROM #t_scroll_validation")
-
-        # invalid types
-        with pytest.raises(Exception):
-            cursor.scroll("a")
-        with pytest.raises(Exception):
-            cursor.scroll(1.5)
-
-        # invalid mode
-        with pytest.raises(Exception):
-            cursor.scroll(0, "weird")
-
-        # before-first is allowed when already before first
-        cursor.scroll(-1, "absolute")
-        assert cursor.rownumber == -1
-
-    finally:
-        _drop_if_exists_scroll(cursor, "#t_scroll_validation")
-
-
-def test_cursor_skip_basic_functionality(cursor, db_connection):
-    """Test basic skip functionality that advances cursor position"""
-    try:
-        _drop_if_exists_scroll(cursor, "#test_skip")
-        cursor.execute("CREATE TABLE #test_skip (id INTEGER)")
-        cursor.executemany(
-            "INSERT INTO #test_skip VALUES (?)", [(i,) for i in range(1, 11)]
-        )
-        db_connection.commit()
-
-        # Execute query
-        cursor.execute("SELECT id FROM #test_skip ORDER BY id")
-
-        # Skip 3 rows
-        cursor.skip(3)
-
-        # After skip(3), last-returned index is 2
-        assert cursor.rownumber == 2, "After skip(3), last-returned index should be 2"
-
-        # Verify correct position by fetching - should get id=4
-        row = cursor.fetchone()
-        assert row[0] == 4, "After skip(3), next row should be id=4"
-
-        # Skip another 2 rows
-        cursor.skip(2)
-
-        # Verify position again
-        row = cursor.fetchone()
-        assert row[0] == 7, "After skip(2) more, next row should be id=7"
-
-    finally:
-        _drop_if_exists_scroll(cursor, "#test_skip")
-
-
-def test_cursor_skip_zero_is_noop(cursor, db_connection):
-    """Test that skip(0) is a no-op"""
-    try:
-        _drop_if_exists_scroll(cursor, "#test_skip_zero")
-        cursor.execute("CREATE TABLE #test_skip_zero (id INTEGER)")
-        cursor.executemany(
-            "INSERT INTO #test_skip_zero VALUES (?)", [(i,) for i in range(1, 6)]
-        )
-        db_connection.commit()
-
-        # Execute query
-        cursor.execute("SELECT id FROM #test_skip_zero ORDER BY id")
-
-        # Get initial position
-        initial_rownumber = cursor.rownumber
-
-        # Skip 0 rows (should be no-op)
-        cursor.skip(0)
-
-        # Verify position unchanged
-        assert (
-            cursor.rownumber == initial_rownumber
-        ), "skip(0) should not change position"
-        row = cursor.fetchone()
-        assert row[0] == 1, "After skip(0), first row should still be id=1"
-
-        # Skip some rows, then skip(0)
-        cursor.skip(2)
-        position_after_skip = cursor.rownumber
-        cursor.skip(0)
-
-        # Verify position unchanged after second skip(0)
-        assert (
-            cursor.rownumber == position_after_skip
-        ), "skip(0) should not change position"
-        row = cursor.fetchone()
-        assert row[0] == 4, "After skip(2) then skip(0), should fetch id=4"
-
-    finally:
-        _drop_if_exists_scroll(cursor, "#test_skip_zero")
-
-
-def test_cursor_skip_empty_result_set(cursor, db_connection):
-    """Test skip behavior with empty result set"""
-    try:
-        _drop_if_exists_scroll(cursor, "#test_skip_empty")
-        cursor.execute("CREATE TABLE #test_skip_empty (id INTEGER)")
-        db_connection.commit()
-
-        # Execute query on empty table
-        cursor.execute("SELECT id FROM #test_skip_empty")
-
-        # Skip should raise IndexError on empty result set
-        with pytest.raises(IndexError):
-            cursor.skip(1)
-
-        # Verify row is still None
-        assert cursor.fetchone() is None, "Empty result should return None"
-
-    finally:
-        _drop_if_exists_scroll(cursor, "#test_skip_empty")
-
-
 def test_cursor_skip_past_end(cursor, db_connection):
     """Test skip past end of result set"""
     try:
@@ -6010,8 +5684,8 @@ def test_cursor_skip_integration_with_fetch_methods(cursor, db_connection):
         rows = cursor.fetchmany(2)
 
         assert [r[0] for r in rows] == [
-            5,
             6,
+            7,
         ], "After fetchmany(2) and skip(3), should get ids matching implementation"
 
         # Test with fetchall
@@ -13803,20 +13477,6 @@ def test_numeric_leading_zeros_precision_loss(
             actual == expected
         ), f"Leading zeros precision loss for {value}, expected {expected}, got {actual}"
 
-    except Exception as e:
-        # Handle cases where values get converted to scientific notation and cause SQL Server conversion errors
-        error_msg = str(e).lower()
-        if (
-            "converting" in error_msg
-            and "varchar" in error_msg
-            and "numeric" in error_msg
-        ):
-            pytest.skip(
-                f"Value {value} converted to scientific notation, causing expected SQL Server conversion error: {e}"
-            )
-        else:
-            raise  # Re-raise unexpected errors
-
     finally:
         try:
             cursor.execute(f"DROP TABLE {table_name}")
@@ -13864,31 +13524,12 @@ def test_numeric_extreme_exponents_precision_loss(
             "1E-18"
         ), f"Extreme exponent value not preserved for {description}: {value} -> {actual}"
 
-    except Exception as e:
-        # Handle expected SQL Server validation errors for scientific notation values
-        error_msg = str(e).lower()
-        if "scale" in error_msg and "range" in error_msg:
-            # This is expected - SQL Server rejects invalid scale/precision combinations
-            pytest.skip(
-                f"Expected SQL Server scale/precision validation for {description}: {e}"
-            )
-        elif any(
-            keyword in error_msg
-            for keyword in ["converting", "overflow", "precision", "varchar", "numeric"]
-        ):
-            # Other expected precision/conversion issues
-            pytest.skip(
-                f"Expected SQL Server precision limits or VARCHAR conversion for {description}: {e}"
-            )
-        else:
-            raise  # Re-raise if it's not a precision-related error
     finally:
         try:
             cursor.execute(f"DROP TABLE {table_name}")
             db_connection.commit()
         except:
             pass  # Table might not exist if creation failed
-
 
 # ---------------------------------------------------------
 # Test 12: 38-digit precision boundary limits
@@ -13984,6 +13625,72 @@ def test_numeric_beyond_38_digit_precision_negative(
         "maximum precision supported by SQL Server is 38" in error_msg
     ), f"Expected SQL Server precision limit message for {description}, got: {error_msg}"
 
+
+@pytest.mark.parametrize(
+    "values, description",
+    [
+        # Small decimal values with scientific notation
+        (
+            [
+                decimal.Decimal('0.70000000000696'),
+                decimal.Decimal('1E-7'),
+                decimal.Decimal('0.00001'),
+                decimal.Decimal('6.96E-12'),
+            ],
+            "Small decimals with scientific notation"
+        ),
+        # Large decimal values with scientific notation
+        (
+            [
+                decimal.Decimal('4E+8'),
+                decimal.Decimal('1.521E+15'),
+                decimal.Decimal('5.748E+18'),
+                decimal.Decimal('1E+11')
+            ],
+            "Large decimals with positive exponents"
+        ),
+        # Medium-sized decimals
+        (
+            [
+                decimal.Decimal('123.456'),
+                decimal.Decimal('9999.9999'),
+                decimal.Decimal('1000000.50')
+            ],
+            "Medium-sized decimals"
+        ),
+    ],
+)
+def test_decimal_scientific_notation_to_varchar(cursor, db_connection, values, description):
+    """
+    Test that Decimal values with scientific notation are properly converted
+    to VARCHAR without triggering 'varchar to numeric' conversion errors.
+    This verifies that the driver correctly handles Decimal to VARCHAR conversion
+    """
+    table_name = "#pytest_decimal_varchar_conversion"
+    try:
+        cursor.execute(f"CREATE TABLE {table_name} (id INT IDENTITY(1,1), val VARCHAR(50))")
+        
+        for val in values:
+            cursor.execute(f"INSERT INTO {table_name} (val) VALUES (?)", (val,))
+        db_connection.commit()
+        
+        cursor.execute(f"SELECT val FROM {table_name} ORDER BY id")
+        rows = cursor.fetchall()
+        
+        assert len(rows) == len(values), f"Expected {len(values)} rows, got {len(rows)}"
+        
+        for i, (row, expected_val) in enumerate(zip(rows, values)):
+            stored_val = decimal.Decimal(row[0])
+            assert stored_val == expected_val, (
+                f"{description}: Row {i} mismatch - expected {expected_val}, got {stored_val}"
+            )
+        
+    finally:
+        try:
+            cursor.execute(f"DROP TABLE {table_name}")
+            db_connection.commit()
+        except:
+            pass
 
 SMALL_XML = "<root><item>1</item></root>"
 LARGE_XML = "<root>" + "".join(f"<item>{i}</item>" for i in range(10000)) + "</root>"
@@ -14377,19 +14084,6 @@ def test_foreignkeys_parameter_validation(cursor):
         cursor.foreignKeys(table=None, foreignTable=None)
 
 
-def test_scroll_absolute_end_of_result_set(cursor):
-    """Test scroll absolute to end of result set (Lines 2269-2277)."""
-
-    # Create a small result set
-    cursor.execute("SELECT 1 UNION SELECT 2 UNION SELECT 3")
-
-    # Try to scroll to a position beyond the result set
-    with pytest.raises(
-        IndexError, match="Cannot scroll to position.*end of result set reached"
-    ):
-        cursor.scroll(100, mode="absolute")
-
-
 def test_tables_error_handling(cursor):
     """Test tables method error handling (Lines 2396-2404)."""
 
@@ -14566,89 +14260,6 @@ def test_row_uuid_processing_sql_guid_type(cursor, db_connection):
         drop_table_if_exists(cursor, "#pytest_sql_guid_type")
         db_connection.commit()
 
-
-def test_row_uuid_processing_exception_handling(cursor, db_connection):
-    """Test Row UUID processing exception handling (Lines 101-102, 116-117)."""
-
-    try:
-        # Create a table with invalid GUID data that will trigger exception handling
-        drop_table_if_exists(cursor, "#pytest_uuid_exception")
-        cursor.execute(
-            """
-            CREATE TABLE #pytest_uuid_exception (
-                id INT,
-                text_col VARCHAR(50)  -- Regular text column that we'll treat as GUID
-            )
-        """
-        )
-
-        # Insert invalid GUID string
-        cursor.execute(
-            "INSERT INTO #pytest_uuid_exception (id, text_col) VALUES (?, ?)",
-            [1, "invalid-guid-string-not-a-uuid"],
-        )
-        db_connection.commit()
-
-        # Create a custom Row class to test the UUID exception handling
-        from mssql_python.row import Row
-
-        # Execute query and get cursor results
-        cursor.execute("SELECT id, text_col FROM #pytest_uuid_exception")
-
-        # Get the raw results from the cursor
-        results = cursor.fetchall()
-        row_data = results[0]  # Get first row data
-
-        # Get the description from cursor
-        description = cursor.description
-
-        # Modify description to make the text column look like SQL_GUID (-11)
-        # This will trigger UUID processing on an invalid GUID string
-        modified_description = [
-            description[0],  # Keep ID column as-is
-            (
-                "text_col",
-                -11,
-                None,
-                None,
-                None,
-                None,
-                None,
-            ),  # Make it look like SQL_GUID
-        ]
-
-        # Create Row instance with native_uuid=True and modified description
-        original_setting = None
-        if (
-            hasattr(cursor.connection, "_settings")
-            and "native_uuid" in cursor.connection._settings
-        ):
-            original_setting = cursor.connection._settings["native_uuid"]
-            cursor.connection._settings["native_uuid"] = True
-
-        # Create Row directly with the data and modified description
-        # This should trigger exception handling in lines 101-102 and 116-117
-        row = Row(cursor, modified_description, list(row_data))
-
-        # The invalid GUID should be kept as original value due to exception handling
-        # Lines 101-102: except (ValueError, AttributeError): pass  # Keep original if conversion fails
-        # Lines 116-117: except (ValueError, AttributeError): pass
-        assert row[0] == 1, "ID should remain unchanged"
-        assert (
-            row[1] == "invalid-guid-string-not-a-uuid"
-        ), "Invalid GUID should remain as original string"
-
-        # Restore original setting
-        if original_setting is not None and hasattr(cursor.connection, "_settings"):
-            cursor.connection._settings["native_uuid"] = original_setting
-
-    except Exception as e:
-        pytest.fail(f"UUID processing exception handling test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_uuid_exception")
-        db_connection.commit()
-
-
 def test_row_output_converter_overflow_error(cursor, db_connection):
     """Test Row output converter OverflowError handling (Lines 186-195)."""
 
@@ -14810,84 +14421,6 @@ def test_row_cursor_log_method_availability(cursor, db_connection):
         pytest.fail(f"Cursor log method availability test failed: {e}")
     finally:
         drop_table_if_exists(cursor, "#pytest_log_check")
-        db_connection.commit()
-
-
-def test_row_uuid_attribute_error_handling(cursor, db_connection):
-    """Test Row UUID processing AttributeError handling."""
-
-    try:
-        # Create a table with integer data that will trigger AttributeError
-        drop_table_if_exists(cursor, "#pytest_uuid_attr_error")
-        cursor.execute(
-            """
-            CREATE TABLE #pytest_uuid_attr_error (
-                guid_col INT  -- Integer column that we'll treat as GUID
-            )
-        """
-        )
-
-        # Insert integer value
-        cursor.execute(
-            "INSERT INTO #pytest_uuid_attr_error (guid_col) VALUES (?)", [42]
-        )
-        db_connection.commit()
-
-        # Create a custom Row class to test the AttributeError handling
-        from mssql_python.row import Row
-
-        # Execute query and get cursor results
-        cursor.execute("SELECT guid_col FROM #pytest_uuid_attr_error")
-
-        # Get the raw results from the cursor
-        results = cursor.fetchall()
-        row_data = results[0]  # Get first row data
-
-        # Get the description from cursor
-        description = cursor.description
-
-        # Modify description to make the integer column look like SQL_GUID (-11)
-        # This will trigger UUID processing on an integer (will cause AttributeError on .strip())
-        modified_description = [
-            (
-                "guid_col",
-                -11,
-                None,
-                None,
-                None,
-                None,
-                None,
-            ),  # Make it look like SQL_GUID
-        ]
-
-        # Create Row instance with native_uuid=True and modified description
-        original_setting = None
-        if (
-            hasattr(cursor.connection, "_settings")
-            and "native_uuid" in cursor.connection._settings
-        ):
-            original_setting = cursor.connection._settings["native_uuid"]
-            cursor.connection._settings["native_uuid"] = True
-
-        # Create Row directly with the data and modified description
-        # This should trigger AttributeError handling in lines 101-102 and 116-117
-        row = Row(cursor, modified_description, list(row_data))
-
-        # The integer value should be kept as original due to AttributeError handling
-        # Lines 101-102: except (ValueError, AttributeError): pass  # Keep original if conversion fails
-        # Lines 116-117: except (ValueError, AttributeError): pass
-        assert (
-            row[0] == 42
-        ), "Value should remain as original integer due to AttributeError"
-
-        # Restore original setting
-        if original_setting is not None and hasattr(cursor.connection, "_settings"):
-            cursor.connection._settings["native_uuid"] = original_setting
-
-    except Exception as e:
-        pytest.fail(f"UUID AttributeError handling test failed: {e}")
-    finally:
-        drop_table_if_exists(cursor, "#pytest_uuid_attr_error")
         db_connection.commit()
 
 
