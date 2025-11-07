@@ -21,8 +21,11 @@ SELECT
     p.Name AS ProductName,
     p.ProductNumber,
     p.Color,
-    p.ListPrice
+    p.ListPrice,
+    n1.number AS RowMultiplier1
 FROM Sales.SalesOrderDetail sod
+CROSS JOIN (SELECT TOP 10 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS number
+            FROM Sales.SalesOrderDetail) n1
 INNER JOIN Production.Product p ON sod.ProductID = p.ProductID;
 """
 
