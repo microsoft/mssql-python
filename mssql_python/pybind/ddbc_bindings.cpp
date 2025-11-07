@@ -3259,8 +3259,23 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     // Convert fetched data to Python objects
     {
         PERF_TIMER("FetchBatchData::construct_rows");
+        
+        // Pre-allocate cache arrays to avoid repeated lookups (optimization)
+        std::vector<SQLLEN> cachedDataLen(numCols);
+        std::vector<SQLSMALLINT> cachedDataType(numCols);
+        
         for (SQLULEN i = 0; i < numRowsFetched; i++) {
         PERF_TIMER("construct_rows::per_row_total");
+        
+        // Pre-fetch all column metadata for this row to improve cache locality
+        {
+            PERF_TIMER("construct_rows::prefetch_metadata");
+            for (SQLUSMALLINT col = 0; col < numCols; col++) {
+                cachedDataLen[col] = buffers.indicators[col][i];
+                cachedDataType[col] = columnInfos[col].dataType;
+            }
+        }
+        
         // Create row container pre-allocated with known column count
         py::list row;
         {
@@ -3270,10 +3285,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         {
             PERF_TIMER("construct_rows::all_columns_processing");
             for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-                PERF_TIMER("construct_rows::per_column_overhead");
+                // Use cached values instead of repeated lookups
                 const ColumnInfo& colInfo = columnInfos[col - 1];
-                SQLSMALLINT dataType = colInfo.dataType;
-                SQLLEN dataLen = buffers.indicators[col - 1][i];
+                SQLSMALLINT dataType = cachedDataType[col - 1];
+                SQLLEN dataLen = cachedDataLen[col - 1];
                 if (dataLen == SQL_NULL_DATA) {
                     PERF_TIMER("construct_rows::null_assignment");
                     row[col - 1] = py::none();
