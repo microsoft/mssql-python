@@ -3261,25 +3261,21 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
     
     size_t initialSize = rows.size();
-    for (SQLULEN i = 0; i < numRowsFetched; i++) {
-        rows.append(py::none());
-    }
     
     // Convert fetched data to Python objects
     {
         PERF_TIMER("FetchBatchData::construct_rows");
         for (SQLULEN i = 0; i < numRowsFetched; i++) {
-        // Create row container pre-allocated with known column count
         py::list row(numCols);
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
             const ColumnInfo& colInfo = columnInfos[col - 1];
             SQLSMALLINT dataType = colInfo.dataType;
             SQLLEN dataLen = buffers.indicators[col - 1][i];
+            
             if (dataLen == SQL_NULL_DATA) {
                 row[col - 1] = py::none();
                 continue;
-            }
-            if (dataLen == SQL_NO_TOTAL) {
+            } else if (dataLen == SQL_NO_TOTAL) {
                 LOG("Cannot determine the length of the data. Returning NULL value instead."
                     "Column ID - {}", col);
                 row[col - 1] = py::none();
@@ -3291,7 +3287,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 } else if (dataType == SQL_WCHAR || dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR) {
                     row[col - 1] = std::wstring(L"");
                 } else if (dataType == SQL_BINARY || dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY) {
-                    row[col - 1] = py::bytes("");
+                    row[col - 1] = py::bytes("", 0);
                 } else {
                     // For other datatypes, 0 length is unexpected. Log & set None
                     LOG("Column data length is 0 for non-string/binary datatype. Setting None to the result row. Column ID - {}", col);
@@ -3303,6 +3299,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 LOG("Unexpected negative data length. Column ID - {}, SQL Type - {}, Data Length - {}", col, dataType, dataLen);
                 ThrowStdException("Unexpected negative data length, check logs for details");
             }
+            
             assert(dataLen > 0 && "Data length must be > 0");
 
             switch (dataType) {
