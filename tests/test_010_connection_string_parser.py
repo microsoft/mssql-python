@@ -7,7 +7,6 @@ Unit tests for _ConnectionStringParser (internal).
 
 import pytest
 from mssql_python.connection_string_parser import _ConnectionStringParser, ConnectionStringParseError
-from mssql_python.constants import _ConnectionStringAllowList
 
 
 class TestConnectionStringParser:
@@ -98,6 +97,19 @@ class TestConnectionStringParser:
         parser = _ConnectionStringParser()
         result = parser._parse("Server=localhost   ;Database=mydb")
         assert result == {'server': 'localhost', 'database': 'mydb'}
+    
+    def test_parse_excessive_whitespace_after_equals(self):
+        """Test parsing with excessive whitespace after equals sign."""
+        parser = _ConnectionStringParser()
+        result = parser._parse("Server= localhost;Database= mydb")
+        assert result == {'server': 'localhost', 'database': 'mydb'}
+    
+    def test_parse_tabs_in_values(self):
+        """Test parsing with tab characters in connection string."""
+        parser = _ConnectionStringParser()
+        # Tabs before the value are stripped as whitespace
+        result = parser._parse("Server=\t\tlocalhost;PWD=\t{pass}")
+        assert result == {'server': 'localhost', 'pwd': 'pass'}
     
     def test_parse_case_insensitive_keys(self):
         """Test that keys are normalized to lowercase."""
@@ -323,9 +335,8 @@ class TestConnectionStringParserErrors:
         assert "Empty keyword" in errors_str
     
     def test_error_unknown_keyword_with_allowlist(self):
-        """Test that unknown keywords are flagged when allowlist is provided."""
-        allowlist = _ConnectionStringAllowList()
-        parser = _ConnectionStringParser(allowlist=allowlist)
+        """Test that unknown keywords are flagged when validation is enabled."""
+        parser = _ConnectionStringParser(validate_keywords=True)
         
         with pytest.raises(ConnectionStringParseError) as exc_info:
             parser._parse("Server=localhost;UnknownParam=value")
@@ -334,8 +345,7 @@ class TestConnectionStringParserErrors:
     
     def test_error_multiple_unknown_keywords(self):
         """Test that multiple unknown keywords are all flagged."""
-        allowlist = _ConnectionStringAllowList()
-        parser = _ConnectionStringParser(allowlist=allowlist)
+        parser = _ConnectionStringParser(validate_keywords=True)
         
         with pytest.raises(ConnectionStringParseError) as exc_info:
             parser._parse("Server=localhost;Unknown1=val1;Database=mydb;Unknown2=val2")
@@ -346,8 +356,7 @@ class TestConnectionStringParserErrors:
     
     def test_error_combined_unknown_and_duplicate(self):
         """Test that unknown keywords and duplicates are both flagged."""
-        allowlist = _ConnectionStringAllowList()
-        parser = _ConnectionStringParser(allowlist=allowlist)
+        parser = _ConnectionStringParser(validate_keywords=True)
         
         with pytest.raises(ConnectionStringParseError) as exc_info:
             parser._parse("Server=first;UnknownParam=value;Server=second")
@@ -357,9 +366,8 @@ class TestConnectionStringParserErrors:
         assert "Duplicate keyword 'server'" in errors_str
     
     def test_valid_with_allowlist(self):
-        """Test that valid keywords pass when allowlist is provided."""
-        allowlist = _ConnectionStringAllowList()
-        parser = _ConnectionStringParser(allowlist=allowlist)
+        """Test that valid keywords pass when validation is enabled."""
+        parser = _ConnectionStringParser(validate_keywords=True)
         
         # These are all valid keywords in the allowlist
         result = parser._parse("Server=localhost;Database=mydb;UID=user;PWD=pass")
@@ -371,8 +379,8 @@ class TestConnectionStringParserErrors:
         }
     
     def test_no_validation_without_allowlist(self):
-        """Test that unknown keywords are allowed when no allowlist is provided."""
-        parser = _ConnectionStringParser()  # No allowlist
+        """Test that unknown keywords are allowed when validation is disabled."""
+        parser = _ConnectionStringParser()  # validate_keywords defaults to False
         
         # Should parse successfully even with unknown keywords
         result = parser._parse("Server=localhost;MadeUpKeyword=value")

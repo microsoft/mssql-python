@@ -17,12 +17,7 @@ Parser behavior:
 
 from typing import Dict, Tuple, Optional
 from mssql_python.exceptions import ConnectionStringParseError
-from mssql_python.constants import _ConnectionStringAllowList
-
-
-# Reserved connection string parameters that are controlled by the driver
-# and cannot be set by users
-RESERVED_PARAMETERS = ('Driver', 'APP')
+from mssql_python.constants import _ALLOWED_CONNECTION_STRING_PARAMS, _RESERVED_PARAMETERS
 
 
 class _ConnectionStringParser:
@@ -40,15 +35,101 @@ class _ConnectionStringParser:
     Reference: https://learn.microsoft.com/en-us/openspecs/sql_server_protocols/ms-odbcstr/55953f0e-2d30-4ad4-8e56-b4207e491409
     """
     
-    def __init__(self, allowlist: Optional['_ConnectionStringAllowList'] = None) -> None:
+    def __init__(self, validate_keywords: bool = False) -> None:
         """
         Initialize the parser.
         
         Args:
-            allowlist: Optional _ConnectionStringAllowList instance for keyword validation.
-                      If None, no keyword validation is performed.
+            validate_keywords: Whether to validate keywords against the allow-list.
+                             If False, pure parsing without validation is performed.
+                             This is useful for testing parsing logic independently
+                             or when validation is handled separately.
         """
-        self._allowlist = allowlist
+        self._validate_keywords = validate_keywords
+    
+    @classmethod
+    def normalize_key(cls, key: str) -> Optional[str]:
+        """
+        Normalize a parameter key to its canonical form.
+        
+        Args:
+            key: Parameter key from connection string (case-insensitive)
+            
+        Returns:
+            Canonical parameter name if allowed, None otherwise
+            
+        Examples:
+            >>> _ConnectionStringParser.normalize_key('SERVER')
+            'Server'
+            >>> _ConnectionStringParser.normalize_key('uid')
+            'UID'
+            >>> _ConnectionStringParser.normalize_key('UnsupportedParam')
+            None
+        """
+        key_lower = key.lower().strip()
+        return _ALLOWED_CONNECTION_STRING_PARAMS.get(key_lower)
+    
+    @staticmethod
+    def _normalize_params(params: Dict[str, str], warn_rejected: bool = True) -> Dict[str, str]:
+        """
+        Normalize and filter parameters against the allow-list (internal use only).
+        
+        This method performs several operations:
+        - Normalizes parameter names (e.g., addr/address → Server, uid → UID)
+        - Filters out parameters not in the allow-list
+        - Removes reserved parameters (Driver, APP)
+        - Deduplicates via normalized keys
+        
+        Args:
+            params: Dictionary of connection string parameters (keys should be lowercase)
+            warn_rejected: Whether to log warnings for rejected parameters
+            
+        Returns:
+            Dictionary containing only allowed parameters with normalized keys
+            
+        Note:
+            Driver and APP parameters are filtered here but will be set by
+            the driver in _construct_connection_string to maintain control.
+        """
+        # Import here to avoid circular dependency issues
+        try:
+            from mssql_python.logging_config import get_logger
+            from mssql_python.helpers import sanitize_user_input
+            logger = get_logger()
+        except ImportError:
+            logger = None
+            sanitize_user_input = lambda x: str(x)[:50]  # Simple fallback
+        
+        filtered = {}
+
+        # The rejected list should ideally be empty when used in the normal connection
+        # flow, since the parser validates against the allowlist first and raises
+        # errors for unknown parameters. This filtering is primarily a safety net.
+        rejected = []
+        
+        for key, value in params.items():
+            normalized_key = _ConnectionStringParser.normalize_key(key)
+            
+            if normalized_key:
+                # Skip Driver and APP - these are controlled by the driver
+                if normalized_key in _RESERVED_PARAMETERS:
+                    continue
+                    
+                # Parameter is allowed
+                filtered[normalized_key] = value
+            else:
+                # Parameter is not in allow-list
+                # Note: In normal flow, this should be empty since parser validates first
+                rejected.append(key)
+        
+        # Log all rejected parameters together if any were found
+        if rejected and warn_rejected and logger:
+            safe_keys = [sanitize_user_input(key) for key in rejected]
+            logger.warning(
+                f"Connection string parameters not in allow-list and will be ignored: {', '.join(safe_keys)}"
+            )
+        
+        return filtered
     
     def _parse(self, connection_str: str) -> Dict[str, str]:
         """
@@ -160,19 +241,19 @@ class _ConnectionStringParser:
                 while current_pos < str_len and connection_str[current_pos] != ';':
                     current_pos += 1
         
-        # Validate keywords against allowlist if provided
-        if self._allowlist:
+        # Validate keywords against allowlist if validation is enabled
+        if self._validate_keywords:
             unknown_keys = []
             reserved_keys = []
             
             for key in params.keys():
                 # Check if this key can be normalized (i.e., it's known)
-                normalized_key = self._allowlist.normalize_key(key)
+                normalized_key = _ConnectionStringParser.normalize_key(key)
                 
                 if normalized_key is None:
                     # Unknown keyword
                     unknown_keys.append(key)
-                elif normalized_key in RESERVED_PARAMETERS:
+                elif normalized_key in _RESERVED_PARAMETERS:
                     # Reserved keyword - user cannot set these
                     reserved_keys.append(key)
             

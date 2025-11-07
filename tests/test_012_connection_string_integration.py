@@ -11,7 +11,6 @@ import pytest
 import os
 from unittest.mock import patch, MagicMock
 from mssql_python.connection_string_parser import _ConnectionStringParser, ConnectionStringParseError
-from mssql_python.constants import _ConnectionStringAllowList
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
 from mssql_python import connect
 
@@ -26,7 +25,7 @@ class TestConnectionStringIntegration:
         parsed = parser._parse("Server=localhost;Database=mydb;Encrypt=yes")
         
         # Filter
-        filtered = _ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
+        filtered = _ConnectionStringParser._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -44,8 +43,7 @@ class TestConnectionStringIntegration:
     def test_parse_filter_build_with_unsupported_param(self):
         """Test that unsupported parameters are flagged as errors with allowlist."""
         # Parse with allowlist
-        allowlist = _ConnectionStringAllowList()
-        parser = _ConnectionStringParser(allowlist=allowlist)
+        parser = _ConnectionStringParser(validate_keywords=True)
         
         # Should raise error for unknown keyword
         with pytest.raises(ConnectionStringParseError) as exc_info:
@@ -60,7 +58,7 @@ class TestConnectionStringIntegration:
         parsed = parser._parse("Server={local;host};PWD={p@ss;w}}rd}")
         
         # Filter
-        filtered = _ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
+        filtered = _ConnectionStringParser._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -80,7 +78,7 @@ class TestConnectionStringIntegration:
         parsed = parser._parse("address=server1;uid=testuser;database=testdb")
         
         # Filter (normalizes synonyms)
-        filtered = _ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
+        filtered = _ConnectionStringParser._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -99,8 +97,7 @@ class TestConnectionStringIntegration:
     def test_parse_filter_build_driver_and_app_reserved(self):
         """Test that Driver and APP in connection string raise errors."""
         # Parser should reject Driver and APP as reserved keywords
-        allowlist = _ConnectionStringAllowList()
-        parser = _ConnectionStringParser(allowlist=allowlist)
+        parser = _ConnectionStringParser(validate_keywords=True)
         
         # Test with APP
         with pytest.raises(ConnectionStringParseError) as exc_info:
@@ -131,7 +128,7 @@ class TestConnectionStringIntegration:
         parsed = parser._parse("")
         
         # Filter
-        filtered = _ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
+        filtered = _ConnectionStringParser._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -150,7 +147,7 @@ class TestConnectionStringIntegration:
         parsed = parser._parse(conn_str)
         
         # Filter
-        filtered = _ConnectionStringAllowList._normalize_params(parsed, warn_rejected=False)
+        filtered = _ConnectionStringParser._normalize_params(parsed, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -212,7 +209,7 @@ class TestConnectionStringIntegration:
         }
         
         # Filter
-        filtered = _ConnectionStringAllowList._normalize_params(original_params, warn_rejected=False)
+        filtered = _ConnectionStringParser._normalize_params(original_params, warn_rejected=False)
         
         # Build
         builder = _ConnectionStringBuilder(filtered)
@@ -288,8 +285,7 @@ class TestConnectionStringIntegration:
     
     def test_parser_with_allowlist_rejects_unknown(self):
         """Test that parser with allowlist rejects unknown keywords."""
-        allowlist = _ConnectionStringAllowList()
-        parser = _ConnectionStringParser(allowlist=allowlist)
+        parser = _ConnectionStringParser(validate_keywords=True)
         
         # Should raise error for unknown keyword
         with pytest.raises(ConnectionStringParseError) as exc_info:

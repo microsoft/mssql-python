@@ -41,6 +41,9 @@ from mssql_python.exceptions import (
 )
 from mssql_python.auth import process_connection_string
 from mssql_python.constants import ConstantsDDBC, GetInfoConstants
+from mssql_python.connection_string_parser import _ConnectionStringParser
+from mssql_python.connection_string_builder import _ConnectionStringBuilder
+from mssql_python.constants import _RESERVED_PARAMETERS
 
 if TYPE_CHECKING:
     from mssql_python.row import Row
@@ -259,27 +262,23 @@ class Connection:
         Returns:
             str: The constructed and validated connection string.
         """
-        from mssql_python.connection_string_parser import _ConnectionStringParser, RESERVED_PARAMETERS
-        from mssql_python.constants import _ConnectionStringAllowList
-        from mssql_python.connection_string_builder import _ConnectionStringBuilder
         
         # Step 1: Parse base connection string with allowlist validation
         # The parser validates everything: unknown params, reserved params, duplicates, syntax
-        allowlist = _ConnectionStringAllowList()
-        parser = _ConnectionStringParser(allowlist=allowlist)
+        parser = _ConnectionStringParser(validate_keywords=True)
         parsed_params = parser._parse(connection_str)
         
         # Step 2: Normalize parameter names (e.g., addr/address -> Server, uid -> UID)
         # This handles synonym mapping and deduplication via normalized keys
-        normalized_params = _ConnectionStringAllowList._normalize_params(parsed_params, warn_rejected=False)
+        normalized_params = _ConnectionStringParser._normalize_params(parsed_params, warn_rejected=False)
         
         # Step 3: Process kwargs and merge with normalized_params
         # kwargs override connection string values (processed after, so they take precedence)
         for key, value in kwargs.items():
-            normalized_key = _ConnectionStringAllowList.normalize_key(key)
+            normalized_key = _ConnectionStringParser.normalize_key(key)
             if normalized_key:
                 # Driver and APP are reserved - raise error if user tries to set them
-                if normalized_key in RESERVED_PARAMETERS:
+                if normalized_key in _RESERVED_PARAMETERS:
                     raise ValueError(
                         f"Connection parameter '{key}' is reserved and controlled by the driver. "
                         f"It cannot be set by the user."

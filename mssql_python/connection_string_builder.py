@@ -9,7 +9,7 @@ with proper escaping and formatting per MS-ODBCSTR specification.
 """
 
 from typing import Dict, Optional
-
+from mssql_python.constants import _CONNECTION_STRING_DRIVER_KEY
 
 class _ConnectionStringBuilder:
     """
@@ -57,7 +57,7 @@ class _ConnectionStringBuilder:
         parts = []
         
         # Build in specific order: Driver first, then others
-        if 'Driver' in self._params:
+        if _CONNECTION_STRING_DRIVER_KEY in self._params:
             parts.append(f"Driver={self._escape_value(self._params['Driver'])}")
         
         # Add other parameters (sorted for consistency)
