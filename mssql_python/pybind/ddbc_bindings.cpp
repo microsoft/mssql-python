@@ -2648,9 +2648,18 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 #if defined(__APPLE__) || defined(__linux__)
                                 PERF_TIMER("SQLGetData_wrap::wstring_conversion");
                                 const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(dataBuffer.data());
-                                std::wstring wstr = SQLWCHARToWString(sqlwBuf, numCharsInData);
-                                std::string utf8str = WideToUTF8(wstr);
-                                row.append(py::str(utf8str));
+                                PyObject* pyStr = PyUnicode_DecodeUTF16(
+                                    reinterpret_cast<const char*>(sqlwBuf),
+                                    numCharsInData * sizeof(SQLWCHAR),
+                                    NULL,
+                                    NULL
+                                );
+                                if (pyStr) {
+                                    row.append(py::reinterpret_steal<py::str>(pyStr));
+                                } else {
+                                    PyErr_Clear();
+                                    row.append(py::str(""));
+                                }
 #else
                                 std::wstring wstr(reinterpret_cast<wchar_t*>(dataBuffer.data()));
                                 row.append(py::cast(wstr));
@@ -3329,8 +3338,18 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
 #if defined(__APPLE__) || defined(__linux__)
                         PERF_TIMER("construct_rows::wstring_conversion");
                         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
-                        std::wstring wstr = SQLWCHARToWString(wcharData, numCharsInData);
-                        row[col - 1] = wstr;
+                        PyObject* pyStr = PyUnicode_DecodeUTF16(
+                            reinterpret_cast<const char*>(wcharData),
+                            numCharsInData * sizeof(SQLWCHAR),
+                            NULL,
+                            NULL
+                        );
+                        if (pyStr) {
+                            row[col - 1] = py::reinterpret_steal<py::str>(pyStr);
+                        } else {
+                            PyErr_Clear();
+                            row[col - 1] = py::str("");
+                        }
 #else
                         row[col - 1] = std::wstring(
                             reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]),
