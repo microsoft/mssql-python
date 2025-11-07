@@ -3260,29 +3260,32 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     {
         PERF_TIMER("FetchBatchData::construct_rows");
         for (SQLULEN i = 0; i < numRowsFetched; i++) {
+        PERF_TIMER("construct_rows::per_row_total");
         // Create row container pre-allocated with known column count
         py::list row;
         {
             PERF_TIMER("construct_rows::pylist_creation");
             row = py::list(numCols);
         }
-        for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-            const ColumnInfo& colInfo = columnInfos[col - 1];
-            SQLSMALLINT dataType = colInfo.dataType;
-            SQLLEN dataLen = buffers.indicators[col - 1][i];
-            if (dataLen == SQL_NULL_DATA) {
-                row[col - 1] = py::none();
-                continue;
-            }
-            if (dataLen == SQL_NO_TOTAL) {
-                LOG("Cannot determine the length of the data. Returning NULL value instead."
-                    "Column ID - {}", col);
-                row[col - 1] = py::none();
-                continue;
-            } else if (dataLen == 0) {
-                // Handle zero-length (non-NULL) data
-                if (dataType == SQL_CHAR || dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR) {
-                    row[col - 1] = std::string("");
+        {
+            PERF_TIMER("construct_rows::all_columns_processing");
+            for (SQLUSMALLINT col = 1; col <= numCols; col++) {
+                const ColumnInfo& colInfo = columnInfos[col - 1];
+                SQLSMALLINT dataType = colInfo.dataType;
+                SQLLEN dataLen = buffers.indicators[col - 1][i];
+                if (dataLen == SQL_NULL_DATA) {
+                    row[col - 1] = py::none();
+                    continue;
+                }
+                if (dataLen == SQL_NO_TOTAL) {
+                    LOG("Cannot determine the length of the data. Returning NULL value instead."
+                        "Column ID - {}", col);
+                    row[col - 1] = py::none();
+                    continue;
+                } else if (dataLen == 0) {
+                    // Handle zero-length (non-NULL) data
+                    if (dataType == SQL_CHAR || dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR) {
+                        row[col - 1] = std::string("");
                 } else if (dataType == SQL_WCHAR || dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR) {
                     row[col - 1] = std::wstring(L"");
                 } else if (dataType == SQL_BINARY || dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY) {
@@ -3539,6 +3542,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
             }
+        }  // End all_columns_processing timer
         }
         {
             PERF_TIMER("construct_rows::rows_append");
