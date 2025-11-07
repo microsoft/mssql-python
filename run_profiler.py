@@ -59,7 +59,7 @@ if __name__ == "__main__":
     import platform
     
     print("="*80)
-    print("PROFILING: Simple Query (~120K rows)")
+    print("PROFILING: Very Large Dataset Query (1.2M rows)")
     print("="*80)
     print(f"Python Platform: {platform.system()} {platform.release()}")
     print(f"Python Version: {platform.python_version()}")
