@@ -3270,19 +3270,23 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         {
             PERF_TIMER("construct_rows::all_columns_processing");
             for (SQLUSMALLINT col = 1; col <= numCols; col++) {
+                PERF_TIMER("construct_rows::per_column_overhead");
                 const ColumnInfo& colInfo = columnInfos[col - 1];
                 SQLSMALLINT dataType = colInfo.dataType;
                 SQLLEN dataLen = buffers.indicators[col - 1][i];
                 if (dataLen == SQL_NULL_DATA) {
+                    PERF_TIMER("construct_rows::null_assignment");
                     row[col - 1] = py::none();
                     continue;
                 }
                 if (dataLen == SQL_NO_TOTAL) {
+                    PERF_TIMER("construct_rows::no_total_assignment");
                     LOG("Cannot determine the length of the data. Returning NULL value instead."
                         "Column ID - {}", col);
                     row[col - 1] = py::none();
                     continue;
                 } else if (dataLen == 0) {
+                    PERF_TIMER("construct_rows::zero_length_assignment");
                     // Handle zero-length (non-NULL) data
                     if (dataType == SQL_CHAR || dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR) {
                         row[col - 1] = std::string("");
@@ -3303,7 +3307,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             }
             assert(dataLen > 0 && "Data length must be > 0");
 
-            switch (dataType) {
+            {
+                PERF_TIMER("construct_rows::switch_and_conversion");
+                switch (dataType) {
                 case SQL_CHAR:
                 case SQL_VARCHAR:
                 case SQL_LONGVARCHAR: {
@@ -3541,7 +3547,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     ThrowStdException(errorString.str());
                     break;
                 }
-            }
+            }  // End switch
+            }  // End switch_and_conversion timer
         }  // End all_columns_processing timer
         }
         {
