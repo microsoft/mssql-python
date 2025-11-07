@@ -50,7 +50,8 @@ python run_profiler.py
         'total_us': 105230,    # Total microseconds
         'calls': 1,             # Number of calls
         'min_us': 105230,       # Minimum time
-        'max_us': 105230        # Maximum time
+        'max_us': 105230,       # Maximum time
+        'platform': 'windows'   # Platform: windows/linux/macos
     }
 }
 ```
@@ -68,8 +69,18 @@ python run_profiler.py
 ## Output Example
 
 ```
-C++ LAYER (PerformanceCounter)
+================================================================================
+PROFILING: Simple Query (~120K rows)
+================================================================================
+Python Platform: Windows 10
+Python Version: 3.13.0
+
+...Python profiling output...
+
+C++ LAYER (Sequential Execution Order)
 ====================================================================================
+Platform: WINDOWS
+
 Function                       Total(ms)    Calls     Avg(us)     Min(us)     Max(us)
 --------------------------------------------------------------------------------------
 FetchAll_wrap                     105.23        1   105230.00   105230.00   105230.00
@@ -78,6 +89,18 @@ SQLExecDirect_wrap                 23.12        1    23120.00    23120.00    231
 Connection::connect                42.35        1    42350.00    42350.00    42350.00
 Connection::Construction            5.18        1     5180.00     5180.00     5180.00
 ```
+
+## Platform-Specific Performance Analysis
+
+The profiler automatically detects the platform and includes it in the stats. This is useful for comparing:
+- **Windows vs Linux**: ODBC driver differences
+- **Windows vs macOS**: TLS/memory manager differences
+- **Linux variations**: Different distros, kernel versions
+
+Example workflow:
+1. Run profiler on Windows: `python run_profiler.py > windows_profile.txt`
+2. Run profiler on Linux: `python run_profiler.py > linux_profile.txt`
+3. Compare the two files to identify platform-specific bottlenecks
 
 ## Tips
 

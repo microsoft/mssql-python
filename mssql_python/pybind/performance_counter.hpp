@@ -15,6 +15,17 @@ namespace py = pybind11;
 
 namespace mssql_profiling {
 
+// Platform detection
+#if defined(_WIN32) || defined(_WIN64)
+    #define PROFILING_PLATFORM "windows"
+#elif defined(__linux__)
+    #define PROFILING_PLATFORM "linux"
+#elif defined(__APPLE__) || defined(__MACH__)
+    #define PROFILING_PLATFORM "macos"
+#else
+    #define PROFILING_PLATFORM "unknown"
+#endif
+
 struct PerfStats {
     int64_t total_time_us = 0;
     int64_t call_count = 0;
@@ -60,6 +71,7 @@ public:
             d["avg_us"] = stats.call_count > 0 ? stats.total_time_us / stats.call_count : 0;
             d["min_us"] = stats.min_time_us == INT64_MAX ? 0 : stats.min_time_us;
             d["max_us"] = stats.max_time_us;
+            d["platform"] = PROFILING_PLATFORM;
             result[py::str(name)] = d;
         }
         
@@ -96,5 +108,8 @@ public:
 
 } // namespace mssql_profiling
 
-// Convenience macro
-#define PERF_TIMER(name) mssql_profiling::ScopedTimer _perf_timer_##__LINE__(name)
+// Convenience macro - use __COUNTER__ for unique variable names even with nested timers
+// __COUNTER__ is supported by MSVC, GCC, and Clang
+#define PERF_TIMER_CONCAT_IMPL(x, y) x##y
+#define PERF_TIMER_CONCAT(x, y) PERF_TIMER_CONCAT_IMPL(x, y)
+#define PERF_TIMER(name) mssql_profiling::ScopedTimer PERF_TIMER_CONCAT(_perf_timer_, __COUNTER__)(name)

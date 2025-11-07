@@ -53,9 +53,14 @@ def run_query():
     return rows, cpp_stats
 
 if __name__ == "__main__":
+    import platform
+    
     print("="*80)
     print("PROFILING: Simple Query (~120K rows)")
     print("="*80)
+    print(f"Python Platform: {platform.system()} {platform.release()}")
+    print(f"Python Version: {platform.python_version()}")
+    print()
     
     # Python-level profiling
     pr = cProfile.Profile()
@@ -81,6 +86,10 @@ if __name__ == "__main__":
     print("C++ LAYER (Sequential Execution Order)")
     print("="*80)
     if cpp_stats:
+        # Detect platform from stats (all functions should have same platform)
+        platform = next(iter(cpp_stats.values()))['platform'] if cpp_stats else 'unknown'
+        print(f"\nPlatform: {platform.upper()}")
+        
         # Group by execution phase
         phases = {
             'Driver & Connection': ['DriverLoader::loadDriver', 'Connection::Connection', 'Connection::allocateDbcHandle', 'Connection::connect', 'Connection::setAutocommit'],

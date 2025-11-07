@@ -182,6 +182,15 @@ build.bat   # Windows
 ### Performance Counter Implementation
 ```cpp
 namespace mssql_profiling {
+    // Platform detection for cross-platform performance analysis
+    #if defined(_WIN32) || defined(_WIN64)
+        #define PROFILING_PLATFORM "windows"
+    #elif defined(__linux__)
+        #define PROFILING_PLATFORM "linux"
+    #elif defined(__APPLE__) || defined(__MACH__)
+        #define PROFILING_PLATFORM "macos"
+    #endif
+
     struct PerfStats {
         uint64_t total_time_us = 0;
         uint32_t call_count = 0;
@@ -221,8 +230,17 @@ namespace mssql_profiling {
     };
 }
 
-#define PERF_TIMER(name) mssql_profiling::ScopedTimer timer_##__LINE__(name)
+// Use __COUNTER__ for unique variable names (supports nested timers)
+// Compatible with MSVC, GCC, and Clang
+#define PERF_TIMER_CONCAT_IMPL(x, y) x##y
+#define PERF_TIMER_CONCAT(x, y) PERF_TIMER_CONCAT_IMPL(x, y)
+#define PERF_TIMER(name) mssql_profiling::ScopedTimer PERF_TIMER_CONCAT(_perf_timer_, __COUNTER__)(name)
 ```
+
+**Key Design Decisions**:
+- **`__COUNTER__` instead of `__LINE__`**: Ensures unique variable names for nested timers (required for MSVC `/WX` flag)
+- **Platform detection**: Tracks which OS profiling data came from (useful for comparing Linux vs Windows performance)
+- **Each stat includes `platform` field**: Helps identify platform-specific bottlenecks
 
 ### Python Bindings
 ```cpp
