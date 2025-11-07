@@ -112,4 +112,12 @@ public:
 // __COUNTER__ is supported by MSVC, GCC, and Clang
 #define PERF_TIMER_CONCAT_IMPL(x, y) x##y
 #define PERF_TIMER_CONCAT(x, y) PERF_TIMER_CONCAT_IMPL(x, y)
-#define PERF_TIMER(name) mssql_profiling::ScopedTimer PERF_TIMER_CONCAT(_perf_timer_, __COUNTER__)(name)
+
+// Conditional timer - only creates timer objects when profiling is enabled
+// This eliminates ALL overhead when profiling is disabled
+#define PERF_TIMER(name) \
+    do { \
+        if (mssql_profiling::PerformanceCounter::instance().is_enabled()) { \
+            mssql_profiling::ScopedTimer PERF_TIMER_CONCAT(_perf_timer_, __COUNTER__)(name); \
+        } \
+    } while(0)
