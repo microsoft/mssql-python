@@ -3536,7 +3536,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
             }
         }
-        {\n            PERF_TIMER(\"construct_rows::rows_append\");\n            rows[initialSize + i] = row;\n        }
+        {
+            PERF_TIMER("construct_rows::rows_append");
+            rows[initialSize + i] = row;
+        }
     }
     } // End construct_rows timer
     return ret;
