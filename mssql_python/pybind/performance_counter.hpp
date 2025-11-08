@@ -112,4 +112,9 @@ public:
 // __COUNTER__ is supported by MSVC, GCC, and Clang
 #define PERF_TIMER_CONCAT_IMPL(x, y) x##y
 #define PERF_TIMER_CONCAT(x, y) PERF_TIMER_CONCAT_IMPL(x, y)
-#define PERF_TIMER(name) mssql_profiling::ScopedTimer PERF_TIMER_CONCAT(_perf_timer_, __COUNTER__)(name)
+
+// PROFILING ENABLED - Creates actual timers
+// #define PERF_TIMER(name) mssql_profiling::ScopedTimer PERF_TIMER_CONCAT(_perf_timer_, __COUNTER__)(name)
+
+// PROFILING DISABLED - Uncomment below and comment above to make PERF_TIMER a no-op
+#define PERF_TIMER(name) do {} while(0)
