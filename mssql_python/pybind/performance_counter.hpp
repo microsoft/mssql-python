@@ -114,7 +114,7 @@ public:
 #define PERF_TIMER_CONCAT(x, y) PERF_TIMER_CONCAT_IMPL(x, y)
 
 // PROFILING ENABLED - Creates actual timers
-#define PERF_TIMER(name) mssql_profiling::ScopedTimer PERF_TIMER_CONCAT(_perf_timer_, __COUNTER__)(name)
+// #define PERF_TIMER(name) mssql_profiling::ScopedTimer PERF_TIMER_CONCAT(_perf_timer_, __COUNTER__)(name)
 
 // PROFILING DISABLED - Uncomment below and comment above to make PERF_TIMER a no-op
-// #define PERF_TIMER(name) do {} while(0)
+#define PERF_TIMER(name) do {} while(0)
