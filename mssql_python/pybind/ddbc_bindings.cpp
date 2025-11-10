@@ -3318,23 +3318,58 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
                 case SQL_INTEGER: {
-                    row[col - 1] = buffers.intBuffers[col - 1][i];
+                    // OPTIMIZATION #2: Direct Python C API for integers
+                    if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
+                        Py_INCREF(Py_None);
+                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                    } else {
+                        PyObject* pyInt = PyLong_FromLong(buffers.intBuffers[col - 1][i]);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyInt);
+                    }
                     break;
                 }
                 case SQL_SMALLINT: {
-                    row[col - 1] = buffers.smallIntBuffers[col - 1][i];
+                    // OPTIMIZATION #2: Direct Python C API for smallint
+                    if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
+                        Py_INCREF(Py_None);
+                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                    } else {
+                        PyObject* pyInt = PyLong_FromLong(buffers.smallIntBuffers[col - 1][i]);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyInt);
+                    }
                     break;
                 }
                 case SQL_TINYINT: {
-                    row[col - 1] = buffers.charBuffers[col - 1][i];
+                    // OPTIMIZATION #2: Direct Python C API for tinyint
+                    if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
+                        Py_INCREF(Py_None);
+                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                    } else {
+                        PyObject* pyInt = PyLong_FromLong(buffers.charBuffers[col - 1][i]);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyInt);
+                    }
                     break;
                 }
                 case SQL_BIT: {
-                    row[col - 1] = static_cast<bool>(buffers.charBuffers[col - 1][i]);
+                    // OPTIMIZATION #2: Direct Python C API for bit/boolean
+                    if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
+                        Py_INCREF(Py_None);
+                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                    } else {
+                        PyObject* pyBool = PyBool_FromLong(buffers.charBuffers[col - 1][i]);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyBool);
+                    }
                     break;
                 }
                 case SQL_REAL: {
-                    row[col - 1] = buffers.realBuffers[col - 1][i];
+                    // OPTIMIZATION #2: Direct Python C API for real/float
+                    if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
+                        Py_INCREF(Py_None);
+                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                    } else {
+                        PyObject* pyFloat = PyFloat_FromDouble(buffers.realBuffers[col - 1][i]);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyFloat);
+                    }
                     break;
                 }
                 case SQL_DECIMAL:
@@ -3356,7 +3391,14 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
                 case SQL_DOUBLE:
                 case SQL_FLOAT: {
-                    row[col - 1] = buffers.doubleBuffers[col - 1][i];
+                    // OPTIMIZATION #2: Direct Python C API for double/float
+                    if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
+                        Py_INCREF(Py_None);
+                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                    } else {
+                        PyObject* pyFloat = PyFloat_FromDouble(buffers.doubleBuffers[col - 1][i]);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyFloat);
+                    }
                     break;
                 }
                 case SQL_TIMESTAMP:
@@ -3369,7 +3411,14 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     break;
                 }
                 case SQL_BIGINT: {
-                    row[col - 1] = buffers.bigIntBuffers[col - 1][i];
+                    // OPTIMIZATION #2: Direct Python C API for bigint
+                    if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
+                        Py_INCREF(Py_None);
+                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                    } else {
+                        PyObject* pyInt = PyLong_FromLongLong(buffers.bigIntBuffers[col - 1][i]);
+                        PyList_SET_ITEM(row.ptr(), col - 1, pyInt);
+                    }
                     break;
                 }
                 case SQL_TYPE_DATE: {
