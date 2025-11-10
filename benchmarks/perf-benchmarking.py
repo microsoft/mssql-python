@@ -36,8 +36,10 @@ if not CONN_STR:
 # Ensure pyodbc connection string has ODBC driver specified
 if CONN_STR and 'Driver=' not in CONN_STR:
     CONN_STR_PYODBC = f"Driver={{ODBC Driver 18 for SQL Server}};{CONN_STR}"
+else:
+    CONN_STR_PYODBC = CONN_STR
 
-NUM_ITERATIONS = 5  # Number of times to run each test for averaging
+NUM_ITERATIONS = 10  # Number of times to run each test for averaging
 
 # SQL Queries
 COMPLEX_JOIN_AGGREGATION = """
