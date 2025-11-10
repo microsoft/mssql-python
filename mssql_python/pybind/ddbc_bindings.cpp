@@ -3220,6 +3220,20 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
     
+    // OPTIMIZATION #3: Prefetch column metadata into cache-friendly arrays
+    // Eliminates repeated struct field access (O(rows × cols)) in the hot loop below
+    std::vector<SQLSMALLINT> dataTypes(numCols);
+    std::vector<SQLULEN> columnSizes(numCols);
+    std::vector<uint64_t> fetchBufferSizes(numCols);
+    std::vector<bool> isLobs(numCols);
+    
+    for (SQLUSMALLINT col = 0; col < numCols; col++) {
+        dataTypes[col] = columnInfos[col].dataType;
+        columnSizes[col] = columnInfos[col].processedColumnSize;
+        fetchBufferSizes[col] = columnInfos[col].fetchBufferSize;
+        isLobs[col] = columnInfos[col].isLob;
+    }
+    
     size_t initialSize = rows.size();
     for (SQLULEN i = 0; i < numRowsFetched; i++) {
         rows.append(py::none());
@@ -3229,8 +3243,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         // Create row container pre-allocated with known column count
         py::list row(numCols);
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-            const ColumnInfo& colInfo = columnInfos[col - 1];
-            SQLSMALLINT dataType = colInfo.dataType;
+            // Use prefetched metadata from L1 cache-hot arrays
+            SQLSMALLINT dataType = dataTypes[col - 1];
             SQLLEN dataLen = buffers.indicators[col - 1][i];
             if (dataLen == SQL_NULL_DATA) {
                 row[col - 1] = py::none();
@@ -3266,11 +3280,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_CHAR:
                 case SQL_VARCHAR:
                 case SQL_LONGVARCHAR: {
-                    SQLULEN columnSize = colInfo.columnSize;
-                    HandleZeroColumnSizeAtFetch(columnSize);
-                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                    SQLULEN columnSize = columnSizes[col - 1];
+                    uint64_t fetchBufferSize = fetchBufferSizes[col - 1];
 					uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
-                    bool isLob = colInfo.isLob;
+                    bool isLob = isLobs[col - 1];
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
                         row[col - 1] = py::str(
@@ -3285,11 +3298,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_WVARCHAR:
                 case SQL_WLONGVARCHAR: {
                     // TODO: variable length data needs special handling, this logic wont suffice
-                    SQLULEN columnSize = colInfo.columnSize;
-                    HandleZeroColumnSizeAtFetch(columnSize);
-                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                    SQLULEN columnSize = columnSizes[col - 1];
+                    uint64_t fetchBufferSize = fetchBufferSizes[col - 1];
 					uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
-                    bool isLob = colInfo.isLob;
+                    bool isLob = isLobs[col - 1];
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
 #if defined(__APPLE__) || defined(__linux__)
@@ -3489,9 +3501,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_BINARY:
                 case SQL_VARBINARY:
                 case SQL_LONGVARBINARY: {
-                    SQLULEN columnSize = colInfo.columnSize;
-                    HandleZeroColumnSizeAtFetch(columnSize);
-                    bool isLob = colInfo.isLob;
+                    SQLULEN columnSize = columnSizes[col - 1];
+                    bool isLob = isLobs[col - 1];
                     if (!isLob && static_cast<size_t>(dataLen) <= columnSize) {
                         row[col - 1] = py::bytes(reinterpret_cast<const char*>(
                                                      &buffers.charBuffers[col - 1][i * columnSize]),
