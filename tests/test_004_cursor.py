@@ -14476,6 +14476,116 @@ def test_all_numeric_types_with_nulls(cursor, db_connection):
         db_connection.commit()
 
 
+def test_lob_data_types(cursor, db_connection):
+    """Test LOB (Large Object) data types to ensure LOB fallback paths are exercised"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_lob_test")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_lob_test (
+                id INT,
+                text_lob VARCHAR(MAX),
+                ntext_lob NVARCHAR(MAX),
+                binary_lob VARBINARY(MAX)
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Create large data that will trigger LOB handling
+        large_text = 'A' * 10000  # 10KB text
+        large_ntext = 'B' * 10000  # 10KB unicode text
+        large_binary = b'\x01\x02\x03\x04' * 2500  # 10KB binary
+
+        cursor.execute(
+            "INSERT INTO #pytest_lob_test VALUES (?, ?, ?, ?)",
+            (1, large_text, large_ntext, large_binary)
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT id, text_lob, ntext_lob, binary_lob FROM #pytest_lob_test")
+        row = cursor.fetchone()
+
+        assert row[0] == 1, "ID should be 1"
+        assert row[1] == large_text, "VARCHAR(MAX) LOB data should match"
+        assert row[2] == large_ntext, "NVARCHAR(MAX) LOB data should match"
+        assert row[3] == large_binary, "VARBINARY(MAX) LOB data should match"
+
+    except Exception as e:
+        pytest.fail(f"LOB data types test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_lob_test")
+        db_connection.commit()
+
+
+def test_guid_with_nulls(cursor, db_connection):
+    """Test GUID type with NULL values"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_guid_nulls")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_guid_nulls (
+                id INT,
+                guid_col UNIQUEIDENTIFIER
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Insert NULL GUID
+        cursor.execute("INSERT INTO #pytest_guid_nulls VALUES (1, NULL)")
+        # Insert actual GUID
+        cursor.execute("INSERT INTO #pytest_guid_nulls VALUES (2, NEWID())")
+        db_connection.commit()
+
+        cursor.execute("SELECT id, guid_col FROM #pytest_guid_nulls ORDER BY id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 2, "Should have exactly 2 rows"
+        assert rows[0][1] is None, "First GUID should be NULL"
+        assert rows[1][1] is not None, "Second GUID should not be NULL"
+
+    except Exception as e:
+        pytest.fail(f"GUID with NULLs test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_guid_nulls")
+        db_connection.commit()
+
+
+def test_datetimeoffset_with_nulls(cursor, db_connection):
+    """Test DATETIMEOFFSET type with NULL values"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_dto_nulls")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_dto_nulls (
+                id INT,
+                dto_col DATETIMEOFFSET
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Insert NULL DATETIMEOFFSET
+        cursor.execute("INSERT INTO #pytest_dto_nulls VALUES (1, NULL)")
+        # Insert actual DATETIMEOFFSET
+        cursor.execute("INSERT INTO #pytest_dto_nulls VALUES (2, SYSDATETIMEOFFSET())")
+        db_connection.commit()
+
+        cursor.execute("SELECT id, dto_col FROM #pytest_dto_nulls ORDER BY id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 2, "Should have exactly 2 rows"
+        assert rows[0][1] is None, "First DATETIMEOFFSET should be NULL"
+        assert rows[1][1] is not None, "Second DATETIMEOFFSET should not be NULL"
+
+    except Exception as e:
+        pytest.fail(f"DATETIMEOFFSET with NULLs test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_dto_nulls")
+        db_connection.commit()
+
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
