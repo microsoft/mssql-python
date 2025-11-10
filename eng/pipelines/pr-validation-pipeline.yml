@@ -316,6 +316,7 @@ jobs:
 
   # Rebuild with profiling ON and run profiler
   - script: |
+      git checkout HEAD -- mssql_python/pybind/performance_counter.hpp
       cd mssql_python\pybind
       build.bat x64 --profiling-on
     displayName: 'Rebuild .pyd file (Profiling ON for profiler)'
@@ -488,6 +489,7 @@ jobs:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
+      git checkout HEAD -- mssql_python/pybind/performance_counter.hpp
       cd mssql_python/pybind
       ./build.sh --profiling-on
     displayName: 'Rebuild pybind bindings (Profiling ON for profiler)'
@@ -639,6 +641,7 @@ jobs:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
+      git checkout HEAD -- mssql_python/pybind/performance_counter.hpp
       cd mssql_python/pybind
       ./build.sh --profiling-on
     displayName: 'Rebuild pybind bindings (Profiling ON)'
