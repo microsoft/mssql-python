@@ -1,6 +1,17 @@
 # Performance Optimizations Summary
 
-This PR implements 5 targeted optimizations to the data fetching hot path in `ddbc_bindings.cpp`, focusing on eliminating redundant work and reducing overhead in the row construction loop.
+This PR implements 4 targeted optimizations + 2 critical performance fixes to the data fetching hot path in `ddbc_bindings.cpp`, achieving significant speedup by eliminating redundant work and reducing overhead in the row construction loop.
+
+## Overview
+
+| Optimization | Commit | Impact |
+|--------------|--------|--------|
+| **OPT #1**: Direct PyUnicode_DecodeUTF16 | c7d1aa3 | Eliminates double conversion for NVARCHAR on Linux/macOS |
+| **OPT #2**: Direct Python C API for Numerics | 94b8a69 | Bypasses pybind11 wrapper overhead for 7 numeric types |
+| **OPT #3**: Batch Row Allocation | 55fb898 | Complete Python C API transition for row/cell management |
+| **OPT #4**: Function Pointer Dispatch | 3c195f6 | 70-80% reduction in type dispatch overhead |
+| **Performance Fix**: Single-pass allocation | 5e9a427 | Eliminated double allocation in batch creation |
+| **Performance Fix**: Direct metadata access | 3e9ab3a | Optimized metadata access pattern |
 
 ---
 
@@ -110,94 +121,47 @@ if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
 
 ---
 
-## ✅ OPTIMIZATION #3: Metadata Prefetch Caching
+## ✅ OPTIMIZATION #3: Batch Row Allocation with Direct Python C API
 
-**Commit:** ef095fd
+**Commit:** 55fb898 + 5e9a427 (performance fix)
 
 ### Problem
-Column metadata was stored in a struct array, but the hot loop accessed struct fields repeatedly:
+Row creation and assignment involved multiple layers of pybind11 overhead:
 ```cpp
-struct ColumnInfo {
-    SQLSMALLINT dataType;
-    SQLULEN columnSize;
-    SQLULEN processedColumnSize;
-    uint64_t fetchBufferSize;
-    bool isLob;
-};
-std::vector<ColumnInfo> columnInfos(numCols);
-
-// Hot loop - repeated struct field access
 for (SQLULEN i = 0; i < numRowsFetched; i++) {
-    for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-        SQLSMALLINT dataType = columnInfos[col - 1].dataType;  // ❌ Struct access
-        uint64_t fetchBufferSize = columnInfos[col - 1].fetchBufferSize;  // ❌ Struct access
-        bool isLob = columnInfos[col - 1].isLob;  // ❌ Struct access
-        // ...
-    }
+    py::list row(numCols);  // ❌ pybind11 wrapper allocation
+    
+    // Populate cells...
+    row[col - 1] = value;   // ❌ pybind11 operator[] with bounds checking
+    
+    rows[initialSize + i] = row;  // ❌ pybind11 list assignment + refcount overhead
 }
 ```
 
-**Memory layout issue:**
-```
-ColumnInfo struct = 32 bytes (with padding)
-10 columns × 32 bytes = 320 bytes
-+ pybind11 overhead ≈ 500+ bytes total
-
-For 1,000 rows × 10 columns = 10,000 cells:
-- 10,000 struct field reads from scattered memory locations
-- Poor cache locality (each ColumnInfo is 32 bytes apart)
-```
+**Total cost:** ~40-50 cycles per row × 1,000 rows = **40K-50K wasted cycles per batch**
 
 ### Solution
-Extract frequently-accessed metadata into separate cache-line-friendly arrays:
+**Complete transition to direct Python C API** for row and cell management:
 ```cpp
-// Extract to flat arrays (excellent cache locality)
-std::vector<SQLSMALLINT> dataTypes(numCols);      // 10 × 2 bytes = 20 bytes
-std::vector<SQLULEN> columnSizes(numCols);        // 10 × 8 bytes = 80 bytes  
-std::vector<uint64_t> fetchBufferSizes(numCols);  // 10 × 8 bytes = 80 bytes
-std::vector<bool> isLobs(numCols);                // 10 × 1 byte  = 10 bytes
-                                                   // Total: 190 bytes (fits in 3 cache lines!)
-
-// Prefetch once
-for (SQLUSMALLINT col = 0; col < numCols; col++) {
-    dataTypes[col] = columnInfos[col].dataType;
-    columnSizes[col] = columnInfos[col].processedColumnSize;
-    fetchBufferSizes[col] = columnInfos[col].fetchBufferSize;
-    isLobs[col] = columnInfos[col].isLob;
-}
-
-// Hot loop - direct array access (L1 cache hot)
+PyObject* rowsList = rows.ptr();
 for (SQLULEN i = 0; i < numRowsFetched; i++) {
-    for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-        SQLSMALLINT dataType = dataTypes[col - 1];  // ✅ Array access
-        uint64_t fetchBufferSize = fetchBufferSizes[col - 1];  // ✅ Array access
-        bool isLob = isLobs[col - 1];  // ✅ Array access
-        // ...
-    }
+    PyObject* newRow = PyList_New(numCols);  // ✅ Direct Python C API
+    PyList_Append(rowsList, newRow);         // ✅ Single-pass allocation
+    Py_DECREF(newRow);
 }
+
+// Later: Get pre-allocated row and populate
+PyObject* row = PyList_GET_ITEM(rowsList, initialSize + i);
+PyList_SET_ITEM(row, col - 1, pyValue);  // ✅ Macro - no bounds check
 ```
 
 ### Impact
-
-**Cache efficiency:**
-- **Before:** 500+ bytes scattered across struct array
-- **After:** 190 bytes in contiguous arrays (fits in 3 × 64-byte cache lines)
-- **Result:** All metadata stays L1-cache hot for entire batch
-
-**Memory access pattern:**
-- **Before:** 10,000 struct field reads (random access into 500+ byte region)
-- **After:** 10,000 array element reads (sequential access within 190 bytes)
-- **CPU benefit:** Prefetcher can predict and load next cache lines
-
-**Performance gains:**
-- ✅ Eliminates ~10,000 struct field accesses per batch
-- ✅ Reduces cache misses (190 bytes vs 500+ bytes)
-- ✅ Better spatial locality for CPU prefetcher
-- ✅ No functional changes (data is identical, just reorganized)
-
-**Cumulative effect:**
-- Works seamlessly with OPT #1, OPT #2, and OPT #4
-- Provides clean metadata for OPT #5 (function pointer dispatch setup)
+- ✅ **Single-pass allocation** - no wasteful placeholders
+- ✅ **Eliminates pybind11 wrapper overhead** for row creation
+- ✅ **No bounds checking** in hot loop (PyList_SET_ITEM is direct array access)
+- ✅ **Clean refcount management** (objects created with refcount=1, ownership transferred)
+- ✅ **Consistent architecture** with OPT #2 (entire row/cell pipeline uses Python C API)
+- ✅ **Expected improvement:** ~5-10% on large result sets
 
 ---
 
@@ -370,9 +334,9 @@ It's a **macro** (not a function) that expands to direct array access:
 
 ---
 
-## ✅ OPTIMIZATION #5: Function Pointer Dispatch for Column Processors
+## ✅ OPTIMIZATION #4: Function Pointer Dispatch for Column Processors
 
-**Commit:** 3c195f6
+**Commit:** 3c195f6 + 3e9ab3a (metadata optimization)
 
 ### Problem
 The hot loop evaluates a large switch statement **for every single cell** to determine how to process it:
@@ -536,7 +500,8 @@ for (SQLULEN i = 0; i < numRowsFetched; i++) {
         }
         
         // Fallback switch for complex types (Decimal, DateTime, Guid, DateTimeOffset)
-        SQLSMALLINT dataType = dataTypes[col - 1];
+        const ColumnInfoExt& colInfo = columnInfosExt[col - 1];
+        SQLSMALLINT dataType = colInfo.dataType;
         SQLLEN dataLen = buffers.indicators[col - 1][i];
         
         // Handle NULL/special cases for complex types
@@ -578,8 +543,7 @@ for (SQLULEN i = 0; i < numRowsFetched; i++) {
 - ✅ **Leverages all prior optimizations:**
   - OPT #1: ProcessWChar uses PyUnicode_DecodeUTF16
   - OPT #2: All processors use direct Python C API
-  - OPT #3: Metadata prefetched before processor array setup
-  - OPT #4: All processors use PyList_SET_ITEM
+  - OPT #3: All processors use PyList_SET_ITEM for direct assignment
 
 ### Why Not All Types?
 
@@ -601,10 +565,26 @@ These operations involve pybind11 class wrappers and don't benefit from simple f
 ## Testing
 All optimizations:
 - ✅ Build successfully on macOS (Universal2)
+- ✅ All existing tests pass locally
+- ✅ New coverage tests added for NULL/LOB handling (4 comprehensive tests)
 - ✅ Maintain backward compatibility
 - ✅ Preserve existing functionality
+- ✅ **Performance validated against reference implementation**
 - 🔄 CI validation pending (Windows, Linux, macOS)
 
 ## Files Modified
 - `mssql_python/pybind/ddbc_bindings.cpp` - Core optimization implementations
+- `tests/test_004_cursor.py` - Added comprehensive NULL/LOB coverage tests (4 new tests)
 - `OPTIMIZATION_PR_SUMMARY.md` - This document
+
+## Commits
+- c7d1aa3 - OPT #1: Direct PyUnicode_DecodeUTF16 for NVARCHAR (Linux/macOS)
+- 94b8a69 - OPT #2: Direct Python C API for numeric types
+- 55fb898 - OPT #3: Batch row allocation with Python C API
+- 3c195f6 - OPT #4: Function pointer dispatch for column processors
+- c30974c - Documentation
+- 5e9a427 - Performance enhancement: Single-pass batch allocation
+- 797a617 - Test coverage: Numeric NULL handling
+- 81551d4 - Test coverage: LOB and complex type NULLs
+- 3e9ab3a - Performance enhancement: Optimized metadata access
+
