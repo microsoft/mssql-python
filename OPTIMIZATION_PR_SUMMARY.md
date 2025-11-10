@@ -31,10 +31,10 @@ This PR implements **4 targeted optimizations + 2 critical performance fixes** t
 
 ## 🔄 Data Flow: Before vs After
 
-### Before Optimization (Mixed pybind11 + Python C API)
+### Before Optimization (pybind11 mode)
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  FETCH 1000 ROWS × 10 COLUMNS (Mixed Mode - Slower)             │
+│  FETCH 1000 ROWS × 10 COLUMNS (pybind11 Mode - Slower)          │
 └─────────────────────────────────────────────────────────────────┘
          │
          ▼
@@ -86,10 +86,10 @@ TOTAL OVERHEAD PER 1000-ROW BATCH:
   TOTAL WASTED:        ~1,182,500 CPU cycles
 ```
 
-### After Optimization (Pure Python C API)
+### After Optimization (Python C API mode)
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│  FETCH 1000 ROWS × 10 COLUMNS (Optimized Mode - Faster)        │
+│  FETCH 1000 ROWS × 10 COLUMNS (Python C API Mode - Faster)     │
 └────────────────────────────────────────────────────────────────┘
          │
          ▼
