@@ -26,12 +26,23 @@ else
     exit 1
 fi
 
-# Check for coverage mode and set flags accordingly
+# Check for coverage mode and profiling mode
 COVERAGE_MODE=false
-if [[ "${1:-}" == "codecov" || "${1:-}" == "--coverage" ]]; then
-    COVERAGE_MODE=true
-    echo "[MODE] Enabling Clang coverage instrumentation"
-fi
+PROFILING_MODE=""
+
+# Parse arguments
+for arg in "$@"; do
+    if [[ "$arg" == "codecov" || "$arg" == "--coverage" ]]; then
+        COVERAGE_MODE=true
+        echo "[MODE] Enabling Clang coverage instrumentation"
+    elif [[ "$arg" == "--profiling-on" ]]; then
+        PROFILING_MODE="ON"
+        echo "[MODE] Enabling performance profiling (PERF_TIMER active)"
+    elif [[ "$arg" == "--profiling-off" ]]; then
+        PROFILING_MODE="OFF"
+        echo "[MODE] Disabling performance profiling (PERF_TIMER no-op)"
+    fi
+done
 
 # Get Python version from active interpreter
 PYTAG=$(python -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')")
@@ -64,20 +75,34 @@ echo "[DIAGNOSTIC] Changed to build directory: ${BUILD_DIR}"
 echo "[DIAGNOSTIC] Running CMake configure"
 if [[ "$COVERAGE_MODE" == "true" && "$OS" == "Linux" ]]; then
     echo "[ACTION] Configuring for Linux with Clang coverage instrumentation"
-    cmake -DARCHITECTURE="$DETECTED_ARCH" \
-          -DCMAKE_C_COMPILER=clang \
-          -DCMAKE_CXX_COMPILER=clang++ \
-          -DCMAKE_CXX_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
-          -DCMAKE_C_FLAGS="-fprofile-instr-generate -fcoverage-mapping" \
-          "${SOURCE_DIR}"
+    CMAKE_ARGS="-DARCHITECTURE=$DETECTED_ARCH \
+                -DCMAKE_C_COMPILER=clang \
+                -DCMAKE_CXX_COMPILER=clang++ \
+                -DCMAKE_CXX_FLAGS='-fprofile-instr-generate -fcoverage-mapping' \
+                -DCMAKE_C_FLAGS='-fprofile-instr-generate -fcoverage-mapping'"
+    
+    # Add profiling flag if specified
+    if [[ -n "$PROFILING_MODE" ]]; then
+        CMAKE_ARGS="$CMAKE_ARGS -DPROFILING_MODE=$PROFILING_MODE"
+    fi
+    
+    eval "cmake $CMAKE_ARGS \"${SOURCE_DIR}\""
 else
+    CMAKE_ARGS=""
     if [[ "$OS" == "macOS" ]]; then
         echo "[ACTION] Configuring for macOS (default build)"
-        cmake -DMACOS_STRING_FIX=ON "${SOURCE_DIR}"
+        CMAKE_ARGS="-DMACOS_STRING_FIX=ON"
     else
         echo "[ACTION] Configuring for Linux with architecture: $DETECTED_ARCH"
-        cmake -DARCHITECTURE="$DETECTED_ARCH" "${SOURCE_DIR}"
+        CMAKE_ARGS="-DARCHITECTURE=$DETECTED_ARCH"
     fi
+    
+    # Add profiling flag if specified
+    if [[ -n "$PROFILING_MODE" ]]; then
+        CMAKE_ARGS="$CMAKE_ARGS -DPROFILING_MODE=$PROFILING_MODE"
+    fi
+    
+    eval "cmake $CMAKE_ARGS \"${SOURCE_DIR}\""
 fi
 
 # Check if CMake configuration succeeded

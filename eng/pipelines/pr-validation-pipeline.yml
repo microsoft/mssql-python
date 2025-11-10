@@ -161,8 +161,8 @@ jobs:
 
   - script: |
       cd mssql_python\pybind
-      build.bat x64
-    displayName: 'Build .pyd file'
+      build.bat x64 --profiling-off
+    displayName: 'Build .pyd file (Profiling OFF for benchmarks)'
 
   # Run tests for LocalDB
   - script: |
@@ -218,7 +218,7 @@ jobs:
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
-  # Run performance benchmarks on SQL Server 2022
+  # Install ODBC Driver and run benchmarks with profiling OFF
   - powershell: |
       Write-Host "Checking and installing ODBC Driver 18 for SQL Server..."
       
@@ -305,15 +305,28 @@ jobs:
       pip install pyodbc
       
       Write-Host "`n================================================"
-      Write-Host "Running performance benchmarks..."
+      Write-Host "PROFILING OFF - Running performance benchmarks"
       Write-Host "================================================"
       python benchmarks/perf-benchmarking.py
-      
+    displayName: 'Run performance benchmarks (Profiling OFF) on SQL Server 2022'
+    condition: eq(variables['sqlVersion'], 'SQL2022')
+    continueOnError: true
+    env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+  # Rebuild with profiling ON and run profiler
+  - script: |
+      cd mssql_python\pybind
+      build.bat x64 --profiling-on
+    displayName: 'Rebuild .pyd file (Profiling ON for profiler)'
+    condition: eq(variables['sqlVersion'], 'SQL2022')
+
+  - powershell: |
       Write-Host "`n================================================"
-      Write-Host "Running profiler..."
+      Write-Host "PROFILING ON - Running profiler"
       Write-Host "================================================"
       python run_profiler.py
-    displayName: 'Run performance benchmarks and profiler on SQL Server 2022'
+    displayName: 'Run profiler (Profiling ON) on SQL Server 2022'
     condition: eq(variables['sqlVersion'], 'SQL2022')
     continueOnError: true
     env:
@@ -418,8 +431,8 @@ jobs:
 
   - script: |
       cd mssql_python/pybind
-      ./build.sh
-    displayName: 'Build pybind bindings (.so)'
+      ./build.sh --profiling-off
+    displayName: 'Build pybind bindings (Profiling OFF for benchmarks)'
 
   - script: |
       echo "Build successful, running tests now"
@@ -465,16 +478,27 @@ jobs:
       pip install pyodbc
       
       echo "================================================"
-      echo "Running performance benchmarks on macOS"
+      echo "PROFILING OFF - Running performance benchmarks"
       echo "================================================"
       python benchmarks/perf-benchmarking.py || echo "Performance benchmark failed or database not available"
-      
+    displayName: 'Run performance benchmarks (Profiling OFF) on macOS'
+    continueOnError: true
+    env:
+      DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      cd mssql_python/pybind
+      ./build.sh --profiling-on
+    displayName: 'Rebuild pybind bindings (Profiling ON for profiler)'
+
+  - script: |
       echo ""
       echo "================================================"
-      echo "Running profiler on macOS"
+      echo "PROFILING ON - Running profiler"
       echo "================================================"
       python run_profiler.py || echo "Profiler execution failed"
-    displayName: 'Run performance benchmarks and profiler on macOS'
+    displayName: 'Run profiler (Profiling ON) on macOS'
     continueOnError: true
     env:
       DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -486,399 +510,579 @@ jobs:
       testResultsFiles: '**/test-results.xml'
       testRunTitle: 'Publish pytest results on macOS'
 
-- job: PytestOnLinux
-  displayName: 'Linux x86_64'
+- job: PytestOnUbuntuNative
+  displayName: 'Ubuntu Native (no Docker)'
   pool:
     vmImage: 'ubuntu-latest'
 
-  strategy:
-    matrix:
-      Ubuntu:
-        dockerImage: 'ubuntu:22.04'
-        distroName: 'Ubuntu'
-        sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
-        useAzureSQL: 'false'
-      # Ubuntu_SQL2025:
-      #   dockerImage: 'ubuntu:22.04'
-      #   distroName: 'Ubuntu-SQL2025'
-      #   sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
-      #   useAzureSQL: 'false'
-      # ${{ if ne(variables['AZURE_CONNECTION_STRING'], '') }}:
-      #   Ubuntu_AzureSQL:
-      #     dockerImage: 'ubuntu:22.04'
-      #     distroName: 'Ubuntu-AzureSQL'
-      #     sqlServerImage: ''
-      #     useAzureSQL: 'true'
-      # Debian:
-      #   dockerImage: 'debian:12'
-      #   distroName: 'Debian'
-      #   sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
-      #   useAzureSQL: 'false'
-
   steps:
-  - script: |
-      # Create a Docker container for testing
-      docker run -d --name test-container-$(distroName) \
-        -v $(Build.SourcesDirectory):/workspace \
-        -w /workspace \
-        --network bridge \
-        $(dockerImage) \
-        tail -f /dev/null
-    displayName: 'Create $(distroName) container'
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '3.13'
+      addToPath: true
+    displayName: 'Use Python 3.13'
 
   - script: |
-      # Start SQL Server container for non-Ubuntu distributions
-      if [ "$(distroName)" != "Ubuntu" ]; then
-        docker run -d --name sqlserver-$(distroName) \
-          -e ACCEPT_EULA=Y \
-          -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-          -p 1433:1433 \
-          $(sqlServerImage)
-        
-        # Wait for SQL Server to be ready
-        echo "Waiting for SQL Server to start..."
-        for i in {1..60}; do
-          if docker exec sqlserver-$(distroName) \
-            /opt/mssql-tools18/bin/sqlcmd \
-            -S localhost \
-            -U SA \
-            -P "$(DB_PASSWORD)" \
-            -C -Q "SELECT 1" >/dev/null 2>&1; then
-            echo "SQL Server is ready!"
-            break
-          fi
-          echo "Waiting... ($i/60)"
-          sleep 2
-        done
-        
-        # Create test database
-        docker exec sqlserver-$(distroName) \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "CREATE DATABASE TestDB"
-      else
-        echo "Skipping Docker SQL Server for Ubuntu - will use native installation"
-      fi
-    displayName: 'Start SQL Server container for $(distroName)'
-    condition: eq(variables['useAzureSQL'], 'false')
+      # Install basic dependencies
+      sudo apt-get update
+      sudo apt-get install -y python3 python3-pip python3-venv cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
+    displayName: 'Install basic dependencies'
+
+  - script: |
+      # Install ODBC Driver 18
+      curl -sSL https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+      curl -sSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+      sudo apt-get update
+      sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
+      sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18
+      sudo apt-get install -y unixodbc-dev
+    displayName: 'Install ODBC Driver 18'
+
+  - script: |
+      # Install SQL Server 2022
+      curl -sSL https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+      sudo add-apt-repository "$(wget -qO- https://packages.microsoft.com/config/ubuntu/22.04/mssql-server-2022.list)"
+      sudo apt-get update
+      sudo apt-get install -y mssql-server
+      
+      # Configure SQL Server
+      sudo MSSQL_SA_PASSWORD='$(DB_PASSWORD)' \
+           MSSQL_PID='evaluation' \
+           /opt/mssql/bin/mssql-conf -n setup accept-eula
+      
+      # Start SQL Server
+      sudo systemctl start mssql-server
+      sudo systemctl status mssql-server --no-pager
+      
+      # Wait for SQL Server to be ready
+      echo 'Waiting for SQL Server to be ready...'
+      for i in {1..60}; do
+        /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P '$(DB_PASSWORD)' -C -Q 'SELECT 1' >/dev/null 2>&1 && break
+        echo "Waiting... ($i/60)"
+        sleep 2
+      done
+      
+      # Verify SQL Server
+      /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P '$(DB_PASSWORD)' -C -Q 'SELECT @@VERSION'
+      
+      # Create test database
+      /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P '$(DB_PASSWORD)' -C -Q 'CREATE DATABASE TestDB'
+    displayName: 'Install and configure SQL Server 2022'
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
-      # Install dependencies in the container
-      if [ "$(distroName)" = "Ubuntu" ]; then
-        docker exec test-container-$(distroName) bash -c "
-          export DEBIAN_FRONTEND=noninteractive
-          export TZ=UTC
-          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
-          apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
-        "
-      else
-        # Debian
-        docker exec test-container-$(distroName) bash -c "
-          export DEBIAN_FRONTEND=noninteractive
-          export TZ=UTC
-          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
-          apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
-        "
-      fi
-    displayName: 'Install basic dependencies in $(distroName) container'
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+    displayName: 'Install Python dependencies'
 
   - script: |
-      # Install ODBC driver in the container
-      docker exec test-container-$(distroName) bash -c "
-        export DEBIAN_FRONTEND=noninteractive
-        
-        # Download the package to configure the Microsoft repo
-        if [ '$(distroName)' = 'Ubuntu' ]; then
-          curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
-        else
-          # Debian 12
-          curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
-        fi
-        
-        # Install the package
-        dpkg -i packages-microsoft-prod.deb || true
-        rm packages-microsoft-prod.deb
-        
-        # Update package list
-        apt-get update
-        
-        # Install the driver
-        ACCEPT_EULA=Y apt-get install -y msodbcsql18
-        # optional: for bcp and sqlcmd
-        ACCEPT_EULA=Y apt-get install -y mssql-tools18
-        # optional: for unixODBC development headers
-        apt-get install -y unixodbc-dev
-      "
-    displayName: 'Install ODBC Driver in $(distroName) container'
+      cd mssql_python/pybind
+      chmod +x build.sh
+      ./build.sh --profiling-off
+    displayName: 'Build pybind bindings (Profiling OFF)'
 
   - script: |
-      # Install Python dependencies in the container using virtual environment
-      docker exec test-container-$(distroName) bash -c "
-        # Create a virtual environment
-        python3 -m venv /opt/venv
-        source /opt/venv/bin/activate
-        
-        # Install dependencies in the virtual environment
-        python -m pip install --upgrade pip
-        python -m pip install -r requirements.txt
-        
-        # Make the virtual environment globally available
-        echo 'source /opt/venv/bin/activate' >> ~/.bashrc
-      "
-    displayName: 'Install Python dependencies in $(distroName) container'
+      # Uninstall system ODBC driver to use bundled one
+      sudo apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
+      sudo rm -f /usr/bin/sqlcmd /usr/bin/bcp
+      sudo rm -rf /opt/microsoft/msodbcsql
+      odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+      echo 'Using bundled ODBC driver'
+    displayName: 'Remove system ODBC driver'
 
   - script: |
-      # Build pybind bindings in the container
-      docker exec test-container-$(distroName) bash -c "
-        source /opt/venv/bin/activate
-        cd mssql_python/pybind
-        chmod +x build.sh
-        ./build.sh
-      "
-    displayName: 'Build pybind bindings (.so) in $(distroName) container'
-
-  - script: |
-      # Uninstall ODBC Driver before running tests
-      docker exec test-container-$(distroName) bash -c "
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
-        rm -f /usr/bin/sqlcmd
-        rm -f /usr/bin/bcp
-        rm -rf /opt/microsoft/msodbcsql
-        rm -f /lib/x86_64-linux-gnu/libodbcinst.so.2
-        odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
-        echo 'Uninstalled ODBC Driver and cleaned up libraries'
-        echo 'Verifying x86_64 debian_ubuntu driver library signatures:'
-        ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.5.so.1.1
-      "
-    displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
-
-  - script: |
-      # Run tests in the container
-      if [ "$(useAzureSQL)" = "true" ]; then
-        # Azure SQL Database testing
-        echo "Testing against Azure SQL Database"
-        
-        docker exec \
-          -e DB_CONNECTION_STRING="$(AZURE_CONNECTION_STRING)" \
-          test-container-$(distroName) bash -c "
-          source /opt/venv/bin/activate
-          echo 'Build successful, running tests now on $(distroName) with Azure SQL'
-          echo 'Using Azure SQL connection string'
-          python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
-        "
-      else
-        # Local SQL Server testing
-        if [ "$(distroName)" = "Ubuntu" ]; then
-          # Ubuntu uses native SQL Server on localhost
-          echo "Testing against native SQL Server 2022 on Ubuntu (localhost)"
-          
-          docker exec \
-            -e DB_CONNECTION_STRING="Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-            -e DB_PASSWORD="$(DB_PASSWORD)" \
-            test-container-$(distroName) bash -c "
-            source /opt/venv/bin/activate
-            
-            # Create test database
-            /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P '$(DB_PASSWORD)' -C -Q 'CREATE DATABASE TestDB' || echo 'TestDB may already exist'
-            
-            echo 'Build successful, running tests now on $(distroName)'
-            echo 'Using connection string: Server=localhost;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-            python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
-          "
-        else
-          # Other distributions use Docker SQL Server
-          SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-          echo "SQL Server IP: $SQLSERVER_IP"
-          
-          docker exec \
-            -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-            -e DB_PASSWORD="$(DB_PASSWORD)" \
-            test-container-$(distroName) bash -c "
-            source /opt/venv/bin/activate
-            echo 'Build successful, running tests now on $(distroName)'
-            echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-            python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
-          "
-        fi
-      fi
-    displayName: 'Run pytest with coverage in $(distroName) container'
-    condition: or(eq(variables['useAzureSQL'], 'false'), and(eq(variables['useAzureSQL'], 'true'), ne(variables['AZURE_CONNECTION_STRING'], '')))
+      echo "Running tests with native SQL Server"
+      python -m pytest -v --junitxml=test-results-ubuntu-native.xml --cov=. --cov-report=xml:coverage-ubuntu-native.xml --capture=tee-sys --cache-clear
+    displayName: 'Run pytest with coverage'
     env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
-      # Install SQL Server 2022 natively on Ubuntu 22.04
-      if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
-        echo "Installing SQL Server 2022 natively on Ubuntu 22.04..."
-        
-        docker exec test-container-$(distroName) bash -c "
-          export DEBIAN_FRONTEND=noninteractive
-          
-          # Import the public repository GPG keys
-          curl -sSL https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
-          
-          # Add SQL Server 2022 repository for Ubuntu 22.04
-          add-apt-repository \"\$(wget -qO- https://packages.microsoft.com/config/ubuntu/22.04/mssql-server-2022.list)\"
-          
-          # Update package list
-          apt-get update -qq
-          
-          # Install SQL Server
-          echo 'Installing mssql-server package...'
-          apt-get install -y mssql-server
-          
-          # Run mssql-conf setup to configure SQL Server
-          echo 'Configuring SQL Server 2022...'
-          MSSQL_SA_PASSWORD='$(DB_PASSWORD)' \
-          MSSQL_PID='evaluation' \
-          /opt/mssql/bin/mssql-conf -n setup accept-eula
-          
-          # Verify SQL Server is running
-          systemctl status mssql-server --no-pager || echo 'SQL Server service status check (may fail in container)'
-          
-          # Wait for SQL Server to start
-          echo 'Waiting for SQL Server to be ready...'
-          for i in {1..60}; do
-            /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P '$(DB_PASSWORD)' -C -Q 'SELECT 1' >/dev/null 2>&1 && break
-            echo \"Waiting... (\$i/60)\"
-            sleep 2
-          done
-          
-          # Verify SQL Server is accessible
-          /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P '$(DB_PASSWORD)' -C -Q 'SELECT @@VERSION'
-        "
-      fi
-    displayName: 'Install SQL Server 2022 natively in $(distroName) container'
-    condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+      # Download and restore AdventureWorks2022
+      wget -q https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak -O /tmp/AdventureWorks2022.bak
+      
+      # Restore database
+      /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost \
+        -U SA \
+        -P '$(DB_PASSWORD)' \
+        -C \
+        -Q "RESTORE DATABASE AdventureWorks2022 FROM DISK = '/tmp/AdventureWorks2022.bak' WITH MOVE 'AdventureWorks2022' TO '/var/opt/mssql/data/AdventureWorks2022.mdf', MOVE 'AdventureWorks2022_log' TO '/var/opt/mssql/data/AdventureWorks2022_log.ldf', REPLACE"
+      
+      rm -f /tmp/AdventureWorks2022.bak
+    displayName: 'Download and restore AdventureWorks2022'
     continueOnError: true
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
-      # Download and restore AdventureWorks2022 database for benchmarking on Ubuntu only
-      if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
-        echo "Downloading and restoring AdventureWorks2022.bak..."
-        
-        docker exec test-container-$(distroName) bash -c "
-          # Download AdventureWorks2022 backup
-          wget -q https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak -O /tmp/AdventureWorks2022.bak
-          
-          # Restore the database
-          echo 'Restoring AdventureWorks2022 database...'
-          /opt/mssql-tools18/bin/sqlcmd \
-            -S localhost \
-            -U SA \
-            -P '$(DB_PASSWORD)' \
-            -C \
-            -Q \"RESTORE DATABASE AdventureWorks2022 FROM DISK = '/tmp/AdventureWorks2022.bak' WITH MOVE 'AdventureWorks2022' TO '/var/opt/mssql/data/AdventureWorks2022.mdf', MOVE 'AdventureWorks2022_log' TO '/var/opt/mssql/data/AdventureWorks2022_log.ldf', REPLACE\"
-          
-          if [ \$? -eq 0 ]; then
-            echo 'AdventureWorks2022 database restored successfully'
-          else
-            echo 'Failed to restore AdventureWorks2022 database'
-          fi
-          
-          # Clean up
-          rm -f /tmp/AdventureWorks2022.bak
-        "
-      fi
-    displayName: 'Download and restore AdventureWorks2022 database in $(distroName)'
-    condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+      # Reinstall ODBC driver for benchmarking
+      curl -sSL https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+      curl -sSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+      sudo apt-get update
+      sudo apt-get install -y unixodbc unixodbc-dev libodbc1 odbcinst odbcinst1debian2
+      sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18
+      
+      # Install pyodbc
+      pip install pyodbc
+      
+      echo "================================================"
+      echo "PROFILING OFF - Running performance benchmarks"
+      echo "================================================"
+      python benchmarks/perf-benchmarking.py
+    displayName: 'Run performance benchmarks (Profiling OFF)'
     continueOnError: true
     env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
-      # Run performance benchmarks and profiler on Ubuntu with SQL Server 2022 only
-      if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
-        echo "Running performance benchmarks and profiler on Ubuntu with native SQL Server 2022"
-        
-        docker exec \
-          -e DB_CONNECTION_STRING="Server=localhost;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-          test-container-$(distroName) bash -c "
-          source /opt/venv/bin/activate
-          
-          echo 'Reinstalling ODBC Driver for benchmarking...'
-          export DEBIAN_FRONTEND=noninteractive
-          
-          # Remove duplicate repository sources if they exist
-          rm -f /etc/apt/sources.list.d/microsoft-prod.list
-          
-          # Add Microsoft repository
-          curl -sSL https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
-          curl -sSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list > /etc/apt/sources.list.d/mssql-release.list
-          
-          # Update package lists
-          apt-get update -qq
-          
-          # Install unixodbc and its dependencies first (provides libodbcinst.so.2 needed by msodbcsql18)
-          echo 'Installing unixODBC dependencies...'
-          apt-get install -y --no-install-recommends unixodbc unixodbc-dev libodbc1 odbcinst odbcinst1debian2
-          
-          # Verify libodbcinst.so.2 is available
-          ldconfig
-          ls -la /usr/lib/x86_64-linux-gnu/libodbcinst.so.2 || echo 'Warning: libodbcinst.so.2 not found'
-          
-          # Install ODBC Driver 18
-          echo 'Installing msodbcsql18...'
-          ACCEPT_EULA=Y apt-get install -y msodbcsql18
-          
-          # Verify ODBC driver installation
-          odbcinst -q -d -n 'ODBC Driver 18 for SQL Server' || echo 'Warning: ODBC Driver 18 not registered'
-          
-          echo 'Installing pyodbc for benchmarking...'
-          pip install pyodbc
-          
-          echo '================================================'
-          echo 'Running performance benchmarks on $(distroName)'
-          echo '================================================'
-          python benchmarks/perf-benchmarking.py || echo 'Performance benchmark failed or database not available'
-          
-          echo ''
-          echo '================================================'
-          echo 'Running profiler on $(distroName)'
-          echo '================================================'
-          python run_profiler.py || echo 'Profiler execution failed'
-        "
-      else
-        echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"
-      fi
-    displayName: 'Run performance benchmarks and profiler in $(distroName) container'
-    condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+      cd mssql_python/pybind
+      ./build.sh --profiling-on
+    displayName: 'Rebuild pybind bindings (Profiling ON)'
+
+  - script: |
+      echo "================================================"
+      echo "PROFILING ON - Running profiler"
+      echo "================================================"
+      python run_profiler.py
+    displayName: 'Run profiler (Profiling ON)'
     continueOnError: true
     env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
       DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: |
-      # Copy test results from container to host
-      docker cp test-container-$(distroName):/workspace/test-results-$(distroName).xml $(Build.SourcesDirectory)/
-      docker cp test-container-$(distroName):/workspace/coverage-$(distroName).xml $(Build.SourcesDirectory)/
-    displayName: 'Copy test results from $(distroName) container'
-    condition: always()
-
-  - script: |
-      # Clean up containers
-      docker stop test-container-$(distroName) || true
-      docker rm test-container-$(distroName) || true
-      if [ "$(useAzureSQL)" = "false" ] && [ "$(distroName)" != "Ubuntu" ]; then
-        docker stop sqlserver-$(distroName) || true
-        docker rm sqlserver-$(distroName) || true
-      fi
-    displayName: 'Clean up $(distroName) containers'
-    condition: always()
 
   - task: PublishTestResults@2
     condition: succeededOrFailed()
     inputs:
-      testResultsFiles: '**/test-results-$(distroName).xml'
-      testRunTitle: 'Publish pytest results on $(distroName)'
+      testResultsFiles: '**/test-results-ubuntu-native.xml'
+      testRunTitle: 'Publish pytest results on Ubuntu Native'
+
+# - job: PytestOnLinux
+#   displayName: 'Linux x86_64'
+#   pool:
+#     vmImage: 'ubuntu-latest'
+
+#   strategy:
+#     matrix:
+#       Ubuntu:
+#         dockerImage: 'ubuntu:22.04'
+#         distroName: 'Ubuntu'
+#         sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
+#         useAzureSQL: 'false'
+#       # Ubuntu_SQL2025:
+#       #   dockerImage: 'ubuntu:22.04'
+#       #   distroName: 'Ubuntu-SQL2025'
+#       #   sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
+#       #   useAzureSQL: 'false'
+#       # ${{ if ne(variables['AZURE_CONNECTION_STRING'], '') }}:
+#       #   Ubuntu_AzureSQL:
+#       #     dockerImage: 'ubuntu:22.04'
+#       #     distroName: 'Ubuntu-AzureSQL'
+#       #     sqlServerImage: ''
+#       #     useAzureSQL: 'true'
+#       # Debian:
+#       #   dockerImage: 'debian:12'
+#       #   distroName: 'Debian'
+#       #   sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
+#       #   useAzureSQL: 'false'
+
+#   steps:
+#   - script: |
+#       # Create a Docker container for testing
+#       docker run -d --name test-container-$(distroName) \
+#         -v $(Build.SourcesDirectory):/workspace \
+#         -w /workspace \
+#         --network bridge \
+#         $(dockerImage) \
+#         tail -f /dev/null
+#     displayName: 'Create $(distroName) container'
+
+#   - script: |
+#       # Start SQL Server container for non-Ubuntu distributions
+#       if [ "$(distroName)" != "Ubuntu" ]; then
+#         docker run -d --name sqlserver-$(distroName) \
+#           -e ACCEPT_EULA=Y \
+#           -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+#           -p 1433:1433 \
+#           $(sqlServerImage)
+        
+#         # Wait for SQL Server to be ready
+#         echo "Waiting for SQL Server to start..."
+#         for i in {1..60}; do
+#           if docker exec sqlserver-$(distroName) \
+#             /opt/mssql-tools18/bin/sqlcmd \
+#             -S localhost \
+#             -U SA \
+#             -P "$(DB_PASSWORD)" \
+#             -C -Q "SELECT 1" >/dev/null 2>&1; then
+#             echo "SQL Server is ready!"
+#             break
+#           fi
+#           echo "Waiting... ($i/60)"
+#           sleep 2
+#         done
+        
+#         # Create test database
+#         docker exec sqlserver-$(distroName) \
+#           /opt/mssql-tools18/bin/sqlcmd \
+#           -S localhost \
+#           -U SA \
+#           -P "$(DB_PASSWORD)" \
+#           -C -Q "CREATE DATABASE TestDB"
+#       else
+#         echo "Skipping Docker SQL Server for Ubuntu - will use native installation"
+#       fi
+#     displayName: 'Start SQL Server container for $(distroName)'
+#     condition: eq(variables['useAzureSQL'], 'false')
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
+
+#   - script: |
+#       # Install dependencies in the container
+#       if [ "$(distroName)" = "Ubuntu" ]; then
+#         docker exec test-container-$(distroName) bash -c "
+#           export DEBIAN_FRONTEND=noninteractive
+#           export TZ=UTC
+#           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
+#           apt-get update && 
+#           apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
+#         "
+#       else
+#         # Debian
+#         docker exec test-container-$(distroName) bash -c "
+#           export DEBIAN_FRONTEND=noninteractive
+#           export TZ=UTC
+#           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
+#           apt-get update && 
+#           apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
+#         "
+#       fi
+#     displayName: 'Install basic dependencies in $(distroName) container'
+
+#   - script: |
+#       # Install ODBC driver in the container
+#       docker exec test-container-$(distroName) bash -c "
+#         export DEBIAN_FRONTEND=noninteractive
+        
+#         # Download the package to configure the Microsoft repo
+#         if [ '$(distroName)' = 'Ubuntu' ]; then
+#           curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+#         else
+#           # Debian 12
+#           curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
+#         fi
+        
+#         # Install the package
+#         dpkg -i packages-microsoft-prod.deb || true
+#         rm packages-microsoft-prod.deb
+        
+#         # Update package list
+#         apt-get update
+        
+#         # Install the driver
+#         ACCEPT_EULA=Y apt-get install -y msodbcsql18
+#         # optional: for bcp and sqlcmd
+#         ACCEPT_EULA=Y apt-get install -y mssql-tools18
+#         # optional: for unixODBC development headers
+#         apt-get install -y unixodbc-dev
+#       "
+#     displayName: 'Install ODBC Driver in $(distroName) container'
+
+#   - script: |
+#       # Install SQL Server 2022 natively on Ubuntu 22.04
+#       if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
+#         echo "Installing SQL Server 2022 natively on Ubuntu 22.04..."
+        
+#         docker exec test-container-$(distroName) bash -c "
+#           export DEBIAN_FRONTEND=noninteractive
+          
+#           # Import the public repository GPG keys
+#           curl -sSL https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
+          
+#           # Add SQL Server 2022 repository for Ubuntu 22.04
+#           add-apt-repository \"\$(wget -qO- https://packages.microsoft.com/config/ubuntu/22.04/mssql-server-2022.list)\"
+          
+#           # Update package list
+#           apt-get update -qq
+          
+#           # Install SQL Server
+#           echo 'Installing mssql-server package...'
+#           apt-get install -y mssql-server
+          
+#           # Run mssql-conf setup to configure SQL Server
+#           echo 'Configuring SQL Server 2022...'
+#           MSSQL_SA_PASSWORD='$(DB_PASSWORD)' \
+#           MSSQL_PID='evaluation' \
+#           /opt/mssql/bin/mssql-conf -n setup accept-eula
+          
+#           # Start SQL Server service
+#           echo 'Starting SQL Server service...'
+#           systemctl start mssql-server || /opt/mssql/bin/sqlservr &
+          
+#           # Wait for SQL Server to be ready
+#           echo 'Waiting for SQL Server to be ready...'
+#           for i in {1..60}; do
+#             /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P '$(DB_PASSWORD)' -C -Q 'SELECT 1' >/dev/null 2>&1 && break
+#             echo \"Waiting... (\$i/60)\"
+#             sleep 2
+#           done
+          
+#           # Verify SQL Server is accessible
+#           /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P '$(DB_PASSWORD)' -C -Q 'SELECT @@VERSION'
+          
+#           # Create test database
+#           /opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P '$(DB_PASSWORD)' -C -Q 'CREATE DATABASE TestDB'
+#         "
+#       fi
+#     displayName: 'Install and configure SQL Server 2022 natively in $(distroName) container'
+#     condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
+
+#   - script: |
+#       # Install Python dependencies in the container using virtual environment
+#       docker exec test-container-$(distroName) bash -c "
+#         # Create a virtual environment
+#         python3 -m venv /opt/venv
+#         source /opt/venv/bin/activate
+        
+#         # Install dependencies in the virtual environment
+#         python -m pip install --upgrade pip
+#         python -m pip install -r requirements.txt
+        
+#         # Make the virtual environment globally available
+#         echo 'source /opt/venv/bin/activate' >> ~/.bashrc
+#       "
+#     displayName: 'Install Python dependencies in $(distroName) container'
+
+#   - script: |
+#       # Build pybind bindings in the container with profiling OFF
+#       docker exec test-container-$(distroName) bash -c "
+#         source /opt/venv/bin/activate
+#         cd mssql_python/pybind
+#         chmod +x build.sh
+#         ./build.sh --profiling-off
+#       "
+#     displayName: 'Build pybind bindings (Profiling OFF) in $(distroName) container'
+
+#   - script: |
+#       # Uninstall ODBC Driver before running tests
+#       docker exec test-container-$(distroName) bash -c "
+#         export DEBIAN_FRONTEND=noninteractive
+#         apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
+#         rm -f /usr/bin/sqlcmd
+#         rm -f /usr/bin/bcp
+#         rm -rf /opt/microsoft/msodbcsql
+#         rm -f /lib/x86_64-linux-gnu/libodbcinst.so.2
+#         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+#         echo 'Uninstalled ODBC Driver and cleaned up libraries'
+#         echo 'Verifying x86_64 debian_ubuntu driver library signatures:'
+#         ldd mssql_python/libs/linux/debian_ubuntu/x86_64/lib/libmsodbcsql-18.5.so.1.1
+#       "
+#     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) container'
+
+#   - script: |
+#       # Run tests in the container
+#       if [ "$(useAzureSQL)" = "true" ]; then
+#         # Azure SQL Database testing
+#         echo "Testing against Azure SQL Database"
+        
+#         docker exec \
+#           -e DB_CONNECTION_STRING="$(AZURE_CONNECTION_STRING)" \
+#           test-container-$(distroName) bash -c "
+#           source /opt/venv/bin/activate
+#           echo 'Build successful, running tests now on $(distroName) with Azure SQL'
+#           echo 'Using Azure SQL connection string'
+#           python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+#         "
+#       else
+#         # Local SQL Server testing
+#         if [ "$(distroName)" = "Ubuntu" ]; then
+#           # Ubuntu uses native SQL Server on localhost
+#           echo "Testing against native SQL Server 2022 on Ubuntu (localhost)"
+          
+#           docker exec \
+#             -e DB_CONNECTION_STRING="Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+#             -e DB_PASSWORD="$(DB_PASSWORD)" \
+#             test-container-$(distroName) bash -c "
+#             source /opt/venv/bin/activate
+            
+#             echo 'Build successful, running tests now on $(distroName)'
+#             echo 'Using connection string: Server=localhost;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+#             python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+#           "
+#         else
+#           # Other distributions use Docker SQL Server
+#           SQLSERVER_IP=$(docker inspect sqlserver-$(distroName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+#           echo "SQL Server IP: $SQLSERVER_IP"
+          
+#           docker exec \
+#             -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+#             -e DB_PASSWORD="$(DB_PASSWORD)" \
+#             test-container-$(distroName) bash -c "
+#             source /opt/venv/bin/activate
+#             echo 'Build successful, running tests now on $(distroName)'
+#             echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+#             python -m pytest -v --junitxml=test-results-$(distroName).xml --cov=. --cov-report=xml:coverage-$(distroName).xml --capture=tee-sys --cache-clear
+#           "
+#         fi
+#       fi
+#     displayName: 'Run pytest with coverage in $(distroName) container'
+#     condition: or(eq(variables['useAzureSQL'], 'false'), and(eq(variables['useAzureSQL'], 'true'), ne(variables['AZURE_CONNECTION_STRING'], '')))
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
+
+#   - script: |
+#       # Download and restore AdventureWorks2022 database for benchmarking on Ubuntu only
+#       if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
+#         echo "Downloading and restoring AdventureWorks2022.bak..."
+        
+#         docker exec test-container-$(distroName) bash -c "
+#           # Download AdventureWorks2022 backup
+#           wget -q https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak -O /tmp/AdventureWorks2022.bak
+          
+#           # Restore the database
+#           echo 'Restoring AdventureWorks2022 database...'
+#           /opt/mssql-tools18/bin/sqlcmd \
+#             -S localhost \
+#             -U SA \
+#             -P '$(DB_PASSWORD)' \
+#             -C \
+#             -Q \"RESTORE DATABASE AdventureWorks2022 FROM DISK = '/tmp/AdventureWorks2022.bak' WITH MOVE 'AdventureWorks2022' TO '/var/opt/mssql/data/AdventureWorks2022.mdf', MOVE 'AdventureWorks2022_log' TO '/var/opt/mssql/data/AdventureWorks2022_log.ldf', REPLACE\"
+          
+#           if [ \$? -eq 0 ]; then
+#             echo 'AdventureWorks2022 database restored successfully'
+#           else
+#             echo 'Failed to restore AdventureWorks2022 database'
+#           fi
+          
+#           # Clean up
+#           rm -f /tmp/AdventureWorks2022.bak
+#         "
+#       fi
+#     displayName: 'Download and restore AdventureWorks2022 database in $(distroName)'
+#     condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+#     continueOnError: true
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
+
+#   - script: |
+#       # Run performance benchmarks on Ubuntu with SQL Server 2022 (Profiling OFF)
+#       if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
+#         echo "Running performance benchmarks on Ubuntu with native SQL Server 2022 (Profiling OFF)"
+        
+#         docker exec \
+#           -e DB_CONNECTION_STRING="Server=localhost;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+#           test-container-$(distroName) bash -c "
+#           source /opt/venv/bin/activate
+          
+#           echo 'Reinstalling ODBC Driver for benchmarking...'
+#           export DEBIAN_FRONTEND=noninteractive
+          
+#           # Remove duplicate repository sources if they exist
+#           rm -f /etc/apt/sources.list.d/microsoft-prod.list
+          
+#           # Add Microsoft repository
+#           curl -sSL https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
+#           curl -sSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list > /etc/apt/sources.list.d/mssql-release.list
+          
+#           # Update package lists
+#           apt-get update -qq
+          
+#           # Install unixodbc and its dependencies first (provides libodbcinst.so.2 needed by msodbcsql18)
+#           echo 'Installing unixODBC dependencies...'
+#           apt-get install -y --no-install-recommends unixodbc unixodbc-dev libodbc1 odbcinst odbcinst1debian2
+          
+#           # Verify libodbcinst.so.2 is available
+#           ldconfig
+#           ls -la /usr/lib/x86_64-linux-gnu/libodbcinst.so.2 || echo 'Warning: libodbcinst.so.2 not found'
+          
+#           # Install ODBC Driver 18
+#           echo 'Installing msodbcsql18...'
+#           ACCEPT_EULA=Y apt-get install -y msodbcsql18
+          
+#           # Verify ODBC driver installation
+#           odbcinst -q -d -n 'ODBC Driver 18 for SQL Server' || echo 'Warning: ODBC Driver 18 not registered'
+          
+#           echo 'Installing pyodbc for benchmarking...'
+#           pip install pyodbc
+          
+#           echo '================================================'
+#           echo 'PROFILING OFF - Running performance benchmarks'
+#           echo '================================================'
+#           python benchmarks/perf-benchmarking.py || echo 'Performance benchmark failed or database not available'
+#         "
+#       else
+#         echo "Skipping performance benchmarks on $(distroName) (only runs on Ubuntu with local SQL Server)"
+#       fi
+#     displayName: 'Run performance benchmarks (Profiling OFF) in $(distroName) container'
+#     condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+#     continueOnError: true
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
+
+#   - script: |
+#       # Rebuild with profiling ON for profiler
+#       if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
+#         docker exec test-container-$(distroName) bash -c "
+#           source /opt/venv/bin/activate
+#           cd mssql_python/pybind
+#           ./build.sh --profiling-on
+#         "
+#       fi
+#     displayName: 'Rebuild pybind bindings (Profiling ON) in $(distroName) container'
+#     condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+
+#   - script: |
+#       # Run profiler on Ubuntu with SQL Server 2022 (Profiling ON)
+#       if [ "$(distroName)" = "Ubuntu" ] && [ "$(useAzureSQL)" = "false" ]; then
+#         echo "Running profiler on Ubuntu with native SQL Server 2022 (Profiling ON)"
+        
+#         docker exec \
+#           -e DB_CONNECTION_STRING="Server=localhost;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+#           test-container-$(distroName) bash -c "
+#           source /opt/venv/bin/activate
+          
+#           echo '================================================'
+#           echo 'PROFILING ON - Running profiler'
+#           echo '================================================'
+#           python run_profiler.py || echo 'Profiler execution failed'
+#         "
+#       else
+#         echo "Skipping profiler on $(distroName) (only runs on Ubuntu with local SQL Server)"
+#       fi
+#     displayName: 'Run profiler (Profiling ON) in $(distroName) container'
+#     condition: and(eq(variables['distroName'], 'Ubuntu'), eq(variables['useAzureSQL'], 'false'))
+#     continueOnError: true
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
+
+#   - script: |
+#       # Copy test results from container to host
+#       docker cp test-container-$(distroName):/workspace/test-results-$(distroName).xml $(Build.SourcesDirectory)/
+#       docker cp test-container-$(distroName):/workspace/coverage-$(distroName).xml $(Build.SourcesDirectory)/
+#     displayName: 'Copy test results from $(distroName) container'
+#     condition: always()
+
+#   - script: |
+#       # Clean up containers
+#       docker stop test-container-$(distroName) || true
+#       docker rm test-container-$(distroName) || true
+#       if [ "$(useAzureSQL)" = "false" ] && [ "$(distroName)" != "Ubuntu" ]; then
+#         docker stop sqlserver-$(distroName) || true
+#         docker rm sqlserver-$(distroName) || true
+#       fi
+#     displayName: 'Clean up $(distroName) containers'
+#     condition: always()
+
+#   - task: PublishTestResults@2
+#     condition: succeededOrFailed()
+#     inputs:
+#       testResultsFiles: '**/test-results-$(distroName).xml'
+#       testRunTitle: 'Publish pytest results on $(distroName)'
 
 # - job: PytestOnLinux_ARM64
 #   displayName: 'Linux ARM64'

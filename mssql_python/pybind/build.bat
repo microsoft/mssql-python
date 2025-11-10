@@ -1,8 +1,28 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM Usage: build.bat [ARCH], If ARCH is not specified, it defaults to x64.
+REM Usage: build.bat [ARCH] [--profiling-on|--profiling-off]
+REM If ARCH is not specified, it defaults to x64.
 set ARCH=%1
+set PROFILING_MODE=
+
+REM Check if first argument is a profiling flag
+if "%1"=="--profiling-on" (
+    set ARCH=x64
+    set PROFILING_MODE=ON
+    echo [MODE] Enabling performance profiling (PERF_TIMER active)
+) else if "%1"=="--profiling-off" (
+    set ARCH=x64
+    set PROFILING_MODE=OFF
+    echo [MODE] Disabling performance profiling (PERF_TIMER no-op)
+) else if "%2"=="--profiling-on" (
+    set PROFILING_MODE=ON
+    echo [MODE] Enabling performance profiling (PERF_TIMER active)
+) else if "%2"=="--profiling-off" (
+    set PROFILING_MODE=OFF
+    echo [MODE] Disabling performance profiling (PERF_TIMER no-op)
+)
+
 if "%ARCH%"=="" set ARCH=x64
 echo [DIAGNOSTIC] Target Architecture set to: %ARCH%
 
@@ -109,8 +129,13 @@ if errorlevel 1 (
 )
 
 REM Now invoke CMake with correct source path (options first, path last!)
-echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
-cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
+if "%PROFILING_MODE%"=="" (
+    echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
+    cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
+) else (
+    echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% -DPROFILING_MODE=%PROFILING_MODE% "%SOURCE_DIR:~0,-1%"
+    cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% -DPROFILING_MODE=%PROFILING_MODE% "%SOURCE_DIR:~0,-1%"
+)
 echo [DIAGNOSTIC] CMake configure exit code: %errorlevel%
 if errorlevel 1 (
     echo [ERROR] CMake configuration failed

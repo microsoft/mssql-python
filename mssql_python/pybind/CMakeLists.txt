@@ -8,6 +8,41 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Enable verbose output to see actual compiler/linker commands
 set(CMAKE_VERBOSE_MAKEFILE ON CACHE BOOL "Verbose output" FORCE)
 
+# Handle profiling mode configuration
+if(DEFINED PROFILING_MODE)
+    message(STATUS "Profiling mode: ${PROFILING_MODE}")
+    
+    # Read the performance_counter.hpp file
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/performance_counter.hpp" PERF_HEADER_CONTENT)
+    
+    if(PROFILING_MODE STREQUAL "ON")
+        message(STATUS "Enabling PERF_TIMER profiling")
+        # Enable profiling: comment out no-op, uncomment active timer
+        string(REGEX REPLACE 
+            "#define PERF_TIMER\\(name\\) do \\{\\} while\\(0\\)"
+            "// #define PERF_TIMER(name) do {} while(0)"
+            PERF_HEADER_CONTENT "${PERF_HEADER_CONTENT}")
+        string(REGEX REPLACE 
+            "// (#define PERF_TIMER\\(name\\) mssql_profiling::ScopedTimer PERF_TIMER_CONCAT\\(_perf_timer_, __COUNTER__\\)\\(name\\))"
+            "\\1"
+            PERF_HEADER_CONTENT "${PERF_HEADER_CONTENT}")
+    elseif(PROFILING_MODE STREQUAL "OFF")
+        message(STATUS "Disabling PERF_TIMER profiling (no-op)")
+        # Disable profiling: comment out active timer, uncomment no-op
+        string(REGEX REPLACE 
+            "#define PERF_TIMER\\(name\\) mssql_profiling::ScopedTimer PERF_TIMER_CONCAT\\(_perf_timer_, __COUNTER__\\)\\(name\\)"
+            "// #define PERF_TIMER(name) mssql_profiling::ScopedTimer PERF_TIMER_CONCAT(_perf_timer_, __COUNTER__)(name)"
+            PERF_HEADER_CONTENT "${PERF_HEADER_CONTENT}")
+        string(REGEX REPLACE 
+            "// (#define PERF_TIMER\\(name\\) do \\{\\} while\\(0\\))"
+            "\\1"
+            PERF_HEADER_CONTENT "${PERF_HEADER_CONTENT}")
+    endif()
+    
+    # Write back the modified content
+    file(WRITE "${CMAKE_CURRENT_SOURCE_DIR}/performance_counter.hpp" "${PERF_HEADER_CONTENT}")
+endif()
+
 if (MSVC)
     # Security compiler options for OneBranch compliance
     message(STATUS "Applying MSVC security compiler options for OneBranch compliance")
