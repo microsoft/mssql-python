@@ -312,7 +312,8 @@ jobs:
     condition: eq(variables['sqlVersion'], 'SQL2022')
     continueOnError: true
     env:
-      DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      DB_PASSWORD: $(DB_PASSWORD)
 
   # Rebuild with profiling ON and run profiler
   - script: |
@@ -331,7 +332,8 @@ jobs:
     condition: eq(variables['sqlVersion'], 'SQL2022')
     continueOnError: true
     env:
-      DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      DB_PASSWORD: $(DB_PASSWORD)
 
   - task: CopyFiles@2
     inputs:
