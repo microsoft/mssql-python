@@ -3499,13 +3499,20 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     }
     
     size_t initialSize = rows.size();
+    
+    // OPTIMIZATION #4: Pre-allocate all row lists at once (batch creation)
+    // This is much faster than creating lists one-by-one in the loop
+    PyObject* rowsList = rows.ptr();
     for (SQLULEN i = 0; i < numRowsFetched; i++) {
-        rows.append(py::none());
+        PyObject* newRow = PyList_New(numCols);
+        PyList_Append(rowsList, newRow);
+        Py_DECREF(newRow);  // PyList_Append increments refcount
     }
     
     for (SQLULEN i = 0; i < numRowsFetched; i++) {
-        // OPTIMIZATION #4: Create row using direct Python C API (bypasses pybind11 wrapper)
-        PyObject* row = PyList_New(numCols);
+        // Get the pre-allocated row
+        PyObject* row = PyList_GET_ITEM(rowsList, initialSize + i);
+        
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
             // OPTIMIZATION #5: Use function pointer if available (fast path for common types)
             // This eliminates the switch statement from hot loop - reduces 100,000 switch 
@@ -3657,7 +3664,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
             }
         }
-        PyList_SET_ITEM(rows.ptr(), initialSize + i, row);
     }
     return ret;
 }
