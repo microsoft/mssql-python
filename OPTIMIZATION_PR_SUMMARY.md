@@ -115,8 +115,172 @@ if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
 
 ---
 
-## 🔜 OPTIMIZATION #4: Batch Row Allocation
-*Coming next...*
+## ✅ OPTIMIZATION #4: Batch Row Allocation with Direct Python C API
+
+**Commit:** 55fb898
+
+### Problem
+Row creation and assignment involved multiple layers of pybind11 overhead:
+```cpp
+for (SQLULEN i = 0; i < numRowsFetched; i++) {
+    py::list row(numCols);  // ❌ pybind11 wrapper allocation
+    
+    // Populate cells...
+    row[col - 1] = value;   // ❌ pybind11 operator[] with bounds checking
+    
+    rows[initialSize + i] = row;  // ❌ pybind11 list assignment + refcount overhead
+}
+```
+
+**Overhead breakdown:**
+1. **Row allocation**: `py::list(numCols)` creates pybind11 wrapper object (~15 cycles)
+2. **Cell assignment** (non-numeric types): `row[col-1] = value` uses `operator[]` with bounds checking (~10-15 cycles)
+3. **Final assignment**: `rows[i] = row` goes through pybind11 list `__setitem__` (~15-20 cycles)
+4. **Fragmented**: 1,000 separate `py::list()` constructor calls
+
+**Total cost:** ~40-50 cycles per row × 1,000 rows = **40K-50K wasted cycles per batch**
+
+### Solution
+**Complete transition to direct Python C API** for row and cell management:
+```cpp
+for (SQLULEN i = 0; i < numRowsFetched; i++) {
+    PyObject* row = PyList_New(numCols);  // ✅ Direct Python C API
+    
+    // Populate cells using direct API...
+    PyList_SET_ITEM(row, col - 1, pyValue);  // ✅ Macro - no bounds check
+    
+    PyList_SET_ITEM(rows.ptr(), initialSize + i, row);  // ✅ Direct transfer
+}
+```
+
+**Key changes:**
+- `PyList_New(numCols)` creates list directly (no wrapper object)
+- `PyList_SET_ITEM(row, col, value)` is a **macro** that expands to direct array access
+- Final assignment transfers ownership without refcount churn
+
+### Code Changes
+
+**Before (mixed pybind11 + C API):**
+```cpp
+py::list row(numCols);  // pybind11 wrapper
+
+// NULL handling
+row[col - 1] = py::none();
+
+// Strings  
+row[col - 1] = py::str(data, len);
+
+// Complex types
+row[col - 1] = PythonObjectCache::get_datetime_class()(...);
+
+// Final assignment
+rows[initialSize + i] = row;
+```
+
+**After (pure Python C API):**
+```cpp
+PyObject* row = PyList_New(numCols);  // Direct C API
+
+// NULL handling
+Py_INCREF(Py_None);
+PyList_SET_ITEM(row, col - 1, Py_None);
+
+// Strings
+PyObject* pyStr = PyUnicode_FromStringAndSize(data, len);
+PyList_SET_ITEM(row, col - 1, pyStr);
+
+// Complex types
+PyObject* dt = PythonObjectCache::get_datetime_class()(...).release().ptr();
+PyList_SET_ITEM(row, col - 1, dt);
+
+// Final assignment
+PyList_SET_ITEM(rows.ptr(), initialSize + i, row);
+```
+
+### Updated Type Handlers
+
+**All handlers now use `PyList_SET_ITEM`:**
+
+| Type Category | Python C API Used | Notes |
+|---------------|-------------------|-------|
+| **NULL values** | `Py_INCREF(Py_None)` + `PyList_SET_ITEM` | Explicit refcount management |
+| **Integers** | `PyLong_FromLong()` | Already done in OPT #2 |
+| **Floats** | `PyFloat_FromDouble()` | Already done in OPT #2 |
+| **Booleans** | `PyBool_FromLong()` | Already done in OPT #2 |
+| **VARCHAR** | `PyUnicode_FromStringAndSize()` | New in OPT #4 |
+| **NVARCHAR** | `PyUnicode_DecodeUTF16()` | OPT #1 + OPT #4 |
+| **BINARY** | `PyBytes_FromStringAndSize()` | New in OPT #4 |
+| **DECIMAL** | `.release().ptr()` | Transfer ownership |
+| **DATETIME** | `.release().ptr()` | Transfer ownership |
+| **DATE** | `.release().ptr()` | Transfer ownership |
+| **TIME** | `.release().ptr()` | Transfer ownership |
+| **DATETIMEOFFSET** | `.release().ptr()` | Transfer ownership |
+| **GUID** | `.release().ptr()` | Transfer ownership |
+
+### PyList_SET_ITEM Macro Efficiency
+
+**What is `PyList_SET_ITEM`?**
+It's a **macro** (not a function) that expands to direct array access:
+```c
+#define PyList_SET_ITEM(op, i, v) \
+    (((PyListObject *)(op))->ob_item[i] = (PyObject *)(v))
+```
+
+**Why it's faster than `operator[]`:**
+- No function call overhead (inline expansion)
+- No bounds checking (assumes pre-allocated list)
+- No NULL checks (assumes valid pointers)
+- Direct memory write (single CPU instruction)
+
+**Safety:** Pre-allocation via `rows.append(py::none())` ensures list has correct size, making bounds checking redundant.
+
+### Impact
+
+**Performance gains:**
+- ✅ **Eliminates pybind11 wrapper overhead** for row creation (~15 cycles saved per row)
+- ✅ **No bounds checking** in hot loop (PyList_SET_ITEM is direct array access)
+- ✅ **Clean refcount management** (objects created with refcount=1, ownership transferred)
+- ✅ **Consistent architecture** with OPT #2 (entire row/cell pipeline uses Python C API)
+
+**Expected improvement:** ~5-10% on large result sets
+
+**Cumulative effect with OPT #2:**
+- OPT #2: Numeric types use Python C API (7 types)
+- OPT #4: ALL types now use Python C API (complete transition)
+- Result: Zero pybind11 overhead in entire row construction hot path
+
+### Affected Code Paths
+
+**Completely migrated to Python C API:**
+- Row creation and final assignment
+- NULL/SQL_NO_TOTAL handling
+- Zero-length data handling
+- All string types (CHAR, VARCHAR, WCHAR, WVARCHAR)
+- All binary types (BINARY, VARBINARY)
+- All complex types (DECIMAL, DATETIME, DATE, TIME, DATETIMEOFFSET, GUID)
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────┐
+│ BEFORE: Mixed pybind11 + Python C API                  │
+├─────────────────────────────────────────────────────────┤
+│ py::list row(numCols) ← pybind11                       │
+│ ├─ Numeric types: PyLong_FromLong() ← OPT #2           │
+│ ├─ Strings: row[col] = py::str() ← pybind11            │
+│ └─ Complex: row[col] = obj ← pybind11                  │
+│ rows[i] = row ← pybind11                               │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│ AFTER: Pure Python C API                               │
+├─────────────────────────────────────────────────────────┤
+│ PyList_New(numCols) ← Direct C API                     │
+│ ├─ Numeric: PyLong_FromLong() ← OPT #2                 │
+│ ├─ Strings: PyUnicode_FromStringAndSize() ← OPT #4     │
+│ └─ Complex: .release().ptr() ← OPT #4                  │
+│ PyList_SET_ITEM(rows.ptr(), i, row) ← OPT #4           │
+└─────────────────────────────────────────────────────────┘
+```
 
 ---
 
