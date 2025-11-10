@@ -3422,20 +3422,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
     
-    // OPTIMIZATION #3: Prefetch column metadata into cache-friendly arrays
-    // Eliminates repeated struct field access (O(rows × cols)) in the hot loop below
-    std::vector<SQLSMALLINT> dataTypes(numCols);
-    std::vector<SQLULEN> columnSizes(numCols);
-    std::vector<uint64_t> fetchBufferSizes(numCols);
-    std::vector<bool> isLobs(numCols);
-    
-    for (SQLUSMALLINT col = 0; col < numCols; col++) {
-        dataTypes[col] = columnInfos[col].dataType;
-        columnSizes[col] = columnInfos[col].processedColumnSize;
-        fetchBufferSizes[col] = columnInfos[col].fetchBufferSize;
-        isLobs[col] = columnInfos[col].isLob;
-    }
-    
     // OPTIMIZATION #5: Build function pointer dispatch table (once per batch)
     // This eliminates the switch statement from the hot loop - 10,000 rows × 10 cols
     // reduces from 100,000 switch evaluations to just 10 switch evaluations
@@ -3524,7 +3510,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             
             // Fallback for complex types (Decimal, DateTime, Guid, DateTimeOffset, etc.)
             // that require pybind11 or special handling
-            SQLSMALLINT dataType = dataTypes[col - 1];
+            const ColumnInfoExt& colInfo = columnInfosExt[col - 1];
+            SQLSMALLINT dataType = colInfo.dataType;
             SQLLEN dataLen = buffers.indicators[col - 1][i];
             
             // Handle NULL and special cases for complex types
