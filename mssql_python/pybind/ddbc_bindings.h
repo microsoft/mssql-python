@@ -423,6 +423,32 @@ class DriverLoader {
 // RAII wrapper around ODBC handles (ENV, DBC, STMT).
 // Use `std::shared_ptr<SqlHandle>` (alias: SqlHandlePtr) for shared ownership.
 //-------------------------------------------------------------------------------------------------
+
+// Forward declaration for ColumnBuffers (defined in cpp)
+struct ColumnBuffers;
+
+// Column metadata struct for fetch optimization
+struct ColumnInfo {
+    SQLSMALLINT dataType;
+    SQLULEN columnSize;
+    SQLULEN processedColumnSize;
+    uint64_t fetchBufferSize;
+    bool isLob;
+};
+
+// Extended column info struct for processor functions
+struct ColumnInfoExt {
+    SQLSMALLINT dataType;
+    SQLULEN columnSize;
+    SQLULEN processedColumnSize;
+    uint64_t fetchBufferSize;
+    bool isLob;
+};
+
+// Column processor function type - processes one cell
+typedef void (*ColumnProcessor)(PyObject* row, ColumnBuffers& buffers, const void* colInfo, 
+                                 SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt);
+
 class SqlHandle {
  public:
     SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle);
@@ -430,9 +456,26 @@ class SqlHandle {
     SQLHANDLE get() const;
     SQLSMALLINT type() const;
     void free();
+    
+    // Fetch context caching for performance optimization
+    // This cache is built once per result set and reused across all batch fetches
+    struct FetchContext {
+        std::vector<ColumnInfo> columnInfos;
+        std::vector<ColumnProcessor> columnProcessors;
+        std::vector<ColumnInfoExt> columnInfosExt;
+        std::string decimalSeparator;
+        bool initialized = false;
+        
+        void reset() { initialized = false; }
+    };
+    
+    FetchContext& getFetchContext() { return _fetchContext; }
+    void resetFetchContext() { _fetchContext.reset(); }
+    
  private:
     SQLSMALLINT _type;
     SQLHANDLE _handle;
+    FetchContext _fetchContext;  // Per-statement fetch optimization cache
 };
     using SqlHandlePtr = std::shared_ptr<SqlHandle>;
 

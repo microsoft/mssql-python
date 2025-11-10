@@ -3185,21 +3185,8 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
     return ret;
 }
 
-// OPTIMIZATION #5: Column processor function type - processes one cell
-// Using function pointers eliminates switch statement overhead in the hot loop
-typedef void (*ColumnProcessor)(PyObject* row, ColumnBuffers& buffers, const void* colInfo, 
-                                 SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt);
-
-// Extended column info struct for processor functions
-struct ColumnInfoExt {
-    SQLSMALLINT dataType;
-    SQLULEN columnSize;
-    SQLULEN processedColumnSize;
-    uint64_t fetchBufferSize;
-    bool isLob;
-};
-
-// Specialized column processors for each data type (eliminates switch in hot loop)
+// OPTIMIZATION #5: Specialized column processors for each data type (eliminates switch in hot loop)
+// ColumnProcessor typedef and structs now defined in header for fetch context caching
 namespace ColumnProcessors {
 
 inline void ProcessInteger(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
@@ -3389,9 +3376,10 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
 
 // Fetch rows in batches
 // TODO: Move to anonymous namespace, since it is not used outside this file
-SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
+SQLRETURN FetchBatchData(SqlHandlePtr StatementHandle, ColumnBuffers& buffers, py::list& columnNames,
                          py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched, const std::vector<SQLUSMALLINT>& lobColumns) {
     LOG("Fetching data in batches");
+    SQLHSTMT hStmt = StatementHandle->get();
     SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
     if (ret == SQL_NO_DATA) {
         LOG("No data to fetch");
@@ -3401,88 +3389,92 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         LOG("Error while fetching rows in batches");
         return ret;
     }
-    // Pre-cache column metadata to avoid repeated dictionary lookups
-    struct ColumnInfo {
-        SQLSMALLINT dataType;
-        SQLULEN columnSize;
-        SQLULEN processedColumnSize;
-        uint64_t fetchBufferSize;
-        bool isLob;
-    };
-    std::vector<ColumnInfo> columnInfos(numCols);
-    for (SQLUSMALLINT col = 0; col < numCols; col++) {
-        const auto& columnMeta = columnNames[col].cast<py::dict>();
-        columnInfos[col].dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
-        columnInfos[col].columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
-        columnInfos[col].isLob = std::find(lobColumns.begin(), lobColumns.end(), col + 1) != lobColumns.end();
-        columnInfos[col].processedColumnSize = columnInfos[col].columnSize;
-        HandleZeroColumnSizeAtFetch(columnInfos[col].processedColumnSize);
-        columnInfos[col].fetchBufferSize = columnInfos[col].processedColumnSize + 1; // +1 for null terminator
-    }
     
-    std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
+    // OPTIMIZATION: Use cached fetch context to avoid rebuilding metadata/dispatch table per batch
+    auto& ctx = StatementHandle->getFetchContext();
     
-    // OPTIMIZATION #5: Build function pointer dispatch table (once per batch)
-    // This eliminates the switch statement from the hot loop - 10,000 rows × 10 cols
-    // reduces from 100,000 switch evaluations to just 10 switch evaluations
-    std::vector<ColumnProcessor> columnProcessors(numCols);
-    std::vector<ColumnInfoExt> columnInfosExt(numCols);
-    
-    for (SQLUSMALLINT col = 0; col < numCols; col++) {
-        // Populate extended column info for processors that need it
-        columnInfosExt[col].dataType = columnInfos[col].dataType;
-        columnInfosExt[col].columnSize = columnInfos[col].columnSize;
-        columnInfosExt[col].processedColumnSize = columnInfos[col].processedColumnSize;
-        columnInfosExt[col].fetchBufferSize = columnInfos[col].fetchBufferSize;
-        columnInfosExt[col].isLob = columnInfos[col].isLob;
-        
-        // Map data type to processor function (switch executed once per column, not per cell)
-        SQLSMALLINT dataType = columnInfos[col].dataType;
-        switch (dataType) {
-            case SQL_INTEGER:
-                columnProcessors[col] = ColumnProcessors::ProcessInteger;
-                break;
-            case SQL_SMALLINT:
-                columnProcessors[col] = ColumnProcessors::ProcessSmallInt;
-                break;
-            case SQL_BIGINT:
-                columnProcessors[col] = ColumnProcessors::ProcessBigInt;
-                break;
-            case SQL_TINYINT:
-                columnProcessors[col] = ColumnProcessors::ProcessTinyInt;
-                break;
-            case SQL_BIT:
-                columnProcessors[col] = ColumnProcessors::ProcessBit;
-                break;
-            case SQL_REAL:
-                columnProcessors[col] = ColumnProcessors::ProcessReal;
-                break;
-            case SQL_DOUBLE:
-            case SQL_FLOAT:
-                columnProcessors[col] = ColumnProcessors::ProcessDouble;
-                break;
-            case SQL_CHAR:
-            case SQL_VARCHAR:
-            case SQL_LONGVARCHAR:
-                columnProcessors[col] = ColumnProcessors::ProcessChar;
-                break;
-            case SQL_WCHAR:
-            case SQL_WVARCHAR:
-            case SQL_WLONGVARCHAR:
-                columnProcessors[col] = ColumnProcessors::ProcessWChar;
-                break;
-            case SQL_BINARY:
-            case SQL_VARBINARY:
-            case SQL_LONGVARBINARY:
-                columnProcessors[col] = ColumnProcessors::ProcessBinary;
-                break;
-            default:
-                // For complex types (Decimal, DateTime, Guid, etc.), set to nullptr 
-                // and handle via fallback switch in the hot loop
-                columnProcessors[col] = nullptr;
-                break;
+    if (!ctx.initialized) {
+        LOG("Initializing fetch context (first batch)");
+        // Pre-cache column metadata to avoid repeated dictionary lookups
+        // ColumnInfo struct now defined in header for reuse
+        ctx.columnInfos.resize(numCols);
+        for (SQLUSMALLINT col = 0; col < numCols; col++) {
+            const auto& columnMeta = columnNames[col].cast<py::dict>();
+            ctx.columnInfos[col].dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
+            ctx.columnInfos[col].columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+            ctx.columnInfos[col].isLob = std::find(lobColumns.begin(), lobColumns.end(), col + 1) != lobColumns.end();
+            ctx.columnInfos[col].processedColumnSize = ctx.columnInfos[col].columnSize;
+            HandleZeroColumnSizeAtFetch(ctx.columnInfos[col].processedColumnSize);
+            ctx.columnInfos[col].fetchBufferSize = ctx.columnInfos[col].processedColumnSize + 1; // +1 for null terminator
         }
+        
+        ctx.decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
+        
+        // OPTIMIZATION #5: Build function pointer dispatch table (once per result set, not per batch)
+        // This eliminates the switch statement from the hot loop across ALL batches
+        ctx.columnProcessors.resize(numCols);
+        ctx.columnInfosExt.resize(numCols);
+        
+        for (SQLUSMALLINT col = 0; col < numCols; col++) {
+            // Populate extended column info for processors that need it
+            ctx.columnInfosExt[col].dataType = ctx.columnInfos[col].dataType;
+            ctx.columnInfosExt[col].columnSize = ctx.columnInfos[col].columnSize;
+            ctx.columnInfosExt[col].processedColumnSize = ctx.columnInfos[col].processedColumnSize;
+            ctx.columnInfosExt[col].fetchBufferSize = ctx.columnInfos[col].fetchBufferSize;
+            ctx.columnInfosExt[col].isLob = ctx.columnInfos[col].isLob;
+            
+            // Map data type to processor function (switch executed once per result set, not per batch or per cell)
+            SQLSMALLINT dataType = ctx.columnInfos[col].dataType;
+            switch (dataType) {
+                case SQL_INTEGER:
+                    ctx.columnProcessors[col] = ColumnProcessors::ProcessInteger;
+                    break;
+                case SQL_SMALLINT:
+                    ctx.columnProcessors[col] = ColumnProcessors::ProcessSmallInt;
+                    break;
+                case SQL_BIGINT:
+                    ctx.columnProcessors[col] = ColumnProcessors::ProcessBigInt;
+                    break;
+                case SQL_TINYINT:
+                    ctx.columnProcessors[col] = ColumnProcessors::ProcessTinyInt;
+                    break;
+                case SQL_BIT:
+                    ctx.columnProcessors[col] = ColumnProcessors::ProcessBit;
+                    break;
+                case SQL_REAL:
+                    ctx.columnProcessors[col] = ColumnProcessors::ProcessReal;
+                    break;
+                case SQL_DOUBLE:
+                case SQL_FLOAT:
+                    ctx.columnProcessors[col] = ColumnProcessors::ProcessDouble;
+                    break;
+                case SQL_CHAR:
+                case SQL_VARCHAR:
+                case SQL_LONGVARCHAR:
+                    ctx.columnProcessors[col] = ColumnProcessors::ProcessChar;
+                    break;
+                case SQL_WCHAR:
+                case SQL_WVARCHAR:
+                case SQL_WLONGVARCHAR:
+                    ctx.columnProcessors[col] = ColumnProcessors::ProcessWChar;
+                    break;
+                case SQL_BINARY:
+                case SQL_VARBINARY:
+                case SQL_LONGVARBINARY:
+                    ctx.columnProcessors[col] = ColumnProcessors::ProcessBinary;
+                    break;
+                default:
+                    // For complex types (Decimal, DateTime, Guid, etc.), set to nullptr 
+                    // and handle via fallback switch in the hot loop
+                    ctx.columnProcessors[col] = nullptr;
+                    break;
+            }
+        }
+        
+        ctx.initialized = true;
+        LOG("Fetch context initialized successfully");
     }
+    // OPTIMIZATION: Use cached context for all batches (ctx.columnInfos, ctx.columnProcessors, etc.)
     
     size_t initialSize = rows.size();
     
@@ -3501,16 +3493,15 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
             // OPTIMIZATION #5: Use function pointer if available (fast path for common types)
-            // This eliminates the switch statement from hot loop - reduces 100,000 switch 
-            // evaluations (1000 rows × 10 cols × 10 types) to just 10 (setup only)
-            if (columnProcessors[col - 1] != nullptr) {
-                columnProcessors[col - 1](row, buffers, &columnInfosExt[col - 1], col, i, hStmt);
+            // Dispatch table is built once per result set (not per batch) and reused
+            if (ctx.columnProcessors[col - 1] != nullptr) {
+                ctx.columnProcessors[col - 1](row, buffers, &ctx.columnInfosExt[col - 1], col, i, hStmt);
                 continue;
             }
             
             // Fallback for complex types (Decimal, DateTime, Guid, DateTimeOffset, etc.)
             // that require pybind11 or special handling
-            const ColumnInfoExt& colInfo = columnInfosExt[col - 1];
+            const ColumnInfoExt& colInfo = ctx.columnInfosExt[col - 1];
             SQLSMALLINT dataType = colInfo.dataType;
             SQLLEN dataLen = buffers.indicators[col - 1][i];
             
@@ -3811,7 +3802,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
-    ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns);
+    ret = FetchBatchData(StatementHandle, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns);
     if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
         LOG("Error when fetching data");
         return ret;
@@ -3932,7 +3923,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows) {
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
     while (ret != SQL_NO_DATA) {
-        ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns);
+        ret = FetchBatchData(StatementHandle, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns);
         if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
             LOG("Error when fetching data");
             return ret;
@@ -3983,7 +3974,15 @@ SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
         DriverLoader::getInstance().loadDriver();  // Load the driver
     }
 
-    return SQLMoreResults_ptr(StatementHandle->get());
+    SQLRETURN ret = SQLMoreResults_ptr(StatementHandle->get());
+    
+    // Reset fetch context for the new result set (schema may be different)
+    if (SQL_SUCCEEDED(ret)) {
+        StatementHandle->resetFetchContext();
+        LOG("Fetch context reset for next result set");
+    }
+    
+    return ret;
 }
 
 // Wrap SQLFreeHandle
