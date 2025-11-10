@@ -585,6 +585,26 @@ jobs:
     displayName: 'Build pybind bindings (Profiling OFF)'
 
   - script: |
+      # Download and restore AdventureWorks2022 BEFORE removing system tools
+      wget -q https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak -O /tmp/AdventureWorks2022.bak
+      
+      # Restore database using system sqlcmd (still available)
+      /opt/mssql-tools18/bin/sqlcmd \
+        -S localhost \
+        -U SA \
+        -P '$(DB_PASSWORD)' \
+        -C \
+        -Q "RESTORE DATABASE AdventureWorks2022 FROM DISK = '/tmp/AdventureWorks2022.bak' WITH MOVE 'AdventureWorks2022' TO '/var/opt/mssql/data/AdventureWorks2022.mdf', MOVE 'AdventureWorks2022_log' TO '/var/opt/mssql/data/AdventureWorks2022_log.ldf', REPLACE"
+      
+      rm -f /tmp/AdventureWorks2022.bak
+      
+      echo "AdventureWorks2022 database restored successfully"
+    displayName: 'Download and restore AdventureWorks2022'
+    continueOnError: true
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
       # Uninstall system ODBC driver to use bundled one
       sudo apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
       sudo rm -f /usr/bin/sqlcmd /usr/bin/bcp
@@ -599,24 +619,6 @@ jobs:
     displayName: 'Run pytest with coverage'
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
-      DB_PASSWORD: $(DB_PASSWORD)
-
-  - script: |
-      # Download and restore AdventureWorks2022
-      wget -q https://github.com/Microsoft/sql-server-samples/releases/download/adventureworks/AdventureWorks2022.bak -O /tmp/AdventureWorks2022.bak
-      
-      # Restore database
-      /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P '$(DB_PASSWORD)' \
-        -C \
-        -Q "RESTORE DATABASE AdventureWorks2022 FROM DISK = '/tmp/AdventureWorks2022.bak' WITH MOVE 'AdventureWorks2022' TO '/var/opt/mssql/data/AdventureWorks2022.mdf', MOVE 'AdventureWorks2022_log' TO '/var/opt/mssql/data/AdventureWorks2022_log.ldf', REPLACE"
-      
-      rm -f /tmp/AdventureWorks2022.bak
-    displayName: 'Download and restore AdventureWorks2022'
-    continueOnError: true
-    env:
       DB_PASSWORD: $(DB_PASSWORD)
 
   - script: |
