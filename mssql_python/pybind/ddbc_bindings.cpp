@@ -3283,7 +3283,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_CHAR:
                 case SQL_VARCHAR:
                 case SQL_LONGVARCHAR: {
-                    SQLULEN columnSize = columnSizes[col - 1];
                     uint64_t fetchBufferSize = fetchBufferSizes[col - 1];
 					uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
                     bool isLob = isLobs[col - 1];
@@ -3302,7 +3301,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_WVARCHAR:
                 case SQL_WLONGVARCHAR: {
                     // TODO: variable length data needs special handling, this logic wont suffice
-                    SQLULEN columnSize = columnSizes[col - 1];
                     uint64_t fetchBufferSize = fetchBufferSizes[col - 1];
 					uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
                     bool isLob = isLobs[col - 1];
