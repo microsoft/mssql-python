@@ -3264,8 +3264,14 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         {
             PERF_TIMER("construct_rows::all_columns_processing");
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
+            PERF_TIMER("construct_rows::prefetch_metadata");
             const ColumnInfo& colInfo = columnInfos[col - 1];
             SQLSMALLINT dataType = colInfo.dataType;
+            SQLULEN columnSize = colInfo.columnSize;
+            SQLULEN processedColumnSize = colInfo.processedColumnSize;
+            uint64_t fetchBufferSize = colInfo.fetchBufferSize;
+            bool isLob = colInfo.isLob;
+            
             SQLLEN dataLen = buffers.indicators[col - 1][i];
             if (dataLen == SQL_NULL_DATA) {
                 row[col - 1] = py::none();
@@ -3301,11 +3307,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_CHAR:
                 case SQL_VARCHAR:
                 case SQL_LONGVARCHAR: {
-                    SQLULEN columnSize = colInfo.columnSize;
-                    HandleZeroColumnSizeAtFetch(columnSize);
-                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 					uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
-                    bool isLob = colInfo.isLob;
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
                         row[col - 1] = py::str(
@@ -3321,11 +3323,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_WLONGVARCHAR: {
                     PERF_TIMER("construct_rows::wstring_conversion");
                     // TODO: variable length data needs special handling, this logic wont suffice
-                    SQLULEN columnSize = colInfo.columnSize;
-                    HandleZeroColumnSizeAtFetch(columnSize);
-                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
 					uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
-                    bool isLob = colInfo.isLob;
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
 #if defined(__APPLE__) || defined(__linux__)
@@ -3525,12 +3523,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_BINARY:
                 case SQL_VARBINARY:
                 case SQL_LONGVARBINARY: {
-                    SQLULEN columnSize = colInfo.columnSize;
-                    HandleZeroColumnSizeAtFetch(columnSize);
-                    bool isLob = colInfo.isLob;
-                    if (!isLob && static_cast<size_t>(dataLen) <= columnSize) {
+                    if (!isLob && static_cast<size_t>(dataLen) <= processedColumnSize) {
                         row[col - 1] = py::bytes(reinterpret_cast<const char*>(
-                                                     &buffers.charBuffers[col - 1][i * columnSize]),
+                                                     &buffers.charBuffers[col - 1][i * processedColumnSize]),
                                                  dataLen);
                     } else {
                         row[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true);
