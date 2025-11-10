@@ -14424,6 +14424,58 @@ def test_row_cursor_log_method_availability(cursor, db_connection):
         db_connection.commit()
 
 
+def test_all_numeric_types_with_nulls(cursor, db_connection):
+    """Test NULL handling for all numeric types to ensure processor functions handle NULLs correctly"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_all_numeric_nulls")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_all_numeric_nulls (
+                int_col INT,
+                bigint_col BIGINT,
+                smallint_col SMALLINT,
+                tinyint_col TINYINT,
+                bit_col BIT,
+                real_col REAL,
+                float_col FLOAT
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Insert row with all NULLs
+        cursor.execute(
+            "INSERT INTO #pytest_all_numeric_nulls VALUES (NULL, NULL, NULL, NULL, NULL, NULL, NULL)"
+        )
+        # Insert row with actual values
+        cursor.execute(
+            "INSERT INTO #pytest_all_numeric_nulls VALUES (42, 9223372036854775807, 32767, 255, 1, 3.14, 2.718281828)"
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_all_numeric_nulls ORDER BY int_col ASC")
+        rows = cursor.fetchall()
+
+        # First row should be all NULLs
+        assert len(rows) == 2, "Should have exactly 2 rows"
+        assert all(val is None for val in rows[0]), "First row should be all NULLs"
+
+        # Second row should have actual values
+        assert rows[1][0] == 42, "INT column should be 42"
+        assert rows[1][1] == 9223372036854775807, "BIGINT column should match"
+        assert rows[1][2] == 32767, "SMALLINT column should be 32767"
+        assert rows[1][3] == 255, "TINYINT column should be 255"
+        assert rows[1][4] == True, "BIT column should be True"
+        assert abs(rows[1][5] - 3.14) < 0.01, "REAL column should be approximately 3.14"
+        assert abs(rows[1][6] - 2.718281828) < 0.0001, "FLOAT column should be approximately 2.718281828"
+
+    except Exception as e:
+        pytest.fail(f"All numeric types NULL test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_all_numeric_nulls")
+        db_connection.commit()
+
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
