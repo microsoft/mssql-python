@@ -14789,6 +14789,69 @@ def test_decimal_conversion_edge_cases(cursor, db_connection):
         db_connection.commit()
 
 
+def test_fixed_length_char_type(cursor, db_connection):
+    """Test SQL_CHAR (fixed-length CHAR) column processor path (Lines 3464-3467)"""
+    try:
+        cursor.execute("CREATE TABLE #pytest_char_test (id INT, char_col CHAR(10))")
+        cursor.execute("INSERT INTO #pytest_char_test VALUES (1, 'hello')")
+        cursor.execute("INSERT INTO #pytest_char_test VALUES (2, 'world')")
+        
+        cursor.execute("SELECT char_col FROM #pytest_char_test ORDER BY id")
+        rows = cursor.fetchall()
+        
+        # CHAR pads with spaces to fixed length
+        assert len(rows) == 2, "Should fetch 2 rows"
+        assert rows[0][0].rstrip() == "hello", "First CHAR value should be 'hello'"
+        assert rows[1][0].rstrip() == "world", "Second CHAR value should be 'world'"
+        
+        cursor.execute("DROP TABLE #pytest_char_test")
+    except Exception as e:
+        pytest.fail(f"Fixed-length CHAR test failed: {e}")
+
+
+def test_fixed_length_nchar_type(cursor, db_connection):
+    """Test SQL_WCHAR (fixed-length NCHAR) column processor path (Lines 3469-3472)"""
+    try:
+        cursor.execute("CREATE TABLE #pytest_nchar_test (id INT, nchar_col NCHAR(10))")
+        cursor.execute("INSERT INTO #pytest_nchar_test VALUES (1, N'hello')")
+        cursor.execute("INSERT INTO #pytest_nchar_test VALUES (2, N'世界')")  # Unicode test
+        
+        cursor.execute("SELECT nchar_col FROM #pytest_nchar_test ORDER BY id")
+        rows = cursor.fetchall()
+        
+        # NCHAR pads with spaces to fixed length
+        assert len(rows) == 2, "Should fetch 2 rows"
+        assert rows[0][0].rstrip() == "hello", "First NCHAR value should be 'hello'"
+        assert rows[1][0].rstrip() == "世界", "Second NCHAR value should be '世界'"
+        
+        cursor.execute("DROP TABLE #pytest_nchar_test")
+    except Exception as e:
+        pytest.fail(f"Fixed-length NCHAR test failed: {e}")
+
+
+def test_fixed_length_binary_type(cursor, db_connection):
+    """Test SQL_BINARY (fixed-length BINARY) column processor path (Lines 3474-3477)"""
+    try:
+        cursor.execute("CREATE TABLE #pytest_binary_test (id INT, binary_col BINARY(8))")
+        cursor.execute("INSERT INTO #pytest_binary_test VALUES (1, 0x0102030405)")
+        cursor.execute("INSERT INTO #pytest_binary_test VALUES (2, 0xAABBCCDD)")
+        
+        cursor.execute("SELECT binary_col FROM #pytest_binary_test ORDER BY id")
+        rows = cursor.fetchall()
+        
+        # BINARY pads with zeros to fixed length (8 bytes)
+        assert len(rows) == 2, "Should fetch 2 rows"
+        assert len(rows[0][0]) == 8, "BINARY(8) should be 8 bytes"
+        assert len(rows[1][0]) == 8, "BINARY(8) should be 8 bytes"
+        # First 5 bytes should match, rest padded with zeros
+        assert rows[0][0][:5] == b'\x01\x02\x03\x04\x05', "First BINARY value should start with inserted bytes"
+        assert rows[0][0][5:] == b'\x00\x00\x00', "BINARY should be zero-padded"
+        
+        cursor.execute("DROP TABLE #pytest_binary_test")
+    except Exception as e:
+        pytest.fail(f"Fixed-length BINARY test failed: {e}")
+
+
 def test_close(db_connection):
     """Test closing the cursor"""
     try:
