@@ -6,6 +6,7 @@ import sys
 import cProfile
 import pstats
 import io
+import time
 
 sys.path.insert(0, os.path.abspath('.'))
 
@@ -65,6 +66,9 @@ if __name__ == "__main__":
     print(f"Python Version: {platform.python_version()}")
     print()
     
+    # Start overall timer
+    overall_start = time.perf_counter()
+    
     # Python-level profiling
     pr = cProfile.Profile()
     pr.enable()
@@ -72,6 +76,10 @@ if __name__ == "__main__":
     rows, cpp_stats = run_query()
     
     pr.disable()
+    
+    # Stop overall timer
+    overall_end = time.perf_counter()
+    overall_time_ms = (overall_end - overall_start) * 1000.0
     
     print(f"\nRows fetched: {len(rows):,}")
     
@@ -128,5 +136,11 @@ if __name__ == "__main__":
                 print(f"  {func_name:<48} {stats['calls']:>8} {total_ms:>12.3f} {avg_us:>12.1f} {stats['min_us']:>12.1f} {stats['max_us']:>12.1f}")
     else:
         print("No C++ profiling data collected")
+    
+    # Overall execution time
+    print("\n" + "="*80)
+    print("OVERALL EXECUTION TIME")
+    print("="*80)
+    print(f"Total time (including Python + C++): {overall_time_ms:,.2f} ms ({overall_time_ms/1000.0:.3f} seconds)")
     
     print("\n" + "="*80)
