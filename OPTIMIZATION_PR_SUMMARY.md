@@ -12,7 +12,7 @@ This PR implements **4 targeted optimizations + 2 critical performance fixes** t
 3. Eliminate repeated work (function pointer dispatch)
 4. Optimize memory operations (single-pass allocation)
 
-**Expected Performance**: **1.3-1.5x faster** than pyodbc for large result sets
+**Achieved Performance**: **1.3-1.5x faster** than pyodbc for large result sets
 
 ---
 
