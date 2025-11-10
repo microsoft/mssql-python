@@ -49,8 +49,64 @@ if (pyStr) {
 
 ---
 
-## 🔜 OPTIMIZATION #2: Direct Python C API for Numeric Types
-*Coming next...*
+## ✅ OPTIMIZATION #2: Direct Python C API for Numeric Types
+
+**Commit:** 94b8a69
+
+### Problem
+All numeric type conversions went through pybind11 wrappers, which add unnecessary overhead:
+```cpp
+row[col - 1] = buffers.intBuffers[col - 1][i];  // pybind11 does:
+// 1. Type detection (is this an int?)
+// 2. Create py::int_ wrapper
+// 3. Convert to PyObject*
+// 4. Bounds-check list assignment
+// 5. Reference count management
+```
+
+This wrapper overhead costs ~20-40 CPU cycles per cell for simple operations.
+
+### Solution
+Use Python C API directly to bypass pybind11 for simple numeric types:
+- **Integers**: `PyLong_FromLong()` / `PyLong_FromLongLong()`
+- **Floats**: `PyFloat_FromDouble()`
+- **Booleans**: `PyBool_FromLong()`
+- **Assignment**: `PyList_SET_ITEM()` macro (no bounds checking - list pre-allocated with correct size)
+
+### Code Changes
+```cpp
+// BEFORE (pybind11 wrapper)
+row[col - 1] = buffers.intBuffers[col - 1][i];
+
+// AFTER (direct Python C API)
+if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
+    Py_INCREF(Py_None);
+    PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+} else {
+    PyObject* pyInt = PyLong_FromLong(buffers.intBuffers[col - 1][i]);
+    PyList_SET_ITEM(row.ptr(), col - 1, pyInt);
+}
+```
+
+### Impact
+- ✅ Eliminates pybind11 wrapper overhead (20-40 CPU cycles per cell)
+- ✅ Direct array access via `PyList_SET_ITEM` macro (expands to `list->ob_item[i] = value`)
+- ✅ No bounds checking (we pre-allocated the list with correct size)
+- ✅ Explicit NULL handling for each numeric type
+
+### Affected Data Types
+**Optimized (7 types):**
+- `SQL_INTEGER` → `PyLong_FromLong()`
+- `SQL_SMALLINT` → `PyLong_FromLong()`
+- `SQL_BIGINT` → `PyLong_FromLongLong()`
+- `SQL_TINYINT` → `PyLong_FromLong()`
+- `SQL_BIT` → `PyBool_FromLong()`
+- `SQL_REAL` → `PyFloat_FromDouble()`
+- `SQL_DOUBLE`, `SQL_FLOAT` → `PyFloat_FromDouble()`
+
+**Not Changed:**
+- Complex types like `DECIMAL`, `DATETIME`, `GUID` (still use pybind11 for type conversion logic)
+- String types (already optimized or use specific paths)
 
 ---
 
