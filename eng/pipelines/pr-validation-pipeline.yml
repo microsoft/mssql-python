@@ -880,1201 +880,1201 @@ jobs:
       testResultsFiles: '**/test-results-$(distroName).xml'
       testRunTitle: 'Publish pytest results on $(distroName)'
 
-- job: PytestOnLinux_ARM64
-  displayName: 'Linux ARM64'
-  pool:
-    vmImage: 'ubuntu-latest'
+# - job: PytestOnLinux_ARM64
+#   displayName: 'Linux ARM64'
+#   pool:
+#     vmImage: 'ubuntu-latest'
 
-  strategy:
-    matrix:
-      Ubuntu_ARM64:
-        dockerImage: 'ubuntu:22.04'
-        distroName: 'Ubuntu'
-        archName: 'arm64'
-      Debian_ARM64:
-        dockerImage: 'debian:12'
-        distroName: 'Debian'
-        archName: 'arm64'
+#   strategy:
+#     matrix:
+#       Ubuntu_ARM64:
+#         dockerImage: 'ubuntu:22.04'
+#         distroName: 'Ubuntu'
+#         archName: 'arm64'
+#       Debian_ARM64:
+#         dockerImage: 'debian:12'
+#         distroName: 'Debian'
+#         archName: 'arm64'
 
-  steps:
-  - script: |
-      # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-      docker buildx create --name multiarch --driver docker-container --use
-      docker buildx inspect --bootstrap
-    displayName: 'Setup Docker buildx for ARM64 emulation'
+#   steps:
+#   - script: |
+#       # Set up Docker buildx for multi-architecture support
+#       docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+#       docker buildx create --name multiarch --driver docker-container --use
+#       docker buildx inspect --bootstrap
+#     displayName: 'Setup Docker buildx for ARM64 emulation'
 
-  - script: |
-      # Create a Docker container for testing on ARM64
-      docker run -d --name test-container-$(distroName)-$(archName) \
-        --platform linux/arm64 \
-        -v $(Build.SourcesDirectory):/workspace \
-        -w /workspace \
-        --network bridge \
-        $(dockerImage) \
-        tail -f /dev/null
-    displayName: 'Create $(distroName) ARM64 container'
+#   - script: |
+#       # Create a Docker container for testing on ARM64
+#       docker run -d --name test-container-$(distroName)-$(archName) \
+#         --platform linux/arm64 \
+#         -v $(Build.SourcesDirectory):/workspace \
+#         -w /workspace \
+#         --network bridge \
+#         $(dockerImage) \
+#         tail -f /dev/null
+#     displayName: 'Create $(distroName) ARM64 container'
 
-  - script: |
-      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
-      docker run -d --name sqlserver-$(distroName)-$(archName) \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
+#   - script: |
+#       # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
+#       docker run -d --name sqlserver-$(distroName)-$(archName) \
+#         --platform linux/amd64 \
+#         -e ACCEPT_EULA=Y \
+#         -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+#         -p 1433:1433 \
+#         mcr.microsoft.com/mssql/server:2022-latest
       
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-$(distroName)-$(archName) \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
+#       # Wait for SQL Server to be ready
+#       echo "Waiting for SQL Server to start..."
+#       for i in {1..60}; do
+#         if docker exec sqlserver-$(distroName)-$(archName) \
+#           /opt/mssql-tools18/bin/sqlcmd \
+#           -S localhost \
+#           -U SA \
+#           -P "$(DB_PASSWORD)" \
+#           -C -Q "SELECT 1" >/dev/null 2>&1; then
+#           echo "SQL Server is ready!"
+#           break
+#         fi
+#         echo "Waiting... ($i/60)"
+#         sleep 2
+#       done
       
-      # Create test database
-      docker exec sqlserver-$(distroName)-$(archName) \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
-    displayName: 'Start SQL Server container for $(distroName) ARM64'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#       # Create test database
+#       docker exec sqlserver-$(distroName)-$(archName) \
+#         /opt/mssql-tools18/bin/sqlcmd \
+#         -S localhost \
+#         -U SA \
+#         -P "$(DB_PASSWORD)" \
+#         -C -Q "CREATE DATABASE TestDB"
+#     displayName: 'Start SQL Server container for $(distroName) ARM64'
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      # Install dependencies in the ARM64 container
-      if [ "$(distroName)" = "Ubuntu" ]; then
-        docker exec test-container-$(distroName)-$(archName) bash -c "
-          export DEBIAN_FRONTEND=noninteractive
-          export TZ=UTC
-          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
-          apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
-          # Verify architecture
-          uname -m
-          dpkg --print-architecture
-        "
-      else
-        # Debian ARM64
-        docker exec test-container-$(distroName)-$(archName) bash -c "
-          export DEBIAN_FRONTEND=noninteractive
-          export TZ=UTC
-          ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
-          apt-get update && 
-          apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
-          # Verify architecture
-          uname -m
-          dpkg --print-architecture
-        "
-      fi
-    displayName: 'Install basic dependencies in $(distroName) ARM64 container'
+#   - script: |
+#       # Install dependencies in the ARM64 container
+#       if [ "$(distroName)" = "Ubuntu" ]; then
+#         docker exec test-container-$(distroName)-$(archName) bash -c "
+#           export DEBIAN_FRONTEND=noninteractive
+#           export TZ=UTC
+#           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
+#           apt-get update && 
+#           apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
+#           # Verify architecture
+#           uname -m
+#           dpkg --print-architecture
+#         "
+#       else
+#         # Debian ARM64
+#         docker exec test-container-$(distroName)-$(archName) bash -c "
+#           export DEBIAN_FRONTEND=noninteractive
+#           export TZ=UTC
+#           ln -snf /usr/share/zoneinfo/\$TZ /etc/localtime && echo \$TZ > /etc/timezone
+#           apt-get update && 
+#           apt-get install -y python3 python3-pip python3-venv python3-full cmake curl wget gnupg software-properties-common build-essential python3-dev pybind11-dev
+#           # Verify architecture
+#           uname -m
+#           dpkg --print-architecture
+#         "
+#       fi
+#     displayName: 'Install basic dependencies in $(distroName) ARM64 container'
 
-  - script: |
-      # Install ODBC driver in the ARM64 container
-      docker exec test-container-$(distroName)-$(archName) bash -c "
-        export DEBIAN_FRONTEND=noninteractive
+#   - script: |
+#       # Install ODBC driver in the ARM64 container
+#       docker exec test-container-$(distroName)-$(archName) bash -c "
+#         export DEBIAN_FRONTEND=noninteractive
         
-        # Download the package to configure the Microsoft repo
-        if [ '$(distroName)' = 'Ubuntu' ]; then
-          curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
-        else
-          # Debian 12
-          curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
-        fi
+#         # Download the package to configure the Microsoft repo
+#         if [ '$(distroName)' = 'Ubuntu' ]; then
+#           curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
+#         else
+#           # Debian 12
+#           curl -sSL -O https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb
+#         fi
         
-        # Install the package
-        dpkg -i packages-microsoft-prod.deb || true
-        rm packages-microsoft-prod.deb
+#         # Install the package
+#         dpkg -i packages-microsoft-prod.deb || true
+#         rm packages-microsoft-prod.deb
         
-        # Update package list
-        apt-get update
+#         # Update package list
+#         apt-get update
         
-        # Install the driver (ARM64 version)
-        ACCEPT_EULA=Y apt-get install -y msodbcsql18
-        # optional: for bcp and sqlcmd
-        ACCEPT_EULA=Y apt-get install -y mssql-tools18
-        # optional: for unixODBC development headers
-        apt-get install -y unixodbc-dev
-      "
-    displayName: 'Install ODBC Driver in $(distroName) ARM64 container'
+#         # Install the driver (ARM64 version)
+#         ACCEPT_EULA=Y apt-get install -y msodbcsql18
+#         # optional: for bcp and sqlcmd
+#         ACCEPT_EULA=Y apt-get install -y mssql-tools18
+#         # optional: for unixODBC development headers
+#         apt-get install -y unixodbc-dev
+#       "
+#     displayName: 'Install ODBC Driver in $(distroName) ARM64 container'
 
-  - script: |
-      # Install Python dependencies in the ARM64 container using virtual environment
-      docker exec test-container-$(distroName)-$(archName) bash -c "
-        # Create a virtual environment
-        python3 -m venv /opt/venv
-        source /opt/venv/bin/activate
+#   - script: |
+#       # Install Python dependencies in the ARM64 container using virtual environment
+#       docker exec test-container-$(distroName)-$(archName) bash -c "
+#         # Create a virtual environment
+#         python3 -m venv /opt/venv
+#         source /opt/venv/bin/activate
         
-        # Install dependencies in the virtual environment
-        python -m pip install --upgrade pip
-        python -m pip install -r requirements.txt
+#         # Install dependencies in the virtual environment
+#         python -m pip install --upgrade pip
+#         python -m pip install -r requirements.txt
         
-        # Make the virtual environment globally available
-        echo 'source /opt/venv/bin/activate' >> ~/.bashrc
-      "
-    displayName: 'Install Python dependencies in $(distroName) ARM64 container'
+#         # Make the virtual environment globally available
+#         echo 'source /opt/venv/bin/activate' >> ~/.bashrc
+#       "
+#     displayName: 'Install Python dependencies in $(distroName) ARM64 container'
 
-  - script: |
-      # Build pybind bindings in the ARM64 container
-      docker exec test-container-$(distroName)-$(archName) bash -c "
-        source /opt/venv/bin/activate
-        cd mssql_python/pybind
-        chmod +x build.sh
-        ./build.sh
-      "
-    displayName: 'Build pybind bindings (.so) in $(distroName) ARM64 container'
+#   - script: |
+#       # Build pybind bindings in the ARM64 container
+#       docker exec test-container-$(distroName)-$(archName) bash -c "
+#         source /opt/venv/bin/activate
+#         cd mssql_python/pybind
+#         chmod +x build.sh
+#         ./build.sh
+#       "
+#     displayName: 'Build pybind bindings (.so) in $(distroName) ARM64 container'
 
-  - script: |
-      # Uninstall ODBC Driver before running tests
-      docker exec test-container-$(distroName)-$(archName) bash -c "
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
-        rm -f /usr/bin/sqlcmd
-        rm -f /usr/bin/bcp
-        rm -rf /opt/microsoft/msodbcsql
-        rm -f /lib/aarch64-linux-gnu/libodbcinst.so.2
-        odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
-        echo 'Uninstalled ODBC Driver and cleaned up libraries'
-        echo 'Verifying arm64 debian_ubuntu driver library signatures:'
-        ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.5.so.1.1
-      "
-    displayName: 'Uninstall ODBC Driver before running tests in $(distroName) ARM64 container'
+#   - script: |
+#       # Uninstall ODBC Driver before running tests
+#       docker exec test-container-$(distroName)-$(archName) bash -c "
+#         export DEBIAN_FRONTEND=noninteractive
+#         apt-get remove --purge -y msodbcsql18 mssql-tools18 unixodbc-dev
+#         rm -f /usr/bin/sqlcmd
+#         rm -f /usr/bin/bcp
+#         rm -rf /opt/microsoft/msodbcsql
+#         rm -f /lib/aarch64-linux-gnu/libodbcinst.so.2
+#         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
+#         echo 'Uninstalled ODBC Driver and cleaned up libraries'
+#         echo 'Verifying arm64 debian_ubuntu driver library signatures:'
+#         ldd mssql_python/libs/linux/debian_ubuntu/arm64/lib/libmsodbcsql-18.5.so.1.1
+#       "
+#     displayName: 'Uninstall ODBC Driver before running tests in $(distroName) ARM64 container'
 
-  - script: |
-      # Run tests in the ARM64 container
-      # Get SQL Server container IP
-      SQLSERVER_IP=$(docker inspect sqlserver-$(distroName)-$(archName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-      echo "SQL Server IP: $SQLSERVER_IP"
+#   - script: |
+#       # Run tests in the ARM64 container
+#       # Get SQL Server container IP
+#       SQLSERVER_IP=$(docker inspect sqlserver-$(distroName)-$(archName) --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+#       echo "SQL Server IP: $SQLSERVER_IP"
       
-      docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
-        test-container-$(distroName)-$(archName) bash -c "
-        source /opt/venv/bin/activate
-        echo 'Build successful, running tests now on $(distroName) ARM64'
-        echo 'Architecture:' \$(uname -m)
-        echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-        python main.py
-        python -m pytest -v --junitxml=test-results-$(distroName)-$(archName).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(archName).xml --capture=tee-sys --cache-clear
-      "
-    displayName: 'Run pytest with coverage in $(distroName) ARM64 container'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#       docker exec \
+#         -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+#         -e DB_PASSWORD="$(DB_PASSWORD)" \
+#         test-container-$(distroName)-$(archName) bash -c "
+#         source /opt/venv/bin/activate
+#         echo 'Build successful, running tests now on $(distroName) ARM64'
+#         echo 'Architecture:' \$(uname -m)
+#         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+#         python main.py
+#         python -m pytest -v --junitxml=test-results-$(distroName)-$(archName).xml --cov=. --cov-report=xml:coverage-$(distroName)-$(archName).xml --capture=tee-sys --cache-clear
+#       "
+#     displayName: 'Run pytest with coverage in $(distroName) ARM64 container'
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      # Copy test results from container to host
-      docker cp test-container-$(distroName)-$(archName):/workspace/test-results-$(distroName)-$(archName).xml $(Build.SourcesDirectory)/
-      docker cp test-container-$(distroName)-$(archName):/workspace/coverage-$(distroName)-$(archName).xml $(Build.SourcesDirectory)/
-    displayName: 'Copy test results from $(distroName) ARM64 container'
-    condition: always()
+#   - script: |
+#       # Copy test results from container to host
+#       docker cp test-container-$(distroName)-$(archName):/workspace/test-results-$(distroName)-$(archName).xml $(Build.SourcesDirectory)/
+#       docker cp test-container-$(distroName)-$(archName):/workspace/coverage-$(distroName)-$(archName).xml $(Build.SourcesDirectory)/
+#     displayName: 'Copy test results from $(distroName) ARM64 container'
+#     condition: always()
 
-  - script: |
-      # Clean up containers
-      docker stop test-container-$(distroName)-$(archName) || true
-      docker rm test-container-$(distroName)-$(archName) || true
-      docker stop sqlserver-$(distroName)-$(archName) || true
-      docker rm sqlserver-$(distroName)-$(archName) || true
-    displayName: 'Clean up $(distroName) ARM64 containers'
-    condition: always()
+#   - script: |
+#       # Clean up containers
+#       docker stop test-container-$(distroName)-$(archName) || true
+#       docker rm test-container-$(distroName)-$(archName) || true
+#       docker stop sqlserver-$(distroName)-$(archName) || true
+#       docker rm sqlserver-$(distroName)-$(archName) || true
+#     displayName: 'Clean up $(distroName) ARM64 containers'
+#     condition: always()
 
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results-$(distroName)-$(archName).xml'
-      testRunTitle: 'Publish pytest results on $(distroName) ARM64'
+#   - task: PublishTestResults@2
+#     condition: succeededOrFailed()
+#     inputs:
+#       testResultsFiles: '**/test-results-$(distroName)-$(archName).xml'
+#       testRunTitle: 'Publish pytest results on $(distroName) ARM64'
 
-- job: PytestOnLinux_RHEL9
-  displayName: 'Linux RedHat x86_64'
-  pool:
-    vmImage: 'ubuntu-latest'
+# - job: PytestOnLinux_RHEL9
+#   displayName: 'Linux RedHat x86_64'
+#   pool:
+#     vmImage: 'ubuntu-latest'
 
-  steps:
-  - script: |
-      # Create a Docker container for testing
-      docker run -d --name test-container-rhel9 \
-        -v $(Build.SourcesDirectory):/workspace \
-        -w /workspace \
-        --network bridge \
-        redhat/ubi9:latest \
-        tail -f /dev/null
-    displayName: 'Create RHEL 9 container'
+#   steps:
+#   - script: |
+#       # Create a Docker container for testing
+#       docker run -d --name test-container-rhel9 \
+#         -v $(Build.SourcesDirectory):/workspace \
+#         -w /workspace \
+#         --network bridge \
+#         redhat/ubi9:latest \
+#         tail -f /dev/null
+#     displayName: 'Create RHEL 9 container'
 
-  - script: |
-      # Start SQL Server container
-      docker run -d --name sqlserver-rhel9 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
+#   - script: |
+#       # Start SQL Server container
+#       docker run -d --name sqlserver-rhel9 \
+#         -e ACCEPT_EULA=Y \
+#         -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+#         -p 1433:1433 \
+#         mcr.microsoft.com/mssql/server:2022-latest
       
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-rhel9 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
+#       # Wait for SQL Server to be ready
+#       echo "Waiting for SQL Server to start..."
+#       for i in {1..60}; do
+#         if docker exec sqlserver-rhel9 \
+#           /opt/mssql-tools18/bin/sqlcmd \
+#           -S localhost \
+#           -U SA \
+#           -P "$(DB_PASSWORD)" \
+#           -C -Q "SELECT 1" >/dev/null 2>&1; then
+#           echo "SQL Server is ready!"
+#           break
+#         fi
+#         echo "Waiting... ($i/60)"
+#         sleep 2
+#       done
       
-      # Create test database
-      docker exec sqlserver-rhel9 \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
-    displayName: 'Start SQL Server container for RHEL 9'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#       # Create test database
+#       docker exec sqlserver-rhel9 \
+#         /opt/mssql-tools18/bin/sqlcmd \
+#         -S localhost \
+#         -U SA \
+#         -P "$(DB_PASSWORD)" \
+#         -C -Q "CREATE DATABASE TestDB"
+#     displayName: 'Start SQL Server container for RHEL 9'
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      # Install dependencies in the RHEL 9 container
-      docker exec test-container-rhel9 bash -c "
-        # Enable CodeReady Builder repository for additional packages
-        dnf update -y
-        dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
-        subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms || dnf config-manager --set-enabled ubi-9-codeready-builder
+#   - script: |
+#       # Install dependencies in the RHEL 9 container
+#       docker exec test-container-rhel9 bash -c "
+#         # Enable CodeReady Builder repository for additional packages
+#         dnf update -y
+#         dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
+#         subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms || dnf config-manager --set-enabled ubi-9-codeready-builder
         
-        # Install Python 3.9 (available in RHEL 9 UBI) and development tools
-        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 glibc-devel kernel-headers
-        dnf install -y python3-libs python3-debug
-        dnf install -y gcc gcc-c++ make binutils
-        dnf install -y cmake
-        # If that doesn't work, try installing from different repositories
-        if ! which gcc; then
-          echo 'Trying alternative gcc installation...'
-          dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
-        fi
-        # Verify installation
-        python3 --version
-        which gcc && which g++
-        gcc --version
-        g++ --version
-      "
-    displayName: 'Install basic dependencies in RHEL 9 container'
+#         # Install Python 3.9 (available in RHEL 9 UBI) and development tools
+#         dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 glibc-devel kernel-headers
+#         dnf install -y python3-libs python3-debug
+#         dnf install -y gcc gcc-c++ make binutils
+#         dnf install -y cmake
+#         # If that doesn't work, try installing from different repositories
+#         if ! which gcc; then
+#           echo 'Trying alternative gcc installation...'
+#           dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
+#         fi
+#         # Verify installation
+#         python3 --version
+#         which gcc && which g++
+#         gcc --version
+#         g++ --version
+#       "
+#     displayName: 'Install basic dependencies in RHEL 9 container'
 
-  - script: |
-      # Verify compiler installation and set environment for RHEL 9
-      docker exec test-container-rhel9 bash -c "
-        # Verify compilers are available
-        which gcc || echo 'GCC not found'
-        which g++ || echo 'G++ not found'
-        gcc --version || echo 'GCC version check failed'
-        g++ --version || echo 'G++ version check failed'
+#   - script: |
+#       # Verify compiler installation and set environment for RHEL 9
+#       docker exec test-container-rhel9 bash -c "
+#         # Verify compilers are available
+#         which gcc || echo 'GCC not found'
+#         which g++ || echo 'G++ not found'
+#         gcc --version || echo 'GCC version check failed'
+#         g++ --version || echo 'G++ version check failed'
         
-        # Set compiler environment variables
-        export CC=/usr/bin/gcc
-        export CXX=/usr/bin/g++
-        echo 'CC set to:' \$CC
-        echo 'CXX set to:' \$CXX
+#         # Set compiler environment variables
+#         export CC=/usr/bin/gcc
+#         export CXX=/usr/bin/g++
+#         echo 'CC set to:' \$CC
+#         echo 'CXX set to:' \$CXX
         
-        # Create a wrapper script to preserve environment
-        cat > /workspace/setup_env.sh << 'EOF'
-        #!/bin/bash
-        export CC=/usr/bin/gcc
-        export CXX=/usr/bin/g++
-        export PATH=/usr/bin:\$PATH
-        exec \"\$@\"
-        EOF
-        chmod +x /workspace/setup_env.sh
-      "
-    displayName: 'Verify and configure compilers in RHEL 9 container'
+#         # Create a wrapper script to preserve environment
+#         cat > /workspace/setup_env.sh << 'EOF'
+#         #!/bin/bash
+#         export CC=/usr/bin/gcc
+#         export CXX=/usr/bin/g++
+#         export PATH=/usr/bin:\$PATH
+#         exec \"\$@\"
+#         EOF
+#         chmod +x /workspace/setup_env.sh
+#       "
+#     displayName: 'Verify and configure compilers in RHEL 9 container'
 
-  - script: |
-      # Install ODBC driver in the RHEL 9 container
-      docker exec test-container-rhel9 bash -c "
-        # Add Microsoft repository for RHEL 9
-        curl -sSL -o /etc/yum.repos.d/msprod.repo https://packages.microsoft.com/config/rhel/9/prod.repo
+#   - script: |
+#       # Install ODBC driver in the RHEL 9 container
+#       docker exec test-container-rhel9 bash -c "
+#         # Add Microsoft repository for RHEL 9
+#         curl -sSL -o /etc/yum.repos.d/msprod.repo https://packages.microsoft.com/config/rhel/9/prod.repo
         
-        # Install the driver
-        ACCEPT_EULA=Y dnf install -y msodbcsql18
-        # optional: for bcp and sqlcmd
-        ACCEPT_EULA=Y dnf install -y mssql-tools18
-        # optional: for unixODBC development headers
-        dnf install -y unixODBC-devel
-      "
-    displayName: 'Install ODBC Driver in RHEL 9 container'
+#         # Install the driver
+#         ACCEPT_EULA=Y dnf install -y msodbcsql18
+#         # optional: for bcp and sqlcmd
+#         ACCEPT_EULA=Y dnf install -y mssql-tools18
+#         # optional: for unixODBC development headers
+#         dnf install -y unixODBC-devel
+#       "
+#     displayName: 'Install ODBC Driver in RHEL 9 container'
 
-  - script: |
-      # Install Python dependencies in the container using virtual environment
-      docker exec test-container-rhel9 bash -c "
-        # Create a virtual environment with Python 3.9
-        python3 -m venv myvenv
-        source myvenv/bin/activate
+#   - script: |
+#       # Install Python dependencies in the container using virtual environment
+#       docker exec test-container-rhel9 bash -c "
+#         # Create a virtual environment with Python 3.9
+#         python3 -m venv myvenv
+#         source myvenv/bin/activate
 
-        # Install dependencies in the virtual environment
-        python -m pip install --upgrade pip
-        python -m pip install -r requirements.txt
+#         # Install dependencies in the virtual environment
+#         python -m pip install --upgrade pip
+#         python -m pip install -r requirements.txt
         
-        # Make the virtual environment globally available
-        echo 'source myvenv/bin/activate' >> ~/.bashrc
-      "
-    displayName: 'Install Python dependencies in RHEL 9 container'
+#         # Make the virtual environment globally available
+#         echo 'source myvenv/bin/activate' >> ~/.bashrc
+#       "
+#     displayName: 'Install Python dependencies in RHEL 9 container'
 
-  - script: |
-      # Build pybind bindings in the container
-      docker exec test-container-rhel9 bash -c "
-        source myvenv/bin/activate
-        ls /usr/include/python3.9
-        # Set compiler environment variables
-        export CC=/usr/bin/gcc
-        export CXX=/usr/bin/g++
+#   - script: |
+#       # Build pybind bindings in the container
+#       docker exec test-container-rhel9 bash -c "
+#         source myvenv/bin/activate
+#         ls /usr/include/python3.9
+#         # Set compiler environment variables
+#         export CC=/usr/bin/gcc
+#         export CXX=/usr/bin/g++
 
-        cd mssql_python/pybind
-        chmod +x build.sh
-        ./build.sh
-      "
-    displayName: 'Build pybind bindings (.so) in RHEL 9 container'
+#         cd mssql_python/pybind
+#         chmod +x build.sh
+#         ./build.sh
+#       "
+#     displayName: 'Build pybind bindings (.so) in RHEL 9 container'
 
-  - script: |
-      # Uninstall ODBC Driver before running tests
-      docker exec test-container-rhel9 bash -c "
-        dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
-        rm -f /usr/bin/sqlcmd
-        rm -f /usr/bin/bcp
-        rm -rf /opt/microsoft/msodbcsql
-        rm -f /lib64/libodbcinst.so.2
-        odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
-        echo 'Uninstalled ODBC Driver and cleaned up libraries'
-        echo 'Verifying x86_64 rhel driver library signatures:'
-        ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-18.5.so.1.1
-      "
-    displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 container'
+#   - script: |
+#       # Uninstall ODBC Driver before running tests
+#       docker exec test-container-rhel9 bash -c "
+#         dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
+#         rm -f /usr/bin/sqlcmd
+#         rm -f /usr/bin/bcp
+#         rm -rf /opt/microsoft/msodbcsql
+#         rm -f /lib64/libodbcinst.so.2
+#         odbcinst -u -d -n 'ODBC Driver 11 for SQL Server' || true
+#         echo 'Uninstalled ODBC Driver and cleaned up libraries'
+#         echo 'Verifying x86_64 rhel driver library signatures:'
+#         ldd mssql_python/libs/linux/rhel/x86_64/lib/libmsodbcsql-18.5.so.1.1
+#       "
+#     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 container'
 
-  - script: |
-      # Run tests in the container
-      # Get SQL Server container IP
-      SQLSERVER_IP=$(docker inspect sqlserver-rhel9 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-      echo "SQL Server IP: $SQLSERVER_IP"
+#   - script: |
+#       # Run tests in the container
+#       # Get SQL Server container IP
+#       SQLSERVER_IP=$(docker inspect sqlserver-rhel9 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+#       echo "SQL Server IP: $SQLSERVER_IP"
       
-      docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
-        test-container-rhel9 bash -c "
-        source myvenv/bin/activate
-        echo 'Build successful, running tests now on RHEL 9'
-        echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-        python main.py
-        python -m pytest -v --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
-      "
-    displayName: 'Run pytest with coverage in RHEL 9 container'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#       docker exec \
+#         -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+#         -e DB_PASSWORD="$(DB_PASSWORD)" \
+#         test-container-rhel9 bash -c "
+#         source myvenv/bin/activate
+#         echo 'Build successful, running tests now on RHEL 9'
+#         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+#         python main.py
+#         python -m pytest -v --junitxml=test-results-rhel9.xml --cov=. --cov-report=xml:coverage-rhel9.xml --capture=tee-sys --cache-clear
+#       "
+#     displayName: 'Run pytest with coverage in RHEL 9 container'
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      # Copy test results from container to host
-      docker cp test-container-rhel9:/workspace/test-results-rhel9.xml $(Build.SourcesDirectory)/
-      docker cp test-container-rhel9:/workspace/coverage-rhel9.xml $(Build.SourcesDirectory)/
-    displayName: 'Copy test results from RHEL 9 container'
-    condition: always()
+#   - script: |
+#       # Copy test results from container to host
+#       docker cp test-container-rhel9:/workspace/test-results-rhel9.xml $(Build.SourcesDirectory)/
+#       docker cp test-container-rhel9:/workspace/coverage-rhel9.xml $(Build.SourcesDirectory)/
+#     displayName: 'Copy test results from RHEL 9 container'
+#     condition: always()
 
-  - script: |
-      # Clean up containers
-      docker stop test-container-rhel9 || true
-      docker rm test-container-rhel9 || true
-      docker stop sqlserver-rhel9 || true
-      docker rm sqlserver-rhel9 || true
-    displayName: 'Clean up RHEL 9 containers'
-    condition: always()
+#   - script: |
+#       # Clean up containers
+#       docker stop test-container-rhel9 || true
+#       docker rm test-container-rhel9 || true
+#       docker stop sqlserver-rhel9 || true
+#       docker rm sqlserver-rhel9 || true
+#     displayName: 'Clean up RHEL 9 containers'
+#     condition: always()
 
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results-rhel9.xml'
-      testRunTitle: 'Publish pytest results on RHEL 9'
+#   - task: PublishTestResults@2
+#     condition: succeededOrFailed()
+#     inputs:
+#       testResultsFiles: '**/test-results-rhel9.xml'
+#       testRunTitle: 'Publish pytest results on RHEL 9'
 
-- job: PytestOnLinux_RHEL9_ARM64
-  displayName: 'Linux RedHat ARM64'
-  pool:
-    vmImage: 'ubuntu-latest'
+# - job: PytestOnLinux_RHEL9_ARM64
+#   displayName: 'Linux RedHat ARM64'
+#   pool:
+#     vmImage: 'ubuntu-latest'
 
-  steps:
-  - script: |
-      # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-      docker buildx create --name multiarch --driver docker-container --use
-      docker buildx inspect --bootstrap
-    displayName: 'Setup Docker buildx for ARM64 emulation'
+#   steps:
+#   - script: |
+#       # Set up Docker buildx for multi-architecture support
+#       docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+#       docker buildx create --name multiarch --driver docker-container --use
+#       docker buildx inspect --bootstrap
+#     displayName: 'Setup Docker buildx for ARM64 emulation'
 
-  - script: |
-      # Create a Docker container for testing on ARM64
-      docker run -d --name test-container-rhel9-arm64 \
-        --platform linux/arm64 \
-        -v $(Build.SourcesDirectory):/workspace \
-        -w /workspace \
-        --network bridge \
-        redhat/ubi9:latest \
-        tail -f /dev/null
-    displayName: 'Create RHEL 9 ARM64 container'
+#   - script: |
+#       # Create a Docker container for testing on ARM64
+#       docker run -d --name test-container-rhel9-arm64 \
+#         --platform linux/arm64 \
+#         -v $(Build.SourcesDirectory):/workspace \
+#         -w /workspace \
+#         --network bridge \
+#         redhat/ubi9:latest \
+#         tail -f /dev/null
+#     displayName: 'Create RHEL 9 ARM64 container'
 
-  - script: |
-      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
-      docker run -d --name sqlserver-rhel9-arm64 \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
+#   - script: |
+#       # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
+#       docker run -d --name sqlserver-rhel9-arm64 \
+#         --platform linux/amd64 \
+#         -e ACCEPT_EULA=Y \
+#         -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+#         -p 1433:1433 \
+#         mcr.microsoft.com/mssql/server:2022-latest
       
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-rhel9-arm64 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
+#       # Wait for SQL Server to be ready
+#       echo "Waiting for SQL Server to start..."
+#       for i in {1..60}; do
+#         if docker exec sqlserver-rhel9-arm64 \
+#           /opt/mssql-tools18/bin/sqlcmd \
+#           -S localhost \
+#           -U SA \
+#           -P "$(DB_PASSWORD)" \
+#           -C -Q "SELECT 1" >/dev/null 2>&1; then
+#           echo "SQL Server is ready!"
+#           break
+#         fi
+#         echo "Waiting... ($i/60)"
+#         sleep 2
+#       done
       
-      # Create test database
-      docker exec sqlserver-rhel9-arm64 \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
-    displayName: 'Start SQL Server container for RHEL 9 ARM64'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#       # Create test database
+#       docker exec sqlserver-rhel9-arm64 \
+#         /opt/mssql-tools18/bin/sqlcmd \
+#         -S localhost \
+#         -U SA \
+#         -P "$(DB_PASSWORD)" \
+#         -C -Q "CREATE DATABASE TestDB"
+#     displayName: 'Start SQL Server container for RHEL 9 ARM64'
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      # Install dependencies in the RHEL 9 ARM64 container
-      docker exec test-container-rhel9-arm64 bash -c "
-        # Enable CodeReady Builder repository for additional packages
-        dnf update -y
-        dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
-        subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms || dnf config-manager --set-enabled ubi-9-codeready-builder
+#   - script: |
+#       # Install dependencies in the RHEL 9 ARM64 container
+#       docker exec test-container-rhel9-arm64 bash -c "
+#         # Enable CodeReady Builder repository for additional packages
+#         dnf update -y
+#         dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
+#         subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms || dnf config-manager --set-enabled ubi-9-codeready-builder
         
-        # Install Python 3.9 (available in RHEL 9 UBI) and development tools
-        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 glibc-devel kernel-headers
-        dnf install -y python3-libs python3-debug
-        dnf install -y gcc gcc-c++ make binutils
-        dnf install -y cmake
-        # If that doesn't work, try installing from different repositories
-        if ! which gcc; then
-          echo 'Trying alternative gcc installation...'
-          dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
-        fi
-        # Verify installation and architecture
-        python3 --version
-        which gcc && which g++
-        gcc --version
-        g++ --version
-        uname -m
-        echo 'Architecture:' \$(uname -m)
-      "
-    displayName: 'Install basic dependencies in RHEL 9 ARM64 container'
+#         # Install Python 3.9 (available in RHEL 9 UBI) and development tools
+#         dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 glibc-devel kernel-headers
+#         dnf install -y python3-libs python3-debug
+#         dnf install -y gcc gcc-c++ make binutils
+#         dnf install -y cmake
+#         # If that doesn't work, try installing from different repositories
+#         if ! which gcc; then
+#           echo 'Trying alternative gcc installation...'
+#           dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
+#         fi
+#         # Verify installation and architecture
+#         python3 --version
+#         which gcc && which g++
+#         gcc --version
+#         g++ --version
+#         uname -m
+#         echo 'Architecture:' \$(uname -m)
+#       "
+#     displayName: 'Install basic dependencies in RHEL 9 ARM64 container'
 
-  - script: |
-      # Verify compiler installation and set environment for RHEL 9 ARM64
-      docker exec test-container-rhel9-arm64 bash -c "
-        # Verify compilers are available
-        which gcc || echo 'GCC not found'
-        which g++ || echo 'G++ not found'
-        gcc --version || echo 'GCC version check failed'
-        g++ --version || echo 'G++ version check failed'
+#   - script: |
+#       # Verify compiler installation and set environment for RHEL 9 ARM64
+#       docker exec test-container-rhel9-arm64 bash -c "
+#         # Verify compilers are available
+#         which gcc || echo 'GCC not found'
+#         which g++ || echo 'G++ not found'
+#         gcc --version || echo 'GCC version check failed'
+#         g++ --version || echo 'G++ version check failed'
         
-        # Set compiler environment variables
-        export CC=/usr/bin/gcc
-        export CXX=/usr/bin/g++
-        echo 'CC set to:' \$CC
-        echo 'CXX set to:' \$CXX
-        echo 'Running on architecture:' \$(uname -m)
+#         # Set compiler environment variables
+#         export CC=/usr/bin/gcc
+#         export CXX=/usr/bin/g++
+#         echo 'CC set to:' \$CC
+#         echo 'CXX set to:' \$CXX
+#         echo 'Running on architecture:' \$(uname -m)
         
-        # Create a wrapper script to preserve environment
-        cat > /workspace/setup_env.sh << 'EOF'
-        #!/bin/bash
-        export CC=/usr/bin/gcc
-        export CXX=/usr/bin/g++
-        export PATH=/usr/bin:\$PATH
-        exec \"\$@\"
-        EOF
-        chmod +x /workspace/setup_env.sh
-      "
-    displayName: 'Verify and configure compilers in RHEL 9 ARM64 container'
+#         # Create a wrapper script to preserve environment
+#         cat > /workspace/setup_env.sh << 'EOF'
+#         #!/bin/bash
+#         export CC=/usr/bin/gcc
+#         export CXX=/usr/bin/g++
+#         export PATH=/usr/bin:\$PATH
+#         exec \"\$@\"
+#         EOF
+#         chmod +x /workspace/setup_env.sh
+#       "
+#     displayName: 'Verify and configure compilers in RHEL 9 ARM64 container'
 
-  - script: |
-      # Install ODBC driver in the RHEL 9 ARM64 container
-      docker exec test-container-rhel9-arm64 bash -c "
-        # Add Microsoft repository for RHEL 9
-        curl -sSL -o /etc/yum.repos.d/msprod.repo https://packages.microsoft.com/config/rhel/9/prod.repo
+#   - script: |
+#       # Install ODBC driver in the RHEL 9 ARM64 container
+#       docker exec test-container-rhel9-arm64 bash -c "
+#         # Add Microsoft repository for RHEL 9
+#         curl -sSL -o /etc/yum.repos.d/msprod.repo https://packages.microsoft.com/config/rhel/9/prod.repo
         
-        # Install the driver (ARM64 version)
-        ACCEPT_EULA=Y dnf install -y msodbcsql18
-        # optional: for bcp and sqlcmd
-        ACCEPT_EULA=Y dnf install -y mssql-tools18
-        # optional: for unixODBC development headers
-        dnf install -y unixODBC-devel
-      "
-    displayName: 'Install ODBC Driver in RHEL 9 ARM64 container'
+#         # Install the driver (ARM64 version)
+#         ACCEPT_EULA=Y dnf install -y msodbcsql18
+#         # optional: for bcp and sqlcmd
+#         ACCEPT_EULA=Y dnf install -y mssql-tools18
+#         # optional: for unixODBC development headers
+#         dnf install -y unixODBC-devel
+#       "
+#     displayName: 'Install ODBC Driver in RHEL 9 ARM64 container'
 
-  - script: |
-      # Install Python dependencies in the container using virtual environment
-      docker exec test-container-rhel9-arm64 bash -c "
-        # Create a virtual environment with Python 3.9
-        python3 -m venv myvenv
-        source myvenv/bin/activate
+#   - script: |
+#       # Install Python dependencies in the container using virtual environment
+#       docker exec test-container-rhel9-arm64 bash -c "
+#         # Create a virtual environment with Python 3.9
+#         python3 -m venv myvenv
+#         source myvenv/bin/activate
 
-        # Install dependencies in the virtual environment
-        python -m pip install --upgrade pip
-        python -m pip install -r requirements.txt
+#         # Install dependencies in the virtual environment
+#         python -m pip install --upgrade pip
+#         python -m pip install -r requirements.txt
         
-        # Make the virtual environment globally available
-        echo 'source myvenv/bin/activate' >> ~/.bashrc
-      "
-    displayName: 'Install Python dependencies in RHEL 9 ARM64 container'
+#         # Make the virtual environment globally available
+#         echo 'source myvenv/bin/activate' >> ~/.bashrc
+#       "
+#     displayName: 'Install Python dependencies in RHEL 9 ARM64 container'
 
-  - script: |
-      # Build pybind bindings in the ARM64 container
-      docker exec test-container-rhel9-arm64 bash -c "
-        source myvenv/bin/activate
-        ls /usr/include/python3.9
-        # Set compiler environment variables
-        export CC=/usr/bin/gcc
-        export CXX=/usr/bin/g++
+#   - script: |
+#       # Build pybind bindings in the ARM64 container
+#       docker exec test-container-rhel9-arm64 bash -c "
+#         source myvenv/bin/activate
+#         ls /usr/include/python3.9
+#         # Set compiler environment variables
+#         export CC=/usr/bin/gcc
+#         export CXX=/usr/bin/g++
 
-        cd mssql_python/pybind
-        chmod +x build.sh
-        ./build.sh
-      "
-    displayName: 'Build pybind bindings (.so) in RHEL 9 ARM64 container'
+#         cd mssql_python/pybind
+#         chmod +x build.sh
+#         ./build.sh
+#       "
+#     displayName: 'Build pybind bindings (.so) in RHEL 9 ARM64 container'
 
-  - script: |
-      # Uninstall ODBC Driver before running tests
-      docker exec test-container-rhel9-arm64 bash -c "
-        dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
-        rm -f /usr/bin/sqlcmd
-        rm -f /usr/bin/bcp
-        rm -rf /opt/microsoft/msodbcsql
-        rm -f /lib64/libodbcinst.so.2
-        odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
-        echo 'Uninstalled ODBC Driver and cleaned up libraries'
-        echo 'Verifying arm64 rhel driver library signatures:'
-        ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-18.5.so.1.1
-      "
-    displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 ARM64 container'
+#   - script: |
+#       # Uninstall ODBC Driver before running tests
+#       docker exec test-container-rhel9-arm64 bash -c "
+#         dnf remove -y msodbcsql18 mssql-tools18 unixODBC-devel
+#         rm -f /usr/bin/sqlcmd
+#         rm -f /usr/bin/bcp
+#         rm -rf /opt/microsoft/msodbcsql
+#         rm -f /lib64/libodbcinst.so.2
+#         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+#         echo 'Uninstalled ODBC Driver and cleaned up libraries'
+#         echo 'Verifying arm64 rhel driver library signatures:'
+#         ldd mssql_python/libs/linux/rhel/arm64/lib/libmsodbcsql-18.5.so.1.1
+#       "
+#     displayName: 'Uninstall ODBC Driver before running tests in RHEL 9 ARM64 container'
 
-  - script: |
-      # Run tests in the ARM64 container
-      # Get SQL Server container IP
-      SQLSERVER_IP=$(docker inspect sqlserver-rhel9-arm64 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-      echo "SQL Server IP: $SQLSERVER_IP"
+#   - script: |
+#       # Run tests in the ARM64 container
+#       # Get SQL Server container IP
+#       SQLSERVER_IP=$(docker inspect sqlserver-rhel9-arm64 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+#       echo "SQL Server IP: $SQLSERVER_IP"
       
-      docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
-        test-container-rhel9-arm64 bash -c "
-        source myvenv/bin/activate
-        echo 'Build successful, running tests now on RHEL 9 ARM64'
-        echo 'Architecture:' \$(uname -m)
-        echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
-        python -m pytest -v --junitxml=test-results-rhel9-arm64.xml --cov=. --cov-report=xml:coverage-rhel9-arm64.xml --capture=tee-sys --cache-clear
-      "
-    displayName: 'Run pytest with coverage in RHEL 9 ARM64 container'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#       docker exec \
+#         -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+#         -e DB_PASSWORD="$(DB_PASSWORD)" \
+#         test-container-rhel9-arm64 bash -c "
+#         source myvenv/bin/activate
+#         echo 'Build successful, running tests now on RHEL 9 ARM64'
+#         echo 'Architecture:' \$(uname -m)
+#         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+#         python -m pytest -v --junitxml=test-results-rhel9-arm64.xml --cov=. --cov-report=xml:coverage-rhel9-arm64.xml --capture=tee-sys --cache-clear
+#       "
+#     displayName: 'Run pytest with coverage in RHEL 9 ARM64 container'
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      # Copy test results from container to host
-      docker cp test-container-rhel9-arm64:/workspace/test-results-rhel9-arm64.xml $(Build.SourcesDirectory)/
-      docker cp test-container-rhel9-arm64:/workspace/coverage-rhel9-arm64.xml $(Build.SourcesDirectory)/
-    displayName: 'Copy test results from RHEL 9 ARM64 container'
-    condition: always()
+#   - script: |
+#       # Copy test results from container to host
+#       docker cp test-container-rhel9-arm64:/workspace/test-results-rhel9-arm64.xml $(Build.SourcesDirectory)/
+#       docker cp test-container-rhel9-arm64:/workspace/coverage-rhel9-arm64.xml $(Build.SourcesDirectory)/
+#     displayName: 'Copy test results from RHEL 9 ARM64 container'
+#     condition: always()
 
-  - script: |
-      # Clean up containers
-      docker stop test-container-rhel9-arm64 || true
-      docker rm test-container-rhel9-arm64 || true
-      docker stop sqlserver-rhel9-arm64 || true
-      docker rm sqlserver-rhel9-arm64 || true
-    displayName: 'Clean up RHEL 9 ARM64 containers'
-    condition: always()
+#   - script: |
+#       # Clean up containers
+#       docker stop test-container-rhel9-arm64 || true
+#       docker rm test-container-rhel9-arm64 || true
+#       docker stop sqlserver-rhel9-arm64 || true
+#       docker rm sqlserver-rhel9-arm64 || true
+#     displayName: 'Clean up RHEL 9 ARM64 containers'
+#     condition: always()
 
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results-rhel9-arm64.xml'
-      testRunTitle: 'Publish pytest results on RHEL 9 ARM64'
+#   - task: PublishTestResults@2
+#     condition: succeededOrFailed()
+#     inputs:
+#       testResultsFiles: '**/test-results-rhel9-arm64.xml'
+#       testRunTitle: 'Publish pytest results on RHEL 9 ARM64'
 
-- job: PytestOnLinux_Alpine
-  displayName: 'Linux Alpine x86_64'
-  pool:
-    vmImage: 'ubuntu-latest'
+# - job: PytestOnLinux_Alpine
+#   displayName: 'Linux Alpine x86_64'
+#   pool:
+#     vmImage: 'ubuntu-latest'
 
-  steps:
-  - script: |
-      # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-      docker buildx create --name multiarch --driver docker-container --use
-      docker buildx inspect --bootstrap
-    displayName: 'Setup Docker buildx for multi-architecture support'
+#   steps:
+#   - script: |
+#       # Set up Docker buildx for multi-architecture support
+#       docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+#       docker buildx create --name multiarch --driver docker-container --use
+#       docker buildx inspect --bootstrap
+#     displayName: 'Setup Docker buildx for multi-architecture support'
 
-  - script: |
-      # Create a Docker container for testing on x86_64
-      docker run -d --name test-container-alpine \
-        --platform linux/amd64 \
-        -v $(Build.SourcesDirectory):/workspace \
-        -w /workspace \
-        --network bridge \
-        alpine:latest \
-        tail -f /dev/null
-    displayName: 'Create Alpine x86_64 container'
+#   - script: |
+#       # Create a Docker container for testing on x86_64
+#       docker run -d --name test-container-alpine \
+#         --platform linux/amd64 \
+#         -v $(Build.SourcesDirectory):/workspace \
+#         -w /workspace \
+#         --network bridge \
+#         alpine:latest \
+#         tail -f /dev/null
+#     displayName: 'Create Alpine x86_64 container'
 
-  - script: |
-      # Start SQL Server container (x86_64)
-      docker run -d --name sqlserver-alpine \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
+#   - script: |
+#       # Start SQL Server container (x86_64)
+#       docker run -d --name sqlserver-alpine \
+#         --platform linux/amd64 \
+#         -e ACCEPT_EULA=Y \
+#         -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+#         -p 1433:1433 \
+#         mcr.microsoft.com/mssql/server:2022-latest
       
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-alpine \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
+#       # Wait for SQL Server to be ready
+#       echo "Waiting for SQL Server to start..."
+#       for i in {1..60}; do
+#         if docker exec sqlserver-alpine \
+#           /opt/mssql-tools18/bin/sqlcmd \
+#           -S localhost \
+#           -U SA \
+#           -P "$(DB_PASSWORD)" \
+#           -C -Q "SELECT 1" >/dev/null 2>&1; then
+#           echo "SQL Server is ready!"
+#           break
+#         fi
+#         echo "Waiting... ($i/60)"
+#         sleep 2
+#       done
       
-      # Create test database
-      docker exec sqlserver-alpine \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
-    displayName: 'Start SQL Server container for Alpine x86_64'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#       # Create test database
+#       docker exec sqlserver-alpine \
+#         /opt/mssql-tools18/bin/sqlcmd \
+#         -S localhost \
+#         -U SA \
+#         -P "$(DB_PASSWORD)" \
+#         -C -Q "CREATE DATABASE TestDB"
+#     displayName: 'Start SQL Server container for Alpine x86_64'
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      # Install dependencies in the Alpine x86_64 container
-      docker exec test-container-alpine sh -c "
-        # Update package index
-        apk update
+#   - script: |
+#       # Install dependencies in the Alpine x86_64 container
+#       docker exec test-container-alpine sh -c "
+#         # Update package index
+#         apk update
         
-        # Install build tools and system dependencies
-        apk add --no-cache \
-          build-base \
-          cmake \
-          clang \
-          git \
-          bash \
-          wget \
-          curl \
-          gnupg \
-          unixodbc \
-          unixodbc-dev \
-          libffi-dev \
-          openssl-dev \
-          zlib-dev \
-          py3-pip \
-          python3-dev \
-          patchelf
+#         # Install build tools and system dependencies
+#         apk add --no-cache \
+#           build-base \
+#           cmake \
+#           clang \
+#           git \
+#           bash \
+#           wget \
+#           curl \
+#           gnupg \
+#           unixodbc \
+#           unixodbc-dev \
+#           libffi-dev \
+#           openssl-dev \
+#           zlib-dev \
+#           py3-pip \
+#           python3-dev \
+#           patchelf
         
-        # Create symlinks for Python compatibility
-        ln -sf python3 /usr/bin/python || true
-        ln -sf pip3 /usr/bin/pip || true
+#         # Create symlinks for Python compatibility
+#         ln -sf python3 /usr/bin/python || true
+#         ln -sf pip3 /usr/bin/pip || true
         
-        # Verify installation and architecture
-        uname -m
-        python --version
-        which cmake
-      "
-    displayName: 'Install basic dependencies in Alpine x86_64 container'
+#         # Verify installation and architecture
+#         uname -m
+#         python --version
+#         which cmake
+#       "
+#     displayName: 'Install basic dependencies in Alpine x86_64 container'
 
-  - script: |
-      # Install ODBC driver in the Alpine x86_64 container
-      docker exec test-container-alpine bash -c "
-        # Detect architecture for ODBC driver download
-        case \$(uname -m) in
-          x86_64) architecture='amd64' ;;
-          arm64|aarch64) architecture='arm64' ;;
-          *) architecture='unsupported' ;;
-        esac
+#   - script: |
+#       # Install ODBC driver in the Alpine x86_64 container
+#       docker exec test-container-alpine bash -c "
+#         # Detect architecture for ODBC driver download
+#         case \$(uname -m) in
+#           x86_64) architecture='amd64' ;;
+#           arm64|aarch64) architecture='arm64' ;;
+#           *) architecture='unsupported' ;;
+#         esac
         
-        if [[ 'unsupported' == '\$architecture' ]]; then
-          echo 'Alpine architecture \$(uname -m) is not currently supported.'
-          exit 1
-        fi
+#         if [[ 'unsupported' == '\$architecture' ]]; then
+#           echo 'Alpine architecture \$(uname -m) is not currently supported.'
+#           exit 1
+#         fi
         
-        echo 'Detected architecture: '\$architecture
+#         echo 'Detected architecture: '\$architecture
         
-        # Download the packages
-        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.apk
-        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
+#         # Download the packages
+#         curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.apk
+#         curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
         
-        # Download signatures for verification
-        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.sig
-        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
+#         # Download signatures for verification
+#         curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.sig
+#         curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
         
-        # Import Microsoft GPG key and verify packages
-        curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
-        gpg --verify msodbcsql18_18.5.1.1-1_\$architecture.sig msodbcsql18_18.5.1.1-1_\$architecture.apk
-        gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
+#         # Import Microsoft GPG key and verify packages
+#         curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
+#         gpg --verify msodbcsql18_18.5.1.1-1_\$architecture.sig msodbcsql18_18.5.1.1-1_\$architecture.apk
+#         gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
         
-        # Install the packages
-        apk add --allow-untrusted msodbcsql18_18.5.1.1-1_\$architecture.apk
-        apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
+#         # Install the packages
+#         apk add --allow-untrusted msodbcsql18_18.5.1.1-1_\$architecture.apk
+#         apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
         
-        # Cleanup
-        rm -f msodbcsql18_18.5.1.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
+#         # Cleanup
+#         rm -f msodbcsql18_18.5.1.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
         
-        # Add mssql-tools to PATH
-        export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
-        echo 'export PATH=\"\$PATH:/opt/mssql-tools18/bin\"' >> ~/.bashrc
-      "
-    displayName: 'Install ODBC Driver in Alpine x86_64 container'
+#         # Add mssql-tools to PATH
+#         export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
+#         echo 'export PATH=\"\$PATH:/opt/mssql-tools18/bin\"' >> ~/.bashrc
+#       "
+#     displayName: 'Install ODBC Driver in Alpine x86_64 container'
 
-  - script: |
-      # Install Python dependencies in the Alpine x86_64 container using virtual environment
-      docker exec test-container-alpine bash -c "
-        # Create virtual environment
-        python -m venv /workspace/venv
+#   - script: |
+#       # Install Python dependencies in the Alpine x86_64 container using virtual environment
+#       docker exec test-container-alpine bash -c "
+#         # Create virtual environment
+#         python -m venv /workspace/venv
         
-        # Activate virtual environment and install dependencies
-        source /workspace/venv/bin/activate
+#         # Activate virtual environment and install dependencies
+#         source /workspace/venv/bin/activate
         
-        # Upgrade pip and install dependencies
-        python -m pip install --upgrade pip
-        python -m pip install -r requirements.txt
+#         # Upgrade pip and install dependencies
+#         python -m pip install --upgrade pip
+#         python -m pip install -r requirements.txt
         
-        # Verify virtual environment is active
-        which python
-        which pip
-      "
-    displayName: 'Install Python dependencies in Alpine x86_64 container'
+#         # Verify virtual environment is active
+#         which python
+#         which pip
+#       "
+#     displayName: 'Install Python dependencies in Alpine x86_64 container'
 
-  - script: |
-      # Build pybind bindings in the Alpine x86_64 container
-      docker exec test-container-alpine bash -c "
-        # Activate virtual environment
-        source /workspace/venv/bin/activate
+#   - script: |
+#       # Build pybind bindings in the Alpine x86_64 container
+#       docker exec test-container-alpine bash -c "
+#         # Activate virtual environment
+#         source /workspace/venv/bin/activate
         
-        cd mssql_python/pybind
-        chmod +x build.sh
-        ./build.sh
-      "
-    displayName: 'Build pybind bindings (.so) in Alpine x86_64 container'
+#         cd mssql_python/pybind
+#         chmod +x build.sh
+#         ./build.sh
+#       "
+#     displayName: 'Build pybind bindings (.so) in Alpine x86_64 container'
 
-  - script: |
-      # Uninstall ODBC Driver before running tests to use bundled libraries
-      docker exec test-container-alpine bash -c "
-        # Remove system ODBC installation
-        apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'ODBC packages not installed via apk'
-        rm -f /usr/bin/sqlcmd
-        rm -f /usr/bin/bcp
-        rm -rf /opt/microsoft/msodbcsql18
-        rm -f /usr/lib/libodbcinst.so.2
-        odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
-        echo 'Uninstalled system ODBC Driver and cleaned up libraries'
-        echo 'Verifying x86_64 alpine driver library signatures:'
-        ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-18.5.so.1.1 || echo 'Driver library not found'
-      "
-    displayName: 'Uninstall system ODBC Driver before running tests in Alpine x86_64 container'
+#   - script: |
+#       # Uninstall ODBC Driver before running tests to use bundled libraries
+#       docker exec test-container-alpine bash -c "
+#         # Remove system ODBC installation
+#         apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'ODBC packages not installed via apk'
+#         rm -f /usr/bin/sqlcmd
+#         rm -f /usr/bin/bcp
+#         rm -rf /opt/microsoft/msodbcsql18
+#         rm -f /usr/lib/libodbcinst.so.2
+#         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+#         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
+#         echo 'Verifying x86_64 alpine driver library signatures:'
+#         ldd mssql_python/libs/linux/alpine/x86_64/lib/libmsodbcsql-18.5.so.1.1 || echo 'Driver library not found'
+#       "
+#     displayName: 'Uninstall system ODBC Driver before running tests in Alpine x86_64 container'
 
-  - script: |
-      # Run tests in the Alpine x86_64 container
-      # Get SQL Server container IP
-      SQLSERVER_IP=$(docker inspect sqlserver-alpine --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-      echo "SQL Server IP: $SQLSERVER_IP"
+#   - script: |
+#       # Run tests in the Alpine x86_64 container
+#       # Get SQL Server container IP
+#       SQLSERVER_IP=$(docker inspect sqlserver-alpine --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+#       echo "SQL Server IP: $SQLSERVER_IP"
       
-      docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
-        test-container-alpine bash -c "
-        echo 'Build successful, running tests now on Alpine x86_64'
-        echo 'Architecture:' \$(uname -m)
-        echo 'Alpine version:' \$(cat /etc/alpine-release)
-        echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+#       docker exec \
+#         -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+#         -e DB_PASSWORD="$(DB_PASSWORD)" \
+#         test-container-alpine bash -c "
+#         echo 'Build successful, running tests now on Alpine x86_64'
+#         echo 'Architecture:' \$(uname -m)
+#         echo 'Alpine version:' \$(cat /etc/alpine-release)
+#         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
         
-        # Activate virtual environment
-        source /workspace/venv/bin/activate
+#         # Activate virtual environment
+#         source /workspace/venv/bin/activate
 
-        # Test basic Python import first
-        python -c 'import mssql_python; print(\"mssql_python imported successfully\")'
+#         # Test basic Python import first
+#         python -c 'import mssql_python; print(\"mssql_python imported successfully\")'
         
-        # Run main.py if it exists
-        if [ -f main.py ]; then
-          echo 'Running main.py...'
-          python main.py
-        fi
+#         # Run main.py if it exists
+#         if [ -f main.py ]; then
+#           echo 'Running main.py...'
+#           python main.py
+#         fi
         
-        # Run pytest
-        python -m pytest -v --junitxml=test-results-alpine.xml --cov=. --cov-report=xml:coverage-alpine.xml --capture=tee-sys --cache-clear
-      "
-    displayName: 'Run pytest with coverage in Alpine x86_64 container'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#         # Run pytest
+#         python -m pytest -v --junitxml=test-results-alpine.xml --cov=. --cov-report=xml:coverage-alpine.xml --capture=tee-sys --cache-clear
+#       "
+#     displayName: 'Run pytest with coverage in Alpine x86_64 container'
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      # Copy test results from container to host
-      docker cp test-container-alpine:/workspace/test-results-alpine.xml $(Build.SourcesDirectory)/ || echo 'Failed to copy test results'
-      docker cp test-container-alpine:/workspace/coverage-alpine.xml $(Build.SourcesDirectory)/ || echo 'Failed to copy coverage results'
-    displayName: 'Copy test results from Alpine x86_64 container'
-    condition: always()
+#   - script: |
+#       # Copy test results from container to host
+#       docker cp test-container-alpine:/workspace/test-results-alpine.xml $(Build.SourcesDirectory)/ || echo 'Failed to copy test results'
+#       docker cp test-container-alpine:/workspace/coverage-alpine.xml $(Build.SourcesDirectory)/ || echo 'Failed to copy coverage results'
+#     displayName: 'Copy test results from Alpine x86_64 container'
+#     condition: always()
 
-  - script: |
-      # Clean up containers
-      docker stop test-container-alpine || true
-      docker rm test-container-alpine || true
-      docker stop sqlserver-alpine || true
-      docker rm sqlserver-alpine || true
-    displayName: 'Clean up Alpine x86_64 containers'
-    condition: always()
+#   - script: |
+#       # Clean up containers
+#       docker stop test-container-alpine || true
+#       docker rm test-container-alpine || true
+#       docker stop sqlserver-alpine || true
+#       docker rm sqlserver-alpine || true
+#     displayName: 'Clean up Alpine x86_64 containers'
+#     condition: always()
 
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results-alpine.xml'
-      testRunTitle: 'Publish pytest results on Alpine x86_64'
+#   - task: PublishTestResults@2
+#     condition: succeededOrFailed()
+#     inputs:
+#       testResultsFiles: '**/test-results-alpine.xml'
+#       testRunTitle: 'Publish pytest results on Alpine x86_64'
 
-- job: PytestOnLinux_Alpine_ARM64
-  displayName: 'Linux Alpine ARM64'
-  pool:
-    vmImage: 'ubuntu-latest'
+# - job: PytestOnLinux_Alpine_ARM64
+#   displayName: 'Linux Alpine ARM64'
+#   pool:
+#     vmImage: 'ubuntu-latest'
 
-  steps:
-  - script: |
-      # Set up Docker buildx for multi-architecture support
-      docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-      docker buildx create --name multiarch --driver docker-container --use
-      docker buildx inspect --bootstrap
-    displayName: 'Setup Docker buildx for ARM64 emulation'
+#   steps:
+#   - script: |
+#       # Set up Docker buildx for multi-architecture support
+#       docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+#       docker buildx create --name multiarch --driver docker-container --use
+#       docker buildx inspect --bootstrap
+#     displayName: 'Setup Docker buildx for ARM64 emulation'
 
-  - script: |
-      # Create a Docker container for testing on ARM64
-      docker run -d --name test-container-alpine-arm64 \
-        --platform linux/arm64 \
-        -v $(Build.SourcesDirectory):/workspace \
-        -w /workspace \
-        --network bridge \
-        alpine:latest \
-        tail -f /dev/null
-    displayName: 'Create Alpine ARM64 container'
+#   - script: |
+#       # Create a Docker container for testing on ARM64
+#       docker run -d --name test-container-alpine-arm64 \
+#         --platform linux/arm64 \
+#         -v $(Build.SourcesDirectory):/workspace \
+#         -w /workspace \
+#         --network bridge \
+#         alpine:latest \
+#         tail -f /dev/null
+#     displayName: 'Create Alpine ARM64 container'
 
-  - script: |
-      # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
-      docker run -d --name sqlserver-alpine-arm64 \
-        --platform linux/amd64 \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        mcr.microsoft.com/mssql/server:2022-latest
+#   - script: |
+#       # Start SQL Server container (x86_64 - SQL Server doesn't support ARM64)
+#       docker run -d --name sqlserver-alpine-arm64 \
+#         --platform linux/amd64 \
+#         -e ACCEPT_EULA=Y \
+#         -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+#         -p 1433:1433 \
+#         mcr.microsoft.com/mssql/server:2022-latest
       
-      # Wait for SQL Server to be ready
-      echo "Waiting for SQL Server to start..."
-      for i in {1..60}; do
-        if docker exec sqlserver-alpine-arm64 \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" >/dev/null 2>&1; then
-          echo "SQL Server is ready!"
-          break
-        fi
-        echo "Waiting... ($i/60)"
-        sleep 2
-      done
+#       # Wait for SQL Server to be ready
+#       echo "Waiting for SQL Server to start..."
+#       for i in {1..60}; do
+#         if docker exec sqlserver-alpine-arm64 \
+#           /opt/mssql-tools18/bin/sqlcmd \
+#           -S localhost \
+#           -U SA \
+#           -P "$(DB_PASSWORD)" \
+#           -C -Q "SELECT 1" >/dev/null 2>&1; then
+#           echo "SQL Server is ready!"
+#           break
+#         fi
+#         echo "Waiting... ($i/60)"
+#         sleep 2
+#       done
       
-      # Create test database
-      docker exec sqlserver-alpine-arm64 \
-        /opt/mssql-tools18/bin/sqlcmd \
-        -S localhost \
-        -U SA \
-        -P "$(DB_PASSWORD)" \
-        -C -Q "CREATE DATABASE TestDB"
-    displayName: 'Start SQL Server container for Alpine ARM64'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#       # Create test database
+#       docker exec sqlserver-alpine-arm64 \
+#         /opt/mssql-tools18/bin/sqlcmd \
+#         -S localhost \
+#         -U SA \
+#         -P "$(DB_PASSWORD)" \
+#         -C -Q "CREATE DATABASE TestDB"
+#     displayName: 'Start SQL Server container for Alpine ARM64'
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      # Install dependencies in the Alpine ARM64 container
-      docker exec test-container-alpine-arm64 sh -c "
-        # Update package index
-        apk update
+#   - script: |
+#       # Install dependencies in the Alpine ARM64 container
+#       docker exec test-container-alpine-arm64 sh -c "
+#         # Update package index
+#         apk update
         
-        # Install build tools and system dependencies
-        apk add --no-cache \
-          build-base \
-          cmake \
-          clang \
-          git \
-          bash \
-          wget \
-          curl \
-          gnupg \
-          unixodbc \
-          unixodbc-dev \
-          libffi-dev \
-          openssl-dev \
-          zlib-dev \
-          py3-pip \
-          python3-dev \
-          patchelf
+#         # Install build tools and system dependencies
+#         apk add --no-cache \
+#           build-base \
+#           cmake \
+#           clang \
+#           git \
+#           bash \
+#           wget \
+#           curl \
+#           gnupg \
+#           unixodbc \
+#           unixodbc-dev \
+#           libffi-dev \
+#           openssl-dev \
+#           zlib-dev \
+#           py3-pip \
+#           python3-dev \
+#           patchelf
         
-        # Create symlinks for Python compatibility
-        ln -sf python3 /usr/bin/python || true
-        ln -sf pip3 /usr/bin/pip || true
+#         # Create symlinks for Python compatibility
+#         ln -sf python3 /usr/bin/python || true
+#         ln -sf pip3 /usr/bin/pip || true
         
-        # Verify installation and architecture
-        uname -m
-        python --version
-        which cmake
-      "
-    displayName: 'Install basic dependencies in Alpine ARM64 container'
+#         # Verify installation and architecture
+#         uname -m
+#         python --version
+#         which cmake
+#       "
+#     displayName: 'Install basic dependencies in Alpine ARM64 container'
 
-  - script: |
-      # Install ODBC driver in the Alpine ARM64 container
-      docker exec test-container-alpine-arm64 bash -c "
-        # Detect architecture for ODBC driver download
-        case \$(uname -m) in
-          x86_64) architecture='amd64' ;;
-          arm64|aarch64) architecture='arm64' ;;
-          *) architecture='unsupported' ;;
-        esac
+#   - script: |
+#       # Install ODBC driver in the Alpine ARM64 container
+#       docker exec test-container-alpine-arm64 bash -c "
+#         # Detect architecture for ODBC driver download
+#         case \$(uname -m) in
+#           x86_64) architecture='amd64' ;;
+#           arm64|aarch64) architecture='arm64' ;;
+#           *) architecture='unsupported' ;;
+#         esac
         
-        if [[ 'unsupported' == '\$architecture' ]]; then
-          echo 'Alpine architecture \$(uname -m) is not currently supported.'
-          exit 1
-        fi
+#         if [[ 'unsupported' == '\$architecture' ]]; then
+#           echo 'Alpine architecture \$(uname -m) is not currently supported.'
+#           exit 1
+#         fi
         
-        echo 'Detected architecture: '\$architecture
+#         echo 'Detected architecture: '\$architecture
         
-        # Download the packages
-        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.apk
-        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
+#         # Download the packages
+#         curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.apk
+#         curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.apk
         
-        # Download signatures for verification
-        curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.sig
-        curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
+#         # Download signatures for verification
+#         curl -O https://download.microsoft.com/download/fae28b9a-d880-42fd-9b98-d779f0fdd77f/msodbcsql18_18.5.1.1-1_\$architecture.sig
+#         curl -O https://download.microsoft.com/download/7/6d/76de322a-d860-4894-9945-f0cc5d6a45f8/mssql-tools18_18.4.1.1-1_\$architecture.sig
         
-        # Import Microsoft GPG key and verify packages
-        curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
-        gpg --verify msodbcsql18_18.5.1.1-1_\$architecture.sig msodbcsql18_18.5.1.1-1_\$architecture.apk
-        gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
+#         # Import Microsoft GPG key and verify packages
+#         curl https://packages.microsoft.com/keys/microsoft.asc | gpg --import -
+#         gpg --verify msodbcsql18_18.5.1.1-1_\$architecture.sig msodbcsql18_18.5.1.1-1_\$architecture.apk
+#         gpg --verify mssql-tools18_18.4.1.1-1_\$architecture.sig mssql-tools18_18.4.1.1-1_\$architecture.apk
         
-        # Install the packages
-        apk add --allow-untrusted msodbcsql18_18.5.1.1-1_\$architecture.apk
-        apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
+#         # Install the packages
+#         apk add --allow-untrusted msodbcsql18_18.5.1.1-1_\$architecture.apk
+#         apk add --allow-untrusted mssql-tools18_18.4.1.1-1_\$architecture.apk
         
-        # Cleanup
-        rm -f msodbcsql18_18.5.1.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
+#         # Cleanup
+#         rm -f msodbcsql18_18.5.1.1-1_\$architecture.* mssql-tools18_18.4.1.1-1_\$architecture.*
         
-        # Add mssql-tools to PATH
-        export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
-        echo 'export PATH=\"\$PATH:/opt/mssql-tools18/bin\"' >> ~/.bashrc
-      "
-    displayName: 'Install ODBC Driver in Alpine ARM64 container'
+#         # Add mssql-tools to PATH
+#         export PATH=\"\$PATH:/opt/mssql-tools18/bin\"
+#         echo 'export PATH=\"\$PATH:/opt/mssql-tools18/bin\"' >> ~/.bashrc
+#       "
+#     displayName: 'Install ODBC Driver in Alpine ARM64 container'
 
-  - script: |
-      # Install Python dependencies in the Alpine ARM64 container using virtual environment
-      docker exec test-container-alpine-arm64 bash -c "
-        # Create virtual environment
-        python -m venv /workspace/venv
+#   - script: |
+#       # Install Python dependencies in the Alpine ARM64 container using virtual environment
+#       docker exec test-container-alpine-arm64 bash -c "
+#         # Create virtual environment
+#         python -m venv /workspace/venv
         
-        # Activate virtual environment and install dependencies
-        source /workspace/venv/bin/activate
+#         # Activate virtual environment and install dependencies
+#         source /workspace/venv/bin/activate
         
-        # Upgrade pip and install dependencies
-        python -m pip install --upgrade pip
-        python -m pip install -r requirements.txt
+#         # Upgrade pip and install dependencies
+#         python -m pip install --upgrade pip
+#         python -m pip install -r requirements.txt
         
-        # Verify virtual environment is active
-        which python
-        which pip
-      "
-    displayName: 'Install Python dependencies in Alpine ARM64 container'
+#         # Verify virtual environment is active
+#         which python
+#         which pip
+#       "
+#     displayName: 'Install Python dependencies in Alpine ARM64 container'
 
-  - script: |
-      # Build pybind bindings in the Alpine ARM64 container
-      docker exec test-container-alpine-arm64 bash -c "
-        # Activate virtual environment
-        source /workspace/venv/bin/activate
+#   - script: |
+#       # Build pybind bindings in the Alpine ARM64 container
+#       docker exec test-container-alpine-arm64 bash -c "
+#         # Activate virtual environment
+#         source /workspace/venv/bin/activate
         
-        cd mssql_python/pybind
-        chmod +x build.sh
-        ./build.sh
-      "
-    displayName: 'Build pybind bindings (.so) in Alpine ARM64 container'
+#         cd mssql_python/pybind
+#         chmod +x build.sh
+#         ./build.sh
+#       "
+#     displayName: 'Build pybind bindings (.so) in Alpine ARM64 container'
 
-  - script: |
-      # Uninstall ODBC Driver before running tests to use bundled libraries
-      docker exec test-container-alpine-arm64 bash -c "
-        # Remove system ODBC installation
-        apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'ODBC packages not installed via apk'
-        rm -f /usr/bin/sqlcmd
-        rm -f /usr/bin/bcp
-        rm -rf /opt/microsoft/msodbcsql18
-        rm -f /usr/lib/libodbcinst.so.2
-        odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
-        echo 'Uninstalled system ODBC Driver and cleaned up libraries'
-        echo 'Verifying arm64 alpine driver library signatures:'
-        ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-18.5.so.1.1 || echo 'Driver library not found'
-      "
-    displayName: 'Uninstall system ODBC Driver before running tests in Alpine ARM64 container'
+#   - script: |
+#       # Uninstall ODBC Driver before running tests to use bundled libraries
+#       docker exec test-container-alpine-arm64 bash -c "
+#         # Remove system ODBC installation
+#         apk del msodbcsql18 mssql-tools18 unixodbc-dev || echo 'ODBC packages not installed via apk'
+#         rm -f /usr/bin/sqlcmd
+#         rm -f /usr/bin/bcp
+#         rm -rf /opt/microsoft/msodbcsql18
+#         rm -f /usr/lib/libodbcinst.so.2
+#         odbcinst -u -d -n 'ODBC Driver 18 for SQL Server' || true
+#         echo 'Uninstalled system ODBC Driver and cleaned up libraries'
+#         echo 'Verifying arm64 alpine driver library signatures:'
+#         ldd mssql_python/libs/linux/alpine/arm64/lib/libmsodbcsql-18.5.so.1.1 || echo 'Driver library not found'
+#       "
+#     displayName: 'Uninstall system ODBC Driver before running tests in Alpine ARM64 container'
 
-  - script: |
-      # Run tests in the Alpine ARM64 container
-      # Get SQL Server container IP
-      SQLSERVER_IP=$(docker inspect sqlserver-alpine-arm64 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-      echo "SQL Server IP: $SQLSERVER_IP"
+#   - script: |
+#       # Run tests in the Alpine ARM64 container
+#       # Get SQL Server container IP
+#       SQLSERVER_IP=$(docker inspect sqlserver-alpine-arm64 --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+#       echo "SQL Server IP: $SQLSERVER_IP"
       
-      docker exec \
-        -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
-        -e DB_PASSWORD="$(DB_PASSWORD)" \
-        test-container-alpine-arm64 bash -c "
-        echo 'Build successful, running tests now on Alpine ARM64'
-        echo 'Architecture:' \$(uname -m)
-        echo 'Alpine version:' \$(cat /etc/alpine-release)
-        echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
+#       docker exec \
+#         -e DB_CONNECTION_STRING="Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes" \
+#         -e DB_PASSWORD="$(DB_PASSWORD)" \
+#         test-container-alpine-arm64 bash -c "
+#         echo 'Build successful, running tests now on Alpine ARM64'
+#         echo 'Architecture:' \$(uname -m)
+#         echo 'Alpine version:' \$(cat /etc/alpine-release)
+#         echo 'Using connection string: Server=$SQLSERVER_IP;Database=TestDB;Uid=SA;Pwd=***;TrustServerCertificate=yes'
         
-        # Activate virtual environment
-        source /workspace/venv/bin/activate
+#         # Activate virtual environment
+#         source /workspace/venv/bin/activate
 
-        # Test basic Python import first
-        python -c 'import mssql_python; print(\"mssql_python imported successfully\")'
+#         # Test basic Python import first
+#         python -c 'import mssql_python; print(\"mssql_python imported successfully\")'
         
-        # Run main.py if it exists
-        if [ -f main.py ]; then
-          echo 'Running main.py...'
-          python main.py
-        fi
+#         # Run main.py if it exists
+#         if [ -f main.py ]; then
+#           echo 'Running main.py...'
+#           python main.py
+#         fi
         
-        # Run pytest
-        python -m pytest -v --junitxml=test-results-alpine-arm64.xml --cov=. --cov-report=xml:coverage-alpine-arm64.xml --capture=tee-sys --cache-clear
-      "
-    displayName: 'Run pytest with coverage in Alpine ARM64 container'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#         # Run pytest
+#         python -m pytest -v --junitxml=test-results-alpine-arm64.xml --cov=. --cov-report=xml:coverage-alpine-arm64.xml --capture=tee-sys --cache-clear
+#       "
+#     displayName: 'Run pytest with coverage in Alpine ARM64 container'
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      # Copy test results from container to host
-      docker cp test-container-alpine-arm64:/workspace/test-results-alpine-arm64.xml $(Build.SourcesDirectory)/ || echo 'Failed to copy test results'
-      docker cp test-container-alpine-arm64:/workspace/coverage-alpine-arm64.xml $(Build.SourcesDirectory)/ || echo 'Failed to copy coverage results'
-    displayName: 'Copy test results from Alpine ARM64 container'
-    condition: always()
+#   - script: |
+#       # Copy test results from container to host
+#       docker cp test-container-alpine-arm64:/workspace/test-results-alpine-arm64.xml $(Build.SourcesDirectory)/ || echo 'Failed to copy test results'
+#       docker cp test-container-alpine-arm64:/workspace/coverage-alpine-arm64.xml $(Build.SourcesDirectory)/ || echo 'Failed to copy coverage results'
+#     displayName: 'Copy test results from Alpine ARM64 container'
+#     condition: always()
 
-  - script: |
-      # Clean up containers
-      docker stop test-container-alpine-arm64 || true
-      docker rm test-container-alpine-arm64 || true
-      docker stop sqlserver-alpine-arm64 || true
-      docker rm sqlserver-alpine-arm64 || true
-    displayName: 'Clean up Alpine ARM64 containers'
-    condition: always()
+#   - script: |
+#       # Clean up containers
+#       docker stop test-container-alpine-arm64 || true
+#       docker rm test-container-alpine-arm64 || true
+#       docker stop sqlserver-alpine-arm64 || true
+#       docker rm sqlserver-alpine-arm64 || true
+#     displayName: 'Clean up Alpine ARM64 containers'
+#     condition: always()
 
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results-alpine-arm64.xml'
-      testRunTitle: 'Publish pytest results on Alpine ARM64'
+#   - task: PublishTestResults@2
+#     condition: succeededOrFailed()
+#     inputs:
+#       testResultsFiles: '**/test-results-alpine-arm64.xml'
+#       testRunTitle: 'Publish pytest results on Alpine ARM64'
 
-- job: CodeCoverageReport
-  displayName: 'Full Code Coverage Report in Ubuntu x86_64'
-  pool:
-    vmImage: 'ubuntu-latest'
+# - job: CodeCoverageReport
+#   displayName: 'Full Code Coverage Report in Ubuntu x86_64'
+#   pool:
+#     vmImage: 'ubuntu-latest'
 
-  steps:
-  - script: |
-      # Install build dependencies
-      sudo apt-get update
-      sudo apt-get install -y cmake gcc g++ lcov unixodbc-dev llvm clang
-    displayName: 'Install build dependencies'
+#   steps:
+#   - script: |
+#       # Install build dependencies
+#       sudo apt-get update
+#       sudo apt-get install -y cmake gcc g++ lcov unixodbc-dev llvm clang
+#     displayName: 'Install build dependencies'
 
-  - script: |
-      # Start SQL Server container
-      docker pull mcr.microsoft.com/mssql/server:2022-latest
-      docker run \
-        --name sqlserver \
-        -e ACCEPT_EULA=Y \
-        -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-        -p 1433:1433 \
-        -d mcr.microsoft.com/mssql/server:2022-latest
+#   - script: |
+#       # Start SQL Server container
+#       docker pull mcr.microsoft.com/mssql/server:2022-latest
+#       docker run \
+#         --name sqlserver \
+#         -e ACCEPT_EULA=Y \
+#         -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+#         -p 1433:1433 \
+#         -d mcr.microsoft.com/mssql/server:2022-latest
 
-      # Wait until SQL Server is ready
-      for i in {1..30}; do
-        docker exec sqlserver \
-          /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost \
-          -U SA \
-          -P "$(DB_PASSWORD)" \
-          -C -Q "SELECT 1" && break
-        sleep 2
-      done
-    displayName: 'Start SQL Server container'
-    env:
-      DB_PASSWORD: $(DB_PASSWORD)
+#       # Wait until SQL Server is ready
+#       for i in {1..30}; do
+#         docker exec sqlserver \
+#           /opt/mssql-tools18/bin/sqlcmd \
+#           -S localhost \
+#           -U SA \
+#           -P "$(DB_PASSWORD)" \
+#           -C -Q "SELECT 1" && break
+#         sleep 2
+#       done
+#     displayName: 'Start SQL Server container'
+#     env:
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - script: |
-      # Install Python dependencies
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-      pip install coverage-lcov lcov-cobertura
-    displayName: 'Install Python dependencies'
+#   - script: |
+#       # Install Python dependencies
+#       python -m pip install --upgrade pip
+#       pip install -r requirements.txt
+#       pip install coverage-lcov lcov-cobertura
+#     displayName: 'Install Python dependencies'
 
-  - script: |
-      # Build pybind bindings with coverage instrumentation
-      cd mssql_python/pybind
-      ./build.sh codecov
-    displayName: 'Build pybind bindings with coverage'
+#   - script: |
+#       # Build pybind bindings with coverage instrumentation
+#       cd mssql_python/pybind
+#       ./build.sh codecov
+#     displayName: 'Build pybind bindings with coverage'
 
-  - script: |
-      # Generate unified coverage (Python + C++)
-      chmod +x ./generate_codecov.sh
-      ./generate_codecov.sh
+#   - script: |
+#       # Generate unified coverage (Python + C++)
+#       chmod +x ./generate_codecov.sh
+#       ./generate_codecov.sh
 
-      # Convert unified LCOV to Cobertura XML for ADO reporting
-      lcov_cobertura total.info --output unified-coverage/coverage.xml
-    displayName: 'Generate unified coverage (Python + C++)'
-    env:
-      DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
-      DB_PASSWORD: $(DB_PASSWORD)
+#       # Convert unified LCOV to Cobertura XML for ADO reporting
+#       lcov_cobertura total.info --output unified-coverage/coverage.xml
+#     displayName: 'Generate unified coverage (Python + C++)'
+#     env:
+#       DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+#       DB_PASSWORD: $(DB_PASSWORD)
 
-  - task: PublishTestResults@2
-    condition: succeededOrFailed()
-    inputs:
-      testResultsFiles: '**/test-results.xml'
-      testRunTitle: 'Publish pytest results with unified coverage'
+#   - task: PublishTestResults@2
+#     condition: succeededOrFailed()
+#     inputs:
+#       testResultsFiles: '**/test-results.xml'
+#       testRunTitle: 'Publish pytest results with unified coverage'
 
-  - task: PublishCodeCoverageResults@2
-    condition: succeededOrFailed()
-    inputs:
-      codeCoverageTool: Cobertura
-      summaryFileLocation: 'unified-coverage/coverage.xml'
-      reportDirectory: 'unified-coverage'
-      failIfCoverageEmpty: true
-    displayName: 'Publish unified code coverage results'
+#   - task: PublishCodeCoverageResults@2
+#     condition: succeededOrFailed()
+#     inputs:
+#       codeCoverageTool: Cobertura
+#       summaryFileLocation: 'unified-coverage/coverage.xml'
+#       reportDirectory: 'unified-coverage'
+#       failIfCoverageEmpty: true
+#     displayName: 'Publish unified code coverage results'
