@@ -1412,6 +1412,7 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle, SQLRET
 }
 
 py::list SQLGetAllDiagRecords(SqlHandlePtr handle) {
+    PERF_TIMER("SQLGetAllDiagRecords");
     LOG("Retrieving all diagnostic records");
     if (!SQLGetDiagRec_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -1486,15 +1487,18 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Q
     }
 
     // Configure forward-only cursor
-    if (SQLSetStmtAttr_ptr && StatementHandle && StatementHandle->get()) {
-        SQLSetStmtAttr_ptr(StatementHandle->get(),
-                           SQL_ATTR_CURSOR_TYPE,
-                           (SQLPOINTER)SQL_CURSOR_FORWARD_ONLY,
-                           0);
-        SQLSetStmtAttr_ptr(StatementHandle->get(),
-                           SQL_ATTR_CONCURRENCY,
-                           (SQLPOINTER)SQL_CONCUR_READ_ONLY,
-                           0);
+    {
+        PERF_TIMER("SQLExecDirect_wrap::configure_cursor");
+        if (SQLSetStmtAttr_ptr && StatementHandle && StatementHandle->get()) {
+            SQLSetStmtAttr_ptr(StatementHandle->get(),
+                               SQL_ATTR_CURSOR_TYPE,
+                               (SQLPOINTER)SQL_CURSOR_FORWARD_ONLY,
+                               0);
+            SQLSetStmtAttr_ptr(StatementHandle->get(),
+                               SQL_ATTR_CONCURRENCY,
+                               (SQLPOINTER)SQL_CONCUR_READ_ONLY,
+                               0);
+        }
     }
 
     SQLWCHAR* queryPtr;
@@ -1504,7 +1508,13 @@ SQLRETURN SQLExecDirect_wrap(SqlHandlePtr StatementHandle, const std::wstring& Q
 #else
     queryPtr = const_cast<SQLWCHAR*>(Query.c_str());
 #endif
-    SQLRETURN ret = SQLExecDirect_ptr(StatementHandle->get(), queryPtr, SQL_NTS);
+    
+    // Execute query
+    SQLRETURN ret;
+    {
+        PERF_TIMER("SQLExecDirect_wrap::SQLExecDirect_call");
+        ret = SQLExecDirect_ptr(StatementHandle->get(), queryPtr, SQL_NTS);
+    }
     if (!SQL_SUCCEEDED(ret)) {
         LOG("Failed to execute query directly");
     }
@@ -2291,6 +2301,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle,
 
 // Wrap SQLNumResultCols
 SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle) {
+    PERF_TIMER("SQLNumResultCols_wrap");
     LOG("Get number of columns in result set");
     if (!SQLNumResultCols_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -2305,6 +2316,7 @@ SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle) {
 
 // Wrap SQLDescribeCol
 SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMetadata) {
+    PERF_TIMER("SQLDescribeCol_wrap");
     LOG("Get column description");
     if (!SQLDescribeCol_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -2320,6 +2332,7 @@ SQLRETURN SQLDescribeCol_wrap(SqlHandlePtr StatementHandle, py::list& ColumnMeta
     }
 
     for (SQLUSMALLINT i = 1; i <= ColumnCount; ++i) {
+        PERF_TIMER("SQLDescribeCol_wrap::per_column");
         SQLWCHAR ColumnName[256];
         SQLSMALLINT NameLength;
         SQLSMALLINT DataType;
@@ -2415,6 +2428,7 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
                                      bool isWideChar,
                                      bool isBinary)
 {
+    PERF_TIMER("FetchLobColumnData");
     std::vector<char> buffer;
     SQLRETURN ret = SQL_SUCCESS_WITH_INFO;
     int loopCount = 0;
@@ -2629,6 +2643,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
                             if (numCharsInData < dataBuffer.size()) {
 #if defined(__APPLE__) || defined(__linux__)
+                                PERF_TIMER("SQLGetData_wrap::wstring_conversion");
                                 const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(dataBuffer.data());
                                 std::wstring wstr = SQLWCHARToWString(sqlwBuf, numCharsInData);
                                 std::string utf8str = WideToUTF8(wstr);
@@ -3034,6 +3049,7 @@ SQLRETURN SQLFetchScroll_wrap(SqlHandlePtr StatementHandle, SQLSMALLINT FetchOri
 // TODO: Move to anonymous namespace, since it is not used outside this file
 SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
                         SQLUSMALLINT numCols, int fetchSize) {
+    PERF_TIMER("SQLBindColums");
     SQLRETURN ret = SQL_SUCCESS;
     // Bind columns based on their data types
     for (SQLUSMALLINT col = 1; col <= numCols; col++) {
@@ -3240,8 +3256,13 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     {
         PERF_TIMER("FetchBatchData::construct_rows");
         for (SQLULEN i = 0; i < numRowsFetched; i++) {
+            PERF_TIMER("construct_rows::per_row_total");
+            
             // Create row container pre-allocated with known column count
             py::list row(numCols);
+        
+        {
+            PERF_TIMER("construct_rows::all_columns_processing");
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
             const ColumnInfo& colInfo = columnInfos[col - 1];
             SQLSMALLINT dataType = colInfo.dataType;
@@ -3467,6 +3488,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
             }
         }
+        } // End all_columns_processing timer
         rows[initialSize + i] = row;
     }
     } // End construct_rows timer
@@ -3796,6 +3818,7 @@ SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row) {
 
 // Wrap SQLMoreResults
 SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
+    PERF_TIMER("SQLMoreResults_wrap");
     LOG("Check for more results");
     if (!SQLMoreResults_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -3807,6 +3830,7 @@ SQLRETURN SQLMoreResults_wrap(SqlHandlePtr StatementHandle) {
 
 // Wrap SQLFreeHandle
 SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
+    PERF_TIMER("SQLFreeHandle_wrap");
     LOG("Free SQL handle");
     if (!SQLAllocHandle_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
@@ -3823,6 +3847,7 @@ SQLRETURN SQLFreeHandle_wrap(SQLSMALLINT HandleType, SqlHandlePtr Handle) {
 
 // Wrap SQLRowCount
 SQLLEN SQLRowCount_wrap(SqlHandlePtr StatementHandle) {
+    PERF_TIMER("SQLRowCount_wrap");
     LOG("Get number of row affected by last execute");
     if (!SQLRowCount_ptr) {
         LOG("Function pointer not initialized. Loading the driver.");
