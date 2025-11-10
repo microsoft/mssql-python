@@ -319,7 +319,7 @@ jobs:
   - script: |
       git checkout HEAD -- mssql_python/pybind/performance_counter.hpp
       cd mssql_python\pybind
-      build.bat x64 --profiling-on
+      build.bat --profiling-on
     displayName: 'Rebuild .pyd file (Profiling ON for profiler)'
     condition: eq(variables['sqlVersion'], 'SQL2022')
 
