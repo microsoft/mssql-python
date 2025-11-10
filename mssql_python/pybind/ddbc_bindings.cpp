@@ -3319,6 +3319,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_WCHAR:
                 case SQL_WVARCHAR:
                 case SQL_WLONGVARCHAR: {
+                    PERF_TIMER("construct_rows::wstring_conversion");
                     // TODO: variable length data needs special handling, this logic wont suffice
                     SQLULEN columnSize = colInfo.columnSize;
                     HandleZeroColumnSizeAtFetch(columnSize);
@@ -3329,8 +3330,19 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     if (!isLob && numCharsInData < fetchBufferSize) {
 #if defined(__APPLE__) || defined(__linux__)
                         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
-                        std::wstring wstr = SQLWCHARToWString(wcharData, numCharsInData);
-                        row[col - 1] = wstr;
+                        // OPTIMIZATION #1: Use PyUnicode_DecodeUTF16 directly instead of intermediate std::wstring
+                        PyObject* pyStr = PyUnicode_DecodeUTF16(
+                            reinterpret_cast<const char*>(wcharData),
+                            numCharsInData * sizeof(SQLWCHAR),
+                            NULL,  // errors - use default handling
+                            NULL   // byteorder - auto-detect
+                        );
+                        if (pyStr) {
+                            row[col - 1] = py::reinterpret_steal<py::object>(pyStr);
+                        } else {
+                            PyErr_Clear();
+                            row[col - 1] = std::wstring(L"");
+                        }
 #else
                         row[col - 1] = std::wstring(
                             reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]),
