@@ -4003,6 +4003,14 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
     
+    // Add profiling submodule
+    auto profiling = m.def_submodule("profiling", "Performance profiling");
+    profiling.def("enable", []() { mssql_profiling::PerformanceCounter::instance().enable(); }, "Enable performance profiling");
+    profiling.def("disable", []() { mssql_profiling::PerformanceCounter::instance().disable(); }, "Disable performance profiling");
+    profiling.def("get_stats", []() { return mssql_profiling::PerformanceCounter::instance().get_stats(); }, "Get profiling statistics");
+    profiling.def("reset", []() { mssql_profiling::PerformanceCounter::instance().reset(); }, "Reset profiling statistics");
+    profiling.def("is_enabled", []() { return mssql_profiling::PerformanceCounter::instance().is_enabled(); }, "Check if profiling is enabled");
+    
     try {
         // Try loading the ODBC driver when the module is imported
         LOG("Loading ODBC driver");

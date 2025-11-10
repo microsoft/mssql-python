@@ -118,6 +118,16 @@ else
             else
                 echo "[WARNING] macOS dylib configuration encountered issues"
             fi
+            
+            # Codesign the main .so file to prevent import errors
+            echo "[ACTION] Codesigning the Python extension .so file"
+            SO_FILE=$(ls -1 "$PARENT_DIR"/*.so | head -n 1)
+            codesign --force --sign - "$SO_FILE"
+            if [ $? -eq 0 ]; then
+                echo "[SUCCESS] Python extension codesigned successfully"
+            else
+                echo "[WARNING] Failed to codesign Python extension"
+            fi
         fi
     else
         echo "[ERROR] Failed to copy .so file"
