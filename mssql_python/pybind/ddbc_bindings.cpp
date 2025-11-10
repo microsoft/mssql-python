@@ -8,12 +8,10 @@
 #include "connection/connection_pool.h"
 
 #include <cstdint>
-#include <cstring>  // For std::memcpy
 #include <iomanip>  // std::setw, std::setfill
 #include <iostream>
 #include <utility>  // std::forward
 #include <filesystem>
-#include <type_traits>  // For std::alignment_of
 //-------------------------------------------------------------------------------------------------
 // Macro definitions
 //-------------------------------------------------------------------------------------------------
@@ -2463,31 +2461,14 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
                     LOG("Loop {}: Trimmed null terminator (narrow)", loopCount);
                 }
             } else {
-                // Wide characters - optimized alignment check
+                // Wide characters
                 size_t wcharSize = sizeof(SQLWCHAR);
-                if (bytesRead >= wcharSize && (bytesRead % wcharSize == 0)) {
+                if (bytesRead >= wcharSize) {
+                    auto sqlwBuf = reinterpret_cast<const SQLWCHAR*>(chunk.data());
                     size_t wcharCount = bytesRead / wcharSize;
-                    const void* chunkPtr = chunk.data();
-                    
-                    // Check if chunk data is properly aligned for SQLWCHAR access
-                    // Most allocators align to 8/16 bytes, so this is usually true
-                    bool isAligned = (reinterpret_cast<uintptr_t>(chunkPtr) % alignof(SQLWCHAR) == 0);
-                    
-                    if (isAligned) {
-                        // Fast path: direct access without memcpy
-                        const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(chunkPtr);  // CodeQL [SM02986] Runtime alignment verified via modulo check before cast - safe when isAligned=true
-                        while (wcharCount > 0 && sqlwBuf[wcharCount - 1] == 0) {
-                            --wcharCount;
-                            bytesRead -= wcharSize;
-                        }
-                    } else {
-                        // Slow path: unaligned data requires safe copy (rare)
-                        std::vector<SQLWCHAR> alignedBuf(wcharCount);
-                        std::memcpy(alignedBuf.data(), chunkPtr, bytesRead);
-                        while (wcharCount > 0 && alignedBuf[wcharCount - 1] == 0) {
-                            --wcharCount;
-                            bytesRead -= wcharSize;
-                        }
+                    while (wcharCount > 0 && sqlwBuf[wcharCount - 1] == 0) {
+                        --wcharCount;
+                        bytesRead -= wcharSize;
                     }
                     if (bytesRead < DAE_CHUNK_SIZE) {
                         LOG("Loop {}: Trimmed null terminator (wide)", loopCount);
@@ -2514,44 +2495,16 @@ static py::object FetchLobColumnData(SQLHSTMT hStmt,
     }
     if (isWideChar) {
 #if defined(_WIN32)
-        size_t wcharCount = buffer.size() / sizeof(wchar_t);
-        const void* bufPtr = buffer.data();
-        bool isAligned = (reinterpret_cast<uintptr_t>(bufPtr) % alignof(wchar_t) == 0);
-        
-        if (isAligned) {
-            // Fast path: direct construction from aligned buffer
-            const wchar_t* wcharPtr = reinterpret_cast<const wchar_t*>(bufPtr);  // CodeQL [SM02986] Runtime alignment verified via modulo check before cast - safe when isAligned=true
-            std::wstring wstr(wcharPtr, wcharCount);
-            std::string utf8str = WideToUTF8(wstr);
-            return py::str(utf8str);
-        } else {
-            // Slow path: copy to aligned buffer (rare)
-            std::vector<wchar_t> alignedBuf(wcharCount);
-            std::memcpy(alignedBuf.data(), bufPtr, buffer.size());
-            std::wstring wstr(alignedBuf.data(), wcharCount);
-            std::string utf8str = WideToUTF8(wstr);
-            return py::str(utf8str);
-        }
+        std::wstring wstr(reinterpret_cast<const wchar_t*>(buffer.data()), buffer.size() / sizeof(wchar_t));
+        std::string utf8str = WideToUTF8(wstr);
+        return py::str(utf8str);
 #else
         // Linux/macOS handling
         size_t wcharCount = buffer.size() / sizeof(SQLWCHAR);
-        const void* bufPtr = buffer.data();
-        bool isAligned = (reinterpret_cast<uintptr_t>(bufPtr) % alignof(SQLWCHAR) == 0);
-        
-        if (isAligned) {
-            // Fast path: direct access to aligned buffer
-            const SQLWCHAR* sqlwcharPtr = reinterpret_cast<const SQLWCHAR*>(bufPtr);  // CodeQL [SM02986] Runtime alignment verified via modulo check before cast - safe when isAligned=true
-            std::wstring wstr = SQLWCHARToWString(sqlwcharPtr, wcharCount);
-            std::string utf8str = WideToUTF8(wstr);
-            return py::str(utf8str);
-        } else {
-            // Slow path: copy to aligned buffer (rare)
-            std::vector<SQLWCHAR> alignedBuf(wcharCount);
-            std::memcpy(alignedBuf.data(), bufPtr, buffer.size());
-            std::wstring wstr = SQLWCHARToWString(alignedBuf.data(), wcharCount);
-            std::string utf8str = WideToUTF8(wstr);
-            return py::str(utf8str);
-        }
+        const SQLWCHAR* sqlwBuf = reinterpret_cast<const SQLWCHAR*>(buffer.data());
+        std::wstring wstr = SQLWCHARToWString(sqlwBuf, wcharCount);
+        std::string utf8str = WideToUTF8(wstr);
+        return py::str(utf8str);
 #endif
     }
     if (isBinary) {
