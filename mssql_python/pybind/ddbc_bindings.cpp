@@ -3246,10 +3246,15 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
     
     size_t initialSize = rows.size();
+    PyObject* rowsList = rows.ptr();  // Get raw Python list pointer
+    
     {
-        PERF_TIMER("FetchBatchData::allocate_placeholder_rows");
+        PERF_TIMER("FetchBatchData::rows_append");
+        // Pre-allocate all rows at once using direct Python C API
         for (SQLULEN i = 0; i < numRowsFetched; i++) {
-            rows.append(py::none());
+            PyObject* row = PyList_New(numCols);  // Allocate list with numCols elements
+            PyList_Append(rowsList, row);
+            Py_DECREF(row);  // PyList_Append increments refcount
         }
     }
     
@@ -3258,8 +3263,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         for (SQLULEN i = 0; i < numRowsFetched; i++) {
             PERF_TIMER("construct_rows::per_row_total");
             
-            // Create row container pre-allocated with known column count
-            py::list row(numCols);
+            // Get pre-allocated row from list
+            PyObject* row = PyList_GET_ITEM(rowsList, initialSize + i);
+            py::list rowWrapper = py::reinterpret_borrow<py::list>(row);
         
         {
             PERF_TIMER("construct_rows::all_columns_processing");
@@ -3274,26 +3280,26 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             
             SQLLEN dataLen = buffers.indicators[col - 1][i];
             if (dataLen == SQL_NULL_DATA) {
-                row[col - 1] = py::none();
+                rowWrapper[col - 1] = py::none();
                 continue;
             }
             if (dataLen == SQL_NO_TOTAL) {
                 LOG("Cannot determine the length of the data. Returning NULL value instead."
                     "Column ID - {}", col);
-                row[col - 1] = py::none();
+                rowWrapper[col - 1] = py::none();
                 continue;
             } else if (dataLen == 0) {
                 // Handle zero-length (non-NULL) data
                 if (dataType == SQL_CHAR || dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR) {
-                    row[col - 1] = std::string("");
+                    rowWrapper[col - 1] = std::string("");
                 } else if (dataType == SQL_WCHAR || dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR) {
-                    row[col - 1] = std::wstring(L"");
+                    rowWrapper[col - 1] = std::wstring(L"");
                 } else if (dataType == SQL_BINARY || dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY) {
-                    row[col - 1] = py::bytes("");
+                    rowWrapper[col - 1] = py::bytes("");
                 } else {
                     // For other datatypes, 0 length is unexpected. Log & set None
                     LOG("Column data length is 0 for non-string/binary datatype. Setting None to the result row. Column ID - {}", col);
-                    row[col - 1] = py::none();
+                    rowWrapper[col - 1] = py::none();
                 }
                 continue;
             } else if (dataLen < 0) {
@@ -3310,11 +3316,11 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
 					uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
 					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
                     if (!isLob && numCharsInData < fetchBufferSize) {
-                        row[col - 1] = py::str(
+                        rowWrapper[col - 1] = py::str(
                             reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * fetchBufferSize]),
                             numCharsInData);
                     } else {
-                        row[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false);
+                        rowWrapper[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false);
                     }
                     break;
                 }
@@ -3336,18 +3342,18 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                             NULL   // byteorder - auto-detect
                         );
                         if (pyStr) {
-                            row[col - 1] = py::reinterpret_steal<py::object>(pyStr);
+                            rowWrapper[col - 1] = py::reinterpret_steal<py::object>(pyStr);
                         } else {
                             PyErr_Clear();
-                            row[col - 1] = std::wstring(L"");
+                            rowWrapper[col - 1] = std::wstring(L"");
                         }
 #else
-                        row[col - 1] = std::wstring(
+                        rowWrapper[col - 1] = std::wstring(
                             reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]),
                             numCharsInData);
 #endif
                     } else {
-                        row[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false);
+                        rowWrapper[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false);
                     }
                     break;
                 }
@@ -3355,10 +3361,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     PERF_TIMER("construct_rows::int_c_api_assign");
                     if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
                         Py_INCREF(Py_None);
-                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                        PyList_SET_ITEM(row, col - 1, Py_None);
                     } else {
                         PyObject* pyInt = PyLong_FromLong(buffers.intBuffers[col - 1][i]);
-                        PyList_SET_ITEM(row.ptr(), col - 1, pyInt);
+                        PyList_SET_ITEM(row, col - 1, pyInt);
                     }
                     break;
                 }
@@ -3366,10 +3372,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     PERF_TIMER("construct_rows::smallint_c_api_assign");
                     if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
                         Py_INCREF(Py_None);
-                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                        PyList_SET_ITEM(row, col - 1, Py_None);
                     } else {
                         PyObject* pyInt = PyLong_FromLong(buffers.smallIntBuffers[col - 1][i]);
-                        PyList_SET_ITEM(row.ptr(), col - 1, pyInt);
+                        PyList_SET_ITEM(row, col - 1, pyInt);
                     }
                     break;
                 }
@@ -3377,10 +3383,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     PERF_TIMER("construct_rows::tinyint_c_api_assign");
                     if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
                         Py_INCREF(Py_None);
-                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                        PyList_SET_ITEM(row, col - 1, Py_None);
                     } else {
                         PyObject* pyInt = PyLong_FromLong(buffers.charBuffers[col - 1][i]);
-                        PyList_SET_ITEM(row.ptr(), col - 1, pyInt);
+                        PyList_SET_ITEM(row, col - 1, pyInt);
                     }
                     break;
                 }
@@ -3388,10 +3394,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     PERF_TIMER("construct_rows::bit_c_api_assign");
                     if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
                         Py_INCREF(Py_None);
-                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                        PyList_SET_ITEM(row, col - 1, Py_None);
                     } else {
                         PyObject* pyBool = PyBool_FromLong(buffers.charBuffers[col - 1][i]);
-                        PyList_SET_ITEM(row.ptr(), col - 1, pyBool);
+                        PyList_SET_ITEM(row, col - 1, pyBool);
                     }
                     break;
                 }
@@ -3399,10 +3405,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     PERF_TIMER("construct_rows::real_c_api_assign");
                     if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
                         Py_INCREF(Py_None);
-                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                        PyList_SET_ITEM(row, col - 1, Py_None);
                     } else {
                         PyObject* pyFloat = PyFloat_FromDouble(buffers.realBuffers[col - 1][i]);
-                        PyList_SET_ITEM(row.ptr(), col - 1, pyFloat);
+                        PyList_SET_ITEM(row, col - 1, pyFloat);
                     }
                     break;
                 }
@@ -3415,11 +3421,11 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         
                         // Always use standard decimal point for Python Decimal parsing  
                         // The decimal separator only affects display formatting, not parsing
-                        row[col - 1] = PythonObjectCache::get_decimal_class()(py::str(rawData, decimalDataLen));
+                        rowWrapper[col - 1] = PythonObjectCache::get_decimal_class()(py::str(rawData, decimalDataLen));
                     } catch (const py::error_already_set& e) {
                         // Handle the exception, e.g., log the error and set py::none()
                         LOG("Error converting to decimal: {}", e.what());
-                        row[col - 1] = py::none();
+                        rowWrapper[col - 1] = py::none();
                     }
                     break;
                 }
@@ -3428,10 +3434,10 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     PERF_TIMER("construct_rows::double_c_api_assign");
                     if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
                         Py_INCREF(Py_None);
-                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                        PyList_SET_ITEM(row, col - 1, Py_None);
                     } else {
                         PyObject* pyFloat = PyFloat_FromDouble(buffers.doubleBuffers[col - 1][i]);
-                        PyList_SET_ITEM(row.ptr(), col - 1, pyFloat);
+                        PyList_SET_ITEM(row, col - 1, pyFloat);
                     }
                     break;
                 }
@@ -3439,7 +3445,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_TYPE_TIMESTAMP:
                 case SQL_DATETIME: {
                     const SQL_TIMESTAMP_STRUCT& ts = buffers.timestampBuffers[col - 1][i];
-                    row[col - 1] = PythonObjectCache::get_datetime_class()(ts.year, ts.month, ts.day,
+                    rowWrapper[col - 1] = PythonObjectCache::get_datetime_class()(ts.year, ts.month, ts.day,
                                                                            ts.hour, ts.minute, ts.second,
                                                                            ts.fraction / 1000);
                     break;
@@ -3448,15 +3454,15 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     PERF_TIMER("construct_rows::bigint_c_api_assign");
                     if (buffers.indicators[col - 1][i] == SQL_NULL_DATA) {
                         Py_INCREF(Py_None);
-                        PyList_SET_ITEM(row.ptr(), col - 1, Py_None);
+                        PyList_SET_ITEM(row, col - 1, Py_None);
                     } else {
                         PyObject* pyInt = PyLong_FromLongLong(buffers.bigIntBuffers[col - 1][i]);
-                        PyList_SET_ITEM(row.ptr(), col - 1, pyInt);
+                        PyList_SET_ITEM(row, col - 1, pyInt);
                     }
                     break;
                 }
                 case SQL_TYPE_DATE: {
-                    row[col - 1] = PythonObjectCache::get_date_class()(buffers.dateBuffers[col - 1][i].year,
+                    rowWrapper[col - 1] = PythonObjectCache::get_date_class()(buffers.dateBuffers[col - 1][i].year,
                                                                        buffers.dateBuffers[col - 1][i].month,
                                                                        buffers.dateBuffers[col - 1][i].day);
                     break;
@@ -3464,7 +3470,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 case SQL_TIME:
                 case SQL_TYPE_TIME:
                 case SQL_SS_TIME2: {
-                    row[col - 1] = PythonObjectCache::get_time_class()(buffers.timeBuffers[col - 1][i].hour,
+                    rowWrapper[col - 1] = PythonObjectCache::get_time_class()(buffers.timeBuffers[col - 1][i].hour,
                                                                        buffers.timeBuffers[col - 1][i].minute,
                                                                        buffers.timeBuffers[col - 1][i].second);
                     break;
@@ -3489,16 +3495,16 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                             dtoValue.fraction / 1000,  // ns → µs
                             tzinfo
                         );
-                        row[col - 1] = py_dt;
+                        rowWrapper[col - 1] = py_dt;
                     } else {
-                        row[col - 1] = py::none();
+                        rowWrapper[col - 1] = py::none();
                     }
                     break;
                 }
                 case SQL_GUID: {
                     SQLLEN indicator = buffers.indicators[col - 1][i];
                     if (indicator == SQL_NULL_DATA) {
-                        row[col - 1] = py::none();
+                        rowWrapper[col - 1] = py::none();
                         break;
                     }
                     SQLGUID* guidValue = &buffers.guidBuffers[col - 1][i];
@@ -3517,18 +3523,18 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     py::dict kwargs;
                     kwargs["bytes"] = py_guid_bytes;
                     py::object uuid_obj = PythonObjectCache::get_uuid_class()(**kwargs);
-                    row[col - 1] = uuid_obj;
+                    rowWrapper[col - 1] = uuid_obj;
                     break;
                 }
                 case SQL_BINARY:
                 case SQL_VARBINARY:
                 case SQL_LONGVARBINARY: {
                     if (!isLob && static_cast<size_t>(dataLen) <= processedColumnSize) {
-                        row[col - 1] = py::bytes(reinterpret_cast<const char*>(
+                        rowWrapper[col - 1] = py::bytes(reinterpret_cast<const char*>(
                                                      &buffers.charBuffers[col - 1][i * processedColumnSize]),
                                                  dataLen);
                     } else {
-                        row[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true);
+                        rowWrapper[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true);
                     }
                     break;
                 }
@@ -3545,7 +3551,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             }
         }
         } // End all_columns_processing timer
-        rows[initialSize + i] = row;
+        // Row is already in the list, no need to assign
     }
     } // End construct_rows timer
     return ret;
