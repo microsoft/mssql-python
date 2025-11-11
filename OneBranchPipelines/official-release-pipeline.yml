@@ -77,7 +77,9 @@ extends:
       
       credscan:
         enabled: true
-        suppressionsFile: '$(REPO_ROOT)/.config/CredScanSuppressions.json'
+        suppressionsFile: '$(Build.SourcesDirectory)/.gdn/.gdnsuppress'
+        baseline:
+          baselinesFile: '$(Build.SourcesDirectory)/.gdn/.gdnbaselines'
       
       policheck:
         enabled: true

@@ -182,9 +182,12 @@ extends:
         querySuite: security-extended
 
       # CredScan - Scans for credentials in code
+      # Note: 1ES Pipeline Templates use Guardian, which requires .gdn/.gdnsuppress format
       credscan:
         enabled: ${{ parameters.runSdlTasks }}
-        suppressionsFile: '$(REPO_ROOT)/.config/CredScanSuppressions.json'
+        suppressionsFile: '$(Build.SourcesDirectory)/.gdn/.gdnsuppress'
+        baseline:
+          baselinesFile: '$(Build.SourcesDirectory)/.gdn/.gdnbaselines'
       
       # ESLint - JavaScript/TypeScript specific, not applicable for Python
       eslint:
