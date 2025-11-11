@@ -111,7 +111,7 @@ stages:
               python -m pytest -v
             displayName: 'Run pytests'
             env:
-              DB_CONNECTION_STRING: 'Driver=ODBC Driver 18 for SQL Server;Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+              DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
           
           - script: |
               python -m pip install --upgrade pip wheel setuptools
