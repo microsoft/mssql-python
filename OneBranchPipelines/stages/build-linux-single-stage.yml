@@ -29,6 +29,14 @@ stages:
     jobs:
       - job: ${{ parameters.jobName }}
         displayName: 'Build Wheels - ${{ parameters.linuxTag }} ${{ parameters.arch }}'
+        
+        # Disable BinSkim for Linux - requires ICU libraries not available in containers
+        templateContext:
+          sdl:
+            binskim:
+              enabled: false
+              justificationForDisabling: 'BinSkim is a .NET tool requiring ICU libraries not available in Linux containers'
+        
         pool:
           type: linux
           isCustom: true
@@ -38,11 +46,16 @@ stages:
         timeoutInMinutes: 120
         
         variables:
-          ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
-          LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
-          LINUX_TAG: ${{ parameters.linuxTag }}
-          ARCH: ${{ parameters.arch }}
-          DOCKER_PLATFORM: ${{ parameters.dockerPlatform }}
+          - name: ob_outputDirectory
+            value: '$(Build.ArtifactStagingDirectory)'
+          - name: LinuxContainerImage
+            value: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+          - name: LINUX_TAG
+            value: ${{ parameters.linuxTag }}
+          - name: ARCH
+            value: ${{ parameters.arch }}
+          - name: DOCKER_PLATFORM
+            value: ${{ parameters.dockerPlatform }}
         
         steps:
           - checkout: self

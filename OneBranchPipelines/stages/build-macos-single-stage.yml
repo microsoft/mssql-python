@@ -26,6 +26,14 @@ stages:
     jobs:
       - job: ${{ parameters.jobName }}
         displayName: 'Build Wheel - Python ${{ parameters.pythonVersion }} universal2'
+        
+        # Disable BinSkim for macOS - primarily designed for Windows binaries
+        templateContext:
+          sdl:
+            binskim:
+              enabled: false
+              justificationForDisabling: 'BinSkim is a .NET tool primarily designed for Windows PE binaries, not applicable to macOS Mach-O binaries'
+        
         pool:
           type: linux
           isCustom: true
@@ -34,10 +42,14 @@ stages:
         timeoutInMinutes: 120
         
         variables:
-          ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
-          LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
-          pythonVersion: ${{ parameters.pythonVersion }}
-          shortPyVer: ${{ parameters.shortPyVer }}
+          - name: ob_outputDirectory
+            value: '$(Build.ArtifactStagingDirectory)'
+          - name: LinuxContainerImage
+            value: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+          - name: pythonVersion
+            value: ${{ parameters.pythonVersion }}
+          - name: shortPyVer
+            value: ${{ parameters.shortPyVer }}
         
         steps:
           - checkout: self
