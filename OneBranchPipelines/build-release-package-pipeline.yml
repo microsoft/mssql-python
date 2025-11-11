@@ -143,6 +143,14 @@ extends:
     # Global SDL Configuration
     # See: https://aka.ms/obpipelines/sdl
     globalSdl:
+      # Global Guardian baseline and suppression files
+      baseline:
+        baselineFile: $(Build.SourcesDirectory)\.gdn\.gdnbaselines
+        suppressionSet: default
+      suppression:
+        suppressionFile: $(Build.SourcesDirectory)\.gdn\.gdnsuppress
+        suppressionSet: default
+      
       # ApiScan - Scans APIs for security vulnerabilities
       apiscan:
         enabled: ${{ parameters.runSdlTasks }}
@@ -182,12 +190,9 @@ extends:
         querySuite: security-extended
 
       # CredScan - Scans for credentials in code
-      # Note: 1ES Pipeline Templates use Guardian, which requires .gdn/.gdnsuppress format
+      # Note: Global baseline/suppression files configured at globalSdl level
       credscan:
         enabled: ${{ parameters.runSdlTasks }}
-        suppressionsFile: '$(Build.SourcesDirectory)\.gdn\.gdnsuppress'
-        baseline:
-          baselinesFile: '$(Build.SourcesDirectory)\.gdn\.gdnbaselines'
       
       # ESLint - JavaScript/TypeScript specific, not applicable for Python
       eslint:

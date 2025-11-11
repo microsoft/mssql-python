@@ -70,6 +70,14 @@ extends:
 
     # Global SDL Configuration
     globalSdl:
+      # Global Guardian baseline and suppression files
+      baseline:
+        baselineFile: $(Build.SourcesDirectory)\.gdn\.gdnbaselines
+        suppressionSet: default
+      suppression:
+        suppressionFile: $(Build.SourcesDirectory)\.gdn\.gdnsuppress
+        suppressionSet: default
+      
       # Minimal SDL for release pipeline - artifacts already scanned during build
       binskim:
         enabled: true
@@ -77,9 +85,6 @@ extends:
       
       credscan:
         enabled: true
-        suppressionsFile: '$(Build.SourcesDirectory)\.gdn\.gdnsuppress'
-        baseline:
-          baselinesFile: '$(Build.SourcesDirectory)\.gdn\.gdnbaselines'
       
       policheck:
         enabled: true
