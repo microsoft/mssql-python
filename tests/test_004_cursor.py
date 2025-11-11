@@ -1663,6 +1663,22 @@ def test_executemany_empty_parameter_list(cursor, db_connection):
         db_connection.commit()
 
 
+def test_executemany_Decimal_list(cursor, db_connection):
+    """Test executemany with an empty parameter list."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_empty_params (val DECIMAL(30, 20))")
+        data = [(decimal.Decimal('35.1128407822'),), (decimal.Decimal('40000.5640564065406'),)]
+        cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params")
+        count = cursor.fetchone()[0]
+        assert count == 0
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_params")
+        db_connection.commit()
+
+
 def test_nextset(cursor):
     """Test nextset"""
     cursor.execute("SELECT * FROM #pytest_all_data_types WHERE id = 1;")
