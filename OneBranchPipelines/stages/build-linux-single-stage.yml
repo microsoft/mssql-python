@@ -213,7 +213,7 @@ stages:
           # ESRP Malware scanning (Official builds only)
           - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
               - task: EsrpMalwareScanning@5
-                displayName: 'ESRP MalwareScanning - Python Wheels'
+                displayName: 'ESRP MalwareScanning - Python Wheels (Official)'
                 inputs:
                   ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
                   AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
@@ -222,6 +222,7 @@ stages:
                   UseMSIAuthentication: true
                   FolderPath: '$(ob_outputDirectory)/wheels'
                   Pattern: '*.whl'
+                  SessionTimeout: 60
                   CleanupTempStorage: 1
                   VerboseLogin: 1
           
@@ -237,6 +238,7 @@ stages:
                   UseMSIAuthentication: true
                   FolderPath: '$(ob_outputDirectory)/wheels'
                   Pattern: '*.whl'
+                  SessionTimeout: 60
                   CleanupTempStorage: 1
                   VerboseLogin: 1
           
