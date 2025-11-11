@@ -1717,9 +1717,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         sample_value = None
         for v in non_nulls:
-            if not sample_value or (
-                hasattr(v, "__len__") and len(v) > len(sample_value)
-            ):
+            if not sample_value:
+                sample_value = v
+            elif hasattr(v, "__len__") and hasattr(sample_value, "__len__") and len(v) > len(sample_value):
+                # For objects with length (strings, bytes, etc.), prefer the longer one
+                sample_value = v
+            elif isinstance(v, decimal.Decimal) and isinstance(sample_value, decimal.Decimal):
+                # For Decimal objects, prefer the one with higher precision (more digits)
+                v_tuple = v.as_tuple()
+                sample_tuple = sample_value.as_tuple()
+                if len(v_tuple.digits) > len(sample_tuple.digits):
+                    sample_value = v
+            elif isinstance(v, decimal.Decimal) and not isinstance(sample_value, decimal.Decimal):
+                # If comparing Decimal to non-Decimal, prefer Decimal for better type inference
                 sample_value = v
 
         return sample_value, None, None
