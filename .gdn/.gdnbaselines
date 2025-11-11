@@ -1,0 +1,300 @@
+{
+  "hydrated": false,
+  "properties": {
+    "helpUri": "https://eng.ms/docs/microsoft-security/security/azure-security/cloudai-security-fundamentals-engineering/security-integration/guardian-wiki/microsoft-guardian/general/baselines"
+  },
+  "version": "1.0.0",
+  "baselines": {
+    "default": {
+      "name": "default",
+      "createdDate": "2025-11-10 15:00:51Z",
+      "lastUpdatedDate": "2025-11-10 15:00:51Z"
+    }
+  },
+  "results": {
+    "aade958c0f923536ba575ebaaf1ce15a85f6c45b73e7785c2c15fb5a2c94408e": {
+      "signature": "aade958c0f923536ba575ebaaf1ce15a85f6c45b73e7785c2c15fb5a2c94408e",
+      "alternativeSignatures": [
+        "c59f521d29345c75983ad0e494c2e55e3a4c41ac35b7163da488a9f78c864f63"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "a7d351fb49883535cfb307e2a4f77636ae5e54a94af99406f96d2558bd643edc": {
+      "signature": "a7d351fb49883535cfb307e2a4f77636ae5e54a94af99406f96d2558bd643edc",
+      "alternativeSignatures": [],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "1ba31ce1ab7a0b18ae9e504ad24c48f235eab0e6dcb3ad960a7a89b9c48b077a": {
+      "signature": "1ba31ce1ab7a0b18ae9e504ad24c48f235eab0e6dcb3ad960a7a89b9c48b077a",
+      "alternativeSignatures": [],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "f7e51f21d47b749dd39359b75955ad1c0cf382c0a78426bcb31539bc0a88374b": {
+      "signature": "f7e51f21d47b749dd39359b75955ad1c0cf382c0a78426bcb31539bc0a88374b",
+      "alternativeSignatures": [],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "57bee1c81911d2ba66861c1deebf33ec0ec5fa5d946666748017493ead017d53": {
+      "signature": "57bee1c81911d2ba66861c1deebf33ec0ec5fa5d946666748017493ead017d53",
+      "alternativeSignatures": [],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "278585c30d0968e80928c1d86455aa32481e0b97b0cdbba1f20073e70398a0b8": {
+      "signature": "278585c30d0968e80928c1d86455aa32481e0b97b0cdbba1f20073e70398a0b8",
+      "alternativeSignatures": [],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "974a35997c6b2cdbb802ee711e2265e93f2f788f7ab976c05fbf7894e9248855": {
+      "signature": "974a35997c6b2cdbb802ee711e2265e93f2f788f7ab976c05fbf7894e9248855",
+      "alternativeSignatures": [],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "6064d60cf011d4ef6771441256423be8099dafb8d1f11cc066365115c18f51ab": {
+      "signature": "6064d60cf011d4ef6771441256423be8099dafb8d1f11cc066365115c18f51ab",
+      "alternativeSignatures": [],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "6b32b6a40b729abe443c04556b5a1c8fdcbbd27f1b6ae1d0d44ac75fa0dd38d5": {
+      "signature": "6b32b6a40b729abe443c04556b5a1c8fdcbbd27f1b6ae1d0d44ac75fa0dd38d5",
+      "alternativeSignatures": [],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "8ef0a26f4366de0ec76cc6e929cceae58295937b3dce9d31471657091c9c9986": {
+      "signature": "8ef0a26f4366de0ec76cc6e929cceae58295937b3dce9d31471657091c9c9986",
+      "alternativeSignatures": [],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "f1fa10a58cac2aca8946aba45e4a1d10f8ef6b86b433ed49b58910d3205149cc": {
+      "signature": "f1fa10a58cac2aca8946aba45e4a1d10f8ef6b86b433ed49b58910d3205149cc",
+      "alternativeSignatures": [],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "39c0c5997e05cc2c4bbd182acf975698088e87d358e196008147ffafde9f43e2": {
+      "signature": "39c0c5997e05cc2c4bbd182acf975698088e87d358e196008147ffafde9f43e2",
+      "alternativeSignatures": [],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "097d40852758d2660cdc7865c1b9cb638ec9165685773916e960efca725bb6cd": {
+      "signature": "097d40852758d2660cdc7865c1b9cb638ec9165685773916e960efca725bb6cd",
+      "alternativeSignatures": [],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "9f83def0a176d3aa7dc47f6443ab546ba717e2b16a552e229784b171a18e55f5": {
+      "signature": "9f83def0a176d3aa7dc47f6443ab546ba717e2b16a552e229784b171a18e55f5",
+      "alternativeSignatures": [],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "86966d5f6215bf5ae8c1b4d894caa6b69cc678374ab7a2321695dca35fc55923": {
+      "signature": "86966d5f6215bf5ae8c1b4d894caa6b69cc678374ab7a2321695dca35fc55923",
+      "alternativeSignatures": [
+        "4c8f75669e65355d034fcd3be56ebf462134e0ff2fec2605d04bccdb36e68111"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "d07377aee65d4515741765e830ea055dfe6df987f8f2f6399dfff1b6928115f5": {
+      "signature": "d07377aee65d4515741765e830ea055dfe6df987f8f2f6399dfff1b6928115f5",
+      "alternativeSignatures": [
+        "c0bcaaad531041aae4bc6bd88f452c845de3fb2b3825ab9b7ed1282cf2c548dd"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "bb10304b655f6008876c0671e0e8c73a858fc040867f340464dfc479cd9c3ba9": {
+      "signature": "bb10304b655f6008876c0671e0e8c73a858fc040867f340464dfc479cd9c3ba9",
+      "alternativeSignatures": [
+        "ee06cd1fcac7607b9f9103d3572ae7468bb3c43350639c2798a91017851442ed"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "7df253f960bd38300d111d29e106cd8c4fbdcb1d9e1420b8f8b5efa702cc0d6b": {
+      "signature": "7df253f960bd38300d111d29e106cd8c4fbdcb1d9e1420b8f8b5efa702cc0d6b",
+      "alternativeSignatures": [
+        "9f54994c0e212ec81244442d324a11d5bc2b20233eeef67e251767186fd0743e"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "bd9c1992728d9d1798329af6f6dc8ae44d7058a7d8f15b9001c009200ec0aaa3": {
+      "signature": "bd9c1992728d9d1798329af6f6dc8ae44d7058a7d8f15b9001c009200ec0aaa3",
+      "alternativeSignatures": [
+        "1bb6c80c485a4385f09c8fe2ecd7f65b310fcbbc9987456db0c9372f2f9c479d"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "e8040349a51b39e6f9eb478d16128184865096ad79e35f1687e8f36bce9d0021": {
+      "signature": "e8040349a51b39e6f9eb478d16128184865096ad79e35f1687e8f36bce9d0021",
+      "alternativeSignatures": [
+        "7ac989754684da6e6398df0fa8e9b38e63d43f536098574e98f8d82f987c9e64"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "99dbea9de7468dde3ab131a4c21f572fc19ff010730062451187de094abe9413": {
+      "signature": "99dbea9de7468dde3ab131a4c21f572fc19ff010730062451187de094abe9413",
+      "alternativeSignatures": [
+        "924682483adec7d5d020422beaa8a703b2070d04e0b368a6c1c9fb33f4c0f386"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "f15c06eb6496f3eec4ecd667ae96476d7280d3691bee142a9e023b21d184cb7f": {
+      "signature": "f15c06eb6496f3eec4ecd667ae96476d7280d3691bee142a9e023b21d184cb7f",
+      "alternativeSignatures": [
+        "a5b6768732ae9dcb3c8619af98639a1442cf53e8980716d861c40a14d40bcfef"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "3e5ff8a2e08d5e9a25ccaa7911b8cc758248fcc23ed7ff01d8f833294b2425dd": {
+      "signature": "3e5ff8a2e08d5e9a25ccaa7911b8cc758248fcc23ed7ff01d8f833294b2425dd",
+      "alternativeSignatures": [
+        "36b8101496f546de6416a5978c611cc5fe309f40977bf78652d73b41b2975ea5"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "5e1c753e18bd472af64c82c71aee0dc83d0ddcb3a897522d120b707b56d47401": {
+      "signature": "5e1c753e18bd472af64c82c71aee0dc83d0ddcb3a897522d120b707b56d47401",
+      "alternativeSignatures": [
+        "099fe23e23d95c8f957773101e24a53187e6cf67ccd2ae3944e65fddf95cf3c2"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "8636faecde898cdc690b9804ed240276ea631134588b99be21a509c3bcf8f5c6": {
+      "signature": "8636faecde898cdc690b9804ed240276ea631134588b99be21a509c3bcf8f5c6",
+      "alternativeSignatures": [
+        "3d4b23500b78a0f0c4365d5fe9dc9773b07a653b6154bc2ec6e3df1147058e9f"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "83bd28e26677f06338e89530f916ac93bf0760f1ce328f1c3dd407863a74ad27": {
+      "signature": "83bd28e26677f06338e89530f916ac93bf0760f1ce328f1c3dd407863a74ad27",
+      "alternativeSignatures": [
+        "bf49ba09d629e0b78e7d4ee56afc7347a7ba0cb727fed893f53f09be4466ebb5"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "5808b18c90fbe2874ded2e82d381b7fe425a5f472c4f123559923319de9adf44": {
+      "signature": "5808b18c90fbe2874ded2e82d381b7fe425a5f472c4f123559923319de9adf44",
+      "alternativeSignatures": [
+        "0cc5b7885e75304a9951f4b22666fcafbfe5aafba268c6bcfdada2ef4b35bcfc"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "b4280c9ec7953fca7e333ae67821bb25616127bcaad96bb449fe2a777a2a754b": {
+      "signature": "b4280c9ec7953fca7e333ae67821bb25616127bcaad96bb449fe2a777a2a754b",
+      "alternativeSignatures": [
+        "0a6d7dc7d76c5ec589cdceaba4bce1c6c7c1b54582900f305a5f35bfb606ca3e"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "9ebd52ffe5444d94809a5aaddfd754d8bce0085910516171b226a630f71a2cf6": {
+      "signature": "9ebd52ffe5444d94809a5aaddfd754d8bce0085910516171b226a630f71a2cf6",
+      "alternativeSignatures": [
+        "3b2519103c3722c7c8a7fb8c639a57ebb6884441638f7a9cdcb49d788987b902"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "9a0821feaabde36ea784d6caad810916d21e950c4745162e04994faa5774fa3f": {
+      "signature": "9a0821feaabde36ea784d6caad810916d21e950c4745162e04994faa5774fa3f",
+      "alternativeSignatures": [
+        "5ee6cebbc49bb7e376d0776ea55cf64f16bf3006e82048ccb7b6bcc174bd88b4"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    },
+    "42007d4363dd45ea940c7a3dc4e76c13644982eb9d5879d89e7d6d79285b4be9": {
+      "signature": "42007d4363dd45ea940c7a3dc4e76c13644982eb9d5879d89e7d6d79285b4be9",
+      "alternativeSignatures": [
+        "a6571b410651c2e09642232ecb65d8212dd7106cd268c5a90d5e5a4e61ff178f"
+      ],
+      "memberOf": [
+        "default"
+      ],
+      "createdDate": "2025-11-10 15:00:51Z"
+    }
+  }
+}
