@@ -343,8 +343,4 @@ _settings_lock: threading.Lock = threading.Lock()
 def get_settings() -> Settings:
     """Return the global settings object"""
     with _settings_lock:
-<<<<<<< HEAD
         return _settings
-=======
-        return _settings
->>>>>>> 8ed531e5161fbae39debf29b8e89363b1efaca31
