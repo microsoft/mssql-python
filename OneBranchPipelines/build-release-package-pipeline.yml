@@ -185,9 +185,9 @@ extends:
       # Note: 1ES Pipeline Templates use Guardian, which requires .gdn/.gdnsuppress format
       credscan:
         enabled: ${{ parameters.runSdlTasks }}
-        suppressionsFile: '.gdn/.gdnsuppress'
+        suppressionsFile: '$(Build.SourcesDirectory)\.gdn\.gdnsuppress'
         baseline:
-          baselinesFile: '.gdn/.gdnbaselines'
+          baselinesFile: '$(Build.SourcesDirectory)\.gdn\.gdnbaselines'
       
       # ESLint - JavaScript/TypeScript specific, not applicable for Python
       eslint:

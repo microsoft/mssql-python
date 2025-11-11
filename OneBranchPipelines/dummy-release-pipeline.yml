@@ -79,9 +79,9 @@ extends:
       
       credscan:
         enabled: true
-        suppressionsFile: '.gdn/.gdnsuppress'
+        suppressionsFile: '$(Build.SourcesDirectory)\.gdn\.gdnsuppress'
         baseline:
-          baselinesFile: '.gdn/.gdnbaselines'
+          baselinesFile: '$(Build.SourcesDirectory)\.gdn\.gdnbaselines'
       
       policheck:
         enabled: true
