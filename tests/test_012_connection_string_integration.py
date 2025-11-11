@@ -160,7 +160,7 @@ class TestConnectionStringIntegration:
         assert 'Server=tcp:server.database.windows.net,1433' in result
         assert 'Database=mydb' in result
         assert 'UID=user@server' in result  # UID not Uid (canonical form)
-        assert 'PWD={P@ss;w}}rd}' in result
+        assert 'PWD={TestP@ss;w}}rd}' in result
         assert 'Encrypt=yes' in result
         assert 'TrustServerCertificate=no' in result
         # Connection Timeout not in result (filtered out)

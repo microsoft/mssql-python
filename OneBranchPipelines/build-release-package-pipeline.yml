@@ -138,17 +138,23 @@ extends:
     featureFlags:
       WindowsHostVersion:
         Version: '2022'
+      binskimScanAllExtensions: true  # Enable scanning of all supported file types including .pyd
 
     # Global SDL Configuration
     # See: https://aka.ms/obpipelines/sdl
     globalSdl:
+      # Global Guardian baseline and suppression files
+      baseline:
+        baselineFile: $(Build.SourcesDirectory)\.gdn\.gdnbaselines
+        suppressionSet: default
+      suppression:
+        suppressionFile: $(Build.SourcesDirectory)\.gdn\.gdnsuppress
+        suppressionSet: default
+      
       # ApiScan - Scans APIs for security vulnerabilities
+      # Disabled: Requires specific binary paths and symbols not applicable to Python wheels
       apiscan:
-        enabled: ${{ parameters.runSdlTasks }}
-        softwareFolder: '$(apiScanDllPath)'
-        softwareName: 'mssql-python'
-        softwareVersionNum: '$(packageVersion)'
-        symbolsFolder: '$(apiScanPdbPath)'
+        enabled: false
 
       # Armory - Security scanning for binaries
       armory:
@@ -163,6 +169,10 @@ extends:
       binskim:
         enabled: ${{ parameters.runSdlTasks }}
         break: true
+        # Scan all binary types: .pyd (Python), .dll/.exe (Windows), .so (Linux), .dylib (macOS)
+        analyzeTarget: '$(Build.SourcesDirectory)/**/*.{pyd,dll,exe,so,dylib}'
+        analyzeRecurse: true
+        logFile: '$(Build.ArtifactStagingDirectory)/BinSkimResults.sarif'
 
       # CodeInspector - Source code security analysis
       codeinspector:
@@ -177,9 +187,9 @@ extends:
         querySuite: security-extended
 
       # CredScan - Scans for credentials in code
+      # Note: Global baseline/suppression files configured at globalSdl level
       credscan:
         enabled: ${{ parameters.runSdlTasks }}
-        suppressionsFile: '$(REPO_ROOT)/.config/CredScanSuppressions.json'
       
       # ESLint - JavaScript/TypeScript specific, not applicable for Python
       eslint:
