@@ -30,13 +30,6 @@ stages:
       - job: ${{ parameters.jobName }}
         displayName: 'Build Wheels - ${{ parameters.linuxTag }} ${{ parameters.arch }}'
         
-        # Disable BinSkim for Linux - requires ICU libraries not available in containers
-        templateContext:
-          sdl:
-            binskim:
-              enabled: false
-              justificationForDisabling: 'BinSkim is a .NET tool requiring ICU libraries not available in Linux containers'
-        
         pool:
           type: linux
           isCustom: true
@@ -46,6 +39,9 @@ stages:
         timeoutInMinutes: 120
         
         variables:
+          # Disable BinSkim for Linux - requires ICU libraries not available in containers
+          - name: ob_sdl_binskim_enabled
+            value: false
           - name: ob_outputDirectory
             value: '$(Build.ArtifactStagingDirectory)'
           - name: LinuxContainerImage

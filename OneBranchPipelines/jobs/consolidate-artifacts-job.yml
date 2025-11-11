@@ -19,7 +19,11 @@ jobs:
       vmImage: 'ubuntu-latest'
     
     variables:
-      ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+      # Disable BinSkim - consolidation job only downloads artifacts, no binary builds
+      - name: ob_sdl_binskim_enabled
+        value: false
+      - name: ob_outputDirectory
+        value: '$(Build.ArtifactStagingDirectory)'
     
     steps:
       - checkout: none  # No source code needed for consolidation
