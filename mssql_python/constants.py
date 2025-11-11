@@ -5,12 +5,14 @@ This module contains the constants used in the DDBC module.
 """
 
 from enum import Enum
+from typing import Dict, Optional, Tuple
 
 
 class ConstantsDDBC(Enum):
     """
     Constants used in the DDBC module.
     """
+
     SQL_HANDLE_ENV = 1
     SQL_HANDLE_DBC = 2
     SQL_HANDLE_STMT = 3
@@ -20,20 +22,14 @@ class ConstantsDDBC(Enum):
     SQL_STILL_EXECUTING = 2
     SQL_NTS = -3
     SQL_DRIVER_NOPROMPT = 0
-    SQL_ATTR_ASYNC_DBC_EVENT = 119
     SQL_IS_INTEGER = -6
-    SQL_ATTR_ASYNC_DBC_FUNCTIONS_ENABLE = 117
     SQL_OV_DDBC3_80 = 380
-    SQL_ATTR_DDBC_VERSION = 200
-    SQL_ATTR_ASYNC_ENABLE = 4
-    SQL_ATTR_ASYNC_STMT_EVENT = 29
     SQL_ERROR = -1
     SQL_INVALID_HANDLE = -2
     SQL_NULL_HANDLE = 0
     SQL_OV_DDBC3 = 3
     SQL_COMMIT = 0
     SQL_ROLLBACK = 1
-    SQL_ATTR_AUTOCOMMIT = 102
     SQL_SMALLINT = 5
     SQL_CHAR = 1
     SQL_WCHAR = -8
@@ -94,20 +90,15 @@ class ConstantsDDBC(Enum):
     SQL_DESC_TYPE = 2
     SQL_DESC_LENGTH = 3
     SQL_DESC_NAME = 4
-    SQL_ATTR_ROW_ARRAY_SIZE = 27
-    SQL_ATTR_ROWS_FETCHED_PTR = 26
-    SQL_ATTR_ROW_STATUS_PTR = 25
     SQL_ROW_SUCCESS = 0
     SQL_ROW_SUCCESS_WITH_INFO = 1
     SQL_ROW_NOROW = 100
-    SQL_ATTR_CURSOR_TYPE = 6
     SQL_CURSOR_FORWARD_ONLY = 0
     SQL_CURSOR_STATIC = 3
     SQL_CURSOR_KEYSET_DRIVEN = 2
     SQL_CURSOR_DYNAMIC = 3
     SQL_NULL_DATA = -1
     SQL_C_DEFAULT = 99
-    SQL_ATTR_ROW_BIND_TYPE = 5
     SQL_BIND_BY_COLUMN = 0
     SQL_PARAM_INPUT = 1
     SQL_PARAM_OUTPUT = 2
@@ -115,7 +106,6 @@ class ConstantsDDBC(Enum):
     SQL_C_WCHAR = -8
     SQL_NULLABLE = 1
     SQL_MAX_NUMERIC_LEN = 16
-    SQL_ATTR_QUERY_TIMEOUT = 2
 
     SQL_FETCH_NEXT = 1
     SQL_FETCH_FIRST = 2
@@ -136,11 +126,66 @@ class ConstantsDDBC(Enum):
     SQL_QUICK = 0
     SQL_ENSURE = 1
 
+    # Connection Attribute Constants for set_attr()
+    SQL_ATTR_ACCESS_MODE = 101
+    SQL_ATTR_AUTOCOMMIT = 102
+    SQL_ATTR_CURSOR_TYPE = 6
+    SQL_ATTR_ROW_BIND_TYPE = 5
+    SQL_ATTR_ASYNC_DBC_FUNCTIONS_ENABLE = 117
+    SQL_ATTR_ROW_ARRAY_SIZE = 27
+    SQL_ATTR_ASYNC_DBC_EVENT = 119
+    SQL_ATTR_DDBC_VERSION = 200
+    SQL_ATTR_ASYNC_STMT_EVENT = 29
+    SQL_ATTR_ROWS_FETCHED_PTR = 26
+    SQL_ATTR_ROW_STATUS_PTR = 25
+    SQL_ATTR_CONNECTION_TIMEOUT = 113
+    SQL_ATTR_CURRENT_CATALOG = 109
+    SQL_ATTR_LOGIN_TIMEOUT = 103
+    SQL_ATTR_ODBC_CURSORS = 110
+    SQL_ATTR_PACKET_SIZE = 112
+    SQL_ATTR_QUIET_MODE = 111
+    SQL_ATTR_TXN_ISOLATION = 108
+    SQL_ATTR_TRACE = 104
+    SQL_ATTR_TRACEFILE = 105
+    SQL_ATTR_TRANSLATE_LIB = 106
+    SQL_ATTR_TRANSLATE_OPTION = 107
+    SQL_ATTR_CONNECTION_POOLING = 201
+    SQL_ATTR_CP_MATCH = 202
+    SQL_ATTR_ASYNC_ENABLE = 4
+    SQL_ATTR_ENLIST_IN_DTC = 1207
+    SQL_ATTR_ENLIST_IN_XA = 1208
+    SQL_ATTR_CONNECTION_DEAD = 1209
+    SQL_ATTR_SERVER_NAME = 13
+    SQL_ATTR_RESET_CONNECTION = 116
+
+    # Transaction Isolation Level Constants
+    SQL_TXN_READ_UNCOMMITTED = 1
+    SQL_TXN_READ_COMMITTED = 2
+    SQL_TXN_REPEATABLE_READ = 4
+    SQL_TXN_SERIALIZABLE = 8
+
+    # Access Mode Constants
+    SQL_MODE_READ_WRITE = 0
+    SQL_MODE_READ_ONLY = 1
+
+    # Connection Dead Constants
+    SQL_CD_TRUE = 1
+    SQL_CD_FALSE = 0
+
+    # ODBC Cursors Constants
+    SQL_CUR_USE_IF_NEEDED = 0
+    SQL_CUR_USE_ODBC = 1
+    SQL_CUR_USE_DRIVER = 2
+
+    # Reset Connection Constants
+    SQL_RESET_CONNECTION_YES = 1
+
+
 class GetInfoConstants(Enum):
     """
     These constants are used with various methods like getinfo().
     """
-    
+
     # Driver and database information
     SQL_DRIVER_NAME = 6
     SQL_DRIVER_VER = 7
@@ -275,53 +320,190 @@ class GetInfoConstants(Enum):
     SQL_IC_SENSITIVE = 3
     SQL_IC_MIXED = 4
 
+
 class AuthType(Enum):
     """Constants for authentication types"""
+
     INTERACTIVE = "activedirectoryinteractive"
     DEVICE_CODE = "activedirectorydevicecode"
     DEFAULT = "activedirectorydefault"
 
+
 class SQLTypes:
     """Constants for valid SQL data types to use with setinputsizes"""
-    
+
     @classmethod
     def get_valid_types(cls) -> set:
         """Returns a set of all valid SQL type constants"""
-        
+
         return {
-            ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_VARCHAR.value, 
-            ConstantsDDBC.SQL_LONGVARCHAR.value, ConstantsDDBC.SQL_WCHAR.value,
-            ConstantsDDBC.SQL_WVARCHAR.value, ConstantsDDBC.SQL_WLONGVARCHAR.value,
-            ConstantsDDBC.SQL_DECIMAL.value, ConstantsDDBC.SQL_NUMERIC.value, 
-            ConstantsDDBC.SQL_BIT.value, ConstantsDDBC.SQL_TINYINT.value,
-            ConstantsDDBC.SQL_SMALLINT.value, ConstantsDDBC.SQL_INTEGER.value, 
-            ConstantsDDBC.SQL_BIGINT.value, ConstantsDDBC.SQL_REAL.value,
-            ConstantsDDBC.SQL_FLOAT.value, ConstantsDDBC.SQL_DOUBLE.value, 
-            ConstantsDDBC.SQL_BINARY.value, ConstantsDDBC.SQL_VARBINARY.value,
-            ConstantsDDBC.SQL_LONGVARBINARY.value, ConstantsDDBC.SQL_DATE.value, 
-            ConstantsDDBC.SQL_TIME.value, ConstantsDDBC.SQL_TIMESTAMP.value,
-            ConstantsDDBC.SQL_GUID.value
+            ConstantsDDBC.SQL_CHAR.value,
+            ConstantsDDBC.SQL_VARCHAR.value,
+            ConstantsDDBC.SQL_LONGVARCHAR.value,
+            ConstantsDDBC.SQL_WCHAR.value,
+            ConstantsDDBC.SQL_WVARCHAR.value,
+            ConstantsDDBC.SQL_WLONGVARCHAR.value,
+            ConstantsDDBC.SQL_DECIMAL.value,
+            ConstantsDDBC.SQL_NUMERIC.value,
+            ConstantsDDBC.SQL_BIT.value,
+            ConstantsDDBC.SQL_TINYINT.value,
+            ConstantsDDBC.SQL_SMALLINT.value,
+            ConstantsDDBC.SQL_INTEGER.value,
+            ConstantsDDBC.SQL_BIGINT.value,
+            ConstantsDDBC.SQL_REAL.value,
+            ConstantsDDBC.SQL_FLOAT.value,
+            ConstantsDDBC.SQL_DOUBLE.value,
+            ConstantsDDBC.SQL_BINARY.value,
+            ConstantsDDBC.SQL_VARBINARY.value,
+            ConstantsDDBC.SQL_LONGVARBINARY.value,
+            ConstantsDDBC.SQL_DATE.value,
+            ConstantsDDBC.SQL_TIME.value,
+            ConstantsDDBC.SQL_TIMESTAMP.value,
+            ConstantsDDBC.SQL_GUID.value,
         }
-    
+
     # Could also add category methods for convenience
     @classmethod
     def get_string_types(cls) -> set:
         """Returns a set of string SQL type constants"""
-        
+
         return {
-            ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_VARCHAR.value, 
-            ConstantsDDBC.SQL_LONGVARCHAR.value, ConstantsDDBC.SQL_WCHAR.value,
-            ConstantsDDBC.SQL_WVARCHAR.value, ConstantsDDBC.SQL_WLONGVARCHAR.value
+            ConstantsDDBC.SQL_CHAR.value,
+            ConstantsDDBC.SQL_VARCHAR.value,
+            ConstantsDDBC.SQL_LONGVARCHAR.value,
+            ConstantsDDBC.SQL_WCHAR.value,
+            ConstantsDDBC.SQL_WVARCHAR.value,
+            ConstantsDDBC.SQL_WLONGVARCHAR.value,
         }
-    
+
     @classmethod
     def get_numeric_types(cls) -> set:
         """Returns a set of numeric SQL type constants"""
-        
+
         return {
-            ConstantsDDBC.SQL_DECIMAL.value, ConstantsDDBC.SQL_NUMERIC.value,
-            ConstantsDDBC.SQL_BIT.value, ConstantsDDBC.SQL_TINYINT.value,
-            ConstantsDDBC.SQL_SMALLINT.value, ConstantsDDBC.SQL_INTEGER.value,
-            ConstantsDDBC.SQL_BIGINT.value, ConstantsDDBC.SQL_REAL.value,
-            ConstantsDDBC.SQL_FLOAT.value, ConstantsDDBC.SQL_DOUBLE.value
+            ConstantsDDBC.SQL_DECIMAL.value,
+            ConstantsDDBC.SQL_NUMERIC.value,
+            ConstantsDDBC.SQL_BIT.value,
+            ConstantsDDBC.SQL_TINYINT.value,
+            ConstantsDDBC.SQL_SMALLINT.value,
+            ConstantsDDBC.SQL_INTEGER.value,
+            ConstantsDDBC.SQL_BIGINT.value,
+            ConstantsDDBC.SQL_REAL.value,
+            ConstantsDDBC.SQL_FLOAT.value,
+            ConstantsDDBC.SQL_DOUBLE.value,
         }
+
+
+class AttributeSetTime(Enum):
+    """
+    Defines when connection attributes can be set in relation to connection establishment.
+
+    This enum is used to validate if a specific connection attribute can be set before
+    connection, after connection, or at either time.
+    """
+
+    BEFORE_ONLY = 1  # Must be set before connection is established
+    AFTER_ONLY = 2  # Can only be set after connection is established
+    EITHER = 3  # Can be set either before or after connection
+
+
+# Dictionary mapping attributes to their valid set times
+ATTRIBUTE_SET_TIMING = {
+    # Must be set before connection
+    ConstantsDDBC.SQL_ATTR_LOGIN_TIMEOUT.value: AttributeSetTime.BEFORE_ONLY,
+    ConstantsDDBC.SQL_ATTR_ODBC_CURSORS.value: AttributeSetTime.BEFORE_ONLY,
+    ConstantsDDBC.SQL_ATTR_PACKET_SIZE.value: AttributeSetTime.BEFORE_ONLY,
+    # Can only be set after connection
+    ConstantsDDBC.SQL_ATTR_CONNECTION_DEAD.value: AttributeSetTime.AFTER_ONLY,
+    ConstantsDDBC.SQL_ATTR_ENLIST_IN_DTC.value: AttributeSetTime.AFTER_ONLY,
+    ConstantsDDBC.SQL_ATTR_TRANSLATE_LIB.value: AttributeSetTime.AFTER_ONLY,
+    ConstantsDDBC.SQL_ATTR_TRANSLATE_OPTION.value: AttributeSetTime.AFTER_ONLY,
+    # Can be set either before or after connection
+    ConstantsDDBC.SQL_ATTR_ACCESS_MODE.value: AttributeSetTime.EITHER,
+    ConstantsDDBC.SQL_ATTR_ASYNC_DBC_EVENT.value: AttributeSetTime.EITHER,
+    ConstantsDDBC.SQL_ATTR_ASYNC_DBC_FUNCTIONS_ENABLE.value: AttributeSetTime.EITHER,
+    ConstantsDDBC.SQL_ATTR_ASYNC_ENABLE.value: AttributeSetTime.EITHER,
+    ConstantsDDBC.SQL_ATTR_AUTOCOMMIT.value: AttributeSetTime.EITHER,
+    ConstantsDDBC.SQL_ATTR_CONNECTION_TIMEOUT.value: AttributeSetTime.EITHER,
+    ConstantsDDBC.SQL_ATTR_CURRENT_CATALOG.value: AttributeSetTime.EITHER,
+    ConstantsDDBC.SQL_ATTR_QUIET_MODE.value: AttributeSetTime.EITHER,
+    ConstantsDDBC.SQL_ATTR_TRACE.value: AttributeSetTime.EITHER,
+    ConstantsDDBC.SQL_ATTR_TRACEFILE.value: AttributeSetTime.EITHER,
+    ConstantsDDBC.SQL_ATTR_TXN_ISOLATION.value: AttributeSetTime.EITHER,
+}
+
+
+def get_attribute_set_timing(attribute):
+    """
+    Get when an attribute can be set (before connection, after, or either).
+
+    Args:
+        attribute (int): The connection attribute (SQL_ATTR_*)
+
+    Returns:
+        AttributeSetTime: When the attribute can be set
+    """
+    return ATTRIBUTE_SET_TIMING.get(attribute, AttributeSetTime.AFTER_ONLY)
+
+_CONNECTION_STRING_DRIVER_KEY = 'Driver'
+_CONNECTION_STRING_APP_KEY = 'APP'
+
+# Reserved connection string parameters that are controlled by the driver
+# and cannot be set by users
+_RESERVED_PARAMETERS = (_CONNECTION_STRING_DRIVER_KEY, _CONNECTION_STRING_APP_KEY)
+
+# Core connection parameters with synonym mapping
+# Maps lowercase parameter names to their canonical form
+# Based on ODBC Driver 18 for SQL Server supported parameters
+# A new connection string key to be supported in Python, should be added
+# to the dictionary below. the value is the canonical name used in the 
+# final connection string sent to ODBC driver.
+# The left side is what Python connection string supports, the right side 
+# is the canonical ODBC key name.
+_ALLOWED_CONNECTION_STRING_PARAMS = {
+    # Server identification - addr, address, and server are synonyms
+    'server': 'Server',
+    'address': 'Server',
+    'addr': 'Server',
+    
+    # Authentication
+    'uid': 'UID',
+    'pwd': 'PWD',
+    'authentication': 'Authentication',
+    'trusted_connection': 'Trusted_Connection',
+    
+    # Database
+    'database': 'Database',
+    
+    # Driver (always controlled by mssql-python)
+    'driver': 'Driver',
+    
+    # Application name (always controlled by mssql-python)
+    'app': 'APP',
+    
+    # Encryption and Security
+    'encrypt': 'Encrypt',
+    'trustservercertificate': 'TrustServerCertificate',
+    'trust_server_certificate': 'TrustServerCertificate',  # Snake_case synonym
+    'hostnameincertificate': 'HostnameInCertificate',  # v18.0+
+    'servercertificate': 'ServerCertificate',  # v18.1+
+    'serverspn': 'ServerSPN',
+    
+    # Connection behavior
+    'multisubnetfailover': 'MultiSubnetFailover',
+    'applicationintent': 'ApplicationIntent',
+    'connectretrycount': 'ConnectRetryCount',
+    'connectretryinterval': 'ConnectRetryInterval',
+    
+    # Keep-Alive (v17.4+)
+    'keepalive': 'KeepAlive',
+    'keepaliveinterval': 'KeepAliveInterval',
+    
+    # IP Address Preference (v18.1+)
+    'ipaddresspreference': 'IpAddressPreference',
+
+    'packet size': 'PacketSize', # From the tests it looks like pyodbc users use Packet Size
+                                    # (with spaces) ODBC only honors "PacketSize" without spaces
+                                    # internally.
+    'packetsize': 'PacketSize',
+}
