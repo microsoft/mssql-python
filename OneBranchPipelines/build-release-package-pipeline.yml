@@ -152,12 +152,9 @@ extends:
         suppressionSet: default
       
       # ApiScan - Scans APIs for security vulnerabilities
+      # Disabled: Requires specific binary paths and symbols not applicable to Python wheels
       apiscan:
-        enabled: ${{ parameters.runSdlTasks }}
-        softwareFolder: '${{ variables.apiScanDllPath }}'
-        softwareName: 'mssql-python'
-        softwareVersionNum: '${{ variables.packageVersion }}'
-        symbolsFolder: '${{ variables.apiScanPdbPath }}'
+        enabled: false
 
       # Armory - Security scanning for binaries
       armory:
