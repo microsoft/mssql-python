@@ -200,6 +200,7 @@ stages:
                   UseMSIAuthentication: true
                   FolderPath: '$(ob_outputDirectory)/wheels'
                   Pattern: '*.whl'
+                  SessionTimeout: 60
                   CleanupTempStorage: 1
                   VerboseLogin: 1
           

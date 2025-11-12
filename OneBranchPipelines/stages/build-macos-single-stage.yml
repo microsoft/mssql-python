@@ -26,6 +26,7 @@ stages:
     jobs:
       - job: ${{ parameters.jobName }}
         displayName: 'Build Wheel - Python ${{ parameters.pythonVersion }} universal2'
+        
         pool:
           type: linux
           isCustom: true
@@ -34,10 +35,17 @@ stages:
         timeoutInMinutes: 120
         
         variables:
-          ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
-          LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
-          pythonVersion: ${{ parameters.pythonVersion }}
-          shortPyVer: ${{ parameters.shortPyVer }}
+          # Disable BinSkim for macOS - primarily designed for Windows binaries
+          - name: ob_sdl_binskim_enabled
+            value: false
+          - name: ob_outputDirectory
+            value: '$(Build.ArtifactStagingDirectory)'
+          - name: LinuxContainerImage
+            value: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+          - name: pythonVersion
+            value: ${{ parameters.pythonVersion }}
+          - name: shortPyVer
+            value: ${{ parameters.shortPyVer }}
         
         steps:
           - checkout: self
@@ -142,7 +150,7 @@ stages:
           # ESRP Malware scanning (Official builds only)
           - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
               - task: EsrpMalwareScanning@5
-                displayName: 'ESRP MalwareScanning - Python Wheels'
+                displayName: 'ESRP MalwareScanning - Python Wheels (Official)'
                 inputs:
                   ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
                   AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
@@ -151,6 +159,7 @@ stages:
                   UseMSIAuthentication: true
                   FolderPath: '$(ob_outputDirectory)/wheels'
                   Pattern: '*.whl'
+                  SessionTimeout: 60
                   CleanupTempStorage: 1
                   VerboseLogin: 1
           
@@ -166,6 +175,7 @@ stages:
                   UseMSIAuthentication: true
                   FolderPath: '$(ob_outputDirectory)/wheels'
                   Pattern: '*.whl'
+                  SessionTimeout: 60
                   CleanupTempStorage: 1
                   VerboseLogin: 1
           

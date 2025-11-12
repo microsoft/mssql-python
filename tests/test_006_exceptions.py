@@ -18,7 +18,6 @@ from mssql_python.exceptions import (
 from mssql_python import ConnectionStringParseError
 
 
-
 def drop_table_if_exists(cursor, table_name):
     """Drop the table if it exists"""
     try:

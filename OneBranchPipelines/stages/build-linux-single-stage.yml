@@ -29,6 +29,7 @@ stages:
     jobs:
       - job: ${{ parameters.jobName }}
         displayName: 'Build Wheels - ${{ parameters.linuxTag }} ${{ parameters.arch }}'
+        
         pool:
           type: linux
           isCustom: true
@@ -38,11 +39,19 @@ stages:
         timeoutInMinutes: 120
         
         variables:
-          ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
-          LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
-          LINUX_TAG: ${{ parameters.linuxTag }}
-          ARCH: ${{ parameters.arch }}
-          DOCKER_PLATFORM: ${{ parameters.dockerPlatform }}
+          # Disable BinSkim for Linux - requires ICU libraries not available in containers
+          - name: ob_sdl_binskim_enabled
+            value: false
+          - name: ob_outputDirectory
+            value: '$(Build.ArtifactStagingDirectory)'
+          - name: LinuxContainerImage
+            value: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+          - name: LINUX_TAG
+            value: ${{ parameters.linuxTag }}
+          - name: ARCH
+            value: ${{ parameters.arch }}
+          - name: DOCKER_PLATFORM
+            value: ${{ parameters.dockerPlatform }}
         
         steps:
           - checkout: self
@@ -200,7 +209,7 @@ stages:
           # ESRP Malware scanning (Official builds only)
           - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
               - task: EsrpMalwareScanning@5
-                displayName: 'ESRP MalwareScanning - Python Wheels'
+                displayName: 'ESRP MalwareScanning - Python Wheels (Official)'
                 inputs:
                   ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
                   AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
@@ -209,6 +218,7 @@ stages:
                   UseMSIAuthentication: true
                   FolderPath: '$(ob_outputDirectory)/wheels'
                   Pattern: '*.whl'
+                  SessionTimeout: 60
                   CleanupTempStorage: 1
                   VerboseLogin: 1
           
@@ -224,6 +234,7 @@ stages:
                   UseMSIAuthentication: true
                   FolderPath: '$(ob_outputDirectory)/wheels'
                   Pattern: '*.whl'
+                  SessionTimeout: 60
                   CleanupTempStorage: 1
                   VerboseLogin: 1
           

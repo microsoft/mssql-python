@@ -152,9 +152,10 @@ extends:
         suppressionSet: default
       
       # ApiScan - Scans APIs for security vulnerabilities
-      # Disabled: Requires specific binary paths and symbols not applicable to Python wheels
+      # Disabled: Not applicable to Python wheel distribution model
       apiscan:
         enabled: false
+        justificationForDisabling: 'APIScan requires PDB symbols for native Windows DLLs. Python wheels primarily contain .pyd files and Python code, better covered by BinSkim. JDBC team also has APIScan disabled for similar reasons.'
 
       # Armory - Security scanning for binaries
       armory:
