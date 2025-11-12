@@ -636,33 +636,29 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT col, SQLSMALLINT cTyp
 // Specialized column processors for each data type (eliminates switch in hot loop)
 namespace ColumnProcessors {
 
+// Process SQL INTEGER (4-byte int) column into Python int
+// SAFETY: PyList_SET_ITEM is safe here because row is freshly allocated with PyList_New()
+//         and each slot is filled exactly once (NULL -> value)
+// NOTE: NULL check removed - handled centrally before processor is called (OPTIMIZATION #6)
 inline void ProcessInteger(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
                            SQLULEN rowIdx, SQLHSTMT) {
-    if (buffers.indicators[col - 1][rowIdx] == SQL_NULL_DATA) {
-        Py_INCREF(Py_None);
-        PyList_SET_ITEM(row, col - 1, Py_None);
-        return;
-    }
     // OPTIMIZATION #2: Direct Python C API call (bypasses pybind11)
     PyObject* pyInt = PyLong_FromLong(buffers.intBuffers[col - 1][rowIdx]);
-    if (!pyInt) {
+    if (!pyInt) {  // Handle memory allocation failure
         Py_INCREF(Py_None);
         PyList_SET_ITEM(row, col - 1, Py_None);
         return;
     }
-    PyList_SET_ITEM(row, col - 1, pyInt);
+    PyList_SET_ITEM(row, col - 1, pyInt);  // Transfer ownership to list
 }
 
+// Process SQL SMALLINT (2-byte int) column into Python int
+// NOTE: NULL check removed - handled centrally before processor is called (OPTIMIZATION #6)
 inline void ProcessSmallInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
                             SQLULEN rowIdx, SQLHSTMT) {
-    if (buffers.indicators[col - 1][rowIdx] == SQL_NULL_DATA) {
-        Py_INCREF(Py_None);
-        PyList_SET_ITEM(row, col - 1, Py_None);
-        return;
-    }
     // OPTIMIZATION #2: Direct Python C API call
     PyObject* pyInt = PyLong_FromLong(buffers.smallIntBuffers[col - 1][rowIdx]);
-    if (!pyInt) {
+    if (!pyInt) {  // Handle memory allocation failure
         Py_INCREF(Py_None);
         PyList_SET_ITEM(row, col - 1, Py_None);
         return;
@@ -670,16 +666,13 @@ inline void ProcessSmallInt(PyObject* row, ColumnBuffers& buffers, const void*, 
     PyList_SET_ITEM(row, col - 1, pyInt);
 }
 
+// Process SQL BIGINT (8-byte int) column into Python int
+// NOTE: NULL check removed - handled centrally before processor is called (OPTIMIZATION #6)
 inline void ProcessBigInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
                           SQLULEN rowIdx, SQLHSTMT) {
-    if (buffers.indicators[col - 1][rowIdx] == SQL_NULL_DATA) {
-        Py_INCREF(Py_None);
-        PyList_SET_ITEM(row, col - 1, Py_None);
-        return;
-    }
     // OPTIMIZATION #2: Direct Python C API call
     PyObject* pyInt = PyLong_FromLongLong(buffers.bigIntBuffers[col - 1][rowIdx]);
-    if (!pyInt) {
+    if (!pyInt) {  // Handle memory allocation failure
         Py_INCREF(Py_None);
         PyList_SET_ITEM(row, col - 1, Py_None);
         return;
@@ -687,16 +680,13 @@ inline void ProcessBigInt(PyObject* row, ColumnBuffers& buffers, const void*, SQ
     PyList_SET_ITEM(row, col - 1, pyInt);
 }
 
+// Process SQL TINYINT (1-byte unsigned int) column into Python int
+// NOTE: NULL check removed - handled centrally before processor is called (OPTIMIZATION #6)
 inline void ProcessTinyInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
                            SQLULEN rowIdx, SQLHSTMT) {
-    if (buffers.indicators[col - 1][rowIdx] == SQL_NULL_DATA) {
-        Py_INCREF(Py_None);
-        PyList_SET_ITEM(row, col - 1, Py_None);
-        return;
-    }
     // OPTIMIZATION #2: Direct Python C API call
     PyObject* pyInt = PyLong_FromLong(buffers.charBuffers[col - 1][rowIdx]);
-    if (!pyInt) {
+    if (!pyInt) {  // Handle memory allocation failure
         Py_INCREF(Py_None);
         PyList_SET_ITEM(row, col - 1, Py_None);
         return;
@@ -704,16 +694,13 @@ inline void ProcessTinyInt(PyObject* row, ColumnBuffers& buffers, const void*, S
     PyList_SET_ITEM(row, col - 1, pyInt);
 }
 
+// Process SQL BIT column into Python bool
+// NOTE: NULL check removed - handled centrally before processor is called (OPTIMIZATION #6)
 inline void ProcessBit(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
                        SQLULEN rowIdx, SQLHSTMT) {
-    if (buffers.indicators[col - 1][rowIdx] == SQL_NULL_DATA) {
-        Py_INCREF(Py_None);
-        PyList_SET_ITEM(row, col - 1, Py_None);
-        return;
-    }
-    // OPTIMIZATION #2: Direct Python C API call
+    // OPTIMIZATION #2: Direct Python C API call (converts 0/1 to True/False)
     PyObject* pyBool = PyBool_FromLong(buffers.charBuffers[col - 1][rowIdx]);
-    if (!pyBool) {
+    if (!pyBool) {  // Handle memory allocation failure
         Py_INCREF(Py_None);
         PyList_SET_ITEM(row, col - 1, Py_None);
         return;
@@ -721,16 +708,13 @@ inline void ProcessBit(PyObject* row, ColumnBuffers& buffers, const void*, SQLUS
     PyList_SET_ITEM(row, col - 1, pyBool);
 }
 
+// Process SQL REAL (4-byte float) column into Python float
+// NOTE: NULL check removed - handled centrally before processor is called (OPTIMIZATION #6)
 inline void ProcessReal(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
                         SQLULEN rowIdx, SQLHSTMT) {
-    if (buffers.indicators[col - 1][rowIdx] == SQL_NULL_DATA) {
-        Py_INCREF(Py_None);
-        PyList_SET_ITEM(row, col - 1, Py_None);
-        return;
-    }
     // OPTIMIZATION #2: Direct Python C API call
     PyObject* pyFloat = PyFloat_FromDouble(buffers.realBuffers[col - 1][rowIdx]);
-    if (!pyFloat) {
+    if (!pyFloat) {  // Handle memory allocation failure
         Py_INCREF(Py_None);
         PyList_SET_ITEM(row, col - 1, Py_None);
         return;
@@ -738,16 +722,13 @@ inline void ProcessReal(PyObject* row, ColumnBuffers& buffers, const void*, SQLU
     PyList_SET_ITEM(row, col - 1, pyFloat);
 }
 
+// Process SQL DOUBLE/FLOAT (8-byte float) column into Python float
+// NOTE: NULL check removed - handled centrally before processor is called (OPTIMIZATION #6)
 inline void ProcessDouble(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
                           SQLULEN rowIdx, SQLHSTMT) {
-    if (buffers.indicators[col - 1][rowIdx] == SQL_NULL_DATA) {
-        Py_INCREF(Py_None);
-        PyList_SET_ITEM(row, col - 1, Py_None);
-        return;
-    }
     // OPTIMIZATION #2: Direct Python C API call
     PyObject* pyFloat = PyFloat_FromDouble(buffers.doubleBuffers[col - 1][rowIdx]);
-    if (!pyFloat) {
+    if (!pyFloat) {  // Handle memory allocation failure
         Py_INCREF(Py_None);
         PyList_SET_ITEM(row, col - 1, Py_None);
         return;
@@ -755,16 +736,14 @@ inline void ProcessDouble(PyObject* row, ColumnBuffers& buffers, const void*, SQ
     PyList_SET_ITEM(row, col - 1, pyFloat);
 }
 
+// Process SQL CHAR/VARCHAR (single-byte string) column into Python str
+// NOTE: NULL/NO_TOTAL checks removed - handled centrally before processor is called (OPTIMIZATION #6)
 inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr, 
                         SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
     
-    if (dataLen == SQL_NULL_DATA || dataLen == SQL_NO_TOTAL) {
-        Py_INCREF(Py_None);
-        PyList_SET_ITEM(row, col - 1, Py_None);
-        return;
-    }
+    // Handle empty strings
     if (dataLen == 0) {
         PyObject* emptyStr = PyUnicode_FromStringAndSize("", 0);
         if (!emptyStr) {
@@ -777,9 +756,10 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
     }
     
     uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
+    // Fast path: Data fits in buffer (not LOB or truncated)
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
     if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
-        // OPTIMIZATION #2: Direct Python C API call
+        // OPTIMIZATION #2: Direct Python C API call - create string from buffer
         PyObject* pyStr = PyUnicode_FromStringAndSize(
             reinterpret_cast<char*>(&buffers.charBuffers[col - 1][rowIdx * colInfo->fetchBufferSize]),
             numCharsInData);
@@ -790,20 +770,19 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
             PyList_SET_ITEM(row, col - 1, pyStr);
         }
     } else {
+        // Slow path: LOB data requires separate fetch call
         PyList_SET_ITEM(row, col - 1, FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false).release().ptr());
     }
 }
 
+// Process SQL NCHAR/NVARCHAR (wide/Unicode string) column into Python str
+// NOTE: NULL/NO_TOTAL checks removed - handled centrally before processor is called (OPTIMIZATION #6)
 inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr, 
                          SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
     
-    if (dataLen == SQL_NULL_DATA || dataLen == SQL_NO_TOTAL) {
-        Py_INCREF(Py_None);
-        PyList_SET_ITEM(row, col - 1, Py_None);
-        return;
-    }
+    // Handle empty strings
     if (dataLen == 0) {
         PyObject* emptyStr = PyUnicode_FromStringAndSize("", 0);
         if (!emptyStr) {
@@ -816,25 +795,26 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
     }
     
     uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
+    // Fast path: Data fits in buffer (not LOB or truncated)
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
     if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
 #if defined(__APPLE__) || defined(__linux__)
+        // OPTIMIZATION #1: Direct UTF-16 decode (SQLWCHAR is 2 bytes on Linux/macOS)
         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
-        // OPTIMIZATION #1: Direct UTF-16 decode
         PyObject* pyStr = PyUnicode_DecodeUTF16(
             reinterpret_cast<const char*>(wcharData),
             numCharsInData * sizeof(SQLWCHAR),
-            NULL,
-            NULL
+            NULL,  // errors (use default strict)
+            NULL   // byteorder (auto-detect)
         );
         if (pyStr) {
             PyList_SET_ITEM(row, col - 1, pyStr);
         } else {
-            PyErr_Clear();
+            PyErr_Clear();  // Ignore decode error, return empty string
             PyList_SET_ITEM(row, col - 1, PyUnicode_FromStringAndSize("", 0));
         }
 #else
-        // OPTIMIZATION #2: Direct Python C API call
+        // OPTIMIZATION #2: Direct Python C API call (Windows where SQLWCHAR == wchar_t)
         PyObject* pyStr = PyUnicode_FromWideChar(
             reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize]),
             numCharsInData);
@@ -846,20 +826,19 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
         }
 #endif
     } else {
+        // Slow path: LOB data requires separate fetch call
         PyList_SET_ITEM(row, col - 1, FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false).release().ptr());
     }
 }
 
+// Process SQL BINARY/VARBINARY (binary data) column into Python bytes
+// NOTE: NULL/NO_TOTAL checks removed - handled centrally before processor is called (OPTIMIZATION #6)
 inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr, 
                           SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
     
-    if (dataLen == SQL_NULL_DATA || dataLen == SQL_NO_TOTAL) {
-        Py_INCREF(Py_None);
-        PyList_SET_ITEM(row, col - 1, Py_None);
-        return;
-    }
+    // Handle empty binary data
     if (dataLen == 0) {
         PyObject* emptyBytes = PyBytes_FromStringAndSize("", 0);
         if (!emptyBytes) {
@@ -871,8 +850,9 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
         return;
     }
     
+    // Fast path: Data fits in buffer (not LOB or truncated)
     if (!colInfo->isLob && static_cast<size_t>(dataLen) <= colInfo->processedColumnSize) {
-        // OPTIMIZATION #2: Direct Python C API call
+        // OPTIMIZATION #2: Direct Python C API call - create bytes from buffer
         PyObject* pyBytes = PyBytes_FromStringAndSize(
             reinterpret_cast<const char*>(&buffers.charBuffers[col - 1][rowIdx * colInfo->processedColumnSize]),
             dataLen);
@@ -883,6 +863,7 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
             PyList_SET_ITEM(row, col - 1, pyBytes);
         }
     } else {
+        // Slow path: LOB data requires separate fetch call
         PyList_SET_ITEM(row, col - 1, FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true).release().ptr());
     }
 }

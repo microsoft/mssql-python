@@ -3259,9 +3259,27 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         PyObject* row = PyList_GET_ITEM(rowsList, initialSize + i);
         
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
+            // OPTIMIZATION #6: Consistent NULL checking - check BEFORE calling processor functions
+            // This eliminates redundant NULL checks inside each processor and improves branch prediction
+            SQLLEN dataLen = buffers.indicators[col - 1][i];
+            
+            // Handle NULL and special indicator values first (applies to ALL types)
+            if (dataLen == SQL_NULL_DATA) {
+                Py_INCREF(Py_None);
+                PyList_SET_ITEM(row, col - 1, Py_None);
+                continue;
+            }
+            if (dataLen == SQL_NO_TOTAL) {
+                LOG("Cannot determine the length of the data. Returning NULL value instead. Column ID - {}", col);
+                Py_INCREF(Py_None);
+                PyList_SET_ITEM(row, col - 1, Py_None);
+                continue;
+            }
+            
             // OPTIMIZATION #5: Use function pointer if available (fast path for common types)
             // This eliminates the switch statement from hot loop - reduces 100,000 switch 
             // evaluations (1000 rows × 10 cols × 10 types) to just 10 (setup only)
+            // Note: Processor functions no longer need to check for NULL since we do it above
             if (columnProcessors[col - 1] != nullptr) {
                 columnProcessors[col - 1](row, buffers, &columnInfosExt[col - 1], col, i, hStmt);
                 continue;
@@ -3271,21 +3289,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             // that require pybind11 or special handling
             const ColumnInfoExt& colInfo = columnInfosExt[col - 1];
             SQLSMALLINT dataType = colInfo.dataType;
-            SQLLEN dataLen = buffers.indicators[col - 1][i];
             
-            // Handle NULL and special cases for complex types
-            if (dataLen == SQL_NULL_DATA) {
-                Py_INCREF(Py_None);
-                PyList_SET_ITEM(row, col - 1, Py_None);
-                continue;
-            }
-            if (dataLen == SQL_NO_TOTAL) {
-                LOG("Cannot determine the length of the data. Returning NULL value instead."
-                    "Column ID - {}", col);
-                Py_INCREF(Py_None);
-                PyList_SET_ITEM(row, col - 1, Py_None);
-                continue;
-            } else if (dataLen == 0) {
+            // Additional validation for complex types
+            if (dataLen == 0) {
                 // Handle zero-length (non-NULL) data for complex types
                 LOG("Column data length is 0 for complex datatype. Setting None to the result row. Column ID - {}", col);
                 Py_INCREF(Py_None);
