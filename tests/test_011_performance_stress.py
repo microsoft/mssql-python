@@ -8,7 +8,7 @@ These tests verify the driver's behavior under stress conditions:
 - Thousands of empty string allocations
 - 10MB+ LOB data handling
 
-Tests are marked with @pytest.mark.slow and may be skipped in regular CI runs.
+Tests are marked with @pytest.mark.stress and may be skipped in regular CI runs.
 """
 
 import pytest
@@ -39,7 +39,7 @@ def drop_table_if_exists(cursor, table_name):
         pass
 
 
-@pytest.mark.slow
+@pytest.mark.stress
 def test_exception_mid_batch_no_corrupt_data(cursor, db_connection):
     """
     Test #1: Verify that batch processing handles data integrity correctly.
@@ -86,7 +86,7 @@ def test_exception_mid_batch_no_corrupt_data(cursor, db_connection):
             assert row[1] == f"Value_{i}", f"Row {i} has wrong value"
             assert abs(row[2] - (i * 1.5)) < 0.001, f"Row {i} has wrong amount"
         
-        print(f"✓ Batch integrity test passed: All 1000 rows complete, no corrupt data")
+        print(f"[OK] Batch integrity test passed: All 1000 rows complete, no corrupt data")
     
     except Exception as e:
         pytest.fail(f"Batch integrity test failed: {e}")
@@ -95,7 +95,7 @@ def test_exception_mid_batch_no_corrupt_data(cursor, db_connection):
         db_connection.commit()
 
 
-@pytest.mark.slow
+@pytest.mark.stress
 @pytest.mark.skipif(
     not supports_resource_limits() or platform.system() == 'Darwin',
     reason="Requires Unix resource limits, not supported on macOS"
@@ -157,14 +157,14 @@ def test_python_c_api_null_handling_memory_pressure(cursor, db_connection):
                         assert len(row) == 4, "Partial row detected under memory pressure"
             except MemoryError:
                 # Acceptable - ran out of memory, but didn't crash
-                print("✓ Memory pressure caused MemoryError (expected, not a crash)")
+                print("[OK] Memory pressure caused MemoryError (expected, not a crash)")
                 pass
             
         finally:
             # Restore memory limit
             resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
         
-        print("✓ Python C API NULL handling test passed: No segfault under memory pressure")
+        print("[OK] Python C API NULL handling test passed: No segfault under memory pressure")
         
     except Exception as e:
         pytest.fail(f"Python C API NULL handling test failed: {e}")
@@ -173,7 +173,7 @@ def test_python_c_api_null_handling_memory_pressure(cursor, db_connection):
         db_connection.commit()
 
 
-@pytest.mark.slow
+@pytest.mark.stress
 def test_thousands_of_empty_strings_allocation_stress(cursor, db_connection):
     """
     Test #3: Stress test with thousands of empty string allocations.
@@ -208,7 +208,7 @@ def test_thousands_of_empty_strings_allocation_stress(cursor, db_connection):
                 print(f"  Inserted {i} rows...")
         
         db_connection.commit()
-        print(f"✓ Inserted {num_rows} rows")
+        print(f"[OK] Inserted {num_rows} rows")
         
         # Test 1: fetchall() - stress test all allocations at once
         print("Testing fetchall()...")
@@ -227,7 +227,7 @@ def test_thousands_of_empty_strings_allocation_stress(cursor, db_connection):
             if i % 2000 == 0 and i > 0:
                 print(f"  Verified {i} rows...")
         
-        print(f"✓ fetchall() test passed: All {num_rows} empty strings correct")
+        print(f"[OK] fetchall() test passed: All {num_rows} empty strings correct")
         
         # Test 2: fetchmany() - stress test batch allocations
         print("Testing fetchmany(1000)...")
@@ -250,7 +250,7 @@ def test_thousands_of_empty_strings_allocation_stress(cursor, db_connection):
             print(f"  Batch {batch_num}: fetched {len(batch)} rows (total: {total_fetched})")
         
         assert total_fetched == num_rows, f"fetchmany total {total_fetched} != {num_rows}"
-        print(f"✓ fetchmany() test passed: All {num_rows} empty strings correct")
+        print(f"[OK] fetchmany() test passed: All {num_rows} empty strings correct")
         
     except Exception as e:
         pytest.fail(f"Empty strings stress test failed: {e}")
@@ -259,7 +259,7 @@ def test_thousands_of_empty_strings_allocation_stress(cursor, db_connection):
         db_connection.commit()
 
 
-@pytest.mark.slow
+@pytest.mark.stress
 def test_large_result_set_100k_rows_no_overflow(cursor, db_connection):
     """
     Test #5: Fetch very large result sets (100,000+ rows) to test buffer overflow protection.
@@ -307,7 +307,7 @@ def test_large_result_set_100k_rows_no_overflow(cursor, db_connection):
                 print(f"  Inserted {batch_start + batch_size} rows...")
         
         db_connection.commit()
-        print(f"✓ Inserted {num_rows} rows")
+        print(f"[OK] Inserted {num_rows} rows")
         
         # Fetch all rows and verify data integrity
         print("Fetching all rows...")
@@ -315,21 +315,21 @@ def test_large_result_set_100k_rows_no_overflow(cursor, db_connection):
         rows = cursor.fetchall()
         
         assert len(rows) == num_rows, f"Expected {num_rows} rows, got {len(rows)}"
-        print(f"✓ Fetched {num_rows} rows")
+        print(f"[OK] Fetched {num_rows} rows")
         
         # Verify first row
         assert rows[0][0] == 0, f"First row ID incorrect: {rows[0][0]}"
         assert rows[0][1] == "VARCHAR_0", f"First row varchar incorrect: {rows[0][1]}"
         assert rows[0][2] == "NVARCHAR_0", f"First row nvarchar incorrect: {rows[0][2]}"
         assert rows[0][3] == 0, f"First row int incorrect: {rows[0][3]}"
-        print("✓ First row verified")
+        print("[OK] First row verified")
         
         # Verify last row
         assert rows[-1][0] == num_rows - 1, f"Last row ID incorrect: {rows[-1][0]}"
         assert rows[-1][1] == f"VARCHAR_{num_rows-1}", f"Last row varchar incorrect"
         assert rows[-1][2] == f"NVARCHAR_{num_rows-1}", f"Last row nvarchar incorrect"
         assert rows[-1][3] == (num_rows - 1) * 2, f"Last row int incorrect"
-        print("✓ Last row verified")
+        print("[OK] Last row verified")
         
         # Verify random spot checks throughout the dataset
         check_indices = [10000, 25000, 50000, 75000, 99999]
@@ -339,7 +339,7 @@ def test_large_result_set_100k_rows_no_overflow(cursor, db_connection):
             assert row[1] == f"VARCHAR_{idx}", f"Row {idx} varchar incorrect: {row[1]}"
             assert row[2] == f"NVARCHAR_{idx}", f"Row {idx} nvarchar incorrect: {row[2]}"
             assert row[3] == idx * 2, f"Row {idx} int incorrect: {row[3]}"
-        print(f"✓ Spot checks verified at indices: {check_indices}")
+        print(f"[OK] Spot checks verified at indices: {check_indices}")
         
         # Verify all rows have correct sequential IDs (full integrity check)
         print("Performing full integrity check...")
@@ -350,7 +350,7 @@ def test_large_result_set_100k_rows_no_overflow(cursor, db_connection):
             if i % 20000 == 0 and i > 0:
                 print(f"  Verified {i} rows...")
         
-        print(f"✓ Full integrity check passed: All {num_rows} rows correct, no buffer overflow")
+        print(f"[OK] Full integrity check passed: All {num_rows} rows correct, no buffer overflow")
         
     except Exception as e:
         pytest.fail(f"Large result set test failed: {e}")
@@ -359,7 +359,7 @@ def test_large_result_set_100k_rows_no_overflow(cursor, db_connection):
         db_connection.commit()
 
 
-@pytest.mark.slow  
+@pytest.mark.stress  
 def test_very_large_lob_10mb_data_integrity(cursor, db_connection):
     """
     Test #6: Fetch VARCHAR(MAX), NVARCHAR(MAX), VARBINARY(MAX) with 10MB+ data.
@@ -407,7 +407,7 @@ def test_very_large_lob_10mb_data_integrity(cursor, db_connection):
             (1, varchar_data, nvarchar_data, varbinary_data)
         )
         db_connection.commit()
-        print("✓ Inserted 10MB LOB data")
+        print("[OK] Inserted 10MB LOB data")
         
         # Fetch and verify
         print("Fetching 10MB LOB data...")
@@ -426,7 +426,7 @@ def test_very_large_lob_10mb_data_integrity(cursor, db_connection):
         fetched_varchar_hash = hashlib.sha256(fetched_varchar.encode('utf-8')).hexdigest()
         assert fetched_varchar_hash == varchar_hash, \
             f"VARCHAR data corruption: hash mismatch"
-        print(f"✓ VARCHAR(MAX) verified: {len(fetched_varchar):,} bytes, SHA256 match")
+        print(f"[OK] VARCHAR(MAX) verified: {len(fetched_varchar):,} bytes, SHA256 match")
         
         # Verify NVARCHAR(MAX) - byte-by-byte integrity
         print("Verifying NVARCHAR(MAX) integrity...")
@@ -437,7 +437,7 @@ def test_very_large_lob_10mb_data_integrity(cursor, db_connection):
         fetched_nvarchar_hash = hashlib.sha256(fetched_nvarchar.encode('utf-8')).hexdigest()
         assert fetched_nvarchar_hash == nvarchar_hash, \
             f"NVARCHAR data corruption: hash mismatch"
-        print(f"✓ NVARCHAR(MAX) verified: {len(fetched_nvarchar):,} chars, SHA256 match")
+        print(f"[OK] NVARCHAR(MAX) verified: {len(fetched_nvarchar):,} chars, SHA256 match")
         
         # Verify VARBINARY(MAX) - byte-by-byte integrity
         print("Verifying VARBINARY(MAX) integrity...")
@@ -448,9 +448,9 @@ def test_very_large_lob_10mb_data_integrity(cursor, db_connection):
         fetched_varbinary_hash = hashlib.sha256(fetched_varbinary).hexdigest()
         assert fetched_varbinary_hash == varbinary_hash, \
             f"VARBINARY data corruption: hash mismatch"
-        print(f"✓ VARBINARY(MAX) verified: {len(fetched_varbinary):,} bytes, SHA256 match")
+        print(f"[OK] VARBINARY(MAX) verified: {len(fetched_varbinary):,} bytes, SHA256 match")
         
-        print("✓ All 10MB+ LOB data verified: LOB detection correct, no overflow, integrity perfect")
+        print("[OK] All 10MB+ LOB data verified: LOB detection correct, no overflow, integrity perfect")
         
     except Exception as e:
         pytest.fail(f"Very large LOB test failed: {e}")
@@ -459,7 +459,7 @@ def test_very_large_lob_10mb_data_integrity(cursor, db_connection):
         db_connection.commit()
 
 
-@pytest.mark.slow
+@pytest.mark.stress
 def test_concurrent_fetch_data_integrity_no_corruption(db_connection, conn_str):
     """
     Test #7: Multiple threads/cursors fetching data simultaneously.
@@ -557,16 +557,16 @@ def test_concurrent_fetch_data_integrity_no_corruption(db_connection, conn_str):
     for thread in threads:
         thread.join()
     
-    # Verify results
-    print(f"\nConcurrent fetch results:")
-    for result in results:
-        print(f"  Thread {result['thread_id']}: Fetched {result['rows_fetched']} rows - {'✓ Success' if result['success'] else '✗ Failed'}")
-    
-    if errors:
-        print(f"\nErrors encountered:")
-        for error in errors:
-            print(f"  Thread {error['thread_id']}: {error['error']}")
-        pytest.fail(f"Concurrent fetch had {len(errors)} errors")
+        # Verify results
+        print(f"\nConcurrent fetch results:")
+        for result in results:
+            print(f"  Thread {result['thread_id']}: Fetched {result['rows_fetched']} rows - {'OK' if result['success'] else 'FAILED'}")
+        
+        if errors:
+            print(f"\nErrors encountered:")
+            for error in errors:
+                print(f"  Thread {error['thread_id']}: {error['error']}")
+            pytest.fail(f"Concurrent fetch had {len(errors)} errors")
     
     # All threads should have succeeded
     assert len(results) == num_threads, \
@@ -577,4 +577,4 @@ def test_concurrent_fetch_data_integrity_no_corruption(db_connection, conn_str):
         assert result['rows_fetched'] == num_rows_per_table, \
             f"Thread {result['thread_id']} fetched {result['rows_fetched']} rows, expected {num_rows_per_table}"
     
-    print(f"\n✓ Concurrent fetch test passed: {num_threads} threads, no corruption, no race conditions")
+    print(f"\n[OK] Concurrent fetch test passed: {num_threads} threads, no corruption, no race conditions")

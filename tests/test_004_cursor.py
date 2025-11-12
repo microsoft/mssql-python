@@ -6985,12 +6985,12 @@ def test_varbinarymax_insert_fetch(cursor, db_connection):
         """
         )
 
-        # Prepare test data
+        # Prepare test data - use moderate sizes to guarantee LOB fetch path (line 867-868) efficiently
         test_data = [
             (2, b""),  # Empty bytes
             (3, b"1234567890"),  # Small binary
-            (4, b"A" * 9000),  # Large binary > 8000 (streaming)
-            (5, b"B" * 20000),  # Large binary > 8000 (streaming)
+            (4, b"A" * 15000),  # Large binary > 15KB (guaranteed LOB path)
+            (5, b"B" * 20000),  # Large binary > 20KB (guaranteed LOB path)
             (6, b"C" * 8000),  # Edge case: exactly 8000 bytes
             (7, b"D" * 8001),  # Edge case: just over 8000 bytes
         ]
@@ -7436,9 +7436,10 @@ def test_varcharmax_boundary(cursor, db_connection):
 
 
 def test_varcharmax_streaming(cursor, db_connection):
-    """Streaming fetch > 8k with all fetch modes."""
+    """Streaming fetch > 8k with all fetch modes to ensure LOB path coverage."""
     try:
-        values = ["Y" * 8100, "Z" * 10000]
+        # Use 15KB to guarantee LOB fetch path (line 774-775) while keeping test fast
+        values = ["Y" * 15000, "Z" * 20000]
         cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
         db_connection.commit()
         for v in values:
@@ -7563,9 +7564,10 @@ def test_nvarcharmax_boundary(cursor, db_connection):
 
 
 def test_nvarcharmax_streaming(cursor, db_connection):
-    """Streaming fetch > 4k unicode with all fetch modes."""
+    """Streaming fetch > 4k unicode with all fetch modes to ensure LOB path coverage."""
     try:
-        values = ["Ω" * 4100, "漢" * 5000]
+        # Use 10KB to guarantee LOB fetch path (line 830-831) while keeping test fast
+        values = ["Ω" * 10000, "漢" * 12000]
         cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
         db_connection.commit()
         for v in values:
