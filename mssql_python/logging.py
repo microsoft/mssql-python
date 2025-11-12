@@ -30,7 +30,7 @@ BOTH = 'both'      # Log to both file and stdout
 ALLOWED_LOG_EXTENSIONS = {'.txt', '.log', '.csv'}
 
 
-class TraceIDFilter(logging.Filter):
+class ThreadIDFilter(logging.Filter):
     """Filter that adds thread_id to all log records."""
     
     def filter(self, record):
@@ -90,7 +90,7 @@ class MSSQLLogger:
         self._logger.propagate = False  # Don't propagate to root logger
         
         # Add trace ID filter (injects thread_id into every log record)
-        self._logger.addFilter(TraceIDFilter())
+        self._logger.addFilter(ThreadIDFilter())
         
         # Output mode and handlers
         self._output_mode = FILE  # Default to file only
