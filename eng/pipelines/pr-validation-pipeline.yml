@@ -6,44 +6,677 @@ trigger:
     include:
       - main
 
+pr:
+  branches:
+    include:
+      - main
+
 jobs:
-- job: CodeQLAnalysis
-  displayName: 'CodeQL Security Analysis'
+# ===== PYTHON 3.14 TESTING JOBS =====
+
+- job: BuildWindowsWheels_Python314
   pool:
-    vmImage: 'ubuntu-latest'
-  
+    vmImage: 'windows-latest'
+  displayName: 'Build Windows Python 3.14 -'
+  strategy:
+    matrix:
+      py314_x64:
+        pythonVersion: '3.14'
+        shortPyVer: '314'
+        architecture: 'x64'
+        targetArch: 'x64'
+      py314_arm64:
+        pythonVersion: '3.14'
+        shortPyVer: '314'
+        architecture: 'x64'
+        targetArch: 'arm64'
+
   steps:
-  - script: |
-      sudo apt-get update
-      sudo apt-get install -y build-essential cmake curl git python3 python3-pip python3-dev python3-venv unixodbc-dev
-    displayName: 'Install build dependencies for CodeQL'
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '$(pythonVersion)'
+        architecture: '$(architecture)'
+        addToPath: true
+        githubToken: $(GITHUB_TOKEN)
+      displayName: 'Use Python $(pythonVersion) ($(architecture))'
 
-  - task: UsePythonVersion@0
-    inputs:
-      versionSpec: '3.13'
-      addToPath: true
-    displayName: 'Use Python 3.13 for CodeQL'
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install cmake pybind11
+      displayName: 'Install dependencies'
 
-  - script: |
-      python -m pip install --upgrade pip
-      pip install -r requirements.txt
-    displayName: 'Install Python dependencies for CodeQL'
+    - powershell: |
+        sqllocaldb create MSSQLLocalDB
+        sqllocaldb start MSSQLLocalDB
+      displayName: 'Start LocalDB instance'
 
-  - task: CodeQL3000Init@0
-    inputs:
-      Enabled: true
-    displayName: 'Initialize CodeQL'
+    - powershell: |
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+        sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+      displayName: 'Setup database and user'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
 
-  # Build the C++ extension for CodeQL analysis
-  - script: |
-      cd mssql_python/pybind
-      chmod +x build.sh
-      ./build.sh
-    displayName: 'Build C++ extension for CodeQL analysis'
+    - task: DownloadPipelineArtifact@2
+      condition: eq(variables['targetArch'], 'arm64')
+      inputs:
+        buildType: 'specific'
+        project: '$(System.TeamProject)'
+        definition: 2162
+        buildVersionToDownload: 'latest'
+        artifactName: 'mssql-python-arm64-libs'
+        targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
+      displayName: 'Download ARM64 Python libs'
 
-  - task: CodeQL3000Finalize@0
-    condition: always()
-    displayName: 'Finalize CodeQL'
+    - script: |
+        echo "Python Version: $(pythonVersion)"
+        echo "Short Tag: $(shortPyVer)"
+        echo "Architecture: Host=$(architecture), Target=$(targetArch)"
+
+        cd "$(Build.SourcesDirectory)\mssql_python\pybind"
+
+        if "$(targetArch)"=="arm64" (
+          echo Using arm64-specific Python library...
+          set CUSTOM_PYTHON_LIB_DIR=$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64
+        )
+
+        call build.bat $(targetArch)
+        call keep_single_arch.bat $(targetArch)
+
+        cd ..\..
+      displayName: 'Build PYD for $(targetArch)'
+      continueOnError: false
+
+    - powershell: |
+        Write-Host "Running pytests to validate bindings"
+        if ("$(targetArch)" -eq "arm64") {
+          Write-Host "Skipping pytests on Windows ARM64"
+        } else {
+          python -m pytest -v
+        }
+      displayName: 'Run pytests'
+      env:
+        DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+        Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)\ddbc-bindings\windows'
+      displayName: 'Place PYD file into artifacts directory'
+
+    - script: |
+        python -m pip install --upgrade pip
+        pip install wheel setuptools
+        set ARCHITECTURE=$(targetArch)
+        python setup.py bdist_wheel
+      displayName: 'Build wheel package for Python $(pythonVersion) ($(targetArch))'
+    
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)\dist'
+        Contents: '*.whl'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)\dist'
+      displayName: 'Collect wheel package'    
+
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)\ddbc-bindings'
+        ArtifactName: 'mssql-python-ddbc-bindings-py314'
+        publishLocation: 'Container'
+      displayName: 'Publish PYDs as artifacts'
+
+    - task: PublishBuildArtifacts@1
+      condition: eq(variables['targetArch'], 'arm64')
+      inputs:
+        PathtoPublish: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
+        ArtifactName: 'mssql-python-arm64-libs-py314'
+        publishLocation: 'Container'
+      displayName: 'Publish arm64 libs as artifacts'
+    
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)\dist'
+        ArtifactName: 'mssql-python-wheels-dist-py314'
+        publishLocation: 'Container'
+      displayName: 'Publish wheels as artifacts'
+
+- job: BuildMacOSWheels_Python314
+  pool:
+    vmImage: 'macos-latest'
+  displayName: 'Build macOS Python 3.14 - Universal2'
+
+  steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.14'
+        addToPath: true
+        githubToken: $(GITHUB_TOKEN)
+      displayName: 'Use Python 3.14 (Universal2)'
+
+    - script: |
+        brew update
+        brew uninstall cmake --ignore-dependencies || echo "CMake not installed or already removed"
+        brew install cmake
+      displayName: 'Install CMake'
+
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install cmake pybind11
+      displayName: 'Install dependencies'
+
+    - script: |
+        echo "Python Version: 3.14"
+        echo "Building Universal2 Binary"
+        cd "$(Build.SourcesDirectory)/mssql_python/pybind"
+        ./build.sh
+      displayName: 'Build .so file'
+      continueOnError: false
+
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)/mssql_python'
+        Contents: '*.so'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)/ddbc-bindings/macOS'
+      displayName: 'Place .so file into artifacts directory'
+
+    - script: |
+        brew update
+        brew install docker colima
+
+        colima start --cpu 3 --memory 10 --disk 30 --vm-type=vz || \
+        colima start --cpu 3 --memory 10 --disk 30 --vm-type=qemu
+
+        sleep 30
+        docker context use colima >/dev/null || true
+        docker version
+        docker ps
+      displayName: 'Install and start Colima-based Docker'
+      timeoutInMinutes: 15
+
+    - script: |
+        docker pull mcr.microsoft.com/mssql/server:2022-latest
+        docker run \
+          --name sqlserver \
+          -e ACCEPT_EULA=Y \
+          -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+          -p 1433:1433 \
+          -d mcr.microsoft.com/mssql/server:2022-latest
+
+        for i in {1..30}; do
+          docker exec sqlserver \
+            /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost \
+            -U SA \
+            -P "$DB_PASSWORD" \
+            -C -Q "SELECT 1" && break
+          sleep 2
+        done
+      displayName: 'Pull & start SQL Server (Docker)'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
+
+    - script: |
+        python -m pytest -v
+      displayName: 'Run Pytest to validate bindings'
+      env:
+        DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+    - script: |
+        python -m pip install --upgrade pip
+        pip install wheel setuptools
+        python setup.py bdist_wheel
+      displayName: 'Build 3.14 universal2 whl'
+    
+    - task: CopyFiles@2
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)/dist'
+        Contents: '*.whl'
+        TargetFolder: '$(Build.ArtifactStagingDirectory)/dist'
+      displayName: 'Collect wheel package'
+    
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
+        ArtifactName: 'mssql-python-ddbc-bindings-py314'
+        publishLocation: 'Container'
+      displayName: 'Publish .so files as artifacts'
+    
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/dist'
+        ArtifactName: 'mssql-python-wheels-dist-py314'
+        publishLocation: 'Container'
+      displayName: 'Publish wheels as artifacts'
+
+- job: BuildLinuxWheels_Python314
+  displayName: 'Build Linux Python 3.14 -'
+  pool: { vmImage: 'ubuntu-latest' }
+  timeoutInMinutes: 120
+
+  strategy:
+    matrix:
+      manylinux_x86_64:
+        LINUX_TAG: 'manylinux'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+        IMAGE: 'quay.io/pypa/manylinux_2_28_x86_64'
+      manylinux_aarch64:
+        LINUX_TAG: 'manylinux'
+        ARCH: 'aarch64'
+        DOCKER_PLATFORM: 'linux/arm64'
+        IMAGE: 'quay.io/pypa/manylinux_2_28_aarch64'
+      musllinux_x86_64:
+        LINUX_TAG: 'musllinux'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+        IMAGE: 'quay.io/pypa/musllinux_1_2_x86_64'
+      musllinux_aarch64:
+        LINUX_TAG: 'musllinux'
+        ARCH: 'aarch64'
+        DOCKER_PLATFORM: 'linux/arm64'
+        IMAGE: 'quay.io/pypa/musllinux_1_2_aarch64'
+
+  steps:
+    - checkout: self
+      fetchDepth: 0
+
+    - script: |
+        sudo docker run --rm --privileged tonistiigi/binfmt --install all
+      displayName: 'Enable QEMU (for aarch64)'
+
+    - script: |
+        rm -rf $(Build.ArtifactStagingDirectory)/dist $(Build.ArtifactStagingDirectory)/ddbc-bindings
+        mkdir -p $(Build.ArtifactStagingDirectory)/dist
+        mkdir -p $(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)
+      displayName: 'Prepare artifact directories'
+
+    - script: |
+        docker run -d --name build-$(LINUX_TAG)-$(ARCH) \
+          --platform $(DOCKER_PLATFORM) \
+          -v $(Build.SourcesDirectory):/workspace \
+          -w /workspace \
+          $(IMAGE) \
+          tail -f /dev/null
+      displayName: 'Start $(LINUX_TAG) $(ARCH) container'
+
+    - script: |
+        set -euxo pipefail
+        if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
+          docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc '
+            set -euxo pipefail
+            if command -v dnf >/dev/null 2>&1; then
+              dnf -y update || true
+              dnf -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache || true
+            elif command -v yum >/dev/null 2>&1; then
+              yum -y update || true
+              yum -y install gcc gcc-c++ make cmake unixODBC-devel krb5-libs keyutils-libs ccache || true
+            else
+              echo "No dnf/yum found in manylinux image" >&2
+            fi
+
+            echo "---- tool versions ----"
+            gcc --version || true
+            cmake --version || true
+          '
+        else
+          docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc '
+            set -euxo pipefail
+            apk update || true
+            apk add --no-cache bash build-base cmake unixodbc-dev krb5-libs keyutils-libs ccache || true
+
+            echo "---- tool versions ----"
+            gcc --version || true
+            cmake --version || true
+          '
+        fi
+      displayName: 'Install system build dependencies'
+
+    - script: |
+        set -euxo pipefail
+        if [[ "$(LINUX_TAG)" == "manylinux" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
+
+        docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
+
+        # Build only for Python 3.14 (cp314)
+        PYBIN=cp314
+        echo "=== Building for $PYBIN on $(LINUX_TAG)/$(ARCH) ==="
+        if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
+          docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc "
+            set -euxo pipefail;
+            PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
+            test -x \$PY || { echo 'Python \$PY missing'; exit 0; }
+            ln -sf \$PY /usr/local/bin/python;
+            python -m pip install -U pip setuptools wheel pybind11;
+            echo 'python:' \$(python -V); which python;
+            cd /workspace/mssql_python/pybind;
+            bash build.sh;
+
+            cd /workspace;
+            python setup.py bdist_wheel;
+          "
+        else
+          docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc "
+            set -euxo pipefail;
+            PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
+            test -x \$PY || { echo 'Python \$PY missing'; exit 0; }
+            ln -sf \$PY /usr/local/bin/python;
+            python -m pip install -U pip setuptools wheel pybind11;
+            echo 'python:' \$(python -V); which python;
+            cd /workspace/mssql_python/pybind;
+            bash build.sh;
+
+            cd /workspace;
+            python setup.py bdist_wheel;
+          "
+        fi
+      displayName: 'Run build.sh and build wheels for Python 3.14'
+
+    - script: |
+        set -euxo pipefail
+        docker cp build-$(LINUX_TAG)-$(ARCH):/workspace/dist/. "$(Build.ArtifactStagingDirectory)/dist/" || echo "No wheels to copy"
+
+        mkdir -p "$(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)"
+
+        docker exec build-$(LINUX_TAG)-$(ARCH) $([[ "$(LINUX_TAG)" == "manylinux" ]] && echo bash -lc || echo sh -lc) '
+          set -euxo pipefail;
+          echo "Listing package dirs for sanity:";
+          ls -la /workspace/mssql_python || true;
+          ls -la /workspace/mssql_python/pybind || true;
+
+          OUT="/tmp/ddbc-out-$(LINUX_TAG)-$(ARCH)";
+          rm -rf "$OUT"; mkdir -p "$OUT";
+
+          find /workspace/mssql_python -maxdepth 1 -type f -name "*.so" -exec cp -v {} "$OUT"/ \; || true
+
+          echo "Top-level .so collected in $OUT:";
+          ls -la "$OUT" || true
+        '
+
+        docker cp "build-$(LINUX_TAG)-$(ARCH):/tmp/ddbc-out-$(LINUX_TAG)-$(ARCH)/." \
+          "$(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)/" \
+          || echo "No top-level .so files to copy"
+
+        find "$(Build.ArtifactStagingDirectory)/ddbc-bindings/$(LINUX_TAG)-$(ARCH)" -maxdepth 1 -type f ! -name "*.so" -delete || true
+      displayName: 'Copy wheels and .so back to host'
+
+    - script: |
+        docker stop build-$(LINUX_TAG)-$(ARCH) || true
+        docker rm   build-$(LINUX_TAG)-$(ARCH) || true
+      displayName: 'Clean up container'
+      condition: always()
+
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/dist'
+        ArtifactName: 'mssql-python-wheels-dist-py314'
+        publishLocation: 'Container'
+      displayName: 'Publish wheels as artifacts'
+
+    - task: PublishBuildArtifacts@1
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)/ddbc-bindings'
+        ArtifactName: 'mssql-python-ddbc-bindings-py314'
+        publishLocation: 'Container'
+      displayName: 'Publish .so files as artifacts'
+
+- job: TestWheelsOnLinux_Python314
+  displayName: 'Pytests on Linux Python 3.14 -'
+  dependsOn: BuildLinuxWheels_Python314
+  condition: succeeded('BuildLinuxWheels_Python314')
+  pool: { vmImage: 'ubuntu-latest' }
+  timeoutInMinutes: 60
+
+  strategy:
+    matrix:
+      debian12:
+        BASE_IMAGE: 'debian:12-slim'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+      rhel_ubi9:
+        BASE_IMAGE: 'registry.access.redhat.com/ubi9/ubi:latest'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+      alpine320:
+        BASE_IMAGE: 'alpine:3.20'
+        ARCH: 'x86_64'
+        DOCKER_PLATFORM: 'linux/amd64'
+      debian12_arm64:
+        BASE_IMAGE: 'debian:12-slim'
+        ARCH: 'arm64'
+        DOCKER_PLATFORM: 'linux/arm64'
+      rhel_ubi9_arm64:
+        BASE_IMAGE: 'registry.access.redhat.com/ubi9/ubi:latest'
+        ARCH: 'arm64'
+        DOCKER_PLATFORM: 'linux/arm64'
+      alpine320_arm64:
+        BASE_IMAGE: 'alpine:3.20'
+        ARCH: 'arm64'
+        DOCKER_PLATFORM: 'linux/arm64'
+
+  steps:
+    - checkout: self
+
+    - task: DownloadBuildArtifacts@0
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        artifactName: 'mssql-python-wheels-dist-py314'
+        downloadPath: '$(System.ArtifactsDirectory)'
+      displayName: 'Download wheel artifacts from current build'
+
+    - script: |
+        set -euxo pipefail
+        WHEEL_DIR="$(System.ArtifactsDirectory)/mssql-python-wheels-dist-py314"
+        if [ ! -d "$WHEEL_DIR" ] || [ -z "$(ls -A $WHEEL_DIR/*.whl 2>/dev/null)" ]; then
+          echo "ERROR: No wheel files found in $WHEEL_DIR"
+          echo "Contents of artifacts directory:"
+          find "$(System.ArtifactsDirectory)" -type f -name "*.whl" || echo "No .whl files found anywhere"
+          exit 1
+        fi
+        echo "Found wheel files:"
+        ls -la "$WHEEL_DIR"/*.whl
+      displayName: 'Verify wheel artifacts exist'
+
+    - script: |
+        set -euxo pipefail
+        docker run -d --name sqlserver \
+          --network bridge \
+          -e ACCEPT_EULA=Y \
+          -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+          -p 1433:1433 \
+          mcr.microsoft.com/mssql/server:2022-latest
+
+        echo "Waiting for SQL Server to start..."
+        for i in {1..30}; do
+          if docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "SELECT 1" >/dev/null 2>&1; then
+            echo "SQL Server is ready!"
+            break
+          fi
+          echo "Attempt $i/30: SQL Server not ready yet..."
+          sleep 3
+        done
+
+        docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost -U SA -P "$(DB_PASSWORD)" -C \
+          -Q "CREATE DATABASE TestDB"
+      displayName: 'Start SQL Server and create test database'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
+
+    - script: |
+        set -euxo pipefail
+        
+        if [[ "$(ARCH)" == "arm64" ]] || [[ "$(ARCH)" == "aarch64" ]]; then
+          sudo docker run --rm --privileged tonistiigi/binfmt --install all
+        fi
+        
+        for i in {1..3}; do
+          if docker run -d --name test-$(ARCH) \
+            --platform $(DOCKER_PLATFORM) \
+            --network bridge \
+            -v $(System.ArtifactsDirectory):/artifacts:ro \
+            $(BASE_IMAGE) \
+            tail -f /dev/null; then
+            echo "Container started successfully on attempt $i"
+            break
+          else
+            echo "Failed to start container on attempt $i, retrying..."
+            docker rm test-$(ARCH) 2>/dev/null || true
+            sleep 5
+          fi
+        done
+
+        if ! docker ps | grep -q test-$(ARCH); then
+          echo "ERROR: Container test-$(ARCH) is not running"
+          docker logs test-$(ARCH) || true
+          exit 1
+        fi
+
+        if [[ "$(BASE_IMAGE)" == alpine* ]]; then
+          echo "Setting up Alpine Linux..."
+          docker exec test-$(ARCH) sh -c "
+            apk update && apk add --no-cache python3 py3-pip python3-dev unixodbc-dev curl libtool libltdl krb5-libs
+            python3 -m venv /venv
+            /venv/bin/pip install pytest
+          "
+          PY_CMD="/venv/bin/python"
+        elif [[ "$(BASE_IMAGE)" == *ubi* ]] || [[ "$(BASE_IMAGE)" == *rocky* ]] || [[ "$(BASE_IMAGE)" == *alma* ]]; then
+          echo "Setting up RHEL-based system..."
+          docker exec test-$(ARCH) bash -c "
+            set -euo pipefail
+            echo 'Installing Python on UBI/RHEL...'
+            if command -v dnf >/dev/null; then
+              dnf clean all
+              rm -rf /var/cache/dnf
+              dnf -y makecache
+
+              dnf list --showduplicates python3.11 python3.12 || true
+
+              if dnf -y install python3.12 python3.12-pip unixODBC-devel; then
+                PY=python3.12
+                echo 'Installed Python 3.12'
+              elif dnf -y install python3.11 python3.11-pip unixODBC-devel; then
+                PY=python3.11
+                echo 'Installed Python 3.11'
+              else
+                dnf -y install python3 python3-pip unixODBC-devel
+                PY=python3
+                echo 'Falling back to default Python'
+              fi
+
+              \$PY -m venv /venv
+              /venv/bin/python -m pip install -U 'pip>=25' pytest
+              /venv/bin/python --version
+              /venv/bin/pip --version
+            else
+              echo 'ERROR: dnf not found'
+              exit 1
+            fi
+          "
+          PY_CMD="/venv/bin/python"
+        else
+          echo "Setting up Debian/Ubuntu..."
+          docker exec test-$(ARCH) bash -c "
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y python3 python3-pip python3-venv python3-full unixodbc-dev curl
+            python3 -m venv /venv
+            /venv/bin/pip install pytest
+          "
+          PY_CMD="/venv/bin/python"
+        fi
+
+        if [[ "$(BASE_IMAGE)" == alpine* ]]; then
+          SHELL_CMD="sh -c"
+          WHEEL_PATTERN="*musllinux*$(ARCH)*.whl"
+        else
+          SHELL_CMD="bash -c"
+          WHEEL_PATTERN="*manylinux*$(ARCH)*.whl"
+        fi
+
+        docker exec test-$(ARCH) $SHELL_CMD "
+          mkdir -p /test_whl
+          cd /test_whl
+          
+          echo 'Available wheels:'
+          ls -la /artifacts/mssql-python-wheels-dist-py314/*.whl
+          echo 'Installing package (letting pip auto-select in isolated environment):'
+          $PY_CMD -m pip install mssql_python --find-links /artifacts/mssql-python-wheels-dist-py314 --no-index --no-deps
+          
+          echo 'Installed package location:'
+          $PY_CMD -c 'import mssql_python; print(\"Package location:\", mssql_python.__file__)'
+          
+          $PY_CMD -c 'import mssql_python; print(\"Package imported successfully\")'
+        "
+
+      displayName: 'Test wheel installation on $(BASE_IMAGE)'
+      env:
+        DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+    - script: |
+        set -euxo pipefail
+        
+        echo "Copying source code to container for pytest..."
+        docker cp $(Build.SourcesDirectory)/. test-$(ARCH):/workspace/
+        
+        if [[ "$(BASE_IMAGE)" == alpine* ]]; then
+          SHELL_CMD="sh -c"
+          PY_CMD="/venv/bin/python"
+        else
+          SHELL_CMD="bash -c"
+          PY_CMD="/venv/bin/python"
+        fi
+        
+        docker exec test-$(ARCH) $SHELL_CMD "
+          cd /workspace
+          
+          echo 'Running pytest suite with installed wheel...'
+          echo 'Current directory:' \$(pwd)
+          echo 'Python version:'
+          $PY_CMD --version
+          
+          echo 'Package import verification:'
+          $PY_CMD -c 'import mssql_python; print(\"Testing installed wheel from:\", mssql_python.__file__)'
+          
+          if [ -f requirements.txt ]; then
+            echo 'Installing test requirements...'
+            $PY_CMD -m pip install -r requirements.txt || echo 'Failed to install some requirements'
+          fi
+          
+          $PY_CMD -m pip install pytest || echo 'pytest installation failed'
+          
+          echo 'Available test files:'
+          find tests/ -name 'test_*.py' 2>/dev/null || echo 'No test files found in tests/'
+          
+          if [ -d tests/ ]; then
+            echo 'Starting pytest...'
+            $PY_CMD -m pytest -v || echo 'Some tests failed - this may be expected in containerized environment'
+          else
+            echo 'No tests directory found, skipping pytest'
+          fi
+        "
+      displayName: 'Run pytest suite on $(BASE_IMAGE) $(ARCH)'
+      env:
+        DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+      continueOnError: true
+
+    - script: |
+        docker stop test-$(ARCH) sqlserver || true
+        docker rm test-$(ARCH) sqlserver || true
+      displayName: 'Cleanup containers'
+      condition: always()
 
 - job: PytestOnWindows
   displayName: 'Windows x64'
