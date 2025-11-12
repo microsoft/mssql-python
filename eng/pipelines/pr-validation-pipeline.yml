@@ -60,16 +60,38 @@ jobs:
       env:
         DB_PASSWORD: $(DB_PASSWORD)
 
-    - task: DownloadPipelineArtifact@2
+    - powershell: |
+        # Download Python 3.14 ARM64 libs from python.org
+        $pythonVersion = "3.14.0a2"  # Update to latest alpha/beta/rc as available
+        $url = "https://www.python.org/ftp/python/$pythonVersion/python-$pythonVersion-embed-arm64.zip"
+        $output = "$(Build.SourcesDirectory)\python314-arm64-embed.zip"
+        
+        Write-Host "Downloading Python 3.14 ARM64 embed from: $url"
+        try {
+          Invoke-WebRequest -Uri $url -OutFile $output -UseBasicParsing
+          
+          # Extract to libs directory
+          $destPath = "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64"
+          New-Item -ItemType Directory -Force -Path $destPath
+          Expand-Archive -Path $output -DestinationPath $destPath -Force
+          
+          Write-Host "Successfully downloaded and extracted Python 3.14 ARM64 libs"
+          ls $destPath
+        } catch {
+          Write-Warning "Could not download Python 3.14 ARM64 embed package. Will try alternative sources."
+          # Alternative: Download from GitHub releases if available
+          Write-Host "Attempting alternative download from GitHub..."
+          $ghUrl = "https://github.com/python/cpython/releases/download/v$pythonVersion/python-$pythonVersion-embed-arm64.zip"
+          try {
+            Invoke-WebRequest -Uri $ghUrl -OutFile $output -UseBasicParsing
+            Expand-Archive -Path $output -DestinationPath $destPath -Force
+            Write-Host "Successfully downloaded from GitHub"
+          } catch {
+            Write-Warning "ARM64 libs not available. Build may fail for ARM64."
+          }
+        }
       condition: eq(variables['targetArch'], 'arm64')
-      inputs:
-        buildType: 'specific'
-        project: '$(System.TeamProject)'
-        definition: 2162
-        buildVersionToDownload: 'latest'
-        artifactName: 'mssql-python-arm64-libs'
-        targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
-      displayName: 'Download ARM64 Python libs'
+      displayName: 'Download Python 3.14 ARM64 libs from python.org'
 
     - script: |
         echo "Python Version: $(pythonVersion)"
@@ -545,38 +567,74 @@ jobs:
         fi
 
         if [[ "$(BASE_IMAGE)" == alpine* ]]; then
-          echo "Setting up Alpine Linux..."
+          echo "Setting up Alpine Linux with Python 3.14..."
           docker exec test-$(ARCH) sh -c "
-            apk update && apk add --no-cache python3 py3-pip python3-dev unixodbc-dev curl libtool libltdl krb5-libs
+            apk update && apk add --no-cache build-base openssl-dev zlib-dev libffi-dev readline-dev sqlite-dev bzip2-dev xz-dev unixodbc-dev curl wget tar gzip libtool libltdl krb5-libs
+            
+            # Download and build Python 3.14
+            cd /tmp
+            wget https://www.python.org/ftp/python/3.14.0/Python-3.14.0a2.tar.xz || wget https://www.python.org/ftp/python/3.14.0/Python-3.14.0a1.tar.xz || echo 'Python 3.14 not available, will try git'
+            
+            if [ -f Python-3.14.0a*.tar.xz ]; then
+              tar -xf Python-3.14.0a*.tar.xz
+              cd Python-3.14.0a*
+              ./configure --prefix=/usr/local --enable-optimizations --with-ensurepip=install
+              make -j\$(nproc)
+              make install
+              ln -sf /usr/local/bin/python3.14 /usr/local/bin/python3
+            else
+              echo 'Building from git source...'
+              apk add --no-cache git
+              git clone --depth 1 --branch v3.14.0a2 https://github.com/python/cpython.git || git clone --depth 1 --branch main https://github.com/python/cpython.git
+              cd cpython
+              ./configure --prefix=/usr/local --enable-optimizations --with-ensurepip=install
+              make -j\$(nproc)
+              make install
+              ln -sf /usr/local/bin/python3.14 /usr/local/bin/python3
+            fi
+            
+            python3 --version
             python3 -m venv /venv
             /venv/bin/pip install pytest
           "
           PY_CMD="/venv/bin/python"
         elif [[ "$(BASE_IMAGE)" == *ubi* ]] || [[ "$(BASE_IMAGE)" == *rocky* ]] || [[ "$(BASE_IMAGE)" == *alma* ]]; then
-          echo "Setting up RHEL-based system..."
+          echo "Setting up RHEL-based system with Python 3.14..."
           docker exec test-$(ARCH) bash -c "
             set -euo pipefail
-            echo 'Installing Python on UBI/RHEL...'
+            echo 'Installing Python 3.14 on UBI/RHEL...'
             if command -v dnf >/dev/null; then
               dnf clean all
               rm -rf /var/cache/dnf
               dnf -y makecache
-
-              dnf list --showduplicates python3.11 python3.12 || true
-
-              if dnf -y install python3.12 python3.12-pip unixODBC-devel; then
-                PY=python3.12
-                echo 'Installed Python 3.12'
-              elif dnf -y install python3.11 python3.11-pip unixODBC-devel; then
-                PY=python3.11
-                echo 'Installed Python 3.11'
+              
+              # Install build dependencies
+              dnf -y install gcc gcc-c++ make openssl-devel zlib-devel libffi-devel readline-devel sqlite-devel bzip2-devel xz-devel unixODBC-devel wget tar gzip
+              
+              # Download and build Python 3.14
+              cd /tmp
+              wget https://www.python.org/ftp/python/3.14.0/Python-3.14.0a2.tar.xz || wget https://www.python.org/ftp/python/3.14.0/Python-3.14.0a1.tar.xz || echo 'Python 3.14 not available, will try git'
+              
+              if [ -f Python-3.14.0a*.tar.xz ]; then
+                tar -xf Python-3.14.0a*.tar.xz
+                cd Python-3.14.0a*
+                ./configure --prefix=/usr/local --enable-optimizations --with-ensurepip=install
+                make -j\$(nproc)
+                make install
+                ln -sf /usr/local/bin/python3.14 /usr/local/bin/python3
               else
-                dnf -y install python3 python3-pip unixODBC-devel
-                PY=python3
-                echo 'Falling back to default Python'
+                echo 'Building from git source...'
+                dnf -y install git
+                git clone --depth 1 --branch v3.14.0a2 https://github.com/python/cpython.git || git clone --depth 1 --branch main https://github.com/python/cpython.git
+                cd cpython
+                ./configure --prefix=/usr/local --enable-optimizations --with-ensurepip=install
+                make -j\$(nproc)
+                make install
+                ln -sf /usr/local/bin/python3.14 /usr/local/bin/python3
               fi
-
-              \$PY -m venv /venv
+              
+              python3 --version
+              python3 -m venv /venv
               /venv/bin/python -m pip install -U 'pip>=25' pytest
               /venv/bin/python --version
               /venv/bin/pip --version
@@ -587,11 +645,35 @@ jobs:
           "
           PY_CMD="/venv/bin/python"
         else
-          echo "Setting up Debian/Ubuntu..."
+          echo "Setting up Debian/Ubuntu with Python 3.14..."
           docker exec test-$(ARCH) bash -c "
             export DEBIAN_FRONTEND=noninteractive
             apt-get update
-            apt-get install -y python3 python3-pip python3-venv python3-full unixodbc-dev curl
+            apt-get install -y build-essential libssl-dev zlib1g-dev libncurses5-dev libncursesw5-dev libreadline-dev libsqlite3-dev libgdbm-dev libdb5.3-dev libbz2-dev libexpat1-dev liblzma-dev tk-dev libffi-dev unixodbc-dev curl wget tar gzip
+            
+            # Download and build Python 3.14
+            cd /tmp
+            wget https://www.python.org/ftp/python/3.14.0/Python-3.14.0a2.tar.xz || wget https://www.python.org/ftp/python/3.14.0/Python-3.14.0a1.tar.xz || echo 'Python 3.14 not available, will try git'
+            
+            if [ -f Python-3.14.0a*.tar.xz ]; then
+              tar -xf Python-3.14.0a*.tar.xz
+              cd Python-3.14.0a*
+              ./configure --prefix=/usr/local --enable-optimizations --with-ensurepip=install
+              make -j\$(nproc)
+              make install
+              ln -sf /usr/local/bin/python3.14 /usr/local/bin/python3
+            else
+              echo 'Building from git source...'
+              apt-get install -y git
+              git clone --depth 1 --branch v3.14.0a2 https://github.com/python/cpython.git || git clone --depth 1 --branch main https://github.com/python/cpython.git
+              cd cpython
+              ./configure --prefix=/usr/local --enable-optimizations --with-ensurepip=install
+              make -j\$(nproc)
+              make install
+              ln -sf /usr/local/bin/python3.14 /usr/local/bin/python3
+            fi
+            
+            python3 --version
             python3 -m venv /venv
             /venv/bin/pip install pytest
           "
