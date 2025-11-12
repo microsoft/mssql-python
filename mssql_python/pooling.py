@@ -8,6 +8,7 @@ import threading
 from typing import Dict
 
 from mssql_python import ddbc_bindings
+from mssql_python.logging import logger
 
 
 class PoolingManager:
