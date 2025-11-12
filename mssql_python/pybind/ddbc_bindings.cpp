@@ -3244,7 +3244,13 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     PyObject* rowsList = rows.ptr();
     for (SQLULEN i = 0; i < numRowsFetched; i++) {
         PyObject* newRow = PyList_New(numCols);
-        PyList_Append(rowsList, newRow);
+        if (!newRow) {
+            throw std::runtime_error("Failed to allocate row list - memory allocation failure");
+        }
+        if (PyList_Append(rowsList, newRow) < 0) {
+            Py_DECREF(newRow);
+            throw std::runtime_error("Failed to append row to results list - memory allocation failure");
+        }
         Py_DECREF(newRow);  // PyList_Append increments refcount
     }
     

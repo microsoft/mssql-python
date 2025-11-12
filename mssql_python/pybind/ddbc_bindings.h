@@ -645,6 +645,11 @@ inline void ProcessInteger(PyObject* row, ColumnBuffers& buffers, const void*, S
     }
     // OPTIMIZATION #2: Direct Python C API call (bypasses pybind11)
     PyObject* pyInt = PyLong_FromLong(buffers.intBuffers[col - 1][rowIdx]);
+    if (!pyInt) {
+        Py_INCREF(Py_None);
+        PyList_SET_ITEM(row, col - 1, Py_None);
+        return;
+    }
     PyList_SET_ITEM(row, col - 1, pyInt);
 }
 
@@ -657,6 +662,11 @@ inline void ProcessSmallInt(PyObject* row, ColumnBuffers& buffers, const void*, 
     }
     // OPTIMIZATION #2: Direct Python C API call
     PyObject* pyInt = PyLong_FromLong(buffers.smallIntBuffers[col - 1][rowIdx]);
+    if (!pyInt) {
+        Py_INCREF(Py_None);
+        PyList_SET_ITEM(row, col - 1, Py_None);
+        return;
+    }
     PyList_SET_ITEM(row, col - 1, pyInt);
 }
 
@@ -669,6 +679,11 @@ inline void ProcessBigInt(PyObject* row, ColumnBuffers& buffers, const void*, SQ
     }
     // OPTIMIZATION #2: Direct Python C API call
     PyObject* pyInt = PyLong_FromLongLong(buffers.bigIntBuffers[col - 1][rowIdx]);
+    if (!pyInt) {
+        Py_INCREF(Py_None);
+        PyList_SET_ITEM(row, col - 1, Py_None);
+        return;
+    }
     PyList_SET_ITEM(row, col - 1, pyInt);
 }
 
@@ -681,6 +696,11 @@ inline void ProcessTinyInt(PyObject* row, ColumnBuffers& buffers, const void*, S
     }
     // OPTIMIZATION #2: Direct Python C API call
     PyObject* pyInt = PyLong_FromLong(buffers.charBuffers[col - 1][rowIdx]);
+    if (!pyInt) {
+        Py_INCREF(Py_None);
+        PyList_SET_ITEM(row, col - 1, Py_None);
+        return;
+    }
     PyList_SET_ITEM(row, col - 1, pyInt);
 }
 
@@ -693,6 +713,11 @@ inline void ProcessBit(PyObject* row, ColumnBuffers& buffers, const void*, SQLUS
     }
     // OPTIMIZATION #2: Direct Python C API call
     PyObject* pyBool = PyBool_FromLong(buffers.charBuffers[col - 1][rowIdx]);
+    if (!pyBool) {
+        Py_INCREF(Py_None);
+        PyList_SET_ITEM(row, col - 1, Py_None);
+        return;
+    }
     PyList_SET_ITEM(row, col - 1, pyBool);
 }
 
@@ -705,6 +730,11 @@ inline void ProcessReal(PyObject* row, ColumnBuffers& buffers, const void*, SQLU
     }
     // OPTIMIZATION #2: Direct Python C API call
     PyObject* pyFloat = PyFloat_FromDouble(buffers.realBuffers[col - 1][rowIdx]);
+    if (!pyFloat) {
+        Py_INCREF(Py_None);
+        PyList_SET_ITEM(row, col - 1, Py_None);
+        return;
+    }
     PyList_SET_ITEM(row, col - 1, pyFloat);
 }
 
@@ -717,6 +747,11 @@ inline void ProcessDouble(PyObject* row, ColumnBuffers& buffers, const void*, SQ
     }
     // OPTIMIZATION #2: Direct Python C API call
     PyObject* pyFloat = PyFloat_FromDouble(buffers.doubleBuffers[col - 1][rowIdx]);
+    if (!pyFloat) {
+        Py_INCREF(Py_None);
+        PyList_SET_ITEM(row, col - 1, Py_None);
+        return;
+    }
     PyList_SET_ITEM(row, col - 1, pyFloat);
 }
 
@@ -731,7 +766,13 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
         return;
     }
     if (dataLen == 0) {
-        PyList_SET_ITEM(row, col - 1, PyUnicode_FromStringAndSize("", 0));
+        PyObject* emptyStr = PyUnicode_FromStringAndSize("", 0);
+        if (!emptyStr) {
+            Py_INCREF(Py_None);
+            PyList_SET_ITEM(row, col - 1, Py_None);
+        } else {
+            PyList_SET_ITEM(row, col - 1, emptyStr);
+        }
         return;
     }
     
@@ -742,7 +783,12 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
         PyObject* pyStr = PyUnicode_FromStringAndSize(
             reinterpret_cast<char*>(&buffers.charBuffers[col - 1][rowIdx * colInfo->fetchBufferSize]),
             numCharsInData);
-        PyList_SET_ITEM(row, col - 1, pyStr);
+        if (!pyStr) {
+            Py_INCREF(Py_None);
+            PyList_SET_ITEM(row, col - 1, Py_None);
+        } else {
+            PyList_SET_ITEM(row, col - 1, pyStr);
+        }
     } else {
         PyList_SET_ITEM(row, col - 1, FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false).release().ptr());
     }
@@ -759,7 +805,13 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
         return;
     }
     if (dataLen == 0) {
-        PyList_SET_ITEM(row, col - 1, PyUnicode_FromStringAndSize("", 0));
+        PyObject* emptyStr = PyUnicode_FromStringAndSize("", 0);
+        if (!emptyStr) {
+            Py_INCREF(Py_None);
+            PyList_SET_ITEM(row, col - 1, Py_None);
+        } else {
+            PyList_SET_ITEM(row, col - 1, emptyStr);
+        }
         return;
     }
     
@@ -786,7 +838,12 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
         PyObject* pyStr = PyUnicode_FromWideChar(
             reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize]),
             numCharsInData);
-        PyList_SET_ITEM(row, col - 1, pyStr);
+        if (!pyStr) {
+            Py_INCREF(Py_None);
+            PyList_SET_ITEM(row, col - 1, Py_None);
+        } else {
+            PyList_SET_ITEM(row, col - 1, pyStr);
+        }
 #endif
     } else {
         PyList_SET_ITEM(row, col - 1, FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false).release().ptr());
@@ -804,7 +861,13 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
         return;
     }
     if (dataLen == 0) {
-        PyList_SET_ITEM(row, col - 1, PyBytes_FromStringAndSize("", 0));
+        PyObject* emptyBytes = PyBytes_FromStringAndSize("", 0);
+        if (!emptyBytes) {
+            Py_INCREF(Py_None);
+            PyList_SET_ITEM(row, col - 1, Py_None);
+        } else {
+            PyList_SET_ITEM(row, col - 1, emptyBytes);
+        }
         return;
     }
     
@@ -813,7 +876,12 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
         PyObject* pyBytes = PyBytes_FromStringAndSize(
             reinterpret_cast<const char*>(&buffers.charBuffers[col - 1][rowIdx * colInfo->processedColumnSize]),
             dataLen);
-        PyList_SET_ITEM(row, col - 1, pyBytes);
+        if (!pyBytes) {
+            Py_INCREF(Py_None);
+            PyList_SET_ITEM(row, col - 1, Py_None);
+        } else {
+            PyList_SET_ITEM(row, col - 1, pyBytes);
+        }
     } else {
         PyList_SET_ITEM(row, col - 1, FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true).release().ptr());
     }
