@@ -629,6 +629,10 @@ struct ColumnInfoExt {
     bool isLob;
 };
 
+// Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp) - MUST be outside namespace
+py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT col, SQLSMALLINT cType, 
+                              bool isWideChar, bool isBinary);
+
 // Specialized column processors for each data type (eliminates switch in hot loop)
 namespace ColumnProcessors {
 
@@ -715,10 +719,6 @@ inline void ProcessDouble(PyObject* row, ColumnBuffers& buffers, const void*, SQ
     PyObject* pyFloat = PyFloat_FromDouble(buffers.doubleBuffers[col - 1][rowIdx]);
     PyList_SET_ITEM(row, col - 1, pyFloat);
 }
-
-// Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp)
-py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT col, SQLSMALLINT cType, 
-                              bool isWideChar, bool isBinary);
 
 inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr, 
                         SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {

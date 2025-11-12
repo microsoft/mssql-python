@@ -2359,11 +2359,12 @@ SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
     return SQLFetch_ptr(StatementHandle->get());
 }
 
-static py::object FetchLobColumnData(SQLHSTMT hStmt,
-                                     SQLUSMALLINT colIndex,
-                                     SQLSMALLINT cType,
-                                     bool isWideChar,
-                                     bool isBinary)
+// Non-static so it can be called from inline functions in header
+py::object FetchLobColumnData(SQLHSTMT hStmt,
+                              SQLUSMALLINT colIndex,
+                              SQLSMALLINT cType,
+                              bool isWideChar,
+                              bool isBinary)
 {
     std::vector<char> buffer;
     SQLRETURN ret = SQL_SUCCESS_WITH_INFO;
