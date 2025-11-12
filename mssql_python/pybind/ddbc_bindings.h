@@ -170,7 +170,6 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
 
 #if defined(__APPLE__) || defined(__linux__)
 #include "unix_utils.h"    // Unix-specific fixes
-#include "unix_buffers.h"  // Unix-specific buffers
 #endif
 
 //-------------------------------------------------------------------------------------------------
