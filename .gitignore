@@ -38,14 +38,6 @@ build/
 *.pyd
 *.pdb
 
-# ODBC driver binaries (modified by build scripts with install_name_tool/patchelf/codesigning)
-# macOS
-mssql_python/libs/macos/*/lib/*.dylib
-# Linux
-mssql_python/libs/linux/*/*/lib/*.so*
-# Windows
-mssql_python/libs/windows/*/*.dll
-
 # IDE files
 .vscode/
 .idea/
