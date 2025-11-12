@@ -811,7 +811,13 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
             PyList_SET_ITEM(row, col - 1, pyStr);
         } else {
             PyErr_Clear();  // Ignore decode error, return empty string
-            PyList_SET_ITEM(row, col - 1, PyUnicode_FromStringAndSize("", 0));
+            PyObject* emptyStr = PyUnicode_FromStringAndSize("", 0);
+            if (!emptyStr) {
+                Py_INCREF(Py_None);
+                PyList_SET_ITEM(row, col - 1, Py_None);
+            } else {
+                PyList_SET_ITEM(row, col - 1, emptyStr);
+            }
         }
 #else
         // Performance: Direct Python C API call (Windows where SQLWCHAR == wchar_t)
