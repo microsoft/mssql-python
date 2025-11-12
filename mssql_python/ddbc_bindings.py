@@ -10,9 +10,6 @@ import importlib.util
 import sys
 import platform
 
-from mssql_python.logging import logger
-
-
 def normalize_architecture(platform_name_param, architecture_param):
     """
     Normalize architecture names for the given platform.
