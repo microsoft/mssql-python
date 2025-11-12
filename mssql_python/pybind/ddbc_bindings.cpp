@@ -4041,7 +4041,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         mssql_python::logging::LoggerBridge::initialize();
     } catch (const std::exception& e) {
         // Log initialization failure but don't throw
-        fprintf(stderr, "Logger bridge initialization failed: %s\n", e.what());
+        // Use std::cerr instead of fprintf for type-safe output
+        std::cerr << "Logger bridge initialization failed: " << e.what() << std::endl;
     }
     
     try {
