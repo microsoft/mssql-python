@@ -3311,13 +3311,24 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     // This prevents data corruption (no partially-filled rows) and simplifies error handling
     PyObject* rowsList = rows.ptr();
     
+    // RAII wrapper to ensure row cleanup on exception (CRITICAL: prevents memory leak)
+    struct RowGuard {
+        PyObject* row;
+        bool released;
+        RowGuard() : row(nullptr), released(false) {}
+        ~RowGuard() { if (row && !released) Py_DECREF(row); }
+        void release() { released = true; }
+    };
+    
     for (SQLULEN i = 0; i < numRowsFetched; i++) {
         // Create row and immediately fill it (atomic operation per row)
         // This eliminates the two-phase pattern that could leave garbage rows on exception
-        PyObject* row = PyList_New(numCols);
-        if (!row) {
+        RowGuard guard;
+        guard.row = PyList_New(numCols);
+        if (!guard.row) {
             throw std::runtime_error("Failed to allocate row list - memory allocation failure");
         }
+        PyObject* row = guard.row;
         
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
             // Performance: Centralized NULL checking before calling processor functions
@@ -3481,10 +3492,13 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         // Row is now fully populated - add it to results list atomically
         // This ensures no partially-filled rows exist in the list on exception
         if (PyList_Append(rowsList, row) < 0) {
-            Py_DECREF(row);  // Clean up this row
+            // RowGuard will clean up row automatically
             throw std::runtime_error("Failed to append row to results list - memory allocation failure");
         }
-        Py_DECREF(row);  // PyList_Append increments refcount, release our reference
+        // PyList_Append increments refcount, so we can release our reference
+        // Mark guard as released so destructor doesn't double-free
+        guard.release();
+        Py_DECREF(row);
     }
     return ret;
 }

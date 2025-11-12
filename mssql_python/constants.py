@@ -7,8 +7,6 @@ This module contains the constants used in the DDBC module.
 from enum import Enum
 from typing import Dict, Optional, Tuple
 
-from mssql_python.logging import logger
-
 
 class ConstantsDDBC(Enum):
     """

@@ -268,40 +268,9 @@ class MSSQLLogger:
             # Don't fail if header writing fails
             pass
     
-    @staticmethod
-    def _sanitize_message(msg: str) -> str:
-        """
-        Sanitize sensitive information from log messages.
-        
-        Removes:
-        - PWD=...
-        - Password=...
-        - TOKEN=...
-        - Authorization: Bearer ...
-        
-        Args:
-            msg: The message to sanitize
-            
-        Returns:
-            str: Sanitized message with credentials replaced by ***
-        """
-        # Pattern to match various credential formats
-        patterns = [
-            (r'(PWD|Password|pwd|password)\s*=\s*[^;,\s]+', r'\1=***'),
-            (r'(TOKEN|Token|token)\s*=\s*[^;,\s]+', r'\1=***'),
-            (r'(Authorization:\s*Bearer\s+)[^\s;,]+', r'\1***'),
-            (r'(ApiKey|API_KEY|api_key)\s*=\s*[^;,\s]+', r'\1=***'),
-        ]
-        
-        sanitized = msg
-        for pattern, replacement in patterns:
-            sanitized = re.sub(pattern, replacement, sanitized)
-        
-        return sanitized
-    
     def _log(self, level: int, msg: str, add_prefix: bool = True, *args, **kwargs):
         """
-        Internal logging method with sanitization.
+        Internal logging method.
         
         Args:
             level: Log level (DEBUG, INFO, WARNING, ERROR)
@@ -309,6 +278,11 @@ class MSSQLLogger:
             add_prefix: Whether to add [Python] prefix (default True)
             *args: Arguments for message formatting
             **kwargs: Additional keyword arguments
+        
+        Note:
+            Callers are responsible for sanitizing sensitive data (passwords,
+            tokens, etc.) before logging. Use helpers.sanitize_connection_string()
+            for connection strings.
         """
         # Fast level check (zero overhead if disabled)
         if not self._logger.isEnabledFor(level):
@@ -322,11 +296,8 @@ class MSSQLLogger:
         if args:
             msg = msg % args
         
-        # Sanitize message
-        sanitized_msg = self._sanitize_message(msg)
-        
         # Log the message (no args since already formatted)
-        self._logger.log(level, sanitized_msg, **kwargs)
+        self._logger.log(level, msg, **kwargs)
     
     # Convenience methods for logging
     

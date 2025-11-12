@@ -24,7 +24,7 @@ bool LoggerBridge::initialized_ = false;
 void LoggerBridge::initialize() {
     std::lock_guard<std::mutex> lock(mutex_);
     
-    // Skip if already initialized
+    // Skip if already initialized (check inside lock to prevent TOCTOU race)
     if (initialized_) {
         return;
     }
@@ -39,9 +39,11 @@ void LoggerBridge::initialize() {
         // Get the logger instance
         py::object logger_obj = logging_module.attr("logger");
         
-        // Cache the logger object (increment refcount)
+        // Cache the logger object pointer
+        // NOTE: We don't increment refcount because pybind11 py::object manages lifetime
+        // and the logger is a module-level singleton that persists for program lifetime.
+        // Adding Py_INCREF here would cause a memory leak since we never Py_DECREF.
         cached_logger_ = logger_obj.ptr();
-        Py_INCREF(cached_logger_);
         
         // Get initial log level
         py::object level_obj = logger_obj.attr("level");
