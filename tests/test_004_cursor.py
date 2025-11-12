@@ -7274,6 +7274,124 @@ def test_varbinarymax_insert_fetch_null(cursor, db_connection):
         db_connection.commit()
 
 
+def test_sql_double_type(cursor, db_connection):
+    """Test SQL_DOUBLE type (FLOAT(53)) to cover line 3213 in dispatcher."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_double_type")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_double_type (
+                id INT PRIMARY KEY,
+                double_col FLOAT(53),
+                float_col FLOAT
+            )
+        """
+        )
+
+        # Insert test data with various double precision values
+        test_data = [
+            (1, 1.23456789012345, 3.14159),
+            (2, -9876543210.123456, -2.71828),
+            (3, 0.0, 0.0),
+            (4, 1.7976931348623157e308, 1.0e10),  # Near max double
+            (5, 2.2250738585072014e-308, 1.0e-10),  # Near min positive double
+        ]
+
+        for row in test_data:
+            cursor.execute(
+                "INSERT INTO #pytest_double_type VALUES (?, ?, ?)", row
+            )
+        db_connection.commit()
+
+        # Fetch and verify
+        cursor.execute("SELECT id, double_col, float_col FROM #pytest_double_type ORDER BY id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == len(test_data), f"Expected {len(test_data)} rows, got {len(rows)}"
+
+        for i, (expected_id, expected_double, expected_float) in enumerate(test_data):
+            fetched_id, fetched_double, fetched_float = rows[i]
+            assert fetched_id == expected_id, f"Row {i+1} ID mismatch"
+            assert isinstance(fetched_double, float), f"Row {i+1} double_col should be float type"
+            assert isinstance(fetched_float, float), f"Row {i+1} float_col should be float type"
+            # Use relative tolerance for floating point comparison
+            assert abs(fetched_double - expected_double) < abs(expected_double * 1e-10) or abs(fetched_double - expected_double) < 1e-10, \
+                f"Row {i+1} double_col mismatch: expected {expected_double}, got {fetched_double}"
+            assert abs(fetched_float - expected_float) < abs(expected_float * 1e-5) or abs(fetched_float - expected_float) < 1e-5, \
+                f"Row {i+1} float_col mismatch: expected {expected_float}, got {fetched_float}"
+
+    except Exception as e:
+        pytest.fail(f"SQL_DOUBLE type test failed: {e}")
+
+    finally:
+        drop_table_if_exists(cursor, "#pytest_double_type")
+        db_connection.commit()
+
+
+def test_null_guid_type(cursor, db_connection):
+    """Test NULL UNIQUEIDENTIFIER (GUID) to cover lines 3376-3377.
+    
+    NOTE: GUIDs currently return as strings due to PR #314 reverting native_uuid 
+    support (which caused performance regression with ~1.2M rows). Once native_uuid 
+    is re-implemented with better performance, this test should be updated to expect 
+    uuid.UUID objects instead of strings.
+    """
+    try:
+        drop_table_if_exists(cursor, "#pytest_null_guid")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_null_guid (
+                id INT PRIMARY KEY,
+                guid_col UNIQUEIDENTIFIER,
+                guid_nullable UNIQUEIDENTIFIER NULL
+            )
+        """
+        )
+
+        # Insert test data with NULL and non-NULL GUIDs
+        test_guid = uuid.uuid4()
+        test_data = [
+            (1, test_guid, None),  # NULL GUID
+            (2, uuid.uuid4(), uuid.uuid4()),  # Both non-NULL
+            (3, uuid.UUID('12345678-1234-5678-1234-567812345678'), None),  # NULL GUID
+        ]
+
+        for row_id, guid1, guid2 in test_data:
+            cursor.execute(
+                "INSERT INTO #pytest_null_guid VALUES (?, ?, ?)", 
+                (row_id, guid1, guid2)
+            )
+        db_connection.commit()
+
+        # Fetch and verify
+        cursor.execute("SELECT id, guid_col, guid_nullable FROM #pytest_null_guid ORDER BY id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == len(test_data), f"Expected {len(test_data)} rows, got {len(rows)}"
+
+        for i, (expected_id, expected_guid1, expected_guid2) in enumerate(test_data):
+            fetched_id, fetched_guid1, fetched_guid2 = rows[i]
+            assert fetched_id == expected_id, f"Row {i+1} ID mismatch"
+            
+            # GUIDs are returned as strings (native_uuid was reverted due to perf regression)
+            assert isinstance(fetched_guid1, str), f"Row {i+1} guid_col should be string type, got {type(fetched_guid1)}"
+            assert uuid.UUID(fetched_guid1) == expected_guid1, f"Row {i+1} guid_col mismatch"
+            
+            # Verify NULL handling (NULL GUIDs are returned as None)
+            if expected_guid2 is None:
+                assert fetched_guid2 is None, f"Row {i+1} guid_nullable should be None"
+            else:
+                assert isinstance(fetched_guid2, str), f"Row {i+1} guid_nullable should be string type, got {type(fetched_guid2)}"
+                assert uuid.UUID(fetched_guid2) == expected_guid2, f"Row {i+1} guid_nullable mismatch"
+
+    except Exception as e:
+        pytest.fail(f"NULL GUID type test failed: {e}")
+
+    finally:
+        drop_table_if_exists(cursor, "#pytest_null_guid")
+        db_connection.commit()
+
+
 def test_only_null_and_empty_binary(cursor, db_connection):
     """Test table with only NULL and empty binary values to ensure fallback doesn't produce size=0"""
     try:
