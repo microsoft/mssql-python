@@ -7,11 +7,33 @@ These classes are used to raise exceptions when an error occurs while executing 
 
 from typing import Optional
 from mssql_python.logging_config import get_logger
+import builtins
 
 logger = get_logger()
 
 
-class Exception(Exception):
+class ConnectionStringParseError(builtins.Exception):
+    """
+    Exception raised when connection string parsing fails.
+    
+    This exception is raised when the connection string parser encounters
+    syntax errors, unknown keywords, duplicate keywords, or other validation
+    failures. It collects all errors and reports them together.
+    """
+    
+    def __init__(self, errors: list) -> None:
+        """
+        Initialize the error with a list of validation errors.
+        
+        Args:
+            errors: List of error messages describing what went wrong
+        """
+        self.errors = errors
+        message = "Connection string parsing failed:\n  " + "\n  ".join(errors)
+        super().__init__(message)
+
+
+class Exception(builtins.Exception):
     """
     Base class for all DB API 2.0 exceptions.
     """

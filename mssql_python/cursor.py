@@ -121,18 +121,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Therefore, it must be a list with exactly one bool element.
 
         # rownumber attribute
-        self._rownumber: int = (
-            -1
-        )  # DB-API extension: last returned row index, -1 before first
-        self._next_row_index: int = (
-            0  # internal: index of the next row the driver will return (0-based)
-        )
-        self._has_result_set: bool = False  # Track if we have an active result set
-        self._skip_increment_for_next_fetch: bool = (
-            False  # Track if we need to skip incrementing the row index
-        )
-
-        self.messages: List[str] = []  # Store diagnostic messages
+        self._rownumber = -1  # DB-API extension: last returned row index, -1 before first
+        
+        self._cached_column_map = None
+        self._cached_converter_map = None
+        self._next_row_index = 0  # internal: index of the next row the driver will return (0-based)
+        self._has_result_set = False  # Track if we have an active result set
+        self._skip_increment_for_next_fetch = False  # Track if we need to skip incrementing the row index
+        self.messages = []  # Store diagnostic messages
 
     def _is_unicode_string(self, param: str) -> bool:
         """
@@ -399,8 +395,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             # Detect MONEY / SMALLMONEY range
             if SMALLMONEY_MIN <= param <= SMALLMONEY_MAX:
-                # smallmoney
-                parameters_list[i] = str(param)
+                parameters_list[i] = format(param, 'f')
                 return (
                     ddbc_sql_const.SQL_VARCHAR.value,
                     ddbc_sql_const.SQL_C_CHAR.value,
@@ -409,8 +404,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     False,
                 )
             if MONEY_MIN <= param <= MONEY_MAX:
-                # money
-                parameters_list[i] = str(param)
+                parameters_list[i] = format(param, 'f')
                 return (
                     ddbc_sql_const.SQL_VARCHAR.value,
                     ddbc_sql_const.SQL_C_CHAR.value,
@@ -823,7 +817,57 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             )
         self.description = description
 
-    def _map_data_type(self, sql_type: int) -> type:
+    def _build_converter_map(self):
+        """
+        Build a pre-computed converter map for output converters.
+        Returns a list where each element is either a converter function or None.
+        This eliminates the need to look up converters for every row.
+        """
+        if not self.description or not hasattr(self.connection, '_output_converters') or not self.connection._output_converters:
+            return None
+        
+        converter_map = []
+        
+        for desc in self.description:
+            if desc is None:
+                converter_map.append(None)
+                continue
+            sql_type = desc[1]
+            converter = self.connection.get_output_converter(sql_type)
+            # If no converter found for the SQL type, try the WVARCHAR converter as a fallback
+            if converter is None:
+                from mssql_python.constants import ConstantsDDBC
+                converter = self.connection.get_output_converter(ConstantsDDBC.SQL_WVARCHAR.value)
+            
+            converter_map.append(converter)
+        
+        return converter_map
+
+    def _get_column_and_converter_maps(self):
+        """
+        Get column map and converter map for Row construction (thread-safe).
+        This centralizes the column map building logic to eliminate duplication
+        and ensure thread-safe lazy initialization.
+        
+        Returns:
+            tuple: (column_map, converter_map)
+        """
+        # Thread-safe lazy initialization of column map
+        column_map = self._cached_column_map
+        if column_map is None and self.description:
+            # Build column map locally first, then assign to cache
+            column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
+            self._cached_column_map = column_map
+        
+        # Fallback to legacy column name map if no cached map
+        column_map = column_map or getattr(self, '_column_name_map', None)
+        
+        # Get cached converter map
+        converter_map = getattr(self, '_cached_converter_map', None)
+        
+        return column_map, converter_map
+
+    def _map_data_type(self, sql_type):
         """
         Map SQL data type to Python data type.
 
@@ -1125,8 +1169,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # After successful execution, initialize description if there are results
         column_metadata = []
         try:
-            # ODBC specification guarantees that column metadata is available immediately after
-            # a successful SQLExecute/SQLExecDirect for the first result set
             ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
             self._initialize_description(column_metadata)
         except Exception as e:  # pylint: disable=broad-exception-caught
@@ -1135,29 +1177,25 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Reset rownumber for new result set (only for SELECT statements)
         if self.description:  # If we have column descriptions, it's likely a SELECT
-            # Capture settings snapshot for this result set
-            settings = get_settings()
-            self._settings_snapshot = {  # pylint: disable=attribute-defined-outside-init
-                "lowercase": settings.lowercase,
-                "native_uuid": settings.native_uuid,
-            }
-            # Identify UUID columns based on Python type in description[1]
-            # This relies on _map_data_type correctly mapping SQL_GUID to uuid.UUID
-            self._uuid_indices = []  # pylint: disable=attribute-defined-outside-init
-            for i, desc in enumerate(self.description):
-                if desc and desc[1] == uuid.UUID:  # Column type code at index 1
-                    self._uuid_indices.append(i)
-                # Verify we have complete description tuples (7 items per PEP-249)
-                elif desc and len(desc) != 7:
-                    log(
-                        "warning",
-                        f"Column description at index {i} has incorrect tuple length: {len(desc)}",
-                    )
             self.rowcount = -1
             self._reset_rownumber()
+            # Pre-build column map and converter map
+            self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
+            self._cached_converter_map = self._build_converter_map()
         else:
             self.rowcount = ddbc_bindings.DDBCSQLRowCount(self.hstmt)
             self._clear_rownumber()
+            self._cached_column_map = None
+            self._cached_converter_map = None
+
+        # After successful execution, initialize description if there are results
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+        except Exception as e:
+            # If describe fails, it's likely there are no results (e.g., for INSERT)
+            self.description = None
 
         self._reset_inputsizes()  # Reset input sizes after execution
         # Return self for method chaining
@@ -1876,13 +1914,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             for i, val in enumerate(processed_row):
                 if val is None:
                     continue
-                # Convert Decimals for money/smallmoney to string
                 if (
                     isinstance(val, decimal.Decimal)
                     and parameters_type[i].paramSQLType
                     == ddbc_sql_const.SQL_VARCHAR.value
                 ):
-                    processed_row[i] = str(val)
+                    processed_row[i] = format(val, 'f')
                 # Existing numeric conversion
                 elif parameters_type[i].paramSQLType in (
                     ddbc_sql_const.SQL_DECIMAL.value,
@@ -1968,12 +2005,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self._increment_rownumber()
 
             self.rowcount = self._next_row_index
-
-            # Create and return a Row object, passing column name map if available
-            column_map = getattr(self, "_column_name_map", None)
-            settings_snapshot = getattr(self, "_settings_snapshot", None)
-            return Row(self, self.description, row_data, column_map, settings_snapshot)
-        except Exception as e:  # pylint: disable=broad-exception-caught
+            
+            # Get column and converter maps
+            column_map, converter_map = self._get_column_and_converter_maps()
+            return Row(row_data, column_map, cursor=self, converter_map=converter_map)
+        except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
 
@@ -2016,15 +2052,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.rowcount = 0
             else:
                 self.rowcount = self._next_row_index
-
+            
+            # Get column and converter maps
+            column_map, converter_map = self._get_column_and_converter_maps()
+            
             # Convert raw data to Row objects
-            column_map = getattr(self, "_column_name_map", None)
-            settings_snapshot = getattr(self, "_settings_snapshot", None)
-            return [
-                Row(self, self.description, row_data, column_map, settings_snapshot)
-                for row_data in rows_data
-            ]
-        except Exception as e:  # pylint: disable=broad-exception-caught
+            return [Row(row_data, column_map, cursor=self, converter_map=converter_map) for row_data in rows_data]
+        except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
 
@@ -2057,15 +2091,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 self.rowcount = 0
             else:
                 self.rowcount = self._next_row_index
-
+            
+            # Get column and converter maps
+            column_map, converter_map = self._get_column_and_converter_maps()
+            
             # Convert raw data to Row objects
-            column_map = getattr(self, "_column_name_map", None)
-            settings_snapshot = getattr(self, "_settings_snapshot", None)
-            return [
-                Row(self, self.description, row_data, column_map, settings_snapshot)
-                for row_data in rows_data
-            ]
-        except Exception as e:  # pylint: disable=broad-exception-caught
+            return [Row(row_data, column_map, cursor=self, converter_map=converter_map) for row_data in rows_data]
+        except Exception as e:
             # On error, don't increment rownumber - rethrow the error
             raise e
 
@@ -2084,15 +2116,34 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Clear messages per DBAPI
         self.messages = []
 
+        # Clear cached column and converter maps for the new result set
+        self._cached_column_map = None
+        self._cached_converter_map = None
+
         # Skip to the next result set
         ret = ddbc_bindings.DDBCSQLMoreResults(self.hstmt)
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
             self._clear_rownumber()
+            self.description = None
             return False
 
         self._reset_rownumber()
+
+        # Initialize description for the new result set
+        column_metadata = []
+        try:
+            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
+            self._initialize_description(column_metadata)
+            
+            # Pre-build column map and converter map for the new result set
+            if self.description:
+                self._cached_column_map = {col_desc[0]: i for i, col_desc in enumerate(self.description)}
+                self._cached_converter_map = self._build_converter_map()
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            # If describe fails, there might be no results in this result set
+            self.description = None
 
         return True
 
@@ -2266,57 +2317,33 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         row_data: list = []
 
-        # Absolute special cases
+        # Absolute positioning not supported with forward-only cursors
         if mode == "absolute":
-            if value == -1:
-                # Before first
-                ddbc_bindings.DDBCSQLFetchScroll(
-                    self.hstmt, ddbc_sql_const.SQL_FETCH_ABSOLUTE.value, 0, row_data
-                )
-                self._rownumber = -1
-                self._next_row_index = 0
-                return
-            if value == 0:
-                # Before first, but tests want rownumber==0 pre and post the next fetch
-                ddbc_bindings.DDBCSQLFetchScroll(
-                    self.hstmt, ddbc_sql_const.SQL_FETCH_ABSOLUTE.value, 0, row_data
-                )
-                self._rownumber = 0
-                self._next_row_index = 0
-                self._skip_increment_for_next_fetch = True
-                return
+            raise NotSupportedError(
+                "Absolute positioning not supported",
+                "Forward-only cursors do not support absolute positioning"
+            )
 
         try:
             if mode == "relative":
                 if value == 0:
                     return
-                ret = ddbc_bindings.DDBCSQLFetchScroll(
-                    self.hstmt, ddbc_sql_const.SQL_FETCH_RELATIVE.value, value, row_data
-                )
-                if ret == ddbc_sql_const.SQL_NO_DATA.value:
-                    raise IndexError(
-                        "Cannot scroll to specified position: end of result set reached"
+                
+                # For forward-only cursors, use multiple SQL_FETCH_NEXT calls
+                # This matches pyodbc's approach for skip operations
+                for i in range(value):
+                    ret = ddbc_bindings.DDBCSQLFetchScroll(
+                        self.hstmt, ddbc_sql_const.SQL_FETCH_NEXT.value, 0, row_data
                     )
-                # Consume N rows; last-returned index advances by N
+                    if ret == ddbc_sql_const.SQL_NO_DATA.value:
+                        raise IndexError(
+                            "Cannot scroll to specified position: end of result set reached"
+                        )
+                
+                # Update position tracking
                 self._rownumber = self._rownumber + value
                 self._next_row_index = self._rownumber + 1
                 return
-
-            # absolute(k>0): map Python k (0-based next row) to ODBC ABSOLUTE k (1-based),
-            # intentionally passing k so ODBC fetches row #k (1-based), i.e., 0-based (k-1),
-            # leaving the NEXT fetch to return 0-based index k.
-            ret = ddbc_bindings.DDBCSQLFetchScroll(
-                self.hstmt, ddbc_sql_const.SQL_FETCH_ABSOLUTE.value, value, row_data
-            )
-            if ret == ddbc_sql_const.SQL_NO_DATA.value:
-                raise IndexError(
-                    f"Cannot scroll to position {value}: end of result set reached"
-                )
-
-            # Tests expect rownumber == value after absolute(value)
-            # Next fetch should return row index 'value'
-            self._rownumber = value
-            self._next_row_index = value
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             if isinstance(e, (IndexError, NotSupportedError)):
@@ -2472,3 +2499,4 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             are managed automatically by the underlying driver.
         """
         # This is a no-op - buffer sizes are managed automatically
+

@@ -21,11 +21,9 @@ Functions:
 
 from mssql_python.exceptions import InterfaceError, ProgrammingError, DatabaseError
 import mssql_python
-import sys
 import pytest
 import time
-from mssql_python import connect, Connection, pooling, SQL_CHAR, SQL_WCHAR
-import threading
+from mssql_python import connect, Connection, SQL_CHAR, SQL_WCHAR
 
 # Import all exception classes for testing
 from mssql_python.exceptions import (
@@ -43,6 +41,7 @@ from mssql_python.exceptions import (
 import struct
 from datetime import datetime, timedelta, timezone
 from mssql_python.constants import ConstantsDDBC
+from conftest import is_azure_sql_connection
 
 
 @pytest.fixture(autouse=True)
@@ -124,104 +123,46 @@ def test_connection(db_connection):
 
 def test_construct_connection_string(db_connection):
     # Check if the connection string is constructed correctly with kwargs
-    conn_str = db_connection._construct_connection_string(
-        host="localhost",
-        user="me",
-        password="mypwd",
-        database="mydb",
-        encrypt="yes",
-        trust_server_certificate="yes",
-    )
-    assert (
-        "Server=localhost;" in conn_str
-    ), "Connection string should contain 'Server=localhost;'"
-    assert "Uid=me;" in conn_str, "Connection string should contain 'Uid=me;'"
-    assert "Pwd=mypwd;" in conn_str, "Connection string should contain 'Pwd=mypwd;'"
-    assert (
-        "Database=mydb;" in conn_str
-    ), "Connection string should contain 'Database=mydb;'"
-    assert "Encrypt=yes;" in conn_str, "Connection string should contain 'Encrypt=yes;'"
-    assert (
-        "TrustServerCertificate=yes;" in conn_str
-    ), "Connection string should contain 'TrustServerCertificate=yes;'"
-    assert (
-        "APP=MSSQL-Python" in conn_str
-    ), "Connection string should contain 'APP=MSSQL-Python'"
-    assert (
-        "Driver={ODBC Driver 18 for SQL Server}" in conn_str
-    ), "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
-    assert (
-        "Driver={ODBC Driver 18 for SQL Server};;APP=MSSQL-Python;Server=localhost;Uid=me;Pwd=mypwd;Database=mydb;Encrypt=yes;TrustServerCertificate=yes;"
-        == conn_str
-    ), "Connection string is incorrect"
-
+    # Using official ODBC parameter names
+    conn_str = db_connection._construct_connection_string(Server="localhost", UID="me", PWD="mypwd", Database="mydb", Encrypt="yes", TrustServerCertificate="yes")
+    # With the new allow-list implementation, parameters are normalized and validated
+    assert "Server=localhost" in conn_str, "Connection string should contain 'Server=localhost'"
+    assert "UID=me" in conn_str, "Connection string should contain 'UID=me'"
+    assert "PWD=mypwd" in conn_str, "Connection string should contain 'PWD=mypwd'"
+    assert "Database=mydb" in conn_str, "Connection string should contain 'Database=mydb'"
+    assert "Encrypt=yes" in conn_str, "Connection string should contain 'Encrypt=yes'"
+    assert "TrustServerCertificate=yes" in conn_str, "Connection string should contain 'TrustServerCertificate=yes'"
+    assert "APP=MSSQL-Python" in conn_str, "Connection string should contain 'APP=MSSQL-Python'"
+    assert "Driver={ODBC Driver 18 for SQL Server}" in conn_str, "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
 
 def test_connection_string_with_attrs_before(db_connection):
     # Check if the connection string is constructed correctly with attrs_before
-    conn_str = db_connection._construct_connection_string(
-        host="localhost",
-        user="me",
-        password="mypwd",
-        database="mydb",
-        encrypt="yes",
-        trust_server_certificate="yes",
-        attrs_before={1256: "token"},
-    )
-    assert (
-        "Server=localhost;" in conn_str
-    ), "Connection string should contain 'Server=localhost;'"
-    assert "Uid=me;" in conn_str, "Connection string should contain 'Uid=me;'"
-    assert "Pwd=mypwd;" in conn_str, "Connection string should contain 'Pwd=mypwd;'"
-    assert (
-        "Database=mydb;" in conn_str
-    ), "Connection string should contain 'Database=mydb;'"
-    assert "Encrypt=yes;" in conn_str, "Connection string should contain 'Encrypt=yes;'"
-    assert (
-        "TrustServerCertificate=yes;" in conn_str
-    ), "Connection string should contain 'TrustServerCertificate=yes;'"
-    assert (
-        "APP=MSSQL-Python" in conn_str
-    ), "Connection string should contain 'APP=MSSQL-Python'"
-    assert (
-        "Driver={ODBC Driver 18 for SQL Server}" in conn_str
-    ), "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
-    assert (
-        "{1256: token}" not in conn_str
-    ), "Connection string should not contain '{1256: token}'"
-
+    # Using official ODBC parameter names
+    conn_str = db_connection._construct_connection_string(Server="localhost", UID="me", PWD="mypwd", Database="mydb", Encrypt="yes", TrustServerCertificate="yes", attrs_before={1256: "token"})
+    # With the new allow-list implementation, parameters are normalized and validated
+    assert "Server=localhost" in conn_str, "Connection string should contain 'Server=localhost'"
+    assert "UID=me" in conn_str, "Connection string should contain 'UID=me'"
+    assert "PWD=mypwd" in conn_str, "Connection string should contain 'PWD=mypwd'"
+    assert "Database=mydb" in conn_str, "Connection string should contain 'Database=mydb'"
+    assert "Encrypt=yes" in conn_str, "Connection string should contain 'Encrypt=yes'"
+    assert "TrustServerCertificate=yes" in conn_str, "Connection string should contain 'TrustServerCertificate=yes'"
+    assert "APP=MSSQL-Python" in conn_str, "Connection string should contain 'APP=MSSQL-Python'"
+    assert "Driver={ODBC Driver 18 for SQL Server}" in conn_str, "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
+    assert "{1256: token}" not in conn_str, "Connection string should not contain '{1256: token}'"
 
 def test_connection_string_with_odbc_param(db_connection):
     # Check if the connection string is constructed correctly with ODBC parameters
-    conn_str = db_connection._construct_connection_string(
-        server="localhost",
-        uid="me",
-        pwd="mypwd",
-        database="mydb",
-        encrypt="yes",
-        trust_server_certificate="yes",
-    )
-    assert (
-        "Server=localhost;" in conn_str
-    ), "Connection string should contain 'Server=localhost;'"
-    assert "Uid=me;" in conn_str, "Connection string should contain 'Uid=me;'"
-    assert "Pwd=mypwd;" in conn_str, "Connection string should contain 'Pwd=mypwd;'"
-    assert (
-        "Database=mydb;" in conn_str
-    ), "Connection string should contain 'Database=mydb;'"
-    assert "Encrypt=yes;" in conn_str, "Connection string should contain 'Encrypt=yes;'"
-    assert (
-        "TrustServerCertificate=yes;" in conn_str
-    ), "Connection string should contain 'TrustServerCertificate=yes;'"
-    assert (
-        "APP=MSSQL-Python" in conn_str
-    ), "Connection string should contain 'APP=MSSQL-Python'"
-    assert (
-        "Driver={ODBC Driver 18 for SQL Server}" in conn_str
-    ), "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
-    assert (
-        "Driver={ODBC Driver 18 for SQL Server};;APP=MSSQL-Python;Server=localhost;Uid=me;Pwd=mypwd;Database=mydb;Encrypt=yes;TrustServerCertificate=yes;"
-        == conn_str
-    ), "Connection string is incorrect"
+    # Using lowercase synonyms that normalize to uppercase (uid->UID, pwd->PWD)
+    conn_str = db_connection._construct_connection_string(server="localhost", uid="me", pwd="mypwd", database="mydb", encrypt="yes", trust_server_certificate="yes")
+    # With the new allow-list implementation, parameters are normalized and validated
+    assert "Server=localhost" in conn_str, "Connection string should contain 'Server=localhost'"
+    assert "UID=me" in conn_str, "Connection string should contain 'UID=me'"
+    assert "PWD=mypwd" in conn_str, "Connection string should contain 'PWD=mypwd'"
+    assert "Database=mydb" in conn_str, "Connection string should contain 'Database=mydb'"
+    assert "Encrypt=yes" in conn_str, "Connection string should contain 'Encrypt=yes'"
+    assert "TrustServerCertificate=yes" in conn_str, "Connection string should contain 'TrustServerCertificate=yes'"
+    assert "APP=MSSQL-Python" in conn_str, "Connection string should contain 'APP=MSSQL-Python'"
+    assert "Driver={ODBC Driver 18 for SQL Server}" in conn_str, "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
 
 
 def test_autocommit_default(db_connection):
@@ -415,10 +356,11 @@ def test_connection_timeout_invalid_password(conn_str):
     with pytest.raises(Exception):
         connect(bad_conn_str)
     elapsed = time.perf_counter() - start
-    # Should fail quickly (within 10 seconds)
+    # Azure SQL takes longer to timeout, so use different thresholds
+    timeout_threshold = 30 if is_azure_sql_connection(conn_str) else 10
     assert (
-        elapsed < 10
-    ), f"Connection with invalid password took too long: {elapsed:.2f}s"
+        elapsed < timeout_threshold
+    ), f"Connection with invalid password took too long: {elapsed:.2f}s (threshold: {timeout_threshold}s)"
 
 
 def test_connection_timeout_invalid_host(conn_str):
@@ -3639,7 +3581,7 @@ def test_execute_after_connection_close(conn_str):
     ), "Error should mention the connection is closed"
 
 
-def test_execute_multiple_simultaneous_cursors(db_connection):
+def test_execute_multiple_simultaneous_cursors(db_connection, conn_str):
     """Test creating and using many cursors simultaneously through Connection.execute
 
     ⚠️ WARNING: This test has several limitations:
@@ -3648,14 +3590,17 @@ def test_execute_multiple_simultaneous_cursors(db_connection):
     3. Memory measurement requires the optional 'psutil' package
     4. Creates cursors sequentially rather than truly concurrently
     5. Results may vary based on system resources, SQL Server version, and ODBC driver
+    6. Skipped for Azure SQL due to connection pool and throttling limitations
 
     The test verifies that:
     - Multiple cursors can be created and used simultaneously
     - Connection tracks created cursors appropriately
     - Connection remains stable after intensive cursor operations
     """
+    # Skip this test for Azure SQL Database
+    if is_azure_sql_connection(conn_str):
+        pytest.skip("Skipping for Azure SQL - connection limits cause this test to hang")
     import gc
-    import sys
 
     # Start with a clean connection state
     cursor = db_connection.execute("SELECT 1")
@@ -3712,7 +3657,7 @@ def test_execute_multiple_simultaneous_cursors(db_connection):
     final_cursor.close()
 
 
-def test_execute_with_large_parameters(db_connection):
+def test_execute_with_large_parameters(db_connection, conn_str):
     """Test executing queries with very large parameter sets
 
     ⚠️ WARNING: This test has several limitations:
@@ -3722,12 +3667,16 @@ def test_execute_with_large_parameters(db_connection):
     4. No streaming parameter support is tested
     5. Only tests with 10,000 rows, which is small compared to production scenarios
     6. Performance measurements are affected by system load and environment
+    7. Skipped for Azure SQL due to connection pool and throttling limitations
 
     The test verifies:
     - Handling of a large number of parameters in batch inserts
     - Working with parameters near but under the size limit
     - Processing large result sets
     """
+    # Skip this test for Azure SQL Database
+    if is_azure_sql_connection(conn_str):
+        pytest.skip("Skipping for Azure SQL - large parameter tests may cause timeouts")
 
     # Test with a temporary table for large data
     cursor = db_connection.execute(
@@ -4289,7 +4238,7 @@ def test_batch_execute_input_validation(db_connection):
     cursor.close()
 
 
-def test_batch_execute_large_batch(db_connection):
+def test_batch_execute_large_batch(db_connection, conn_str):
     """Test batch_execute with a large number of statements
 
     ⚠️ WARNING: This test has several limitations:
@@ -4299,12 +4248,16 @@ def test_batch_execute_large_batch(db_connection):
     4. Results must be fully consumed between statements to avoid "Connection is busy" errors
     5. Driver-specific limitations may exist for maximum batch sizes
     6. Network timeouts during long-running batches aren't tested
+    7. Skipped for Azure SQL due to connection pool and throttling limitations
 
     The test verifies:
     - The method can handle multiple statements in sequence
     - Results are correctly returned for all statements
     - Memory usage remains reasonable during batch processing
     """
+    # Skip this test for Azure SQL Database
+    if is_azure_sql_connection(conn_str):
+        pytest.skip("Skipping for Azure SQL - large batch tests may cause timeouts")
     # Create a batch of 50 statements
     statements = ["SELECT " + str(i) for i in range(50)]
 
@@ -4848,92 +4801,6 @@ def test_timeout_from_constructor(conn_str):
         conn.close()
 
 
-def test_timeout_long_query(db_connection):
-    """Test that a query exceeding the timeout raises an exception if supported by driver"""
-
-    cursor = db_connection.cursor()
-
-    try:
-        # First execute a simple query to check if we can run tests
-        cursor.execute("SELECT 1")
-        cursor.fetchall()
-    except Exception as e:
-        pytest.skip(f"Skipping timeout test due to connection issue: {e}")
-
-    # Set a short timeout
-    original_timeout = db_connection.timeout
-    db_connection.timeout = 2  # 2 seconds
-
-    try:
-        # Try several different approaches to test timeout
-        start_time = time.perf_counter()
-        try:
-            # Method 1: CPU-intensive query with REPLICATE and large result set
-            cpu_intensive_query = """
-            WITH numbers AS (
-                SELECT TOP 1000000 ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n
-                FROM sys.objects a CROSS JOIN sys.objects b
-            )
-            SELECT COUNT(*) FROM numbers WHERE n % 2 = 0
-            """
-            cursor.execute(cpu_intensive_query)
-            cursor.fetchall()
-
-            elapsed_time = time.perf_counter() - start_time
-
-            # If we get here without an exception, try a different approach
-            if elapsed_time < 4.5:
-
-                # Method 2: Try with WAITFOR
-                start_time = time.perf_counter()
-                cursor.execute("WAITFOR DELAY '00:00:05'")
-                cursor.fetchall()
-                elapsed_time = time.perf_counter() - start_time
-
-                # If we still get here, try one more approach
-                if elapsed_time < 4.5:
-
-                    # Method 3: Try with a join that generates many rows
-                    start_time = time.perf_counter()
-                    cursor.execute(
-                        """
-                    SELECT COUNT(*) FROM sys.objects a, sys.objects b, sys.objects c
-                    WHERE a.object_id = b.object_id * c.object_id
-                    """
-                    )
-                    cursor.fetchall()
-                    elapsed_time = time.perf_counter() - start_time
-
-            # If we still get here without an exception
-            if elapsed_time < 4.5:
-                pytest.skip("Timeout feature not enforced by database driver")
-
-        except Exception as e:
-            # Verify this is a timeout exception
-            elapsed_time = time.perf_counter() - start_time
-            assert elapsed_time < 4.5, "Exception occurred but after expected timeout"
-            error_text = str(e).lower()
-
-            # Check for various error messages that might indicate timeout
-            timeout_indicators = [
-                "timeout",
-                "timed out",
-                "hyt00",
-                "hyt01",
-                "cancel",
-                "operation canceled",
-                "execution terminated",
-                "query limit",
-            ]
-
-            assert any(
-                indicator in error_text for indicator in timeout_indicators
-            ), f"Exception occurred but doesn't appear to be a timeout error: {e}"
-    finally:
-        # Reset timeout for other tests
-        db_connection.timeout = original_timeout
-
-
 def test_timeout_affects_all_cursors(db_connection):
     """Test that changing timeout on connection affects all new cursors"""
     # Create a cursor with default timeout
@@ -5449,6 +5316,9 @@ def test_timeout_long_query(db_connection):
     try:
         # Try several different approaches to test timeout
         start_time = time.perf_counter()
+        max_retries = 3
+        retry_count = 0
+        
         try:
             # Method 1: CPU-intensive query with REPLICATE and large result set
             cpu_intensive_query = """
@@ -5476,21 +5346,43 @@ def test_timeout_long_query(db_connection):
                 if elapsed_time < 4.5:
 
                     # Method 3: Try with a join that generates many rows
-                    start_time = time.perf_counter()
-                    cursor.execute(
-                        """
-                    SELECT COUNT(*) FROM sys.objects a, sys.objects b, sys.objects c
-                    WHERE a.object_id = b.object_id * c.object_id
-                    """
-                    )
-                    cursor.fetchall()
-                    elapsed_time = time.perf_counter() - start_time
+                    # Retry this method multiple times if we get DataError (arithmetic overflow)
+                    while retry_count < max_retries:
+                        start_time = time.perf_counter()
+                        try:
+                            cursor.execute(
+                                """
+                            SELECT COUNT(*) FROM sys.objects a, sys.objects b, sys.objects c
+                            WHERE a.object_id = b.object_id * c.object_id
+                            """
+                            )
+                            cursor.fetchall()
+                            elapsed_time = time.perf_counter() - start_time
+                            break  # Success, exit retry loop
+                        except Exception as retry_e:
+                            from mssql_python.exceptions import DataError
+                            if isinstance(retry_e, DataError) and "overflow" in str(retry_e).lower():
+                                retry_count += 1
+                                if retry_count >= max_retries:
+                                    # After max retries with overflow, skip this method
+                                    break
+                                # Wait a bit and retry
+                                import time as time_module
+                                time_module.sleep(0.1)
+                            else:
+                                # Not an overflow error, re-raise to be handled by outer exception handler
+                                raise
 
             # If we still get here without an exception
             if elapsed_time < 4.5:
                 pytest.skip("Timeout feature not enforced by database driver")
 
         except Exception as e:
+            from mssql_python.exceptions import DataError
+            # Check if this is a DataError with overflow (flaky test condition)
+            if isinstance(e, DataError) and "overflow" in str(e).lower():
+                pytest.skip(f"Skipping timeout test due to arithmetic overflow in test query: {e}")
+            
             # Verify this is a timeout exception
             elapsed_time = time.perf_counter() - start_time
             assert elapsed_time < 4.5, "Exception occurred but after expected timeout"
@@ -7737,7 +7629,7 @@ def test_set_attr_login_timeout_effect(conn_str):
         conn = connect(invalid_conn_str)  # Don't use the login_timeout parameter
         conn.close()
         pytest.fail("Connection to invalid server should have failed")
-    except Exception as e:
+    except Exception:
         end_time = time.time()
         elapsed = end_time - start_time
 
@@ -7926,9 +7818,12 @@ def test_set_attr_access_mode_after_connect(db_connection):
     result = cursor.fetchall()
     assert result[0][0] == 1
 
-
-def test_set_attr_current_catalog_after_connect(db_connection):
+def test_set_attr_current_catalog_after_connect(db_connection, conn_str):
     """Test setting current catalog after connection via set_attr."""
+    # Skip this test for Azure SQL Database - it doesn't support changing database after connection
+    if is_azure_sql_connection(conn_str):
+        pytest.skip("Skipping for Azure SQL - SQL_ATTR_CURRENT_CATALOG not supported after connection")
+
     # Get current database name
     cursor = db_connection.cursor()
     cursor.execute("SELECT DB_NAME()")
@@ -8603,7 +8498,9 @@ def test_connection_context_manager_with_cursor_cleanup(conn_str):
 
         # Perform operations
         cursor1.execute("SELECT 1")
+        cursor1.fetchone()
         cursor2.execute("SELECT 2")
+        cursor2.fetchone()
 
         # Verify cursors are tracked
         assert len(conn._cursors) == 2, "Should track both cursors"

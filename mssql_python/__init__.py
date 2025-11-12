@@ -3,7 +3,6 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 This module initializes the mssql_python package.
 """
-
 import sys
 import types
 from typing import Dict
@@ -13,6 +12,8 @@ from .helpers import Settings, get_settings, _settings, _settings_lock
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
+
+# Import necessary modules
 from .exceptions import (
     Warning,
     Error,
@@ -24,6 +25,7 @@ from .exceptions import (
     InternalError,
     ProgrammingError,
     NotSupportedError,
+    ConnectionStringParseError,
 )
 
 # Type Objects
@@ -44,6 +46,10 @@ from .type import (
 
 # Connection Objects
 from .db_connection import connect, Connection
+
+# Connection String Handling
+from .connection_string_parser import _ConnectionStringParser
+from .connection_string_builder import _ConnectionStringBuilder
 
 # Cursor Objects
 from .cursor import Cursor
@@ -174,8 +180,20 @@ def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) 
     else:
         PoolingManager.enable(max_size, idle_timeout)
 
-
 _original_module_setattr = sys.modules[__name__].__setattr__
+
+def _custom_setattr(name, value):
+    if name == 'lowercase':
+        with _settings_lock:
+            _settings.lowercase = bool(value)
+            # Update the module's lowercase variable
+            _original_module_setattr(name, _settings.lowercase)
+    else:
+        _original_module_setattr(name, value)
+
+# Replace the module's __setattr__ with our custom version
+sys.modules[__name__].__setattr__ = _custom_setattr
+
 
 # Export SQL constants at module level
 SQL_VARCHAR: int = ConstantsDDBC.SQL_VARCHAR.value
@@ -251,22 +269,8 @@ def get_info_constants() -> Dict[str, int]:
     """
     return {name: member.value for name, member in GetInfoConstants.__members__.items()}
 
-
 # Create a custom module class that uses properties instead of __setattr__
 class _MSSQLModule(types.ModuleType):
-    @property
-    def native_uuid(self) -> bool:
-        """Get the native UUID setting."""
-        return _settings.native_uuid
-
-    @native_uuid.setter
-    def native_uuid(self, value: bool) -> None:
-        """Set the native UUID setting."""
-        if not isinstance(value, bool):
-            raise ValueError("native_uuid must be a boolean value")
-        with _settings_lock:
-            _settings.native_uuid = value
-
     @property
     def lowercase(self) -> bool:
         """Get the lowercase setting."""
@@ -298,4 +302,3 @@ sys.modules[__name__] = new_module
 
 # Initialize property values
 lowercase: bool = _settings.lowercase
-native_uuid: bool = _settings.native_uuid
