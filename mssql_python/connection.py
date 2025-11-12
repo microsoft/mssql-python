@@ -783,7 +783,10 @@ class Connection:
             DatabaseError: If there is an error while creating the cursor.
             InterfaceError: If there is an error related to the database interface.
         """
+        logger.debug('cursor: Creating new cursor - timeout=%d, total_cursors=%d', 
+                     self._timeout, len(self._cursors))
         if self._closed:
+            logger.error('cursor: Cannot create cursor on closed connection')
             # raise InterfaceError
             raise InterfaceError(
                 driver_error="Cannot create cursor on closed connection",
@@ -792,6 +795,7 @@ class Connection:
 
         cursor = Cursor(self, timeout=self._timeout)
         self._cursors.add(cursor)  # Track the cursor
+        logger.debug('cursor: Cursor created successfully - total_cursors=%d', len(self._cursors))
         return cursor
 
     def add_output_converter(self, sqltype: int, func: Callable[[Any], Any]) -> None:

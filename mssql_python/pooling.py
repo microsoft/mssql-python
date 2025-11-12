@@ -37,18 +37,23 @@ class PoolingManager:
         Raises:
             ValueError: If parameters are invalid (max_size <= 0 or idle_timeout < 0)
         """
+        logger.debug('PoolingManager.enable: Attempting to enable pooling - max_size=%d, idle_timeout=%d', max_size, idle_timeout)
         with cls._lock:
             if cls._enabled:
+                logger.debug('PoolingManager.enable: Pooling already enabled, skipping')
                 return
 
             if max_size <= 0 or idle_timeout < 0:
+                logger.error('PoolingManager.enable: Invalid parameters - max_size=%d, idle_timeout=%d', max_size, idle_timeout)
                 raise ValueError("Invalid pooling parameters")
 
+            logger.info('PoolingManager.enable: Enabling connection pooling - max_size=%d, idle_timeout=%d seconds', max_size, idle_timeout)
             ddbc_bindings.enable_pooling(max_size, idle_timeout)
             cls._config["max_size"] = max_size
             cls._config["idle_timeout"] = idle_timeout
             cls._enabled = True
             cls._initialized = True
+            logger.info('PoolingManager.enable: Connection pooling enabled successfully')
 
     @classmethod
     def disable(cls) -> None:
@@ -58,11 +63,16 @@ class PoolingManager:
         This method safely disables pooling and closes existing connections.
         It can be called multiple times safely.
         """
+        logger.debug('PoolingManager.disable: Attempting to disable pooling')
         with cls._lock:
             if (
                 cls._enabled and not cls._pools_closed
             ):  # Only cleanup if enabled and not already closed
+                logger.info('PoolingManager.disable: Closing connection pools')
                 ddbc_bindings.close_pooling()
+                logger.info('PoolingManager.disable: Connection pools closed successfully')
+            else:
+                logger.debug('PoolingManager.disable: Pooling already disabled or closed')
             cls._pools_closed = True
             cls._enabled = False
             cls._initialized = True
@@ -104,7 +114,12 @@ def shutdown_pooling():
     This function is registered with atexit to ensure proper cleanup of
     connection pools when the application terminates.
     """
+    logger.debug('shutdown_pooling: atexit cleanup triggered')
     with PoolingManager._lock:
         if PoolingManager._enabled and not PoolingManager._pools_closed:
+            logger.info('shutdown_pooling: Closing connection pools during application exit')
             ddbc_bindings.close_pooling()
             PoolingManager._pools_closed = True
+            logger.info('shutdown_pooling: Connection pools closed successfully')
+        else:
+            logger.debug('shutdown_pooling: No active pools to close')

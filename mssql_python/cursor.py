@@ -2146,6 +2146,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Raises:
             Error: If the previous call to execute did not produce any result set.
         """
+        logger.debug('nextset: Moving to next result set')
         self._check_closed()  # Check if the cursor is closed
 
         # Clear messages per DBAPI
@@ -2160,6 +2161,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
         if ret == ddbc_sql_const.SQL_NO_DATA.value:
+            logger.debug('nextset: No more result sets available')
             self._clear_rownumber()
             self.description = None
             return False
@@ -2180,6 +2182,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # If describe fails, there might be no results in this result set
             self.description = None
 
+        logger.debug('nextset: Moved to next result set - column_count=%d', 
+                     len(self.description) if self.description else 0)
         return True
 
     def __enter__(self):
@@ -2221,17 +2225,24 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             After calling fetchval(), the cursor position advances by one row,
             just like fetchone().
         """
+        logger.debug('fetchval: Fetching single value from first column')
         self._check_closed()  # Check if the cursor is closed
 
         # Check if this is a result-producing statement
         if not self.description:
             # Non-result-set statement (INSERT, UPDATE, DELETE, etc.)
+            logger.debug('fetchval: No result set available (non-SELECT statement)')
             return None
 
         # Fetch the first row
         row = self.fetchone()
 
-        return None if row is None else row[0]
+        if row is None:
+            logger.debug('fetchval: No value available (no rows)')
+            return None
+        
+        logger.debug('fetchval: Value retrieved successfully')
+        return row[0]
 
     def commit(self):
         """
@@ -2322,22 +2333,27 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
           - absolute(k>0): next fetch returns row index k (0-based); 
             rownumber == k after scroll.
         """
+        logger.debug('scroll: Scrolling cursor - mode=%s, value=%d, current_rownumber=%d', 
+                     mode, value, self._rownumber)
         self._check_closed()
 
         # Clear messages per DBAPI
         self.messages = []
 
         if mode not in ("relative", "absolute"):
+            logger.error('scroll: Invalid mode - mode=%s', mode)
             raise ProgrammingError(
                 "Invalid scroll mode",
                 f"mode must be 'relative' or 'absolute', got '{mode}'",
             )
         if not self._has_result_set:
+            logger.error('scroll: No active result set')
             raise ProgrammingError(
                 "No active result set",
                 "Cannot scroll: no result set available. Execute a query first.",
             )
         if not isinstance(value, int):
+            logger.error('scroll: Invalid value type - type=%s', type(value).__name__)
             raise ProgrammingError(
                 "Invalid scroll value type",
                 f"scroll value must be an integer, got {type(value).__name__}",
@@ -2345,6 +2361,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Relative backward not supported
         if mode == "relative" and value < 0:
+            logger.error('scroll: Backward scrolling not supported - value=%d', value)
             raise NotSupportedError(
                 "Backward scrolling not supported",
                 f"Cannot move backward by {value} rows on a forward-only cursor",
@@ -2378,6 +2395,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 # Update position tracking
                 self._rownumber = self._rownumber + value
                 self._next_row_index = self._rownumber + 1
+                logger.debug('scroll: Scroll complete - new_rownumber=%d, next_row_index=%d', 
+                             self._rownumber, self._next_row_index)
                 return
 
         except Exception as e:  # pylint: disable=broad-exception-caught

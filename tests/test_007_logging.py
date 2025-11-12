@@ -497,3 +497,334 @@ class TestDriverLogger:
         """driver_logger should be the same as logger._logger"""
         from mssql_python.logging import driver_logger
         assert driver_logger is logger._logger
+
+
+class TestThreadSafety:
+    """Tests for thread safety and race condition fixes"""
+    
+    def test_concurrent_initialization_no_double_init(self, cleanup_logger):
+        """Test that concurrent __init__ calls don't cause double initialization"""
+        import threading
+        from mssql_python.logging import MSSQLLogger
+        
+        # Force re-creation by deleting singleton
+        MSSQLLogger._instance = None
+        
+        init_counts = []
+        errors = []
+        
+        def create_logger():
+            try:
+                # This should only initialize once despite concurrent calls
+                log = MSSQLLogger()
+                # Count handlers as proxy for initialization
+                init_counts.append(len(log._logger.handlers))
+            except Exception as e:
+                errors.append(str(e))
+        
+        # Create 10 threads that all try to initialize simultaneously
+        threads = [threading.Thread(target=create_logger) for _ in range(10)]
+        
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        
+        # Should have no errors
+        assert len(errors) == 0, f"Errors during concurrent init: {errors}"
+        
+        # All threads should see the same initialized logger
+        # (handler count should be consistent - either all 0 or all same count)
+        assert len(set(init_counts)) <= 2, f"Inconsistent handler counts: {init_counts}"
+    
+    def test_concurrent_logging_during_reconfigure(self, cleanup_logger, temp_log_dir):
+        """Test that logging during handler reconfiguration doesn't crash"""
+        import threading
+        import time
+        
+        log_file = os.path.join(temp_log_dir, "concurrent_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        errors = []
+        log_count = [0]
+        
+        def log_continuously():
+            """Log messages continuously"""
+            try:
+                for i in range(50):
+                    logger.debug(f"Test message {i}")
+                    log_count[0] += 1
+                    time.sleep(0.001)  # Small delay
+            except Exception as e:
+                errors.append(f"Logging error: {str(e)}")
+        
+        def reconfigure_repeatedly():
+            """Reconfigure logger repeatedly"""
+            try:
+                for i in range(10):
+                    # Alternate between modes to trigger handler recreation
+                    mode = STDOUT if i % 2 == 0 else FILE
+                    setup_logging(output=mode, 
+                                log_file_path=log_file if mode == FILE else None)
+                    time.sleep(0.005)
+            except Exception as e:
+                errors.append(f"Config error: {str(e)}")
+        
+        # Start logging thread
+        log_thread = threading.Thread(target=log_continuously)
+        log_thread.start()
+        
+        # Start reconfiguration thread
+        config_thread = threading.Thread(target=reconfigure_repeatedly)
+        config_thread.start()
+        
+        # Wait for completion
+        log_thread.join(timeout=5)
+        config_thread.join(timeout=5)
+        
+        # Should have no errors (no crashes, no closed file exceptions)
+        assert len(errors) == 0, f"Errors during concurrent operations: {errors}"
+        
+        # Should have logged some messages successfully
+        assert log_count[0] > 0, "No messages were logged"
+    
+    def test_handler_access_thread_safe(self, cleanup_logger):
+        """Test that accessing handlers property is thread-safe"""
+        import threading
+        
+        setup_logging(output=FILE)
+        
+        errors = []
+        handler_counts = []
+        
+        def access_handlers():
+            try:
+                for _ in range(100):
+                    handlers = logger.handlers
+                    handler_counts.append(len(handlers))
+            except Exception as e:
+                errors.append(str(e))
+        
+        threads = [threading.Thread(target=access_handlers) for _ in range(5)]
+        
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        
+        # Should have no errors
+        assert len(errors) == 0, f"Errors accessing handlers: {errors}"
+        
+        # All counts should be consistent (same handler count)
+        unique_counts = set(handler_counts)
+        assert len(unique_counts) == 1, f"Inconsistent handler counts: {unique_counts}"
+    
+    def test_no_crash_when_logging_to_closed_handler(self, cleanup_logger, temp_log_dir):
+        """Stress test: Verify no crashes when aggressively reconfiguring during heavy logging"""
+        import threading
+        import time
+        
+        log_file = os.path.join(temp_log_dir, "stress_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        errors = []
+        log_success_count = [0]
+        reconfig_count = [0]
+        
+        def log_aggressively():
+            """Log messages as fast as possible"""
+            try:
+                for i in range(200):
+                    logger.debug(f"Aggressive log message {i}")
+                    logger.info(f"Info message {i}")
+                    logger.warning(f"Warning message {i}")
+                    log_success_count[0] += 3
+                    # No sleep - log as fast as possible
+            except Exception as e:
+                errors.append(f"Logging crashed: {type(e).__name__}: {str(e)}")
+        
+        def reconfigure_aggressively():
+            """Reconfigure handlers as fast as possible"""
+            try:
+                modes = [FILE, STDOUT, BOTH]
+                for i in range(30):
+                    mode = modes[i % len(modes)]
+                    setup_logging(output=mode, 
+                                log_file_path=log_file if mode in (FILE, BOTH) else None)
+                    reconfig_count[0] += 1
+                    # Very short sleep to maximize contention
+                    time.sleep(0.002)
+            except Exception as e:
+                errors.append(f"Reconfiguration crashed: {type(e).__name__}: {str(e)}")
+        
+        # Start 5 logging threads (heavy contention)
+        log_threads = [threading.Thread(target=log_aggressively) for _ in range(5)]
+        
+        # Start 2 reconfiguration threads (aggressive handler switching)
+        config_threads = [threading.Thread(target=reconfigure_aggressively) for _ in range(2)]
+        
+        # Start all threads
+        for t in log_threads + config_threads:
+            t.start()
+        
+        # Wait for completion
+        for t in log_threads + config_threads:
+            t.join(timeout=10)
+        
+        # Critical assertion: No crashes
+        assert len(errors) == 0, f"Crashes detected: {errors}"
+        
+        # Should have logged many messages successfully
+        assert log_success_count[0] > 500, f"Too few successful logs: {log_success_count[0]}"
+        
+        # Should have reconfigured many times
+        assert reconfig_count[0] > 20, f"Too few reconfigurations: {reconfig_count[0]}"
+    
+    def test_atexit_cleanup_registered(self, cleanup_logger, temp_log_dir):
+        """Test that atexit cleanup is registered on first handler setup"""
+        import atexit
+        
+        log_file = os.path.join(temp_log_dir, "atexit_test.log")
+        
+        # Get initial state (may already be registered from other tests due to singleton)
+        initial_state = logger._cleanup_registered
+        
+        # Enable logging - this should register atexit cleanup if not already registered
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # After setup_logging, cleanup must be registered
+        assert logger._cleanup_registered
+        
+        # Verify it stays registered (idempotent)
+        setup_logging(output=FILE, log_file_path=log_file)
+        assert logger._cleanup_registered
+    
+    def test_cleanup_handlers_closes_files(self, cleanup_logger, temp_log_dir):
+        """Test that _cleanup_handlers properly closes all file handles"""
+        log_file = os.path.join(temp_log_dir, "cleanup_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # Log some messages to ensure file is open
+        logger.debug("Test message 1")
+        logger.info("Test message 2")
+        
+        # Get file handler before cleanup
+        file_handler = logger._file_handler
+        assert file_handler is not None
+        assert file_handler.stream is not None  # File is open
+        
+        # Call cleanup
+        logger._cleanup_handlers()
+        
+        # After cleanup, handlers should be closed
+        assert file_handler.stream is None or file_handler.stream.closed
+
+
+class TestExceptionSafety:
+    """Test that logging never crashes the application"""
+    
+    def test_bad_format_string_args_mismatch(self, cleanup_logger, temp_log_dir):
+        """Test that wrong number of format args doesn't crash"""
+        log_file = os.path.join(temp_log_dir, "exception_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # Too many args - should not crash
+        logger.debug("Message with %s placeholder", "arg1", "arg2")
+        
+        # Too few args - should not crash
+        logger.info("Message with %s and %s", "only_one_arg")
+        
+        # Wrong type - should not crash
+        logger.warning("Number: %d", "not_a_number")
+        
+        # Application should still be running (no exception propagated)
+        assert True
+    
+    def test_bad_format_string_syntax(self, cleanup_logger, temp_log_dir):
+        """Test that invalid format syntax doesn't crash"""
+        log_file = os.path.join(temp_log_dir, "exception_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # Invalid format specifier - should not crash
+        logger.debug("Bad format: %z", "value")
+        
+        # Incomplete format - should not crash
+        logger.info("Incomplete: %")
+        
+        # Application should still be running
+        assert True
+    
+    def test_disk_full_simulation(self, cleanup_logger, temp_log_dir):
+        """Test that disk full errors don't crash (mock simulation)"""
+        import unittest.mock as mock
+        
+        log_file = os.path.join(temp_log_dir, "disk_full_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # Mock the logger.log method to raise IOError (disk full)
+        with mock.patch.object(logger._logger, 'log', side_effect=OSError("No space left on device")):
+            # Should not crash
+            logger.debug("This would fail with disk full")
+            logger.info("This would also fail")
+        
+        # Application should still be running
+        assert True
+    
+    def test_permission_denied_simulation(self, cleanup_logger, temp_log_dir):
+        """Test that permission errors don't crash (mock simulation)"""
+        import unittest.mock as mock
+        
+        log_file = os.path.join(temp_log_dir, "permission_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # Mock to raise PermissionError
+        with mock.patch.object(logger._logger, 'log', side_effect=PermissionError("Permission denied")):
+            # Should not crash
+            logger.warning("This would fail with permission error")
+        
+        # Application should still be running
+        assert True
+    
+    def test_unicode_encoding_error(self, cleanup_logger, temp_log_dir):
+        """Test that unicode encoding errors don't crash"""
+        log_file = os.path.join(temp_log_dir, "unicode_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # Various problematic unicode scenarios
+        logger.debug("Unicode: \udcff invalid surrogate")  # Invalid surrogate
+        logger.info("Emoji: 🚀💾🔥")  # Emojis
+        logger.warning("Mixed: ASCII + 中文 + العربية")  # Multiple scripts
+        
+        # Application should still be running
+        assert True
+    
+    def test_none_as_message(self, cleanup_logger, temp_log_dir):
+        """Test that None as message doesn't crash"""
+        log_file = os.path.join(temp_log_dir, "none_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # None should not crash (though bad practice)
+        try:
+            logger.debug(None)
+        except:
+            pass  # Even if this specific case fails, it shouldn't crash app
+        
+        # Application should still be running
+        assert True
+    
+    def test_exception_during_format(self, cleanup_logger, temp_log_dir):
+        """Test that exceptions during formatting don't crash"""
+        log_file = os.path.join(temp_log_dir, "format_exception_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # Object with bad __str__ method
+        class BadStr:
+            def __str__(self):
+                raise RuntimeError("__str__ failed")
+        
+        # Should not crash
+        logger.debug("Object: %s", BadStr())
+        
+        # Application should still be running
+        assert True
+

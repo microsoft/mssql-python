@@ -14,6 +14,7 @@ import threading
 import datetime
 import re
 import platform
+import atexit
 from typing import Optional
 
 
@@ -67,6 +68,7 @@ class MSSQLLogger:
     
     _instance: Optional['MSSQLLogger'] = None
     _lock = threading.Lock()
+    _init_lock = threading.Lock()  # Separate lock for initialization
     
     def __new__(cls) -> 'MSSQLLogger':
         """Ensure singleton pattern"""
@@ -77,12 +79,15 @@ class MSSQLLogger:
         return cls._instance
     
     def __init__(self):
-        """Initialize the logger (only once)"""
-        # Skip if already initialized
-        if hasattr(self, '_initialized'):
-            return
-        
-        self._initialized = True
+        """Initialize the logger (only once) - thread-safe"""
+        # Use separate lock for initialization check to prevent race condition
+        # This ensures hasattr check and assignment are atomic
+        with self._init_lock:
+            # Skip if already initialized
+            if hasattr(self, '_initialized'):
+                return
+            
+            self._initialized = True
         
         # Create the underlying Python logger
         self._logger = logging.getLogger('mssql_python')
@@ -99,6 +104,8 @@ class MSSQLLogger:
         self._log_file = None
         self._custom_log_path = None  # Custom log file path (if specified)
         self._handlers_initialized = False
+        self._handler_lock = threading.RLock()  # Reentrant lock for handler operations
+        self._cleanup_registered = False  # Track if atexit cleanup is registered
         
         # Don't setup handlers yet - do it lazily when setLevel is called
         # This prevents creating log files when user changes output mode before enabling logging
@@ -107,15 +114,35 @@ class MSSQLLogger:
         """
         Setup handlers based on output mode.
         Creates file handler and/or stdout handler as needed.
+        Thread-safe: Protects against concurrent handler removal during logging.
         """
-        # Clear any existing handlers
-        if self._logger.handlers:
-            for handler in self._logger.handlers[:]:
-                handler.close()
-                self._logger.removeHandler(handler)
-        
-        self._file_handler = None
-        self._stdout_handler = None
+        # Lock prevents race condition where one thread logs while another removes handlers
+        with self._handler_lock:
+            # Acquire locks on all existing handlers before closing
+            # This ensures no thread is mid-write when we close
+            old_handlers = self._logger.handlers[:]
+            for handler in old_handlers:
+                handler.acquire()
+            
+            try:
+                # Flush and close each handler while holding its lock
+                for handler in old_handlers:
+                    try:
+                        handler.flush()  # Flush BEFORE close
+                    except:
+                        pass  # Ignore flush errors
+                    handler.close()
+                    self._logger.removeHandler(handler)
+            finally:
+                # Release locks on old handlers
+                for handler in old_handlers:
+                    try:
+                        handler.release()
+                    except:
+                        pass  # Handler might already be closed
+            
+            self._file_handler = None
+            self._stdout_handler = None
         
         # Create CSV formatter
         # Custom formatter to extract source from message and format as CSV
@@ -202,6 +229,38 @@ class MSSQLLogger:
         """
         self._setup_handlers()
     
+    def _cleanup_handlers(self):
+        """
+        Cleanup all handlers on process exit.
+        Registered with atexit to ensure proper file handle cleanup.
+        
+        Thread-safe: Protects against concurrent logging during cleanup.
+        
+        Note on RotatingFileHandler:
+            - File rotation (at 512MB) is already thread-safe
+            - doRollover() is called within emit() which holds handler.lock
+            - No additional synchronization needed for rotation
+        """
+        with self._handler_lock:
+            handlers = self._logger.handlers[:]
+            for handler in handlers:
+                handler.acquire()
+            
+            try:
+                for handler in handlers:
+                    try:
+                        handler.flush()
+                        handler.close()
+                    except:
+                        pass  # Ignore errors during cleanup
+                    self._logger.removeHandler(handler)
+            finally:
+                for handler in handlers:
+                    try:
+                        handler.release()
+                    except:
+                        pass
+    
     def _validate_log_file_extension(self, file_path: str) -> None:
         """
         Validate that the log file has an allowed extension.
@@ -265,12 +324,17 @@ class MSSQLLogger:
                 f.write(csv_header)
                 
         except Exception as e:
-            # Don't fail if header writing fails
-            pass
+            # Notify on stderr so user knows why header is missing
+            try:
+                sys.stderr.write(f"[MSSQL-Python] Warning: Failed to write log header to {self._log_file}: {type(e).__name__}\n")
+                sys.stderr.flush()
+            except:
+                pass  # Even stderr notification failed
+            # Don't crash - logging continues without header
     
     def _log(self, level: int, msg: str, add_prefix: bool = True, *args, **kwargs):
         """
-        Internal logging method.
+        Internal logging method with exception safety.
         
         Args:
             level: Log level (DEBUG, INFO, WARNING, ERROR)
@@ -283,21 +347,41 @@ class MSSQLLogger:
             Callers are responsible for sanitizing sensitive data (passwords,
             tokens, etc.) before logging. Use helpers.sanitize_connection_string()
             for connection strings.
+        
+        Exception Safety:
+            NEVER crashes the application. Catches all exceptions:
+            - TypeError/ValueError: Bad format string or args
+            - IOError/OSError: Disk full, permission denied
+            - UnicodeEncodeError: Encoding issues
+            
+            On critical failures (ERROR level), attempts stderr fallback.
+            All other failures are silently ignored to prevent app crashes.
         """
-        # Fast level check (zero overhead if disabled)
-        if not self._logger.isEnabledFor(level):
-            return
-        
-        # Add prefix if requested (only after level check)
-        if add_prefix:
-            msg = f"[Python] {msg}"
-        
-        # Format message with args if provided
-        if args:
-            msg = msg % args
-        
-        # Log the message (no args since already formatted)
-        self._logger.log(level, msg, **kwargs)
+        try:
+            # Fast level check (zero overhead if disabled)
+            if not self._logger.isEnabledFor(level):
+                return
+            
+            # Add prefix if requested (only after level check)
+            if add_prefix:
+                msg = f"[Python] {msg}"
+            
+            # Format message with args if provided
+            if args:
+                msg = msg % args
+            
+            # Log the message (no args since already formatted)
+            self._logger.log(level, msg, **kwargs)
+        except Exception:
+            # Last resort: Try stderr fallback for any logging failure
+            # This helps diagnose critical issues (disk full, permission denied, etc.)
+            try:
+                import sys
+                level_name = logging.getLevelName(level)
+                sys.stderr.write(f"[MSSQL-Python Logging Failed - {level_name}] {msg if 'msg' in locals() else 'Unable to format message'}\n")
+                sys.stderr.flush()
+            except:
+                pass  # Even stderr failed - give up silently
     
     # Convenience methods for logging
     
@@ -346,11 +430,17 @@ class MSSQLLogger:
             self._custom_log_path = log_file_path
         
         # Setup handlers if not yet initialized or if output mode/path changed
+        # Handler setup is protected by _handler_lock inside _setup_handlers()
         if not self._handlers_initialized or output is not None or log_file_path is not None:
             self._setup_handlers()
             self._handlers_initialized = True
+            
+            # Register atexit cleanup on first handler setup
+            if not self._cleanup_registered:
+                atexit.register(self._cleanup_handlers)
+                self._cleanup_registered = True
         
-        # Set level
+        # Set level (atomic operation, no lock needed)
         self._logger.setLevel(level)
         
         # Notify C++ bridge of level change
@@ -380,17 +470,20 @@ class MSSQLLogger:
     # Handler management
     
     def addHandler(self, handler: logging.Handler):
-        """Add a handler to the logger"""
-        self._logger.addHandler(handler)
+        """Add a handler to the logger (thread-safe)"""
+        with self._handler_lock:
+            self._logger.addHandler(handler)
     
     def removeHandler(self, handler: logging.Handler):
-        """Remove a handler from the logger"""
-        self._logger.removeHandler(handler)
+        """Remove a handler from the logger (thread-safe)"""
+        with self._handler_lock:
+            self._logger.removeHandler(handler)
     
     @property
     def handlers(self) -> list:
-        """Get list of handlers attached to the logger"""
-        return self._logger.handlers
+        """Get list of handlers attached to the logger (thread-safe)"""
+        with self._handler_lock:
+            return self._logger.handlers[:]  # Return copy to prevent external modification
     
     def reset_handlers(self):
         """
