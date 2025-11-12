@@ -3175,7 +3175,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
     
-    // OPTIMIZATION #5: Build function pointer dispatch table (once per batch)
+    // Performance: Build function pointer dispatch table (once per batch)
     // This eliminates the switch statement from the hot loop - 10,000 rows × 10 cols
     // reduces from 100,000 switch evaluations to just 10 switch evaluations
     std::vector<ColumnProcessor> columnProcessors(numCols);
@@ -3237,10 +3237,9 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         }
     }
     
-    size_t initialSize = rows.size();
-    
-    // OPTIMIZATION #4: Pre-allocate outer list to avoid PyList_Append reallocations
-    // Directly create and fill rows in one pass to prevent data corruption window
+    // Performance: Single-phase row creation pattern
+    // Create each row, fill it completely, then append to results list
+    // This prevents data corruption (no partially-filled rows) and simplifies error handling
     PyObject* rowsList = rows.ptr();
     
     for (SQLULEN i = 0; i < numRowsFetched; i++) {
@@ -3252,8 +3251,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         }
         
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-            // OPTIMIZATION #6: Consistent NULL checking - check BEFORE calling processor functions
-            // This eliminates redundant NULL checks inside each processor and improves branch prediction
+            // Performance: Centralized NULL checking before calling processor functions
+            // This eliminates redundant NULL checks inside each processor and improves CPU branch prediction
             SQLLEN dataLen = buffers.indicators[col - 1][i];
             
             // Handle NULL and special indicator values first (applies to ALL types)
@@ -3269,7 +3268,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 continue;
             }
             
-            // OPTIMIZATION #5: Use function pointer if available (fast path for common types)
+            // Performance: Use function pointer dispatch for simple types (fast path)
             // This eliminates the switch statement from hot loop - reduces 100,000 switch 
             // evaluations (1000 rows × 10 cols × 10 types) to just 10 (setup only)
             // Note: Processor functions no longer need to check for NULL since we do it above
