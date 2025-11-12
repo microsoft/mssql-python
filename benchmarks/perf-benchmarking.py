@@ -35,9 +35,11 @@ if not CONN_STR:
 
 # Ensure pyodbc connection string has ODBC driver specified
 if CONN_STR and 'Driver=' not in CONN_STR:
-    CONN_STR = f"Driver={{ODBC Driver 18 for SQL Server}};{CONN_STR}"
+    CONN_STR_PYODBC = f"Driver={{ODBC Driver 18 for SQL Server}};{CONN_STR}"
+else:
+    CONN_STR_PYODBC = CONN_STR
 
-NUM_ITERATIONS = 5  # Number of times to run each test for averaging
+NUM_ITERATIONS = 10  # Number of times to run each test for averaging
 
 # SQL Queries
 COMPLEX_JOIN_AGGREGATION = """
@@ -187,7 +189,7 @@ def run_benchmark_pyodbc(query: str, name: str, iterations: int) -> BenchmarkRes
     for i in range(iterations):
         try:
             start_time = time.time()
-            conn = pyodbc.connect(CONN_STR)
+            conn = pyodbc.connect(CONN_STR_PYODBC)
             cursor = conn.cursor()
             cursor.execute(query)
             rows = cursor.fetchall()
