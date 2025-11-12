@@ -239,11 +239,12 @@ class Test_ConnectionStringAllowList:
             assert 'badparam2' in log_output
             assert 'not in allow-list' in log_output
         finally:
-            # Clean up
-            if os.path.exists(log_file):
-                os.remove(log_file)
-            # Disable logging
-            driver_logger.setLevel(logging.CRITICAL)
+            # Close all handlers BEFORE attempting to delete (Windows requirement)
             for handler in driver_logger.handlers[:]:
                 handler.close()
                 driver_logger.removeHandler(handler)
+            # Disable logging
+            driver_logger.setLevel(logging.CRITICAL)
+            # Clean up temp file
+            if os.path.exists(log_file):
+                os.remove(log_file)

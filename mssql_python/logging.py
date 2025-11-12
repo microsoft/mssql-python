@@ -172,10 +172,12 @@ class MSSQLLogger:
                 )
             
             # Create rotating file handler (512MB, 5 backups)
+            # Use UTF-8 encoding for unicode support on all platforms
             self._file_handler = RotatingFileHandler(
                 self._log_file,
                 maxBytes=512 * 1024 * 1024,  # 512MB
-                backupCount=5
+                backupCount=5,
+                encoding='utf-8'
             )
             self._file_handler.setFormatter(formatter)
             self._logger.addHandler(self._file_handler)
