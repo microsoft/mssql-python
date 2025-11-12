@@ -262,7 +262,7 @@ def validate_attribute_value(
 
     # Check if attribute can be set at the current connection state
     if is_connected and attribute in before_only_attributes:
-        log('finer', 'validate_attribute_value: Timing violation - attr=%d cannot be set after connection', attribute)
+        logger.debug('validate_attribute_value: Timing violation - attr=%d cannot be set after connection', attribute)
         return (
             False,
             (
@@ -318,19 +318,6 @@ def validate_attribute_value(
     # All basic validations passed
     logger.debug('validate_attribute_value: Validation passed - attr=%d, value_type=%s', attribute, type(value).__name__)
     return True, None, sanitized_attr, sanitized_val
-
-
-def log(level: str, message: str, *args) -> None:
-    """
-    Universal logging helper that gets the logger instance.
-
-    Args:
-        level: Log level ('debug', 'info', 'warning', 'error', 'fine', 'finer', 'finest')
-        message: Log message with optional format placeholders
-        *args: Arguments for message formatting
-    """
-    if hasattr(logger, level):
-        getattr(logger, level)(message, *args)
 
 
 # Settings functionality moved here to avoid circular imports

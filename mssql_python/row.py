@@ -7,6 +7,7 @@ from a cursor fetch operation.
 import decimal
 from typing import Any
 from mssql_python.helpers import get_settings
+from mssql_python.logging import logger
 
 class Row:
     """
@@ -88,8 +89,7 @@ class Row:
                     else:
                         converted_values[i] = converter(value)
                 except Exception:
-                    if hasattr(cursor, 'log'):
-                        cursor.log('debug', 'Exception occurred in output converter', exc_info=True)
+                    logger.debug('Exception occurred in output converter', exc_info=True)
                     # If conversion fails, keep the original value
                     pass
         

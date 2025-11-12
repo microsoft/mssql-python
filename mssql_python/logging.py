@@ -13,7 +13,6 @@ import sys
 import threading
 import datetime
 import re
-import contextvars
 import platform
 from typing import Optional
 
@@ -29,9 +28,6 @@ BOTH = 'both'      # Log to both file and stdout
 
 # Allowed log file extensions
 ALLOWED_LOG_EXTENSIONS = {'.txt', '.log', '.csv'}
-
-# Module-level context variable for trace IDs (thread-safe, async-safe)
-_trace_id_var = contextvars.ContextVar('trace_id', default=None)
 
 
 class TraceIDFilter(logging.Filter):
@@ -93,12 +89,8 @@ class MSSQLLogger:
         self._logger.setLevel(logging.CRITICAL)  # Disabled by default
         self._logger.propagate = False  # Don't propagate to root logger
         
-        # Add trace ID filter (injects trace_id into every log record)
+        # Add trace ID filter (injects thread_id into every log record)
         self._logger.addFilter(TraceIDFilter())
-        
-        # Trace ID counter (thread-safe)
-        self._trace_counter = 0
-        self._trace_lock = threading.Lock()
         
         # Output mode and handlers
         self._output_mode = FILE  # Default to file only
@@ -305,67 +297,6 @@ class MSSQLLogger:
         
         return sanitized
     
-    def generate_trace_id(self, prefix: str = "TRACE") -> str:
-        """
-        Generate a unique trace ID for correlating log messages.
-        
-        Format: PREFIX-PID-ThreadID-Counter
-        Examples: 
-            CONN-12345-67890-1
-            CURS-12345-67890-2
-        
-        Args:
-            prefix: Prefix for the trace ID (e.g., "CONN", "CURS", "TRACE")
-            
-        Returns:
-            str: Unique trace ID in format PREFIX-PID-ThreadID-Counter
-        """
-        with self._trace_lock:
-            self._trace_counter += 1
-            counter = self._trace_counter
-        
-        pid = os.getpid()
-        thread_id = threading.get_ident()
-        
-        return f"{prefix}-{pid}-{thread_id}-{counter}"
-    
-    def set_trace_id(self, trace_id: str):
-        """
-        Set the trace ID for the current context.
-        
-        This uses contextvars, so the trace ID automatically propagates to:
-        - Child threads created within this context
-        - Async tasks spawned from this context
-        - All log calls made within this context
-        
-        Args:
-            trace_id: Trace ID to set (typically from generate_trace_id())
-        
-        Example:
-            trace_id = logger.generate_trace_id("CONN")
-            logger.set_trace_id(trace_id)
-            logger.debug("Connection opened")  # Includes trace ID automatically
-        """
-        _trace_id_var.set(trace_id)
-    
-    def get_trace_id(self) -> Optional[str]:
-        """
-        Get the trace ID for the current context.
-        
-        Returns:
-            str or None: Current trace ID, or None if not set
-        """
-        return _trace_id_var.get()
-    
-    def clear_trace_id(self):
-        """
-        Clear the trace ID for the current context.
-        
-        Typically called when closing a connection/cursor to avoid
-        trace ID leaking to subsequent operations.
-        """
-        _trace_id_var.set(None)
-    
     def _log(self, level: int, msg: str, *args, **kwargs):
         """
         Internal logging method with sanitization.
@@ -407,14 +338,6 @@ class MSSQLLogger:
     def error(self, msg: str, *args, **kwargs):
         """Log at ERROR level"""
         self._log(logging.ERROR, f"[Python] {msg}", *args, **kwargs)
-    
-    def critical(self, msg: str, *args, **kwargs):
-        """Log at CRITICAL level"""
-        self._log(logging.CRITICAL, f"[Python] {msg}", *args, **kwargs)
-    
-    def log(self, level: int, msg: str, *args, **kwargs):
-        """Log a message at the specified level"""
-        self._log(level, f"[Python] {msg}", *args, **kwargs)
     
     # Level control
     

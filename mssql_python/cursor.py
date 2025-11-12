@@ -121,9 +121,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Hence, we can't pass around bools by reference & modify them.
         # Therefore, it must be a list with exactly one bool element.
 
-        # Generate and set trace ID for this cursor
-        self._trace_id = logger.generate_trace_id("CURS")
-        logger.set_trace_id(self._trace_id)
         self._rownumber = -1  # DB-API extension: last returned row index, -1 before first
         
         self._cached_column_map = None
@@ -635,9 +632,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             logger.debug( "SQLFreeHandle succeeded")
         self._clear_rownumber()
         self.closed = True
-        
-        # Clear the trace ID context when cursor closes
-        logger.clear_trace_id()
 
     def _check_closed(self) -> None:
         """
@@ -1267,10 +1261,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             try:
                 ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
             except InterfaceError as e:
-                logger.error( f"Driver interface error during metadata retrieval: {e}")
+                logger.warning( f"Driver interface error during metadata retrieval: {e}")
             except Exception as e:  # pylint: disable=broad-exception-caught
                 # Log the exception with appropriate context
-                logger.error(
+                logger.warning(
                     f"Failed to retrieve column metadata: {e}. "
                     f"Using standard ODBC column definitions instead.",
                 )

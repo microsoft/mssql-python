@@ -546,7 +546,7 @@ def truncate_error_message(error_message: str) -> str:
         string_third = string_second[string_second.index("]") + 1 :]
         return string_first + string_third
     except Exception as e:
-        logger.error("Error while truncating error message: %s", e)
+        logger.warning("Error while truncating error message: %s", e)
         return error_message
 
 
@@ -565,8 +565,9 @@ def raise_exception(sqlstate: str, ddbc_error: str) -> None:
     """
     exception_class = sqlstate_to_exception(sqlstate, ddbc_error)
     if exception_class:
-        logger.error(exception_class)
+        logger.error(f"Raising exception: {exception_class}")
         raise exception_class
+    logger.error(f"Unknown SQLSTATE {sqlstate}, raising DatabaseError")
     raise DatabaseError(
         driver_error=f"An error occurred with SQLSTATE code: {sqlstate}",
         ddbc_error=f"{ddbc_error}" if ddbc_error else "Unknown DDBC error",

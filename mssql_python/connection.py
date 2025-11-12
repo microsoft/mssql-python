@@ -232,11 +232,6 @@ class Connection:
         # Initialize search escape character
         self._searchescape = None
 
-        # Generate and set trace ID for this connection BEFORE establishing connection
-        # This ensures all connection establishment logs have the trace ID
-        self._trace_id = logger.generate_trace_id("CONN")
-        logger.set_trace_id(self._trace_id)
-
         # Auto-enable pooling if user never called
         if not PoolingManager.is_initialized():
             PoolingManager.enable()
@@ -728,8 +723,7 @@ class Connection:
 
         except Exception as e:
             error_msg = f"Failed to set connection attribute {sanitized_attr}: {str(e)}"
-            logger.error( error_msg)
-
+            
             # Determine appropriate exception type based on error content
             error_str = str(e).lower()
             if (
@@ -737,7 +731,9 @@ class Connection:
                 or "unsupported" in error_str
                 or "cast" in error_str
             ):
+                logger.error(error_msg)
                 raise InterfaceError(error_msg, str(e)) from e
+            logger.error(error_msg)
             raise ProgrammingError(error_msg, str(e)) from e
 
     @property
@@ -1430,9 +1426,7 @@ class Connection:
         finally:
             # Always mark as closed, even if there were errors
             self._closed = True
-            # Clear the trace ID context when connection closes
-            logger.clear_trace_id()
-
+        
         logger.info( "Connection closed successfully.")
 
     def _remove_cursor(self, cursor: Cursor) -> None:
@@ -1492,4 +1486,4 @@ class Connection:
                 self.close()
             except Exception as e:
                 # Dont raise exceptions from __del__ to avoid issues during garbage collection
-                logger.error( f"Error during connection cleanup: {e}")
+                logger.warning( f"Error during connection cleanup: {e}")
