@@ -161,9 +161,13 @@ void LoggerBridge::log(int level, const char* file, int line,
     int written = std::snprintf(complete_message, sizeof(complete_message), 
                                "[DDBC] %s", message.c_str());
     
-    // Ensure null-termination (snprintf guarantees this, but be explicit)
+    // Warn if message was truncated (critical for troubleshooting)
     if (written >= static_cast<int>(sizeof(complete_message))) {
         complete_message[sizeof(complete_message) - 1] = '\0';
+        // Use stderr to notify about truncation (logging may be the truncated call itself)
+        std::cerr << "[MSSQL-Python] Warning: Log message truncated from " 
+                  << written << " bytes to " << (sizeof(complete_message) - 1) 
+                  << " bytes at " << file << ":" << line << std::endl;
     }
     
     // Lock for Python call (minimize critical section)
@@ -201,8 +205,11 @@ void LoggerBridge::log(int level, const char* file, int line,
         // (Logging errors should not crash the application)
         (void)e;  // Suppress unused variable warning
     } catch (const std::exception& e) {
-        // Other error - ignore
+        // Standard C++ exception - ignore
         (void)e;
+    } catch (...) {
+        // Catch-all for unknown exceptions (non-standard exceptions, corrupted state, etc.)
+        // Logging must NEVER crash the application
     }
 }
 
