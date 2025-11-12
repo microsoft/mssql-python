@@ -223,8 +223,8 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
 
 #if defined(__APPLE__) || defined(__linux__)
             // For macOS/Linux, convert wstring to SQLWCHAR buffer
-            std::vector<SQLWCHAR> sqlwcharBuffer = WStringToSQLWCHAR(wstr);
-            if (sqlwcharBuffer.empty() && !wstr.empty()) {
+            std::vector<SQLWCHAR> sqlwcharBuffer = WStringToSQLWCHAR(this->wstrStringBuffer);
+            if (sqlwcharBuffer.empty() && !this->wstrStringBuffer.empty()) {
                 LOG("Failed to convert wide string to SQLWCHAR buffer");
                 return SQL_ERROR;
             }
@@ -235,8 +235,7 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
 #else
             // On Windows, wchar_t and SQLWCHAR are the same size
             ptr = const_cast<SQLWCHAR*>(this->wstrStringBuffer.c_str());
-            length = static_cast<SQLINTEGER>(
-                wstr.length() * sizeof(SQLWCHAR));
+            length = static_cast<SQLINTEGER>(this->wstrStringBuffer.length() * sizeof(SQLWCHAR));
 #endif
 
             SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(),
