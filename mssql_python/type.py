@@ -7,9 +7,6 @@ This module contains type objects and constructors for the mssql_python package.
 import datetime
 import time
 
-from mssql_python.logging import logger
-
-
 # Type Objects
 class STRING(str):
     """
