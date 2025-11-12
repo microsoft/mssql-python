@@ -297,19 +297,24 @@ class MSSQLLogger:
         
         return sanitized
     
-    def _log(self, level: int, msg: str, *args, **kwargs):
+    def _log(self, level: int, msg: str, add_prefix: bool = True, *args, **kwargs):
         """
         Internal logging method with sanitization.
         
         Args:
-            level: Log level (FINE, FINER, FINEST, etc.)
+            level: Log level (DEBUG, INFO, WARNING, ERROR)
             msg: Message format string
+            add_prefix: Whether to add [Python] prefix (default True)
             *args: Arguments for message formatting
             **kwargs: Additional keyword arguments
         """
         # Fast level check (zero overhead if disabled)
         if not self._logger.isEnabledFor(level):
             return
+        
+        # Add prefix if requested (only after level check)
+        if add_prefix:
+            msg = f"[Python] {msg}"
         
         # Format message with args if provided
         if args:
@@ -325,19 +330,19 @@ class MSSQLLogger:
     
     def debug(self, msg: str, *args, **kwargs):
         """Log at DEBUG level (all diagnostic messages)"""
-        self._log(logging.DEBUG, f"[Python] {msg}", *args, **kwargs)
+        self._log(logging.DEBUG, msg, True, *args, **kwargs)
     
     def info(self, msg: str, *args, **kwargs):
         """Log at INFO level"""
-        self._log(logging.INFO, f"[Python] {msg}", *args, **kwargs)
+        self._log(logging.INFO, msg, True, *args, **kwargs)
     
     def warning(self, msg: str, *args, **kwargs):
         """Log at WARNING level"""
-        self._log(logging.WARNING, f"[Python] {msg}", *args, **kwargs)
+        self._log(logging.WARNING, msg, True, *args, **kwargs)
     
     def error(self, msg: str, *args, **kwargs):
         """Log at ERROR level"""
-        self._log(logging.ERROR, f"[Python] {msg}", *args, **kwargs)
+        self._log(logging.ERROR, msg, True, *args, **kwargs)
     
     # Level control
     
