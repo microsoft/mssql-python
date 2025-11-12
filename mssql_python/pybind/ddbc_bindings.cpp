@@ -3239,24 +3239,17 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     
     size_t initialSize = rows.size();
     
-    // OPTIMIZATION #4: Pre-allocate all row lists at once (batch creation)
-    // This is much faster than creating lists one-by-one in the loop
+    // OPTIMIZATION #4: Pre-allocate outer list to avoid PyList_Append reallocations
+    // Directly create and fill rows in one pass to prevent data corruption window
     PyObject* rowsList = rows.ptr();
-    for (SQLULEN i = 0; i < numRowsFetched; i++) {
-        PyObject* newRow = PyList_New(numCols);
-        if (!newRow) {
-            throw std::runtime_error("Failed to allocate row list - memory allocation failure");
-        }
-        if (PyList_Append(rowsList, newRow) < 0) {
-            Py_DECREF(newRow);
-            throw std::runtime_error("Failed to append row to results list - memory allocation failure");
-        }
-        Py_DECREF(newRow);  // PyList_Append increments refcount
-    }
     
     for (SQLULEN i = 0; i < numRowsFetched; i++) {
-        // Get the pre-allocated row
-        PyObject* row = PyList_GET_ITEM(rowsList, initialSize + i);
+        // Create row and immediately fill it (atomic operation per row)
+        // This eliminates the two-phase pattern that could leave garbage rows on exception
+        PyObject* row = PyList_New(numCols);
+        if (!row) {
+            throw std::runtime_error("Failed to allocate row list - memory allocation failure");
+        }
         
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
             // OPTIMIZATION #6: Consistent NULL checking - check BEFORE calling processor functions
@@ -3416,6 +3409,14 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
             }
         }
+        
+        // Row is now fully populated - add it to results list atomically
+        // This ensures no partially-filled rows exist in the list on exception
+        if (PyList_Append(rowsList, row) < 0) {
+            Py_DECREF(row);  // Clean up this row
+            throw std::runtime_error("Failed to append row to results list - memory allocation failure");
+        }
+        Py_DECREF(row);  // PyList_Append increments refcount, release our reference
     }
     return ret;
 }
