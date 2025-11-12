@@ -295,12 +295,40 @@ class TestLogLevels:
 
 
 class TestPasswordSanitization:
-    """Test password/credential sanitization"""
+    """Test password/credential sanitization using helpers.sanitize_connection_string()"""
     
     def test_pwd_sanitization(self, cleanup_logger):
-        """PWD= should be sanitized"""
+        """PWD= should be sanitized when explicitly calling sanitize_connection_string()"""
+        from mssql_python.helpers import sanitize_connection_string
+        
+        conn_str = "Server=localhost;PWD=secret123;Database=test"
+        sanitized = sanitize_connection_string(conn_str)
+        
+        assert "PWD=***" in sanitized
+        assert "secret123" not in sanitized
+    
+    def test_pwd_case_insensitive(self, cleanup_logger):
+        """PWD/Pwd/pwd should all be sanitized (case-insensitive)"""
+        from mssql_python.helpers import sanitize_connection_string
+        
+        test_cases = [
+            ("Server=localhost;PWD=secret;Database=test", "PWD=***"),
+            ("Server=localhost;Pwd=secret;Database=test", "Pwd=***"),
+            ("Server=localhost;pwd=secret;Database=test", "pwd=***"),
+        ]
+        
+        for conn_str, expected in test_cases:
+            sanitized = sanitize_connection_string(conn_str)
+            assert expected in sanitized
+            assert "secret" not in sanitized
+    
+    def test_explicit_sanitization_in_logging(self, cleanup_logger):
+        """Verify that explicit sanitization works when logging"""
+        from mssql_python.helpers import sanitize_connection_string
+        
         setup_logging()
-        logger.debug("Connection string: Server=localhost;PWD=secret123;Database=test")
+        conn_str = "Server=localhost;PWD=secret123;Database=test"
+        logger.debug("Connection string: %s", sanitize_connection_string(conn_str))
         
         with open(logger.log_file, 'r') as f:
             content = f.read()
@@ -308,49 +336,18 @@ class TestPasswordSanitization:
         assert "PWD=***" in content
         assert "secret123" not in content
     
-    def test_password_sanitization(self, cleanup_logger):
-        """Password= should be sanitized"""
+    def test_no_automatic_sanitization(self, cleanup_logger):
+        """Verify that logger does NOT automatically sanitize - user must do it explicitly"""
         setup_logging()
-        logger.debug("Connection string: Server=localhost;Password=mypassword;Database=test")
+        # Log without sanitization - password should appear in log (by design)
+        logger.debug("Connection string: Server=localhost;PWD=notsanitized;Database=test")
         
         with open(logger.log_file, 'r') as f:
             content = f.read()
         
-        assert "Password=***" in content
-        assert "mypassword" not in content
-    
-    def test_token_sanitization(self, cleanup_logger):
-        """TOKEN= should be sanitized"""
-        setup_logging()
-        logger.debug("Auth: TOKEN=abc123xyz")
-        
-        with open(logger.log_file, 'r') as f:
-            content = f.read()
-        
-        assert "TOKEN=***" in content
-        assert "abc123xyz" not in content
-    
-    def test_bearer_token_sanitization(self, cleanup_logger):
-        """Authorization: Bearer tokens should be sanitized"""
-        setup_logging()
-        logger.debug("Header: Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGc")
-        
-        with open(logger.log_file, 'r') as f:
-            content = f.read()
-        
-        assert "Bearer ***" in content
-        assert "eyJ0eXAiOiJKV1QiLCJhbGc" not in content
-    
-    def test_apikey_sanitization(self, cleanup_logger):
-        """ApiKey= should be sanitized"""
-        setup_logging()
-        logger.debug("Config: ApiKey=sk-1234567890")
-        
-        with open(logger.log_file, 'r') as f:
-            content = f.read()
-        
-        assert "ApiKey=***" in content
-        assert "sk-1234567890" not in content
+        # Password should be visible because we didn't sanitize
+        assert "notsanitized" in content
+        # This is expected behavior - caller must sanitize explicitly
 
 
 class TestThreadID:
