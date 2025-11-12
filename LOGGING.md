@@ -334,10 +334,10 @@ class MyLogHandler(py_logging.Handler):
         # Process log record
         print(f"Custom handler: {record.getMessage()}")
         
-        # Access trace ID
-        trace_id = getattr(record, 'trace_id', None)
-        if trace_id:
-            print(f"  Trace ID: {trace_id}")
+        # Access thread ID
+        thread_id = getattr(record, 'thread_id', None)
+        if thread_id:
+            print(f"  Thread ID: {thread_id}")
 
 handler = MyLogHandler()
 logger.addHandler(handler)

@@ -31,7 +31,8 @@ This document describes a **simplified, single-level logging system** for mssql-
 - ✅ Uses **single Python logger** with cached C++ access
 - ✅ Maintains **log sequence integrity** (single writer)
 - ✅ Simplifies architecture (2 components only)
-- ✅ Clear performance warning (don't enable without reason)
+- ✅ Clear performance warning (~2-5% overhead when enabled)
+- ✅ Thread tracking via OS native thread IDs (not trace IDs)
 - ✅ Future: Universal profiler for performance analysis (separate from logging)
 
 ### Key Philosophy
@@ -45,14 +46,15 @@ This document describes a **simplified, single-level logging system** for mssql-
 
 ### Key Differences from Previous System
 
-| Aspect | Previous System | New System |
+| Aspect | Previous System | Current System |
 | --- | --- | --- |
 | **Levels** | FINE/FINER/FINEST | **DEBUG only** (all or nothing) |
 | **User API** | `logger.setLevel(level)` | `setup_logging()` |
 | **Philosophy** | Granular control | All or nothing - see everything or nothing |
-| **Performance** | Minor overhead | Same overhead, but clearer warning |
-| **Use Case** | Diagnostics at different levels | Troubleshooting only (profiler for perf) |
+| **Performance** | Minor overhead | ~2-5% overhead when enabled |
+| **Use Case** | Diagnostics at different levels | Troubleshooting only |
 | **Complexity** | Multiple levels | Single level - simpler |
+| **Thread Tracking** | Trace IDs (counter-based) | OS native thread IDs |
 
 ---
 
@@ -209,19 +211,14 @@ Single source of truth for all logging. Provides Driver Levels and manages file 
 - Thread-safe initialization
 - Lazy initialization on first import
 
-**Custom Log Levels**
+**Log Levels**
 ```python
-# Driver Levels (Primary API - Recommended)
-FINEST = 5    # Ultra-detailed trace (most verbose)
-FINER  = 15   # Detailed diagnostics
-FINE   = 18   # Standard diagnostics (recommended default)
-
-# Python Standard Levels (Also Available - For Compatibility)
-# DEBUG  = 10  # Python standard debug level
-# INFO   = 20  # Python standard info level
-# WARNING = 30 # Python standard warning level
-# ERROR  = 40  # Python standard error level
-# CRITICAL = 50 # Python standard critical level
+# Single level when enabled: DEBUG
+# Python Standard Levels (available):
+# DEBUG  = 10  # Used when logging enabled
+# INFO   = 20  # Also logged when enabled
+# WARNING = 30 # Also logged when enabled
+# ERROR  = 40  # Also logged when enabled (always raises exception)
 ```
 
 **Output Destination Constants**
@@ -232,11 +229,11 @@ STDOUT = 'stdout'  # Log to stdout only
 BOTH = 'both'      # Log to both file and stdout
 ```
 
-**Why these numbers?**
-- Driver Levels (FINEST/FINER/FINE) are **recommended** for driver diagnostics
-- Standard Python levels (DEBUG/INFO/WARNING/ERROR) also work for compatibility
-- FINE=18 < INFO=20, so FINE level includes INFO and above
-- Higher number = higher priority (standard convention)
+**Why DEBUG?**
+- Single level simplifies the API - no decision paralysis
+- When troubleshooting, you need to see everything
+- Higher levels (INFO/WARNING/ERROR) still work for structured logging
+- ERROR always followed by raising an exception
 
 **File Handler Configuration**
 - **Location**: `./mssql_python_logs/` folder (created automatically if doesn't exist)
@@ -255,7 +252,7 @@ BOTH = 'both'      # Log to both file and stdout
 
 **Thread Tracking System**
 
-The logging system uses **OS native thread IDs** to track operations across multi-threaded applications.
+The logging system uses **OS native thread IDs** (not trace IDs) to track operations across multi-threaded applications. Thread IDs are automatically injected into every log record.
 
 **Use Cases:**
 - Multi-threaded applications with multiple concurrent connections
@@ -432,62 +429,34 @@ logger.setLevel(FINE)  # FINE = 18
 #### Public API
 
 ```python
-from mssql_python.logging import logger, FINE, FINER, FINEST, FILE, STDOUT, BOTH
+import mssql_python
+from mssql_python.logging import driver_logger
 
-# Driver Levels API (Recommended for mssql-python)
-# =================================================
+# Simple API - Enable/Disable Only
+# =================================
 
-# Check if level enabled
-if logger.isEnabledFor(FINER):
-    expensive_data = compute_diagnostics()
-    logger.finer(f"Diagnostics: {expensive_data}")
+# Enable logging - shows everything at DEBUG level
+mssql_python.setup_logging()  # Default: file output
+mssql_python.setup_logging(output='stdout')  # Console output
+mssql_python.setup_logging(output='both')  # Both file and console
+mssql_python.setup_logging(log_file_path="/var/log/myapp.log")  # Custom path
 
-# Log at Driver Levels (recommended)
-logger.fine("Standard diagnostic message")      # Primary diagnostic level
-logger.finer("Detailed diagnostic message")     # Detailed troubleshooting
-logger.finest("Ultra-detailed trace message")   # Deep debugging
-
-# Change level with Driver Level constants (recommended)
-logger.setLevel(FINE)      # Standard diagnostics
-logger.setLevel(FINER)     # Detailed diagnostics
-logger.setLevel(FINEST)    # Ultra-detailed (all diagnostics)
-logger.setLevel(CRITICAL)  # Errors only (production)
-
-# Configure output destination
-logger.output = FILE    # File only (default)
-logger.output = STDOUT  # Stdout only
-logger.output = BOTH    # Both file and stdout
-
-# Or set output when setting level
-logger.setLevel(FINE, output=BOTH)
-
-# Custom log file path
-logger.setLevel(FINE, log_file_path="/var/log/myapp.log")
-logger.setLevel(FINE, output=BOTH, log_file_path="/tmp/debug.log")
-
-# Python Standard API (Also Available for Compatibility)
-# ======================================================
-import logging
-
-# Also works - standard Python logging methods
-logger.info("Informational message")      # Python standard
-logger.warning("Warning message")         # Python standard
-logger.error("Error message")             # Python standard
-logger.debug("Debug message")             # Python standard
-
-# Can also use Python standard level constants
-logger.setLevel(logging.DEBUG)    # Python standard
-logger.setLevel(logging.INFO)     # Python standard
+# Use driver_logger in your code (optional)
+driver_logger.debug("[App] Debug message")
+driver_logger.info("[App] Info message")
+driver_logger.warning("[App] Warning message")
+driver_logger.error("[App] Error message")  # Always followed by raise
 
 # Get log file location
-print(f"Logging to: {logger.log_file}")
+print(f"Logging to: {driver_logger.handlers[0].baseFilename if driver_logger.handlers else 'not configured'}")
 ```
 
 #### Internal Structure
 
 ```python
 class MSSQLLogger:
-    _instance = None
+    # Singleton logger using Python's logging module
+    # Configured via setup_logging() function
     _lock = threading.Lock()
     
     def __init__(self):
@@ -751,29 +720,27 @@ void LoggerBridge::initialize() {
 ┌─────────────────────────────────────────────────────────┐
 │                     User Code                           │
 │                                                         │
-│  logger.setLevel(FINE)                                  │
+│  mssql_python.setup_logging()                           │
 │                                                         │
 └────────────────────────┬────────────────────────────────┘
                          │
                          ↓
 ┌─────────────────────────────────────────────────────────┐
-│        logging.py: MSSQLLogger.setLevel()               │
+│        logging_config.py: setup_logging()               │
 │                                                         │
-│  1. Update Python logger level                          │
-│     self._logger.setLevel(FINE)                         │
-│                                                         │
-│  2. Notify C++ bridge                                   │
-│     ddbc_bindings.update_log_level(FINE)                │
+│  1. Configure file handler with rotation                │
+│  2. Set level to DEBUG                                  │
+│  3. Add thread ID filter                                │
+│  4. Create log file with header                         │
 │                                                         │
 └────────────────────────┬────────────────────────────────┘
                          │
                          ↓
 ┌─────────────────────────────────────────────────────────┐
-│          C++: LoggerBridge::updateLevel()               │
+│              driver_logger (global)                     │
 │                                                         │
-│  cached_level_.store(FINE)                              │
-│  // Atomic update, visible to all                       │
-│  // C++ threads immediately                             │
+│  Now configured with DEBUG level                        │
+│  All debug(), info(), warning(), error() calls logged   │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
                          │
@@ -825,26 +792,23 @@ When you enable Driver Levels with `logger.setLevel(FINE)`, **all Python standar
 ┌─────────────────────────────────────────────────────────┐
 │                    connection.py                        │
 │                                                         │
-│  logger.fine("Connecting to server")                    │
+│  logger.debug("Connecting to server")                   │
 │                                                         │
 └────────────────────────┬────────────────────────────────┘
                          │
                          ↓
 ┌─────────────────────────────────────────────────────────┐
-│          logging.py: MSSQLLogger.fine()                 │
+│          driver_logger (Python logging.Logger)          │
 │                                                         │
 │  1. Check if enabled (fast)                             │
-│     if not isEnabledFor(FINE):                          │
+│     if not isEnabledFor(DEBUG):                         │
 │         return                                          │
 │                                                         │
-│  2. Add prefix                                          │
-│     msg = f"[Python] {msg}"                             │
+│  2. Thread ID injected by ThreadIDFilter                │
 │                                                         │
-│  3. Sanitize (if needed)                                │
-│     msg = sanitize(msg)                                 │
+│  3. Password sanitization by SanitizingFormatter        │
 │                                                         │
-│  4. Log via Python's logger                             │
-│     self._logger.log(FINE, msg)                         │
+│  4. Write to file handler                               │
 │                                                         │
 └────────────────────────┬────────────────────────────────┘
                          │
@@ -862,9 +826,8 @@ When you enable Driver Levels with `logger.setLevel(FINE)`, **all Python standar
 ┌─────────────────────────────────────────────────────────┐
 │                      Log File                           │
 │                                                         │
-│  2025-10-31 14:30:22,145 - FINE -                       │
-│  connection.py:42 - [Python]                            │
-│  Connecting to server                                   │
+│  2025-11-06 14:30:22.145, 8581947520, DEBUG,            │
+│  connection.py:42, Python, Connecting to server         │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -879,7 +842,7 @@ When you enable Driver Levels with `logger.setLevel(FINE)`, **all Python standar
 ┌─────────────────────────────────────────────────────────┐
 │                 ddbc_connection.cpp                     │
 │                                                         │
-│  LOG_FINE("Allocating handle: %p", handle)              │
+│  LOG_DEBUG("Allocating handle: %p", handle)             │
 │                                                         │
 └────────────────────────┬────────────────────────────────┘
                          │ (macro expands to:)
@@ -887,8 +850,8 @@ When you enable Driver Levels with `logger.setLevel(FINE)`, **all Python standar
 ┌─────────────────────────────────────────────────────────┐
 │                   Expanded Macro                        │
 │                                                         │
-│  if (LoggerBridge::isLoggable(FINE)) {                  │
-│    LoggerBridge::log(FINE, __FILE__, __LINE__,          │
+│  if (LoggerBridge::isLoggable()) {                      │
+│    LoggerBridge::log(__FILE__, __LINE__,                │
 │        "Allocating handle: %p", handle);                │
 │  }                                                      │
 │                                                         │
@@ -898,7 +861,7 @@ When you enable Driver Levels with `logger.setLevel(FINE)`, **all Python standar
 ┌─────────────────────────────────────────────────────────┐
 │            C++: LoggerBridge::isLoggable()              │
 │                                                         │
-│  return FINE >= cached_level_;                          │
+│  return logging_enabled_;  // Simple bool check         │
 │  // Inline, lock-free, ~1 CPU cycle                     │
 │                                                         │
 │  Result: TRUE (logging enabled)                         │
@@ -934,9 +897,9 @@ When you enable Driver Levels with `logger.setLevel(FINE)`, **all Python standar
 ┌─────────────────────────────────────────────────────────┐
 │                      Log File                           │
 │                                                         │
-│  2025-10-31 14:30:22,146 - FINE -                       │
-│  logger_bridge.cpp:89 - [DDBC]                          │
-│  Allocating handle: 0x7fff1234 [file.cpp:42]            │
+│  2025-11-06 14:30:22.146, 8581947520, DEBUG,            │
+│  ddbc_connection.cpp:89, DDBC,                          │
+│  Allocating handle: 0x7fff1234                          │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
 ```

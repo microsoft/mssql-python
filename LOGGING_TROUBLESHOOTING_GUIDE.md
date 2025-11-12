@@ -42,6 +42,7 @@ mssql-python uses an **all-or-nothing** approach:
 - **One Level**: DEBUG level only - no level categorization
 - **All or Nothing**: When enabled, you see EVERYTHING
 - **Troubleshooting Focus**: Turn on when something breaks, off otherwise
+- **Thread Tracking**: OS native thread IDs (not trace IDs) for multi-threaded debugging
 
 ### Output Modes
 
@@ -98,7 +99,7 @@ When enabled, logging shows **everything** at DEBUG level:
 - ✅ **SQL queries**: Full query text and parameters
 - ✅ **Internal operations**: ODBC calls, handle management, memory allocations
 - ✅ **Error details**: Exceptions with stack traces and error codes
-- ✅ **Thread tracking**: OS native thread IDs for multi-threaded debugging
+- ✅ **Thread tracking**: OS native thread IDs (not trace IDs) for multi-threaded debugging
 
 ### Log Format
 
@@ -218,14 +219,14 @@ conn = mssql_python.connect(connection_string)
 
 **Success:**
 ```
-2025-11-04 10:30:15 [CONN-12345-67890-1] - DEBUG - connection.py:42 - [Python] Connecting to server: localhost
-2025-11-04 10:30:15 [CONN-12345-67890-1] - DEBUG - connection.py:89 - [Python] Connection established
+2025-11-04 10:30:15.100, 8581947520, DEBUG, connection.py:42, Python, Connecting to server: localhost
+2025-11-04 10:30:15.250, 8581947520, DEBUG, connection.py:89, Python, Connection established
 ```
 
 **Failure (wrong server):**
 ```
-2025-11-04 10:30:15 [CONN-12345-67890-1] - DEBUG - connection.py:42 - [Python] Connecting to server: wrongserver
-2025-11-04 10:30:20 [CONN-12345-67890-1] - ERROR - connection.py:156 - [Python] Connection failed: timeout
+2025-11-04 10:30:15.100, 8581947520, DEBUG, connection.py:42, Python, Connecting to server: wrongserver
+2025-11-04 10:30:20.500, 8581947520, ERROR, connection.py:156, Python, Connection failed: timeout
 ```
 
 **Action:** Check server name, network connectivity, firewall rules
@@ -841,23 +842,27 @@ Thanks!
 
 **Log Format:**
 ```
-2025-11-04 10:30:15,123 [CONN-12345-67890-1] - DEBUG - connection.py:42 - [Python] Message
-│                        │                      │       │                   │
-│                        │                      │       │                   └─ Log message
-│                        │                      │       └─ Source file:line
-│                        │                      └─ Log level (always DEBUG)
-│                        └─ Trace ID (PREFIX-PID-ThreadID-Counter)
-└─ Timestamp (YYYY-MM-DD HH:MM:SS,milliseconds)
+Timestamp, ThreadID, Level, Location, Source, Message
+2025-11-04 10:30:15.123, 8581947520, DEBUG, connection.py:42, Python, Message
+│                       │          │     │                │       │
+│                       │          │     │                │       └─ Log message
+│                       │          │     │                └─ Python or DDBC
+│                       │          │     └─ Source file:line
+│                       │          └─ Log level (DEBUG/INFO/WARNING/ERROR)
+│                       └─ OS native thread ID
+└─ Timestamp (YYYY-MM-DD HH:MM:SS.milliseconds)
 ```
 
-**Trace ID Components:**
-- `CONN-12345-67890-1` = Connection, Process 12345, Thread 67890, Sequence 1
-- `CURS-12345-67890-2` = Cursor, Process 12345, Thread 67890, Sequence 2
+**Thread ID:**
+- OS native thread ID (e.g., `8581947520`)
+- Matches debugger thread IDs for correlation
+- Use to filter logs: `grep "8581947520" logfile.log`
 
-**Why Trace IDs matter:**
+**Why Thread IDs matter:**
 - Multi-threaded apps: Distinguish logs from different threads
-- Multiple connections: Track which connection did what
-- Debugging: Filter logs with `grep "CONN-12345-67890-1" logfile.log`
+- Connection pooling: Track which thread handles which connection
+- Debugging: Filter logs by specific thread
+- Performance: Correlate with debugger thread views
 
 ---
 
@@ -866,8 +871,8 @@ Thanks!
 #### Pattern 1: Successful Connection
 
 ```
-2025-11-04 10:30:15,100 [CONN-12345-67890-1] - DEBUG - connection.py:42 - [Python] Connecting to server: localhost
-2025-11-04 10:30:15,250 [CONN-12345-67890-1] - DEBUG - connection.py:89 - [Python] Connection established
+2025-11-04 10:30:15.100, 8581947520, DEBUG, connection.py:42, Python, Connecting to server: localhost
+2025-11-04 10:30:15.250, 8581947520, DEBUG, connection.py:89, Python, Connection established
 ```
 
 **Interpretation:** Connection succeeded in ~150ms
@@ -877,8 +882,8 @@ Thanks!
 #### Pattern 2: Query Execution
 
 ```
-2025-11-04 10:30:16,100 [CURS-12345-67890-2] - DEBUG - cursor.py:1040 - execute: Starting - operation_length=45, param_count=2, use_prepare=False
-2025-11-04 10:30:16,350 [CURS-12345-67890-2] - DEBUG - cursor.py:1200 - [Python] Query completed, 42 rows fetched
+2025-11-04 10:30:16.100, 8581947520, DEBUG, cursor.py:1040, Python, execute: Starting - operation_length=45, param_count=2
+2025-11-04 10:30:16.350, 8581947520, DEBUG, cursor.py:1200, Python, Query completed, 42 rows fetched
 ```
 
 **Interpretation:** 
@@ -891,10 +896,10 @@ Thanks!
 #### Pattern 3: Parameter Binding
 
 ```
-2025-11-04 10:30:16,100 [CURS-12345-67890-2] - DEBUG - cursor.py:1063 - execute: Setting query timeout=30 seconds
-2025-11-04 10:30:16,105 [CURS-12345-67890-2] - DEBUG - cursor.py:310 - _map_sql_type: Mapping param index=0, type=int
-2025-11-04 10:30:16,106 [CURS-12345-67890-2] - DEBUG - cursor.py:335 - _map_sql_type: INT detected - index=0, min=100, max=100
-2025-11-04 10:30:16,107 [CURS-12345-67890-2] - DEBUG - cursor.py:339 - _map_sql_type: INT -> TINYINT - index=0
+2025-11-04 10:30:16.100, 8581947520, DEBUG, cursor.py:1063, Python, execute: Setting query timeout=30 seconds
+2025-11-04 10:30:16.105, 8581947520, DEBUG, cursor.py:310, Python, _map_sql_type: Mapping param index=0, type=int
+2025-11-04 10:30:16.106, 8581947520, DEBUG, cursor.py:335, Python, _map_sql_type: INT detected - index=0, value=100
+2025-11-04 10:30:16.107, 8581947520, DEBUG, cursor.py:339, Python, _map_sql_type: INT -> TINYINT - index=0
 ```
 
 **Interpretation:**
@@ -906,8 +911,8 @@ Thanks!
 #### Pattern 4: Error
 
 ```
-2025-11-04 10:30:16,100 [CURS-12345-67890-2] - DEBUG - cursor.py:1040 - execute: Starting - operation_length=45, param_count=2, use_prepare=False
-2025-11-04 10:30:16,200 [CURS-12345-67890-2] - ERROR - cursor.py:1500 - [Python] Query failed: Invalid object name 'users'
+2025-11-04 10:30:16.100, 8581947520, DEBUG, cursor.py:1040, Python, execute: Starting - operation_length=45, param_count=2
+2025-11-04 10:30:16.200, 8581947520, ERROR, cursor.py:1500, Python, Query failed: Invalid object name 'users'
 ```
 
 **Interpretation:**
@@ -923,9 +928,9 @@ Thanks!
 grep "ERROR" mssql_python_trace_*.log
 ```
 
-**Find specific connection:**
+**Find specific thread:**
 ```bash
-grep "CONN-12345-67890-1" mssql_python_trace_*.log
+grep "8581947520" mssql_python_trace_*.log
 ```
 
 **Find slow queries (multi-second timestamps):**
@@ -949,10 +954,10 @@ Select-String -Path "mssql_python_trace_*.log" -Pattern "ERROR"
 
 🚩 **Multiple connection attempts:**
 ```
-10:30:15 - Connecting to server: localhost
-10:30:20 - Connection failed: timeout
-10:30:21 - Connecting to server: localhost
-10:30:26 - Connection failed: timeout
+10:30:15.100, 8581947520, DEBUG, connection.py:42, Python, Connecting to server: localhost
+10:30:20.500, 8581947520, ERROR, connection.py:156, Python, Connection failed: timeout
+10:30:21.100, 8581947520, DEBUG, connection.py:42, Python, Connecting to server: localhost
+10:30:26.500, 8581947520, ERROR, connection.py:156, Python, Connection failed: timeout
 ```
 → Network or firewall issue
 
