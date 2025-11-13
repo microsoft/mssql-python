@@ -61,37 +61,44 @@ jobs:
         DB_PASSWORD: $(DB_PASSWORD)
 
     - powershell: |
-        # Download Python 3.14 ARM64 libs from python.org
-        $pythonVersion = "3.14.0a2"  # Update to latest alpha/beta/rc as available
-        $url = "https://www.python.org/ftp/python/$pythonVersion/python-$pythonVersion-embed-arm64.zip"
+        # Download Python 3.14 ARM64 embed package from python.org
+        # Note: The FTP path uses the base version (3.14.0) not the full version (3.14.0a2)
+        $url = "https://www.python.org/ftp/python/3.14.0/python-3.14.0a2-embed-arm64.zip"
         $output = "$(Build.SourcesDirectory)\python314-arm64-embed.zip"
+        $destPath = "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64"
         
-        Write-Host "Downloading Python 3.14 ARM64 embed from: $url"
+        Write-Host "Downloading Python 3.14 ARM64 embed package from: $url"
+        
         try {
-          Invoke-WebRequest -Uri $url -OutFile $output -UseBasicParsing
+          # Download the embed package
+          Invoke-WebRequest -Uri $url -OutFile $output -UseBasicParsing -ErrorAction Stop
+          Write-Host "Download successful! File size: $((Get-Item $output).Length / 1MB) MB"
           
-          # Extract to libs directory
-          $destPath = "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64"
-          New-Item -ItemType Directory -Force -Path $destPath
+          # Create destination directory
+          New-Item -ItemType Directory -Force -Path $destPath | Out-Null
+          
+          # Extract the embed package
           Expand-Archive -Path $output -DestinationPath $destPath -Force
           
-          Write-Host "Successfully downloaded and extracted Python 3.14 ARM64 libs"
-          ls $destPath
-        } catch {
-          Write-Warning "Could not download Python 3.14 ARM64 embed package. Will try alternative sources."
-          # Alternative: Download from GitHub releases if available
-          Write-Host "Attempting alternative download from GitHub..."
-          $ghUrl = "https://github.com/python/cpython/releases/download/v$pythonVersion/python-$pythonVersion-embed-arm64.zip"
-          try {
-            Invoke-WebRequest -Uri $ghUrl -OutFile $output -UseBasicParsing
-            Expand-Archive -Path $output -DestinationPath $destPath -Force
-            Write-Host "Successfully downloaded from GitHub"
-          } catch {
-            Write-Warning "ARM64 libs not available. Build may fail for ARM64."
+          Write-Host "Successfully extracted Python 3.14 ARM64 libs to: $destPath"
+          Write-Host "Contents:"
+          Get-ChildItem $destPath | ForEach-Object { Write-Host "  - $($_.Name)" }
+          
+          # Verify python314.dll exists
+          if (Test-Path "$destPath\python314.dll") {
+            Write-Host "✓ python314.dll found"
+          } else {
+            Write-Warning "python314.dll not found in extracted files"
           }
+          
+        } catch {
+          Write-Error "Failed to download Python 3.14 ARM64 embed package: $_"
+          Write-Host "URL attempted: $url"
+          Write-Host "This will likely cause the ARM64 build to fail."
+          exit 1
         }
       condition: eq(variables['targetArch'], 'arm64')
-      displayName: 'Download Python 3.14 ARM64 libs from python.org'
+      displayName: 'Download Python 3.14 ARM64 embed package'
 
     - script: |
         echo "Python Version: $(pythonVersion)"
