@@ -91,44 +91,42 @@ jobs:
         DB_PASSWORD: $(DB_PASSWORD)
 
     - powershell: |
-        # Install Python 3.14 ARM64 to temp location to get libs, then uninstall
-        $installerUrl = "https://www.python.org/ftp/python/3.14.0/python-3.14.0a2-arm64.exe"
-        $installerPath = "$(Build.SourcesDirectory)\python314-arm64-installer.exe"
-        $installDir = "$(Build.SourcesDirectory)\Python314-ARM64-Temp"
+        # Download Python 3.14 ARM64 from NuGet (contains libs directory)
+        $nugetUrl = "https://www.nuget.org/api/v2/package/pythonarm64/3.14.0-a2"
+        $nugetZip = "$(Build.SourcesDirectory)\pythonarm64.nupkg"
+        $extractPath = "$(Build.SourcesDirectory)\pythonarm64-nuget"
         $destPath = "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64"
         
-        Write-Host "Downloading Python 3.14 ARM64 installer from: $installerUrl"
-        Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+        Write-Host "Downloading Python 3.14 ARM64 NuGet package from: $nugetUrl"
+        Invoke-WebRequest -Uri $nugetUrl -OutFile $nugetZip -UseBasicParsing
         
-        Write-Host "Installing Python 3.14 ARM64 to temp directory: $installDir"
-        Write-Host "(This won't modify PATH or system settings - using TargetDir and InstallAllUsers=0)"
-        Start-Process -FilePath $installerPath -ArgumentList "/quiet", "InstallAllUsers=0", "PrependPath=0", "Include_test=0", "TargetDir=$installDir" -Wait
+        Write-Host "Extracting NuGet package..."
+        Expand-Archive -Path $nugetZip -DestinationPath $extractPath -Force
         
-        Start-Sleep -Seconds 5
+        Write-Host "`nSearching for libs directory..."
+        $libsDir = Get-ChildItem -Path $extractPath -Recurse -Directory -Filter "libs" | Select-Object -First 1
         
-        Write-Host "`nChecking installation..."
-        if (Test-Path $installDir) {
-          Write-Host "Installation directory found at: $installDir"
-          Get-ChildItem $installDir | ForEach-Object { Write-Host "  - $($_.Name)" }
+        if ($libsDir) {
+          Write-Host "Found libs at: $($libsDir.FullName)"
+          New-Item -ItemType Directory -Force -Path $destPath | Out-Null
+          Copy-Item -Path "$($libsDir.FullName)\*" -Destination $destPath -Recurse -Force
+          Write-Host "✓ Copied .lib files from NuGet package"
         } else {
-          Write-Error "Installation failed - directory not found!"
-          exit 1
+          Write-Host "libs directory not found, searching for .lib files..."
+          $libFiles = Get-ChildItem -Path $extractPath -Recurse -Filter "*.lib"
+          New-Item -ItemType Directory -Force -Path $destPath | Out-Null
+          foreach ($lib in $libFiles) {
+            Write-Host "  Copying $($lib.Name)"
+            Copy-Item -Path $lib.FullName -Destination $destPath -Force
+          }
         }
         
-        Write-Host "`nCopying libs from: $installDir\libs"
-        New-Item -ItemType Directory -Force -Path $destPath | Out-Null
-        
-        if (Test-Path "$installDir\libs") {
-          Copy-Item -Path "$installDir\libs\*" -Destination $destPath -Recurse -Force
-          Write-Host "✓ Copied .lib files"
-        } else {
-          Write-Error "libs directory not found!"
-          exit 1
+        # Also copy DLLs if available
+        $dllFiles = Get-ChildItem -Path $extractPath -Recurse -Filter "*.dll" | Where-Object { $_.Name -like "python*" -or $_.Name -like "vcruntime*" -or $_.Name -like "libcrypto*" -or $_.Name -like "libssl*" -or $_.Name -like "libffi*" }
+        foreach ($dll in $dllFiles) {
+          Write-Host "  Copying $($dll.Name)"
+          Copy-Item -Path $dll.FullName -Destination $destPath -Force
         }
-        
-        # Also copy DLLs
-        Write-Host "Copying DLLs..."
-        Copy-Item -Path "$installDir\*.dll" -Destination $destPath -Force -ErrorAction SilentlyContinue
         
         Write-Host "`nContents of $destPath :"
         Get-ChildItem $destPath | ForEach-Object { Write-Host "  - $($_.Name)" }
@@ -136,17 +134,15 @@ jobs:
         if (Test-Path "$destPath\python314.lib") {
           Write-Host "`n✓ python314.lib found"
         } else {
-          Write-Error "python314.lib not found!"
+          Write-Error "python314.lib not found in NuGet package!"
           exit 1
         }
         
-        # Cleanup temp installation
-        Write-Host "`nCleaning up temp installation..."
-        Remove-Item -Path $installerPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path $installDir -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Host "✓ Cleanup complete"
+        # Cleanup
+        Remove-Item -Path $nugetZip -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $extractPath -Recurse -Force -ErrorAction SilentlyContinue
       condition: eq(variables['targetArch'], 'arm64')
-      displayName: 'Extract Python 3.14 ARM64 libs (no installation)'
+      displayName: 'Download Python 3.14 ARM64 libs from NuGet'
 
     - script: |
         set PATH=C:\Python314;C:\Python314\Scripts;%PATH%
