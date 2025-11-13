@@ -33,54 +33,34 @@ jobs:
 
   steps:
     - powershell: |
-        # Download and install Python 3.14 x64
-        $installerUrl = "https://www.python.org/ftp/python/3.14.0/python-3.14.0a2-amd64.exe"
-        $installerPath = "$(Build.SourcesDirectory)\python314-x64-installer.exe"
-        $installDir = "C:\Python314"
+        # Download Python 3.14 x64 from NuGet (no installation needed)
+        $nugetUrl = "https://www.nuget.org/api/v2/package/python/3.14.0-a2"
+        $nugetZip = "$(Build.SourcesDirectory)\python-x64.nupkg"
+        $extractPath = "C:\Python314-NuGet"
         
-        Write-Host "Downloading Python 3.14 x64 installer from: $installerUrl"
-        Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+        Write-Host "Downloading Python 3.14 x64 NuGet package from: $nugetUrl"
+        Invoke-WebRequest -Uri $nugetUrl -OutFile $nugetZip -UseBasicParsing
         
-        Write-Host "Installing Python 3.14 x64 to: $installDir"
-        Write-Host "This may take a minute..."
-        $process = Start-Process -FilePath $installerPath -ArgumentList "/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_test=0", "TargetDir=$installDir" -Wait -PassThru
+        Write-Host "Extracting NuGet package to: $extractPath"
+        Expand-Archive -Path $nugetZip -DestinationPath $extractPath -Force
         
-        Write-Host "Installer exit code: $($process.ExitCode)"
-        
-        # Wait for installation to complete
-        Write-Host "Waiting for installation to complete..."
-        Start-Sleep -Seconds 15
-        
-        # Verify installation
-        $maxAttempts = 10
-        $attempt = 0
-        $pythonFound = $false
-        
-        while ($attempt -lt $maxAttempts -and -not $pythonFound) {
-          $attempt++
-          Write-Host "Verification attempt $attempt/$maxAttempts..."
-          
-          if (Test-Path "$installDir\python.exe") {
-            $pythonFound = $true
-            Write-Host "✓ Python executable found at: $installDir\python.exe"
-          } else {
-            Write-Host "  Waiting for python.exe to appear..."
-            Start-Sleep -Seconds 3
-          }
-        }
-        
-        if (-not $pythonFound) {
-          Write-Error "Python installation failed - python.exe not found after waiting"
-          exit 1
-        }
+        # Python executable is in tools directory
+        $pythonDir = "$extractPath\tools"
         
         Write-Host "`nVerifying Python installation:"
-        & "$installDir\python.exe" --version
-        Write-Host "Python location:"
-        & "$installDir\python.exe" -c "import sys; print(sys.executable)"
+        & "$pythonDir\python.exe" --version
+        & "$pythonDir\python.exe" -c "import sys; print('Python executable:', sys.executable)"
         
-        Remove-Item -Path $installerPath -Force
-      displayName: 'Install Python 3.14 x64'
+        # Set up for subsequent steps
+        Write-Host "`nPython is ready at: $pythonDir"
+        
+        # Create a simple redirect script at C:\Python314
+        New-Item -ItemType Directory -Force -Path "C:\Python314" | Out-Null
+        Copy-Item -Path "$pythonDir\*" -Destination "C:\Python314" -Recurse -Force
+        Write-Host "Copied Python to C:\Python314 for consistent paths"
+        
+        Remove-Item -Path $nugetZip -Force
+      displayName: 'Download Python 3.14 x64 from NuGet'
 
     - powershell: |
         $env:Path = "C:\Python314;C:\Python314\Scripts;" + $env:Path
