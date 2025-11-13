@@ -14,7 +14,16 @@ Resource Management:
 import weakref
 import re
 import codecs
-from typing import Any, Dict, Optional, Union, List, Tuple, Callable, TYPE_CHECKING
+from typing import (
+    Any,
+    Dict,
+    Optional,
+    Union,
+    List,
+    Tuple,
+    Callable,
+    TYPE_CHECKING,
+)
 import threading
 
 from mssql_python.cursor import Cursor
@@ -39,7 +48,7 @@ from mssql_python.exceptions import (
     ProgrammingError,
     NotSupportedError,
 )
-from mssql_python.auth import process_connection_string
+from mssql_python.auth import process_connection_string, AADAuth
 from mssql_python.constants import ConstantsDDBC, GetInfoConstants
 from mssql_python.connection_string_parser import _ConnectionStringParser
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
@@ -205,11 +214,22 @@ class Connection:
         # This is important for processing the connection string correctly.
         # If authentication is specified, it will be processed to handle
         # different authentication types like interactive, device code, etc.
-        if re.search(r"authentication", self.connection_str, re.IGNORECASE):
-            connection_result = process_connection_string(self.connection_str)
-            self.connection_str = connection_result[0]
-            if connection_result[1]:
-                self._attrs_before.update(connection_result[1])
+        #
+        # skip if the call comes with token
+        if "token" not in kwargs:
+            if re.search(
+                r"authentication", self.connection_str, re.IGNORECASE
+            ):
+                connection_result = process_connection_string(
+                    self.connection_str
+                )
+                self.connection_str = connection_result[0]
+                if connection_result[1]:
+                    self._attrs_before.update(connection_result[1])
+        else:
+            self._attrs_before.update(
+                {1256: AADAuth().get_token_struct(kwargs["token"])}
+            )
 
         self._closed = False
         self._timeout = timeout
@@ -246,7 +266,7 @@ class Connection:
     ) -> str:
         """
         Construct the connection string by parsing, validating, and merging parameters.
-        
+
         This method performs a 6-step process:
         1. Parse and validate the base connection_str (validates against allowlist)
         2. Normalize parameter names (e.g., addr/address -> Server, uid -> UID)
@@ -254,7 +274,7 @@ class Connection:
         4. Build connection string from normalized, merged params
         5. Add Driver and APP parameters (always controlled by the driver)
         6. Return the final connection string
-        
+
         Args:
             connection_str (str): The base connection string.
             **kwargs: Additional key/value pairs for the connection string.
@@ -262,16 +282,18 @@ class Connection:
         Returns:
             str: The constructed and validated connection string.
         """
-        
+
         # Step 1: Parse base connection string with allowlist validation
         # The parser validates everything: unknown params, reserved params, duplicates, syntax
         parser = _ConnectionStringParser(validate_keywords=True)
         parsed_params = parser._parse(connection_str)
-        
+
         # Step 2: Normalize parameter names (e.g., addr/address -> Server, uid -> UID)
         # This handles synonym mapping and deduplication via normalized keys
-        normalized_params = _ConnectionStringParser._normalize_params(parsed_params, warn_rejected=False)
-        
+        normalized_params = _ConnectionStringParser._normalize_params(
+            parsed_params, warn_rejected=False
+        )
+
         # Step 3: Process kwargs and merge with normalized_params
         # kwargs override connection string values (processed after, so they take precedence)
         for key, value in kwargs.items():
@@ -286,21 +308,28 @@ class Connection:
                 # kwargs override any existing values from connection string
                 normalized_params[normalized_key] = str(value)
             else:
-                log('warning', f"Ignoring unknown connection parameter from kwargs: {key}")
-        
+                log(
+                    "warning",
+                    f"Ignoring unknown connection parameter from kwargs: {key}",
+                )
+
         # Step 4: Build connection string with merged params
         builder = _ConnectionStringBuilder(normalized_params)
-        
+
         # Step 5: Add Driver and APP parameters (always controlled by the driver)
         # These maintain existing behavior: Driver is always hardcoded, APP is always MSSQL-Python
-        builder.add_param('Driver', 'ODBC Driver 18 for SQL Server')
-        builder.add_param('APP', 'MSSQL-Python')
-        
+        builder.add_param("Driver", "ODBC Driver 18 for SQL Server")
+        builder.add_param("APP", "MSSQL-Python")
+
         # Step 6: Build final string
         conn_str = builder.build()
-        
-        log('info', "Final connection string: %s", sanitize_connection_string(conn_str))
-        
+
+        log(
+            "info",
+            "Final connection string: %s",
+            sanitize_connection_string(conn_str),
+        )
+
         return conn_str
 
     @property
@@ -434,7 +463,10 @@ class Connection:
                 ctype = ConstantsDDBC.SQL_CHAR.value
 
         # Validate ctype
-        valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
+        valid_ctypes = [
+            ConstantsDDBC.SQL_CHAR.value,
+            ConstantsDDBC.SQL_WCHAR.value,
+        ]
         if ctype not in valid_ctypes:
             # Log the sanitized ctype for security
             log(
@@ -485,7 +517,10 @@ class Connection:
         return self._encoding_settings.copy()
 
     def setdecoding(
-        self, sqltype: int, encoding: Optional[str] = None, ctype: Optional[int] = None
+        self,
+        sqltype: int,
+        encoding: Optional[str] = None,
+        ctype: Optional[int] = None,
     ) -> None:
         """
         Sets the text decoding used when reading SQL_CHAR and SQL_WCHAR from the database.
@@ -577,7 +612,10 @@ class Connection:
                 ctype = ConstantsDDBC.SQL_CHAR.value
 
         # Validate ctype
-        valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
+        valid_ctypes = [
+            ConstantsDDBC.SQL_CHAR.value,
+            ConstantsDDBC.SQL_WCHAR.value,
+        ]
         if ctype not in valid_ctypes:
             log(
                 "warning",
@@ -593,7 +631,10 @@ class Connection:
             )
 
         # Store the decoding settings for the specified sqltype
-        self._decoding_settings[sqltype] = {"encoding": encoding, "ctype": ctype}
+        self._decoding_settings[sqltype] = {
+            "encoding": encoding,
+            "ctype": ctype,
+        }
 
         # Log with sanitized values for security
         sqltype_name = {
@@ -687,7 +728,8 @@ class Connection:
         """
         if self._closed:
             raise InterfaceError(
-                "Cannot set attribute on closed connection", "Connection is closed"
+                "Cannot set attribute on closed connection",
+                "Connection is closed",
             )
 
         # Use the integrated validation helper function with connection state
@@ -707,12 +749,18 @@ class Connection:
             )
 
         # Log with sanitized values
-        log("debug", f"Setting connection attribute: {sanitized_attr}={sanitized_val}")
+        log(
+            "debug",
+            f"Setting connection attribute: {sanitized_attr}={sanitized_val}",
+        )
 
         try:
             # Call the underlying C++ method
             self._conn.set_attr(attribute, value)
-            log("info", f"Connection attribute {sanitized_attr} set successfully")
+            log(
+                "info",
+                f"Connection attribute {sanitized_attr} set successfully",
+            )
 
         except Exception as e:
             error_msg = f"Failed to set connection attribute {sanitized_attr}: {str(e)}"
@@ -786,7 +834,9 @@ class Connection:
         self._cursors.add(cursor)  # Track the cursor
         return cursor
 
-    def add_output_converter(self, sqltype: int, func: Callable[[Any], Any]) -> None:
+    def add_output_converter(
+        self, sqltype: int, func: Callable[[Any], Any]
+    ) -> None:
         """
         Register an output converter function that will be called whenever a value
         with the given SQL type is read from the database.
@@ -928,7 +978,9 @@ class Connection:
     def batch_execute(
         self,
         statements: List[str],
-        params: Optional[List[Union[None, Any, Tuple[Any, ...], List[Any]]]] = None,
+        params: Optional[
+            List[Union[None, Any, Tuple[Any, ...], List[Any]]]
+        ] = None,
         reuse_cursor: Optional[Cursor] = None,
         auto_close: bool = False,
     ) -> Tuple[List[Union[List["Row"], int]], Cursor]:
@@ -1024,7 +1076,10 @@ class Connection:
                         # This is an INSERT, UPDATE, DELETE or similar that doesn't return rows
                         results.append(cursor.rowcount)
 
-                    log("debug", f"Executed batch statement {i+1}/{len(statements)}")
+                    log(
+                        "debug",
+                        f"Executed batch statement {i+1}/{len(statements)}",
+                    )
 
                 except Exception as e:
                     # If a statement fails, include statement context in the error
@@ -1219,9 +1274,15 @@ class Connection:
                     # Map byte length → signed int size
                     int_sizes = {
                         1: lambda d: int(d[0]),
-                        2: lambda d: int.from_bytes(d[:2], "little", signed=True),
-                        4: lambda d: int.from_bytes(d[:4], "little", signed=True),
-                        8: lambda d: int.from_bytes(d[:8], "little", signed=True),
+                        2: lambda d: int.from_bytes(
+                            d[:2], "little", signed=True
+                        ),
+                        4: lambda d: int.from_bytes(
+                            d[:4], "little", signed=True
+                        ),
+                        8: lambda d: int.from_bytes(
+                            d[:8], "little", signed=True
+                        ),
                     }
 
                     # Direct numeric conversion if supported length
@@ -1245,7 +1306,9 @@ class Connection:
 
                     # Try decode as ASCII/UTF-8 string
                     if is_printable_bytes(chunk):
-                        str_val = chunk.decode("utf-8", errors="replace").rstrip("\0")
+                        str_val = chunk.decode(
+                            "utf-8", errors="replace"
+                        ).rstrip("\0")
                         return int(str_val) if str_val.isdigit() else str_val
 
                     # For 16-bit values that might be returned for max lengths
@@ -1259,7 +1322,9 @@ class Connection:
                     # Fallback: try to convert to int if possible
                     try:
                         if length <= 8:
-                            return int.from_bytes(data[:length], "little", signed=True)
+                            return int.from_bytes(
+                                data[:length], "little", signed=True
+                            )
                     except Exception:
                         pass
 
@@ -1295,7 +1360,9 @@ class Connection:
                 # Try to convert to int for short binary data
                 try:
                     if length <= 8:
-                        return int.from_bytes(data[:length], "little", signed=True)
+                        return int.from_bytes(
+                            data[:length], "little", signed=True
+                        )
                 except Exception:  # pylint: disable=broad-exception-caught
                     pass
 
@@ -1380,7 +1447,9 @@ class Connection:
                 try:
                     if not cursor.closed:
                         cursor.close()
-                except Exception as e:  # pylint: disable=broad-exception-caught
+                except (
+                    Exception
+                ) as e:  # pylint: disable=broad-exception-caught
                     # Collect errors but continue closing other cursors
                     close_errors.append(f"Error closing cursor: {e}")
                     log("warning", f"Error closing cursor: {e}")

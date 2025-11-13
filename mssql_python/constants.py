@@ -471,7 +471,8 @@ _ALLOWED_CONNECTION_STRING_PARAMS = {
     'pwd': 'PWD',
     'authentication': 'Authentication',
     'trusted_connection': 'Trusted_Connection',
-    
+    'token': '1256', 
+
     # Database
     'database': 'Database',
     

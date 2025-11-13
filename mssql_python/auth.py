@@ -14,6 +14,58 @@ class AADAuth:
     """Handles Azure Active Directory authentication"""
 
     @staticmethod
+    def get_credential(auth_type: str) -> bytes:
+        try:
+            from azure.identity import (
+                DefaultAzureCredential,
+                DeviceCodeCredential,
+                InteractiveBrowserCredential,
+            )
+            from azure.core.exceptions import ClientAuthenticationError
+        except ImportError as e:
+            raise RuntimeError(
+                "Azure authentication libraries are not installed. "
+                "Please install with: pip install azure-identity azure-core"
+            ) from e
+
+        # Mapping of auth types to credential classes
+        credential_map = {
+            "default": DefaultAzureCredential,
+            "devicecode": DeviceCodeCredential,
+            "interactive": InteractiveBrowserCredential,
+        }
+
+        credential_class = credential_map[auth_type]
+
+        try:
+            credential = credential_class()
+            return credential
+        except ClientAuthenticationError as e:
+            # Re-raise with more specific context about Azure AD authentication failure
+            raise RuntimeError(
+                f"Azure AD authentication failed for {credential_class.__name__}: {e}. "
+                f"This could be due to invalid credentials, missing environment variables, "
+                f"user cancellation, network issues, or unsupported configuration."
+            ) from e
+        except Exception as e:
+            # Catch any other unexpected exceptions
+            raise RuntimeError(
+                f"Failed to create {credential_class.__name__}: {e}"
+            ) from e
+
+    @staticmethod
+    def get_token_from_credential(credential: bytes) -> bytes:
+        try:
+            token = credential.get_token("https://database.windows.net/.default").token
+            return AADAuth.get_token_struct(token)
+        except Exception as e:
+            # Catch any other unexpected exceptions
+            raise RuntimeError(
+                f"Failed to create {credential_class.__name__}: {e}"
+            ) from e
+        
+        
+    @staticmethod
     def get_token_struct(token: str) -> bytes:
         """Convert token to SQL Server compatible format"""
         token_bytes = token.encode("UTF-16-LE")
