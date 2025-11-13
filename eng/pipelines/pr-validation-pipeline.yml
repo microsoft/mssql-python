@@ -60,70 +60,47 @@ jobs:
       env:
         DB_PASSWORD: $(DB_PASSWORD)
 
+    - task: UsePythonVersion@0
+      condition: eq(variables['targetArch'], 'arm64')
+      inputs:
+        versionSpec: '3.14'
+        architecture: 'arm64'
+        addToPath: false
+        githubToken: $(GITHUB_TOKEN)
+      displayName: 'Download Python 3.14 ARM64 for development files'
+
     - powershell: |
-        # Download Python 3.14 ARM64 installer and extract development files
-        # The installer contains python314.lib needed for linking
-        $installerUrl = "https://www.python.org/ftp/python/3.14.0/python-3.14.0a2-arm64.exe"
-        $installerPath = "$(Build.SourcesDirectory)\python314-arm64-installer.exe"
-        $extractPath = "$(Build.SourcesDirectory)\python314-arm64-extracted"
-        $destPath = "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64"
+        # Copy Python 3.14 ARM64 libs from the installed Python
+        $pythonArm64 = Get-ChildItem "C:\hostedtoolcache\windows\Python\3.14*\arm64" -Directory | Select-Object -First 1
         
-        Write-Host "Downloading Python 3.14 ARM64 installer from: $installerUrl"
-        
-        try {
-          # Download the installer
-          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing -ErrorAction Stop
-          Write-Host "Download successful! File size: $((Get-Item $installerPath).Length / 1MB) MB"
+        if ($pythonArm64) {
+          $libsSource = Join-Path $pythonArm64.FullName "libs"
+          $destPath = "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64"
           
-          # Create directories
-          New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
+          Write-Host "Found Python 3.14 ARM64 at: $($pythonArm64.FullName)"
+          Write-Host "Copying libs from: $libsSource"
+          
           New-Item -ItemType Directory -Force -Path $destPath | Out-Null
+          Copy-Item -Path "$libsSource\*" -Destination $destPath -Recurse -Force
           
-          # Extract the installer (it's a self-extracting archive)
-          Write-Host "Extracting installer contents..."
-          & $installerPath /quiet /layout $extractPath
+          # Also copy DLLs
+          Copy-Item -Path "$($pythonArm64.FullName)\*.dll" -Destination $destPath -Force -ErrorAction SilentlyContinue
           
-          # Wait for extraction to complete
-          Start-Sleep -Seconds 10
-          
-          # Find and copy the libs directory (contains python314.lib)
-          $libsSource = Get-ChildItem -Path $extractPath -Recurse -Directory -Filter "libs" | Select-Object -First 1
-          if ($libsSource) {
-            Write-Host "Found libs directory at: $($libsSource.FullName)"
-            Copy-Item -Path "$($libsSource.FullName)\*" -Destination $destPath -Recurse -Force
-          }
-          
-          # Also get the DLLs from the installer
-          $dllFiles = Get-ChildItem -Path $extractPath -Recurse -Filter "*.dll"
-          foreach ($dll in $dllFiles | Where-Object { $_.Name -like "python*" -or $_.Name -like "vcruntime*" }) {
-            Copy-Item -Path $dll.FullName -Destination $destPath -Force
-            Write-Host "Copied: $($dll.Name)"
-          }
-          
-          Write-Host "`nContents of $destPath after extraction:"
+          Write-Host "`nContents of $destPath :"
           Get-ChildItem $destPath | ForEach-Object { Write-Host "  - $($_.Name)" }
           
-          # Verify python314.lib exists
           if (Test-Path "$destPath\python314.lib") {
-            Write-Host "`n✓ python314.lib found (needed for linking)"
+            Write-Host "`n✓ python314.lib found"
           } else {
-            Write-Error "python314.lib not found! Build will fail."
-            Write-Host "Available files in libs directory:"
-            Get-ChildItem $destPath
+            Write-Error "python314.lib not found!"
             exit 1
           }
-          
-          # Cleanup
-          Remove-Item -Path $installerPath -Force -ErrorAction SilentlyContinue
-          Remove-Item -Path $extractPath -Recurse -Force -ErrorAction SilentlyContinue
-          
-        } catch {
-          Write-Error "Failed to download/extract Python 3.14 ARM64 installer: $_"
-          Write-Host "URL attempted: $installerUrl"
+        } else {
+          Write-Error "Python 3.14 ARM64 not found in hostedtoolcache"
           exit 1
         }
       condition: eq(variables['targetArch'], 'arm64')
-      displayName: 'Download Python 3.14 ARM64 development files'
+      displayName: 'Copy Python 3.14 ARM64 libs from hostedtoolcache'
 
     - script: |
         echo "Python Version: $(pythonVersion)"
@@ -770,3 +747,76 @@ jobs:
         docker rm test-$(ARCH) sqlserver || true
       displayName: 'Cleanup containers'
       condition: always()
+
+# Direct Ubuntu testing job without Docker containers
+- job: TestOnUbuntu_Python314
+  displayName: 'Test Python 3.14 on Ubuntu Latest'
+  pool:
+    vmImage: 'ubuntu-latest'
+  
+  steps:
+    - checkout: self
+    
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.14'
+        addToPath: true
+        githubToken: $(GITHUB_TOKEN)
+      displayName: 'Use Python 3.14'
+    
+    - script: |
+        python --version
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install cmake pybind11 pytest
+      displayName: 'Install dependencies'
+    
+    - script: |
+        set -ex
+        
+        # Pull and start SQL Server
+        docker pull mcr.microsoft.com/mssql/server:2022-latest
+        docker run -d --name sqlserver \
+          -e ACCEPT_EULA=Y \
+          -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+          -p 1433:1433 \
+          mcr.microsoft.com/mssql/server:2022-latest
+        
+        # Wait for SQL Server to be ready
+        for i in {1..30}; do
+          if docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "SELECT 1" >/dev/null 2>&1; then
+            echo "SQL Server is ready!"
+            break
+          fi
+          sleep 2
+        done
+        
+        # Create test database
+        docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
+          -S localhost -U SA -P "$(DB_PASSWORD)" -C \
+          -Q "CREATE DATABASE TestDB"
+      displayName: 'Start SQL Server'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
+    
+    - script: |
+        set -ex
+        
+        cd $(Build.SourcesDirectory)/mssql_python/pybind
+        bash build.sh
+        
+        cd $(Build.SourcesDirectory)
+        python --version
+        python -m pytest -v
+        
+      displayName: 'Build and test with Python 3.14'
+      env:
+        DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+    
+    - script: |
+        docker stop sqlserver || true
+        docker rm sqlserver || true
+      displayName: 'Cleanup SQL Server'
+      condition: always()
+
