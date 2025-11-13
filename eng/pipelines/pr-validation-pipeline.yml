@@ -610,8 +610,8 @@ jobs:
               dnf clean all
               dnf -y makecache
               
-              # Install build dependencies (readline-devel may not be in UBI, but ncurses-devel provides similar functionality)
-              dnf -y install gcc gcc-c++ make openssl-devel zlib-devel libffi-devel ncurses-devel sqlite-devel bzip2-devel xz-devel unixODBC-devel wget tar gzip
+              # Install build dependencies (ncurses-devel may not be in UBI, but ncurses-devel provides similar functionality)
+              dnf -y install gcc gcc-c++ make openssl-devel zlib-devel libffi-devel ncurses-devel sqlite-devel bzip2-devel xz-devel unixODBC-devel wget tar gzip xz
               
               # Download and build Python 3.14
               cd /tmp
