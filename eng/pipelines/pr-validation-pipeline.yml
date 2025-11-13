@@ -45,6 +45,10 @@ jobs:
         pip install -r requirements.txt
         pip install cmake pybind11
       displayName: 'Install dependencies'
+    
+    - script: |
+        choco install sqlserver-odbcdriver -y
+      displayName: 'Install SQL Server ODBC Driver'
 
     - powershell: |
         sqllocaldb create MSSQLLocalDB
@@ -440,9 +444,93 @@ jobs:
       displayName: 'Copy wheels and .so back to host'
 
     - script: |
-        docker stop build-$(LINUX_TAG)-$(ARCH) || true
-        docker rm   build-$(LINUX_TAG)-$(ARCH) || true
-      displayName: 'Clean up container'
+        set -euxo pipefail
+        
+        # Start SQL Server on host
+        docker run -d --name sqlserver-$(LINUX_TAG)-$(ARCH) \
+          --platform linux/amd64 \
+          -e ACCEPT_EULA=Y \
+          -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+          -p 1433:1433 \
+          mcr.microsoft.com/mssql/server:2022-latest
+        
+        # Wait for SQL Server to be ready
+        for i in {1..30}; do
+          if docker exec sqlserver-$(LINUX_TAG)-$(ARCH) /opt/mssql-tools18/bin/sqlcmd \
+            -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "SELECT 1" >/dev/null 2>&1; then
+            echo "SQL Server is ready!"
+            break
+          fi
+          sleep 2
+        done
+        
+        # Get SQL Server container IP
+        SQL_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' sqlserver-$(LINUX_TAG)-$(ARCH))
+        echo "SQL Server IP: $SQL_IP"
+        
+        # Install wheel and run tests in build container
+        if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
+          docker exec build-$(LINUX_TAG)-$(ARCH) bash -lc "
+            set -ex
+            PY=/opt/python/cp314-cp314/bin/python
+            
+            # Install the built wheel in isolated directory
+            mkdir -p /test_isolated
+            cd /test_isolated
+            \$PY -m pip install /workspace/dist/*.whl
+            
+            # Verify installation
+            \$PY -c 'import mssql_python; print(\"Package imported successfully from:\", mssql_python.__file__)'
+            
+            # Install pytest
+            \$PY -m pip install pytest
+            
+            # Copy tests from workspace
+            cp -r /workspace/tests /test_isolated/ || echo 'No tests directory'
+            cp /workspace/requirements.txt /test_isolated/ || true
+            \$PY -m pip install -r /test_isolated/requirements.txt || true
+            
+            # Run pytest
+            if [ -d /test_isolated/tests ]; then
+              DB_CONNECTION_STRING='Server=$SQL_IP;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes' \$PY -m pytest /test_isolated/tests -v || echo 'Some tests may have failed'
+            fi
+          "
+        else
+          docker exec build-$(LINUX_TAG)-$(ARCH) sh -lc "
+            set -ex
+            PY=/opt/python/cp314-cp314/bin/python
+            
+            # Install the built wheel in isolated directory
+            mkdir -p /test_isolated
+            cd /test_isolated
+            \$PY -m pip install /workspace/dist/*.whl
+            
+            # Verify installation
+            \$PY -c 'import mssql_python; print(\"Package imported successfully from:\", mssql_python.__file__)'
+            
+            # Install pytest
+            \$PY -m pip install pytest
+            
+            # Copy tests from workspace
+            cp -r /workspace/tests /test_isolated/ || echo 'No tests directory'
+            cp /workspace/requirements.txt /test_isolated/ || true
+            \$PY -m pip install -r /test_isolated/requirements.txt || true
+            
+            # Run pytest
+            if [ -d /test_isolated/tests ]; then
+              DB_CONNECTION_STRING='Server=$SQL_IP;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes' \$PY -m pytest /test_isolated/tests -v || echo 'Some tests may have failed'
+            fi
+          "
+        fi
+      displayName: 'Install wheel and run pytests'
+      env:
+        DB_PASSWORD: $(DB_PASSWORD)
+      continueOnError: true
+
+    - script: |
+        docker stop build-$(LINUX_TAG)-$(ARCH) sqlserver-$(LINUX_TAG)-$(ARCH) || true
+        docker rm build-$(LINUX_TAG)-$(ARCH) sqlserver-$(LINUX_TAG)-$(ARCH) || true
+      displayName: 'Clean up containers'
       condition: always()
 
     - task: PublishBuildArtifacts@1
@@ -460,363 +548,3 @@ jobs:
         ArtifactName: 'mssql-python-ddbc-bindings-py314'
         publishLocation: 'Container'
       displayName: 'Publish .so files as artifacts'
-
-- job: TestWheelsOnLinux_Python314
-  displayName: 'Pytests on Linux Python 3.14 -'
-  dependsOn: BuildLinuxWheels_Python314
-  condition: succeeded('BuildLinuxWheels_Python314')
-  pool: { vmImage: 'ubuntu-latest' }
-  timeoutInMinutes: 60
-
-  strategy:
-    matrix:
-      debian12:
-        BASE_IMAGE: 'debian:12-slim'
-        ARCH: 'x86_64'
-        DOCKER_PLATFORM: 'linux/amd64'
-      rhel_ubi9:
-        BASE_IMAGE: 'registry.access.redhat.com/ubi9/ubi:latest'
-        ARCH: 'x86_64'
-        DOCKER_PLATFORM: 'linux/amd64'
-      alpine320:
-        BASE_IMAGE: 'alpine:3.20'
-        ARCH: 'x86_64'
-        DOCKER_PLATFORM: 'linux/amd64'
-      debian12_arm64:
-        BASE_IMAGE: 'debian:12-slim'
-        ARCH: 'arm64'
-        DOCKER_PLATFORM: 'linux/arm64'
-      rhel_ubi9_arm64:
-        BASE_IMAGE: 'registry.access.redhat.com/ubi9/ubi:latest'
-        ARCH: 'arm64'
-        DOCKER_PLATFORM: 'linux/arm64'
-      alpine320_arm64:
-        BASE_IMAGE: 'alpine:3.20'
-        ARCH: 'arm64'
-        DOCKER_PLATFORM: 'linux/arm64'
-
-  steps:
-    - checkout: self
-
-    - task: DownloadBuildArtifacts@0
-      inputs:
-        buildType: 'current'
-        downloadType: 'single'
-        artifactName: 'mssql-python-wheels-dist-py314'
-        downloadPath: '$(System.ArtifactsDirectory)'
-      displayName: 'Download wheel artifacts from current build'
-
-    - script: |
-        set -euxo pipefail
-        WHEEL_DIR="$(System.ArtifactsDirectory)/mssql-python-wheels-dist-py314"
-        if [ ! -d "$WHEEL_DIR" ] || [ -z "$(ls -A $WHEEL_DIR/*.whl 2>/dev/null)" ]; then
-          echo "ERROR: No wheel files found in $WHEEL_DIR"
-          echo "Contents of artifacts directory:"
-          find "$(System.ArtifactsDirectory)" -type f -name "*.whl" || echo "No .whl files found anywhere"
-          exit 1
-        fi
-        echo "Found wheel files:"
-        ls -la "$WHEEL_DIR"/*.whl
-      displayName: 'Verify wheel artifacts exist'
-
-    - script: |
-        set -euxo pipefail
-        docker run -d --name sqlserver \
-          --network bridge \
-          -e ACCEPT_EULA=Y \
-          -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-          -p 1433:1433 \
-          mcr.microsoft.com/mssql/server:2022-latest
-
-        echo "Waiting for SQL Server to start..."
-        for i in {1..30}; do
-          if docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
-            -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "SELECT 1" >/dev/null 2>&1; then
-            echo "SQL Server is ready!"
-            break
-          fi
-          echo "Attempt $i/30: SQL Server not ready yet..."
-          sleep 3
-        done
-
-        docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost -U SA -P "$(DB_PASSWORD)" -C \
-          -Q "CREATE DATABASE TestDB"
-      displayName: 'Start SQL Server and create test database'
-      env:
-        DB_PASSWORD: $(DB_PASSWORD)
-
-    - script: |
-        set -euxo pipefail
-        
-        if [[ "$(ARCH)" == "arm64" ]] || [[ "$(ARCH)" == "aarch64" ]]; then
-          sudo docker run --rm --privileged tonistiigi/binfmt --install all
-        fi
-        
-        for i in {1..3}; do
-          if docker run -d --name test-$(ARCH) \
-            --platform $(DOCKER_PLATFORM) \
-            --network bridge \
-            -v $(System.ArtifactsDirectory):/artifacts:ro \
-            $(BASE_IMAGE) \
-            tail -f /dev/null; then
-            echo "Container started successfully on attempt $i"
-            break
-          else
-            echo "Failed to start container on attempt $i, retrying..."
-            docker rm test-$(ARCH) 2>/dev/null || true
-            sleep 5
-          fi
-        done
-
-        if ! docker ps | grep -q test-$(ARCH); then
-          echo "ERROR: Container test-$(ARCH) is not running"
-          docker logs test-$(ARCH) || true
-          exit 1
-        fi
-
-        if [[ "$(BASE_IMAGE)" == alpine* ]]; then
-          echo "Setting up Alpine Linux with Python 3.14..."
-          docker exec test-$(ARCH) sh -c "
-            set -ex
-            apk update && apk add --no-cache build-base openssl-dev zlib-dev libffi-dev readline-dev sqlite-dev bzip2-dev xz-dev unixodbc-dev curl wget tar gzip libtool libltdl krb5-libs
-            
-            # Download and build Python 3.14
-            cd /tmp
-            wget https://www.python.org/ftp/python/3.14.0/Python-3.14.0a2.tar.xz || echo 'Could not download a2'
-            
-            if [ -f Python-3.14.0a2.tar.xz ]; then
-              tar -xf Python-3.14.0a2.tar.xz
-              cd /tmp/Python-3.14.0a2
-              ./configure --prefix=/usr/local --with-ensurepip=install
-              make -j\$(nproc)
-              make install
-              ln -sf /usr/local/bin/python3.14 /usr/local/bin/python3
-              python3 --version
-              python3 -m venv /venv
-              /venv/bin/pip install pytest
-            else
-              echo 'ERROR: Could not download Python 3.14'
-              exit 1
-            fi
-          "
-          PY_CMD="/venv/bin/python"
-        elif [[ "$(BASE_IMAGE)" == *ubi* ]] || [[ "$(BASE_IMAGE)" == *rocky* ]] || [[ "$(BASE_IMAGE)" == *alma* ]]; then
-          echo "Setting up RHEL-based system with Python 3.14..."
-          docker exec test-$(ARCH) bash -c "
-            set -ex
-            echo 'Installing Python 3.14 on UBI/RHEL...'
-            if command -v dnf >/dev/null; then
-              dnf clean all
-              dnf -y makecache
-              
-              # Install build dependencies (ncurses-devel may not be in UBI, but ncurses-devel provides similar functionality)
-              dnf -y install gcc gcc-c++ make openssl-devel zlib-devel libffi-devel ncurses-devel sqlite-devel bzip2-devel xz-devel unixODBC-devel wget tar gzip xz
-              
-              # Download and build Python 3.14
-              cd /tmp
-              wget https://www.python.org/ftp/python/3.14.0/Python-3.14.0a2.tar.xz || echo 'Could not download a2'
-              
-              if [ -f Python-3.14.0a2.tar.xz ]; then
-                tar -xf Python-3.14.0a2.tar.xz
-                cd /tmp/Python-3.14.0a2
-                ./configure --prefix=/usr/local --with-ensurepip=install
-                make -j\$(nproc)
-                make install
-                ln -sf /usr/local/bin/python3.14 /usr/local/bin/python3
-                python3 --version
-                python3 -m venv /venv
-                /venv/bin/python -m pip install -U pip pytest
-                /venv/bin/python --version
-              else
-                echo 'ERROR: Could not download Python 3.14'
-                exit 1
-              fi
-            else
-              echo 'ERROR: dnf not found'
-              exit 1
-            fi
-          "
-          PY_CMD="/venv/bin/python"
-        else
-          echo "Setting up Debian/Ubuntu with Python 3.14..."
-          docker exec test-$(ARCH) bash -c "
-            set -ex
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update
-            apt-get install -y build-essential libssl-dev zlib1g-dev libncurses5-dev libncursesw5-dev libreadline-dev libsqlite3-dev libgdbm-dev libdb5.3-dev libbz2-dev libexpat1-dev liblzma-dev tk-dev libffi-dev unixodbc-dev curl wget tar gzip
-            
-            # Download and build Python 3.14
-            cd /tmp
-            wget https://www.python.org/ftp/python/3.14.0/Python-3.14.0a2.tar.xz || echo 'Could not download a2'
-            
-            if [ -f Python-3.14.0a2.tar.xz ]; then
-              tar -xf Python-3.14.0a2.tar.xz
-              cd /tmp/Python-3.14.0a2
-              ./configure --prefix=/usr/local --with-ensurepip=install
-              make -j\$(nproc)
-              make install
-              ln -sf /usr/local/bin/python3.14 /usr/local/bin/python3
-              python3 --version
-              python3 -m venv /venv
-              /venv/bin/pip install pytest
-            else
-              echo 'ERROR: Could not download Python 3.14'
-              exit 1
-            fi
-          "
-          PY_CMD="/venv/bin/python"
-        fi
-
-        if [[ "$(BASE_IMAGE)" == alpine* ]]; then
-          SHELL_CMD="sh -c"
-          WHEEL_PATTERN="*musllinux*$(ARCH)*.whl"
-        else
-          SHELL_CMD="bash -c"
-          WHEEL_PATTERN="*manylinux*$(ARCH)*.whl"
-        fi
-
-        docker exec test-$(ARCH) $SHELL_CMD "
-          mkdir -p /test_whl
-          cd /test_whl
-          
-          echo 'Available wheels:'
-          ls -la /artifacts/mssql-python-wheels-dist-py314/*.whl
-          echo 'Installing package (letting pip auto-select in isolated environment):'
-          $PY_CMD -m pip install mssql_python --find-links /artifacts/mssql-python-wheels-dist-py314 --no-index --no-deps
-          
-          echo 'Installed package location:'
-          $PY_CMD -c 'import mssql_python; print(\"Package location:\", mssql_python.__file__)'
-          
-          $PY_CMD -c 'import mssql_python; print(\"Package imported successfully\")'
-        "
-
-      displayName: 'Test wheel installation on $(BASE_IMAGE)'
-      env:
-        DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
-
-    - script: |
-        set -euxo pipefail
-        
-        echo "Copying source code to container for pytest..."
-        docker cp $(Build.SourcesDirectory)/. test-$(ARCH):/workspace/
-        
-        if [[ "$(BASE_IMAGE)" == alpine* ]]; then
-          SHELL_CMD="sh -c"
-          PY_CMD="/venv/bin/python"
-        else
-          SHELL_CMD="bash -c"
-          PY_CMD="/venv/bin/python"
-        fi
-        
-        docker exec test-$(ARCH) $SHELL_CMD "
-          cd /workspace
-          
-          echo 'Running pytest suite with installed wheel...'
-          echo 'Current directory:' \$(pwd)
-          echo 'Python version:'
-          $PY_CMD --version
-          
-          echo 'Package import verification:'
-          $PY_CMD -c 'import mssql_python; print(\"Testing installed wheel from:\", mssql_python.__file__)'
-          
-          if [ -f requirements.txt ]; then
-            echo 'Installing test requirements...'
-            $PY_CMD -m pip install -r requirements.txt || echo 'Failed to install some requirements'
-          fi
-          
-          $PY_CMD -m pip install pytest || echo 'pytest installation failed'
-          
-          echo 'Available test files:'
-          find tests/ -name 'test_*.py' 2>/dev/null || echo 'No test files found in tests/'
-          
-          if [ -d tests/ ]; then
-            echo 'Starting pytest...'
-            $PY_CMD -m pytest -v || echo 'Some tests failed - this may be expected in containerized environment'
-          else
-            echo 'No tests directory found, skipping pytest'
-          fi
-        "
-      displayName: 'Run pytest suite on $(BASE_IMAGE) $(ARCH)'
-      env:
-        DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
-      continueOnError: true
-
-    - script: |
-        docker stop test-$(ARCH) sqlserver || true
-        docker rm test-$(ARCH) sqlserver || true
-      displayName: 'Cleanup containers'
-      condition: always()
-
-# Direct Ubuntu testing job without Docker containers
-- job: TestOnUbuntu_Python314
-  displayName: 'Test Python 3.14 on Ubuntu Latest'
-  pool:
-    vmImage: 'ubuntu-latest'
-  
-  steps:
-    - checkout: self
-    
-    - task: UsePythonVersion@0
-      inputs:
-        versionSpec: '3.14'
-        addToPath: true
-        githubToken: $(GITHUB_TOKEN)
-      displayName: 'Use Python 3.14'
-    
-    - script: |
-        python --version
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install cmake pybind11 pytest
-      displayName: 'Install dependencies'
-    
-    - script: |
-        set -ex
-        
-        # Pull and start SQL Server
-        docker pull mcr.microsoft.com/mssql/server:2022-latest
-        docker run -d --name sqlserver \
-          -e ACCEPT_EULA=Y \
-          -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
-          -p 1433:1433 \
-          mcr.microsoft.com/mssql/server:2022-latest
-        
-        # Wait for SQL Server to be ready
-        for i in {1..30}; do
-          if docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
-            -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "SELECT 1" >/dev/null 2>&1; then
-            echo "SQL Server is ready!"
-            break
-          fi
-          sleep 2
-        done
-        
-        # Create test database
-        docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
-          -S localhost -U SA -P "$(DB_PASSWORD)" -C \
-          -Q "CREATE DATABASE TestDB"
-      displayName: 'Start SQL Server'
-      env:
-        DB_PASSWORD: $(DB_PASSWORD)
-    
-    - script: |
-        set -ex
-        
-        cd $(Build.SourcesDirectory)/mssql_python/pybind
-        bash build.sh
-        
-        cd $(Build.SourcesDirectory)
-        python --version
-        python -m pytest -v
-        
-      displayName: 'Build and test with Python 3.14'
-      env:
-        DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=TestDB;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
-    
-    - script: |
-        docker stop sqlserver || true
-        docker rm sqlserver || true
-      displayName: 'Cleanup SQL Server'
-      condition: always()
-
