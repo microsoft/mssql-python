@@ -81,17 +81,20 @@ llvm-cov export "$PYBIND_SO" \
   --skip-functions \
   -format=lcov > cpp-coverage.info
 
-# Remove LOG() statements from C++ coverage using sed to filter LCOV data
-# This filters out lines containing LOG( from the coverage report
-echo "[ACTION] Excluding LOG() statements from C++ coverage"
-sed -i '/LOG(/d' cpp-coverage.info
+# Note: LCOV exclusion markers (LCOV_EXCL_LINE) should be added to source code
+# to exclude LOG() statements from coverage. However, for automated exclusion
+# of all LOG lines without modifying source code, we can use geninfo's --omit-lines
+# feature during the merge step (see below).
 
 echo "==================================="
 echo "[STEP 4] Merging Python + C++ coverage"
 echo "==================================="
 
 # Merge LCOV reports (ignore inconsistencies in Python LCOV export)
+# Use --omit-lines to exclude lines containing LOG( from coverage
+echo "[ACTION] Merging coverage and excluding LOG() statements"
 lcov -a python-coverage.info -a cpp-coverage.info -o total.info \
+  --omit-lines '^\s*LOG\(' \
   --ignore-errors inconsistent,corrupt
 
 # Normalize paths so everything starts from mssql_python/
