@@ -32,13 +32,26 @@ jobs:
         targetArch: 'arm64'
 
   steps:
-    - task: UsePythonVersion@0
-      inputs:
-        versionSpec: '$(pythonVersion)'
-        architecture: '$(architecture)'
-        addToPath: true
-        githubToken: $(GITHUB_TOKEN)
-      displayName: 'Use Python $(pythonVersion) ($(architecture))'
+    - powershell: |
+        # Download and install Python 3.14 x64
+        $installerUrl = "https://www.python.org/ftp/python/3.14.0/python-3.14.0a2-amd64.exe"
+        $installerPath = "$(Build.SourcesDirectory)\python314-x64-installer.exe"
+        $installDir = "C:\Python314"
+        
+        Write-Host "Downloading Python 3.14 x64 installer from: $installerUrl"
+        Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+        
+        Write-Host "Installing Python 3.14 x64 to: $installDir"
+        Start-Process -FilePath $installerPath -ArgumentList "/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_test=0", "TargetDir=$installDir" -Wait
+        
+        Write-Host "Adding Python to PATH"
+        $env:Path = "$installDir;$installDir\Scripts;" + $env:Path
+        [Environment]::SetEnvironmentVariable("Path", $env:Path, [System.EnvironmentVariableTarget]::Machine)
+        
+        python --version
+        
+        Remove-Item -Path $installerPath -Force
+      displayName: 'Install Python 3.14 x64'
 
     - script: |
         python -m pip install --upgrade pip
@@ -64,47 +77,55 @@ jobs:
       env:
         DB_PASSWORD: $(DB_PASSWORD)
 
-    - task: UsePythonVersion@0
-      condition: eq(variables['targetArch'], 'arm64')
-      inputs:
-        versionSpec: '3.14'
-        architecture: 'arm64'
-        addToPath: false
-        githubToken: $(GITHUB_TOKEN)
-      displayName: 'Download Python 3.14 ARM64 for development files'
-
     - powershell: |
-        # Copy Python 3.14 ARM64 libs from the installed Python
-        $pythonArm64 = Get-ChildItem "C:\hostedtoolcache\windows\Python\3.14*\arm64" -Directory | Select-Object -First 1
+        # Download Python 3.14 ARM64 installer and extract libs (without installing)
+        $installerUrl = "https://www.python.org/ftp/python/3.14.0/python-3.14.0a2-arm64.exe"
+        $installerPath = "$(Build.SourcesDirectory)\python314-arm64-installer.exe"
+        $extractPath = "$(Build.SourcesDirectory)\python314-arm64-temp"
+        $destPath = "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64"
         
-        if ($pythonArm64) {
-          $libsSource = Join-Path $pythonArm64.FullName "libs"
-          $destPath = "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64"
-          
-          Write-Host "Found Python 3.14 ARM64 at: $($pythonArm64.FullName)"
-          Write-Host "Copying libs from: $libsSource"
-          
+        Write-Host "Downloading Python 3.14 ARM64 installer from: $installerUrl"
+        Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+        
+        Write-Host "Extracting installer to temp folder: $extractPath"
+        # Use 7zip or built-in tools to extract the MSI from the installer
+        Start-Process -FilePath $installerPath -ArgumentList "/layout", $extractPath, "/quiet" -Wait
+        
+        Start-Sleep -Seconds 10
+        
+        # Find libs directory in extracted files
+        Write-Host "Searching for libs directory in extracted files..."
+        $libsDir = Get-ChildItem -Path $extractPath -Recurse -Directory -Filter "libs" -ErrorAction SilentlyContinue | Select-Object -First 1
+        
+        if ($libsDir) {
+          Write-Host "Found libs at: $($libsDir.FullName)"
           New-Item -ItemType Directory -Force -Path $destPath | Out-Null
-          Copy-Item -Path "$libsSource\*" -Destination $destPath -Recurse -Force
+          Copy-Item -Path "$($libsDir.FullName)\*" -Destination $destPath -Recurse -Force
           
-          # Also copy DLLs
-          Copy-Item -Path "$($pythonArm64.FullName)\*.dll" -Destination $destPath -Force -ErrorAction SilentlyContinue
-          
-          Write-Host "`nContents of $destPath :"
-          Get-ChildItem $destPath | ForEach-Object { Write-Host "  - $($_.Name)" }
-          
-          if (Test-Path "$destPath\python314.lib") {
-            Write-Host "`n✓ python314.lib found"
-          } else {
-            Write-Error "python314.lib not found!"
-            exit 1
+          # Also get DLLs
+          $dllFiles = Get-ChildItem -Path $extractPath -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "python*" -or $_.Name -like "vcruntime*" }
+          foreach ($dll in $dllFiles) {
+            Copy-Item -Path $dll.FullName -Destination $destPath -Force
           }
         } else {
-          Write-Error "Python 3.14 ARM64 not found in hostedtoolcache"
+          Write-Warning "libs directory not found in extracted files"
+        }
+        
+        Write-Host "`nContents of $destPath :"
+        Get-ChildItem $destPath -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  - $($_.Name)" }
+        
+        if (Test-Path "$destPath\python314.lib") {
+          Write-Host "`n✓ python314.lib found"
+        } else {
+          Write-Error "python314.lib not found!"
           exit 1
         }
+        
+        # Cleanup
+        Remove-Item -Path $installerPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $extractPath -Recurse -Force -ErrorAction SilentlyContinue
       condition: eq(variables['targetArch'], 'arm64')
-      displayName: 'Copy Python 3.14 ARM64 libs from hostedtoolcache'
+      displayName: 'Extract Python 3.14 ARM64 libs (no installation)'
 
     - script: |
         echo "Python Version: $(pythonVersion)"
