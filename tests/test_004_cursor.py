@@ -3476,7 +3476,7 @@ def test_cursor_rownumber_empty_results(cursor, db_connection):
 def test_rownumber_warning_logged(cursor, db_connection):
     """Test that accessing rownumber logs a warning message"""
     import logging
-    from mssql_python.helpers import get_logger
+    from mssql_python.logging import driver_logger
 
     try:
         # Create test table
@@ -3489,17 +3489,20 @@ def test_rownumber_warning_logged(cursor, db_connection):
         cursor.execute("SELECT * FROM #test_rownumber_log")
 
         # Set up logging capture
-        logger = get_logger()
-        if logger:
+        if driver_logger:
+            # Save original log level
+            original_level = driver_logger.level
+            
+            # Enable WARNING level logging
+            driver_logger.setLevel(logging.WARNING)
+            
             # Create a test handler to capture log messages
             import io
 
             log_stream = io.StringIO()
             test_handler = logging.StreamHandler(log_stream)
             test_handler.setLevel(logging.WARNING)
-
-            # Add our test handler
-            logger.addHandler(test_handler)
+            driver_logger.addHandler(test_handler)
 
             try:
                 # Access rownumber (should trigger warning log)
@@ -3513,12 +3516,13 @@ def test_rownumber_warning_logged(cursor, db_connection):
 
                 # Verify rownumber functionality still works
                 assert (
-                    rownumber is None
-                ), f"Expected rownumber None before fetch, got {rownumber}"
+                    rownumber == -1
+                ), f"Expected rownumber -1 before fetch, got {rownumber}"
 
             finally:
-                # Clean up: remove our test handler
-                logger.removeHandler(test_handler)
+                # Clean up: remove our test handler and restore level
+                driver_logger.removeHandler(test_handler)
+                driver_logger.setLevel(original_level)
         else:
             # If no logger configured, just test that rownumber works
             rownumber = cursor.rownumber

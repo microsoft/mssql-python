@@ -10,7 +10,6 @@ import importlib.util
 import sys
 import platform
 
-
 def normalize_architecture(platform_name_param, architecture_param):
     """
     Normalize architecture names for the given platform.
