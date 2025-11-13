@@ -16,6 +16,16 @@ import time
 import logging
 
 
+def pytest_addoption(parser):
+    """Register custom ini options with pytest"""
+    parser.addini(
+        'enable_logging',
+        type='bool',
+        default=False,
+        help='Enable Python + C++ logging during tests (for coverage)'
+    )
+
+
 def is_azure_sql_connection(conn_str):
     """Helper function to detect if connection string is for Azure SQL Database"""
     if not conn_str:
