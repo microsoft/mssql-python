@@ -35,7 +35,7 @@ jobs:
     - powershell: |
         # Download Python 3.14 x64 from NuGet (no installation needed)
         $nugetUrl = "https://www.nuget.org/api/v2/package/python/3.14.0-a2"
-        $nugetZip = "$(Build.SourcesDirectory)\python-x64.nupkg"
+        $nugetZip = "$(Build.SourcesDirectory)\python-x64.zip"
         $extractPath = "C:\Python314-NuGet"
         
         Write-Host "Downloading Python 3.14 x64 NuGet package from: $nugetUrl"
