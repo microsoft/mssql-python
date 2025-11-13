@@ -1914,9 +1914,6 @@ jobs:
     displayName: 'Build pybind bindings with coverage'
 
   - script: |
-      # Enable Python + C++ logging for coverage by modifying pytest.ini
-      sed -i 's/enable_logging = False/enable_logging = True/' pytest.ini
-      
       # Generate unified coverage (Python + C++)
       chmod +x ./generate_codecov.sh
       ./generate_codecov.sh

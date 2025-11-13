@@ -13,17 +13,6 @@ import os
 import re
 from mssql_python import connect
 import time
-import logging
-
-
-def pytest_addoption(parser):
-    """Register custom ini options with pytest"""
-    parser.addini(
-        'enable_logging',
-        type='bool',
-        default=False,
-        help='Enable Python + C++ logging during tests (for coverage)'
-    )
 
 
 def is_azure_sql_connection(conn_str):
@@ -38,15 +27,8 @@ def is_azure_sql_connection(conn_str):
 
 
 def pytest_configure(config):
-    # Enable Python + C++ logging if configured in pytest.ini
-    enable_log = config.getini('enable_logging')
-    if enable_log and str(enable_log).lower() in ('true', '1', 'yes'):
-        from mssql_python import setup_logging
-        # Initialize Python + C++ logging for coverage
-        # setup_logging() automatically sets DEBUG level and configures both loggers
-        # Uses 'file' output to avoid bombarding CI console
-        setup_logging(output='file')
-        print("[pytest] Python + C++ logging enabled for coverage (logging to file)")
+    # Add any necessary configuration here
+    pass
 
 
 @pytest.fixture(scope="session")
