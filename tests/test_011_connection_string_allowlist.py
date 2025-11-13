@@ -207,29 +207,21 @@ class Test_ConnectionStringAllowList:
     def test__normalize_params_with_warnings(self):
         """Test that rejected parameters are logged when warn_rejected=True."""
         import logging
-        
-        # Create a custom logger for this test
-        logger = logging.getLogger('test_normalize_params_warnings')
-        logger.setLevel(logging.WARNING)
-        
-        # Add a handler to capture log messages
         import io
-        log_stream = io.StringIO()
-        handler = logging.StreamHandler(log_stream)
-        handler.setLevel(logging.WARNING)
-        logger.addHandler(handler)
+        import tempfile
+        import os
         
-        # Temporarily replace the get_logger function in both modules
-        import mssql_python.logging_config as logging_config
-        import mssql_python.helpers as helpers
+        # Enable logging to capture the debug messages
+        from mssql_python.logging import setup_logging, driver_logger
         
-        original_get_logger_config = logging_config.get_logger
-        original_get_logger_helpers = helpers.get_logger
-        
-        logging_config.get_logger = lambda: logger
-        helpers.get_logger = lambda: logger
+        # Create a temp log file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.log', delete=False) as f:
+            log_file = f.name
         
         try:
+            # Enable logging with DEBUG level
+            setup_logging(log_file_path=log_file)
+            
             # Test with unknown parameters and warn_rejected=True
             params = {'server': 'localhost', 'badparam1': 'value1', 'badparam2': 'value2'}
             filtered = _ConnectionStringParser._normalize_params(params, warn_rejected=True)
@@ -238,13 +230,21 @@ class Test_ConnectionStringAllowList:
             assert 'Server' in filtered
             assert len(filtered) == 1
             
+            # Read the log file to check the warning
+            with open(log_file, 'r', encoding='utf-8') as f:
+                log_output = f.read()
+            
             # Check that warning was logged with all rejected keys
-            log_output = log_stream.getvalue()
             assert 'badparam1' in log_output
             assert 'badparam2' in log_output
             assert 'not in allow-list' in log_output
         finally:
-            # Restore original get_logger in both modules
-            logging_config.get_logger = original_get_logger_config
-            helpers.get_logger = original_get_logger_helpers
-            logger.removeHandler(handler)
+            # Close all handlers BEFORE attempting to delete (Windows requirement)
+            for handler in driver_logger.handlers[:]:
+                handler.close()
+                driver_logger.removeHandler(handler)
+            # Disable logging
+            driver_logger.setLevel(logging.CRITICAL)
+            # Clean up temp file
+            if os.path.exists(log_file):
+                os.remove(log_file)
