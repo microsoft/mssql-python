@@ -1733,17 +1733,35 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 v_tuple = v.as_tuple()
                 sample_tuple = sample_value.as_tuple()
                 
-                # Calculate precision (total digits) and scale (decimal places)
+                # Calculate precision (total significant digits) and scale (decimal places)
+                # For a number like 0.000123456789, we need precision = 9, scale = 12
+                # The precision is the number of significant digits (len(digits))
+                # The scale is the number of decimal places needed to represent the number
+                
                 v_precision = len(v_tuple.digits)
-                v_scale = max(0, -v_tuple.exponent) if v_tuple.exponent < 0 else 0
+                if v_tuple.exponent < 0:
+                    v_scale = -v_tuple.exponent
+                else:
+                    v_scale = 0
                 
                 sample_precision = len(sample_tuple.digits)
-                sample_scale = max(0, -sample_tuple.exponent) if sample_tuple.exponent < 0 else 0
+                if sample_tuple.exponent < 0:
+                    sample_scale = -sample_tuple.exponent
+                else:
+                    sample_scale = 0
+                
+                # For SQL DECIMAL(precision, scale), we need:
+                # precision >= number of significant digits
+                # scale >= number of decimal places
+                # For 0.000123456789: precision needs to be at least 12 (to accommodate 12 decimal places)
+                # So we need to adjust precision to be at least as large as scale
+                v_required_precision = max(v_precision, v_scale)
+                sample_required_precision = max(sample_precision, sample_scale)
                 
                 # Prefer the decimal that requires higher precision or scale
                 # This ensures we can accommodate all values in the column
-                if (v_precision > sample_precision or 
-                    (v_precision == sample_precision and v_scale > sample_scale)):
+                if (v_required_precision > sample_required_precision or 
+                    (v_required_precision == sample_required_precision and v_scale > sample_scale)):
                     sample_value = v
             elif isinstance(v, decimal.Decimal) and not isinstance(sample_value, decimal.Decimal):
                 # If comparing Decimal to non-Decimal, prefer Decimal for better type inference

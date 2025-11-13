@@ -1696,7 +1696,7 @@ def test_executemany_DecimalString_list(cursor, db_connection):
 
 
 def test_executemany_DecimalPrecision_list(cursor, db_connection):
-    """Test executemany with an decimal parameter list."""
+    """Test executemany with an decimal Precision parameter list."""
     try:
         cursor.execute("CREATE TABLE #pytest_empty_params (val DECIMAL(30, 20))")
         data = [(decimal.Decimal('35112'),), (decimal.Decimal('35.112'),)]
@@ -1712,7 +1712,7 @@ def test_executemany_DecimalPrecision_list(cursor, db_connection):
 
 
 def test_executemany_Decimal_Batch_List(cursor, db_connection):
-    """Test executemany with an decimal parameter list."""
+    """Test executemany with an decimal Batch parameter list."""
     try:
         cursor.execute("CREATE TABLE #pytest_empty_params (val DECIMAL(10, 4))")
         data = [(decimal.Decimal('1.2345'),), (decimal.Decimal('9999.0000'),)]
@@ -1722,6 +1722,29 @@ def test_executemany_Decimal_Batch_List(cursor, db_connection):
         cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params where val IN (1.2345,9999.0000)")
         count = cursor.fetchone()[0]
         assert count == 2
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_params")
+        db_connection.commit()
+
+
+def test_executemany_DecimalMix_List(cursor, db_connection):
+    """Test executemany with an Decimal Mixed precision parameter list."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_empty_params (val DECIMAL(30, 20))")
+        # Test with mixed precision and scale requirements
+        data = [
+            (decimal.Decimal('1.2345'),),           # 5 digits, 4 decimal places
+            (decimal.Decimal('999999.12'),),        # 8 digits, 2 decimal places  
+            (decimal.Decimal('0.000123456789'),),   # 12 digits, 12 decimal places
+            (decimal.Decimal('1234567890'),),       # 10 digits, 0 decimal places
+            (decimal.Decimal('99.999999999'),)      # 11 digits, 9 decimal places
+        ]
+        cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params")
+        count = cursor.fetchone()[0]
+        assert count == 5
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_empty_params")
         db_connection.commit()
