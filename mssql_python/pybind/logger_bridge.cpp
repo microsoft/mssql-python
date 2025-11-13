@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <vector>
 #include <iostream>
+#include <sstream>
 
 namespace mssql_python {
 namespace logging {
@@ -82,8 +83,9 @@ std::string LoggerBridge::formatMessage(const char* format, va_list args) {
     char buffer[4096];
     
     // Format the message using safe std::vsnprintf (C++11 standard)
-    // std::vsnprintf is safe: always null-terminates, never overflows buffer
-    // DevSkim warning is false positive - this is the recommended safe alternative
+    // std::vsnprintf with size parameter is the recommended safe alternative
+    // It always null-terminates and never overflows the buffer
+    // DevSkim: ignore DS185832 - std::vsnprintf with explicit size is safe
     va_list args_copy;
     va_copy(args_copy, args);
     int result = std::vsnprintf(buffer, sizeof(buffer), format, args_copy);
@@ -103,9 +105,16 @@ std::string LoggerBridge::formatMessage(const char* format, va_list args) {
     // (This should be rare for typical log messages)
     std::vector<char> large_buffer(result + 1);
     va_copy(args_copy, args);
-    // std::vsnprintf is safe here too - proper bounds checking with buffer size
-    std::vsnprintf(large_buffer.data(), large_buffer.size(), format, args_copy);
+    // Use std::vsnprintf with explicit size for safety (C++11 standard)
+    // This is the recommended safe alternative to vsprintf
+    // DevSkim: ignore DS185832 - std::vsnprintf with size is safe
+    int final_result = std::vsnprintf(large_buffer.data(), large_buffer.size(), format, args_copy);
     va_end(args_copy);
+    
+    // Ensure null termination even if formatting fails
+    if (final_result < 0 || final_result >= static_cast<int>(large_buffer.size())) {
+        large_buffer[large_buffer.size() - 1] = '\0';
+    }
     
     return std::string(large_buffer.data());
 }
@@ -155,19 +164,19 @@ void LoggerBridge::log(int level, const char* file, int line,
     
     // Format the complete log message with [DDBC] prefix for CSV parsing
     // File and line number are handled by the Python formatter (in Location column)
-    // std::snprintf is safe: always null-terminates, never overflows buffer
-    // DevSkim warning is false positive - this is the recommended safe alternative
-    char complete_message[4096];
-    int written = std::snprintf(complete_message, sizeof(complete_message), 
-                               "[DDBC] %s", message.c_str());
+    // Use std::ostringstream for type-safe, buffer-overflow-free string building
+    std::ostringstream oss;
+    oss << "[DDBC] " << message;
+    std::string complete_message = oss.str();
     
-    // Warn if message was truncated (critical for troubleshooting)
-    if (written >= static_cast<int>(sizeof(complete_message))) {
-        complete_message[sizeof(complete_message) - 1] = '\0';
+    // Warn if message exceeds reasonable size (critical for troubleshooting)
+    constexpr size_t MAX_LOG_SIZE = 4095;  // Keep same limit for consistency
+    if (complete_message.size() > MAX_LOG_SIZE) {
         // Use stderr to notify about truncation (logging may be the truncated call itself)
         std::cerr << "[MSSQL-Python] Warning: Log message truncated from " 
-                  << written << " bytes to " << (sizeof(complete_message) - 1) 
+                  << complete_message.size() << " bytes to " << MAX_LOG_SIZE 
                   << " bytes at " << file << ":" << line << std::endl;
+        complete_message.resize(MAX_LOG_SIZE);
     }
     
     // Lock for Python call (minimize critical section)
@@ -190,7 +199,7 @@ void LoggerBridge::log(int level, const char* file, int line,
             py::int_(level),                  // level
             py::str(filename),                // pathname (just filename)
             py::int_(line),                   // lineno
-            py::str(complete_message),        // msg
+            py::str(complete_message.c_str()),// msg
             py::tuple(),                      // args
             py::none(),                       // exc_info
             py::str(filename),                // func (use filename as func name)
