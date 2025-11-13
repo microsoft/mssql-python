@@ -42,14 +42,39 @@ jobs:
         Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
         
         Write-Host "Installing Python 3.14 x64 to: $installDir"
-        Start-Process -FilePath $installerPath -ArgumentList "/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_test=0", "TargetDir=$installDir" -Wait
+        Write-Host "This may take a minute..."
+        $process = Start-Process -FilePath $installerPath -ArgumentList "/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_test=0", "TargetDir=$installDir" -Wait -PassThru
         
-        Start-Sleep -Seconds 10
+        Write-Host "Installer exit code: $($process.ExitCode)"
         
-        Write-Host "`nPython installation complete. Setting up PATH..."
-        $env:Path = "$installDir;$installDir\Scripts;" + $env:Path
+        # Wait for installation to complete
+        Write-Host "Waiting for installation to complete..."
+        Start-Sleep -Seconds 15
         
-        Write-Host "Verifying Python installation:"
+        # Verify installation
+        $maxAttempts = 10
+        $attempt = 0
+        $pythonFound = $false
+        
+        while ($attempt -lt $maxAttempts -and -not $pythonFound) {
+          $attempt++
+          Write-Host "Verification attempt $attempt/$maxAttempts..."
+          
+          if (Test-Path "$installDir\python.exe") {
+            $pythonFound = $true
+            Write-Host "✓ Python executable found at: $installDir\python.exe"
+          } else {
+            Write-Host "  Waiting for python.exe to appear..."
+            Start-Sleep -Seconds 3
+          }
+        }
+        
+        if (-not $pythonFound) {
+          Write-Error "Python installation failed - python.exe not found after waiting"
+          exit 1
+        }
+        
+        Write-Host "`nVerifying Python installation:"
         & "$installDir\python.exe" --version
         Write-Host "Python location:"
         & "$installDir\python.exe" -c "import sys; print(sys.executable)"
