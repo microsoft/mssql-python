@@ -184,19 +184,37 @@ jobs:
       continueOnError: false
 
     - powershell: |
-        Write-Host "Running pytests to validate bindings"
+        Write-Host "Running pytests with Python 3.14 to validate bindings"
+        
         if ("$(targetArch)" -eq "arm64") {
           Write-Host "Skipping tests for ARM64 (cannot run ARM64 binaries on x64 host)"
           exit 0
-        } else {
-          Write-Host "Using Python 3.14 for tests:"
-          & C:\Python314\python.exe --version
-          & C:\Python314\python.exe -m pytest tests/ -v --maxfail=5
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Tests failed with exit code $LASTEXITCODE"
-            exit $LASTEXITCODE
-          }
         }
+        
+        Write-Host "`nPython version being used for tests:"
+        & C:\Python314\python.exe --version
+        & C:\Python314\python.exe -c "import sys; print('Executable:', sys.executable)"
+        
+        Write-Host "`nVerifying pytest is available:"
+        & C:\Python314\python.exe -m pytest --version
+        
+        Write-Host "`nVerifying DB_CONNECTION_STRING environment variable:"
+        if ($env:DB_CONNECTION_STRING) {
+          Write-Host "✓ DB_CONNECTION_STRING is set"
+        } else {
+          Write-Error "DB_CONNECTION_STRING is not set!"
+          exit 1
+        }
+        
+        Write-Host "`nRunning pytest..."
+        & C:\Python314\python.exe -m pytest tests/ -v --maxfail=5
+        
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Tests failed with exit code $LASTEXITCODE"
+          exit $LASTEXITCODE
+        }
+        
+        Write-Host "`n✓ All tests passed!"
       displayName: 'Run pytests'
       env:
         DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
