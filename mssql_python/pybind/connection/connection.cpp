@@ -191,7 +191,6 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     LOG("Setting SQL attribute=%d", attribute);
     // SQLPOINTER ptr = nullptr;
     // SQLINTEGER length = 0;
-    static std::string buffer;  // to hold sensitive data temporarily
 
     if (py::isinstance<py::int_>(value)) {
         // Get the integer value
@@ -211,8 +210,6 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
         return ret;
     } else if (py::isinstance<py::str>(value)) {
         try {
-            // Keep buffers alive
-            static std::vector<std::wstring> wstr_buffers;
             std::string utf8_str = value.cast<std::string>();
 
             // Convert to wide string
@@ -221,24 +218,16 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
                 LOG("Failed to convert string value to wide string for attribute=%d", attribute);
                 return SQL_ERROR;
             }
-
-            // Limit static buffer growth for memory safety
-            constexpr size_t MAX_BUFFER_COUNT = 100;
-            if (wstr_buffers.size() >= MAX_BUFFER_COUNT) {
-            // Remove oldest 50% of entries when limit reached
-            wstr_buffers.erase(wstr_buffers.begin(),
-                               wstr_buffers.begin() + (MAX_BUFFER_COUNT / 2));
-            }
-
-            wstr_buffers.push_back(wstr);
+            this->wstrStringBuffer.clear();
+            this->wstrStringBuffer = std::move(wstr);
 
             SQLPOINTER ptr;
             SQLINTEGER length;
 
 #if defined(__APPLE__) || defined(__linux__)
             // For macOS/Linux, convert wstring to SQLWCHAR buffer
-            std::vector<SQLWCHAR> sqlwcharBuffer = WStringToSQLWCHAR(wstr);
-            if (sqlwcharBuffer.empty() && !wstr.empty()) {
+            std::vector<SQLWCHAR> sqlwcharBuffer = WStringToSQLWCHAR(this->wstrStringBuffer);
+            if (sqlwcharBuffer.empty() && !this->wstrStringBuffer.empty()) {
                 LOG("Failed to convert wide string to SQLWCHAR buffer for attribute=%d", attribute);
                 return SQL_ERROR;
             }
@@ -248,9 +237,8 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
                 sqlwcharBuffer.size() * sizeof(SQLWCHAR));
 #else
             // On Windows, wchar_t and SQLWCHAR are the same size
-            ptr = const_cast<SQLWCHAR*>(wstr_buffers.back().c_str());
-            length = static_cast<SQLINTEGER>(
-                wstr.length() * sizeof(SQLWCHAR));
+            ptr = const_cast<SQLWCHAR*>(this->wstrStringBuffer.c_str());
+            length = static_cast<SQLINTEGER>(this->wstrStringBuffer.length() * sizeof(SQLWCHAR));
 #endif
 
             SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(),
@@ -268,21 +256,11 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
     } else if (py::isinstance<py::bytes>(value) ||
                py::isinstance<py::bytearray>(value)) {
         try {
-            static std::vector<std::string> buffers;
             std::string binary_data = value.cast<std::string>();
-
-            // Limit static buffer growth
-            constexpr size_t MAX_BUFFER_COUNT = 100;
-            if (buffers.size() >= MAX_BUFFER_COUNT) {
-            // Remove oldest 50% of entries when limit reached
-            buffers.erase(buffers.begin(),
-                          buffers.begin() + (MAX_BUFFER_COUNT / 2));
-            }
-
-            buffers.emplace_back(std::move(binary_data));
-            SQLPOINTER ptr = const_cast<char*>(buffers.back().c_str());
-            SQLINTEGER length = static_cast<SQLINTEGER>(
-                buffers.back().size());
+            this->strBytesBuffer.clear();
+            this->strBytesBuffer = std::move(binary_data);
+            SQLPOINTER ptr = const_cast<char*>(this->strBytesBuffer.c_str());
+            SQLINTEGER length = static_cast<SQLINTEGER>(this->strBytesBuffer.size());
 
             SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(),
                                                   attribute, ptr, length);
