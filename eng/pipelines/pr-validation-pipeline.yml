@@ -102,15 +102,19 @@ jobs:
     - powershell: |
         # Download Python 3.14 ARM64 from NuGet (contains libs directory)
         $nugetUrl = "https://www.nuget.org/api/v2/package/pythonarm64/3.14.0-a2"
-        $nugetZip = "$(Build.SourcesDirectory)\pythonarm64.nupkg"
+        $nugetFile = "$(Build.SourcesDirectory)\pythonarm64.nupkg"
+        $zipFile = "$(Build.SourcesDirectory)\pythonarm64.zip"
         $extractPath = "$(Build.SourcesDirectory)\pythonarm64-nuget"
         $destPath = "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64"
         
         Write-Host "Downloading Python 3.14 ARM64 NuGet package from: $nugetUrl"
-        Invoke-WebRequest -Uri $nugetUrl -OutFile $nugetZip -UseBasicParsing
+        Invoke-WebRequest -Uri $nugetUrl -OutFile $nugetFile -UseBasicParsing
+        
+        Write-Host "Renaming .nupkg to .zip for extraction..."
+        Move-Item -Path $nugetFile -Destination $zipFile -Force
         
         Write-Host "Extracting NuGet package..."
-        Expand-Archive -Path $nugetZip -DestinationPath $extractPath -Force
+        Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
         
         Write-Host "`nSearching for libs directory..."
         $libsDir = Get-ChildItem -Path $extractPath -Recurse -Directory -Filter "libs" | Select-Object -First 1
@@ -148,7 +152,7 @@ jobs:
         }
         
         # Cleanup
-        Remove-Item -Path $nugetZip -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $zipFile -Force -ErrorAction SilentlyContinue
         Remove-Item -Path $extractPath -Recurse -Force -ErrorAction SilentlyContinue
       condition: eq(variables['targetArch'], 'arm64')
       displayName: 'Download Python 3.14 ARM64 libs from NuGet'
@@ -180,11 +184,20 @@ jobs:
       continueOnError: false
 
     - powershell: |
+        set PATH=C:\Python314;C:\Python314\Scripts;%PATH%
+        
         Write-Host "Running pytests to validate bindings"
         if ("$(targetArch)" -eq "arm64") {
-          Write-Host "Skipping pytests on Windows ARM64"
+          Write-Host "Skipping tests for ARM64 (cannot run ARM64 binaries on x64 host)"
+          exit 0
         } else {
-          python -m pytest -v
+          Write-Host "Using Python 3.14 for tests:"
+          C:\Python314\python.exe --version
+          C:\Python314\python.exe -m pytest tests/ -v --maxfail=5
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Tests failed with exit code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
         }
       displayName: 'Run pytests'
       env:
