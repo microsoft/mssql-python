@@ -1750,9 +1750,54 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         sample_value = None
         for v in non_nulls:
-            if not sample_value or (
-                hasattr(v, "__len__") and len(v) > len(sample_value)
-            ):
+            if not sample_value:
+                sample_value = v
+            elif isinstance(v, (str, bytes, bytearray)) and isinstance(sample_value, (str, bytes, bytearray)):
+                # For string/binary objects, prefer the longer one
+                # Use safe length comparison to avoid exceptions from custom __len__ implementations
+                try:
+                    if len(v) > len(sample_value):
+                        sample_value = v
+                except (TypeError, ValueError, AttributeError):
+                    # If length comparison fails, keep the current sample_value
+                    pass
+            elif isinstance(v, decimal.Decimal) and isinstance(sample_value, decimal.Decimal):
+                # For Decimal objects, prefer the one that requires higher precision or scale
+                v_tuple = v.as_tuple()
+                sample_tuple = sample_value.as_tuple()
+                
+                # Calculate precision (total significant digits) and scale (decimal places)
+                # For a number like 0.000123456789, we need precision = 9, scale = 12
+                # The precision is the number of significant digits (len(digits))
+                # The scale is the number of decimal places needed to represent the number
+                
+                v_precision = len(v_tuple.digits)
+                if v_tuple.exponent < 0:
+                    v_scale = -v_tuple.exponent
+                else:
+                    v_scale = 0
+                
+                sample_precision = len(sample_tuple.digits)
+                if sample_tuple.exponent < 0:
+                    sample_scale = -sample_tuple.exponent
+                else:
+                    sample_scale = 0
+                
+                # For SQL DECIMAL(precision, scale), we need:
+                # precision >= number of significant digits
+                # scale >= number of decimal places
+                # For 0.000123456789: precision needs to be at least 12 (to accommodate 12 decimal places)
+                # So we need to adjust precision to be at least as large as scale
+                v_required_precision = max(v_precision, v_scale)
+                sample_required_precision = max(sample_precision, sample_scale)
+                
+                # Prefer the decimal that requires higher precision or scale
+                # This ensures we can accommodate all values in the column
+                if (v_required_precision > sample_required_precision or 
+                    (v_required_precision == sample_required_precision and v_scale > sample_scale)):
+                    sample_value = v
+            elif isinstance(v, decimal.Decimal) and not isinstance(sample_value, decimal.Decimal):
+                # If comparing Decimal to non-Decimal, prefer Decimal for better type inference
                 sample_value = v
 
         return sample_value, None, None
