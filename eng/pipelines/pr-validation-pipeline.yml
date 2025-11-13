@@ -44,16 +44,29 @@ jobs:
         Write-Host "Installing Python 3.14 x64 to: $installDir"
         Start-Process -FilePath $installerPath -ArgumentList "/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_test=0", "TargetDir=$installDir" -Wait
         
-        Write-Host "Adding Python to PATH"
-        $env:Path = "$installDir;$installDir\Scripts;" + $env:Path
-        [Environment]::SetEnvironmentVariable("Path", $env:Path, [System.EnvironmentVariableTarget]::Machine)
+        Start-Sleep -Seconds 10
         
-        python --version
+        Write-Host "`nPython installation complete. Setting up PATH..."
+        $env:Path = "$installDir;$installDir\Scripts;" + $env:Path
+        
+        Write-Host "Verifying Python installation:"
+        & "$installDir\python.exe" --version
+        Write-Host "Python location:"
+        & "$installDir\python.exe" -c "import sys; print(sys.executable)"
         
         Remove-Item -Path $installerPath -Force
       displayName: 'Install Python 3.14 x64'
 
-    - script: |
+    - powershell: |
+        $env:Path = "C:\Python314;C:\Python314\Scripts;" + $env:Path
+        Write-Host "Current PATH (first 3 entries):"
+        ($env:Path -split ';')[0..2] | ForEach-Object { Write-Host "  $_" }
+        
+        Write-Host "`nPython version:"
+        python --version
+        Write-Host "`nPython executable:"
+        python -c "import sys; print(sys.executable)"
+        
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install cmake pybind11
@@ -136,9 +149,16 @@ jobs:
       displayName: 'Extract Python 3.14 ARM64 libs (no installation)'
 
     - script: |
-        echo "Python Version: $(pythonVersion)"
-        echo "Short Tag: $(shortPyVer)"
-        echo "Architecture: Host=$(architecture), Target=$(targetArch)"
+        set PATH=C:\Python314;C:\Python314\Scripts;%PATH%
+        
+        echo Python Version: $(pythonVersion)
+        echo Short Tag: $(shortPyVer)
+        echo Architecture: Host=$(architecture), Target=$(targetArch)
+        
+        echo.
+        echo Verifying Python before build:
+        python --version
+        python -c "import sys; print('Python:', sys.executable); print('Version:', sys.version_info)"
 
         cd "$(Build.SourcesDirectory)\mssql_python\pybind"
 
