@@ -7001,12 +7001,12 @@ def test_varbinarymax_insert_fetch(cursor, db_connection):
         """
         )
 
-        # Prepare test data
+        # Prepare test data - use moderate sizes to guarantee LOB fetch path (line 867-868) efficiently
         test_data = [
             (2, b""),  # Empty bytes
             (3, b"1234567890"),  # Small binary
-            (4, b"A" * 9000),  # Large binary > 8000 (streaming)
-            (5, b"B" * 20000),  # Large binary > 8000 (streaming)
+            (4, b"A" * 15000),  # Large binary > 15KB (guaranteed LOB path)
+            (5, b"B" * 20000),  # Large binary > 20KB (guaranteed LOB path)
             (6, b"C" * 8000),  # Edge case: exactly 8000 bytes
             (7, b"D" * 8001),  # Edge case: just over 8000 bytes
         ]
@@ -7290,6 +7290,118 @@ def test_varbinarymax_insert_fetch_null(cursor, db_connection):
         db_connection.commit()
 
 
+def test_sql_double_type(cursor, db_connection):
+    """Test SQL_DOUBLE type (FLOAT(53)) to cover line 3213 in dispatcher."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_double_type")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_double_type (
+                id INT PRIMARY KEY,
+                double_col FLOAT(53),
+                float_col FLOAT
+            )
+        """
+        )
+
+        # Insert test data with various double precision values
+        test_data = [
+            (1, 1.23456789012345, 3.14159),
+            (2, -9876543210.123456, -2.71828),
+            (3, 0.0, 0.0),
+            (4, 1.7976931348623157e308, 1.0e10),  # Near max double
+            (5, 2.2250738585072014e-308, 1.0e-10),  # Near min positive double
+        ]
+
+        for row in test_data:
+            cursor.execute(
+                "INSERT INTO #pytest_double_type VALUES (?, ?, ?)", row
+            )
+        db_connection.commit()
+
+        # Fetch and verify
+        cursor.execute("SELECT id, double_col, float_col FROM #pytest_double_type ORDER BY id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == len(test_data), f"Expected {len(test_data)} rows, got {len(rows)}"
+
+        for i, (expected_id, expected_double, expected_float) in enumerate(test_data):
+            fetched_id, fetched_double, fetched_float = rows[i]
+            assert fetched_id == expected_id, f"Row {i+1} ID mismatch"
+            assert isinstance(fetched_double, float), f"Row {i+1} double_col should be float type"
+            assert isinstance(fetched_float, float), f"Row {i+1} float_col should be float type"
+            # Use relative tolerance for floating point comparison
+            assert abs(fetched_double - expected_double) < abs(expected_double * 1e-10) or abs(fetched_double - expected_double) < 1e-10, \
+                f"Row {i+1} double_col mismatch: expected {expected_double}, got {fetched_double}"
+            assert abs(fetched_float - expected_float) < abs(expected_float * 1e-5) or abs(fetched_float - expected_float) < 1e-5, \
+                f"Row {i+1} float_col mismatch: expected {expected_float}, got {fetched_float}"
+
+    except Exception as e:
+        pytest.fail(f"SQL_DOUBLE type test failed: {e}")
+
+    finally:
+        drop_table_if_exists(cursor, "#pytest_double_type")
+        db_connection.commit()
+
+
+def test_null_guid_type(cursor, db_connection):
+    """Test NULL UNIQUEIDENTIFIER (GUID) to cover lines 3376-3377."""
+    try:
+        drop_table_if_exists(cursor, "#pytest_null_guid")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_null_guid (
+                id INT PRIMARY KEY,
+                guid_col UNIQUEIDENTIFIER,
+                guid_nullable UNIQUEIDENTIFIER NULL
+            )
+        """
+        )
+
+        # Insert test data with NULL and non-NULL GUIDs
+        test_guid = uuid.uuid4()
+        test_data = [
+            (1, test_guid, None),  # NULL GUID
+            (2, uuid.uuid4(), uuid.uuid4()),  # Both non-NULL
+            (3, uuid.UUID('12345678-1234-5678-1234-567812345678'), None),  # NULL GUID
+        ]
+
+        for row_id, guid1, guid2 in test_data:
+            cursor.execute(
+                "INSERT INTO #pytest_null_guid VALUES (?, ?, ?)", 
+                (row_id, guid1, guid2)
+            )
+        db_connection.commit()
+
+        # Fetch and verify
+        cursor.execute("SELECT id, guid_col, guid_nullable FROM #pytest_null_guid ORDER BY id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == len(test_data), f"Expected {len(test_data)} rows, got {len(rows)}"
+
+        for i, (expected_id, expected_guid1, expected_guid2) in enumerate(test_data):
+            fetched_id, fetched_guid1, fetched_guid2 = rows[i]
+            assert fetched_id == expected_id, f"Row {i+1} ID mismatch"
+            
+            # C++ layer returns uuid.UUID objects
+            assert isinstance(fetched_guid1, uuid.UUID), f"Row {i+1} guid_col should be UUID type, got {type(fetched_guid1)}"
+            assert fetched_guid1 == expected_guid1, f"Row {i+1} guid_col mismatch"
+            
+            # Verify NULL handling (NULL GUIDs are returned as None)
+            if expected_guid2 is None:
+                assert fetched_guid2 is None, f"Row {i+1} guid_nullable should be None"
+            else:
+                assert isinstance(fetched_guid2, uuid.UUID), f"Row {i+1} guid_nullable should be UUID type, got {type(fetched_guid2)}"
+                assert fetched_guid2 == expected_guid2, f"Row {i+1} guid_nullable mismatch"
+
+    except Exception as e:
+        pytest.fail(f"NULL GUID type test failed: {e}")
+
+    finally:
+        drop_table_if_exists(cursor, "#pytest_null_guid")
+        db_connection.commit()
+
+
 def test_only_null_and_empty_binary(cursor, db_connection):
     """Test table with only NULL and empty binary values to ensure fallback doesn't produce size=0"""
     try:
@@ -7452,9 +7564,10 @@ def test_varcharmax_boundary(cursor, db_connection):
 
 
 def test_varcharmax_streaming(cursor, db_connection):
-    """Streaming fetch > 8k with all fetch modes."""
+    """Streaming fetch > 8k with all fetch modes to ensure LOB path coverage."""
     try:
-        values = ["Y" * 8100, "Z" * 10000]
+        # Use 15KB to guarantee LOB fetch path (line 774-775) while keeping test fast
+        values = ["Y" * 15000, "Z" * 20000]
         cursor.execute("CREATE TABLE #pytest_varcharmax (col VARCHAR(MAX))")
         db_connection.commit()
         for v in values:
@@ -7579,9 +7692,10 @@ def test_nvarcharmax_boundary(cursor, db_connection):
 
 
 def test_nvarcharmax_streaming(cursor, db_connection):
-    """Streaming fetch > 4k unicode with all fetch modes."""
+    """Streaming fetch > 4k unicode with all fetch modes to ensure LOB path coverage."""
     try:
-        values = ["Ω" * 4100, "漢" * 5000]
+        # Use 10KB to guarantee LOB fetch path (line 830-831) while keeping test fast
+        values = ["Ω" * 10000, "漢" * 12000]
         cursor.execute("CREATE TABLE #pytest_nvarcharmax (col NVARCHAR(MAX))")
         db_connection.commit()
         for v in values:
@@ -14438,6 +14552,870 @@ def test_row_cursor_log_method_availability(cursor, db_connection):
     finally:
         drop_table_if_exists(cursor, "#pytest_log_check")
         db_connection.commit()
+
+
+def test_all_numeric_types_with_nulls(cursor, db_connection):
+    """Test NULL handling for all numeric types to ensure processor functions handle NULLs correctly"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_all_numeric_nulls")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_all_numeric_nulls (
+                int_col INT,
+                bigint_col BIGINT,
+                smallint_col SMALLINT,
+                tinyint_col TINYINT,
+                bit_col BIT,
+                real_col REAL,
+                float_col FLOAT
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Insert row with all NULLs
+        cursor.execute(
+            "INSERT INTO #pytest_all_numeric_nulls VALUES (NULL, NULL, NULL, NULL, NULL, NULL, NULL)"
+        )
+        # Insert row with actual values
+        cursor.execute(
+            "INSERT INTO #pytest_all_numeric_nulls VALUES (42, 9223372036854775807, 32767, 255, 1, 3.14, 2.718281828)"
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_all_numeric_nulls ORDER BY int_col ASC")
+        rows = cursor.fetchall()
+
+        # First row should be all NULLs
+        assert len(rows) == 2, "Should have exactly 2 rows"
+        assert all(val is None for val in rows[0]), "First row should be all NULLs"
+
+        # Second row should have actual values
+        assert rows[1][0] == 42, "INT column should be 42"
+        assert rows[1][1] == 9223372036854775807, "BIGINT column should match"
+        assert rows[1][2] == 32767, "SMALLINT column should be 32767"
+        assert rows[1][3] == 255, "TINYINT column should be 255"
+        assert rows[1][4] == True, "BIT column should be True"
+        assert abs(rows[1][5] - 3.14) < 0.01, "REAL column should be approximately 3.14"
+        assert abs(rows[1][6] - 2.718281828) < 0.0001, "FLOAT column should be approximately 2.718281828"
+
+    except Exception as e:
+        pytest.fail(f"All numeric types NULL test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_all_numeric_nulls")
+        db_connection.commit()
+
+
+def test_lob_data_types(cursor, db_connection):
+    """Test LOB (Large Object) data types to ensure LOB fallback paths are exercised"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_lob_test")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_lob_test (
+                id INT,
+                text_lob VARCHAR(MAX),
+                ntext_lob NVARCHAR(MAX),
+                binary_lob VARBINARY(MAX)
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Create large data that will trigger LOB handling
+        large_text = 'A' * 10000  # 10KB text
+        large_ntext = 'B' * 10000  # 10KB unicode text
+        large_binary = b'\x01\x02\x03\x04' * 2500  # 10KB binary
+
+        cursor.execute(
+            "INSERT INTO #pytest_lob_test VALUES (?, ?, ?, ?)",
+            (1, large_text, large_ntext, large_binary)
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT id, text_lob, ntext_lob, binary_lob FROM #pytest_lob_test")
+        row = cursor.fetchone()
+
+        assert row[0] == 1, "ID should be 1"
+        assert row[1] == large_text, "VARCHAR(MAX) LOB data should match"
+        assert row[2] == large_ntext, "NVARCHAR(MAX) LOB data should match"
+        assert row[3] == large_binary, "VARBINARY(MAX) LOB data should match"
+
+    except Exception as e:
+        pytest.fail(f"LOB data types test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_lob_test")
+        db_connection.commit()
+
+
+def test_lob_char_column_types(cursor, db_connection):
+    """Test LOB fetching specifically for CHAR/VARCHAR columns (covers lines 3313-3314)"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_lob_char")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_lob_char (
+                id INT,
+                char_lob VARCHAR(MAX)
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Create data large enough to trigger LOB path (>8000 bytes)
+        large_char_data = 'X' * 20000  # 20KB text
+        
+        cursor.execute(
+            "INSERT INTO #pytest_lob_char VALUES (?, ?)",
+            (1, large_char_data)
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT id, char_lob FROM #pytest_lob_char")
+        row = cursor.fetchone()
+
+        assert row[0] == 1, "ID should be 1"
+        assert row[1] == large_char_data, "VARCHAR(MAX) LOB data should match"
+        assert len(row[1]) == 20000, "VARCHAR(MAX) should be 20000 chars"
+
+    except Exception as e:
+        pytest.fail(f"LOB CHAR column test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_lob_char")
+        db_connection.commit()
+
+
+def test_lob_wchar_column_types(cursor, db_connection):
+    """Test LOB fetching specifically for WCHAR/NVARCHAR columns (covers lines 3358-3359)"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_lob_wchar")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_lob_wchar (
+                id INT,
+                wchar_lob NVARCHAR(MAX)
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Create unicode data large enough to trigger LOB path (>4000 characters for NVARCHAR)
+        large_wchar_data = '🔥' * 5000 + 'Unicode™' * 1000  # Mix of emoji and special chars
+        
+        cursor.execute(
+            "INSERT INTO #pytest_lob_wchar VALUES (?, ?)",
+            (1, large_wchar_data)
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT id, wchar_lob FROM #pytest_lob_wchar")
+        row = cursor.fetchone()
+
+        assert row[0] == 1, "ID should be 1"
+        assert row[1] == large_wchar_data, "NVARCHAR(MAX) LOB data should match"
+        assert '🔥' in row[1], "Should contain emoji characters"
+
+    except Exception as e:
+        pytest.fail(f"LOB WCHAR column test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_lob_wchar")
+        db_connection.commit()
+
+
+def test_lob_binary_column_types(cursor, db_connection):
+    """Test LOB fetching specifically for BINARY/VARBINARY columns (covers lines 3384-3385)"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_lob_binary")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_lob_binary (
+                id INT,
+                binary_lob VARBINARY(MAX)
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Create binary data large enough to trigger LOB path (>8000 bytes)
+        large_binary_data = bytes(range(256)) * 100  # 25.6KB of varied binary data
+        
+        cursor.execute(
+            "INSERT INTO #pytest_lob_binary VALUES (?, ?)",
+            (1, large_binary_data)
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT id, binary_lob FROM #pytest_lob_binary")
+        row = cursor.fetchone()
+
+        assert row[0] == 1, "ID should be 1"
+        assert row[1] == large_binary_data, "VARBINARY(MAX) LOB data should match"
+        assert len(row[1]) == 25600, "VARBINARY(MAX) should be 25600 bytes"
+
+    except Exception as e:
+        pytest.fail(f"LOB BINARY column test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_lob_binary")
+        db_connection.commit()
+
+
+def test_zero_length_complex_types(cursor, db_connection):
+    """Test zero-length data for complex types (covers lines 3531-3533)"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_zero_length")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_zero_length (
+                id INT,
+                empty_varchar VARCHAR(100),
+                empty_nvarchar NVARCHAR(100),
+                empty_binary VARBINARY(100)
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Insert empty (non-NULL) values
+        cursor.execute(
+            "INSERT INTO #pytest_zero_length VALUES (?, ?, ?, ?)",
+            (1, '', '', b'')
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT id, empty_varchar, empty_nvarchar, empty_binary FROM #pytest_zero_length")
+        row = cursor.fetchone()
+
+        assert row[0] == 1, "ID should be 1"
+        assert row[1] == '', "Empty VARCHAR should be empty string"
+        assert row[2] == '', "Empty NVARCHAR should be empty string"
+        assert row[3] == b'', "Empty VARBINARY should be empty bytes"
+
+    except Exception as e:
+        pytest.fail(f"Zero-length complex types test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_zero_length")
+        db_connection.commit()
+
+
+def test_guid_with_nulls(cursor, db_connection):
+    """Test GUID type with NULL values"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_guid_nulls")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_guid_nulls (
+                id INT,
+                guid_col UNIQUEIDENTIFIER
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Insert NULL GUID
+        cursor.execute("INSERT INTO #pytest_guid_nulls VALUES (1, NULL)")
+        # Insert actual GUID
+        cursor.execute("INSERT INTO #pytest_guid_nulls VALUES (2, NEWID())")
+        db_connection.commit()
+
+        cursor.execute("SELECT id, guid_col FROM #pytest_guid_nulls ORDER BY id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 2, "Should have exactly 2 rows"
+        assert rows[0][1] is None, "First GUID should be NULL"
+        assert rows[1][1] is not None, "Second GUID should not be NULL"
+
+    except Exception as e:
+        pytest.fail(f"GUID with NULLs test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_guid_nulls")
+        db_connection.commit()
+
+
+def test_datetimeoffset_with_nulls(cursor, db_connection):
+    """Test DATETIMEOFFSET type with NULL values"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_dto_nulls")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_dto_nulls (
+                id INT,
+                dto_col DATETIMEOFFSET
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Insert NULL DATETIMEOFFSET
+        cursor.execute("INSERT INTO #pytest_dto_nulls VALUES (1, NULL)")
+        # Insert actual DATETIMEOFFSET
+        cursor.execute("INSERT INTO #pytest_dto_nulls VALUES (2, SYSDATETIMEOFFSET())")
+        db_connection.commit()
+
+        cursor.execute("SELECT id, dto_col FROM #pytest_dto_nulls ORDER BY id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 2, "Should have exactly 2 rows"
+        assert rows[0][1] is None, "First DATETIMEOFFSET should be NULL"
+        assert rows[1][1] is not None, "Second DATETIMEOFFSET should not be NULL"
+
+    except Exception as e:
+        pytest.fail(f"DATETIMEOFFSET with NULLs test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_dto_nulls")
+        db_connection.commit()
+
+
+def test_decimal_conversion_edge_cases(cursor, db_connection):
+    """Test DECIMAL/NUMERIC type conversion including edge cases"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_decimal_edge")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_decimal_edge (
+                id INT,
+                dec_col DECIMAL(18, 4)
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Insert various decimal values including edge cases
+        test_values = [
+            (1, "123.4567"),
+            (2, "0.0001"),
+            (3, "-999999999999.9999"),
+            (4, "999999999999.9999"),
+            (5, "0.0000"),
+        ]
+        
+        for id_val, dec_val in test_values:
+            cursor.execute(
+                "INSERT INTO #pytest_decimal_edge VALUES (?, ?)",
+                (id_val, decimal.Decimal(dec_val))
+            )
+        
+        # Also insert NULL
+        cursor.execute("INSERT INTO #pytest_decimal_edge VALUES (6, NULL)")
+        db_connection.commit()
+
+        cursor.execute("SELECT id, dec_col FROM #pytest_decimal_edge ORDER BY id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 6, "Should have exactly 6 rows"
+        
+        # Verify the values
+        for i, (id_val, expected_str) in enumerate(test_values):
+            assert rows[i][0] == id_val, f"Row {i} ID should be {id_val}"
+            assert rows[i][1] == decimal.Decimal(expected_str), f"Row {i} decimal should match {expected_str}"
+        
+        # Verify NULL
+        assert rows[5][0] == 6, "Last row ID should be 6"
+        assert rows[5][1] is None, "Last decimal should be NULL"
+
+    except Exception as e:
+        pytest.fail(f"Decimal conversion edge cases test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_decimal_edge")
+        db_connection.commit()
+
+
+def test_fixed_length_char_type(cursor, db_connection):
+    """Test SQL_CHAR (fixed-length CHAR) column processor path (Lines 3464-3467)"""
+    try:
+        cursor.execute("CREATE TABLE #pytest_char_test (id INT, char_col CHAR(10))")
+        cursor.execute("INSERT INTO #pytest_char_test VALUES (1, 'hello')")
+        cursor.execute("INSERT INTO #pytest_char_test VALUES (2, 'world')")
+        
+        cursor.execute("SELECT char_col FROM #pytest_char_test ORDER BY id")
+        rows = cursor.fetchall()
+        
+        # CHAR pads with spaces to fixed length
+        assert len(rows) == 2, "Should fetch 2 rows"
+        assert rows[0][0].rstrip() == "hello", "First CHAR value should be 'hello'"
+        assert rows[1][0].rstrip() == "world", "Second CHAR value should be 'world'"
+        
+        cursor.execute("DROP TABLE #pytest_char_test")
+    except Exception as e:
+        pytest.fail(f"Fixed-length CHAR test failed: {e}")
+
+
+def test_fixed_length_nchar_type(cursor, db_connection):
+    """Test SQL_WCHAR (fixed-length NCHAR) column processor path (Lines 3469-3472)"""
+    try:
+        cursor.execute("CREATE TABLE #pytest_nchar_test (id INT, nchar_col NCHAR(10))")
+        cursor.execute("INSERT INTO #pytest_nchar_test VALUES (1, N'hello')")
+        cursor.execute("INSERT INTO #pytest_nchar_test VALUES (2, N'世界')")  # Unicode test
+        
+        cursor.execute("SELECT nchar_col FROM #pytest_nchar_test ORDER BY id")
+        rows = cursor.fetchall()
+        
+        # NCHAR pads with spaces to fixed length
+        assert len(rows) == 2, "Should fetch 2 rows"
+        assert rows[0][0].rstrip() == "hello", "First NCHAR value should be 'hello'"
+        assert rows[1][0].rstrip() == "世界", "Second NCHAR value should be '世界'"
+        
+        cursor.execute("DROP TABLE #pytest_nchar_test")
+    except Exception as e:
+        pytest.fail(f"Fixed-length NCHAR test failed: {e}")
+
+
+def test_fixed_length_binary_type(cursor, db_connection):
+    """Test SQL_BINARY (fixed-length BINARY) column processor path (Lines 3474-3477)"""
+    try:
+        cursor.execute("CREATE TABLE #pytest_binary_test (id INT, binary_col BINARY(8))")
+        cursor.execute("INSERT INTO #pytest_binary_test VALUES (1, 0x0102030405)")
+        cursor.execute("INSERT INTO #pytest_binary_test VALUES (2, 0xAABBCCDD)")
+        
+        cursor.execute("SELECT binary_col FROM #pytest_binary_test ORDER BY id")
+        rows = cursor.fetchall()
+        
+        # BINARY pads with zeros to fixed length (8 bytes)
+        assert len(rows) == 2, "Should fetch 2 rows"
+        assert len(rows[0][0]) == 8, "BINARY(8) should be 8 bytes"
+        assert len(rows[1][0]) == 8, "BINARY(8) should be 8 bytes"
+        # First 5 bytes should match, rest padded with zeros
+        assert rows[0][0][:5] == b'\x01\x02\x03\x04\x05', "First BINARY value should start with inserted bytes"
+        assert rows[0][0][5:] == b'\x00\x00\x00', "BINARY should be zero-padded"
+        
+        cursor.execute("DROP TABLE #pytest_binary_test")
+    except Exception as e:
+        pytest.fail(f"Fixed-length BINARY test failed: {e}")
+       # The hasattr check should complete without error
+        # This covers the conditional log method availability checks
+
+    except Exception as e:
+        pytest.fail(f"Cursor log method availability test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_log_check")
+        db_connection.commit()
+
+
+def test_all_numeric_types_with_nulls(cursor, db_connection):
+    """Test NULL handling for all numeric types to ensure processor functions handle NULLs correctly"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_all_numeric_nulls")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_all_numeric_nulls (
+                int_col INT,
+                bigint_col BIGINT,
+                smallint_col SMALLINT,
+                tinyint_col TINYINT,
+                bit_col BIT,
+                real_col REAL,
+                float_col FLOAT
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Insert row with all NULLs
+        cursor.execute(
+            "INSERT INTO #pytest_all_numeric_nulls VALUES (NULL, NULL, NULL, NULL, NULL, NULL, NULL)"
+        )
+        # Insert row with actual values
+        cursor.execute(
+            "INSERT INTO #pytest_all_numeric_nulls VALUES (42, 9223372036854775807, 32767, 255, 1, 3.14, 2.718281828)"
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT * FROM #pytest_all_numeric_nulls ORDER BY int_col ASC")
+        rows = cursor.fetchall()
+
+        # First row should be all NULLs
+        assert len(rows) == 2, "Should have exactly 2 rows"
+        assert all(val is None for val in rows[0]), "First row should be all NULLs"
+
+        # Second row should have actual values
+        assert rows[1][0] == 42, "INT column should be 42"
+        assert rows[1][1] == 9223372036854775807, "BIGINT column should match"
+        assert rows[1][2] == 32767, "SMALLINT column should be 32767"
+        assert rows[1][3] == 255, "TINYINT column should be 255"
+        assert rows[1][4] == True, "BIT column should be True"
+        assert abs(rows[1][5] - 3.14) < 0.01, "REAL column should be approximately 3.14"
+        assert abs(rows[1][6] - 2.718281828) < 0.0001, "FLOAT column should be approximately 2.718281828"
+
+    except Exception as e:
+        pytest.fail(f"All numeric types NULL test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_all_numeric_nulls")
+        db_connection.commit()
+
+
+def test_lob_data_types(cursor, db_connection):
+    """Test LOB (Large Object) data types to ensure LOB fallback paths are exercised"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_lob_test")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_lob_test (
+                id INT,
+                text_lob VARCHAR(MAX),
+                ntext_lob NVARCHAR(MAX),
+                binary_lob VARBINARY(MAX)
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Create large data that will trigger LOB handling
+        large_text = 'A' * 10000  # 10KB text
+        large_ntext = 'B' * 10000  # 10KB unicode text
+        large_binary = b'\x01\x02\x03\x04' * 2500  # 10KB binary
+
+        cursor.execute(
+            "INSERT INTO #pytest_lob_test VALUES (?, ?, ?, ?)",
+            (1, large_text, large_ntext, large_binary)
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT id, text_lob, ntext_lob, binary_lob FROM #pytest_lob_test")
+        row = cursor.fetchone()
+
+        assert row[0] == 1, "ID should be 1"
+        assert row[1] == large_text, "VARCHAR(MAX) LOB data should match"
+        assert row[2] == large_ntext, "NVARCHAR(MAX) LOB data should match"
+        assert row[3] == large_binary, "VARBINARY(MAX) LOB data should match"
+
+    except Exception as e:
+        pytest.fail(f"LOB data types test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_lob_test")
+        db_connection.commit()
+
+
+def test_lob_char_column_types(cursor, db_connection):
+    """Test LOB fetching specifically for CHAR/VARCHAR columns (covers lines 3313-3314)"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_lob_char")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_lob_char (
+                id INT,
+                char_lob VARCHAR(MAX)
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Create data large enough to trigger LOB path (>8000 bytes)
+        large_char_data = 'X' * 20000  # 20KB text
+        
+        cursor.execute(
+            "INSERT INTO #pytest_lob_char VALUES (?, ?)",
+            (1, large_char_data)
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT id, char_lob FROM #pytest_lob_char")
+        row = cursor.fetchone()
+
+        assert row[0] == 1, "ID should be 1"
+        assert row[1] == large_char_data, "VARCHAR(MAX) LOB data should match"
+        assert len(row[1]) == 20000, "VARCHAR(MAX) should be 20000 chars"
+
+    except Exception as e:
+        pytest.fail(f"LOB CHAR column test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_lob_char")
+        db_connection.commit()
+
+
+def test_lob_wchar_column_types(cursor, db_connection):
+    """Test LOB fetching specifically for WCHAR/NVARCHAR columns (covers lines 3358-3359)"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_lob_wchar")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_lob_wchar (
+                id INT,
+                wchar_lob NVARCHAR(MAX)
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Create unicode data large enough to trigger LOB path (>4000 characters for NVARCHAR)
+        large_wchar_data = '🔥' * 5000 + 'Unicode™' * 1000  # Mix of emoji and special chars
+        
+        cursor.execute(
+            "INSERT INTO #pytest_lob_wchar VALUES (?, ?)",
+            (1, large_wchar_data)
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT id, wchar_lob FROM #pytest_lob_wchar")
+        row = cursor.fetchone()
+
+        assert row[0] == 1, "ID should be 1"
+        assert row[1] == large_wchar_data, "NVARCHAR(MAX) LOB data should match"
+        assert '🔥' in row[1], "Should contain emoji characters"
+
+    except Exception as e:
+        pytest.fail(f"LOB WCHAR column test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_lob_wchar")
+        db_connection.commit()
+
+
+def test_lob_binary_column_types(cursor, db_connection):
+    """Test LOB fetching specifically for BINARY/VARBINARY columns (covers lines 3384-3385)"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_lob_binary")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_lob_binary (
+                id INT,
+                binary_lob VARBINARY(MAX)
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Create binary data large enough to trigger LOB path (>8000 bytes)
+        large_binary_data = bytes(range(256)) * 100  # 25.6KB of varied binary data
+        
+        cursor.execute(
+            "INSERT INTO #pytest_lob_binary VALUES (?, ?)",
+            (1, large_binary_data)
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT id, binary_lob FROM #pytest_lob_binary")
+        row = cursor.fetchone()
+
+        assert row[0] == 1, "ID should be 1"
+        assert row[1] == large_binary_data, "VARBINARY(MAX) LOB data should match"
+        assert len(row[1]) == 25600, "VARBINARY(MAX) should be 25600 bytes"
+
+    except Exception as e:
+        pytest.fail(f"LOB BINARY column test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_lob_binary")
+        db_connection.commit()
+
+
+def test_zero_length_complex_types(cursor, db_connection):
+    """Test zero-length data for complex types (covers lines 3531-3533)"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_zero_length")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_zero_length (
+                id INT,
+                empty_varchar VARCHAR(100),
+                empty_nvarchar NVARCHAR(100),
+                empty_binary VARBINARY(100)
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Insert empty (non-NULL) values
+        cursor.execute(
+            "INSERT INTO #pytest_zero_length VALUES (?, ?, ?, ?)",
+            (1, '', '', b'')
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT id, empty_varchar, empty_nvarchar, empty_binary FROM #pytest_zero_length")
+        row = cursor.fetchone()
+
+        assert row[0] == 1, "ID should be 1"
+        assert row[1] == '', "Empty VARCHAR should be empty string"
+        assert row[2] == '', "Empty NVARCHAR should be empty string"
+        assert row[3] == b'', "Empty VARBINARY should be empty bytes"
+
+    except Exception as e:
+        pytest.fail(f"Zero-length complex types test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_zero_length")
+        db_connection.commit()
+
+
+def test_guid_with_nulls(cursor, db_connection):
+    """Test GUID type with NULL values"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_guid_nulls")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_guid_nulls (
+                id INT,
+                guid_col UNIQUEIDENTIFIER
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Insert NULL GUID
+        cursor.execute("INSERT INTO #pytest_guid_nulls VALUES (1, NULL)")
+        # Insert actual GUID
+        cursor.execute("INSERT INTO #pytest_guid_nulls VALUES (2, NEWID())")
+        db_connection.commit()
+
+        cursor.execute("SELECT id, guid_col FROM #pytest_guid_nulls ORDER BY id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 2, "Should have exactly 2 rows"
+        assert rows[0][1] is None, "First GUID should be NULL"
+        assert rows[1][1] is not None, "Second GUID should not be NULL"
+
+    except Exception as e:
+        pytest.fail(f"GUID with NULLs test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_guid_nulls")
+        db_connection.commit()
+
+
+def test_datetimeoffset_with_nulls(cursor, db_connection):
+    """Test DATETIMEOFFSET type with NULL values"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_dto_nulls")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_dto_nulls (
+                id INT,
+                dto_col DATETIMEOFFSET
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Insert NULL DATETIMEOFFSET
+        cursor.execute("INSERT INTO #pytest_dto_nulls VALUES (1, NULL)")
+        # Insert actual DATETIMEOFFSET
+        cursor.execute("INSERT INTO #pytest_dto_nulls VALUES (2, SYSDATETIMEOFFSET())")
+        db_connection.commit()
+
+        cursor.execute("SELECT id, dto_col FROM #pytest_dto_nulls ORDER BY id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 2, "Should have exactly 2 rows"
+        assert rows[0][1] is None, "First DATETIMEOFFSET should be NULL"
+        assert rows[1][1] is not None, "Second DATETIMEOFFSET should not be NULL"
+
+    except Exception as e:
+        pytest.fail(f"DATETIMEOFFSET with NULLs test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_dto_nulls")
+        db_connection.commit()
+
+
+def test_decimal_conversion_edge_cases(cursor, db_connection):
+    """Test DECIMAL/NUMERIC type conversion including edge cases"""
+    try:
+        drop_table_if_exists(cursor, "#pytest_decimal_edge")
+        cursor.execute(
+            """
+            CREATE TABLE #pytest_decimal_edge (
+                id INT,
+                dec_col DECIMAL(18, 4)
+            )
+            """
+        )
+        db_connection.commit()
+
+        # Insert various decimal values including edge cases
+        test_values = [
+            (1, "123.4567"),
+            (2, "0.0001"),
+            (3, "-999999999999.9999"),
+            (4, "999999999999.9999"),
+            (5, "0.0000"),
+        ]
+        
+        for id_val, dec_val in test_values:
+            cursor.execute(
+                "INSERT INTO #pytest_decimal_edge VALUES (?, ?)",
+                (id_val, decimal.Decimal(dec_val))
+            )
+        
+        # Also insert NULL
+        cursor.execute("INSERT INTO #pytest_decimal_edge VALUES (6, NULL)")
+        db_connection.commit()
+
+        cursor.execute("SELECT id, dec_col FROM #pytest_decimal_edge ORDER BY id")
+        rows = cursor.fetchall()
+
+        assert len(rows) == 6, "Should have exactly 6 rows"
+        
+        # Verify the values
+        for i, (id_val, expected_str) in enumerate(test_values):
+            assert rows[i][0] == id_val, f"Row {i} ID should be {id_val}"
+            assert rows[i][1] == decimal.Decimal(expected_str), f"Row {i} decimal should match {expected_str}"
+        
+        # Verify NULL
+        assert rows[5][0] == 6, "Last row ID should be 6"
+        assert rows[5][1] is None, "Last decimal should be NULL"
+
+    except Exception as e:
+        pytest.fail(f"Decimal conversion edge cases test failed: {e}")
+    finally:
+        drop_table_if_exists(cursor, "#pytest_decimal_edge")
+        db_connection.commit()
+
+
+def test_fixed_length_char_type(cursor, db_connection):
+    """Test SQL_CHAR (fixed-length CHAR) column processor path (Lines 3464-3467)"""
+    try:
+        cursor.execute("CREATE TABLE #pytest_char_test (id INT, char_col CHAR(10))")
+        cursor.execute("INSERT INTO #pytest_char_test VALUES (1, 'hello')")
+        cursor.execute("INSERT INTO #pytest_char_test VALUES (2, 'world')")
+        
+        cursor.execute("SELECT char_col FROM #pytest_char_test ORDER BY id")
+        rows = cursor.fetchall()
+        
+        # CHAR pads with spaces to fixed length
+        assert len(rows) == 2, "Should fetch 2 rows"
+        assert rows[0][0].rstrip() == "hello", "First CHAR value should be 'hello'"
+        assert rows[1][0].rstrip() == "world", "Second CHAR value should be 'world'"
+        
+        cursor.execute("DROP TABLE #pytest_char_test")
+    except Exception as e:
+        pytest.fail(f"Fixed-length CHAR test failed: {e}")
+
+
+def test_fixed_length_nchar_type(cursor, db_connection):
+    """Test SQL_WCHAR (fixed-length NCHAR) column processor path (Lines 3469-3472)"""
+    try:
+        cursor.execute("CREATE TABLE #pytest_nchar_test (id INT, nchar_col NCHAR(10))")
+        cursor.execute("INSERT INTO #pytest_nchar_test VALUES (1, N'hello')")
+        cursor.execute("INSERT INTO #pytest_nchar_test VALUES (2, N'世界')")  # Unicode test
+        
+        cursor.execute("SELECT nchar_col FROM #pytest_nchar_test ORDER BY id")
+        rows = cursor.fetchall()
+        
+        # NCHAR pads with spaces to fixed length
+        assert len(rows) == 2, "Should fetch 2 rows"
+        assert rows[0][0].rstrip() == "hello", "First NCHAR value should be 'hello'"
+        assert rows[1][0].rstrip() == "世界", "Second NCHAR value should be '世界'"
+        
+        cursor.execute("DROP TABLE #pytest_nchar_test")
+    except Exception as e:
+        pytest.fail(f"Fixed-length NCHAR test failed: {e}")
+
+
+def test_fixed_length_binary_type(cursor, db_connection):
+    """Test SQL_BINARY (fixed-length BINARY) column processor path (Lines 3474-3477)"""
+    try:
+        cursor.execute("CREATE TABLE #pytest_binary_test (id INT, binary_col BINARY(8))")
+        cursor.execute("INSERT INTO #pytest_binary_test VALUES (1, 0x0102030405)")
+        cursor.execute("INSERT INTO #pytest_binary_test VALUES (2, 0xAABBCCDD)")
+        
+        cursor.execute("SELECT binary_col FROM #pytest_binary_test ORDER BY id")
+        rows = cursor.fetchall()
+        
+        # BINARY pads with zeros to fixed length (8 bytes)
+        assert len(rows) == 2, "Should fetch 2 rows"
+        assert len(rows[0][0]) == 8, "BINARY(8) should be 8 bytes"
+        assert len(rows[1][0]) == 8, "BINARY(8) should be 8 bytes"
+        # First 5 bytes should match, rest padded with zeros
+        assert rows[0][0][:5] == b'\x01\x02\x03\x04\x05', "First BINARY value should start with inserted bytes"
+        assert rows[0][0][5:] == b'\x00\x00\x00', "BINARY should be zero-padded"
+        
+        cursor.execute("DROP TABLE #pytest_binary_test")
+    except Exception as e:
+        pytest.fail(f"Fixed-length BINARY test failed: {e}")
 
 
 def test_close(db_connection):

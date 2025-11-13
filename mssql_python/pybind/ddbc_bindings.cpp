@@ -135,52 +135,6 @@ struct NumericData {
     }
 };
 
-// Struct to hold the DateTimeOffset structure
-struct DateTimeOffset
-{
-    SQLSMALLINT    year;
-    SQLUSMALLINT   month;
-    SQLUSMALLINT   day;
-    SQLUSMALLINT   hour;
-    SQLUSMALLINT   minute;
-    SQLUSMALLINT   second;
-    SQLUINTEGER    fraction;        // Nanoseconds
-    SQLSMALLINT    timezone_hour;   // Offset hours from UTC
-    SQLSMALLINT    timezone_minute; // Offset minutes from UTC
-};
-
-// Struct to hold data buffers and indicators for each column
-struct ColumnBuffers {
-    std::vector<std::vector<SQLCHAR>> charBuffers;
-    std::vector<std::vector<SQLWCHAR>> wcharBuffers;
-    std::vector<std::vector<SQLINTEGER>> intBuffers;
-    std::vector<std::vector<SQLSMALLINT>> smallIntBuffers;
-    std::vector<std::vector<SQLREAL>> realBuffers;
-    std::vector<std::vector<SQLDOUBLE>> doubleBuffers;
-    std::vector<std::vector<SQL_TIMESTAMP_STRUCT>> timestampBuffers;
-    std::vector<std::vector<SQLBIGINT>> bigIntBuffers;
-    std::vector<std::vector<SQL_DATE_STRUCT>> dateBuffers;
-    std::vector<std::vector<SQL_TIME_STRUCT>> timeBuffers;
-    std::vector<std::vector<SQLGUID>> guidBuffers;
-    std::vector<std::vector<SQLLEN>> indicators;
-    std::vector<std::vector<DateTimeOffset>> datetimeoffsetBuffers;
-
-    ColumnBuffers(SQLSMALLINT numCols, int fetchSize)
-        : charBuffers(numCols),
-          wcharBuffers(numCols),
-          intBuffers(numCols),
-          smallIntBuffers(numCols),
-          realBuffers(numCols),
-          doubleBuffers(numCols),
-          timestampBuffers(numCols),
-          bigIntBuffers(numCols),
-          dateBuffers(numCols),
-          timeBuffers(numCols),
-          guidBuffers(numCols),
-          datetimeoffsetBuffers(numCols),
-          indicators(numCols, std::vector<SQLLEN>(fetchSize)) {}
-};
-
 //-------------------------------------------------------------------------------------------------
 // Function pointer initialization
 //-------------------------------------------------------------------------------------------------
@@ -2405,11 +2359,12 @@ SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
     return SQLFetch_ptr(StatementHandle->get());
 }
 
-static py::object FetchLobColumnData(SQLHSTMT hStmt,
-                                     SQLUSMALLINT colIndex,
-                                     SQLSMALLINT cType,
-                                     bool isWideChar,
-                                     bool isBinary)
+// Non-static so it can be called from inline functions in header
+py::object FetchLobColumnData(SQLHSTMT hStmt,
+                              SQLUSMALLINT colIndex,
+                              SQLSMALLINT cType,
+                              bool isWideChar,
+                              bool isBinary)
 {
     std::vector<char> buffer;
     SQLRETURN ret = SQL_SUCCESS_WITH_INFO;
@@ -3220,40 +3175,119 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
     
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
     
-    size_t initialSize = rows.size();
-    for (SQLULEN i = 0; i < numRowsFetched; i++) {
-        rows.append(py::none());
+    // Performance: Build function pointer dispatch table (once per batch)
+    // This eliminates the switch statement from the hot loop - 10,000 rows × 10 cols
+    // reduces from 100,000 switch evaluations to just 10 switch evaluations
+    std::vector<ColumnProcessor> columnProcessors(numCols);
+    std::vector<ColumnInfoExt> columnInfosExt(numCols);
+    
+    for (SQLUSMALLINT col = 0; col < numCols; col++) {
+        // Populate extended column info for processors that need it
+        columnInfosExt[col].dataType = columnInfos[col].dataType;
+        columnInfosExt[col].columnSize = columnInfos[col].columnSize;
+        columnInfosExt[col].processedColumnSize = columnInfos[col].processedColumnSize;
+        columnInfosExt[col].fetchBufferSize = columnInfos[col].fetchBufferSize;
+        columnInfosExt[col].isLob = columnInfos[col].isLob;
+        
+        // Map data type to processor function (switch executed once per column, not per cell)
+        SQLSMALLINT dataType = columnInfos[col].dataType;
+        switch (dataType) {
+            case SQL_INTEGER:
+                columnProcessors[col] = ColumnProcessors::ProcessInteger;
+                break;
+            case SQL_SMALLINT:
+                columnProcessors[col] = ColumnProcessors::ProcessSmallInt;
+                break;
+            case SQL_BIGINT:
+                columnProcessors[col] = ColumnProcessors::ProcessBigInt;
+                break;
+            case SQL_TINYINT:
+                columnProcessors[col] = ColumnProcessors::ProcessTinyInt;
+                break;
+            case SQL_BIT:
+                columnProcessors[col] = ColumnProcessors::ProcessBit;
+                break;
+            case SQL_REAL:
+                columnProcessors[col] = ColumnProcessors::ProcessReal;
+                break;
+            case SQL_DOUBLE:
+            case SQL_FLOAT:
+                columnProcessors[col] = ColumnProcessors::ProcessDouble;
+                break;
+            case SQL_CHAR:
+            case SQL_VARCHAR:
+            case SQL_LONGVARCHAR:
+                columnProcessors[col] = ColumnProcessors::ProcessChar;
+                break;
+            case SQL_WCHAR:
+            case SQL_WVARCHAR:
+            case SQL_WLONGVARCHAR:
+                columnProcessors[col] = ColumnProcessors::ProcessWChar;
+                break;
+            case SQL_BINARY:
+            case SQL_VARBINARY:
+            case SQL_LONGVARBINARY:
+                columnProcessors[col] = ColumnProcessors::ProcessBinary;
+                break;
+            default:
+                // For complex types (Decimal, DateTime, Guid, etc.), set to nullptr 
+                // and handle via fallback switch in the hot loop
+                columnProcessors[col] = nullptr;
+                break;
+        }
     }
     
+    // Performance: Single-phase row creation pattern
+    // Create each row, fill it completely, then append to results list
+    // This prevents data corruption (no partially-filled rows) and simplifies error handling
+    PyObject* rowsList = rows.ptr();
+    
     for (SQLULEN i = 0; i < numRowsFetched; i++) {
-        // Create row container pre-allocated with known column count
-        py::list row(numCols);
+        // Create row and immediately fill it (atomic operation per row)
+        // This eliminates the two-phase pattern that could leave garbage rows on exception
+        PyObject* row = PyList_New(numCols);
+        if (!row) {
+            throw std::runtime_error("Failed to allocate row list - memory allocation failure");
+        }
+        
         for (SQLUSMALLINT col = 1; col <= numCols; col++) {
-            const ColumnInfo& colInfo = columnInfos[col - 1];
-            SQLSMALLINT dataType = colInfo.dataType;
+            // Performance: Centralized NULL checking before calling processor functions
+            // This eliminates redundant NULL checks inside each processor and improves CPU branch prediction
             SQLLEN dataLen = buffers.indicators[col - 1][i];
+            
+            // Handle NULL and special indicator values first (applies to ALL types)
             if (dataLen == SQL_NULL_DATA) {
-                row[col - 1] = py::none();
+                Py_INCREF(Py_None);
+                PyList_SET_ITEM(row, col - 1, Py_None);
                 continue;
             }
             if (dataLen == SQL_NO_TOTAL) {
-                LOG("Cannot determine the length of the data. Returning NULL value instead."
-                    "Column ID - {}", col);
-                row[col - 1] = py::none();
+                LOG("Cannot determine the length of the data. Returning NULL value instead. Column ID - {}", col);
+                Py_INCREF(Py_None);
+                PyList_SET_ITEM(row, col - 1, Py_None);
                 continue;
-            } else if (dataLen == 0) {
-                // Handle zero-length (non-NULL) data
-                if (dataType == SQL_CHAR || dataType == SQL_VARCHAR || dataType == SQL_LONGVARCHAR) {
-                    row[col - 1] = std::string("");
-                } else if (dataType == SQL_WCHAR || dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR) {
-                    row[col - 1] = std::wstring(L"");
-                } else if (dataType == SQL_BINARY || dataType == SQL_VARBINARY || dataType == SQL_LONGVARBINARY) {
-                    row[col - 1] = py::bytes("");
-                } else {
-                    // For other datatypes, 0 length is unexpected. Log & set None
-                    LOG("Column data length is 0 for non-string/binary datatype. Setting None to the result row. Column ID - {}", col);
-                    row[col - 1] = py::none();
-                }
+            }
+            
+            // Performance: Use function pointer dispatch for simple types (fast path)
+            // This eliminates the switch statement from hot loop - reduces 100,000 switch 
+            // evaluations (1000 rows × 10 cols × 10 types) to just 10 (setup only)
+            // Note: Processor functions no longer need to check for NULL since we do it above
+            if (columnProcessors[col - 1] != nullptr) {
+                columnProcessors[col - 1](row, buffers, &columnInfosExt[col - 1], col, i, hStmt);
+                continue;
+            }
+            
+            // Fallback for complex types (Decimal, DateTime, Guid, DateTimeOffset, etc.)
+            // that require pybind11 or special handling
+            const ColumnInfoExt& colInfo = columnInfosExt[col - 1];
+            SQLSMALLINT dataType = colInfo.dataType;
+            
+            // Additional validation for complex types
+            if (dataLen == 0) {
+                // Handle zero-length (non-NULL) data for complex types
+                LOG("Column data length is 0 for complex datatype. Setting None to the result row. Column ID - {}", col);
+                Py_INCREF(Py_None);
+                PyList_SET_ITEM(row, col - 1, Py_None);
                 continue;
             } else if (dataLen < 0) {
                 // Negative value is unexpected, log column index, SQL type & raise exception
@@ -3262,70 +3296,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             }
             assert(dataLen > 0 && "Data length must be > 0");
 
+            // Handle complex types that couldn't use function pointers
             switch (dataType) {
-                case SQL_CHAR:
-                case SQL_VARCHAR:
-                case SQL_LONGVARCHAR: {
-                    SQLULEN columnSize = colInfo.columnSize;
-                    HandleZeroColumnSizeAtFetch(columnSize);
-                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
-					uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
-                    bool isLob = colInfo.isLob;
-					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
-                    if (!isLob && numCharsInData < fetchBufferSize) {
-                        row[col - 1] = py::str(
-                            reinterpret_cast<char*>(&buffers.charBuffers[col - 1][i * fetchBufferSize]),
-                            numCharsInData);
-                    } else {
-                        row[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false);
-                    }
-                    break;
-                }
-                case SQL_WCHAR:
-                case SQL_WVARCHAR:
-                case SQL_WLONGVARCHAR: {
-                    // TODO: variable length data needs special handling, this logic wont suffice
-                    SQLULEN columnSize = colInfo.columnSize;
-                    HandleZeroColumnSizeAtFetch(columnSize);
-                    uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
-					uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
-                    bool isLob = colInfo.isLob;
-					// fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
-                    if (!isLob && numCharsInData < fetchBufferSize) {
-#if defined(__APPLE__) || defined(__linux__)
-                        SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][i * fetchBufferSize];
-                        std::wstring wstr = SQLWCHARToWString(wcharData, numCharsInData);
-                        row[col - 1] = wstr;
-#else
-                        row[col - 1] = std::wstring(
-                            reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][i * fetchBufferSize]),
-                            numCharsInData);
-#endif
-                    } else {
-                        row[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false);
-                    }
-                    break;
-                }
-                case SQL_INTEGER: {
-                    row[col - 1] = buffers.intBuffers[col - 1][i];
-                    break;
-                }
-                case SQL_SMALLINT: {
-                    row[col - 1] = buffers.smallIntBuffers[col - 1][i];
-                    break;
-                }
-                case SQL_TINYINT: {
-                    row[col - 1] = buffers.charBuffers[col - 1][i];
-                    break;
-                }
-                case SQL_BIT: {
-                    row[col - 1] = static_cast<bool>(buffers.charBuffers[col - 1][i]);
-                    break;
-                }
-                case SQL_REAL: {
-                    row[col - 1] = buffers.realBuffers[col - 1][i];
-                    break;
-                }
                 case SQL_DECIMAL:
                 case SQL_NUMERIC: {
                     try {
@@ -3335,44 +3307,40 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                         
                         // Always use standard decimal point for Python Decimal parsing  
                         // The decimal separator only affects display formatting, not parsing
-                        row[col - 1] = PythonObjectCache::get_decimal_class()(py::str(rawData, decimalDataLen));
+                        PyObject* decimalObj = PythonObjectCache::get_decimal_class()(py::str(rawData, decimalDataLen)).release().ptr();
+                        PyList_SET_ITEM(row, col - 1, decimalObj);
                     } catch (const py::error_already_set& e) {
                         // Handle the exception, e.g., log the error and set py::none()
                         LOG("Error converting to decimal: {}", e.what());
-                        row[col - 1] = py::none();
+                        Py_INCREF(Py_None);
+                        PyList_SET_ITEM(row, col - 1, Py_None);
                     }
-                    break;
-                }
-                case SQL_DOUBLE:
-                case SQL_FLOAT: {
-                    row[col - 1] = buffers.doubleBuffers[col - 1][i];
                     break;
                 }
                 case SQL_TIMESTAMP:
                 case SQL_TYPE_TIMESTAMP:
                 case SQL_DATETIME: {
                     const SQL_TIMESTAMP_STRUCT& ts = buffers.timestampBuffers[col - 1][i];
-                    row[col - 1] = PythonObjectCache::get_datetime_class()(ts.year, ts.month, ts.day,
+                    PyObject* datetimeObj = PythonObjectCache::get_datetime_class()(ts.year, ts.month, ts.day,
                                                                            ts.hour, ts.minute, ts.second,
-                                                                           ts.fraction / 1000);
-                    break;
-                }
-                case SQL_BIGINT: {
-                    row[col - 1] = buffers.bigIntBuffers[col - 1][i];
+                                                                           ts.fraction / 1000).release().ptr();
+                    PyList_SET_ITEM(row, col - 1, datetimeObj);
                     break;
                 }
                 case SQL_TYPE_DATE: {
-                    row[col - 1] = PythonObjectCache::get_date_class()(buffers.dateBuffers[col - 1][i].year,
+                    PyObject* dateObj = PythonObjectCache::get_date_class()(buffers.dateBuffers[col - 1][i].year,
                                                                        buffers.dateBuffers[col - 1][i].month,
-                                                                       buffers.dateBuffers[col - 1][i].day);
+                                                                       buffers.dateBuffers[col - 1][i].day).release().ptr();
+                    PyList_SET_ITEM(row, col - 1, dateObj);
                     break;
                 }
                 case SQL_TIME:
                 case SQL_TYPE_TIME:
                 case SQL_SS_TIME2: {
-                    row[col - 1] = PythonObjectCache::get_time_class()(buffers.timeBuffers[col - 1][i].hour,
+                    PyObject* timeObj = PythonObjectCache::get_time_class()(buffers.timeBuffers[col - 1][i].hour,
                                                                        buffers.timeBuffers[col - 1][i].minute,
-                                                                       buffers.timeBuffers[col - 1][i].second);
+                                                                       buffers.timeBuffers[col - 1][i].second).release().ptr();
+                    PyList_SET_ITEM(row, col - 1, timeObj);
                     break;
                 }
                 case SQL_SS_TIMESTAMPOFFSET: {
@@ -3395,16 +3363,18 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                             dtoValue.fraction / 1000,  // ns → µs
                             tzinfo
                         );
-                        row[col - 1] = py_dt;
+                        PyList_SET_ITEM(row, col - 1, py_dt.release().ptr());
                     } else {
-                        row[col - 1] = py::none();
+                        Py_INCREF(Py_None);
+                        PyList_SET_ITEM(row, col - 1, Py_None);
                     }
                     break;
                 }
                 case SQL_GUID: {
                     SQLLEN indicator = buffers.indicators[col - 1][i];
                     if (indicator == SQL_NULL_DATA) {
-                        row[col - 1] = py::none();
+                        Py_INCREF(Py_None);
+                        PyList_SET_ITEM(row, col - 1, Py_None);
                         break;
                     }
                     SQLGUID* guidValue = &buffers.guidBuffers[col - 1][i];
@@ -3423,22 +3393,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                     py::dict kwargs;
                     kwargs["bytes"] = py_guid_bytes;
                     py::object uuid_obj = PythonObjectCache::get_uuid_class()(**kwargs);
-                    row[col - 1] = uuid_obj;
-                    break;
-                }
-                case SQL_BINARY:
-                case SQL_VARBINARY:
-                case SQL_LONGVARBINARY: {
-                    SQLULEN columnSize = colInfo.columnSize;
-                    HandleZeroColumnSizeAtFetch(columnSize);
-                    bool isLob = colInfo.isLob;
-                    if (!isLob && static_cast<size_t>(dataLen) <= columnSize) {
-                        row[col - 1] = py::bytes(reinterpret_cast<const char*>(
-                                                     &buffers.charBuffers[col - 1][i * columnSize]),
-                                                 dataLen);
-                    } else {
-                        row[col - 1] = FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true);
-                    }
+                    PyList_SET_ITEM(row, col - 1, uuid_obj.release().ptr());
                     break;
                 }
                 default: {
@@ -3453,7 +3408,14 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
             }
         }
-        rows[initialSize + i] = row;
+        
+        // Row is now fully populated - add it to results list atomically
+        // This ensures no partially-filled rows exist in the list on exception
+        if (PyList_Append(rowsList, row) < 0) {
+            Py_DECREF(row);  // Clean up this row
+            throw std::runtime_error("Failed to append row to results list - memory allocation failure");
+        }
+        Py_DECREF(row);  // PyList_Append increments refcount, release our reference
     }
     return ret;
 }
