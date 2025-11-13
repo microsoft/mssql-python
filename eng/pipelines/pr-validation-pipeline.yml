@@ -61,44 +61,69 @@ jobs:
         DB_PASSWORD: $(DB_PASSWORD)
 
     - powershell: |
-        # Download Python 3.14 ARM64 embed package from python.org
-        # Note: The FTP path uses the base version (3.14.0) not the full version (3.14.0a2)
-        $url = "https://www.python.org/ftp/python/3.14.0/python-3.14.0a2-embed-arm64.zip"
-        $output = "$(Build.SourcesDirectory)\python314-arm64-embed.zip"
+        # Download Python 3.14 ARM64 installer and extract development files
+        # The installer contains python314.lib needed for linking
+        $installerUrl = "https://www.python.org/ftp/python/3.14.0/python-3.14.0a2-arm64.exe"
+        $installerPath = "$(Build.SourcesDirectory)\python314-arm64-installer.exe"
+        $extractPath = "$(Build.SourcesDirectory)\python314-arm64-extracted"
         $destPath = "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64"
         
-        Write-Host "Downloading Python 3.14 ARM64 embed package from: $url"
+        Write-Host "Downloading Python 3.14 ARM64 installer from: $installerUrl"
         
         try {
-          # Download the embed package
-          Invoke-WebRequest -Uri $url -OutFile $output -UseBasicParsing -ErrorAction Stop
-          Write-Host "Download successful! File size: $((Get-Item $output).Length / 1MB) MB"
+          # Download the installer
+          Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing -ErrorAction Stop
+          Write-Host "Download successful! File size: $((Get-Item $installerPath).Length / 1MB) MB"
           
-          # Create destination directory
+          # Create directories
+          New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
           New-Item -ItemType Directory -Force -Path $destPath | Out-Null
           
-          # Extract the embed package
-          Expand-Archive -Path $output -DestinationPath $destPath -Force
+          # Extract the installer (it's a self-extracting archive)
+          Write-Host "Extracting installer contents..."
+          & $installerPath /quiet /layout $extractPath
           
-          Write-Host "Successfully extracted Python 3.14 ARM64 libs to: $destPath"
-          Write-Host "Contents:"
-          Get-ChildItem $destPath | ForEach-Object { Write-Host "  - $($_.Name)" }
+          # Wait for extraction to complete
+          Start-Sleep -Seconds 10
           
-          # Verify python314.dll exists
-          if (Test-Path "$destPath\python314.dll") {
-            Write-Host "✓ python314.dll found"
-          } else {
-            Write-Warning "python314.dll not found in extracted files"
+          # Find and copy the libs directory (contains python314.lib)
+          $libsSource = Get-ChildItem -Path $extractPath -Recurse -Directory -Filter "libs" | Select-Object -First 1
+          if ($libsSource) {
+            Write-Host "Found libs directory at: $($libsSource.FullName)"
+            Copy-Item -Path "$($libsSource.FullName)\*" -Destination $destPath -Recurse -Force
           }
           
+          # Also get the DLLs from the installer
+          $dllFiles = Get-ChildItem -Path $extractPath -Recurse -Filter "*.dll"
+          foreach ($dll in $dllFiles | Where-Object { $_.Name -like "python*" -or $_.Name -like "vcruntime*" }) {
+            Copy-Item -Path $dll.FullName -Destination $destPath -Force
+            Write-Host "Copied: $($dll.Name)"
+          }
+          
+          Write-Host "`nContents of $destPath after extraction:"
+          Get-ChildItem $destPath | ForEach-Object { Write-Host "  - $($_.Name)" }
+          
+          # Verify python314.lib exists
+          if (Test-Path "$destPath\python314.lib") {
+            Write-Host "`n✓ python314.lib found (needed for linking)"
+          } else {
+            Write-Error "python314.lib not found! Build will fail."
+            Write-Host "Available files in libs directory:"
+            Get-ChildItem $destPath
+            exit 1
+          }
+          
+          # Cleanup
+          Remove-Item -Path $installerPath -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path $extractPath -Recurse -Force -ErrorAction SilentlyContinue
+          
         } catch {
-          Write-Error "Failed to download Python 3.14 ARM64 embed package: $_"
-          Write-Host "URL attempted: $url"
-          Write-Host "This will likely cause the ARM64 build to fail."
+          Write-Error "Failed to download/extract Python 3.14 ARM64 installer: $_"
+          Write-Host "URL attempted: $installerUrl"
           exit 1
         }
       condition: eq(variables['targetArch'], 'arm64')
-      displayName: 'Download Python 3.14 ARM64 embed package'
+      displayName: 'Download Python 3.14 ARM64 development files'
 
     - script: |
         echo "Python Version: $(pythonVersion)"
@@ -608,8 +633,8 @@ jobs:
               dnf clean all
               dnf -y makecache
               
-              # Install build dependencies
-              dnf -y install gcc gcc-c++ make openssl-devel zlib-devel libffi-devel readline-devel sqlite-devel bzip2-devel xz-devel unixODBC-devel wget tar gzip
+              # Install build dependencies (readline-devel may not be in UBI, but ncurses-devel provides similar functionality)
+              dnf -y install gcc gcc-c++ make openssl-devel zlib-devel libffi-devel ncurses-devel sqlite-devel bzip2-devel xz-devel unixODBC-devel wget tar gzip
               
               # Download and build Python 3.14
               cd /tmp
