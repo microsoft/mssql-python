@@ -42,14 +42,11 @@ def pytest_configure(config):
     enable_log = config.getini('enable_logging')
     if enable_log and str(enable_log).lower() in ('true', '1', 'yes'):
         from mssql_python import setup_logging
-        # Configure Python logging to capture both Python and C++ logs
-        logging.basicConfig(
-            level=logging.DEBUG,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        # Initialize DDBC logging bridge for C++ logs
-        setup_logging(level=logging.DEBUG)
-        print("[pytest] Python + C++ logging enabled for coverage")
+        # Initialize Python + C++ logging for coverage
+        # setup_logging() automatically sets DEBUG level and configures both loggers
+        # Uses 'file' output to avoid bombarding CI console
+        setup_logging(output='file')
+        print("[pytest] Python + C++ logging enabled for coverage (logging to file)")
 
 
 @pytest.fixture(scope="session")
