@@ -81,9 +81,10 @@ llvm-cov export "$PYBIND_SO" \
   --skip-functions \
   -format=lcov > cpp-coverage.info
 
-# Remove LOG() statements from C++ coverage (similar to Python logging exclusion)
+# Remove LOG() statements from C++ coverage using sed to filter LCOV data
+# This filters out lines containing LOG( from the coverage report
 echo "[ACTION] Excluding LOG() statements from C++ coverage"
-lcov --remove cpp-coverage.info '*/LOG(*' -o cpp-coverage.info --ignore-errors unused
+sed -i '/LOG(/d' cpp-coverage.info
 
 echo "==================================="
 echo "[STEP 4] Merging Python + C++ coverage"
