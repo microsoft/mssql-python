@@ -7,8 +7,6 @@ import sys
 import types
 from typing import Dict
 
-from mssql_python.logging import logger
-
 # Import settings from helpers to avoid circular imports
 from .helpers import Settings, get_settings, _settings, _settings_lock
 
