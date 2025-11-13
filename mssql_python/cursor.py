@@ -1719,14 +1719,31 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         for v in non_nulls:
             if not sample_value:
                 sample_value = v
-            elif hasattr(v, "__len__") and hasattr(sample_value, "__len__") and len(v) > len(sample_value):
-                # For objects with length (strings, bytes, etc.), prefer the longer one
-                sample_value = v
+            elif isinstance(v, (str, bytes, bytearray)) and isinstance(sample_value, (str, bytes, bytearray)):
+                # For string/binary objects, prefer the longer one
+                # Use safe length comparison to avoid exceptions from custom __len__ implementations
+                try:
+                    if len(v) > len(sample_value):
+                        sample_value = v
+                except (TypeError, ValueError, AttributeError):
+                    # If length comparison fails, keep the current sample_value
+                    pass
             elif isinstance(v, decimal.Decimal) and isinstance(sample_value, decimal.Decimal):
-                # For Decimal objects, prefer the one with higher precision (more digits)
+                # For Decimal objects, prefer the one that requires higher precision or scale
                 v_tuple = v.as_tuple()
                 sample_tuple = sample_value.as_tuple()
-                if len(v_tuple.digits) > len(sample_tuple.digits):
+                
+                # Calculate precision (total digits) and scale (decimal places)
+                v_precision = len(v_tuple.digits)
+                v_scale = max(0, -v_tuple.exponent) if v_tuple.exponent < 0 else 0
+                
+                sample_precision = len(sample_tuple.digits)
+                sample_scale = max(0, -sample_tuple.exponent) if sample_tuple.exponent < 0 else 0
+                
+                # Prefer the decimal that requires higher precision or scale
+                # This ensures we can accommodate all values in the column
+                if (v_precision > sample_precision or 
+                    (v_precision == sample_precision and v_scale > sample_scale)):
                     sample_value = v
             elif isinstance(v, decimal.Decimal) and not isinstance(sample_value, decimal.Decimal):
                 # If comparing Decimal to non-Decimal, prefer Decimal for better type inference
