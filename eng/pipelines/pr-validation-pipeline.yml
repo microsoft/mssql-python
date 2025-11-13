@@ -184,16 +184,14 @@ jobs:
       continueOnError: false
 
     - powershell: |
-        set PATH=C:\Python314;C:\Python314\Scripts;%PATH%
-        
         Write-Host "Running pytests to validate bindings"
         if ("$(targetArch)" -eq "arm64") {
           Write-Host "Skipping tests for ARM64 (cannot run ARM64 binaries on x64 host)"
           exit 0
         } else {
           Write-Host "Using Python 3.14 for tests:"
-          C:\Python314\python.exe --version
-          C:\Python314\python.exe -m pytest tests/ -v --maxfail=5
+          & C:\Python314\python.exe --version
+          & C:\Python314\python.exe -m pytest tests/ -v --maxfail=5
           if ($LASTEXITCODE -ne 0) {
             Write-Error "Tests failed with exit code $LASTEXITCODE"
             exit $LASTEXITCODE
@@ -211,6 +209,7 @@ jobs:
       displayName: 'Place PYD file into artifacts directory'
 
     - script: |
+        set PATH=C:\Python314;C:\Python314\Scripts;%PATH%
         python -m pip install --upgrade pip
         pip install wheel setuptools
         set ARCHITECTURE=$(targetArch)
