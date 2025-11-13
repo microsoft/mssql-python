@@ -35,14 +35,18 @@ jobs:
     - powershell: |
         # Download Python 3.14 x64 from NuGet (no installation needed)
         $nugetUrl = "https://www.nuget.org/api/v2/package/python/3.14.0-a2"
-        $nugetZip = "$(Build.SourcesDirectory)\python-x64.zip"
+        $nugetFile = "$(Build.SourcesDirectory)\python-x64.nupkg"
+        $zipFile = "$(Build.SourcesDirectory)\python-x64.zip"
         $extractPath = "C:\Python314-NuGet"
         
         Write-Host "Downloading Python 3.14 x64 NuGet package from: $nugetUrl"
-        Invoke-WebRequest -Uri $nugetUrl -OutFile $nugetZip -UseBasicParsing
+        Invoke-WebRequest -Uri $nugetUrl -OutFile $nugetFile -UseBasicParsing
+        
+        Write-Host "Renaming .nupkg to .zip for extraction..."
+        Move-Item -Path $nugetFile -Destination $zipFile -Force
         
         Write-Host "Extracting NuGet package to: $extractPath"
-        Expand-Archive -Path $nugetZip -DestinationPath $extractPath -Force
+        Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
         
         # Python executable is in tools directory
         $pythonDir = "$extractPath\tools"
@@ -59,7 +63,7 @@ jobs:
         Copy-Item -Path "$pythonDir\*" -Destination "C:\Python314" -Recurse -Force
         Write-Host "Copied Python to C:\Python314 for consistent paths"
         
-        Remove-Item -Path $nugetZip -Force
+        Remove-Item -Path $zipFile -Force
       displayName: 'Download Python 3.14 x64 from NuGet'
 
     - powershell: |
