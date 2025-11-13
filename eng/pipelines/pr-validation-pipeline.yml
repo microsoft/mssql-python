@@ -67,18 +67,18 @@ jobs:
       displayName: 'Download Python 3.14 x64 from NuGet'
 
     - powershell: |
-        $env:Path = "C:\Python314;C:\Python314\Scripts;" + $env:Path
-        Write-Host "Current PATH (first 3 entries):"
-        ($env:Path -split ';')[0..2] | ForEach-Object { Write-Host "  $_" }
+        Write-Host "Installing dependencies with Python 3.14..."
+        Write-Host "Python version:"
+        C:\Python314\python.exe --version
+        Write-Host "Python executable:"
+        C:\Python314\python.exe -c "import sys; print(sys.executable)"
         
-        Write-Host "`nPython version:"
-        python --version
-        Write-Host "`nPython executable:"
-        python -c "import sys; print(sys.executable)"
+        C:\Python314\python.exe -m pip install --upgrade pip
+        C:\Python314\python.exe -m pip install -r requirements.txt
+        C:\Python314\python.exe -m pip install cmake pybind11
         
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install cmake pybind11
+        Write-Host "`nVerifying pytest installation:"
+        C:\Python314\python.exe -m pytest --version
       displayName: 'Install dependencies'
     
     - script: |
