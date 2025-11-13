@@ -91,10 +91,8 @@ echo "[STEP 4] Merging Python + C++ coverage"
 echo "==================================="
 
 # Merge LCOV reports (ignore inconsistencies in Python LCOV export)
-# Use --omit-lines to exclude lines containing LOG( from coverage
-echo "[ACTION] Merging coverage and excluding LOG() statements"
+echo "[ACTION] Merging Python and C++ coverage"
 lcov -a python-coverage.info -a cpp-coverage.info -o total.info \
-  --omit-lines '^\s*LOG\(' \
   --ignore-errors inconsistent,corrupt
 
 # Normalize paths so everything starts from mssql_python/

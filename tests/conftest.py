@@ -13,6 +13,7 @@ import os
 import re
 from mssql_python import connect
 import time
+import logging
 
 
 def is_azure_sql_connection(conn_str):
@@ -27,8 +28,18 @@ def is_azure_sql_connection(conn_str):
 
 
 def pytest_configure(config):
-    # Add any necessary configuration here
-    pass
+    # Enable Python + C++ logging if configured in pytest.ini
+    enable_log = config.getini('enable_logging')
+    if enable_log and str(enable_log).lower() in ('true', '1', 'yes'):
+        from mssql_python import setup_logging
+        # Configure Python logging to capture both Python and C++ logs
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        # Initialize DDBC logging bridge for C++ logs
+        setup_logging(level=logging.DEBUG)
+        print("[pytest] Python + C++ logging enabled for coverage")
 
 
 @pytest.fixture(scope="session")
