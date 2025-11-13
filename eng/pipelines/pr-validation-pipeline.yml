@@ -78,61 +78,44 @@ jobs:
         DB_PASSWORD: $(DB_PASSWORD)
 
     - powershell: |
-        # Download Python 3.14 ARM64 embed package and extract libs
-        $embedUrl = "https://www.python.org/ftp/python/3.14.0/python-3.14.0a2-embed-arm64.zip"
+        # Install Python 3.14 ARM64 to temp location to get libs, then uninstall
         $installerUrl = "https://www.python.org/ftp/python/3.14.0/python-3.14.0a2-arm64.exe"
-        $embedZip = "$(Build.SourcesDirectory)\python314-arm64-embed.zip"
         $installerPath = "$(Build.SourcesDirectory)\python314-arm64-installer.exe"
-        $embedExtract = "$(Build.SourcesDirectory)\python314-arm64-embed"
-        $installerExtract = "$(Build.SourcesDirectory)\python314-arm64-install"
+        $installDir = "$(Build.SourcesDirectory)\Python314-ARM64-Temp"
         $destPath = "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64"
         
-        New-Item -ItemType Directory -Force -Path $destPath | Out-Null
-        
-        # Try embed package first for DLLs
-        Write-Host "Downloading Python 3.14 ARM64 embed package from: $embedUrl"
-        try {
-          Invoke-WebRequest -Uri $embedUrl -OutFile $embedZip -UseBasicParsing -ErrorAction Stop
-          Write-Host "Extracting embed package..."
-          Expand-Archive -Path $embedZip -DestinationPath $embedExtract -Force
-          
-          # Copy DLLs from embed package
-          Get-ChildItem -Path $embedExtract -Filter "*.dll" | ForEach-Object {
-            Write-Host "  Copying $($_.Name) from embed package"
-            Copy-Item -Path $_.FullName -Destination $destPath -Force
-          }
-          
-          Remove-Item -Path $embedZip -Force -ErrorAction SilentlyContinue
-          Remove-Item -Path $embedExtract -Recurse -Force -ErrorAction SilentlyContinue
-        } catch {
-          Write-Warning "Could not download embed package: $_"
-        }
-        
-        # Download full installer to extract python314.lib using 7zip
-        Write-Host "`nDownloading Python 3.14 ARM64 installer from: $installerUrl"
+        Write-Host "Downloading Python 3.14 ARM64 installer from: $installerUrl"
         Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
         
-        Write-Host "Extracting installer with 7zip (it's a self-extracting archive)..."
-        # The installer is actually a self-extracting 7z archive
-        & "C:\Program Files\7-Zip\7z.exe" x "$installerPath" "-o$installerExtract" -y
+        Write-Host "Installing Python 3.14 ARM64 to temp directory: $installDir"
+        Write-Host "(This won't modify PATH or system settings - using TargetDir and InstallAllUsers=0)"
+        Start-Process -FilePath $installerPath -ArgumentList "/quiet", "InstallAllUsers=0", "PrependPath=0", "Include_test=0", "TargetDir=$installDir" -Wait
         
-        # Find and copy python314.lib
-        Write-Host "Searching for python314.lib..."
-        $libFile = Get-ChildItem -Path $installerExtract -Recurse -Filter "python314.lib" -ErrorAction SilentlyContinue | Select-Object -First 1
+        Start-Sleep -Seconds 5
         
-        if ($libFile) {
-          Write-Host "Found python314.lib at: $($libFile.FullName)"
-          Copy-Item -Path $libFile.FullName -Destination $destPath -Force
+        Write-Host "`nChecking installation..."
+        if (Test-Path $installDir) {
+          Write-Host "Installation directory found at: $installDir"
+          Get-ChildItem $installDir | ForEach-Object { Write-Host "  - $($_.Name)" }
         } else {
-          Write-Warning "python314.lib not found in installer extraction"
+          Write-Error "Installation failed - directory not found!"
+          exit 1
         }
         
-        # Also look for other .lib files in libs directory
-        $libsFiles = Get-ChildItem -Path $installerExtract -Recurse -Filter "*.lib" -ErrorAction SilentlyContinue
-        foreach ($lib in $libsFiles) {
-          Write-Host "  Copying $($lib.Name)"
-          Copy-Item -Path $lib.FullName -Destination $destPath -Force
+        Write-Host "`nCopying libs from: $installDir\libs"
+        New-Item -ItemType Directory -Force -Path $destPath | Out-Null
+        
+        if (Test-Path "$installDir\libs") {
+          Copy-Item -Path "$installDir\libs\*" -Destination $destPath -Recurse -Force
+          Write-Host "✓ Copied .lib files"
+        } else {
+          Write-Error "libs directory not found!"
+          exit 1
         }
+        
+        # Also copy DLLs
+        Write-Host "Copying DLLs..."
+        Copy-Item -Path "$installDir\*.dll" -Destination $destPath -Force -ErrorAction SilentlyContinue
         
         Write-Host "`nContents of $destPath :"
         Get-ChildItem $destPath | ForEach-Object { Write-Host "  - $($_.Name)" }
@@ -144,9 +127,11 @@ jobs:
           exit 1
         }
         
-        # Cleanup
+        # Cleanup temp installation
+        Write-Host "`nCleaning up temp installation..."
         Remove-Item -Path $installerPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path $installerExtract -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $installDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "✓ Cleanup complete"
       condition: eq(variables['targetArch'], 'arm64')
       displayName: 'Extract Python 3.14 ARM64 libs (no installation)'
 
