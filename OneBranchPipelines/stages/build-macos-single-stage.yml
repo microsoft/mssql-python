@@ -1,56 +1,75 @@
 # macOS Single Configuration Stage Template
 # Builds Python wheel for a specific Python version (universal2 binary)
+# Universal2 = combined x86_64 + ARM64 binary in single .so file
+# Tests with Docker-based SQL Server (using Colima as Docker runtime)
 parameters:
+  # Stage identifier (e.g., 'MacOS_py312')
   - name: stageName
     type: string
+  # Job identifier within the stage
   - name: jobName
     type: string
     default: 'BuildWheel'
+  # Python version in X.Y format (e.g., '3.12')
   - name: pythonVersion
     type: string
+  # Python version as 3-digit string for file naming (e.g., '312')
   - name: shortPyVer
     type: string
+  # OneBranch build type: 'Official' (production) or 'NonOfficial' (dev/test)
   - name: oneBranchType
     type: string
     default: 'Official'
-  - name: signingEnabled
-    type: boolean
-    default: true
-  - name: buildConfiguration
-    type: string
-    default: 'Release'
 
 stages:
   - stage: ${{ parameters.stageName }}
-    displayName: 'Build macOS Python ${{ parameters.pythonVersion }}'
+    displayName: 'macOS Py${{ parameters.pythonVersion }} Universal2'
     jobs:
       - job: ${{ parameters.jobName }}
-        displayName: 'Build Wheel - Python ${{ parameters.pythonVersion }} universal2'
+        displayName: 'Build Wheel - Py${{ parameters.pythonVersion }} Universal2'
         
+        # Pool Configuration
+        # macOS-14 image = macOS Sonoma with Xcode 15, Python 3.x toolchain
+        # type:linux is Azure Pipelines quirk (macOS pools declare as 'linux' type)
         pool:
           type: linux
           isCustom: true
           name: Azure Pipelines
           vmImage: 'macOS-14'
+        # 120-minute timeout (universal2 builds take longer due to dual-architecture compilation)
         timeoutInMinutes: 120
         
+        # Build Variables
         variables:
-          # Disable BinSkim for macOS - primarily designed for Windows binaries
+          # Disable BinSkim (Windows-focused binary analyzer) - macOS uses Mach-O format, not PE
           - name: ob_sdl_binskim_enabled
             value: false
+          # OneBranch artifact output directory
           - name: ob_outputDirectory
             value: '$(Build.ArtifactStagingDirectory)'
+          # Linux container image (unused in macOS builds, but required by OneBranch template)
           - name: LinuxContainerImage
             value: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+          # Python version in X.Y format (e.g., '3.12')
           - name: pythonVersion
             value: ${{ parameters.pythonVersion }}
+          # Python version as 3-digit string (e.g., '312') for file naming
           - name: shortPyVer
             value: ${{ parameters.shortPyVer }}
         
         steps:
+          # =========================
+          # SOURCE CODE CHECKOUT
+          # =========================
+          # fetchDepth: 0 = full git history (needed for version tagging)
           - checkout: self
             fetchDepth: 0
           
+          # =========================
+          # PYTHON INSTALLATION
+          # =========================
+          # UsePythonVersion@0 supports Python 3.10-3.14 on macOS
+          # No need for NuGet download like Windows (3.14 is in Azure Pipelines registry)
           - task: UsePythonVersion@0
             inputs:
               versionSpec: '${{ parameters.pythonVersion }}'
@@ -58,12 +77,24 @@ stages:
             displayName: 'Use Python ${{ parameters.pythonVersion }} (Universal2)'
             continueOnError: false
           
+          # =========================
+          # BUILD TOOLS
+          # =========================
+          # CMake = cross-platform build system generator (needed for C++ compilation)
+          # Uninstall first to ensure clean version (avoid conflicts with pre-installed CMake)
           - script: |
               brew update
               brew uninstall cmake --ignore-dependencies || echo "CMake not installed"
               brew install cmake
             displayName: 'Install CMake'
           
+          # =========================
+          # PYTHON DEPENDENCIES
+          # =========================
+          # Install build dependencies:
+          # - requirements.txt: runtime dependencies (if any)
+          # - cmake: CMake Python wrapper
+          # - pybind11: C++/Python binding library (headers needed for compilation)
           - script: |
               python --version
               python -m pip --version
@@ -72,6 +103,12 @@ stages:
               python -m pip install cmake pybind11
             displayName: 'Install dependencies'
           
+          # =========================
+          # NATIVE EXTENSION BUILD
+          # =========================
+          # Build universal2 .so binary (x86_64 + ARM64 in single file)
+          # build.sh sets ARCHFLAGS="-arch x86_64 -arch arm64" for clang
+          # Output: mssql_python.cpython-3XX-darwin.so (Mach-O universal binary)
           - script: |
               echo "Python Version: ${{ parameters.pythonVersion }}"
               echo "Building Universal2 Binary"
@@ -80,6 +117,8 @@ stages:
             displayName: 'Build .so file'
             continueOnError: false
           
+          # Copy native extension to artifact directory for later inspection
+          # .so file will be packaged into wheel in later step
           - task: CopyFiles@2
             inputs:
               SourceFolder: '$(Build.SourcesDirectory)/mssql_python'
@@ -87,17 +126,30 @@ stages:
               TargetFolder: '$(ob_outputDirectory)/bindings/macOS'
             displayName: 'Copy .so files'
           
+          # Install Docker CLI and Colima (macOS Docker runtime)
+          # Colima = lightweight Docker Desktop alternative using macOS virtualization
+          # vz = native macOS virtualization (faster, only works on M1+)
+          # qemu = cross-platform emulator (slower, works on Intel Macs)
+          # 4 CPU cores + 8GB RAM needed for SQL Server container
           - script: |
               brew update
               brew install docker colima
-              colima start --cpu 3 --memory 10 --disk 30 --vm-type=vz || \
-              colima start --cpu 3 --memory 10 --disk 30 --vm-type=qemu
+              colima start --vm-type vz --cpu 4 --memory 8 || {
+                echo "vz VM failed, trying qemu..."
+                colima start --vm-type qemu --cpu 4 --memory 8
+              }
               sleep 30
               docker context use colima >/dev/null || true
               docker version
             displayName: 'Install and start Docker (Colima)'
             timeoutInMinutes: 15
           
+          # =========================
+          # SQL SERVER CONTAINER
+          # =========================
+          # Start SQL Server 2022 Docker container for pytest execution
+          # macOS uses host networking (localhost:1433) vs Linux uses container IP
+          # Container runs in background (-d) and accepts connections on port 1433
           - script: |
               docker pull mcr.microsoft.com/mssql/server:2022-latest
               docker run --name sqlserver \
@@ -106,6 +158,8 @@ stages:
                 -p 1433:1433 -d \
                 mcr.microsoft.com/mssql/server:2022-latest
               
+              # Wait for SQL Server to accept connections (up to 60 seconds)
+              # sqlcmd -C flag = trust server certificate (for TLS connection)
               for i in {1..30}; do
                 docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
                   -S localhost -U SA -P "$DB_PASSWORD" -C -Q "SELECT 1" && break
@@ -115,17 +169,36 @@ stages:
             env:
               DB_PASSWORD: $(DB_PASSWORD)
           
+          # =========================
+          # TESTING
+          # =========================
+          # Run pytest against SQL Server container
+          # Tests use localhost:1433 connection (SA user with password from variable)
+          # -v = verbose output (show test names and results)
           - script: |
               python -m pytest -v
             displayName: 'Run pytests'
             env:
+              # Connection string uses localhost (SQL Server container exposed on port 1433)
+              # TrustServerCertificate=yes bypasses SSL cert validation (test env only)
               DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
           
+          # =========================
+          # WHEEL BUILD
+          # =========================
+          # Build wheel package from setup.py
+          # Wheel filename: mssql_python-X.Y.Z-cp3XX-cp3XX-macosx_XX_X_universal2.whl
+          # bdist_wheel = build binary wheel distribution (contains pre-compiled .so)
           - script: |
               python -m pip install --upgrade pip wheel setuptools
               python setup.py bdist_wheel
             displayName: 'Build wheel package'
           
+          # =========================
+          # ARTIFACT PUBLISHING
+          # =========================
+          # Copy wheel to OneBranch output directory
+          # dist/ = output directory from setup.py bdist_wheel
           - task: CopyFiles@2
             inputs:
               SourceFolder: '$(Build.SourcesDirectory)/dist'
@@ -133,7 +206,9 @@ stages:
               TargetFolder: '$(ob_outputDirectory)/wheels'
             displayName: 'Copy wheel files'
           
-          # Explicit publish with OneBranch-compliant artifact name
+          # Publish all artifacts (wheels + .so files) for Consolidate stage
+          # Artifact naming: drop_<stageName>_<jobName> (OneBranch requirement)
+          # Consolidate stage downloads this artifact via 'dependsOn' dependency
           - task: PublishPipelineArtifact@1
             displayName: 'Publish macOS Artifacts'
             inputs:
@@ -141,14 +216,21 @@ stages:
               artifact: 'drop_${{ parameters.stageName }}_${{ parameters.jobName }}'
               publishLocation: 'pipeline'
           
-          # General malware scanning (Component Governance + OneBranch AntiMalware)
+          # =========================
+          # SECURITY SCANNING
+          # =========================
+          # Component Governance + OneBranch AntiMalware scanning
+          # artifactType:'dll' is misnomer - scans all binary files (.so, .dylib, etc.)
           - template: ../steps/malware-scanning-step.yml@self
             parameters:
               scanPath: '$(ob_outputDirectory)'
               artifactType: 'dll'
           
-          # ESRP Malware scanning (Official builds only)
-          - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
+          # ESRP Malware Scanning (Official Builds Only)
+          # ESRP = Microsoft's Enterprise Signing and Release Platform
+          # Scans wheel files for malware using Microsoft Defender and custom signatures
+          # Only runs for Official builds (production compliance requirement)
+          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
               - task: EsrpMalwareScanning@5
                 displayName: 'ESRP MalwareScanning - Python Wheels (Official)'
                 inputs:
@@ -158,30 +240,14 @@ stages:
                   EsrpClientId: '$(SigningEsrpClientId)'
                   UseMSIAuthentication: true
                   FolderPath: '$(ob_outputDirectory)/wheels'
-                  Pattern: '*.whl'
-                  SessionTimeout: 60
-                  CleanupTempStorage: 1
-                  VerboseLogin: 1
-          
-          # ESRP Malware scanning (when signing is enabled)
-          - ${{ if eq(parameters.signingEnabled, true) }}:
-              - task: EsrpMalwareScanning@5
-                displayName: 'ESRP MalwareScanning - Python Wheels'
-                inputs:
-                  ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
-                  AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
-                  AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
-                  EsrpClientId: '$(SigningEsrpClientId)'
-                  UseMSIAuthentication: true
-                  FolderPath: '$(ob_outputDirectory)/wheels'
-                  Pattern: '*.whl'
+                  Pattern: '*.whl'  # Scan all wheel files
                   SessionTimeout: 60
                   CleanupTempStorage: 1
                   VerboseLogin: 1
           
           # ESRP Code Signing (DISABLED - wheel files cannot be signed with SignTool)
           # See compound-esrp-code-signing-step.yml for detailed explanation of why this doesn't work
-          # - ${{ if eq(parameters.signingEnabled, true) }}:
+          # - ${{ if eq(parameters.oneBranchType, 'Official') }}:
           #     - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
           #       parameters:
           #         appRegistrationClientId: '$(SigningAppRegistrationClientId)'
