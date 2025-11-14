@@ -18,7 +18,8 @@ Parser behavior:
 from typing import Dict, Tuple, Optional
 from mssql_python.exceptions import ConnectionStringParseError
 from mssql_python.constants import _ALLOWED_CONNECTION_STRING_PARAMS, _RESERVED_PARAMETERS
-from mssql_python.helpers import sanitize_user_input, log
+from mssql_python.helpers import sanitize_user_input
+from mssql_python.logging import logger
 
 
 class _ConnectionStringParser:
@@ -117,7 +118,7 @@ class _ConnectionStringParser:
         # Log all rejected parameters together if any were found
         if rejected and warn_rejected:
             safe_keys = [sanitize_user_input(key) for key in rejected]
-            log('warning',
+            logger.debug(
                 f"Connection string parameters not in allow-list and will be ignored: {', '.join(safe_keys)}"
             )
         

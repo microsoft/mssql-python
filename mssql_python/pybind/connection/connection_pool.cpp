@@ -6,6 +6,9 @@
 #include <memory>
 #include <vector>
 
+// Logging uses LOG() macro for all diagnostic output
+#include "logger_bridge.hpp"
+
 ConnectionPool::ConnectionPool(size_t max_size, int idle_timeout_secs)
     : _max_size(max_size), _idle_timeout_secs(idle_timeout_secs),
       _current_size(0) {}
@@ -69,7 +72,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(
         try {
             conn->disconnect();
         } catch (const std::exception& ex) {
-            LOG("Disconnect bad/expired connections failed: {}", ex.what());
+            LOG("Disconnect bad/expired connections failed: %s", ex.what());
         }
     }
     return valid_conn;
@@ -100,8 +103,7 @@ void ConnectionPool::close() {
         try {
             conn->disconnect();
         } catch (const std::exception& ex) {
-            LOG("ConnectionPool::close: disconnect failed: {}",
-                ex.what());
+            LOG("ConnectionPool::close: disconnect failed: %s", ex.what());
         }
     }
 }

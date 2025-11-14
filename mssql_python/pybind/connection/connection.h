@@ -59,6 +59,8 @@ class Connection {
     bool _autocommit = true;
     SqlHandlePtr _dbcHandle;
     std::chrono::steady_clock::time_point _lastUsed;
+    std::wstring wstrStringBuffer;  // wstr buffer for string attribute setting
+    std::string strBytesBuffer;    // string buffer for byte attributes setting
 };
 
 class ConnectionHandle {

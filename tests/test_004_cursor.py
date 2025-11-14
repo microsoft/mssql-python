@@ -1663,6 +1663,93 @@ def test_executemany_empty_parameter_list(cursor, db_connection):
         db_connection.commit()
 
 
+def test_executemany_Decimal_list(cursor, db_connection):
+    """Test executemany with an decimal parameter list."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_empty_params (val DECIMAL(30, 20))")
+        data = [(decimal.Decimal('35.1128407822'),), (decimal.Decimal('40000.5640564065406'),)]
+        cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params")
+        count = cursor.fetchone()[0]
+        assert count == 2
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_params")
+        db_connection.commit()
+
+
+def test_executemany_DecimalString_list(cursor, db_connection):
+    """Test executemany with an string of decimal parameter list."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_empty_params (val DECIMAL(30, 20))")
+        data = [(str(decimal.Decimal('35.1128407822')),), (str(decimal.Decimal('40000.5640564065406')),)]
+        cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params where val IN (35.1128407822,40000.5640564065406)")
+        count = cursor.fetchone()[0]
+        assert count == 2
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_params")
+        db_connection.commit()
+
+
+def test_executemany_DecimalPrecision_list(cursor, db_connection):
+    """Test executemany with an decimal Precision parameter list."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_empty_params (val DECIMAL(30, 20))")
+        data = [(decimal.Decimal('35112'),), (decimal.Decimal('35.112'),)]
+        cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params where val IN (35112,35.112)")
+        count = cursor.fetchone()[0]
+        assert count == 2
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_params")
+        db_connection.commit()
+
+
+def test_executemany_Decimal_Batch_List(cursor, db_connection):
+    """Test executemany with an decimal Batch parameter list."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_empty_params (val DECIMAL(10, 4))")
+        data = [(decimal.Decimal('1.2345'),), (decimal.Decimal('9999.0000'),)]
+        cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params where val IN (1.2345,9999.0000)")
+        count = cursor.fetchone()[0]
+        assert count == 2
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_params")
+        db_connection.commit()
+
+
+def test_executemany_DecimalMix_List(cursor, db_connection):
+    """Test executemany with an Decimal Mixed precision parameter list."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_empty_params (val DECIMAL(30, 20))")
+        # Test with mixed precision and scale requirements
+        data = [
+            (decimal.Decimal('1.2345'),),           # 5 digits, 4 decimal places
+            (decimal.Decimal('999999.12'),),        # 8 digits, 2 decimal places  
+            (decimal.Decimal('0.000123456789'),),   # 12 digits, 12 decimal places
+            (decimal.Decimal('1234567890'),),       # 10 digits, 0 decimal places
+            (decimal.Decimal('99.999999999'),)      # 11 digits, 9 decimal places
+        ]
+        cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params")
+        count = cursor.fetchone()[0]
+        assert count == 5
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_params")
+        db_connection.commit()
+
+
 def test_nextset(cursor):
     """Test nextset"""
     cursor.execute("SELECT * FROM #pytest_all_data_types WHERE id = 1;")
@@ -3476,7 +3563,7 @@ def test_cursor_rownumber_empty_results(cursor, db_connection):
 def test_rownumber_warning_logged(cursor, db_connection):
     """Test that accessing rownumber logs a warning message"""
     import logging
-    from mssql_python.helpers import get_logger
+    from mssql_python.logging import driver_logger
 
     try:
         # Create test table
@@ -3489,17 +3576,20 @@ def test_rownumber_warning_logged(cursor, db_connection):
         cursor.execute("SELECT * FROM #test_rownumber_log")
 
         # Set up logging capture
-        logger = get_logger()
-        if logger:
+        if driver_logger:
+            # Save original log level
+            original_level = driver_logger.level
+            
+            # Enable WARNING level logging
+            driver_logger.setLevel(logging.WARNING)
+            
             # Create a test handler to capture log messages
             import io
 
             log_stream = io.StringIO()
             test_handler = logging.StreamHandler(log_stream)
             test_handler.setLevel(logging.WARNING)
-
-            # Add our test handler
-            logger.addHandler(test_handler)
+            driver_logger.addHandler(test_handler)
 
             try:
                 # Access rownumber (should trigger warning log)
@@ -3513,12 +3603,13 @@ def test_rownumber_warning_logged(cursor, db_connection):
 
                 # Verify rownumber functionality still works
                 assert (
-                    rownumber is None
-                ), f"Expected rownumber None before fetch, got {rownumber}"
+                    rownumber == -1
+                ), f"Expected rownumber -1 before fetch, got {rownumber}"
 
             finally:
-                # Clean up: remove our test handler
-                logger.removeHandler(test_handler)
+                # Clean up: remove our test handler and restore level
+                driver_logger.removeHandler(test_handler)
+                driver_logger.setLevel(original_level)
         else:
             # If no logger configured, just test that rownumber works
             rownumber = cursor.rownumber
