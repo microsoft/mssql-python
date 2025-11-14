@@ -244,3 +244,17 @@ stages:
                   SessionTimeout: 60
                   CleanupTempStorage: 1
                   VerboseLogin: 1
+          
+          # ESRP Code Signing (DISABLED - wheel files cannot be signed with SignTool)
+          # See compound-esrp-code-signing-step.yml for detailed explanation of why this doesn't work
+          # - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+          #     - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
+          #       parameters:
+          #         appRegistrationClientId: '$(SigningAppRegistrationClientId)'
+          #         appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+          #         artifactType: 'whl'
+          #         authAkvName: '$(SigningAuthAkvName)'
+          #         authSignCertName: '$(SigningAuthSignCertName)'
+          #         esrpClientId: '$(SigningEsrpClientId)'
+          #         esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+          #         signPath: '$(ob_outputDirectory)/wheels'
