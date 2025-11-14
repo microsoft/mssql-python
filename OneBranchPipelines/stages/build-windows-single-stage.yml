@@ -297,14 +297,15 @@ stages:
               python setup.py bdist_wheel
             displayName: 'Build wheel package'
           
+          # =========================
+          # ARTIFACT PUBLISHING
+          # =========================
+          # Copy wheel to OneBranch output directory
           - task: CopyFiles@2
             inputs:
               SourceFolder: '$(Build.SourcesDirectory)\dist'
               Contents: '*.whl'
               TargetFolder: '$(ob_outputDirectory)\wheels'
-            displayName: 'Copy wheel files'
-          
-          # Explicit publish with OneBranch-compliant artifact name
             displayName: 'Copy wheel files'
           
           # Publish artifacts to Azure Pipelines for downstream consumption
