@@ -321,22 +321,24 @@ stages:
               scanPath: '$(ob_outputDirectory)'
               artifactType: 'dll'
           
-          # ESRP Malware Scanning
+          # ESRP Malware Scanning (Official Builds Only)
+          # ESRP = Microsoft's Enterprise Signing and Release Platform
           # Scans wheel files for malware using Microsoft Defender and custom signatures
-          # Required for all production releases
-          - task: EsrpMalwareScanning@5
-            displayName: 'ESRP MalwareScanning - Python Wheels'
-            inputs:
-              ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
-              AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
-              AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
-              EsrpClientId: '$(SigningEsrpClientId)'
-              UseMSIAuthentication: true
-              FolderPath: '$(ob_outputDirectory)/wheels'
-              Pattern: '*.whl'
-              SessionTimeout: 60
-              CleanupTempStorage: 1
-              VerboseLogin: 1
+          # Only runs for Official builds (production compliance requirement)
+          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+              - task: EsrpMalwareScanning@5
+                displayName: 'ESRP MalwareScanning - Python Wheels (Official)'
+                inputs:
+                  ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+                  AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
+                  AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+                  EsrpClientId: '$(SigningEsrpClientId)'
+                  UseMSIAuthentication: true
+                  FolderPath: '$(ob_outputDirectory)/wheels'
+                  Pattern: '*.whl'
+                  SessionTimeout: 60
+                  CleanupTempStorage: 1
+                  VerboseLogin: 1
           
           # ESRP Code Signing (DISABLED - wheel files cannot be signed with SignTool)
           # See compound-esrp-code-signing-step.yml for detailed explanation of why this doesn't work
