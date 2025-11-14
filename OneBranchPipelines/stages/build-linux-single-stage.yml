@@ -379,9 +379,11 @@ stages:
               scanPath: '$(ob_outputDirectory)'
               artifactType: 'dll'
           
-          # ESRP Malware Scanning (Official builds only)
-          # Additional enterprise-grade malware scanning for production releases
-          - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
+          # ESRP Malware Scanning (Official Builds Only)
+          # ESRP = Microsoft's Enterprise Signing and Release Platform
+          # Scans wheel files for malware using Microsoft Defender and custom signatures
+          # Only runs for Official builds (production compliance requirement)
+          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
               - task: EsrpMalwareScanning@5
                 displayName: 'ESRP MalwareScanning - Python Wheels (Official)'
                 inputs:
@@ -396,18 +398,7 @@ stages:
                   CleanupTempStorage: 1
                   VerboseLogin: 1
           
-          # ESRP Malware scanning (when signing is enabled)
-          - ${{ if eq(parameters.signingEnabled, true) }}:
-              - task: EsrpMalwareScanning@5
-                displayName: 'ESRP MalwareScanning - Python Wheels'
-                inputs:
-                  ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
-                  AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
-                  AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
-                  EsrpClientId: '$(SigningEsrpClientId)'
-                  UseMSIAuthentication: true
-                  FolderPath: '$(ob_outputDirectory)/wheels'
-                  Pattern: '*.whl'
+          # Note: ESRP Code Signing not applicable
                   SessionTimeout: 60
                   CleanupTempStorage: 1
                   VerboseLogin: 1

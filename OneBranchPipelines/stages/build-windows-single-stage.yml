@@ -237,7 +237,15 @@ stages:
               call keep_single_arch.bat $(targetArch)
               
               cd ..\..
-            displayName: 'Build PYD for $(targetArch)'\n            continueOnError: false\n          \n          # Run pytest to validate bindings (x64 only)\n          # ARM64 binaries cannot execute on x64 host, so tests are skipped\n          - powershell: |
+            displayName: 'Build PYD for $(targetArch)'
+            continueOnError: false
+          
+          # =========================
+          # TESTING
+          # =========================
+          # Run pytest to validate bindings (x64 only)
+          # ARM64 binaries cannot execute on x64 host, so tests are skipped
+          - powershell: |
               Write-Host "Running pytests to validate bindings"
               if ("$(targetArch)" -eq "arm64") {
                 Write-Host "Skipping pytests on Windows ARM64"
