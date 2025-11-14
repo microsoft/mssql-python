@@ -54,6 +54,7 @@ parameters:
   # OneBranch build type determines compliance level
   # - Official: Production builds with full SDL compliance, all security scanning enabled
   # - NonOfficial: Development/test builds with reduced security scanning
+  # Note: Scheduled (daily) builds automatically use 'Official' regardless of this setting
   - name: oneBranchType
     displayName: 'OneBranch Template Type'
     type: string
@@ -140,6 +141,14 @@ parameters:
 # PIPELINE VARIABLES
 # =========================
 variables:
+  # Determine effective build type: scheduled builds are Official, manual/PR builds use parameter
+  # Build.Reason values: Schedule, Manual, IndividualCI, PullRequest, BatchedCI
+  - name: effectiveOneBranchType
+    ${{ if eq(variables['Build.Reason'], 'Schedule') }}:
+      value: 'Official'
+    ${{ else }}:
+      value: '${{ parameters.oneBranchType }}'
+  
   # Variable template imports
   # Each file provides specific variable groups:
   # - common-variables: Shared across all builds (paths, flags)
@@ -180,11 +189,11 @@ resources:
 # PIPELINE TEMPLATE EXTENSION
 # =========================
 # Extends OneBranch official template for cross-platform builds
-# Template type determined by oneBranchType parameter:
-# - Official: Full SDL compliance, production builds
-# - NonOfficial: Reduced security scanning, development builds
+# Template type determined by effectiveOneBranchType:
+# - Scheduled builds: Always Official (full SDL compliance)
+# - Manual/PR builds: Uses oneBranchType parameter (default NonOfficial)
 extends:
-  template: 'v2/OneBranch.${{ parameters.oneBranchType }}.CrossPlat.yml@templates'
+  template: 'v2/OneBranch.${{ variables.effectiveOneBranchType }}.CrossPlat.yml@templates'
 
   # =========================
   # ONEBRANCH TEMPLATE PARAMETERS
@@ -322,7 +331,7 @@ extends:
       # Uploads scan results to Microsoft's TSA tool for tracking
       # Only enabled for Official builds (production compliance requirement)
       tsa:
-        enabled: ${{ and(eq(parameters.oneBranchType, 'Official'), parameters.runSdlTasks) }}
+        enabled: ${{ and(eq(variables.effectiveOneBranchType, 'Official'), parameters.runSdlTasks) }}
         configFile: '$(REPO_ROOT)/.config/tsaoptions.json'
 
     # =========================
@@ -354,7 +363,7 @@ extends:
               pythonVersion: ${{ format('{0}.{1}', substring(config.pyVer, 0, 1), substring(config.pyVer, 1, 2)) }}
               shortPyVer: ${{ config.pyVer }}
               architecture: ${{ config.arch }}
-              oneBranchType: '${{ parameters.oneBranchType }}'
+              oneBranchType: '${{ variables.effectiveOneBranchType }}'
       
       # =========================
       # MACOS BUILD STAGES
@@ -379,7 +388,7 @@ extends:
               # Convert pyVer '310' → pythonVersion '3.10'
               pythonVersion: ${{ format('{0}.{1}', substring(config.pyVer, 0, 1), substring(config.pyVer, 1, 2)) }}
               shortPyVer: ${{ config.pyVer }}
-              oneBranchType: '${{ parameters.oneBranchType }}'
+              oneBranchType: '${{ variables.effectiveOneBranchType }}'
       
       # =========================
       # LINUX BUILD STAGES
@@ -409,7 +418,7 @@ extends:
               linuxTag: ${{ config.tag }}
               arch: ${{ config.arch }}
               dockerPlatform: ${{ config.platform }}
-              oneBranchType: '${{ parameters.oneBranchType }}'
+              oneBranchType: '${{ variables.effectiveOneBranchType }}'
       
       # =========================
       # CONSOLIDATE STAGE
