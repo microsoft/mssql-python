@@ -21,6 +21,7 @@ Functions:
 
 from mssql_python.exceptions import InterfaceError, ProgrammingError, DatabaseError
 import mssql_python
+import sys
 import pytest
 import time
 from mssql_python import connect, Connection, SQL_CHAR, SQL_WCHAR
@@ -7823,7 +7824,6 @@ def test_set_attr_current_catalog_after_connect(db_connection, conn_str):
     # Skip this test for Azure SQL Database - it doesn't support changing database after connection
     if is_azure_sql_connection(conn_str):
         pytest.skip("Skipping for Azure SQL - SQL_ATTR_CURRENT_CATALOG not supported after connection")
-
     # Get current database name
     cursor = db_connection.cursor()
     cursor.execute("SELECT DB_NAME()")

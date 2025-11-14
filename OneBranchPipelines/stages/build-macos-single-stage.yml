@@ -1,0 +1,194 @@
+# macOS Single Configuration Stage Template
+# Builds Python wheel for a specific Python version (universal2 binary)
+parameters:
+  - name: stageName
+    type: string
+  - name: jobName
+    type: string
+    default: 'BuildWheel'
+  - name: pythonVersion
+    type: string
+  - name: shortPyVer
+    type: string
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+  - name: signingEnabled
+    type: boolean
+    default: true
+  - name: buildConfiguration
+    type: string
+    default: 'Release'
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: 'Build macOS Python ${{ parameters.pythonVersion }}'
+    jobs:
+      - job: ${{ parameters.jobName }}
+        displayName: 'Build Wheel - Python ${{ parameters.pythonVersion }} universal2'
+        
+        pool:
+          type: linux
+          isCustom: true
+          name: Azure Pipelines
+          vmImage: 'macOS-14'
+        timeoutInMinutes: 120
+        
+        variables:
+          # Disable BinSkim for macOS - primarily designed for Windows binaries
+          - name: ob_sdl_binskim_enabled
+            value: false
+          - name: ob_outputDirectory
+            value: '$(Build.ArtifactStagingDirectory)'
+          - name: LinuxContainerImage
+            value: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+          - name: pythonVersion
+            value: ${{ parameters.pythonVersion }}
+          - name: shortPyVer
+            value: ${{ parameters.shortPyVer }}
+        
+        steps:
+          - checkout: self
+            fetchDepth: 0
+          
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '${{ parameters.pythonVersion }}'
+              addToPath: true
+            displayName: 'Use Python ${{ parameters.pythonVersion }} (Universal2)'
+            continueOnError: false
+          
+          - script: |
+              brew update
+              brew uninstall cmake --ignore-dependencies || echo "CMake not installed"
+              brew install cmake
+            displayName: 'Install CMake'
+          
+          - script: |
+              python --version
+              python -m pip --version
+              python -m pip install --upgrade pip
+              python -m pip install -r requirements.txt
+              python -m pip install cmake pybind11
+            displayName: 'Install dependencies'
+          
+          - script: |
+              echo "Python Version: ${{ parameters.pythonVersion }}"
+              echo "Building Universal2 Binary"
+              cd "$(Build.SourcesDirectory)/mssql_python/pybind"
+              ./build.sh
+            displayName: 'Build .so file'
+            continueOnError: false
+          
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)/mssql_python'
+              Contents: '*.so'
+              TargetFolder: '$(ob_outputDirectory)/bindings/macOS'
+            displayName: 'Copy .so files'
+          
+          - script: |
+              brew update
+              brew install docker colima
+              colima start --cpu 3 --memory 10 --disk 30 --vm-type=vz || \
+              colima start --cpu 3 --memory 10 --disk 30 --vm-type=qemu
+              sleep 30
+              docker context use colima >/dev/null || true
+              docker version
+            displayName: 'Install and start Docker (Colima)'
+            timeoutInMinutes: 15
+          
+          - script: |
+              docker pull mcr.microsoft.com/mssql/server:2022-latest
+              docker run --name sqlserver \
+                -e ACCEPT_EULA=Y \
+                -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
+                -p 1433:1433 -d \
+                mcr.microsoft.com/mssql/server:2022-latest
+              
+              for i in {1..30}; do
+                docker exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
+                  -S localhost -U SA -P "$DB_PASSWORD" -C -Q "SELECT 1" && break
+                sleep 2
+              done
+            displayName: 'Start SQL Server (Docker)'
+            env:
+              DB_PASSWORD: $(DB_PASSWORD)
+          
+          - script: |
+              python -m pytest -v
+            displayName: 'Run pytests'
+            env:
+              DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+          
+          - script: |
+              python -m pip install --upgrade pip wheel setuptools
+              python setup.py bdist_wheel
+            displayName: 'Build wheel package'
+          
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)/dist'
+              Contents: '*.whl'
+              TargetFolder: '$(ob_outputDirectory)/wheels'
+            displayName: 'Copy wheel files'
+          
+          # Explicit publish with OneBranch-compliant artifact name
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish macOS Artifacts'
+            inputs:
+              targetPath: '$(ob_outputDirectory)'
+              artifact: 'drop_${{ parameters.stageName }}_${{ parameters.jobName }}'
+              publishLocation: 'pipeline'
+          
+          # General malware scanning (Component Governance + OneBranch AntiMalware)
+          - template: ../steps/malware-scanning-step.yml@self
+            parameters:
+              scanPath: '$(ob_outputDirectory)'
+              artifactType: 'dll'
+          
+          # ESRP Malware scanning (Official builds only)
+          - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
+              - task: EsrpMalwareScanning@5
+                displayName: 'ESRP MalwareScanning - Python Wheels (Official)'
+                inputs:
+                  ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+                  AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
+                  AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+                  EsrpClientId: '$(SigningEsrpClientId)'
+                  UseMSIAuthentication: true
+                  FolderPath: '$(ob_outputDirectory)/wheels'
+                  Pattern: '*.whl'
+                  SessionTimeout: 60
+                  CleanupTempStorage: 1
+                  VerboseLogin: 1
+          
+          # ESRP Malware scanning (when signing is enabled)
+          - ${{ if eq(parameters.signingEnabled, true) }}:
+              - task: EsrpMalwareScanning@5
+                displayName: 'ESRP MalwareScanning - Python Wheels'
+                inputs:
+                  ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+                  AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
+                  AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+                  EsrpClientId: '$(SigningEsrpClientId)'
+                  UseMSIAuthentication: true
+                  FolderPath: '$(ob_outputDirectory)/wheels'
+                  Pattern: '*.whl'
+                  SessionTimeout: 60
+                  CleanupTempStorage: 1
+                  VerboseLogin: 1
+          
+          # ESRP Code Signing (DISABLED - wheel files cannot be signed with SignTool)
+          # See compound-esrp-code-signing-step.yml for detailed explanation of why this doesn't work
+          # - ${{ if eq(parameters.signingEnabled, true) }}:
+          #     - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
+          #       parameters:
+          #         appRegistrationClientId: '$(SigningAppRegistrationClientId)'
+          #         appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+          #         artifactType: 'whl'
+          #         authAkvName: '$(SigningAuthAkvName)'
+          #         authSignCertName: '$(SigningAuthSignCertName)'
+          #         esrpClientId: '$(SigningEsrpClientId)'
+          #         esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+          #         signPath: '$(ob_outputDirectory)/wheels'

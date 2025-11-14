@@ -126,13 +126,13 @@ class TestConnectionStringParser:
     def test_parse_complex_connection_string(self):
         """Test parsing a complex realistic connection string."""
         parser = _ConnectionStringParser()
-        conn_str = "Server=tcp:server.database.windows.net,1433;Database=mydb;UID=user@server;PWD={p@ss;w}}rd};Encrypt=yes"
+        conn_str = "Server=tcp:server.database.windows.net,1433;Database=mydb;UID=user@server;PWD={TestP@ss;w}}rd};Encrypt=yes"
         result = parser._parse(conn_str)
         assert result == {
             'server': 'tcp:server.database.windows.net,1433',
             'database': 'mydb',
             'uid': 'user@server',
-            'pwd': 'p@ss;w}rd',  # }} escapes to single }
+            'pwd': 'TestP@ss;w}rd',  # }} escapes to single }
             'encrypt': 'yes'
         }
     
