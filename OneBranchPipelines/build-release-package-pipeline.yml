@@ -459,7 +459,9 @@ extends:
         jobs:
           - template: /OneBranchPipelines/jobs/consolidate-artifacts-job.yml@self
             parameters:
-              oneBranchType: '${{ parameters.oneBranchType }}'
+              # CRITICAL: Use effectiveOneBranchType to ensure scheduled builds run as 'Official'
+              # Using parameters.oneBranchType would break scheduled builds (they'd run as 'NonOfficial')
+              oneBranchType: '${{ variables.effectiveOneBranchType }}'
 
       # Note: Symbol publishing handled directly in Windows build stages
       # PDB files uploaded to Microsoft Symbol Server for debugging
