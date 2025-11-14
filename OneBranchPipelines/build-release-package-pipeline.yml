@@ -140,17 +140,6 @@ parameters:
 # PIPELINE VARIABLES
 # =========================
 variables:
-  # Package version from parameter (used in wheel metadata)
-  # readonly:true prevents modification during build
-  - name: PACKAGE_VERSION
-    value: '${{ parameters.packageVersion }}'
-    readonly: true
-  
-  # Alias for packageVersion (some tasks expect lowercase)
-  - name: packageVersion
-    value: '${{ parameters.packageVersion }}'
-    readonly: true
-  
   # Variable template imports
   # Each file provides specific variable groups:
   # - common-variables: Shared across all builds (paths, flags)
