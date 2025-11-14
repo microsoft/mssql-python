@@ -89,16 +89,69 @@ stages:
             env:
               DB_PASSWORD: $(DB_PASSWORD)
           
-          - task: DownloadPipelineArtifact@2
+          - powershell: |
+              # Download Python ARM64 from NuGet (contains libs directory with python.lib)
+              $pythonVer = "${{ parameters.pythonVersion }}"
+              
+              # Map version to NuGet package version
+              $nugetVersion = switch ($pythonVer) {
+                "3.10" { "3.10.11" }
+                "3.11" { "3.11.9" }
+                "3.12" { "3.12.7" }
+                "3.13" { "3.13.0" }
+                "3.14" { "3.14.0-a2" }
+                default { throw "Unsupported Python version: $pythonVer" }
+              }
+              
+              $nugetUrl = "https://www.nuget.org/api/v2/package/pythonarm64/$nugetVersion"
+              $nugetFile = "$(Build.SourcesDirectory)\pythonarm64.nupkg"
+              $zipFile = "$(Build.SourcesDirectory)\pythonarm64.zip"
+              $extractPath = "$(Build.SourcesDirectory)\pythonarm64-nuget"
+              $destPath = "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64"
+              
+              Write-Host "Downloading Python $pythonVer ARM64 NuGet package from: $nugetUrl"
+              Invoke-WebRequest -Uri $nugetUrl -OutFile $nugetFile -UseBasicParsing
+              
+              Write-Host "Renaming .nupkg to .zip for extraction..."
+              Move-Item -Path $nugetFile -Destination $zipFile -Force
+              
+              Write-Host "Extracting NuGet package..."
+              Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
+              
+              Write-Host "`nSearching for libs directory..."
+              $libsDir = Get-ChildItem -Path $extractPath -Recurse -Directory -Filter "libs" | Select-Object -First 1
+              
+              if ($libsDir) {
+                Write-Host "Found libs at: $($libsDir.FullName)"
+                New-Item -ItemType Directory -Force -Path $destPath | Out-Null
+                Copy-Item -Path "$($libsDir.FullName)\*" -Destination $destPath -Recurse -Force
+                Write-Host "✓ Copied .lib files from NuGet package"
+              } else {
+                Write-Host "libs directory not found, searching for .lib files..."
+                $libFiles = Get-ChildItem -Path $extractPath -Recurse -Filter "*.lib"
+                New-Item -ItemType Directory -Force -Path $destPath | Out-Null
+                foreach ($lib in $libFiles) {
+                  Write-Host "  Copying $($lib.Name)"
+                  Copy-Item -Path $lib.FullName -Destination $destPath -Force
+                }
+              }
+              
+              Write-Host "`nContents of $destPath :"
+              Get-ChildItem $destPath | ForEach-Object { Write-Host "  - $($_.Name)" }
+              
+              $expectedLib = "python$($pythonVer.Replace('.', '')).lib"
+              if (Test-Path "$destPath\$expectedLib") {
+                Write-Host "`n✓ $expectedLib found"
+              } else {
+                Write-Error "$expectedLib not found in NuGet package!"
+                exit 1
+              }
+              
+              # Cleanup
+              Remove-Item -Path $zipFile -Force -ErrorAction SilentlyContinue
+              Remove-Item -Path $extractPath -Recurse -Force -ErrorAction SilentlyContinue
             condition: eq(variables['targetArch'], 'arm64')
-            inputs:
-              buildType: 'specific'
-              project: '$(System.TeamProject)'
-              definition: 2162
-              buildVersionToDownload: 'latest'
-              artifactName: 'mssql-python-arm64-libs'
-              targetPath: '$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64'
-            displayName: 'Download ARM64 Python libs'
+            displayName: 'Download Python ARM64 libs from NuGet'
           
           - script: |
               echo "Python Version: $(pythonVersion)"
