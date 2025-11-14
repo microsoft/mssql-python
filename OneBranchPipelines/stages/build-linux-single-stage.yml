@@ -411,10 +411,3 @@ stages:
           #         esrpClientId: '$(SigningEsrpClientId)'
           #         esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
           #         signPath: '$(ob_outputDirectory)/wheels'
-          
-          # Note: ESRP Code Signing not applicable to wheel files
-          # Wheels cannot be signed with SignTool (Windows-specific signing mechanism)
-          # Future: Consider PEP 458/480 for wheel signing
-          #         esrpClientId: '$(SigningEsrpClientId)'
-          #         esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
-          #         signPath: '$(ob_outputDirectory)/wheels'
