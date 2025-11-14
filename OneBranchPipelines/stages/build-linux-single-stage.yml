@@ -228,9 +228,6 @@ stages:
                     echo "Installing: $WHEEL";
                     $PY -m pip install -q "$WHEEL";
                     
-                                        echo "Installing: $WHEEL";
-                    $PY -m pip install -q "$WHEEL";
-                    
                     # Step 6: Verify package imports correctly
                     echo "Verifying package installation...";
                     $PY -c 'import mssql_python; print("Package imported from:", mssql_python.__file__)';
