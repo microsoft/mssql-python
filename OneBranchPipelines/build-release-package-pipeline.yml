@@ -1,20 +1,44 @@
-# OneBranch Pipeline for mssql-python
-# Builds Python wheels for Windows, macOS, and Linux with security compliance
+# =========================================================================================
+# OneBranch Release Pipeline for mssql-python
+# =========================================================================================
+# Builds Python wheels for all supported platforms with SDL compliance:
+# - Windows: Python 3.10-3.14 (x64 + ARM64)
+# - macOS: Python 3.10-3.14 (Universal2 = x86_64 + ARM64 in single binary)
+# - Linux: Python 3.10-3.14 on manylinux/musllinux (x86_64 + ARM64)
+#
+# Security Features:
+# - ESRP code signing (Windows .pyd files only)
+# - ESRP malware scanning (all artifacts)
+# - Component Governance (dependency scanning)
+# - BinSkim (binary security analysis)
+# - CredScan (credential leak detection)
+# - PoliCheck (inclusive language scanning)
+# - CodeQL (static code analysis)
+# - SBOM generation (Software Bill of Materials)
+# =========================================================================================
 
+# Build number format: YYDDD.r (YY=year, DDD=day of year, r=revision)
+# Example: 24365.1 = 2024, day 365, revision 1
 name: $(Year:YY)$(DayOfYear)$(Rev:.r)
 
-# Pipeline triggers
+# =========================
+# PIPELINE TRIGGERS
+# =========================
+# Trigger on commits to main branch
 trigger:
   branches:
     include:
       - main
 
+# Trigger on pull requests to main branch
 pr:
   branches:
     include:
       - main
 
-# Schedule the pipeline to run on main branch daily at 07:00 AM IST
+# Schedule: Daily builds at 07:00 AM IST (01:30 UTC)
+# Cron format: minute hour day month weekday
+# always:true = run even if no code changes
 schedules:
   - cron: "30 1 * * *"
     displayName: Daily run at 07:00 AM IST
@@ -23,8 +47,14 @@ schedules:
         - main
     always: true
 
-# Parameters for pipeline behavior
+# =========================
+# PIPELINE PARAMETERS
+# =========================
 parameters:
+  # OneBranch build type determines compliance level
+  # - Official: Production builds with full SDL compliance, all security scanning enabled
+  # - NonOfficial: Development/test builds with reduced security scanning
+  # Note: Scheduled (daily) builds automatically use 'Official' regardless of this setting
   - name: oneBranchType
     displayName: 'OneBranch Template Type'
     type: string
@@ -33,33 +63,30 @@ parameters:
       - 'NonOfficial'
     default: 'NonOfficial'
 
-  - name: buildConfiguration
-    displayName: 'Build Configuration'
-    type: string
-    values:
-      - 'Release'
-      - 'Debug'
-    default: 'Release'
-
+  # Enable/disable SDL security tasks (BinSkim, CredScan, PoliCheck, etc.)
+  # Set to false for faster builds during development
   - name: runSdlTasks
     displayName: 'Run SDL Security Tasks'
     type: boolean
     default: true
-
-  - name: signingEnabled
-    displayName: 'Enable Code Signing (ESRP)'
-    type: boolean
-    default: true
-
-  - name: packageVersion
-    displayName: 'Package Version (e.g., 0.13.0)'
-    type: string
-    default: '0.13.0'
   
-  # Configuration matrices for each platform
+  # =========================
+  # PLATFORM CONFIGURATIONS
+  # =========================
+  # Each platform uses different matrix strategy:
+  # - Windows: Explicit per-version stages (9 stages for x64/ARM64 combos)
+  # - macOS: Explicit per-version stages (5 stages for universal2 builds)
+  # - Linux: Per-distro stages, builds ALL Python versions in loop (4 stages)
+  
+  # Windows Configuration Matrix
+  # Each entry creates separate stage: Win_py<pyVer>_<arch>
+  # pyVer format: '310' = Python 3.10, '314' = Python 3.14
+  # arch: 'x64' (Intel/AMD 64-bit) or 'arm64' (ARM64, cross-compiled on x64)
+  # Note: ARM64 builds use x64 host with ARM64 python.lib for cross-compilation
   - name: windowsConfigs
     type: object
     default:
+      # x64 builds (5 versions: 3.10-3.14)
       - pyVer: '310'
         arch: 'x64'
       - pyVer: '311'
@@ -68,54 +95,89 @@ parameters:
         arch: 'x64'
       - pyVer: '313'
         arch: 'x64'
+      # - pyVer: '314'  # Life of π: Unfolding in v1.0.0
+      #   arch: 'x64'
+      # ARM64 builds (4 versions: 3.11-3.14)
+      # 3.10 excluded due to limited ARM64 support
       - pyVer: '311'
         arch: 'arm64'
       - pyVer: '312'
         arch: 'arm64'
       - pyVer: '313'
         arch: 'arm64'
+      # - pyVer: '314'  # Life of π: Unfolding in v1.0.0
+      #   arch: 'arm64'
   
+  # macOS Configuration Matrix
+  # Each entry creates separate stage: MacOS_py<pyVer>
+  # All builds are Universal2 (x86_64 + ARM64 in single binary)
+  # pyVer format: '310' = Python 3.10, '314' = Python 3.14
   - name: macosConfigs
     type: object
     default:
+      # 5 versions: 3.10-3.14 (all universal2)
       - pyVer: '310'
       - pyVer: '311'
       - pyVer: '312'
       - pyVer: '313'
+      # - pyVer: '314'  # Life of π: Unfolding in v1.0.0
   
+  # Linux Configuration Matrix
+  # Each entry creates ONE stage that builds ALL Python versions (3.10-3.14)
+  # tag: 'manylinux' (glibc-based, e.g., Ubuntu/CentOS) or 'musllinux' (musl-based, e.g., Alpine)
+  # arch: CPU architecture for Docker platform
+  # platform: Docker platform identifier for multi-arch builds
   - name: linuxConfigs
     type: object
     default:
+      # manylinux (glibc-based) for x86_64 and ARM64
       - { tag: 'manylinux', arch: 'x86_64', platform: 'linux/amd64' }
       - { tag: 'manylinux', arch: 'aarch64', platform: 'linux/arm64' }
+      # musllinux (musl-based) for x86_64 and ARM64
       - { tag: 'musllinux', arch: 'x86_64', platform: 'linux/amd64' }
       - { tag: 'musllinux', arch: 'aarch64', platform: 'linux/arm64' }
 
-# Variable templates
+# =========================
+# PIPELINE VARIABLES
+# =========================
 variables:
-  # Set package version from parameter
-  - name: PACKAGE_VERSION
-    value: '${{ parameters.packageVersion }}'
-    readonly: true
-  # Set package version from parameter
-  - name: PACKAGE_VERSION
-    value: '${{ parameters.packageVersion }}'
-    readonly: true
+  # Determine effective build type: scheduled builds are Official, manual/PR builds use parameter
+  # Build.Reason values: Schedule, Manual, IndividualCI, PullRequest, BatchedCI
+  - name: effectiveOneBranchType
+    ${{ if eq(variables['Build.Reason'], 'Schedule') }}:
+      value: 'Official'
+    ${{ else }}:
+      value: '${{ parameters.oneBranchType }}'
   
-  # Alias for SDL tools (compile-time)
-  - name: packageVersion
-    value: '${{ parameters.packageVersion }}'
-    readonly: true
-  
+  # Variable template imports
+  # Each file provides specific variable groups:
+  # - common-variables: Shared across all builds (paths, flags)
+  # - onebranch-variables: OneBranch-specific settings (SDL, compliance)
+  # - build-variables: Build configuration (compiler flags, options)
+  # - signing-variables: ESRP signing credentials and settings
+  # - symbol-variables: Debug symbol publishing configuration
   - template: /OneBranchPipelines/variables/common-variables.yml@self
   - template: /OneBranchPipelines/variables/onebranch-variables.yml@self
   - template: /OneBranchPipelines/variables/build-variables.yml@self
   - template: /OneBranchPipelines/variables/signing-variables.yml@self
   - template: /OneBranchPipelines/variables/symbol-variables.yml@self
-    # Variable groups
-  - group: 'ESRP Federated Creds (AME)'  # Contains ESRP signing credentials
+  
+  # Variable group from Azure DevOps Library
+  # Contains ESRP service connection credentials:
+  # - SigningEsrpConnectedServiceName
+  # - SigningAppRegistrationClientId
+  # - SigningAppRegistrationTenantId
+  # - SigningEsrpClientId
+  # - DB_PASSWORD (SQL Server SA password for testing)
+  - group: 'ESRP Federated Creds (AME)'
 
-# OneBranch resources
+# =========================
+# ONEBRANCH RESOURCES
+# =========================
+# OneBranch.Pipelines/GovernedTemplates repository contains:
+# - SDL compliance templates (BinSkim, CredScan, PoliCheck, etc.)
+# - Security scanning templates (ESRP, Component Governance)
+# - Artifact publishing templates (OneBranch-compliant artifact handling)
 resources:
   repositories:
     - repository: templates
@@ -123,132 +185,231 @@ resources:
       name: 'OneBranch.Pipelines/GovernedTemplates'
       ref: 'refs/heads/main'
 
-# Extend OneBranch official template
+# =========================
+# PIPELINE TEMPLATE EXTENSION
+# =========================
+# Extends OneBranch official template for cross-platform builds
+# Template type determined by effectiveOneBranchType:
+# - Scheduled builds: Always Official (full SDL compliance)
+# - Manual/PR builds: Uses oneBranchType parameter (default NonOfficial)
 extends:
-  template: 'v2/OneBranch.${{ parameters.oneBranchType }}.CrossPlat.yml@templates'
+  template: 'v2/OneBranch.${{ variables.effectiveOneBranchType }}.CrossPlat.yml@templates'
 
+  # =========================
+  # ONEBRANCH TEMPLATE PARAMETERS
+  # =========================
   parameters:
-    # Container definitions
-    # Note: All jobs use custom 1ES pools or Microsoft-hosted agents
-    # Windows: Django-1ES-pool + WIN22-SQL22 (custom 1ES)
-    # Linux: Django-1ES-pool + ADO-UB22-SQL22 (custom 1ES) 
-    # macOS: Azure Pipelines + macOS-14 (Microsoft-hosted)
+    # Pool Configuration
+    # Different platforms use different agent pools:
+    # - Windows: Custom 1ES pool (Django-1ES-pool) with WIN22-SQL22 image (Windows Server 2022 + SQL Server 2022)
+    # - Linux: Custom 1ES pool (Django-1ES-pool) with ADO-UB22-SQL22 image (Ubuntu 22.04 + SQL Server 2022)
+    # - macOS: Microsoft-hosted pool (Azure Pipelines) with macOS-14 image (macOS Sonoma)
+    # Note: Container definitions section present but unused (pools configured in individual stage templates)
     
-    # Feature flags
+    # Feature Flags
+    # Controls OneBranch platform behavior
     featureFlags:
+      # Use Windows Server 2022 base image for Windows builds
       WindowsHostVersion:
         Version: '2022'
-      binskimScanAllExtensions: true  # Enable scanning of all supported file types including .pyd
+      # Enable BinSkim scanning for all supported file extensions
+      # Without this, only .dll/.exe scanned (misses .pyd Python extensions)
+      binskimScanAllExtensions: true
 
-    # Global SDL Configuration
+    # =========================
+    # GLOBAL SDL CONFIGURATION
+    # =========================
+    # SDL = Security Development Lifecycle
+    # Comprehensive security scanning across all build stages
     # See: https://aka.ms/obpipelines/sdl
     globalSdl:
       # Global Guardian baseline and suppression files
+      # Baseline = known issues that are being tracked
+      # Suppression = false positives that should be ignored
       baseline:
-        baselineFile: $(Build.SourcesDirectory)\.gdn\.gdnbaselines
+        baselineFile: $(Build.SourcesDirectory)/.gdn/.gdnbaselines
         suppressionSet: default
       suppression:
-        suppressionFile: $(Build.SourcesDirectory)\.gdn\.gdnsuppress
+        suppressionFile: $(Build.SourcesDirectory)/.gdn/.gdnsuppress
         suppressionSet: default
       
       # ApiScan - Scans APIs for security vulnerabilities
-      # Disabled: Not applicable to Python wheel distribution model
+      # Disabled: Requires PDB symbols for Windows DLLs
+      # Python wheels (.pyd files) better covered by BinSkim
+      # Justification: JDBC team also disables APIScan for similar reasons
       apiscan:
         enabled: false
         justificationForDisabling: 'APIScan requires PDB symbols for native Windows DLLs. Python wheels primarily contain .pyd files and Python code, better covered by BinSkim. JDBC team also has APIScan disabled for similar reasons.'
 
       # Armory - Security scanning for binaries
+      # Checks for known vulnerabilities in compiled artifacts
+      # break:true = fail build if critical issues found
       armory:
         enabled: ${{ parameters.runSdlTasks }}
         break: true
 
-      # AsyncSdl - Asynchronous SDL tasks
+      # AsyncSdl - Asynchronous SDL tasks (run after build completion)
+      # Disabled: All SDL tasks run synchronously during build
       asyncSdl:
         enabled: false
 
-      # BinSkim - Binary analyzer for security issues
+      # BinSkim - Binary security analyzer (Microsoft tool)
+      # Scans compiled binaries for security best practices:
+      # - Stack buffer overrun protection (/GS)
+      # - DEP (Data Execution Prevention)
+      # - ASLR (Address Space Layout Randomization)
+      # - Control Flow Guard (CFG)
+      # Scans: .pyd (Python), .dll/.exe (Windows), .so (Linux), .dylib (macOS)
       binskim:
         enabled: ${{ parameters.runSdlTasks }}
-        break: true
-        # Scan all binary types: .pyd (Python), .dll/.exe (Windows), .so (Linux), .dylib (macOS)
+        break: true  # Fail build on critical BinSkim errors
+        # Recursive scan of all binary file types
         analyzeTarget: '$(Build.SourcesDirectory)/**/*.{pyd,dll,exe,so,dylib}'
         analyzeRecurse: true
+        # SARIF output (Static Analysis Results Interchange Format)
         logFile: '$(Build.ArtifactStagingDirectory)/BinSkimResults.sarif'
 
       # CodeInspector - Source code security analysis
+      # Checks Python/C++ code for security anti-patterns
       codeinspector:
         enabled: ${{ parameters.runSdlTasks }}
         logLevel: Error
 
-      # CodeQL - Semantic code analysis
+      # CodeQL - Semantic code analysis (GitHub Advanced Security)
+      # Deep analysis of Python and C++ code:
+      # - SQL injection vulnerabilities
+      # - Buffer overflows
+      # - Use-after-free
+      # - Integer overflows
+      # security-extended suite = comprehensive security queries
       codeql:
         enabled: ${{ parameters.runSdlTasks }}
         language: 'python,cpp'
         sourceRoot: '$(REPO_ROOT)'
         querySuite: security-extended
 
-      # CredScan - Scans for credentials in code
-      # Note: Global baseline/suppression files configured at globalSdl level
+      # CredScan - Credential scanner
+      # Detects hardcoded credentials, API keys, passwords in code
+      # Uses global baseline/suppression files configured above
       credscan:
         enabled: ${{ parameters.runSdlTasks }}
       
-      # ESLint - JavaScript/TypeScript specific, not applicable for Python
+      # ESLint - JavaScript/TypeScript linter
+      # Disabled: Not applicable to Python/C++ project
       eslint:
         enabled: false
 
-      # PoliCheck - Checks for politically incorrect terms
+      # PoliCheck - Political correctness checker
+      # Scans code and documentation for inappropriate terms
+      # Exclusion file contains approved exceptions (technical terms)
       policheck:
         enabled: ${{ parameters.runSdlTasks }}
         break: true
         exclusionFile: '$(REPO_ROOT)/.config/PolicheckExclusions.xml'
 
-      # Roslyn Analyzers - .NET-specific, not applicable for Python
+      # Roslyn Analyzers - .NET C# code analysis
+      # Disabled: Not applicable to Python/C++ project
       roslyn:
         enabled: false
 
-      # Publish SDL logs
+      # Publish SDL Logs
+      # Uploads security scan results (SARIF files) to pipeline artifacts
+      # Used for audit trail and compliance reporting
       publishLogs:
         enabled: ${{ parameters.runSdlTasks }}
 
       # SBOM - Software Bill of Materials
+      # Generates machine-readable list of all dependencies
+      # Required for supply chain security and compliance
+      # Format: SPDX or CycloneDX
+      # Version automatically detected from wheel metadata (setup.py)
       sbom:
         enabled: ${{ parameters.runSdlTasks }}
         packageName: 'mssql-python'
-        packageVersion: '${{ variables.packageVersion }}'
 
-      # TSA - Threat and Security Assessment (Official builds only)
+      # TSA - Threat and Security Assessment
+      # Uploads scan results to Microsoft's TSA tool for tracking
+      # Only enabled for Official builds (production compliance requirement)
       tsa:
-        enabled: ${{ and(eq(parameters.oneBranchType, 'Official'), parameters.runSdlTasks) }}
+        enabled: ${{ and(eq(variables.effectiveOneBranchType, 'Official'), parameters.runSdlTasks) }}
         configFile: '$(REPO_ROOT)/.config/tsaoptions.json'
 
-    # Pipeline stages
+    # =========================
+    # PIPELINE STAGES
+    # =========================
+    # Total stages: 9 Windows + 5 macOS + 4 Linux + 1 Consolidate = 19 stages
+    # Stages run in parallel (no dependencies between platform builds)
     stages:
-      # Windows stages - one per Python version/architecture combination
+      # =========================
+      # WINDOWS BUILD STAGES
+      # =========================
+      # Strategy: Explicit stage per Python version × architecture
+      # Total: 9 stages (5 x64 + 4 ARM64)
+      # Python versions: 3.10-3.14 (x64), 3.11-3.14 (ARM64)
+      # Each stage:
+      # 1. Installs Python (UsePythonVersion or NuGet for 3.14)
+      # 2. Downloads ARM64 python.lib if cross-compiling
+      # 3. Builds .pyd native extension
+      # 4. Runs pytest (x64 only, ARM64 can't execute on x64 host)
+      # 5. Builds wheel
+      # 6. Publishes artifacts (wheels + PYD + PDB)
+      # 7. ESRP malware scanning
       - ${{ each config in parameters.windowsConfigs }}:
           - template: /OneBranchPipelines/stages/build-windows-single-stage.yml@self
             parameters:
               stageName: Win_py${{ config.pyVer }}_${{ config.arch }}
               jobName: BuildWheel
+              # Convert pyVer '310' → pythonVersion '3.10'
               pythonVersion: ${{ format('{0}.{1}', substring(config.pyVer, 0, 1), substring(config.pyVer, 1, 2)) }}
               shortPyVer: ${{ config.pyVer }}
               architecture: ${{ config.arch }}
-              oneBranchType: '${{ parameters.oneBranchType }}'
-              signingEnabled: '${{ parameters.signingEnabled }}'
-              buildConfiguration: '${{ parameters.buildConfiguration }}'
+              oneBranchType: '${{ variables.effectiveOneBranchType }}'
       
-      # macOS stages - one per Python version (universal2 binaries)
+      # =========================
+      # MACOS BUILD STAGES
+      # =========================
+      # Strategy: Explicit stage per Python version
+      # Total: 5 stages (3.10-3.14)
+      # All builds are Universal2 (x86_64 + ARM64 in single .so binary)
+      # Each stage:
+      # 1. Installs Python via UsePythonVersion@0
+      # 2. Installs CMake and pybind11
+      # 3. Builds universal2 .so (ARCHFLAGS="-arch x86_64 -arch arm64")
+      # 4. Starts SQL Server Docker container (via Colima)
+      # 5. Runs pytest
+      # 6. Builds wheel
+      # 7. Publishes artifacts (wheels + .so)
+      # 8. ESRP malware scanning
       - ${{ each config in parameters.macosConfigs }}:
           - template: /OneBranchPipelines/stages/build-macos-single-stage.yml@self
             parameters:
               stageName: MacOS_py${{ config.pyVer }}
               jobName: BuildWheel
+              # Convert pyVer '310' → pythonVersion '3.10'
               pythonVersion: ${{ format('{0}.{1}', substring(config.pyVer, 0, 1), substring(config.pyVer, 1, 2)) }}
               shortPyVer: ${{ config.pyVer }}
-              oneBranchType: '${{ parameters.oneBranchType }}'
-              signingEnabled: '${{ parameters.signingEnabled }}'
-              buildConfiguration: '${{ parameters.buildConfiguration }}'
+              oneBranchType: '${{ variables.effectiveOneBranchType }}'
       
-      # Linux stages - one per distribution/architecture (builds all Python versions inside)
+      # =========================
+      # LINUX BUILD STAGES
+      # =========================
+      # Strategy: One stage per distribution × architecture
+      # Total: 4 stages (manylinux×2 + musllinux×2)
+      # Each stage builds ALL Python versions (3.10-3.14) in a loop
+      # Distributions:
+      # - manylinux: glibc-based (Ubuntu, CentOS, etc.)
+      # - musllinux: musl-based (Alpine Linux)
+      # Architectures: x86_64 (AMD/Intel), aarch64 (ARM64)
+      # Each stage:
+      # 1. Starts PyPA Docker container (manylinux_2_28 or musllinux_1_2)
+      # 2. Starts SQL Server Docker container
+      # 3. For each Python version (cp310-cp314):
+      #    a. Builds .so native extension
+      #    b. Builds wheel
+      #    c. Installs wheel in isolated directory
+      #    d. Runs pytest against SQL Server
+      # 4. Publishes artifacts (all 5 wheels)
+      # 5. Component Governance + AntiMalware scanning
       - ${{ each config in parameters.linuxConfigs }}:
           - template: /OneBranchPipelines/stages/build-linux-single-stage.yml@self
             parameters:
@@ -257,28 +418,40 @@ extends:
               linuxTag: ${{ config.tag }}
               arch: ${{ config.arch }}
               dockerPlatform: ${{ config.platform }}
-              oneBranchType: '${{ parameters.oneBranchType }}'
-              signingEnabled: '${{ parameters.signingEnabled }}'
-              buildConfiguration: '${{ parameters.buildConfiguration }}'
+              oneBranchType: '${{ variables.effectiveOneBranchType }}'
       
-      # Consolidate all artifacts into single dist/ folder
+      # =========================
+      # CONSOLIDATE STAGE
+      # =========================
+      # Purpose: Collect all artifacts from platform builds into single dist/ folder
+      # Dependencies: All 18 build stages (9 Windows + 5 macOS + 4 Linux)
+      # Stages run in parallel, Consolidate waits for ALL to complete
+      # Outputs:
+      # - dist/wheels/*.whl (all platform wheels)
+      # - dist/bindings/Windows/*.{pyd,pdb} (Windows native extensions)
+      # - dist/bindings/macOS/*.so (macOS universal2 binaries)
+      # - dist/bindings/Linux/*.so (Linux native extensions)
+      # This stage also runs final BinSkim scan on all binaries
       - stage: Consolidate
         displayName: 'Consolidate All Artifacts'
         dependsOn:
-          # Windows dependencies
+          # Windows dependencies (9 stages)
           - Win_py310_x64
           - Win_py311_x64
           - Win_py312_x64
           - Win_py313_x64
+          # - Win_py314_x64 # Life of π: Unfolding in v1.0.0
           - Win_py311_arm64
           - Win_py312_arm64
           - Win_py313_arm64
-          # macOS dependencies
+          # - Win_py314_arm64 # Life of π: Unfolding in v1.0.0
+          # macOS dependencies (5 stages)
           - MacOS_py310
           - MacOS_py311
           - MacOS_py312
           - MacOS_py313
-          # Linux dependencies
+          # - MacOS_py314 # Life of π: Unfolding in v1.0.0
+          # Linux dependencies (4 stages)
           - Linux_manylinux_x86_64
           - Linux_manylinux_aarch64
           - Linux_musllinux_x86_64
@@ -286,6 +459,9 @@ extends:
         jobs:
           - template: /OneBranchPipelines/jobs/consolidate-artifacts-job.yml@self
             parameters:
-              oneBranchType: '${{ parameters.oneBranchType }}'
+              # CRITICAL: Use effectiveOneBranchType to ensure scheduled builds run as 'Official'
+              # Using parameters.oneBranchType would break scheduled builds (they'd run as 'NonOfficial')
+              oneBranchType: '${{ variables.effectiveOneBranchType }}'
 
-      # Note: Symbol publishing is now handled directly in the Windows build stages
+      # Note: Symbol publishing handled directly in Windows build stages
+      # PDB files uploaded to Microsoft Symbol Server for debugging
