@@ -68,11 +68,15 @@ parameters:
         arch: 'x64'
       - pyVer: '313'
         arch: 'x64'
+      - pyVer: '314'
+        arch: 'x64'
       - pyVer: '311'
         arch: 'arm64'
       - pyVer: '312'
         arch: 'arm64'
       - pyVer: '313'
+        arch: 'arm64'
+      - pyVer: '314'
         arch: 'arm64'
   
   - name: macosConfigs
@@ -82,6 +86,7 @@ parameters:
       - pyVer: '311'
       - pyVer: '312'
       - pyVer: '313'
+      - pyVer: '314'
   
   - name: linuxConfigs
     type: object
@@ -270,14 +275,17 @@ extends:
           - Win_py311_x64
           - Win_py312_x64
           - Win_py313_x64
+          - Win_py314_x64
           - Win_py311_arm64
           - Win_py312_arm64
           - Win_py313_arm64
+          - Win_py314_arm64
           # macOS dependencies
           - MacOS_py310
           - MacOS_py311
           - MacOS_py312
           - MacOS_py313
+          - MacOS_py314
           # Linux dependencies
           - Linux_manylinux_x86_64
           - Linux_manylinux_aarch64

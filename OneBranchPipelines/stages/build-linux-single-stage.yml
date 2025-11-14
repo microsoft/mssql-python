@@ -141,7 +141,7 @@ stages:
               if [[ "$(LINUX_TAG)" == "manylinux" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
               docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
               
-              for PYBIN in cp310 cp311 cp312 cp313; do
+              for PYBIN in cp310 cp311 cp312 cp313 cp314; do
                 echo "=== Building for $PYBIN on $(LINUX_TAG)/$(ARCH) ==="
                 if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
                   docker exec -e PYBIN=$PYBIN build-$(LINUX_TAG)-$(ARCH) bash -lc '
@@ -169,7 +169,7 @@ stages:
                   '
                 fi
               done
-            displayName: 'Build wheels for Python 3.10-3.13'
+            displayName: 'Build wheels for Python 3.10-3.14'
           
           - script: |
               set -euxo pipefail
