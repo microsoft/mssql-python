@@ -182,7 +182,7 @@ stages:
               docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
               
               # Loop through all Python versions: build wheel -> test wheel -> repeat
-              for PYBIN in cp310 cp311 cp312 cp313 cp314; do
+              for PYBIN in cp310 cp311 cp312 cp313; do  # cp314: Life of π: Unfolding in v1.0.0
                 echo ""
                 echo "====================================================="
                 echo "Building and testing $PYBIN on $(LINUX_TAG)/$(ARCH)"
