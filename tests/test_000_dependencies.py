@@ -562,8 +562,10 @@ def test_ddbc_bindings_extension_detection():
     # We can verify this by checking what the module import system expects
     # The extension detection logic is used during import
     import os
+    import mssql_python
 
-    module_dir = os.path.dirname(__file__).replace("tests", "mssql_python")
+    # Get the actual installed module directory
+    module_dir = os.path.dirname(mssql_python.__file__)
 
     # Check that some ddbc_bindings file exists with the expected extension
     ddbc_files = [
