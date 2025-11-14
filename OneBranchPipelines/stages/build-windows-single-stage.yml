@@ -1,56 +1,68 @@
 # Windows Single Configuration Stage Template
 # Builds Python wheel for a specific Python version and architecture
+# Supports both x64 (AMD64) and ARM64 cross-compilation
+# Tests x64 builds with pytest (ARM64 binaries can't run on x64 host)
 parameters:
+  # Stage identifier (e.g., 'Win_py312_x64')
   - name: stageName
     type: string
+  # Job identifier within the stage
   - name: jobName
     type: string
     default: 'BuildWheel'
+  # Python version in X.Y format (e.g., '3.12')
   - name: pythonVersion
     type: string
+  # Python version as 3-digit string for file naming (e.g., '312')
   - name: shortPyVer
     type: string
+  # Target architecture: 'x64' (AMD64) or 'arm64' (ARM64)
   - name: architecture
     type: string
+  # OneBranch build type: 'Official' (production) or 'NonOfficial' (dev/test)
   - name: oneBranchType
     type: string
     default: 'Official'
-  - name: signingEnabled
-    type: boolean
-    default: true
-  - name: buildConfiguration
-    type: string
-    default: 'Release'
+  # Publish PDB symbols to symbol server (disabled by default, handled in release pipeline)
   - name: publishSymbols
     type: boolean
     default: true
 
 stages:
   - stage: ${{ parameters.stageName }}
-    displayName: 'Build Windows Python ${{ parameters.pythonVersion }} ${{ parameters.architecture }}'
+    displayName: 'Windows Py${{ parameters.pythonVersion }} ${{ parameters.architecture }}'
     jobs:
       - job: ${{ parameters.jobName }}
-        displayName: 'Build Wheel - Python ${{ parameters.pythonVersion }} ${{ parameters.architecture }}'
+        displayName: 'Build Wheel - Py${{ parameters.pythonVersion }} ${{ parameters.architecture }}'
+        # Use custom 1ES pool with Windows Server 2022 + SQL Server 2022 pre-installed
         pool:
           type: windows
           isCustom: true
           name: Django-1ES-pool
           vmImage: WIN22-SQL22
+        # Extended timeout for downloads, builds, and testing
         timeoutInMinutes: 120
         
         variables:
+          # OneBranch output directory for artifacts (wheels, bindings, symbols)
           ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+          # OneBranch-required variable (unused in this template)
           LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+          # Python version passed to build scripts
           pythonVersion: ${{ parameters.pythonVersion }}
+          # Short Python version for file naming (e.g., '312')
           shortPyVer: ${{ parameters.shortPyVer }}
+          # Target architecture (can differ from host for cross-compilation)
           targetArch: ${{ parameters.architecture }}
-          SYSTEM_ACCESSTOKEN: $(System.AccessToken)  # Make System.AccessToken available to all steps in this job
+          # System access token for authenticated downloads (e.g., GitHub artifacts)
+          SYSTEM_ACCESSTOKEN: $(System.AccessToken)
         
         steps:
           - checkout: self
             fetchDepth: 0
           
-          # Python 3.14: Download and install from NuGet (not in UsePythonVersion yet)
+          # Python 3.14 Installation: Download from NuGet (not yet in UsePythonVersion@0 task)
+          # Microsoft hasn't added Python 3.14 to the standard Python registry yet
           - powershell: |
               $pythonVer = "${{ parameters.pythonVersion }}"
               
@@ -96,6 +108,8 @@ stages:
             condition: eq('${{ parameters.pythonVersion }}', '3.14')
             displayName: 'Download and install Python 3.14 from NuGet'
           
+          # Python 3.10-3.13: Use standard Azure Pipelines task
+          # UsePythonVersion@0 supports these versions natively
           - task: UsePythonVersion@0
             inputs:
               versionSpec: '${{ parameters.pythonVersion }}'
@@ -122,6 +136,8 @@ stages:
               Write-Host "Dependencies installed successfully"
             displayName: 'Install Python dependencies'
           
+          # Start SQL Server LocalDB for pytest execution
+          # LocalDB is a lightweight SQL Server instance pre-installed on WIN22-SQL22 agents
           - powershell: |
               sqllocaldb create MSSQLLocalDB
               sqllocaldb start MSSQLLocalDB
@@ -136,6 +152,8 @@ stages:
             env:
               DB_PASSWORD: $(DB_PASSWORD)
           
+          # Download ARM64 Python libraries for cross-compilation (ARM64 builds only)
+          # ARM64 wheels must be built on x64 host using ARM64 python.lib
           - powershell: |
               # Download Python ARM64 from NuGet (contains libs directory with python.lib)
               $pythonVer = "${{ parameters.pythonVersion }}"
@@ -200,6 +218,8 @@ stages:
             condition: eq(variables['targetArch'], 'arm64')
             displayName: 'Download Python ARM64 libs from NuGet'
           
+          # Build native Python extension (.pyd) using MSVC and CMake
+          # For ARM64: Uses CUSTOM_PYTHON_LIB_DIR to link against ARM64 python.lib
           - script: |
               echo "Python Version: $(pythonVersion)"
               echo "Short Tag: $(shortPyVer)"
@@ -217,10 +237,7 @@ stages:
               call keep_single_arch.bat $(targetArch)
               
               cd ..\..
-            displayName: 'Build PYD for $(targetArch)'
-            continueOnError: false
-          
-          - powershell: |
+            displayName: 'Build PYD for $(targetArch)'\n            continueOnError: false\n          \n          # Run pytest to validate bindings (x64 only)\n          # ARM64 binaries cannot execute on x64 host, so tests are skipped\n          - powershell: |
               Write-Host "Running pytests to validate bindings"
               if ("$(targetArch)" -eq "arm64") {
                 Write-Host "Skipping pytests on Windows ARM64"
@@ -231,6 +248,8 @@ stages:
             env:
               DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
           
+          # Copy artifacts to OneBranch output directory for publishing
+          # PYD files: Native Python extensions (ddbc_bindings.cpXXX-win_xxx.pyd)
           - task: CopyFiles@2
             inputs:
               SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
@@ -238,6 +257,7 @@ stages:
               TargetFolder: '$(ob_outputDirectory)\bindings\windows'
             displayName: 'Copy PYD files'
           
+          # PDB files: Debugging symbols for native code
           - task: CopyFiles@2
             inputs:
               SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
@@ -245,7 +265,8 @@ stages:
               TargetFolder: '$(ob_outputDirectory)\symbols'
             displayName: 'Copy PDB files'
           
-          # Copy files to ApiScan directories (for globalSdl scanning)
+          # Copy PYD to ApiScan directory for SDL security scanning
+          # BinSkim and other tools scan binaries from this location
           - task: CopyFiles@2
             inputs:
               SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
@@ -260,7 +281,8 @@ stages:
               TargetFolder: '$(Build.SourcesDirectory)\apiScan\pdbs\windows\py$(shortPyVer)\$(targetArch)'
             displayName: 'Copy PDB to ApiScan directory'
 
-          
+          # Build Python wheel package from source distribution
+          # ARCHITECTURE environment variable controls target platform tagging
           - script: |
               python -m pip install --upgrade pip wheel setuptools
               set ARCHITECTURE=$(targetArch)
@@ -275,6 +297,10 @@ stages:
             displayName: 'Copy wheel files'
           
           # Explicit publish with OneBranch-compliant artifact name
+            displayName: 'Copy wheel files'
+          
+          # Publish artifacts to Azure Pipelines for downstream consumption
+          # OneBranch requires specific artifact naming: drop_<stageName>_<jobName>
           - task: PublishPipelineArtifact@1
             displayName: 'Publish Windows Artifacts'
             inputs:
@@ -282,41 +308,29 @@ stages:
               artifact: 'drop_${{ parameters.stageName }}_${{ parameters.jobName }}'
               publishLocation: 'pipeline'
           
-          # General malware scanning (Component Governance + OneBranch AntiMalware)
+          # Security Scanning: Component Governance + OneBranch AntiMalware
+          # Scans PYD files and wheels for known vulnerabilities and malware signatures
           - template: /OneBranchPipelines/steps/malware-scanning-step.yml@self
             parameters:
               scanPath: '$(ob_outputDirectory)'
               artifactType: 'dll'
           
-          # ESRP Malware scanning (when signing is enabled)
-          - ${{ if eq(parameters.signingEnabled, true) }}:
-              - task: EsrpMalwareScanning@5
-                displayName: 'ESRP MalwareScanning - Python Wheels'
-                inputs:
-                  ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
-                  AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
-                  AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
-                  EsrpClientId: '$(SigningEsrpClientId)'
-                  UseMSIAuthentication: true
-                  FolderPath: '$(ob_outputDirectory)/wheels'
-                  Pattern: '*.whl'
-                  SessionTimeout: 60
-                  CleanupTempStorage: 1
-                  VerboseLogin: 1
-          
-          # ESRP Code Signing (DISABLED - wheel files cannot be signed with SignTool)
-          # See compound-esrp-code-signing-step.yml for detailed explanation of why this doesn't work
-          # - ${{ if eq(parameters.signingEnabled, true) }}:
-          #     - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
-          #       parameters:
-          #         appRegistrationClientId: '$(SigningAppRegistrationClientId)'
-          #         appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
-          #         artifactType: 'whl'
-          #         authAkvName: '$(SigningAuthAkvName)'
-          #         authSignCertName: '$(SigningAuthSignCertName)'
-          #         esrpClientId: '$(SigningEsrpClientId)'
-          #         esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
-          #         signPath: '$(ob_outputDirectory)\wheels'
+          # ESRP Malware Scanning
+          # Scans wheel files for malware using Microsoft Defender and custom signatures
+          # Required for all production releases
+          - task: EsrpMalwareScanning@5
+            displayName: 'ESRP MalwareScanning - Python Wheels'
+            inputs:
+              ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+              AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
+              AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+              EsrpClientId: '$(SigningEsrpClientId)'
+              UseMSIAuthentication: true
+              FolderPath: '$(ob_outputDirectory)/wheels'
+              Pattern: '*.whl'
+              SessionTimeout: 60
+              CleanupTempStorage: 1
+              VerboseLogin: 1
           
           # Note: Symbol publishing moved to release pipeline
           # Symbols are published as artifacts here and consumed in release pipeline

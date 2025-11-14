@@ -1,55 +1,63 @@
 # Linux Single Configuration Stage Template
 # Builds Python wheels for a specific Linux distribution and architecture
-# Builds for Python 3.10, 3.11, 3.12, 3.13 within single job
+# Builds for Python 3.10, 3.11, 3.12, 3.13, 3.14 within single job
+# Tests each wheel after building with isolated pytest execution
 parameters:
+  # Stage identifier (e.g., 'Linux_manylinux_x86_64')
   - name: stageName
     type: string
+  # Job identifier within the stage
   - name: jobName
     type: string
     default: 'BuildWheels'
+  # Linux distribution type: 'manylinux' (glibc-based) or 'musllinux' (musl libc-based)
   - name: linuxTag
-    type: string  # 'manylinux' or 'musllinux'
+    type: string
+  # CPU architecture: 'x86_64' (AMD64) or 'aarch64' (ARM64)
   - name: arch
-    type: string  # 'x86_64' or 'aarch64'
+    type: string
+  # Docker platform for QEMU emulation: 'linux/amd64' or 'linux/arm64'
   - name: dockerPlatform
-    type: string  # 'linux/amd64' or 'linux/arm64'
+    type: string
+  # OneBranch build type: 'Official' (production) or 'NonOfficial' (dev/test)
   - name: oneBranchType
     type: string
     default: 'Official'
-  - name: signingEnabled
-    type: boolean
-    default: true
-  - name: buildConfiguration
-    type: string
-    default: 'Release'
 
 stages:
   - stage: ${{ parameters.stageName }}
-    displayName: 'Build Linux ${{ parameters.linuxTag }} ${{ parameters.arch }}'
+    displayName: 'Linux ${{ parameters.linuxTag }} ${{ parameters.arch }}'
     jobs:
       - job: ${{ parameters.jobName }}
         displayName: 'Build Wheels - ${{ parameters.linuxTag }} ${{ parameters.arch }}'
         
+        # Use custom 1ES pool with Ubuntu 22.04 + SQL Server 2022 pre-installed
         pool:
           type: linux
           isCustom: true
           name: Django-1ES-pool
           demands:
           - imageOverride -equals ADO-UB22-SQL22
+        # Extended timeout for multi-version builds + testing (5 Python versions × build + test time)
         timeoutInMinutes: 120
         
         variables:
-          # Disable BinSkim for Linux - requires ICU libraries not available in containers
+          # Disable BinSkim for Linux - requires ICU libraries not available in manylinux/musllinux containers
           - name: ob_sdl_binskim_enabled
             value: false
+          # OneBranch output directory for artifacts (wheels, bindings, symbols)
           - name: ob_outputDirectory
             value: '$(Build.ArtifactStagingDirectory)'
+          # OneBranch-required variable (unused in this template)
           - name: LinuxContainerImage
             value: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+          # Distribution type passed to container selection logic
           - name: LINUX_TAG
             value: ${{ parameters.linuxTag }}
+          # Architecture passed to container selection and file naming
           - name: ARCH
             value: ${{ parameters.arch }}
+          # Docker platform for QEMU-based cross-compilation
           - name: DOCKER_PLATFORM
             value: ${{ parameters.dockerPlatform }}
         
@@ -136,45 +144,203 @@ stages:
               fi
             displayName: 'Install system build dependencies'
           
+          # Start SQL Server container for pytest execution
+          # Runs on host (not in build container) to be accessible from build container via network
+          - script: |
+              set -euxo pipefail
+              
+              echo "Starting SQL Server 2022 container for testing..."
+              docker run -d --name sqlserver-$(LINUX_TAG)-$(ARCH) \
+                --platform linux/amd64 \
+                -e ACCEPT_EULA=Y \
+                -e MSSQL_SA_PASSWORD="$(DB_PASSWORD)" \
+                -p 1433:1433 \
+                mcr.microsoft.com/mssql/server:2022-latest
+              
+              echo "Waiting for SQL Server to be ready..."
+              for i in {1..30}; do
+                if docker exec sqlserver-$(LINUX_TAG)-$(ARCH) /opt/mssql-tools18/bin/sqlcmd \
+                  -S localhost -U SA -P "$(DB_PASSWORD)" -C -Q "SELECT 1" >/dev/null 2>&1; then
+                  echo "✓ SQL Server is ready!"
+                  break
+                fi
+                sleep 2
+              done
+              
+              # Get SQL Server container IP for build container to connect
+              SQL_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' sqlserver-$(LINUX_TAG)-$(ARCH))
+              echo "SQL Server IP: $SQL_IP"
+              echo "##vso[task.setvariable variable=SQL_IP]$SQL_IP"
+            displayName: 'Start SQL Server container for testing'
+            env:
+              DB_PASSWORD: $(DB_PASSWORD)
+          
+          # Build wheels for all Python versions (3.10-3.14) and test each one
           - script: |
               set -euxo pipefail
               if [[ "$(LINUX_TAG)" == "manylinux" ]]; then SHELL_EXE=bash; else SHELL_EXE=sh; fi
               docker exec build-$(LINUX_TAG)-$(ARCH) $SHELL_EXE -lc 'mkdir -p /workspace/dist'
               
+              # Loop through all Python versions: build wheel -> test wheel -> repeat
               for PYBIN in cp310 cp311 cp312 cp313 cp314; do
-                echo "=== Building for $PYBIN on $(LINUX_TAG)/$(ARCH) ==="
+                echo ""
+                echo "====================================================="
+                echo "Building and testing $PYBIN on $(LINUX_TAG)/$(ARCH)"
+                echo "====================================================="
+                
                 if [[ "$(LINUX_TAG)" == "manylinux" ]]; then
-                  docker exec -e PYBIN=$PYBIN build-$(LINUX_TAG)-$(ARCH) bash -lc '
+                  # Manylinux (glibc-based) - use bash
+                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" build-$(LINUX_TAG)-$(ARCH) bash -lc '
                     set -euxo pipefail;
+                    
+                    # Step 1: Setup Python environment
                     PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
-                    test -x $PY || { echo "Python $PY missing"; exit 0; };
+                    test -x $PY || { echo "Python $PY missing - skipping"; exit 0; };
                     ln -sf $PY /usr/local/bin/python;
-                    python -m pip install -U pip setuptools wheel pybind11;
+                    echo "Using: $(python --version)";
+                    
+                    # Step 2: Install build dependencies
+                    python -m pip install -q -U pip setuptools wheel pybind11;
+                    
+                    # Step 3: Build native extension (.so)
+                    echo "Building native extension...";
                     cd /workspace/mssql_python/pybind;
                     bash build.sh;
+                    
+                    # Step 4: Build wheel
+                    echo "Building wheel package...";
                     cd /workspace;
                     python setup.py bdist_wheel;
+                    
+                    # Step 5: Install wheel in isolated directory for testing
+                    echo "Installing wheel in isolated test environment...";
+                    TEST_DIR="/test_isolated_${PYBIN}";
+                    rm -rf $TEST_DIR;
+                    mkdir -p $TEST_DIR;
+                    cd $TEST_DIR;
+                    
+                    # Find and install the wheel for this Python version
+                    WHEEL=$(ls /workspace/dist/*${PYBIN}*.whl | head -1);
+                    if [ -z "$WHEEL" ]; then
+                      echo "ERROR: No wheel found for ${PYBIN}";
+                      exit 1;
+                    fi;
+                    echo "Installing: $WHEEL";
+                    $PY -m pip install -q "$WHEEL";
+                    
+                    # Step 6: Verify package imports correctly
+                    echo "Verifying package installation...";
+                    $PY -c "import mssql_python; print(f'✓ Package imported from: {mssql_python.__file__}')";
+                    
+                    # Step 7: Setup test environment
+                    echo "Setting up test environment...";
+                    $PY -m pip install -q pytest;
+                    cp -r /workspace/tests $TEST_DIR/ || echo "WARNING: No tests directory";
+                    cp /workspace/pytest.ini $TEST_DIR/ || echo "WARNING: No pytest.ini";
+                    cp /workspace/requirements.txt $TEST_DIR/ || true;
+                    $PY -m pip install -q -r $TEST_DIR/requirements.txt || true;
+                    
+                    # Step 8: Run pytest (stops on first failure)
+                    if [ -d $TEST_DIR/tests ]; then
+                      echo "Running pytest for ${PYBIN}...";
+                      DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
+                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 || {
+                          echo "ERROR: Tests failed for ${PYBIN}";
+                          exit 1;
+                        };
+                      echo "✓ All tests passed for ${PYBIN}";
+                    else
+                      echo "WARNING: No tests found, skipping pytest";
+                    fi;
                   '
                 else
-                  docker exec -e PYBIN=$PYBIN build-$(LINUX_TAG)-$(ARCH) sh -lc '
+                  # Musllinux (musl libc-based) - use sh
+                  docker exec -e PYBIN=$PYBIN -e SQL_IP=$(SQL_IP) -e DB_PASSWORD="$(DB_PASSWORD)" build-$(LINUX_TAG)-$(ARCH) sh -lc '
                     set -euxo pipefail;
+                    
+                    # Step 1: Setup Python environment
                     PY=/opt/python/${PYBIN}-${PYBIN}/bin/python;
-                    test -x $PY || { echo "Python $PY missing"; exit 0; };
+                    test -x $PY || { echo "Python $PY missing - skipping"; exit 0; };
                     ln -sf $PY /usr/local/bin/python;
-                    python -m pip install -U pip setuptools wheel pybind11;
+                    echo "Using: $(python --version)";
+                    
+                    # Step 2: Install build dependencies
+                    python -m pip install -q -U pip setuptools wheel pybind11;
+                    
+                    # Step 3: Build native extension (.so)
+                    echo "Building native extension...";
                     cd /workspace/mssql_python/pybind;
                     bash build.sh;
+                    
+                    # Step 4: Build wheel
+                    echo "Building wheel package...";
                     cd /workspace;
                     python setup.py bdist_wheel;
+                    
+                    # Step 5: Install wheel in isolated directory for testing
+                    echo "Installing wheel in isolated test environment...";
+                    TEST_DIR="/test_isolated_${PYBIN}";
+                    rm -rf $TEST_DIR;
+                    mkdir -p $TEST_DIR;
+                    cd $TEST_DIR;
+                    
+                    # Find and install the wheel for this Python version
+                    WHEEL=$(ls /workspace/dist/*${PYBIN}*.whl | head -1);
+                    if [ -z "$WHEEL" ]; then
+                      echo "ERROR: No wheel found for ${PYBIN}";
+                      exit 1;
+                    fi;
+                    echo "Installing: $WHEEL";
+                    $PY -m pip install -q "$WHEEL";
+                    
+                    # Step 6: Verify package imports correctly
+                    echo "Verifying package installation...";
+                    $PY -c "import mssql_python; print(f'✓ Package imported from: {mssql_python.__file__}')";
+                    
+                    # Step 7: Setup test environment
+                    echo "Setting up test environment...";
+                    $PY -m pip install -q pytest;
+                    cp -r /workspace/tests $TEST_DIR/ || echo "WARNING: No tests directory";
+                    cp /workspace/pytest.ini $TEST_DIR/ || echo "WARNING: No pytest.ini";
+                    cp /workspace/requirements.txt $TEST_DIR/ || true;
+                    $PY -m pip install -q -r $TEST_DIR/requirements.txt || true;
+                    
+                    # Step 8: Run pytest (stops on first failure)
+                    if [ -d $TEST_DIR/tests ]; then
+                      echo "Running pytest for ${PYBIN}...";
+                      DB_CONNECTION_STRING="Server=$SQL_IP;Database=master;Uid=SA;Pwd=$DB_PASSWORD;TrustServerCertificate=yes" \
+                        $PY -m pytest $TEST_DIR/tests -v --maxfail=1 || {
+                          echo "ERROR: Tests failed for ${PYBIN}";
+                          exit 1;
+                        };
+                      echo "✓ All tests passed for ${PYBIN}";
+                    else
+                      echo "WARNING: No tests found, skipping pytest";
+                    fi;
                   '
                 fi
+                
+                echo "✓ Build and test complete for $PYBIN"
               done
-            displayName: 'Build wheels for Python 3.10-3.14'
+              
+              echo ""
+              echo "====================================================="
+              echo "✓ All Python versions built and tested successfully!"
+              echo "====================================================="
+            displayName: 'Build and test wheels for Python 3.10-3.14'
+            env:
+              DB_PASSWORD: $(DB_PASSWORD)
           
+          # Copy built artifacts from container to host for publishing
           - script: |
               set -euxo pipefail
-              docker cp build-$(LINUX_TAG)-$(ARCH):/workspace/dist/. "$(ob_outputDirectory)/wheels/" || echo "No wheels"
               
+              # Copy all wheels (5 Python versions) to output directory
+              echo "Copying wheels to host..."
+              docker cp build-$(LINUX_TAG)-$(ARCH):/workspace/dist/. "$(ob_outputDirectory)/wheels/" || echo "No wheels found"
+              
+              # Copy native .so bindings for artifact archival
+              echo "Copying .so bindings to host..."
               mkdir -p "$(ob_outputDirectory)/bindings/$(LINUX_TAG)-$(ARCH)"
               docker exec build-$(LINUX_TAG)-$(ARCH) $([[ "$(LINUX_TAG)" == "manylinux" ]] && echo bash -lc || echo sh -lc) '
                 OUT="/tmp/ddbc-out";
@@ -183,16 +349,22 @@ stages:
               '
               
               docker cp "build-$(LINUX_TAG)-$(ARCH):/tmp/ddbc-out/." \
-                "$(ob_outputDirectory)/bindings/$(LINUX_TAG)-$(ARCH)/" || echo "No .so files"
+                "$(ob_outputDirectory)/bindings/$(LINUX_TAG)-$(ARCH)/" || echo "No .so files found"
+              
+              echo "✓ Artifacts copied successfully"
             displayName: 'Copy artifacts to host'
           
+          # Cleanup: Stop and remove Docker containers
           - script: |
-              docker stop build-$(LINUX_TAG)-$(ARCH) || true
-              docker rm build-$(LINUX_TAG)-$(ARCH) || true
-            displayName: 'Cleanup container'
-            condition: always()
+              echo "Stopping and removing containers..."
+              docker stop build-$(LINUX_TAG)-$(ARCH) sqlserver-$(LINUX_TAG)-$(ARCH) || true
+              docker rm build-$(LINUX_TAG)-$(ARCH) sqlserver-$(LINUX_TAG)-$(ARCH) || true
+              echo "✓ Containers cleaned up"
+            displayName: 'Cleanup containers'
+            condition: always()  # Always run cleanup, even if build/test fails
           
-          # Explicit publish with OneBranch-compliant artifact name
+          # Publish artifacts to Azure Pipelines for downstream consumption
+          # OneBranch requires specific artifact naming: drop_<stageName>_<jobName>
           - task: PublishPipelineArtifact@1
             displayName: 'Publish Linux Artifacts'
             inputs:
@@ -200,13 +372,15 @@ stages:
               artifact: 'drop_${{ parameters.stageName }}_${{ parameters.jobName }}'
               publishLocation: 'pipeline'
           
-          # General malware scanning (Component Governance + OneBranch AntiMalware)
+          # Security Scanning: Component Governance + OneBranch AntiMalware
+          # Scans wheels and binaries for known vulnerabilities and malware signatures
           - template: ../steps/malware-scanning-step.yml@self
             parameters:
               scanPath: '$(ob_outputDirectory)'
               artifactType: 'dll'
           
-          # ESRP Malware scanning (Official builds only)
+          # ESRP Malware Scanning (Official builds only)
+          # Additional enterprise-grade malware scanning for production releases
           - ${{ if and(eq(parameters.signingEnabled, true), eq(parameters.oneBranchType, 'Official')) }}:
               - task: EsrpMalwareScanning@5
                 displayName: 'ESRP MalwareScanning - Python Wheels (Official)'
