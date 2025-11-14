@@ -54,8 +54,8 @@ from .connection_string_builder import _ConnectionStringBuilder
 # Cursor Objects
 from .cursor import Cursor
 
-# Logging Configuration
-from .logging_config import setup_logging, get_logger
+# Logging Configuration (Simplified single-level DEBUG system)
+from .logging import logger, setup_logging, driver_logger
 
 # Constants
 from .constants import ConstantsDDBC, GetInfoConstants
@@ -181,6 +181,19 @@ def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) 
         PoolingManager.enable(max_size, idle_timeout)
 
 _original_module_setattr = sys.modules[__name__].__setattr__
+
+def _custom_setattr(name, value):
+    if name == 'lowercase':
+        with _settings_lock:
+            _settings.lowercase = bool(value)
+            # Update the module's lowercase variable
+            _original_module_setattr(name, _settings.lowercase)
+    else:
+        _original_module_setattr(name, value)
+
+# Replace the module's __setattr__ with our custom version
+sys.modules[__name__].__setattr__ = _custom_setattr
+
 
 # Export SQL constants at module level
 SQL_VARCHAR: int = ConstantsDDBC.SQL_VARCHAR.value

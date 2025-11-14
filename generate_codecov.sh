@@ -81,11 +81,17 @@ llvm-cov export "$PYBIND_SO" \
   --skip-functions \
   -format=lcov > cpp-coverage.info
 
+# Note: LCOV exclusion markers (LCOV_EXCL_LINE) should be added to source code
+# to exclude LOG() statements from coverage. However, for automated exclusion
+# of all LOG lines without modifying source code, we can use geninfo's --omit-lines
+# feature during the merge step (see below).
+
 echo "==================================="
 echo "[STEP 4] Merging Python + C++ coverage"
 echo "==================================="
 
 # Merge LCOV reports (ignore inconsistencies in Python LCOV export)
+echo "[ACTION] Merging Python and C++ coverage"
 lcov -a python-coverage.info -a cpp-coverage.info -o total.info \
   --ignore-errors inconsistent,corrupt
 

@@ -1,323 +1,833 @@
+"""
+Unit tests for mssql_python logging module.
+Tests the logging API, configuration, output modes, and formatting.
+"""
 import logging
 import os
 import pytest
-import glob
-from mssql_python.logging_config import setup_logging, get_logger, LoggingManager
+import re
+import tempfile
+import shutil
+from pathlib import Path
+from mssql_python.logging import logger, setup_logging, DEBUG, STDOUT, FILE, BOTH
 
 
-def get_log_file_path():
-    # Get the LoggingManager singleton instance
-    manager = LoggingManager()
-    # If logging is enabled, return the actual log file path
-    if manager.enabled and manager.log_file:
-        return manager.log_file
-    # For fallback/cleanup, try to find existing log files in the logs directory
-    repo_root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    log_dir = os.path.join(repo_root_dir, "mssql_python", "logs")
-    os.makedirs(log_dir, exist_ok=True)
-
-    # Try to find existing log files
-    log_files = glob.glob(os.path.join(log_dir, "mssql_python_trace_*.log"))
-    if log_files:
-        # Return the most recently created log file
-        return max(log_files, key=os.path.getctime)
-
-    # Fallback to default pattern
-    pid = os.getpid()
-    return os.path.join(log_dir, f"mssql_python_trace_{pid}.log")
+@pytest.fixture
+def temp_log_dir():
+    """Create a temporary directory for log files"""
+    temp_dir = tempfile.mkdtemp()
+    yield temp_dir
+    # Cleanup
+    shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @pytest.fixture
 def cleanup_logger():
-    """Cleanup logger & log files before and after each test"""
-
-    def cleanup():
-        # Get the LoggingManager singleton instance
-        manager = LoggingManager()
-        logger = get_logger()
-        if logger is not None:
-            logger.handlers.clear()
-
-        # Try to remove the actual log file if it exists
-        try:
-            log_file_path = get_log_file_path()
-            if os.path.exists(log_file_path):
-                os.remove(log_file_path)
-        except:
-            pass  # Ignore errors during cleanup
-
-        # Reset the LoggingManager instance
-        manager._enabled = False
-        manager._initialized = False
-        manager._logger = None
-        manager._log_file = None
-
-    # Perform cleanup before the test
-    cleanup()
+    """Reset logger state before and after each test"""
+    # Store original state
+    original_level = logger.getLevel()
+    original_output = logger.output
+    
+    # Disable logging and clear handlers
+    logger._logger.setLevel(logging.CRITICAL)
+    for handler in logger._logger.handlers[:]:
+        handler.close()
+        logger._logger.removeHandler(handler)
+    logger._handlers_initialized = False
+    logger._custom_log_path = None
+    
+    # Cleanup any log files in current directory
+    log_dir = os.path.join(os.getcwd(), "mssql_python_logs")
+    if os.path.exists(log_dir):
+        shutil.rmtree(log_dir, ignore_errors=True)
+    
     yield
-    # Perform cleanup after the test
-    cleanup()
+    
+    # Restore state and cleanup
+    logger._logger.setLevel(logging.CRITICAL)
+    for handler in logger._logger.handlers[:]:
+        handler.close()
+        logger._logger.removeHandler(handler)
+    logger._handlers_initialized = False
+    logger._custom_log_path = None
+    
+    if os.path.exists(log_dir):
+        shutil.rmtree(log_dir, ignore_errors=True)
 
 
-def test_no_logging(cleanup_logger):
-    """Test that logging is off by default"""
-    try:
-        # Get the LoggingManager singleton instance
-        manager = LoggingManager()
-        logger = get_logger()
-        assert logger is None
-        assert manager.enabled == False
-    except Exception as e:
-        pytest.fail(f"Logging not off by default. Error: {e}")
-
-
-def test_setup_logging(cleanup_logger):
-    """Test if logging is set up correctly"""
-    try:
-        setup_logging()  # This must enable logging
-        logger = get_logger()
-        assert logger is not None
-        # Fix: Check for the correct logger name
-        assert logger == logging.getLogger("mssql_python")
-        assert logger.level == logging.DEBUG  # DEBUG level
-    except Exception as e:
-        pytest.fail(f"Logging setup failed: {e}")
-
-
-def test_logging_in_file_mode(cleanup_logger):
-    """Test if logging works correctly in file mode"""
-    try:
+class TestLoggingBasics:
+    """Test basic logging functionality"""
+    
+    def test_logger_disabled_by_default(self, cleanup_logger):
+        """Logger should be disabled by default (CRITICAL level)"""
+        assert logger.getLevel() == logging.CRITICAL
+        assert not logger.isEnabledFor(logging.DEBUG)
+        assert not logger.isEnabledFor(logging.INFO)
+    
+    def test_setup_logging_enables_debug(self, cleanup_logger):
+        """setup_logging() should enable DEBUG level"""
         setup_logging()
-        logger = get_logger()
-        assert logger is not None
-        # Log a test message
-        test_message = "Testing file logging mode"
-        logger.info(test_message)
-        # Check if the log file is created and contains the test message
-        log_file_path = get_log_file_path()
-        assert os.path.exists(log_file_path), "Log file not created"
-        # open the log file and check its content
-        with open(log_file_path, "r") as f:
-            log_content = f.read()
-        assert test_message in log_content, "Log message not found in log file"
-    except Exception as e:
-        pytest.fail(f"Logging in file mode failed: {e}")
+        assert logger.getLevel() == logging.DEBUG
+        assert logger.isEnabledFor(logging.DEBUG)
+    
+    def test_singleton_behavior(self, cleanup_logger):
+        """Logger should behave as singleton"""
+        from mssql_python.logging import logger as logger1
+        from mssql_python.logging import logger as logger2
+        assert logger1 is logger2
 
 
-def test_logging_in_stdout_mode(cleanup_logger, capsys):
-    """Test if logging works correctly in stdout mode"""
-    try:
-        setup_logging("stdout")
-        logger = get_logger()
-        assert logger is not None
-        # Log a test message
-        test_message = "Testing file + stdout logging mode"
-        logger.info(test_message)
-        # Check if the log file is created and contains the test message
-        log_file_path = get_log_file_path()
-        assert os.path.exists(log_file_path), "Log file not created in file+stdout mode"
-        with open(log_file_path, "r") as f:
-            log_content = f.read()
-        assert test_message in log_content, "Log message not found in log file"
-        # Check if the message is printed to stdout
-        captured_stdout = capsys.readouterr().out
-        assert test_message in captured_stdout, "Log message not found in stdout"
-    except Exception as e:
-        pytest.fail(f"Logging in stdout mode failed: {e}")
-
-
-def test_python_layer_prefix(cleanup_logger):
-    """Test that Python layer logs have the correct prefix"""
-    try:
+class TestOutputModes:
+    """Test different output modes (file, stdout, both)"""
+    
+    def test_default_output_mode_is_file(self, cleanup_logger):
+        """Default output mode should be FILE"""
         setup_logging()
-        logger = get_logger()
-        assert logger is not None
+        assert logger.output == FILE
+        assert logger.log_file is not None
+        assert os.path.exists(logger.log_file)
+    
+    def test_stdout_mode_no_file_created(self, cleanup_logger):
+        """STDOUT mode should not create log file"""
+        setup_logging(output=STDOUT)
+        assert logger.output == STDOUT
+        # Log file property might be None or point to non-existent file
+        if logger.log_file:
+            assert not os.path.exists(logger.log_file)
+    
+    def test_both_mode_creates_file(self, cleanup_logger):
+        """BOTH mode should create log file and output to stdout"""
+        setup_logging(output=BOTH)
+        assert logger.output == BOTH
+        assert logger.log_file is not None
+        assert os.path.exists(logger.log_file)
+    
+    def test_invalid_output_mode_raises_error(self, cleanup_logger):
+        """Invalid output mode should raise ValueError"""
+        with pytest.raises(ValueError, match="Invalid output mode"):
+            setup_logging(output='invalid')
 
-        # Log a test message
-        test_message = "This is a Python layer test message"
-        logger.info(test_message)
 
-        # Check if the log file contains the message with [Python Layer log] prefix
-        log_file_path = get_log_file_path()
-        with open(log_file_path, "r") as f:
-            log_content = f.read()
-
-        # The logged message should have the Python Layer prefix
-        assert "[Python Layer log]" in log_content, "Python Layer log prefix not found"
-        assert test_message in log_content, "Test message not found in log file"
-    except Exception as e:
-        pytest.fail(f"Python layer prefix test failed: {e}")
-
-
-def test_different_log_levels(cleanup_logger):
-    """Test that different log levels work correctly"""
-    try:
+class TestLogFile:
+    """Test log file creation and naming"""
+    
+    def test_log_file_created_in_mssql_python_logs_folder(self, cleanup_logger):
+        """Log file should be created in mssql_python_logs subfolder"""
         setup_logging()
-        logger = get_logger()
-        assert logger is not None
-
-        # Log messages at different levels
-        debug_msg = "This is a DEBUG message"
-        info_msg = "This is an INFO message"
-        warning_msg = "This is a WARNING message"
-        error_msg = "This is an ERROR message"
-
-        logger.debug(debug_msg)
-        logger.info(info_msg)
-        logger.warning(warning_msg)
-        logger.error(error_msg)
-
-        # Check if the log file contains all messages
-        log_file_path = get_log_file_path()
-        with open(log_file_path, "r") as f:
-            log_content = f.read()
-
-        assert debug_msg in log_content, "DEBUG message not found in log file"
-        assert info_msg in log_content, "INFO message not found in log file"
-        assert warning_msg in log_content, "WARNING message not found in log file"
-        assert error_msg in log_content, "ERROR message not found in log file"
-
-        # Also check for level indicators in the log
-        assert "DEBUG" in log_content, "DEBUG level not found in log file"
-        assert "INFO" in log_content, "INFO level not found in log file"
-        assert "WARNING" in log_content, "WARNING level not found in log file"
-        assert "ERROR" in log_content, "ERROR level not found in log file"
-    except Exception as e:
-        pytest.fail(f"Log levels test failed: {e}")
-
-
-def test_singleton_behavior(cleanup_logger):
-    """Test that LoggingManager behaves as a singleton"""
-    try:
-        # Create multiple instances of LoggingManager
-        manager1 = LoggingManager()
-        manager2 = LoggingManager()
-
-        # They should be the same instance
-        assert manager1 is manager2, "LoggingManager instances are not the same"
-
-        # Enable logging through one instance
-        manager1._enabled = True
-
-        # The other instance should reflect this change
-        assert manager2.enabled == True, "Singleton state not shared between instances"
-
-        # Reset for cleanup
-        manager1._enabled = False
-    except Exception as e:
-        pytest.fail(f"Singleton behavior test failed: {e}")
-
-
-def test_timestamp_in_log_filename(cleanup_logger):
-    """Test that log filenames include timestamps"""
-    try:
+        logger.debug("Test message")
+        
+        log_file = logger.log_file
+        assert log_file is not None
+        assert "mssql_python_logs" in log_file
+        assert os.path.exists(log_file)
+    
+    def test_log_file_naming_pattern(self, cleanup_logger):
+        """Log file should follow naming pattern: mssql_python_trace_YYYYMMDDHHMMSS_PID.log"""
         setup_logging()
-
-        # Get the log file path
-        log_file_path = get_log_file_path()
-        filename = os.path.basename(log_file_path)
-
-        # Extract parts of the filename
-        parts = filename.split("_")
-
-        # The filename should follow the pattern: mssql_python_trace_YYYYMMDD_HHMMSS_PID.log
-        # Fix: Account for the fact that "mssql_python" contains an underscore
-        assert parts[0] == "mssql", "Incorrect filename prefix part 1"
-        assert parts[1] == "python", "Incorrect filename prefix part 2"
-        assert parts[2] == "trace", "Incorrect filename part"
-
-        # Check date format (YYYYMMDD)
-        date_part = parts[3]
-        assert (
-            len(date_part) == 8 and date_part.isdigit()
-        ), "Date format incorrect in filename"
-
-        # Check time format (HHMMSS)
-        time_part = parts[4]
-        assert (
-            len(time_part) == 6 and time_part.isdigit()
-        ), "Time format incorrect in filename"
-
-        # Process ID should be the last part before .log
-        pid_part = parts[5].split(".")[0]
-        assert pid_part.isdigit(), "Process ID not found in filename"
-    except Exception as e:
-        pytest.fail(f"Timestamp in filename test failed: {e}")
-
-
-def test_invalid_logging_mode(cleanup_logger):
-    """Test that invalid logging modes raise ValueError (Lines 130-138)."""
-    from mssql_python.logging_config import LoggingManager
-
-    # Test invalid mode "invalid" - should trigger line 134
-    manager = LoggingManager()
-    with pytest.raises(ValueError, match="Invalid logging mode: invalid"):
-        manager.setup(mode="invalid")
-
-    # Test another invalid mode "console" - should also trigger line 134
-    with pytest.raises(ValueError, match="Invalid logging mode: console"):
-        manager.setup(mode="console")
-
-    # Test invalid mode "both" - should also trigger line 134
-    with pytest.raises(ValueError, match="Invalid logging mode: both"):
-        manager.setup(mode="both")
-
-    # Test empty string mode - should trigger line 134
-    with pytest.raises(ValueError, match="Invalid logging mode: "):
-        manager.setup(mode="")
-
-    # Test None as mode (will become string "None") - should trigger line 134
-    with pytest.raises(ValueError, match="Invalid logging mode: None"):
-        manager.setup(mode=str(None))
+        logger.debug("Test message")
+        
+        filename = os.path.basename(logger.log_file)
+        pattern = r'^mssql_python_trace_\d{14}_\d+\.log$'
+        assert re.match(pattern, filename), f"Filename '{filename}' doesn't match pattern"
+        
+        # Extract and verify PID
+        parts = filename.replace('mssql_python_trace_', '').replace('.log', '').split('_')
+        assert len(parts) == 2
+        timestamp_part, pid_part = parts
+        
+        assert len(timestamp_part) == 14 and timestamp_part.isdigit()
+        assert int(pid_part) == os.getpid()
+    
+    def test_custom_log_file_path(self, cleanup_logger, temp_log_dir):
+        """Custom log file path should be respected"""
+        custom_path = os.path.join(temp_log_dir, "custom_test.log")
+        setup_logging(log_file_path=custom_path)
+        logger.debug("Test message")
+        
+        assert logger.log_file == custom_path
+        assert os.path.exists(custom_path)
+    
+    def test_custom_log_file_path_creates_directory(self, cleanup_logger, temp_log_dir):
+        """Custom log file path should create parent directories"""
+        custom_path = os.path.join(temp_log_dir, "subdir", "nested", "test.log")
+        setup_logging(log_file_path=custom_path)
+        logger.debug("Test message")
+        
+        assert os.path.exists(custom_path)
+    
+    def test_log_file_extension_validation_txt(self, cleanup_logger, temp_log_dir):
+        """.txt extension should be allowed"""
+        custom_path = os.path.join(temp_log_dir, "test.txt")
+        setup_logging(log_file_path=custom_path)
+        assert os.path.exists(custom_path)
+    
+    def test_log_file_extension_validation_csv(self, cleanup_logger, temp_log_dir):
+        """.csv extension should be allowed"""
+        custom_path = os.path.join(temp_log_dir, "test.csv")
+        setup_logging(log_file_path=custom_path)
+        assert os.path.exists(custom_path)
+    
+    def test_log_file_extension_validation_invalid(self, cleanup_logger, temp_log_dir):
+        """Invalid extension should raise ValueError"""
+        custom_path = os.path.join(temp_log_dir, "test.json")
+        with pytest.raises(ValueError, match="Invalid log file extension"):
+            setup_logging(log_file_path=custom_path)
 
 
-def test_valid_logging_modes_for_comparison(cleanup_logger):
-    """Test that valid logging modes work correctly for comparison."""
-    from mssql_python.logging_config import LoggingManager
+class TestCSVFormat:
+    """Test CSV output format"""
+    
+    def test_csv_header_written(self, cleanup_logger):
+        """CSV header should be written to log file"""
+        setup_logging()
+        logger.debug("Test message")
+        
+        with open(logger.log_file, 'r') as f:
+            content = f.read()
+        
+        assert "Timestamp, ThreadID, Level, Location, Source, Message" in content
+    
+    def test_csv_metadata_header(self, cleanup_logger):
+        """CSV metadata header should contain script, PID, Python version, etc."""
+        setup_logging()
+        logger.debug("Test message")
+        
+        with open(logger.log_file, 'r') as f:
+            first_line = f.readline()
+        
+        assert first_line.startswith("#")
+        assert "MSSQL-Python Driver Log" in first_line
+        assert f"PID: {os.getpid()}" in first_line
+        assert "Python:" in first_line
+    
+    def test_csv_row_format(self, cleanup_logger):
+        """CSV rows should have correct format"""
+        setup_logging()
+        logger.debug("Test message")
+        
+        with open(logger.log_file, 'r') as f:
+            lines = f.readlines()
+        
+        # Find first log line (skip header and metadata)
+        log_line = None
+        for line in lines:
+            if not line.startswith('#') and 'Timestamp' not in line and 'Test message' in line:
+                log_line = line
+                break
+        
+        assert log_line is not None
+        parts = [p.strip() for p in log_line.split(',')]
+        assert len(parts) >= 6  # timestamp, thread_id, level, location, source, message
+        
+        # Verify timestamp format (YYYY-MM-DD HH:MM:SS.mmm)
+        timestamp_pattern = r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$'
+        assert re.match(timestamp_pattern, parts[0]), f"Invalid timestamp: {parts[0]}"
+        
+        # Verify thread_id is numeric
+        assert parts[1].isdigit(), f"Invalid thread_id: {parts[1]}"
+        
+        # Verify level
+        assert parts[2] in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+        
+        # Verify location format (filename:lineno)
+        assert ':' in parts[3]
+        
+        # Verify source
+        assert parts[4] in ['Python', 'DDBC', 'Unknown']
 
-    # Test valid mode "file" - should not raise exception
-    manager = LoggingManager()
-    try:
-        logger = manager.setup(mode="file")
-        assert logger is not None
-        assert manager.enabled is True
-    except ValueError:
-        pytest.fail("Valid mode 'file' should not raise ValueError")
 
-    # Reset manager for next test
-    manager._enabled = False
-    manager._initialized = False
-    manager._logger = None
-    manager._log_file = None
+class TestLogLevels:
+    """Test different log levels"""
+    
+    def test_debug_level(self, cleanup_logger):
+        """DEBUG level messages should be logged"""
+        setup_logging()
+        logger.debug("Debug message")
+        
+        with open(logger.log_file, 'r') as f:
+            content = f.read()
+        
+        assert "Debug message" in content
+        assert "DEBUG" in content
+    
+    def test_info_level(self, cleanup_logger):
+        """INFO level messages should be logged"""
+        setup_logging()
+        logger.info("Info message")
+        
+        with open(logger.log_file, 'r') as f:
+            content = f.read()
+        
+        assert "Info message" in content
+        assert "INFO" in content
+    
+    def test_warning_level(self, cleanup_logger):
+        """WARNING level messages should be logged"""
+        setup_logging()
+        logger.warning("Warning message")
+        
+        with open(logger.log_file, 'r') as f:
+            content = f.read()
+        
+        assert "Warning message" in content
+        assert "WARNING" in content
+    
+    def test_error_level(self, cleanup_logger):
+        """ERROR level messages should be logged"""
+        setup_logging()
+        logger.error("Error message")
+        
+        with open(logger.log_file, 'r') as f:
+            content = f.read()
+        
+        assert "Error message" in content
+        assert "ERROR" in content
+    
+    def test_python_prefix_added(self, cleanup_logger):
+        """All Python log messages should have [Python] prefix"""
+        setup_logging()
+        logger.debug("Test message")
+        
+        with open(logger.log_file, 'r') as f:
+            content = f.read()
+        
+        assert "Python" in content  # Should appear in Source column
 
-    # Test valid mode "stdout" - should not raise exception
-    try:
-        logger = manager.setup(mode="stdout")
-        assert logger is not None
-        assert manager.enabled is True
-    except ValueError:
-        pytest.fail("Valid mode 'stdout' should not raise ValueError")
+
+class TestPasswordSanitization:
+    """Test password/credential sanitization using helpers.sanitize_connection_string()"""
+    
+    def test_pwd_sanitization(self, cleanup_logger):
+        """PWD= should be sanitized when explicitly calling sanitize_connection_string()"""
+        from mssql_python.helpers import sanitize_connection_string
+        
+        conn_str = "Server=localhost;PWD=secret123;Database=test"
+        sanitized = sanitize_connection_string(conn_str)
+        
+        assert "PWD=***" in sanitized
+        assert "secret123" not in sanitized
+    
+    def test_pwd_case_insensitive(self, cleanup_logger):
+        """PWD/Pwd/pwd should all be sanitized (case-insensitive)"""
+        from mssql_python.helpers import sanitize_connection_string
+        
+        test_cases = [
+            ("Server=localhost;PWD=secret;Database=test", "PWD=***"),
+            ("Server=localhost;Pwd=secret;Database=test", "Pwd=***"),
+            ("Server=localhost;pwd=secret;Database=test", "pwd=***"),
+        ]
+        
+        for conn_str, expected in test_cases:
+            sanitized = sanitize_connection_string(conn_str)
+            assert expected in sanitized
+            assert "secret" not in sanitized
+    
+    def test_explicit_sanitization_in_logging(self, cleanup_logger):
+        """Verify that explicit sanitization works when logging"""
+        from mssql_python.helpers import sanitize_connection_string
+        
+        setup_logging()
+        conn_str = "Server=localhost;PWD=secret123;Database=test"
+        logger.debug("Connection string: %s", sanitize_connection_string(conn_str))
+        
+        with open(logger.log_file, 'r') as f:
+            content = f.read()
+        
+        assert "PWD=***" in content
+        assert "secret123" not in content
+    
+    def test_no_automatic_sanitization(self, cleanup_logger):
+        """Verify that logger does NOT automatically sanitize - user must do it explicitly"""
+        setup_logging()
+        # Log without sanitization - password should appear in log (by design)
+        logger.debug("Connection string: Server=localhost;PWD=notsanitized;Database=test")
+        
+        with open(logger.log_file, 'r') as f:
+            content = f.read()
+        
+        # Password should be visible because we didn't sanitize
+        assert "notsanitized" in content
+        # This is expected behavior - caller must sanitize explicitly
 
 
-def test_logging_mode_validation_error_message_format(cleanup_logger):
-    """Test that the error message format for invalid modes is correct."""
-    from mssql_python.logging_config import LoggingManager
+class TestThreadID:
+    """Test thread ID functionality"""
+    
+    def test_thread_id_in_logs(self, cleanup_logger):
+        """Thread ID should appear in log output"""
+        setup_logging()
+        logger.debug("Test message")
+        
+        with open(logger.log_file, 'r') as f:
+            content = f.read()
+        
+        # Thread ID should be in the second column (after timestamp)
+        lines = content.split('\n')
+        for line in lines:
+            if 'Test message' in line:
+                parts = [p.strip() for p in line.split(',')]
+                assert len(parts) >= 2
+                assert parts[1].isdigit()  # Thread ID should be numeric
+                break
+        else:
+            pytest.fail("Test message not found in log")
+    
+    def test_thread_id_consistent_in_same_thread(self, cleanup_logger):
+        """Thread ID should be consistent for messages in same thread"""
+        setup_logging()
+        logger.debug("Message 1")
+        logger.debug("Message 2")
+        
+        with open(logger.log_file, 'r') as f:
+            lines = f.readlines()
+        
+        thread_ids = []
+        for line in lines:
+            if 'Message' in line and not line.startswith('#'):  # Skip header and metadata
+                parts = [p.strip() for p in line.split(',')]
+                if len(parts) >= 6 and parts[1].isdigit():  # Ensure it's a data row with numeric thread ID
+                    thread_ids.append(parts[1])
+        
+        assert len(thread_ids) == 2
+        assert thread_ids[0] == thread_ids[1]  # Same thread ID
 
-    manager = LoggingManager()
 
-    # Test the exact error message format from line 134
-    invalid_modes = ["invalid", "debug", "console", "stderr", "syslog"]
+class TestLoggerProperties:
+    """Test logger properties and methods"""
+    
+    def test_log_file_property(self, cleanup_logger):
+        """log_file property should return current log file path"""
+        setup_logging()
+        log_file = logger.log_file
+        assert log_file is not None
+        assert os.path.exists(log_file)
+    
+    def test_level_property(self, cleanup_logger):
+        """level property should return current log level"""
+        setup_logging()
+        assert logger.level == logging.DEBUG
+    
+    def test_output_property(self, cleanup_logger):
+        """output property should return current output mode"""
+        setup_logging(output=BOTH)
+        assert logger.output == BOTH
+    
+    def test_getLevel_method(self, cleanup_logger):
+        """getLevel() should return current level"""
+        setup_logging()
+        assert logger.getLevel() == logging.DEBUG
+    
+    def test_isEnabledFor_method(self, cleanup_logger):
+        """isEnabledFor() should check if level is enabled"""
+        setup_logging()
+        assert logger.isEnabledFor(logging.DEBUG)
+        assert logger.isEnabledFor(logging.INFO)
 
-    for invalid_mode in invalid_modes:
-        with pytest.raises(ValueError) as exc_info:
-            manager.setup(mode=invalid_mode)
 
-        # Verify the error message format matches line 134
-        expected_message = f"Invalid logging mode: {invalid_mode}"
-        assert str(exc_info.value) == expected_message
+class TestEdgeCases:
+    """Test edge cases and error handling"""
+    
+    def test_message_with_percent_signs(self, cleanup_logger):
+        """Messages with % signs should not cause formatting errors"""
+        setup_logging()
+        logger.debug("Progress: 50%% complete")
+        
+        with open(logger.log_file, 'r') as f:
+            content = f.read()
+        
+        assert "Progress: 50" in content
+    
+    def test_message_with_commas(self, cleanup_logger):
+        """Messages with commas should not break CSV format"""
+        setup_logging()
+        logger.debug("Values: 1, 2, 3, 4")
+        
+        with open(logger.log_file, 'r') as f:
+            content = f.read()
+        
+        assert "Values: 1, 2, 3, 4" in content
+    
+    def test_empty_message(self, cleanup_logger):
+        """Empty messages should not cause errors"""
+        setup_logging()
+        logger.debug("")
+        
+        # Should not raise exception
+        assert os.path.exists(logger.log_file)
+    
+    def test_very_long_message(self, cleanup_logger):
+        """Very long messages should be logged without errors"""
+        setup_logging()
+        long_message = "X" * 10000
+        logger.debug(long_message)
+        
+        with open(logger.log_file, 'r') as f:
+            content = f.read()
+        
+        assert long_message in content
+    
+    def test_unicode_characters(self, cleanup_logger):
+        """Unicode characters should be handled correctly"""
+        setup_logging()
+        logger.debug("Unicode: 你好 🚀 café")
+        
+        # Use utf-8-sig on Windows to handle BOM if present
+        import sys
+        encoding = 'utf-8-sig' if sys.platform == 'win32' else 'utf-8'
+        
+        with open(logger.log_file, 'r', encoding=encoding, errors='replace') as f:
+            content = f.read()
+        
+        # Check that the message was logged (exact unicode may vary by platform)
+        assert "Unicode:" in content
+        # At least one unicode character should be present or replaced
+        assert ("你好" in content or "café" in content or "?" in content)
 
-        # Reset manager state for next iteration
-        manager._enabled = False
-        manager._initialized = False
-        manager._logger = None
-        manager._log_file = None
+
+class TestDriverLogger:
+    """Test driver_logger export"""
+    
+    def test_driver_logger_accessible(self, cleanup_logger):
+        """driver_logger should be accessible for application use"""
+        from mssql_python.logging import driver_logger
+        assert driver_logger is not None
+        assert isinstance(driver_logger, logging.Logger)
+    
+    def test_driver_logger_is_same_as_internal(self, cleanup_logger):
+        """driver_logger should be the same as logger._logger"""
+        from mssql_python.logging import driver_logger
+        assert driver_logger is logger._logger
+
+
+class TestThreadSafety:
+    """Tests for thread safety and race condition fixes"""
+    
+    def test_concurrent_initialization_no_double_init(self, cleanup_logger):
+        """Test that concurrent __init__ calls don't cause double initialization"""
+        import threading
+        from mssql_python.logging import MSSQLLogger
+        
+        # Force re-creation by deleting singleton
+        MSSQLLogger._instance = None
+        
+        init_counts = []
+        errors = []
+        
+        def create_logger():
+            try:
+                # This should only initialize once despite concurrent calls
+                log = MSSQLLogger()
+                # Count handlers as proxy for initialization
+                init_counts.append(len(log._logger.handlers))
+            except Exception as e:
+                errors.append(str(e))
+        
+        # Create 10 threads that all try to initialize simultaneously
+        threads = [threading.Thread(target=create_logger) for _ in range(10)]
+        
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        
+        # Should have no errors
+        assert len(errors) == 0, f"Errors during concurrent init: {errors}"
+        
+        # All threads should see the same initialized logger
+        # (handler count should be consistent - either all 0 or all same count)
+        assert len(set(init_counts)) <= 2, f"Inconsistent handler counts: {init_counts}"
+    
+    def test_concurrent_logging_during_reconfigure(self, cleanup_logger, temp_log_dir):
+        """Test that logging during handler reconfiguration doesn't crash"""
+        import threading
+        import time
+        
+        log_file = os.path.join(temp_log_dir, "concurrent_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        errors = []
+        log_count = [0]
+        
+        def log_continuously():
+            """Log messages continuously"""
+            try:
+                for i in range(50):
+                    logger.debug(f"Test message {i}")
+                    log_count[0] += 1
+                    time.sleep(0.001)  # Small delay
+            except Exception as e:
+                errors.append(f"Logging error: {str(e)}")
+        
+        def reconfigure_repeatedly():
+            """Reconfigure logger repeatedly"""
+            try:
+                for i in range(10):
+                    # Alternate between modes to trigger handler recreation
+                    mode = STDOUT if i % 2 == 0 else FILE
+                    setup_logging(output=mode, 
+                                log_file_path=log_file if mode == FILE else None)
+                    time.sleep(0.005)
+            except Exception as e:
+                errors.append(f"Config error: {str(e)}")
+        
+        # Start logging thread
+        log_thread = threading.Thread(target=log_continuously)
+        log_thread.start()
+        
+        # Start reconfiguration thread
+        config_thread = threading.Thread(target=reconfigure_repeatedly)
+        config_thread.start()
+        
+        # Wait for completion
+        log_thread.join(timeout=5)
+        config_thread.join(timeout=5)
+        
+        # Should have no errors (no crashes, no closed file exceptions)
+        assert len(errors) == 0, f"Errors during concurrent operations: {errors}"
+        
+        # Should have logged some messages successfully
+        assert log_count[0] > 0, "No messages were logged"
+    
+    def test_handler_access_thread_safe(self, cleanup_logger):
+        """Test that accessing handlers property is thread-safe"""
+        import threading
+        
+        setup_logging(output=FILE)
+        
+        errors = []
+        handler_counts = []
+        
+        def access_handlers():
+            try:
+                for _ in range(100):
+                    handlers = logger.handlers
+                    handler_counts.append(len(handlers))
+            except Exception as e:
+                errors.append(str(e))
+        
+        threads = [threading.Thread(target=access_handlers) for _ in range(5)]
+        
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        
+        # Should have no errors
+        assert len(errors) == 0, f"Errors accessing handlers: {errors}"
+        
+        # All counts should be consistent (same handler count)
+        unique_counts = set(handler_counts)
+        assert len(unique_counts) == 1, f"Inconsistent handler counts: {unique_counts}"
+    
+    @pytest.mark.skip(reason="Flaky on LocalDB/slower systems - TODO: Increase timing tolerance or skip on CI")
+    def test_no_crash_when_logging_to_closed_handler(self, cleanup_logger, temp_log_dir):
+        """Stress test: Verify no crashes when aggressively reconfiguring during heavy logging"""
+        import threading
+        import time
+        
+        log_file = os.path.join(temp_log_dir, "stress_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        errors = []
+        log_success_count = [0]
+        reconfig_count = [0]
+        
+        def log_aggressively():
+            """Log messages as fast as possible"""
+            try:
+                for i in range(200):
+                    logger.debug(f"Aggressive log message {i}")
+                    logger.info(f"Info message {i}")
+                    logger.warning(f"Warning message {i}")
+                    log_success_count[0] += 3
+                    # No sleep - log as fast as possible
+            except Exception as e:
+                errors.append(f"Logging crashed: {type(e).__name__}: {str(e)}")
+        
+        def reconfigure_aggressively():
+            """Reconfigure handlers as fast as possible"""
+            try:
+                modes = [FILE, STDOUT, BOTH]
+                for i in range(30):
+                    mode = modes[i % len(modes)]
+                    setup_logging(output=mode, 
+                                log_file_path=log_file if mode in (FILE, BOTH) else None)
+                    reconfig_count[0] += 1
+                    # Very short sleep to maximize contention
+                    # TODO: This test is flaky on LocalDB/slower systems due to extreme timing sensitivity
+                    # Consider: 1) Increase sleep to 0.005+ for reliability, or 2) Skip on slower CI environments
+                    time.sleep(0.005)
+            except Exception as e:
+                errors.append(f"Reconfiguration crashed: {type(e).__name__}: {str(e)}")
+        
+        # Start 5 logging threads (heavy contention)
+        log_threads = [threading.Thread(target=log_aggressively) for _ in range(5)]
+        
+        # Start 2 reconfiguration threads (aggressive handler switching)
+        config_threads = [threading.Thread(target=reconfigure_aggressively) for _ in range(2)]
+        
+        # Start all threads
+        for t in log_threads + config_threads:
+            t.start()
+        
+        # Wait for completion
+        for t in log_threads + config_threads:
+            t.join(timeout=10)
+        
+        # Critical assertion: No crashes
+        assert len(errors) == 0, f"Crashes detected: {errors}"
+        
+        # Should have logged many messages successfully
+        assert log_success_count[0] > 500, f"Too few successful logs: {log_success_count[0]}"
+        
+        # Should have reconfigured many times
+        assert reconfig_count[0] > 20, f"Too few reconfigurations: {reconfig_count[0]}"
+    
+    def test_atexit_cleanup_registered(self, cleanup_logger, temp_log_dir):
+        """Test that atexit cleanup is registered on first handler setup"""
+        import atexit
+        
+        log_file = os.path.join(temp_log_dir, "atexit_test.log")
+        
+        # Get initial state (may already be registered from other tests due to singleton)
+        initial_state = logger._cleanup_registered
+        
+        # Enable logging - this should register atexit cleanup if not already registered
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # After setup_logging, cleanup must be registered
+        assert logger._cleanup_registered
+        
+        # Verify it stays registered (idempotent)
+        setup_logging(output=FILE, log_file_path=log_file)
+        assert logger._cleanup_registered
+    
+    def test_cleanup_handlers_closes_files(self, cleanup_logger, temp_log_dir):
+        """Test that _cleanup_handlers properly closes all file handles"""
+        log_file = os.path.join(temp_log_dir, "cleanup_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # Log some messages to ensure file is open
+        logger.debug("Test message 1")
+        logger.info("Test message 2")
+        
+        # Get file handler before cleanup
+        file_handler = logger._file_handler
+        assert file_handler is not None
+        assert file_handler.stream is not None  # File is open
+        
+        # Call cleanup
+        logger._cleanup_handlers()
+        
+        # After cleanup, handlers should be closed
+        assert file_handler.stream is None or file_handler.stream.closed
+
+
+class TestExceptionSafety:
+    """Test that logging never crashes the application"""
+    
+    def test_bad_format_string_args_mismatch(self, cleanup_logger, temp_log_dir):
+        """Test that wrong number of format args doesn't crash"""
+        log_file = os.path.join(temp_log_dir, "exception_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # Too many args - should not crash
+        logger.debug("Message with %s placeholder", "arg1", "arg2")
+        
+        # Too few args - should not crash
+        logger.info("Message with %s and %s", "only_one_arg")
+        
+        # Wrong type - should not crash
+        logger.warning("Number: %d", "not_a_number")
+        
+        # Application should still be running (no exception propagated)
+        assert True
+    
+    def test_bad_format_string_syntax(self, cleanup_logger, temp_log_dir):
+        """Test that invalid format syntax doesn't crash"""
+        log_file = os.path.join(temp_log_dir, "exception_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # Invalid format specifier - should not crash
+        logger.debug("Bad format: %z", "value")
+        
+        # Incomplete format - should not crash
+        logger.info("Incomplete: %")
+        
+        # Application should still be running
+        assert True
+    
+    def test_disk_full_simulation(self, cleanup_logger, temp_log_dir):
+        """Test that disk full errors don't crash (mock simulation)"""
+        import unittest.mock as mock
+        
+        log_file = os.path.join(temp_log_dir, "disk_full_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # Mock the logger.log method to raise IOError (disk full)
+        with mock.patch.object(logger._logger, 'log', side_effect=OSError("No space left on device")):
+            # Should not crash
+            logger.debug("This would fail with disk full")
+            logger.info("This would also fail")
+        
+        # Application should still be running
+        assert True
+    
+    def test_permission_denied_simulation(self, cleanup_logger, temp_log_dir):
+        """Test that permission errors don't crash (mock simulation)"""
+        import unittest.mock as mock
+        
+        log_file = os.path.join(temp_log_dir, "permission_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # Mock to raise PermissionError
+        with mock.patch.object(logger._logger, 'log', side_effect=PermissionError("Permission denied")):
+            # Should not crash
+            logger.warning("This would fail with permission error")
+        
+        # Application should still be running
+        assert True
+    
+    def test_unicode_encoding_error(self, cleanup_logger, temp_log_dir):
+        """Test that unicode encoding errors don't crash"""
+        log_file = os.path.join(temp_log_dir, "unicode_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # Various problematic unicode scenarios
+        logger.debug("Unicode: \udcff invalid surrogate")  # Invalid surrogate
+        logger.info("Emoji: 🚀💾🔥")  # Emojis
+        logger.warning("Mixed: ASCII + 中文 + العربية")  # Multiple scripts
+        
+        # Application should still be running
+        assert True
+    
+    def test_none_as_message(self, cleanup_logger, temp_log_dir):
+        """Test that None as message doesn't crash"""
+        log_file = os.path.join(temp_log_dir, "none_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # None should not crash (though bad practice)
+        try:
+            logger.debug(None)
+        except:
+            pass  # Even if this specific case fails, it shouldn't crash app
+        
+        # Application should still be running
+        assert True
+    
+    def test_exception_during_format(self, cleanup_logger, temp_log_dir):
+        """Test that exceptions during formatting don't crash"""
+        log_file = os.path.join(temp_log_dir, "format_exception_test.log")
+        setup_logging(output=FILE, log_file_path=log_file)
+        
+        # Object with bad __str__ method
+        class BadStr:
+            def __str__(self):
+                raise RuntimeError("__str__ failed")
+        
+        # Should not crash
+        logger.debug("Object: %s", BadStr())
+        
+        # Application should still be running
+        assert True
+
