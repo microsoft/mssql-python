@@ -39,12 +39,22 @@ PyBind11 provides:
 
 We are currently in **Public Preview**.
 
-## What's new in v0.13.1
+## What's new in v0.14.0
 
-- **Authentication Reliability:** Fixed token handling for Microsoft Entra ID authentication to ensure stable and reliable connections.
-- **Timezone Preservation:** Removed forced UTC conversion for `datetimeoffset` values, preserving original timezone information in Python `datetime` objects for accurate cross-timezone data handling.
-- **Connection Pooling Stability:** Enhanced pool shutdown mechanism with proper tracking to prevent resource leaks and ensure cleanup operations execute reliably.
-- **Predictable Type Handling:** Refined UUID string parameter handling to prevent automatic type coercion, ensuring strings are processed as intended.
+### New Features
+- **50-60% Faster Fetching:** Major optimizations including direct UTF-16 decoding, Python C API usage, and cached converters deliver dramatic performance gains for large result sets (100K+ rows), with **1.4-1.7× improvement** for very large datasets.
+- **Connection String Validation:** Intelligent parser with allowlist validation, synonym normalization, and clear error messages for malformed strings. **Breaking change:** Unknown parameters now raise errors instead of being silently ignored.
+- **Enhanced DECIMAL Precision:** Increased precision support from 15 to 38 digits (SQL Server maximum) with proper binary representation for high-precision calculations.
+- **Comprehensive Logging:** Unified Python-C++ logging framework with `setup_logging()` API for detailed diagnostics with zero overhead when disabled.
+- **Connection Attribute Control:** New `Connection.set_attr()` method for fine-grained control over ODBC connection attributes, isolation levels, and timeouts (pyodbc-compatible API).
+- **XML Data Type:** Comprehensive support for SQL Server `XML` type, including efficient streaming for large documents.
+- **DECIMAL Scientific Notation:** Improved handling of decimal values in scientific notation to prevent SQL Server conversion errors.
+
+### Bug Fixes
+- **Access Token Management:** Fixed Microsoft Entra ID authentication token handling to eliminate corruption in concurrent scenarios.
+- **Decimal executemany Fix:** Resolved type inference issues when batch inserting Decimal values.
+
+⚠️ **Breaking Change:** Connection string validation now raises `ConnectionStringParseError` for unknown/misspelled parameters. Review connection strings before upgrading.
 
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
 
