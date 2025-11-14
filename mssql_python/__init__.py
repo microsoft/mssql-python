@@ -182,6 +182,19 @@ def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) 
 
 _original_module_setattr = sys.modules[__name__].__setattr__
 
+def _custom_setattr(name, value):
+    if name == 'lowercase':
+        with _settings_lock:
+            _settings.lowercase = bool(value)
+            # Update the module's lowercase variable
+            _original_module_setattr(name, _settings.lowercase)
+    else:
+        _original_module_setattr(name, value)
+
+# Replace the module's __setattr__ with our custom version
+sys.modules[__name__].__setattr__ = _custom_setattr
+
+
 # Export SQL constants at module level
 SQL_VARCHAR: int = ConstantsDDBC.SQL_VARCHAR.value
 SQL_LONGVARCHAR: int = ConstantsDDBC.SQL_LONGVARCHAR.value
