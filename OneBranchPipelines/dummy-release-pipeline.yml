@@ -12,15 +12,10 @@ pr: none
 
 # Parameters for DUMMY release pipeline
 parameters:
-  - name: packageVersion
-    displayName: '[TEST] Package Version (e.g., 0.13.0)'
-    type: string
-    default: '0.13.0'
-
   - name: publishSymbols
     displayName: '[TEST] Publish Symbols to Symbol Servers'
     type: boolean
-    default: true
+    default: false
 
   - name: performDummyRelease
     displayName: '[TEST] Perform Dummy ESRP Release (Maven - NOT PyPI)'
@@ -29,14 +24,6 @@ parameters:
 
 # Variables
 variables:
-  - name: PACKAGE_VERSION
-    value: '${{ parameters.packageVersion }}'
-    readonly: true
-  
-  - name: packageVersion
-    value: '${{ parameters.packageVersion }}'
-    readonly: true
-  
   # Common variables
   - template: /OneBranchPipelines/variables/common-variables.yml@self
   - template: /OneBranchPipelines/variables/onebranch-variables.yml@self
@@ -271,11 +258,10 @@ extends:
                     inputs:
                       targetType: 'inline'
                       script: |
-                        Write-Host "====================================="
+                        Write-Host "===================================="
                         Write-Host "⚠️  TEST PIPELINE - DUMMY RELEASE COMPLETED  ⚠️"
-                        Write-Host "====================================="
+                        Write-Host "===================================="
                         Write-Host "Package: mssql-python (TEST)"
-                        Write-Host "Version: ${{ parameters.packageVersion }}"
                         Write-Host "ContentType: Maven (NOT PyPI - Safe for Testing)"
                         Write-Host "Owners: $(owner)"
                         Write-Host "Approvers: $(approver)"
@@ -306,11 +292,10 @@ extends:
                     inputs:
                       targetType: 'inline'
                       script: |
-                        Write-Host "====================================="
+                        Write-Host "===================================="
                         Write-Host "⚠️  TEST PIPELINE - DRY RUN MODE  ⚠️"
-                        Write-Host "====================================="
+                        Write-Host "===================================="
                         Write-Host "Package: mssql-python (TEST)"
-                        Write-Host "Version: ${{ parameters.packageVersion }}"
                         Write-Host ""
                         Write-Host "Actions performed:"
                         Write-Host "✓ Downloaded wheels from build pipeline"
