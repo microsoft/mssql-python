@@ -571,6 +571,7 @@ jobs:
             
             # Copy tests from workspace
             cp -r /workspace/tests /test_isolated/ || echo 'No tests directory'
+            cp /workspace/pytest.ini /test_isolated/ || echo 'No pytest.ini found'
             cp /workspace/requirements.txt /test_isolated/ || true
             \$PY -m pip install -r /test_isolated/requirements.txt || true
             
@@ -597,6 +598,7 @@ jobs:
             
             # Copy tests from workspace
             cp -r /workspace/tests /test_isolated/ || echo 'No tests directory'
+            cp /workspace/pytest.ini /test_isolated/ || echo 'No pytest.ini found'
             cp /workspace/requirements.txt /test_isolated/ || true
             \$PY -m pip install -r /test_isolated/requirements.txt || true
             
