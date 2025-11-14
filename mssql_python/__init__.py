@@ -54,8 +54,8 @@ from .connection_string_builder import _ConnectionStringBuilder
 # Cursor Objects
 from .cursor import Cursor
 
-# Logging Configuration
-from .logging_config import setup_logging, get_logger
+# Logging Configuration (Simplified single-level DEBUG system)
+from .logging import logger, setup_logging, driver_logger
 
 # Constants
 from .constants import ConstantsDDBC, GetInfoConstants

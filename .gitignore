@@ -60,3 +60,6 @@ build/
 # Virtual environments
 *venv*/
 **/*venv*/
+
+# learning files
+learnings/

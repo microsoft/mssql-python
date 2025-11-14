@@ -22,9 +22,9 @@ from mssql_python.helpers import (
     add_driver_to_connection_str,
     sanitize_connection_string,
     sanitize_user_input,
-    log,
     validate_attribute_value,
 )
+from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
 from mssql_python.pooling import PoolingManager
 from mssql_python.exceptions import (
@@ -286,7 +286,7 @@ class Connection:
                 # kwargs override any existing values from connection string
                 normalized_params[normalized_key] = str(value)
             else:
-                log('warning', f"Ignoring unknown connection parameter from kwargs: {key}")
+                logger.warning(f"Ignoring unknown connection parameter from kwargs: {key}")
         
         # Step 4: Build connection string with merged params
         builder = _ConnectionStringBuilder(normalized_params)
@@ -299,7 +299,7 @@ class Connection:
         # Step 6: Build final string
         conn_str = builder.build()
         
-        log('info', "Final connection string: %s", sanitize_connection_string(conn_str))
+        logger.info("Final connection string: %s", sanitize_connection_string(conn_str))
         
         return conn_str
 
@@ -334,7 +334,7 @@ class Connection:
         if value < 0:
             raise ValueError("Timeout cannot be negative")
         self._timeout = value
-        log("info", f"Query timeout set to {value} seconds")
+        logger.info( f"Query timeout set to {value} seconds")
 
     @property
     def autocommit(self) -> bool:
@@ -355,7 +355,7 @@ class Connection:
             None
         """
         self.setautocommit(value)
-        log("info", "Autocommit mode set to %s.", value)
+        logger.info( "Autocommit mode set to %s.", value)
 
     def setautocommit(self, value: bool = False) -> None:
         """
@@ -400,7 +400,10 @@ class Connection:
             # For explicitly using SQL_CHAR
             cnxn.setencoding(encoding='utf-8', ctype=mssql_python.SQL_CHAR)
         """
+        logger.debug( 'setencoding: Configuring encoding=%s, ctype=%s', 
+            str(encoding) if encoding else 'default', str(ctype) if ctype else 'auto')
         if self._closed:
+            logger.debug( 'setencoding: Connection is closed')
             raise InterfaceError(
                 driver_error="Connection is closed",
                 ddbc_error="Connection is closed",
@@ -409,11 +412,12 @@ class Connection:
         # Set default encoding if not provided
         if encoding is None:
             encoding = "utf-16le"
+            logger.debug( 'setencoding: Using default encoding=utf-16le')
 
         # Validate encoding using cached validation for better performance
         if not _validate_encoding(encoding):
             # Log the sanitized encoding for security
-            log(
+            logger.debug(
                 "warning",
                 "Invalid encoding attempted: %s",
                 sanitize_user_input(str(encoding)),
@@ -425,19 +429,22 @@ class Connection:
 
         # Normalize encoding to casefold for more robust Unicode handling
         encoding = encoding.casefold()
+        logger.debug( 'setencoding: Encoding normalized to %s', encoding)
 
         # Set default ctype based on encoding if not provided
         if ctype is None:
             if encoding in UTF16_ENCODINGS:
                 ctype = ConstantsDDBC.SQL_WCHAR.value
+                logger.debug( 'setencoding: Auto-selected SQL_WCHAR for UTF-16')
             else:
                 ctype = ConstantsDDBC.SQL_CHAR.value
+                logger.debug( 'setencoding: Auto-selected SQL_CHAR for non-UTF-16')
 
         # Validate ctype
         valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
         if ctype not in valid_ctypes:
             # Log the sanitized ctype for security
-            log(
+            logger.debug(
                 "warning",
                 "Invalid ctype attempted: %s",
                 sanitize_user_input(str(ctype)),
@@ -454,7 +461,7 @@ class Connection:
         self._encoding_settings = {"encoding": encoding, "ctype": ctype}
 
         # Log with sanitized values for security
-        log(
+        logger.debug(
             "info",
             "Text encoding set to %s with ctype %s",
             sanitize_user_input(encoding),
@@ -533,7 +540,7 @@ class Connection:
             SQL_WMETADATA,
         ]
         if sqltype not in valid_sqltypes:
-            log(
+            logger.debug(
                 "warning",
                 "Invalid sqltype attempted: %s",
                 sanitize_user_input(str(sqltype)),
@@ -556,7 +563,7 @@ class Connection:
 
         # Validate encoding using cached validation for better performance
         if not _validate_encoding(encoding):
-            log(
+            logger.debug(
                 "warning",
                 "Invalid encoding attempted: %s",
                 sanitize_user_input(str(encoding)),
@@ -579,7 +586,7 @@ class Connection:
         # Validate ctype
         valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
         if ctype not in valid_ctypes:
-            log(
+            logger.debug(
                 "warning",
                 "Invalid ctype attempted: %s",
                 sanitize_user_input(str(ctype)),
@@ -602,7 +609,7 @@ class Connection:
             SQL_WMETADATA: "SQL_WMETADATA",
         }.get(sqltype, str(sqltype))
 
-        log(
+        logger.debug(
             "info",
             "Text decoding set for %s to %s with ctype %s",
             sqltype_name,
@@ -697,7 +704,7 @@ class Connection:
 
         if not is_valid:
             # Use the already sanitized values for logging
-            log(
+            logger.debug(
                 "warning",
                 f"Invalid attribute or value: {sanitized_attr}={sanitized_val}, {error_message}",
             )
@@ -707,17 +714,16 @@ class Connection:
             )
 
         # Log with sanitized values
-        log("debug", f"Setting connection attribute: {sanitized_attr}={sanitized_val}")
+        logger.debug( f"Setting connection attribute: {sanitized_attr}={sanitized_val}")
 
         try:
             # Call the underlying C++ method
             self._conn.set_attr(attribute, value)
-            log("info", f"Connection attribute {sanitized_attr} set successfully")
+            logger.info( f"Connection attribute {sanitized_attr} set successfully")
 
         except Exception as e:
             error_msg = f"Failed to set connection attribute {sanitized_attr}: {str(e)}"
-            log("error", error_msg)
-
+            
             # Determine appropriate exception type based on error content
             error_str = str(e).lower()
             if (
@@ -725,7 +731,9 @@ class Connection:
                 or "unsupported" in error_str
                 or "cast" in error_str
             ):
+                logger.error(error_msg)
                 raise InterfaceError(error_msg, str(e)) from e
+            logger.error(error_msg)
             raise ProgrammingError(error_msg, str(e)) from e
 
     @property
@@ -751,7 +759,7 @@ class Connection:
                 self._searchescape = escape_char
             except Exception as e:
                 # Log the exception for debugging, but do not expose sensitive info
-                log(
+                logger.debug(
                     "warning",
                     "Failed to retrieve search escape character, using default '\\'. "
                     "Exception: %s",
@@ -775,7 +783,10 @@ class Connection:
             DatabaseError: If there is an error while creating the cursor.
             InterfaceError: If there is an error related to the database interface.
         """
+        logger.debug('cursor: Creating new cursor - timeout=%d, total_cursors=%d', 
+                     self._timeout, len(self._cursors))
         if self._closed:
+            logger.error('cursor: Cannot create cursor on closed connection')
             # raise InterfaceError
             raise InterfaceError(
                 driver_error="Cannot create cursor on closed connection",
@@ -784,6 +795,7 @@ class Connection:
 
         cursor = Cursor(self, timeout=self._timeout)
         self._cursors.add(cursor)  # Track the cursor
+        logger.debug('cursor: Cursor created successfully - total_cursors=%d', len(self._cursors))
         return cursor
 
     def add_output_converter(self, sqltype: int, func: Callable[[Any], Any]) -> None:
@@ -815,7 +827,7 @@ class Connection:
             # Pass to the underlying connection if native implementation supports it
             if hasattr(self._conn, "add_output_converter"):
                 self._conn.add_output_converter(sqltype, func)
-        log("info", f"Added output converter for SQL type {sqltype}")
+        logger.info( f"Added output converter for SQL type {sqltype}")
 
     def get_output_converter(
         self, sqltype: Union[int, type]
@@ -856,7 +868,7 @@ class Connection:
                 # Pass to the underlying connection if native implementation supports it
                 if hasattr(self._conn, "remove_output_converter"):
                     self._conn.remove_output_converter(sqltype)
-        log("info", f"Removed output converter for SQL type {sqltype}")
+        logger.info( f"Removed output converter for SQL type {sqltype}")
 
     def clear_output_converters(self) -> None:
         """
@@ -872,7 +884,7 @@ class Connection:
             # Pass to the underlying connection if native implementation supports it
             if hasattr(self._conn, "clear_output_converters"):
                 self._conn.clear_output_converters()
-        log("info", "Cleared all output converters")
+        logger.info( "Cleared all output converters")
 
     def execute(self, sql: str, *args: Any) -> Cursor:
         """
@@ -1024,11 +1036,11 @@ class Connection:
                         # This is an INSERT, UPDATE, DELETE or similar that doesn't return rows
                         results.append(cursor.rowcount)
 
-                    log("debug", f"Executed batch statement {i+1}/{len(statements)}")
+                    logger.debug( f"Executed batch statement {i+1}/{len(statements)}")
 
                 except Exception as e:
                     # If a statement fails, include statement context in the error
-                    log(
+                    logger.debug(
                         "error",
                         f"Error executing statement {i+1}/{len(statements)}: {e}",
                     )
@@ -1040,12 +1052,12 @@ class Connection:
                 try:
                     # Close the cursor regardless of whether it's reused or new
                     cursor.close()
-                    log(
+                    logger.debug(
                         "debug",
                         "Automatically closed cursor after batch execution error",
                     )
                 except Exception as close_err:
-                    log(
+                    logger.debug(
                         "warning",
                         f"Error closing cursor after execution failure: {close_err}",
                     )
@@ -1055,7 +1067,7 @@ class Connection:
         # Close the cursor if requested and we created a new one
         if is_new_cursor and auto_close:
             cursor.close()
-            log("debug", "Automatically closed cursor after batch execution")
+            logger.debug( "Automatically closed cursor after batch execution")
 
         return results, cursor
 
@@ -1089,7 +1101,7 @@ class Connection:
 
         # Check for invalid info_type values
         if info_type < 0:
-            log(
+            logger.debug(
                 "warning",
                 f"Invalid info_type: {info_type}. Must be a positive integer.",
             )
@@ -1100,7 +1112,7 @@ class Connection:
             raw_result = self._conn.get_info(info_type)
         except Exception as e:  # pylint: disable=broad-exception-caught
             # Log the error and return None for invalid info types
-            log("warning", f"getinfo({info_type}) failed: {e}")
+            logger.warning( f"getinfo({info_type}) failed: {e}")
             return None
 
         if raw_result is None:
@@ -1117,7 +1129,7 @@ class Connection:
             length = raw_result["length"]
 
             # Debug logging to understand the issue better
-            log(
+            logger.debug(
                 "debug",
                 f"getinfo: info_type={info_type}, length={length}, data_type={type(data)}",
             )
@@ -1193,7 +1205,7 @@ class Connection:
                         try:
                             return actual_data.decode("latin1").rstrip("\0")
                         except Exception as e:
-                            log(
+                            logger.debug(
                                 "error",
                                 "Failed to decode string in getinfo: %s. "
                                 "Returning None to avoid silent corruption.",
@@ -1328,7 +1340,7 @@ class Connection:
 
         # Commit the current transaction
         self._conn.commit()
-        log("info", "Transaction committed successfully.")
+        logger.info( "Transaction committed successfully.")
 
     def rollback(self) -> None:
         """
@@ -1351,7 +1363,7 @@ class Connection:
 
         # Roll back the current transaction
         self._conn.rollback()
-        log("info", "Transaction rolled back successfully.")
+        logger.info( "Transaction rolled back successfully.")
 
     def close(self) -> None:
         """
@@ -1383,11 +1395,11 @@ class Connection:
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     # Collect errors but continue closing other cursors
                     close_errors.append(f"Error closing cursor: {e}")
-                    log("warning", f"Error closing cursor: {e}")
+                    logger.warning( f"Error closing cursor: {e}")
 
             # If there were errors closing cursors, log them but continue
             if close_errors:
-                log(
+                logger.debug(
                     "warning",
                     "Encountered %d errors while closing cursors",
                     len(close_errors),
@@ -1405,24 +1417,21 @@ class Connection:
                     # This is important to ensure no partial transactions remain
                     # For autocommit True, this is not necessary as each statement is
                     # committed immediately
-                    log(
-                        "info",
-                        "Rolling back uncommitted changes before closing connection.",
-                    )
+                    logger.debug("Rolling back uncommitted changes before closing connection.")
                     self._conn.rollback()
                 # TODO: Check potential race conditions in case of multithreaded scenarios
                 # Close the connection
                 self._conn.close()
                 self._conn = None
         except Exception as e:
-            log("error", f"Error closing database connection: {e}")
+            logger.error( f"Error closing database connection: {e}")
             # Re-raise the connection close error as it's more critical
             raise
         finally:
             # Always mark as closed, even if there were errors
             self._closed = True
-
-        log("info", "Connection closed successfully.")
+        
+        logger.info( "Connection closed successfully.")
 
     def _remove_cursor(self, cursor: Cursor) -> None:
         """
@@ -1455,7 +1464,7 @@ class Connection:
                 cursor.execute("INSERT INTO table VALUES (?)", [value])
                 # Transaction will be committed automatically when exiting
         """
-        log("info", "Entering connection context manager.")
+        logger.info( "Entering connection context manager.")
         return self
 
     def __exit__(self, *args: Any) -> None:
@@ -1481,4 +1490,4 @@ class Connection:
                 self.close()
             except Exception as e:
                 # Dont raise exceptions from __del__ to avoid issues during garbage collection
-                log("error", f"Error during connection cleanup: {e}")
+                logger.warning( f"Error during connection cleanup: {e}")

@@ -14,6 +14,9 @@
 #define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
 #define SQL_MAX_SMALL_INT 32767  // Maximum value for SQLSMALLINT
 
+// Logging uses LOG() macro for all diagnostic output
+#include "logger_bridge.hpp"
+
 static SqlHandlePtr getEnvHandle() {
     static SqlHandlePtr envHandle = []() -> SqlHandlePtr {
         LOG("Allocating ODBC environment handle");
@@ -57,7 +60,7 @@ Connection::~Connection() {
 void Connection::allocateDbcHandle() {
     auto _envHandle = getEnvHandle();
     SQLHANDLE dbc = nullptr;
-    LOG("Allocate SQL Connection Handle");
+    LOG("Allocating SQL Connection Handle");
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(),
                                        &dbc);
     checkError(ret);
@@ -80,7 +83,7 @@ void Connection::connect(const py::dict& attrs_before) {
     LOG("Creating connection string buffer for macOS/Linux");
     std::vector<SQLWCHAR> connStrBuffer = WStringToSQLWCHAR(_connStr);
     // Ensure the buffer is null-terminated
-    LOG("Connection string buffer size - {}", connStrBuffer.size());
+    LOG("Connection string buffer size=%zu", connStrBuffer.size());
     connStrPtr = connStrBuffer.data();
     LOG("Connection string buffer created");
 #else
@@ -143,15 +146,15 @@ void Connection::setAutocommit(bool enable) {
         ThrowStdException("Connection handle not allocated");
     }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
-    LOG("Setting SQL Connection Attribute");
+    LOG("Setting autocommit=%d", enable);
     SQLRETURN ret = SQLSetConnectAttr_ptr(
         _dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
         reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
     checkError(ret);
     if (value == SQL_AUTOCOMMIT_ON) {
-        LOG("SQL Autocommit set to True");
+        LOG("Autocommit enabled");
     } else {
-        LOG("SQL Autocommit set to False");
+        LOG("Autocommit disabled");
     }
     _autocommit = enable;
 }
@@ -160,7 +163,7 @@ bool Connection::getAutocommit() const {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
-    LOG("Get SQL Connection Attribute");
+    LOG("Getting autocommit attribute");
     SQLINTEGER value;
     SQLINTEGER string_length;
     SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(),
@@ -185,10 +188,9 @@ SqlHandlePtr Connection::allocStatementHandle() {
 }
 
 SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
-    LOG("Setting SQL attribute");
+    LOG("Setting SQL attribute=%d", attribute);
     // SQLPOINTER ptr = nullptr;
     // SQLINTEGER length = 0;
-    static std::string buffer;  // to hold sensitive data temporarily
 
     if (py::isinstance<py::int_>(value)) {
         // Get the integer value
@@ -201,42 +203,32 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
             SQL_IS_INTEGER);
 
         if (!SQL_SUCCEEDED(ret)) {
-            LOG("Failed to set attribute");
+            LOG("Failed to set integer attribute=%d, ret=%d", attribute, ret);
         } else {
-            LOG("Set attribute successfully");
+            LOG("Set integer attribute=%d successfully", attribute);
         }
         return ret;
     } else if (py::isinstance<py::str>(value)) {
         try {
-            // Keep buffers alive
-            static std::vector<std::wstring> wstr_buffers;
             std::string utf8_str = value.cast<std::string>();
 
             // Convert to wide string
             std::wstring wstr = Utf8ToWString(utf8_str);
             if (wstr.empty() && !utf8_str.empty()) {
-                LOG("Failed to convert string value to wide string");
+                LOG("Failed to convert string value to wide string for attribute=%d", attribute);
                 return SQL_ERROR;
             }
-
-            // Limit static buffer growth for memory safety
-            constexpr size_t MAX_BUFFER_COUNT = 100;
-            if (wstr_buffers.size() >= MAX_BUFFER_COUNT) {
-            // Remove oldest 50% of entries when limit reached
-            wstr_buffers.erase(wstr_buffers.begin(),
-                               wstr_buffers.begin() + (MAX_BUFFER_COUNT / 2));
-            }
-
-            wstr_buffers.push_back(wstr);
+            this->wstrStringBuffer.clear();
+            this->wstrStringBuffer = std::move(wstr);
 
             SQLPOINTER ptr;
             SQLINTEGER length;
 
 #if defined(__APPLE__) || defined(__linux__)
             // For macOS/Linux, convert wstring to SQLWCHAR buffer
-            std::vector<SQLWCHAR> sqlwcharBuffer = WStringToSQLWCHAR(wstr);
-            if (sqlwcharBuffer.empty() && !wstr.empty()) {
-                LOG("Failed to convert wide string to SQLWCHAR buffer");
+            std::vector<SQLWCHAR> sqlwcharBuffer = WStringToSQLWCHAR(this->wstrStringBuffer);
+            if (sqlwcharBuffer.empty() && !this->wstrStringBuffer.empty()) {
+                LOG("Failed to convert wide string to SQLWCHAR buffer for attribute=%d", attribute);
                 return SQL_ERROR;
             }
 
@@ -245,58 +237,45 @@ SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
                 sqlwcharBuffer.size() * sizeof(SQLWCHAR));
 #else
             // On Windows, wchar_t and SQLWCHAR are the same size
-            ptr = const_cast<SQLWCHAR*>(wstr_buffers.back().c_str());
-            length = static_cast<SQLINTEGER>(
-                wstr.length() * sizeof(SQLWCHAR));
+            ptr = const_cast<SQLWCHAR*>(this->wstrStringBuffer.c_str());
+            length = static_cast<SQLINTEGER>(this->wstrStringBuffer.length() * sizeof(SQLWCHAR));
 #endif
 
             SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(),
                                                   attribute, ptr, length);
             if (!SQL_SUCCEEDED(ret)) {
-                LOG("Failed to set string attribute");
+                LOG("Failed to set string attribute=%d, ret=%d", attribute, ret);
             } else {
-                LOG("Set string attribute successfully");
+                LOG("Set string attribute=%d successfully", attribute);
             }
             return ret;
         } catch (const std::exception& e) {
-            LOG("Exception during string attribute setting: " +
-                std::string(e.what()));
+            LOG("Exception during string attribute=%d setting: %s", attribute, e.what());
             return SQL_ERROR;
         }
     } else if (py::isinstance<py::bytes>(value) ||
                py::isinstance<py::bytearray>(value)) {
         try {
-            static std::vector<std::string> buffers;
             std::string binary_data = value.cast<std::string>();
-
-            // Limit static buffer growth
-            constexpr size_t MAX_BUFFER_COUNT = 100;
-            if (buffers.size() >= MAX_BUFFER_COUNT) {
-            // Remove oldest 50% of entries when limit reached
-            buffers.erase(buffers.begin(),
-                          buffers.begin() + (MAX_BUFFER_COUNT / 2));
-            }
-
-            buffers.emplace_back(std::move(binary_data));
-            SQLPOINTER ptr = const_cast<char*>(buffers.back().c_str());
-            SQLINTEGER length = static_cast<SQLINTEGER>(
-                buffers.back().size());
+            this->strBytesBuffer.clear();
+            this->strBytesBuffer = std::move(binary_data);
+            SQLPOINTER ptr = const_cast<char*>(this->strBytesBuffer.c_str());
+            SQLINTEGER length = static_cast<SQLINTEGER>(this->strBytesBuffer.size());
 
             SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(),
                                                   attribute, ptr, length);
             if (!SQL_SUCCEEDED(ret)) {
-                LOG("Failed to set attribute with binary data");
+                LOG("Failed to set binary attribute=%d, ret=%d", attribute, ret);
             } else {
-                LOG("Set attribute successfully with binary data");
+                LOG("Set binary attribute=%d successfully (length=%d)", attribute, length);
             }
             return ret;
         } catch (const std::exception& e) {
-            LOG("Exception during binary attribute setting: " +
-                std::string(e.what()));
+            LOG("Exception during binary attribute=%d setting: %s", attribute, e.what());
             return SQL_ERROR;
         }
     } else {
-        LOG("Unsupported attribute value type");
+        LOG("Unsupported attribute value type for attribute=%d", attribute);
         return SQL_ERROR;
     }
 }
@@ -344,7 +323,7 @@ bool Connection::reset() {
         (SQLPOINTER)SQL_RESET_CONNECTION_YES,
         SQL_IS_INTEGER);
     if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to reset connection. Marking as dead.");
+        LOG("Failed to reset connection (ret=%d). Marking as dead.", ret);
         disconnect();
         return false;
     }
@@ -516,13 +495,13 @@ void ConnectionHandle::setAttr(int attribute, py::object value) {
                 errorMsg += ": " + ddbcErrorStr;
             }
 
-            LOG("Connection setAttribute failed: {}", errorMsg);
+            LOG("Connection setAttribute failed: %s", errorMsg.c_str());
             ThrowStdException(errorMsg);
         } catch (...) {
             // Fallback to generic error if detailed error retrieval fails
             std::string errorMsg = "Failed to set connection attribute " +
                                    std::to_string(attribute);
-            LOG("Connection setAttribute failed: {}", errorMsg);
+            LOG("Connection setAttribute failed: %s", errorMsg.c_str());
             ThrowStdException(errorMsg);
         }
     }
