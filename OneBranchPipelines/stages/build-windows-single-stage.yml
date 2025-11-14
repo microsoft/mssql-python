@@ -50,11 +50,58 @@ stages:
           - checkout: self
             fetchDepth: 0
           
+          # Python 3.14: Download and install from NuGet (not in UsePythonVersion yet)
+          - powershell: |
+              $pythonVer = "${{ parameters.pythonVersion }}"
+              
+              if ($pythonVer -eq "3.14") {
+                Write-Host "Python 3.14 detected - downloading from NuGet..."
+                
+                # Download Python 3.14 x64 from NuGet
+                $nugetUrl = "https://www.nuget.org/api/v2/package/python/3.14.0-a2"
+                $nugetFile = "$(Build.SourcesDirectory)\python-x64.nupkg"
+                $zipFile = "$(Build.SourcesDirectory)\python-x64.zip"
+                $extractPath = "C:\Python314-NuGet"
+                
+                Write-Host "Downloading Python 3.14 x64 from: $nugetUrl"
+                Invoke-WebRequest -Uri $nugetUrl -OutFile $nugetFile -UseBasicParsing
+                
+                Write-Host "Extracting NuGet package..."
+                Move-Item -Path $nugetFile -Destination $zipFile -Force
+                Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
+                
+                # Python executable is in tools directory
+                $pythonDir = "$extractPath\tools"
+                
+                Write-Host "Setting up Python at: $pythonDir"
+                
+                # Create C:\Python314 for consistent paths
+                New-Item -ItemType Directory -Force -Path "C:\Python314" | Out-Null
+                Copy-Item -Path "$pythonDir\*" -Destination "C:\Python314" -Recurse -Force
+                
+                Write-Host "`nVerifying Python installation:"
+                & "C:\Python314\python.exe" --version
+                & "C:\Python314\python.exe" -c "import sys; print('Python:', sys.executable)"
+                
+                # Add to PATH
+                Write-Host "##vso[task.prependpath]C:\Python314"
+                Write-Host "##vso[task.prependpath]C:\Python314\Scripts"
+                
+                # Cleanup
+                Remove-Item -Path $zipFile -Force -ErrorAction SilentlyContinue
+                Remove-Item -Path $extractPath -Recurse -Force -ErrorAction SilentlyContinue
+              } else {
+                Write-Host "Python $pythonVer will use UsePythonVersion task"
+              }
+            condition: eq('${{ parameters.pythonVersion }}', '3.14')
+            displayName: 'Download and install Python 3.14 from NuGet'
+          
           - task: UsePythonVersion@0
             inputs:
               versionSpec: '${{ parameters.pythonVersion }}'
               architecture: 'x64'
               addToPath: true
+            condition: ne('${{ parameters.pythonVersion }}', '3.14')
             displayName: 'Use Python ${{ parameters.pythonVersion }} (${{ parameters.architecture }})'
             continueOnError: false
           
