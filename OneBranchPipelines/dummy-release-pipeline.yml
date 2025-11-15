@@ -2,7 +2,7 @@
 # ⚠️ THIS IS A TEST PIPELINE - NOT FOR PRODUCTION RELEASES ⚠️
 # Downloads wheel and symbol artifacts from build pipeline, publishes symbols, and performs dummy ESRP release for testing
 # Uses Maven ContentType instead of PyPI to avoid accidental production releases
-# This pipeline is ALWAYS Official - no NonOfficial option
+# This pipeline is ALWAYS NonOfficial - for testing only, not production
 
 name: $(Year:YY)$(DayOfYear)$(Rev:.r)-Dummy-Release
 
@@ -46,10 +46,10 @@ resources:
       source: 'Build-Release-Package-Pipeline'  # Name of the build pipeline
       trigger: none  # Manual trigger only
 
-# Extend OneBranch official template
-# Always uses Official template for release pipeline
+# Extend OneBranch Nonofficial template
+# Always uses NonOfficial template for dummy pipeline
 extends:
-  template: 'v2/OneBranch.Official.CrossPlat.yml@templates'
+  template: 'v2/OneBranch.NonOfficial.CrossPlat.yml@templates'
 
   parameters:
     # Feature flags
@@ -83,11 +83,6 @@ extends:
       # Publish SDL logs
       publishLogs:
         enabled: true
-      
-      # TSA - Always enabled for Official release pipeline
-      tsa:
-        enabled: true
-        configFile: '$(REPO_ROOT)/.config/tsaoptions.json'
 
     # Pipeline stages
     stages:
