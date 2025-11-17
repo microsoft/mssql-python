@@ -307,7 +307,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             logger.debug('_map_sql_type: NULL parameter - index=%d', i)
             return (
                 ddbc_sql_const.SQL_VARCHAR.value,
-                ddbc_sql_const.SQL_C_DEFAULT.value,
+                ddbc_sql_const.SQL_C_CHAR.value,
                 1,
                 0,
                 False,
