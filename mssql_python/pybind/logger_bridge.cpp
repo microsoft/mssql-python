@@ -13,14 +13,12 @@
 #include <sstream>
 #include <vector>
 
-
 namespace mssql_python {
 namespace logging {
 
 // Initialize static members
 PyObject* LoggerBridge::cached_logger_ = nullptr;
-std::atomic<int>
-    LoggerBridge::cached_level_(LOG_LEVEL_CRITICAL); // Disabled by default
+std::atomic<int> LoggerBridge::cached_level_(LOG_LEVEL_CRITICAL);  // Disabled by default
 std::mutex LoggerBridge::mutex_;
 bool LoggerBridge::initialized_ = false;
 
@@ -37,8 +35,7 @@ void LoggerBridge::initialize() {
         py::gil_scoped_acquire gil;
 
         // Import the logging module
-        py::module_ logging_module =
-            py::module_::import("mssql_python.logging");
+        py::module_ logging_module = py::module_::import("mssql_python.logging");
 
         // Get the logger instance
         py::object logger_obj = logging_module.attr("logger");
@@ -60,12 +57,10 @@ void LoggerBridge::initialize() {
     } catch (const py::error_already_set& e) {
         // Failed to initialize - log to stderr and continue
         // (logging will be disabled but won't crash)
-        std::cerr << "LoggerBridge initialization failed: " << e.what()
-                  << std::endl;
+        std::cerr << "LoggerBridge initialization failed: " << e.what() << std::endl;
         initialized_ = false;
     } catch (const std::exception& e) {
-        std::cerr << "LoggerBridge initialization failed: " << e.what()
-                  << std::endl;
+        std::cerr << "LoggerBridge initialization failed: " << e.what() << std::endl;
         initialized_ = false;
     }
 }
@@ -104,8 +99,7 @@ std::string LoggerBridge::formatMessage(const char* format, va_list args) {
 
     if (result < static_cast<int>(sizeof(buffer))) {
         // Message fit in buffer (vsnprintf guarantees null-termination)
-        return std::string(
-            buffer, std::min(static_cast<size_t>(result), sizeof(buffer) - 1));
+        return std::string(buffer, std::min(static_cast<size_t>(result), sizeof(buffer) - 1));
     }
 
     // Message was truncated - allocate larger buffer
@@ -115,13 +109,11 @@ std::string LoggerBridge::formatMessage(const char* format, va_list args) {
     // Use std::vsnprintf with explicit size for safety (C++11 standard)
     // This is the recommended safe alternative to vsprintf
     // DevSkim: ignore DS185832 - std::vsnprintf with size is safe
-    int final_result = std::vsnprintf(large_buffer.data(), large_buffer.size(),
-                                      format, args_copy);
+    int final_result = std::vsnprintf(large_buffer.data(), large_buffer.size(), format, args_copy);
     va_end(args_copy);
 
     // Ensure null termination even if formatting fails
-    if (final_result < 0 ||
-        final_result >= static_cast<int>(large_buffer.size())) {
+    if (final_result < 0 || final_result >= static_cast<int>(large_buffer.size())) {
         large_buffer[large_buffer.size() - 1] = '\0';
     }
 
@@ -150,8 +142,7 @@ const char* LoggerBridge::extractFilename(const char* path) {
     return path;
 }
 
-void LoggerBridge::log(int level, const char* file, int line,
-                       const char* format, ...) {
+void LoggerBridge::log(int level, const char* file, int line, const char* format, ...) {
     // Fast level check (should already be done by macro, but double-check)
     if (!isLoggable(level)) {
         return;
@@ -180,13 +171,13 @@ void LoggerBridge::log(int level, const char* file, int line,
     std::string complete_message = oss.str();
 
     // Warn if message exceeds reasonable size (critical for troubleshooting)
-    constexpr size_t MAX_LOG_SIZE = 4095; // Keep same limit for consistency
+    constexpr size_t MAX_LOG_SIZE = 4095;  // Keep same limit for consistency
     if (complete_message.size() > MAX_LOG_SIZE) {
         // Use stderr to notify about truncation (logging may be the truncated
         // call itself)
         std::cerr << "[MSSQL-Python] Warning: Log message truncated from "
-                  << complete_message.size() << " bytes to " << MAX_LOG_SIZE
-                  << " bytes at " << file << ":" << line << std::endl;
+                  << complete_message.size() << " bytes to " << MAX_LOG_SIZE << " bytes at " << file
+                  << ":" << line << std::endl;
         complete_message.resize(MAX_LOG_SIZE);
     }
 
@@ -199,25 +190,24 @@ void LoggerBridge::log(int level, const char* file, int line,
 
         // Get the logger object
         py::handle logger_handle(cached_logger_);
-        py::object logger_obj =
-            py::reinterpret_borrow<py::object>(logger_handle);
+        py::object logger_obj = py::reinterpret_borrow<py::object>(logger_handle);
 
         // Get the underlying Python logger to create LogRecord with correct
         // filename/lineno
         py::object py_logger = logger_obj.attr("_logger");
 
         // Call makeRecord to create a LogRecord with correct attributes
-        py::object record = py_logger.attr("makeRecord")(
-            py_logger.attr("name"),            // name
-            py::int_(level),                   // level
-            py::str(filename),                 // pathname (just filename)
-            py::int_(line),                    // lineno
-            py::str(complete_message.c_str()), // msg
-            py::tuple(),                       // args
-            py::none(),                        // exc_info
-            py::str(filename), // func (use filename as func name)
-            py::none()         // extra
-        );
+        py::object record =
+            py_logger.attr("makeRecord")(py_logger.attr("name"),  // name
+                                         py::int_(level),         // level
+                                         py::str(filename),       // pathname (just filename)
+                                         py::int_(line),          // lineno
+                                         py::str(complete_message.c_str()),  // msg
+                                         py::tuple(),                        // args
+                                         py::none(),                         // exc_info
+                                         py::str(filename),  // func (use filename as func name)
+                                         py::none()          // extra
+            );
 
         // Call handle() to process the record through filters and handlers
         py_logger.attr("handle")(record);
@@ -225,7 +215,7 @@ void LoggerBridge::log(int level, const char* file, int line,
     } catch (const py::error_already_set& e) {
         // Python error during logging - ignore to prevent cascading failures
         // (Logging errors should not crash the application)
-        (void)e; // Suppress unused variable warning
+        (void)e;  // Suppress unused variable warning
     } catch (const std::exception& e) {
         // Standard C++ exception - ignore
         (void)e;
@@ -235,5 +225,5 @@ void LoggerBridge::log(int level, const char* file, int line,
     }
 }
 
-} // namespace logging
-} // namespace mssql_python
+}  // namespace logging
+}  // namespace mssql_python

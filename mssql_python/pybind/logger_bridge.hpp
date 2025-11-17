@@ -20,7 +20,6 @@
 #include <pybind11/pybind11.h>
 #include <string>
 
-
 namespace py = pybind11;
 
 namespace mssql_python {
@@ -28,11 +27,11 @@ namespace logging {
 
 // Log level constants (matching Python levels)
 // Note: Avoid using ERROR as it conflicts with Windows.h macro
-const int LOG_LEVEL_DEBUG = 10;    // Debug/diagnostic logging
-const int LOG_LEVEL_INFO = 20;     // Informational
-const int LOG_LEVEL_WARNING = 30;  // Warnings
-const int LOG_LEVEL_ERROR = 40;    // Errors
-const int LOG_LEVEL_CRITICAL = 50; // Critical errors
+const int LOG_LEVEL_DEBUG = 10;     // Debug/diagnostic logging
+const int LOG_LEVEL_INFO = 20;      // Informational
+const int LOG_LEVEL_WARNING = 30;   // Warnings
+const int LOG_LEVEL_ERROR = 40;     // Errors
+const int LOG_LEVEL_CRITICAL = 50;  // Critical errors
 
 /**
  * LoggerBridge - Bridge between C++ and Python logging
@@ -82,8 +81,7 @@ class LoggerBridge {
      * @param format Printf-style format string
      * @param ... Variable arguments for format string
      */
-    static void log(int level, const char* file, int line, const char* format,
-                    ...);
+    static void log(int level, const char* file, int line, const char* format, ...);
 
     /**
      * Get the current log level.
@@ -137,50 +135,46 @@ class LoggerBridge {
     static const char* extractFilename(const char* path);
 };
 
-} // namespace logging
-} // namespace mssql_python
+}  // namespace logging
+}  // namespace mssql_python
 
 // Convenience macros for logging
 // Single LOG() macro for all diagnostic logging (DEBUG level)
 
-#define LOG(fmt, ...)                                                          \
-    do {                                                                       \
-        if (mssql_python::logging::LoggerBridge::isLoggable(                   \
-                mssql_python::logging::LOG_LEVEL_DEBUG)) {                     \
-            mssql_python::logging::LoggerBridge::log(                          \
-                mssql_python::logging::LOG_LEVEL_DEBUG, __FILE__, __LINE__,    \
-                fmt, ##__VA_ARGS__);                                           \
-        }                                                                      \
+#define LOG(fmt, ...)                                                                              \
+    do {                                                                                           \
+        if (mssql_python::logging::LoggerBridge::isLoggable(                                       \
+                mssql_python::logging::LOG_LEVEL_DEBUG)) {                                         \
+            mssql_python::logging::LoggerBridge::log(mssql_python::logging::LOG_LEVEL_DEBUG,       \
+                                                     __FILE__, __LINE__, fmt, ##__VA_ARGS__);      \
+        }                                                                                          \
     } while (0)
 
-#define LOG_INFO(fmt, ...)                                                     \
-    do {                                                                       \
-        if (mssql_python::logging::LoggerBridge::isLoggable(                   \
-                mssql_python::logging::LOG_LEVEL_INFO)) {                      \
-            mssql_python::logging::LoggerBridge::log(                          \
-                mssql_python::logging::LOG_LEVEL_INFO, __FILE__, __LINE__,     \
-                fmt, ##__VA_ARGS__);                                           \
-        }                                                                      \
+#define LOG_INFO(fmt, ...)                                                                         \
+    do {                                                                                           \
+        if (mssql_python::logging::LoggerBridge::isLoggable(                                       \
+                mssql_python::logging::LOG_LEVEL_INFO)) {                                          \
+            mssql_python::logging::LoggerBridge::log(mssql_python::logging::LOG_LEVEL_INFO,        \
+                                                     __FILE__, __LINE__, fmt, ##__VA_ARGS__);      \
+        }                                                                                          \
     } while (0)
 
-#define LOG_WARNING(fmt, ...)                                                  \
-    do {                                                                       \
-        if (mssql_python::logging::LoggerBridge::isLoggable(                   \
-                mssql_python::logging::LOG_LEVEL_WARNING)) {                   \
-            mssql_python::logging::LoggerBridge::log(                          \
-                mssql_python::logging::LOG_LEVEL_WARNING, __FILE__, __LINE__,  \
-                fmt, ##__VA_ARGS__);                                           \
-        }                                                                      \
+#define LOG_WARNING(fmt, ...)                                                                      \
+    do {                                                                                           \
+        if (mssql_python::logging::LoggerBridge::isLoggable(                                       \
+                mssql_python::logging::LOG_LEVEL_WARNING)) {                                       \
+            mssql_python::logging::LoggerBridge::log(mssql_python::logging::LOG_LEVEL_WARNING,     \
+                                                     __FILE__, __LINE__, fmt, ##__VA_ARGS__);      \
+        }                                                                                          \
     } while (0)
 
-#define LOG_ERROR(fmt, ...)                                                    \
-    do {                                                                       \
-        if (mssql_python::logging::LoggerBridge::isLoggable(                   \
-                mssql_python::logging::LOG_LEVEL_ERROR)) {                     \
-            mssql_python::logging::LoggerBridge::log(                          \
-                mssql_python::logging::LOG_LEVEL_ERROR, __FILE__, __LINE__,    \
-                fmt, ##__VA_ARGS__);                                           \
-        }                                                                      \
+#define LOG_ERROR(fmt, ...)                                                                        \
+    do {                                                                                           \
+        if (mssql_python::logging::LoggerBridge::isLoggable(                                       \
+                mssql_python::logging::LOG_LEVEL_ERROR)) {                                         \
+            mssql_python::logging::LoggerBridge::log(mssql_python::logging::LOG_LEVEL_ERROR,       \
+                                                     __FILE__, __LINE__, fmt, ##__VA_ARGS__);      \
+        }                                                                                          \
     } while (0)
 
-#endif // MSSQL_PYTHON_LOGGER_BRIDGE_HPP
+#endif  // MSSQL_PYTHON_LOGGER_BRIDGE_HPP

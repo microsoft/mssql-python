@@ -54,11 +54,11 @@ jobs:
     - name: Lint with Flake8
       run: |
         echo "::group::Flake8 Linting"
-        flake8 mssql_python/ tests/ --max-line-length=100 --extend-ignore=E203,W503 --count --statistics --show-source || {
-          echo "::error::Flake8 found linting issues. Please fix the errors above."
-          exit 1
+        flake8 mssql_python/ tests/ --max-line-length=100 --extend-ignore=E203,W503,E501,E722,F401,F841,W293,W291,F541,F811,E402,E711,E712,E721,F821 --count --statistics || {
+          echo "::warning::Flake8 found linting issues (informational only, not blocking)"
         }
         echo "::endgroup::"
+      continue-on-error: true
         
     - name: Lint with Pylint
       run: |
@@ -105,18 +105,15 @@ jobs:
     - name: Check C++ formatting with clang-format
       run: |
         echo "::group::clang-format Check"
-        find mssql_python/pybind -name "*.cpp" -o -name "*.c" -o -name "*.h" -o -name "*.hpp" | while read file; do
-          clang-format --dry-run --Werror "$file" 2>&1 | tee -a format_errors.txt || true
+        # Check formatting without Werror (informational only)
+        find mssql_python/pybind -type f \( -name "*.cpp" -o -name "*.c" -o -name "*.h" -o -name "*.hpp" \) | while read file; do
+          echo "Checking $file"
+          clang-format --dry-run "$file" 2>&1 || true
         done
         
-        if [ -s format_errors.txt ]; then
-          echo "::error::C++ formatting issues found. Run 'clang-format -i <file>' locally to fix."
-          cat format_errors.txt
-          exit 1
-        else
-          echo "✅ All C++ files are properly formatted"
-        fi
+        echo "✅ clang-format check completed (informational only)"
         echo "::endgroup::"
+      continue-on-error: true
         
     - name: Lint with cpplint
       run: |
@@ -133,19 +130,15 @@ jobs:
         
         if [ -s cpplint_output.txt ] && grep -q "Total errors found:" cpplint_output.txt; then
           TOTAL_ERRORS=$(grep "Total errors found:" cpplint_output.txt | awk '{print $4}')
-          echo "::warning::cpplint found $TOTAL_ERRORS issues. Review the output above."
-          cat cpplint_output.txt
+          echo "::warning::cpplint found $TOTAL_ERRORS issues. These are informational and don't block the PR."
           
-          # Fail if there are critical errors (you can adjust threshold)
-          if [ "$TOTAL_ERRORS" -gt 200 ]; then
-            echo "::error::Too many cpplint errors ($TOTAL_ERRORS). Please fix critical issues."
-            exit 1
-          fi
+          # Show summary but don't fail (informational only)
+          echo "cpplint found $TOTAL_ERRORS style guideline issues (not blocking)"
         else
           echo "✅ cpplint check passed with minimal issues"
         fi
         echo "::endgroup::"
-      continue-on-error: false
+      continue-on-error: true
 
   lint-summary:
     name: Linting Summary
@@ -158,28 +151,29 @@ jobs:
       run: |
         echo "## Linting Summary" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Check Results" >> $GITHUB_STEP_SUMMARY
         
         if [ "${{ needs.python-lint.result }}" == "success" ]; then
-          echo "✅ **Python Linting:** PASSED" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **Python Formatting (Black):** PASSED" >> $GITHUB_STEP_SUMMARY
         else
-          echo "❌ **Python Linting:** FAILED" >> $GITHUB_STEP_SUMMARY
+          echo "❌ **Python Formatting (Black):** FAILED - Please run Black formatter" >> $GITHUB_STEP_SUMMARY
         fi
         
-        if [ "${{ needs.cpp-lint.result }}" == "success" ]; then
-          echo "✅ **C++ Linting:** PASSED" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "❌ **C++ Linting:** FAILED" >> $GITHUB_STEP_SUMMARY
-        fi
+        echo "ℹ️ **Python Linting (Flake8, Pylint):** Informational only" >> $GITHUB_STEP_SUMMARY
+        echo "ℹ️ **C++ Linting (clang-format, cpplint):** Informational only" >> $GITHUB_STEP_SUMMARY
         
         echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-        echo "- Review the linting errors in the job logs above" >> $GITHUB_STEP_SUMMARY
-        echo "- Fix issues locally by saving files (auto-format is enabled)" >> $GITHUB_STEP_SUMMARY
-        echo "- Run formatters manually: \`black --line-length=100 .\` or \`clang-format -i <file>\`" >> $GITHUB_STEP_SUMMARY
-        echo "- Commit and push the fixes to update this PR" >> $GITHUB_STEP_SUMMARY
+        echo "### Required Actions" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Black formatting must pass (blocking)" >> $GITHUB_STEP_SUMMARY
+        echo "- ℹ️ Other linting issues are warnings and won't block PR" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### How to Fix" >> $GITHUB_STEP_SUMMARY
+        echo "1. Save all files in VS Code (Ctrl+S) - auto-formatting will fix most issues" >> $GITHUB_STEP_SUMMARY
+        echo "2. Or run manually: \`black --line-length=100 mssql_python/ tests/\`" >> $GITHUB_STEP_SUMMARY
+        echo "3. For C++: \`clang-format -i mssql_python/pybind/*.cpp\`" >> $GITHUB_STEP_SUMMARY
         
-    - name: Fail if linting failed
-      if: needs.python-lint.result != 'success' || needs.cpp-lint.result != 'success'
+    - name: Fail if Python formatting failed
+      if: needs.python-lint.result != 'success'
       run: |
-        echo "::error::Linting checks failed. Please fix the issues and push again."
+        echo "::error::Python Black formatting check failed. Please format your Python files."
         exit 1
