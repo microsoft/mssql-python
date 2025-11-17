@@ -1662,6 +1662,21 @@ def test_executemany_empty_parameter_list(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS #pytest_empty_params")
         db_connection.commit()
 
+def test_executemany_NONE_parameter_list(cursor, db_connection):
+    """Test executemany with an NONE parameter list."""
+    try:
+        cursor.execute("CREATE TABLE #pytest_empty_params (val VARCHAR(50))")
+        data = [(None,), (None,)]
+        cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
+        db_connection.commit()
+
+        cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params")
+        count = cursor.fetchone()[0]
+        assert count == 2
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_empty_params")
+        db_connection.commit()
+
 
 def test_executemany_Decimal_list(cursor, db_connection):
     """Test executemany with an decimal parameter list."""
