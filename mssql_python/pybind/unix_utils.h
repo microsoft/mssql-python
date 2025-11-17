@@ -8,11 +8,11 @@
 
 #pragma once
 
+#include <codecvt>
+#include <locale>
 #include <pybind11/pybind11.h>
 #include <sql.h>
 #include <sqlext.h>
-#include <codecvt>
-#include <locale>
 #include <string>
 #include <vector>
 
@@ -20,8 +20,8 @@ namespace py = pybind11;
 
 #if defined(__APPLE__) || defined(__linux__)
 // Constants for character encoding
-extern const char* kOdbcEncoding;  // ODBC uses UTF-16LE for SQLWCHAR
-extern const size_t kUcsLength;    // SQLWCHAR is 2 bytes on all platforms
+extern const char* kOdbcEncoding; // ODBC uses UTF-16LE for SQLWCHAR
+extern const size_t kUcsLength;   // SQLWCHAR is 2 bytes on all platforms
 
 // Function to convert SQLWCHAR strings to std::wstring on macOS
 // Removed default argument to avoid redefinition conflict

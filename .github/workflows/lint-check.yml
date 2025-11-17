@@ -1,0 +1,185 @@
+name: Linting Check
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+    paths:
+      - '**.py'
+      - '**.cpp'
+      - '**.c'
+      - '**.h'
+      - '**.hpp'
+      - '.github/workflows/lint-check.yml'
+      - 'pyproject.toml'
+      - '.flake8'
+      - '.clang-format'
+  push:
+    branches:
+      - main
+
+permissions:
+  pull-requests: write
+
+jobs:
+  python-lint:
+    name: Python Linting
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install black flake8 pylint autopep8
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        
+    - name: Check Python formatting with Black
+      run: |
+        echo "::group::Black Formatting Check"
+        black --check --line-length=100 --diff mssql_python/ tests/ || {
+          echo "::error::Black formatting issues found. Run 'black --line-length=100 mssql_python/ tests/' locally to fix."
+          exit 1
+        }
+        echo "::endgroup::"
+        
+    - name: Lint with Flake8
+      run: |
+        echo "::group::Flake8 Linting"
+        flake8 mssql_python/ tests/ --max-line-length=100 --extend-ignore=E203,W503 --count --statistics --show-source || {
+          echo "::error::Flake8 found linting issues. Please fix the errors above."
+          exit 1
+        }
+        echo "::endgroup::"
+        
+    - name: Lint with Pylint
+      run: |
+        echo "::group::Pylint Analysis"
+        pylint mssql_python/ --max-line-length=100 \
+          --disable=fixme,no-member,too-many-arguments,too-many-positional-arguments,invalid-name,useless-parent-delegation \
+          --exit-zero --output-format=colorized --reports=y || true
+        echo "::endgroup::"
+        
+    - name: Check Type Hints (mypy)
+      run: |
+        echo "::group::Type Checking"
+        pip install mypy
+        mypy mssql_python/ --ignore-missing-imports --no-strict-optional --check-untyped-defs || {
+          echo "::warning::Type checking found potential issues. Review the output above."
+        }
+        echo "::endgroup::"
+      continue-on-error: true
+
+  cpp-lint:
+    name: C++ Linting
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python (for cpplint)
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+        
+    - name: Install clang-format
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-format
+        clang-format --version
+        
+    - name: Install cpplint
+      run: |
+        python -m pip install --upgrade pip
+        pip install cpplint
+        
+    - name: Check C++ formatting with clang-format
+      run: |
+        echo "::group::clang-format Check"
+        find mssql_python/pybind -name "*.cpp" -o -name "*.c" -o -name "*.h" -o -name "*.hpp" | while read file; do
+          clang-format --dry-run --Werror "$file" 2>&1 | tee -a format_errors.txt || true
+        done
+        
+        if [ -s format_errors.txt ]; then
+          echo "::error::C++ formatting issues found. Run 'clang-format -i <file>' locally to fix."
+          cat format_errors.txt
+          exit 1
+        else
+          echo "✅ All C++ files are properly formatted"
+        fi
+        echo "::endgroup::"
+        
+    - name: Lint with cpplint
+      run: |
+        echo "::group::cpplint Check"
+        python -m cpplint \
+          --filter=-legal/copyright,-build/include_subdir,-build/c++11 \
+          --linelength=100 \
+          --recursive \
+          --quiet \
+          mssql_python/pybind 2>&1 | tee cpplint_output.txt || true
+        
+        # Count errors and warnings
+        ERROR_COUNT=$(grep -c "Total errors found:" cpplint_output.txt || echo "0")
+        
+        if [ -s cpplint_output.txt ] && grep -q "Total errors found:" cpplint_output.txt; then
+          TOTAL_ERRORS=$(grep "Total errors found:" cpplint_output.txt | awk '{print $4}')
+          echo "::warning::cpplint found $TOTAL_ERRORS issues. Review the output above."
+          cat cpplint_output.txt
+          
+          # Fail if there are critical errors (you can adjust threshold)
+          if [ "$TOTAL_ERRORS" -gt 200 ]; then
+            echo "::error::Too many cpplint errors ($TOTAL_ERRORS). Please fix critical issues."
+            exit 1
+          fi
+        else
+          echo "✅ cpplint check passed with minimal issues"
+        fi
+        echo "::endgroup::"
+      continue-on-error: false
+
+  lint-summary:
+    name: Linting Summary
+    runs-on: ubuntu-latest
+    needs: [python-lint, cpp-lint]
+    if: always()
+    
+    steps:
+    - name: Check results
+      run: |
+        echo "## Linting Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ needs.python-lint.result }}" == "success" ]; then
+          echo "✅ **Python Linting:** PASSED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Python Linting:** FAILED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ "${{ needs.cpp-lint.result }}" == "success" ]; then
+          echo "✅ **C++ Linting:** PASSED" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **C++ Linting:** FAILED" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+        echo "- Review the linting errors in the job logs above" >> $GITHUB_STEP_SUMMARY
+        echo "- Fix issues locally by saving files (auto-format is enabled)" >> $GITHUB_STEP_SUMMARY
+        echo "- Run formatters manually: \`black --line-length=100 .\` or \`clang-format -i <file>\`" >> $GITHUB_STEP_SUMMARY
+        echo "- Commit and push the fixes to update this PR" >> $GITHUB_STEP_SUMMARY
+        
+    - name: Fail if linting failed
+      if: needs.python-lint.result != 'success' || needs.cpp-lint.result != 'success'
+      run: |
+        echo "::error::Linting checks failed. Please fix the issues and push again."
+        exit 1

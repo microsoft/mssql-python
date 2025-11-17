@@ -2,16 +2,16 @@
 // Licensed under the MIT license.
 
 #pragma once
+#include "../ddbc_bindings.h"
 #include <memory>
 #include <string>
-#include "../ddbc_bindings.h"
 
 // Represents a single ODBC database connection.
 // Manages connection handles.
 // Note: This class does NOT implement pooling logic directly.
 
 class Connection {
- public:
+  public:
     Connection(const std::wstring& connStr, bool fromPool);
 
     ~Connection();
@@ -49,7 +49,7 @@ class Connection {
     // Add getter for DBC handle for error reporting
     const SqlHandlePtr& getDbcHandle() const { return _dbcHandle; }
 
- private:
+  private:
     void allocateDbcHandle();
     void checkError(SQLRETURN ret) const;
     void applyAttrsBefore(const py::dict& attrs_before);
@@ -59,12 +59,12 @@ class Connection {
     bool _autocommit = true;
     SqlHandlePtr _dbcHandle;
     std::chrono::steady_clock::time_point _lastUsed;
-    std::wstring wstrStringBuffer;  // wstr buffer for string attribute setting
+    std::wstring wstrStringBuffer; // wstr buffer for string attribute setting
     std::string strBytesBuffer;    // string buffer for byte attributes setting
 };
 
 class ConnectionHandle {
- public:
+  public:
     ConnectionHandle(const std::string& connStr, bool usePool,
                      const py::dict& attrsBefore = py::dict());
     ~ConnectionHandle();
@@ -80,7 +80,7 @@ class ConnectionHandle {
     // Get information about the driver and data source
     py::object getInfo(SQLUSMALLINT infoType) const;
 
- private:
+  private:
     std::shared_ptr<Connection> _conn;
     bool _usePool;
     std::wstring _connStr;

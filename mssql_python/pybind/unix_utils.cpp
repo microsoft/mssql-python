@@ -14,8 +14,8 @@
 
 #if defined(__APPLE__) || defined(__linux__)
 // Constants for character encoding
-const char* kOdbcEncoding = "utf-16-le";  // ODBC uses UTF-16LE for SQLWCHAR
-const size_t kUcsLength = 2;  // SQLWCHAR is 2 bytes on all platforms
+const char* kOdbcEncoding = "utf-16-le"; // ODBC uses UTF-16LE for SQLWCHAR
+const size_t kUcsLength = 2;             // SQLWCHAR is 2 bytes on all platforms
 
 // Function to convert SQLWCHAR strings to std::wstring on macOS
 std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
@@ -27,7 +27,8 @@ std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
     if (length == SQL_NTS) {
         // Determine length if not provided
         size_t i = 0;
-        while (sqlwStr[i] != 0) ++i;
+        while (sqlwStr[i] != 0)
+            ++i;
         length = i;
     }
 
@@ -41,8 +42,8 @@ std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
     // Convert UTF-16LE to std::wstring (UTF-32 on macOS)
     try {
         // Use C++11 codecvt to convert between UTF-16LE and wstring
-        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t, 0x10ffff,
-                                                     std::little_endian>>
+        std::wstring_convert<
+            std::codecvt_utf8_utf16<wchar_t, 0x10ffff, std::little_endian>>
             converter;
         std::wstring result = converter.from_bytes(
             reinterpret_cast<const char*>(utf16Bytes.data()),
@@ -64,14 +65,14 @@ std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
 std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
     try {
         // Convert wstring (UTF-32 on macOS) to UTF-16LE bytes
-        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t, 0x10ffff,
-                                                     std::little_endian>>
+        std::wstring_convert<
+            std::codecvt_utf8_utf16<wchar_t, 0x10ffff, std::little_endian>>
             converter;
         std::string utf16Bytes = converter.to_bytes(str);
 
         // Convert the bytes to SQLWCHAR array
         std::vector<SQLWCHAR> result(utf16Bytes.size() / kUcsLength + 1,
-                                     0);  // +1 for null terminator
+                                     0); // +1 for null terminator
         for (size_t i = 0; i < utf16Bytes.size() / kUcsLength; ++i) {
             memcpy(&result[i], &utf16Bytes[i * kUcsLength], kUcsLength);
         }
@@ -79,7 +80,7 @@ std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
     } catch (const std::exception& e) {
         // Fallback to simple casting if codecvt fails
         std::vector<SQLWCHAR> result(str.size() + 1,
-                                     0);  // +1 for null terminator
+                                     0); // +1 for null terminator
         for (size_t i = 0; i < str.size(); ++i) {
             result[i] = static_cast<SQLWCHAR>(str[i]);
         }
