@@ -1,0 +1,15 @@
+repos:
+-   repo: https://github.com/pre-commit/mirrors-pylint
+    rev: v3.0.0a5
+    hooks:
+    -   id: pylint
+
+-   repo: local
+    hooks:
+    -   id: cpplint
+        name: cpplint
+        entry: python -m cpplint
+        language: python
+        types: [c++]
+        args: [--filter=-readability/todo, --linelength=100]
+        exclude: ^.*build/.*$
