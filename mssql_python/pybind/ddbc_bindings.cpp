@@ -2183,6 +2183,33 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt,
                     bufferLength = sizeof(SQLGUID);
                     break;
                 }
+                case SQL_C_DEFAULT: {
+                    // Handle NULL parameters - all values in this column should be NULL
+                    LOG("BindParameterArray: Binding SQL_C_DEFAULT (NULL) array - param_index=%d, count=%zu", paramIndex, paramSetSize);
+                    
+                    // Verify all values are indeed NULL
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        if (!columnValues[i].is_none()) {
+                            LOG("BindParameterArray: SQL_C_DEFAULT non-NULL value detected - param_index=%d, row=%zu", paramIndex, i);
+                            ThrowStdException("SQL_C_DEFAULT (99) should only be used for NULL parameters at index " + std::to_string(paramIndex));
+                        }
+                    }
+                    
+                    // For NULL parameters, we need to allocate a minimal buffer and set all indicators to SQL_NULL_DATA
+                    // Use SQL_C_CHAR as a safe default C type for NULL values
+                    char* nullBuffer = AllocateParamBufferArray<char>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+                    
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        nullBuffer[i] = 0;
+                        strLenOrIndArray[i] = SQL_NULL_DATA;
+                    }
+                    
+                    dataPtr = nullBuffer;
+                    bufferLength = 1;
+                    LOG("BindParameterArray: SQL_C_DEFAULT bound - param_index=%d, all_null=true", paramIndex);
+                    break;
+                }
                 default: {
                     LOG("BindParameterArray: Unsupported C type - param_index=%d, C_type=%d", paramIndex, info.paramCType);
                     ThrowStdException("BindParameterArray: Unsupported C type: " + std::to_string(info.paramCType));
