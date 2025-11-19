@@ -11,6 +11,9 @@ from typing import Dict
 # Import settings from helpers to avoid circular imports
 from .helpers import Settings, get_settings, _settings, _settings_lock
 
+# Driver version
+__version__ = "1.0.0"
+
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
 

@@ -95,8 +95,8 @@ parameters:
         arch: 'x64'
       - pyVer: '313'
         arch: 'x64'
-      # - pyVer: '314'  # Life of π: Unfolding in v1.0.0
-      #   arch: 'x64'
+      - pyVer: '314'
+        arch: 'x64'
       # ARM64 builds (4 versions: 3.11-3.14)
       # 3.10 excluded due to limited ARM64 support
       - pyVer: '311'
@@ -105,8 +105,8 @@ parameters:
         arch: 'arm64'
       - pyVer: '313'
         arch: 'arm64'
-      # - pyVer: '314'  # Life of π: Unfolding in v1.0.0
-      #   arch: 'arm64'
+      - pyVer: '314'
+        arch: 'arm64'
   
   # macOS Configuration Matrix
   # Each entry creates separate stage: MacOS_py<pyVer>
@@ -120,7 +120,7 @@ parameters:
       - pyVer: '311'
       - pyVer: '312'
       - pyVer: '313'
-      # - pyVer: '314'  # Life of π: Unfolding in v1.0.0
+      - pyVer: '314'
   
   # Linux Configuration Matrix
   # Each entry creates ONE stage that builds ALL Python versions (3.10-3.14)
@@ -440,17 +440,17 @@ extends:
           - Win_py311_x64
           - Win_py312_x64
           - Win_py313_x64
-          # - Win_py314_x64 # Life of π: Unfolding in v1.0.0
+          - Win_py314_x64
           - Win_py311_arm64
           - Win_py312_arm64
           - Win_py313_arm64
-          # - Win_py314_arm64 # Life of π: Unfolding in v1.0.0
+          - Win_py314_arm64
           # macOS dependencies (5 stages)
           - MacOS_py310
           - MacOS_py311
           - MacOS_py312
           - MacOS_py313
-          # - MacOS_py314 # Life of π: Unfolding in v1.0.0
+          - MacOS_py314
           # Linux dependencies (4 stages)
           - Linux_manylinux_x86_64
           - Linux_manylinux_aarch64
