@@ -5471,6 +5471,33 @@ def test_getinfo_basic_driver_info(db_connection):
         pytest.fail(f"getinfo failed for basic driver info: {e}")
 
 
+def test_getinfo_string_encoding_utf16(db_connection):
+    """Test that string values from getinfo are properly decoded from UTF-16."""
+    
+    # Test string info types that should not contain null bytes
+    string_info_types = [
+        ("SQL_DRIVER_VER", sql_const.SQL_DRIVER_VER.value),
+        ("SQL_DRIVER_NAME", sql_const.SQL_DRIVER_NAME.value),
+        ("SQL_DRIVER_ODBC_VER", sql_const.SQL_DRIVER_ODBC_VER.value),
+        ("SQL_SERVER_NAME", sql_const.SQL_SERVER_NAME.value),
+    ]
+    
+    for name, info_type in string_info_types:
+        result = db_connection.getinfo(info_type)
+        
+        if result is not None:
+            # Verify it's a string
+            assert isinstance(result, str), \
+                f"{name}: Expected str, got {type(result).__name__}"
+            
+            # Verify no null bytes (indicates UTF-16 decoded as UTF-8 bug)
+            assert '\x00' not in result, \
+                f"{name} contains null bytes, likely UTF-16/UTF-8 encoding mismatch: {repr(result)}"
+            
+            # Verify it's not empty (optional, but good sanity check)
+            assert len(result) > 0, f"{name} returned empty string"
+
+
 def test_getinfo_sql_support(db_connection):
     """Test SQL support and conformance info types."""
 
