@@ -5340,7 +5340,8 @@ def test_timeout_long_query(db_connection):
                 # Method 2: Try with WAITFOR
                 start_time = time.perf_counter()
                 cursor.execute("WAITFOR DELAY '00:00:05'")
-                cursor.fetchall()
+                # Don't call fetchall() on WAITFOR - it doesn't return results
+                # The execute itself should timeout
                 elapsed_time = time.perf_counter() - start_time
 
                 # If we still get here, try one more approach

@@ -2158,7 +2158,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         try:
             ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
             
-            # Check for errors from the fetch operation
+            # Check for errors
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
             if self.hstmt:
