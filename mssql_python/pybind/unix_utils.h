@@ -8,11 +8,11 @@
 
 #pragma once
 
+#include <codecvt>
+#include <locale>
 #include <pybind11/pybind11.h>
 #include <sql.h>
 #include <sqlext.h>
-#include <codecvt>
-#include <locale>
 #include <string>
 #include <vector>
 

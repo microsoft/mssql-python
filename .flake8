@@ -1,0 +1,19 @@
+[flake8]
+max-line-length = 100
+# Ignore codes: E203 (whitespace before ':'), W503 (line break before binary operator),
+# E501 (line too long), E722 (bare except), F401 (unused imports), F841 (unused variables),
+# W293 (blank line contains whitespace), W291 (trailing whitespace),
+# F541 (f-string missing placeholders), F811 (redefinition of unused),
+# E402 (module level import not at top), E711/E712 (comparison to None/True/False),
+# E721 (type comparison), F821 (undefined name)
+extend-ignore = E203, W503, E501, E722, F401, F841, W293, W291, F541, F811, E402, E711, E712, E721, F821
+exclude =
+    .git,
+    __pycache__,
+    build,
+    dist,
+    .venv,
+    htmlcov,
+    *.egg-info
+per-file-ignores =
+    __init__.py:F401

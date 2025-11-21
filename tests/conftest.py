@@ -22,7 +22,7 @@ def is_azure_sql_connection(conn_str):
     # Check if database.windows.net appears in the Server parameter
     conn_str_lower = conn_str.lower()
     # Look for Server= or server= followed by database.windows.net
-    server_match = re.search(r'server\s*=\s*[^;]*database\.windows\.net', conn_str_lower)
+    server_match = re.search(r"server\s*=\s*[^;]*database\.windows\.net", conn_str_lower)
     return server_match is not None
 
 
@@ -43,9 +43,7 @@ def db_connection(conn_str):
         conn = connect(conn_str)
     except Exception as e:
         if "Timeout error" in str(e):
-            print(
-                f"Database connection failed due to Timeout: {e}. Retrying in 60 seconds."
-            )
+            print(f"Database connection failed due to Timeout: {e}. Retrying in 60 seconds.")
             time.sleep(60)
             conn = connect(conn_str)
         else:

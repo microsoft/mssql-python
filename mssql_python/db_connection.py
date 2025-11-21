@@ -14,7 +14,7 @@ def connect(
     autocommit: bool = False,
     attrs_before: Optional[Dict[int, Union[int, str, bytes]]] = None,
     timeout: int = 0,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> Connection:
     """
     Constructor for creating a connection to the database.
@@ -44,10 +44,6 @@ def connect(
     transactions, and closing the connection.
     """
     conn = Connection(
-        connection_str,
-        autocommit=autocommit,
-        attrs_before=attrs_before,
-        timeout=timeout,
-        **kwargs
+        connection_str, autocommit=autocommit, attrs_before=attrs_before, timeout=timeout, **kwargs
     )
     return conn

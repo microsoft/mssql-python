@@ -445,8 +445,9 @@ def get_attribute_set_timing(attribute):
     """
     return ATTRIBUTE_SET_TIMING.get(attribute, AttributeSetTime.AFTER_ONLY)
 
-_CONNECTION_STRING_DRIVER_KEY = 'Driver'
-_CONNECTION_STRING_APP_KEY = 'APP'
+
+_CONNECTION_STRING_DRIVER_KEY = "Driver"
+_CONNECTION_STRING_APP_KEY = "APP"
 
 # Reserved connection string parameters that are controlled by the driver
 # and cannot be set by users
@@ -456,54 +457,45 @@ _RESERVED_PARAMETERS = (_CONNECTION_STRING_DRIVER_KEY, _CONNECTION_STRING_APP_KE
 # Maps lowercase parameter names to their canonical form
 # Based on ODBC Driver 18 for SQL Server supported parameters
 # A new connection string key to be supported in Python, should be added
-# to the dictionary below. the value is the canonical name used in the 
+# to the dictionary below. the value is the canonical name used in the
 # final connection string sent to ODBC driver.
-# The left side is what Python connection string supports, the right side 
+# The left side is what Python connection string supports, the right side
 # is the canonical ODBC key name.
 _ALLOWED_CONNECTION_STRING_PARAMS = {
     # Server identification - addr, address, and server are synonyms
-    'server': 'Server',
-    'address': 'Server',
-    'addr': 'Server',
-    
+    "server": "Server",
+    "address": "Server",
+    "addr": "Server",
     # Authentication
-    'uid': 'UID',
-    'pwd': 'PWD',
-    'authentication': 'Authentication',
-    'trusted_connection': 'Trusted_Connection',
-    
+    "uid": "UID",
+    "pwd": "PWD",
+    "authentication": "Authentication",
+    "trusted_connection": "Trusted_Connection",
     # Database
-    'database': 'Database',
-    
+    "database": "Database",
     # Driver (always controlled by mssql-python)
-    'driver': 'Driver',
-    
+    "driver": "Driver",
     # Application name (always controlled by mssql-python)
-    'app': 'APP',
-    
+    "app": "APP",
     # Encryption and Security
-    'encrypt': 'Encrypt',
-    'trustservercertificate': 'TrustServerCertificate',
-    'trust_server_certificate': 'TrustServerCertificate',  # Snake_case synonym
-    'hostnameincertificate': 'HostnameInCertificate',  # v18.0+
-    'servercertificate': 'ServerCertificate',  # v18.1+
-    'serverspn': 'ServerSPN',
-    
+    "encrypt": "Encrypt",
+    "trustservercertificate": "TrustServerCertificate",
+    "trust_server_certificate": "TrustServerCertificate",  # Snake_case synonym
+    "hostnameincertificate": "HostnameInCertificate",  # v18.0+
+    "servercertificate": "ServerCertificate",  # v18.1+
+    "serverspn": "ServerSPN",
     # Connection behavior
-    'multisubnetfailover': 'MultiSubnetFailover',
-    'applicationintent': 'ApplicationIntent',
-    'connectretrycount': 'ConnectRetryCount',
-    'connectretryinterval': 'ConnectRetryInterval',
-    
+    "multisubnetfailover": "MultiSubnetFailover",
+    "applicationintent": "ApplicationIntent",
+    "connectretrycount": "ConnectRetryCount",
+    "connectretryinterval": "ConnectRetryInterval",
     # Keep-Alive (v17.4+)
-    'keepalive': 'KeepAlive',
-    'keepaliveinterval': 'KeepAliveInterval',
-    
+    "keepalive": "KeepAlive",
+    "keepaliveinterval": "KeepAliveInterval",
     # IP Address Preference (v18.1+)
-    'ipaddresspreference': 'IpAddressPreference',
-
-    'packet size': 'PacketSize', # From the tests it looks like pyodbc users use Packet Size
-                                    # (with spaces) ODBC only honors "PacketSize" without spaces
-                                    # internally.
-    'packetsize': 'PacketSize',
+    "ipaddresspreference": "IpAddressPreference",
+    "packet size": "PacketSize",  # From the tests it looks like pyodbc users use Packet Size
+    # (with spaces) ODBC only honors "PacketSize" without spaces
+    # internally.
+    "packetsize": "PacketSize",
 }

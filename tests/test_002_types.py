@@ -30,9 +30,7 @@ def test_number_type():
 
 
 def test_datetime_type():
-    assert DATETIME(2025, 1, 1) == datetime.datetime(
-        2025, 1, 1
-    ), "DATETIME type mismatch"
+    assert DATETIME(2025, 1, 1) == datetime.datetime(2025, 1, 1), "DATETIME type mismatch"
 
 
 def test_rowid_type():
@@ -41,9 +39,7 @@ def test_rowid_type():
 
 def test_date_constructor():
     date = Date(2023, 10, 5)
-    assert isinstance(
-        date, datetime.date
-    ), "Date constructor did not return a date object"
+    assert isinstance(date, datetime.date), "Date constructor did not return a date object"
     assert (
         date.year == 2023 and date.month == 10 and date.day == 5
     ), "Date constructor returned incorrect date"
@@ -51,9 +47,7 @@ def test_date_constructor():
 
 def test_time_constructor():
     time = Time(12, 30, 45)
-    assert isinstance(
-        time, datetime.time
-    ), "Time constructor did not return a time object"
+    assert isinstance(time, datetime.time), "Time constructor did not return a time object"
     assert (
         time.hour == 12 and time.minute == 30 and time.second == 45
     ), "Time constructor returned incorrect time"
@@ -70,9 +64,7 @@ def test_timestamp_constructor():
     assert (
         timestamp.hour == 12 and timestamp.minute == 30 and timestamp.second == 45
     ), "Timestamp constructor returned incorrect time"
-    assert (
-        timestamp.microsecond == 123456
-    ), "Timestamp constructor returned incorrect fraction"
+    assert timestamp.microsecond == 123456, "Timestamp constructor returned incorrect fraction"
 
 
 def test_date_from_ticks():
@@ -85,9 +77,7 @@ def test_date_from_ticks():
 def test_time_from_ticks():
     ticks = 1696500000  # Corresponds to local
     time_var = TimeFromTicks(ticks)
-    assert isinstance(
-        time_var, datetime.time
-    ), "TimeFromTicks did not return a time object"
+    assert isinstance(time_var, datetime.time), "TimeFromTicks did not return a time object"
     assert time_var == datetime.time(
         *time.localtime(ticks)[3:6]
     ), "TimeFromTicks returned incorrect time"
@@ -128,9 +118,7 @@ def test_binary_string_encoding():
 
     # Test string with special characters
     result = Binary("Hello\nWorld\t!")
-    assert (
-        result == b"Hello\nWorld\t!"
-    ), "String with special characters should encode properly"
+    assert result == b"Hello\nWorld\t!", "String with special characters should encode properly"
 
 
 def test_binary_unsupported_types_error():
@@ -139,41 +127,31 @@ def test_binary_unsupported_types_error():
     with pytest.raises(TypeError) as exc_info:
         Binary(123)
     assert "Cannot convert type int to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(
-        exc_info.value
-    )
+    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
 
     # Test float type
     with pytest.raises(TypeError) as exc_info:
         Binary(3.14)
     assert "Cannot convert type float to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(
-        exc_info.value
-    )
+    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
 
     # Test list type
     with pytest.raises(TypeError) as exc_info:
         Binary([1, 2, 3])
     assert "Cannot convert type list to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(
-        exc_info.value
-    )
+    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
 
     # Test dict type
     with pytest.raises(TypeError) as exc_info:
         Binary({"key": "value"})
     assert "Cannot convert type dict to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(
-        exc_info.value
-    )
+    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
 
     # Test None type
     with pytest.raises(TypeError) as exc_info:
         Binary(None)
     assert "Cannot convert type NoneType to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(
-        exc_info.value
-    )
+    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
 
     # Test custom object type
     class CustomObject:
@@ -182,9 +160,7 @@ def test_binary_unsupported_types_error():
     with pytest.raises(TypeError) as exc_info:
         Binary(CustomObject())
     assert "Cannot convert type CustomObject to bytes" in str(exc_info.value)
-    assert "Binary() only accepts str, bytes, or bytearray objects" in str(
-        exc_info.value
-    )
+    assert "Binary() only accepts str, bytes, or bytearray objects" in str(exc_info.value)
 
 
 def test_binary_comprehensive_coverage():
@@ -199,9 +175,7 @@ def test_binary_comprehensive_coverage():
     bytearray_input = bytearray(b"hello bytearray")
     result = Binary(bytearray_input)
     assert isinstance(result, bytes), "Bytearray should be converted to bytes"
-    assert (
-        result == b"hello bytearray"
-    ), "Bytearray content should be preserved in bytes"
+    assert result == b"hello bytearray", "Bytearray content should be preserved in bytes"
 
     # Test string input with various encodings (Lines 134-135)
     # ASCII string
@@ -210,9 +184,7 @@ def test_binary_comprehensive_coverage():
 
     # Unicode string
     result = Binary("héllo wørld")
-    assert result == "héllo wørld".encode(
-        "utf-8"
-    ), "Unicode string should encode to UTF-8"
+    assert result == "héllo wørld".encode("utf-8"), "Unicode string should encode to UTF-8"
 
     # String with emojis
     result = Binary("Hello 🌍")

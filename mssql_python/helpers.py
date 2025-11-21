@@ -12,6 +12,7 @@ from mssql_python import ddbc_bindings
 from mssql_python.exceptions import raise_exception
 from mssql_python.logging import logger
 from mssql_python.constants import ConstantsDDBC
+
 # normalize_architecture import removed as it's unused
 
 
@@ -22,13 +23,17 @@ def add_driver_to_connection_str(connection_str: str) -> str:
     Args:
         connection_str (str): The original connection string.
 
+
     Returns:
         str: The connection string with the DDBC driver added.
 
     Raises:
         Exception: If the connection string is invalid.
     """
-    logger.debug('add_driver_to_connection_str: Processing connection string (length=%d)', len(connection_str))
+    logger.debug(
+        "add_driver_to_connection_str: Processing connection string (length=%d)",
+        len(connection_str),
+    )
     driver_name = "Driver={ODBC Driver 18 for SQL Server}"
     try:
         # Strip any leading or trailing whitespace from the connection string
@@ -44,7 +49,9 @@ def add_driver_to_connection_str(connection_str: str) -> str:
         for attribute in connection_attributes:
             if attribute.lower().split("=")[0] == "driver":
                 driver_found = True
-                logger.debug('add_driver_to_connection_str: Existing driver attribute found, removing')
+                logger.debug(
+                    "add_driver_to_connection_str: Existing driver attribute found, removing"
+                )
                 continue
             final_connection_attributes.append(attribute)
 
@@ -54,11 +61,16 @@ def add_driver_to_connection_str(connection_str: str) -> str:
         # Insert the driver attribute at the beginning of the connection string
         final_connection_attributes.insert(0, driver_name)
         connection_str = ";".join(final_connection_attributes)
-        logger.debug('add_driver_to_connection_str: Driver added (had_existing=%s, attr_count=%d)', 
-            str(driver_found), len(final_connection_attributes))
+        logger.debug(
+            "add_driver_to_connection_str: Driver added (had_existing=%s, attr_count=%d)",
+            str(driver_found),
+            len(final_connection_attributes),
+        )
 
     except Exception as e:
-        logger.debug('add_driver_to_connection_str: Failed to process connection string - %s', str(e))
+        logger.debug(
+            "add_driver_to_connection_str: Failed to process connection string - %s", str(e)
+        )
         raise ValueError(
             "Invalid connection string, Please follow the format: "
             "Server=server_name;Database=database_name;UID=user_name;PWD=password"
@@ -80,10 +92,12 @@ def check_error(handle_type: int, handle: Any, ret: int) -> None:
         RuntimeError: If an error is found.
     """
     if ret < 0:
-        logger.debug('check_error: Error detected - handle_type=%d, return_code=%d', handle_type, ret)
+        logger.debug(
+            "check_error: Error detected - handle_type=%d, return_code=%d", handle_type, ret
+        )
         error_info = ddbc_bindings.DDBCSQLCheckError(handle_type, handle, ret)
         logger.error("Error: %s", error_info.ddbcErrorMsg)
-        logger.debug('check_error: SQL state=%s', error_info.sqlState)
+        logger.debug("check_error: SQL state=%s", error_info.sqlState)
         raise_exception(error_info.sqlState, error_info.ddbcErrorMsg)
 
 
@@ -97,7 +111,7 @@ def add_driver_name_to_app_parameter(connection_string: str) -> str:
     Returns:
         str: The modified connection string.
     """
-    logger.debug('add_driver_name_to_app_parameter: Processing connection string')
+    logger.debug("add_driver_name_to_app_parameter: Processing connection string")
     # Split the input string into key-value pairs
     parameters = connection_string.split(";")
 
@@ -112,7 +126,7 @@ def add_driver_name_to_app_parameter(connection_string: str) -> str:
             app_found = True
             key, _ = param.split("=", 1)
             modified_parameters.append(f"{key}=MSSQL-Python")
-            logger.debug('add_driver_name_to_app_parameter: Existing APP parameter overwritten')
+            logger.debug("add_driver_name_to_app_parameter: Existing APP parameter overwritten")
         else:
             # Keep other parameters as is
             modified_parameters.append(param)
@@ -120,7 +134,7 @@ def add_driver_name_to_app_parameter(connection_string: str) -> str:
     # If APP key is not found, append it
     if not app_found:
         modified_parameters.append("APP=MSSQL-Python")
-        logger.debug('add_driver_name_to_app_parameter: APP parameter added')
+        logger.debug("add_driver_name_to_app_parameter: APP parameter added")
 
     # Join the parameters back into a connection string
     return ";".join(modified_parameters) + ";"
@@ -134,11 +148,13 @@ def sanitize_connection_string(conn_str: str) -> str:
     Returns:
         str: The sanitized connection string.
     """
-    logger.debug('sanitize_connection_string: Sanitizing connection string (length=%d)', len(conn_str))
+    logger.debug(
+        "sanitize_connection_string: Sanitizing connection string (length=%d)", len(conn_str)
+    )
     # Remove sensitive information from the connection string, Pwd section
     # Replace Pwd=...; or Pwd=... (end of string) with Pwd=***;
     sanitized = re.sub(r"(Pwd\s*=\s*)[^;]*", r"\1***", conn_str, flags=re.IGNORECASE)
-    logger.debug('sanitize_connection_string: Password fields masked')
+    logger.debug("sanitize_connection_string: Password fields masked")
     return sanitized
 
 
@@ -154,10 +170,13 @@ def sanitize_user_input(user_input: str, max_length: int = 50) -> str:
     Returns:
         str: The sanitized string safe for logging.
     """
-    logger.debug('sanitize_user_input: Sanitizing input (type=%s, length=%d)', 
-        type(user_input).__name__, len(user_input) if isinstance(user_input, str) else 0)
+    logger.debug(
+        "sanitize_user_input: Sanitizing input (type=%s, length=%d)",
+        type(user_input).__name__,
+        len(user_input) if isinstance(user_input, str) else 0,
+    )
     if not isinstance(user_input, str):
-        logger.debug('sanitize_user_input: Non-string input detected')
+        logger.debug("sanitize_user_input: Non-string input detected")
         return "<non-string>"
 
     # Remove control characters and non-printable characters
@@ -172,7 +191,9 @@ def sanitize_user_input(user_input: str, max_length: int = 50) -> str:
 
     # Return placeholder if nothing remains after sanitization
     result = sanitized if sanitized else "<invalid>"
-    logger.debug('sanitize_user_input: Result length=%d, truncated=%s', len(result), str(was_truncated))
+    logger.debug(
+        "sanitize_user_input: Result length=%d, truncated=%s", len(result), str(was_truncated)
+    )
     return result
 
 
@@ -198,8 +219,12 @@ def validate_attribute_value(
     Returns:
         tuple: (is_valid, error_message, sanitized_attribute, sanitized_value)
     """
-    logger.debug('validate_attribute_value: Validating attribute=%s, value_type=%s, is_connected=%s',
-        str(attribute), type(value).__name__, str(is_connected))
+    logger.debug(
+        "validate_attribute_value: Validating attribute=%s, value_type=%s, is_connected=%s",
+        str(attribute),
+        type(value).__name__,
+        str(is_connected),
+    )
 
     # Sanitize a value for logging
     def _sanitize_for_logging(input_val: Any, max_length: int = max_log_length) -> str:
@@ -219,14 +244,14 @@ def validate_attribute_value(
         return sanitized if sanitized else "<invalid>"
 
     # Create sanitized versions for logging
-    sanitized_attr = (
-        _sanitize_for_logging(attribute) if sanitize_logs else str(attribute)
-    )
+    sanitized_attr = _sanitize_for_logging(attribute) if sanitize_logs else str(attribute)
     sanitized_val = _sanitize_for_logging(value) if sanitize_logs else str(value)
 
     # Basic attribute validation - must be an integer
     if not isinstance(attribute, int):
-        logger.debug('validate_attribute_value: Attribute not an integer - type=%s', type(attribute).__name__)
+        logger.debug(
+            "validate_attribute_value: Attribute not an integer - type=%s", type(attribute).__name__
+        )
         return (
             False,
             f"Attribute must be an integer, got {type(attribute).__name__}",
@@ -246,7 +271,7 @@ def validate_attribute_value(
 
     # Check if attribute is supported
     if attribute not in supported_attributes:
-        logger.debug('validate_attribute_value: Unsupported attribute - attr=%d', attribute)
+        logger.debug("validate_attribute_value: Unsupported attribute - attr=%d", attribute)
         return (
             False,
             f"Unsupported attribute: {attribute}",
@@ -262,7 +287,10 @@ def validate_attribute_value(
 
     # Check if attribute can be set at the current connection state
     if is_connected and attribute in before_only_attributes:
-        logger.debug('validate_attribute_value: Timing violation - attr=%d cannot be set after connection', attribute)
+        logger.debug(
+            "validate_attribute_value: Timing violation - attr=%d cannot be set after connection",
+            attribute,
+        )
         return (
             False,
             (
@@ -316,7 +344,11 @@ def validate_attribute_value(
         )
 
     # All basic validations passed
-    logger.debug('validate_attribute_value: Validation passed - attr=%d, value_type=%s', attribute, type(value).__name__)
+    logger.debug(
+        "validate_attribute_value: Validation passed - attr=%d, value_type=%s",
+        attribute,
+        type(value).__name__,
+    )
     return True, None, sanitized_attr, sanitized_val
 
 
@@ -337,14 +369,16 @@ except (AttributeError, KeyError, TypeError, ValueError):
 class Settings:
     """
     Settings class for mssql_python package configuration.
-    
+
     This class holds global settings that affect the behavior of the package,
     including lowercase column names, decimal separator.
     """
+
     def __init__(self) -> None:
         self.lowercase: bool = False
         # Use the pre-determined separator - no locale access here
         self.decimal_separator: str = _default_decimal_separator
+
 
 # Global settings instance
 _settings: Settings = Settings()
