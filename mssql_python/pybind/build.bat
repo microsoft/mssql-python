@@ -1,10 +1,30 @@
 @echo off
 setlocal enabledelayedexpansion
 
-REM Usage: build.bat [ARCH], If ARCH is not specified, it defaults to x64.
+REM Usage: build.bat [ARCH] [MODE], If ARCH is not specified, it defaults to x64.
+REM MODE can be 'profile' or '--profile' to enable profiling instrumentation
 set ARCH=%1
 if "%ARCH%"=="" set ARCH=x64
+
+REM Check for profiling mode
+set PROFILING_MODE=0
+if /i "%2"=="profile" set PROFILING_MODE=1
+if /i "%2"=="--profile" set PROFILING_MODE=1
+if /i "%1"=="profile" (
+    set PROFILING_MODE=1
+    set ARCH=x64
+)
+if /i "%1"=="--profile" (
+    set PROFILING_MODE=1
+    set ARCH=x64
+)
+
 echo [DIAGNOSTIC] Target Architecture set to: %ARCH%
+if %PROFILING_MODE%==1 (
+    echo [MODE] C++ Profiling: ENABLED
+) else (
+    echo [MODE] C++ Profiling: DISABLED
+)
 
 REM Clean up main build directory if it exists
 echo Checking for main build directory...
@@ -109,8 +129,13 @@ if errorlevel 1 (
 )
 
 REM Now invoke CMake with correct source path (options first, path last!)
-echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
-cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
+if %PROFILING_MODE%==1 (
+    echo [DIAGNOSTIC] Running CMake configure with profiling: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% -DCMAKE_CXX_FLAGS="/DENABLE_PROFILING" -DCMAKE_C_FLAGS="/DENABLE_PROFILING" "%SOURCE_DIR:~0,-1%"
+    cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% -DCMAKE_CXX_FLAGS="/DENABLE_PROFILING" -DCMAKE_C_FLAGS="/DENABLE_PROFILING" "%SOURCE_DIR:~0,-1%"
+) else (
+    echo [DIAGNOSTIC] Running CMake configure with: cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
+    cmake -A %PLATFORM_NAME% -DARCHITECTURE=%ARCH% "%SOURCE_DIR:~0,-1%"
+)
 echo [DIAGNOSTIC] CMake configure exit code: %errorlevel%
 if errorlevel 1 (
     echo [ERROR] CMake configuration failed
@@ -157,22 +182,6 @@ if exist "%OUTPUT_DIR%\%PYD_NAME%" (
         echo [WARNING] PDB file !PDB_NAME! not found in output directory.
     )
 
-    setlocal enabledelayedexpansion
-    for %%I in ("%SOURCE_DIR%..") do (
-        set PARENT_DIR=%%~fI
-    )
-    echo [DIAGNOSTIC] Parent is: !PARENT_DIR!
-
-    set VCREDIST_DLL_PATH=!PARENT_DIR!\libs\windows\!ARCH!\vcredist\msvcp140.dll
-    echo [DIAGNOSTIC] Looking for msvcp140.dll at "!VCREDIST_DLL_PATH!"
-
-    if exist "!VCREDIST_DLL_PATH!" (
-        copy /Y "!VCREDIST_DLL_PATH!" "%SOURCE_DIR%\.."
-        echo [SUCCESS] Copied msvcp140.dll from !VCREDIST_DLL_PATH! to "%SOURCE_DIR%\.."
-    ) else (
-        echo [ERROR] Could not find msvcp140.dll at "!VCREDIST_DLL_PATH!"
-        exit /b 1
-    )
 ) else (
     echo [ERROR] Could not find built .pyd file: %PYD_NAME%
     REM Exit with an error code here if the .pyd file is not found
