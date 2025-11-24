@@ -23,6 +23,7 @@ from mssql_python import (
     setDecimalSeparator,
 )
 
+
 def test_apilevel():
     # Check if apilevel has the expected value
     assert apilevel == "2.0", "apilevel should be '2.0'"
@@ -52,9 +53,7 @@ def test_decimal_separator():
     try:
         # Test setting a new value
         setDecimalSeparator(",")
-        assert (
-            getDecimalSeparator() == ","
-        ), "Decimal separator should be ',' after setting"
+        assert getDecimalSeparator() == ",", "Decimal separator should be ',' after setting"
 
         # Test invalid input
         with pytest.raises(ValueError):
@@ -69,9 +68,7 @@ def test_decimal_separator():
     finally:
         # Restore default value
         setDecimalSeparator(".")
-        assert (
-            getDecimalSeparator() == "."
-        ), "Decimal separator should be restored to '.'"
+        assert getDecimalSeparator() == ".", "Decimal separator should be restored to '.'"
 
 
 def test_lowercase_thread_safety_no_db():
@@ -149,9 +146,7 @@ def test_lowercase_concurrent_access_with_db(db_connection):
                 col_name = cursor.description[0][0]
 
                 if col_name not in ("COLUMN_NAME", "column_name"):
-                    errors.append(
-                        f"Invalid column name '{col_name}' found. Race condition likely."
-                    )
+                    errors.append(f"Invalid column name '{col_name}' found. Race condition likely.")
             except Exception as e:
                 errors.append(f"Reader thread error: {e}")
                 break
@@ -354,14 +349,10 @@ def test_decimal_separator_comprehensive_edge_cases():
             setDecimalSeparator("")
 
         # Test length validation - multiple characters (around line 80)
-        with pytest.raises(
-            ValueError, match="Decimal separator must be a single character"
-        ):
+        with pytest.raises(ValueError, match="Decimal separator must be a single character"):
             setDecimalSeparator("..")
 
-        with pytest.raises(
-            ValueError, match="Decimal separator must be a single character"
-        ):
+        with pytest.raises(ValueError, match="Decimal separator must be a single character"):
             setDecimalSeparator("abc")
 
         # Test whitespace validation (line 92) - THIS IS THE MAIN TARGET
@@ -415,9 +406,7 @@ def test_decimal_separator_with_db_operations(db_connection):
 
         # Test 1: Fetch with default separator
         cursor1 = db_connection.cursor()
-        cursor1.execute(
-            "SELECT decimal_value FROM #decimal_separator_test WHERE id = 1"
-        )
+        cursor1.execute("SELECT decimal_value FROM #decimal_separator_test WHERE id = 1")
         value1 = cursor1.fetchone()[0]
         assert isinstance(value1, decimal.Decimal)
         assert (
@@ -427,9 +416,7 @@ def test_decimal_separator_with_db_operations(db_connection):
         # Test 2: Change separator and fetch new data
         setDecimalSeparator(",")
         cursor2 = db_connection.cursor()
-        cursor2.execute(
-            "SELECT decimal_value FROM #decimal_separator_test WHERE id = 2"
-        )
+        cursor2.execute("SELECT decimal_value FROM #decimal_separator_test WHERE id = 2")
         value2 = cursor2.fetchone()[0]
         assert isinstance(value2, decimal.Decimal)
         assert (
@@ -508,12 +495,8 @@ def test_decimal_separator_batch_operations(db_connection):
         # Important: Verify Python Decimal objects always use "." internally
         # regardless of separator setting (pyodbc-compatible behavior)
         for row in results1:
-            assert isinstance(
-                row[1], decimal.Decimal
-            ), "Results should be Decimal objects"
-            assert isinstance(
-                row[2], decimal.Decimal
-            ), "Results should be Decimal objects"
+            assert isinstance(row[1], decimal.Decimal), "Results should be Decimal objects"
+            assert isinstance(row[2], decimal.Decimal), "Results should be Decimal objects"
             assert "." in str(row[1]), "Decimal string representation should use '.'"
             assert "." in str(row[2]), "Decimal string representation should use '.'"
 
@@ -534,9 +517,7 @@ def test_decimal_separator_batch_operations(db_connection):
 
         # Check if implementation supports separator changes
         # In some versions of pyodbc, changing separator might cause NULL values
-        has_nulls = any(
-            any(v is None for v in row) for row in results2 if row is not None
-        )
+        has_nulls = any(any(v is None for v in row) for row in results2 if row is not None)
 
         if has_nulls:
             print(
@@ -622,12 +603,8 @@ def test_decimal_separator_thread_safety():
 
     try:
         # Create multiple threads that change and read the separator
-        changer_threads = [
-            threading.Thread(target=change_separator_worker) for _ in range(3)
-        ]
-        reader_threads = [
-            threading.Thread(target=read_separator_worker) for _ in range(5)
-        ]
+        changer_threads = [threading.Thread(target=change_separator_worker) for _ in range(3)]
+        reader_threads = [threading.Thread(target=read_separator_worker) for _ in range(5)]
 
         # Start all threads
         for t in changer_threads + reader_threads:
@@ -761,9 +738,7 @@ def test_decimal_separator_concurrent_db_operations(db_connection):
         assert changes, "No separator changes were recorded"
         assert reads, "No separator reads were recorded"
 
-        print(
-            f"Successfully performed {len(changes)} separator changes and {len(reads)} reads"
-        )
+        print(f"Successfully performed {len(changes)} separator changes and {len(reads)} reads")
 
     finally:
         # Always make sure to clean up
