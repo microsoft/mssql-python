@@ -19,9 +19,9 @@ import pytest
 import time
 import threading
 import statistics
-import mssql_python
 from mssql_python import connect, pooling
 from mssql_python.pooling import PoolingManager
+import mssql_python
 
 
 @pytest.fixture(autouse=True)
