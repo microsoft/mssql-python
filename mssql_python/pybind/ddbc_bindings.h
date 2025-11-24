@@ -566,7 +566,7 @@ struct ColumnInfoExt {
 // Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp) - MUST be
 // outside namespace
 py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT col, SQLSMALLINT cType, bool isWideChar,
-                              bool isBinary);
+                              bool isBinary, const std::string& charEncoding = "utf-8");
 
 // Specialized column processors for each data type (eliminates switch in hot
 // loop)
@@ -826,7 +826,7 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
     } else {
         // Slow path: LOB data requires separate fetch call
         PyList_SET_ITEM(row, col - 1,
-                        FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true).release().ptr());
+                        FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true, "").release().ptr());
     }
 }
 
