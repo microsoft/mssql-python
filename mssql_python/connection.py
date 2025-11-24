@@ -59,7 +59,8 @@ UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16le", "utf-16be"])
 
 # Valid encoding characters (alphanumeric, dash, underscore only)
 import string
-VALID_ENCODING_CHARS: frozenset[str] = frozenset(string.ascii_letters + string.digits + '-_')
+
+VALID_ENCODING_CHARS: frozenset[str] = frozenset(string.ascii_letters + string.digits + "-_")
 
 
 def _validate_encoding(encoding: str) -> bool:
@@ -80,11 +81,11 @@ def _validate_encoding(encoding: str) -> bool:
     # First check for dangerous characters (security validation)
     if not all(c in VALID_ENCODING_CHARS for c in encoding):
         return False
-    
+
     # Check length limit (prevent DOS)
     if len(encoding) > 100:
         return False
-    
+
     # Then check if it's a valid Python codec
     try:
         codecs.lookup(encoding)
@@ -241,7 +242,7 @@ class Connection:
         # Initialize output converters dictionary and its lock for thread safety
         self._output_converters = {}
         self._converters_lock = threading.Lock()
-        
+
         # Initialize encoding/decoding settings lock for thread safety
         # This lock protects both _encoding_settings and _decoding_settings dictionaries
         # to prevent race conditions when multiple threads are reading/writing encoding settings
@@ -449,7 +450,7 @@ class Connection:
         # Normalize encoding to casefold for more robust Unicode handling
         encoding = encoding.casefold()
         logger.debug("setencoding: Encoding normalized to %s", encoding)
-        
+
         # Reject 'utf-16' with BOM for SQL_WCHAR (ambiguous byte order)
         if encoding == "utf-16" and ctype == ConstantsDDBC.SQL_WCHAR.value:
             logger.debug(
@@ -489,7 +490,7 @@ class Connection:
                     f"SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value})"
                 ),
             )
-        
+
         # Validate that SQL_WCHAR ctype only used with UTF-16 encodings (not utf-16 with BOM)
         if ctype == ConstantsDDBC.SQL_WCHAR.value:
             if encoding == "utf-16":
@@ -540,7 +541,7 @@ class Connection:
             settings = cnxn.getencoding()
             print(f"Current encoding: {settings['encoding']}")
             print(f"Current ctype: {settings['ctype']}")
-            
+
         Note:
             This method is thread-safe and can be called from multiple threads concurrently.
         """
@@ -638,7 +639,7 @@ class Connection:
 
         # Normalize encoding to lowercase for consistency
         encoding = encoding.lower()
-        
+
         # Reject 'utf-16' with BOM for SQL_WCHAR (ambiguous byte order)
         if sqltype == ConstantsDDBC.SQL_WCHAR.value and encoding == "utf-16":
             logger.debug(
@@ -667,7 +668,7 @@ class Connection:
                     f"SQL_WCHAR requires UTF-16 encodings (utf-16le, utf-16be)"
                 ),
             )
-        
+
         # SQL_WMETADATA can use any valid encoding (UTF-8, UTF-16, etc.)
         # No restriction needed here - let users configure as needed
 
@@ -693,7 +694,7 @@ class Connection:
                     f"SQL_WCHAR ({ConstantsDDBC.SQL_WCHAR.value})"
                 ),
             )
-        
+
         # Validate that SQL_WCHAR ctype only used with UTF-16 encodings (not utf-16 with BOM)
         if ctype == ConstantsDDBC.SQL_WCHAR.value:
             if encoding == "utf-16":
@@ -755,7 +756,7 @@ class Connection:
             settings = cnxn.getdecoding(mssql_python.SQL_CHAR)
             print(f"SQL_CHAR encoding: {settings['encoding']}")
             print(f"SQL_CHAR ctype: {settings['ctype']}")
-            
+
         Note:
             This method is thread-safe and can be called from multiple threads concurrently.
         """

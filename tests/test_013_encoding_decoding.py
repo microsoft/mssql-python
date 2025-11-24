@@ -1,7 +1,7 @@
 """
 Comprehensive Encoding/Decoding Test Suite
 
-This consolidated module provides complete testing for encoding/decoding functionality 
+This consolidated module provides complete testing for encoding/decoding functionality
 in mssql-python, ensuring pyodbc compatibility, thread safety, and connection pooling support.
 
 Total Tests: 131
@@ -80,7 +80,7 @@ Test Categories:
 IMPORTANT NOTES:
 ================
 1. SQL_CHAR encoding affects VARCHAR columns
-2. SQL_WCHAR encoding affects NVARCHAR columns  
+2. SQL_WCHAR encoding affects NVARCHAR columns
 3. These are independent - setting one doesn't affect the other
 4. SQL_WMETADATA affects column name decoding
 5. UTF-16 (LE/BE) is recommended for NVARCHAR but not strictly enforced
@@ -202,7 +202,7 @@ def test_setdecoding_invalid_combinations(db_connection):
     db_connection.setdecoding(SQL_WMETADATA, encoding="utf-8")
     settings = db_connection.getdecoding(SQL_WMETADATA)
     assert settings["encoding"] == "utf-8"
-    
+
     # Restore SQL_WMETADATA to default for subsequent tests
     db_connection.setdecoding(SQL_WMETADATA, encoding="utf-16le")
 
@@ -2361,7 +2361,7 @@ def test_encoding_decoding_sql_char_various_encodings(db_connection):
             if result["encoding"] in basic_encodings and result["success_rate"] > 0:
                 basic_passed = True
                 break
-        
+
         assert basic_passed, "At least one basic encoding (UTF-8, ASCII, Latin-1) should work"
         print("[OK] SQL_CHAR encoding variety test completed")
 
@@ -2375,7 +2375,7 @@ def test_encoding_decoding_sql_char_various_encodings(db_connection):
 
 def test_encoding_decoding_sql_char_with_unicode_fallback(db_connection):
     """Test VARCHAR (SQL_CHAR) vs NVARCHAR (SQL_WCHAR) with Unicode data.
-    
+
     Note: SQL_CHAR encoding affects VARCHAR columns, SQL_WCHAR encoding affects NVARCHAR columns.
     They are independent - setting SQL_CHAR encoding won't affect NVARCHAR data.
     """
@@ -2407,7 +2407,7 @@ def test_encoding_decoding_sql_char_with_unicode_fallback(db_connection):
         # - SQL_WCHAR encoding affects NVARCHAR columns
         db_connection.setencoding(encoding="utf-8", ctype=SQL_CHAR)  # For VARCHAR
         db_connection.setdecoding(SQL_CHAR, encoding="utf-8", ctype=SQL_CHAR)
-        
+
         # NVARCHAR always uses UTF-16LE (SQL_WCHAR)
         db_connection.setencoding(encoding="utf-16le", ctype=SQL_WCHAR)  # For NVARCHAR
         db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
@@ -2445,9 +2445,9 @@ def test_encoding_decoding_sql_char_with_unicode_fallback(db_connection):
                     # Use repr for safe display
                     varchar_display = repr(varchar_result)[:23]
                     nvarchar_display = repr(nvarchar_result)[:23]
-                    
+
                     print(f"  {test_name:<15} | {varchar_display:<25} | {nvarchar_display:<25}")
-                    
+
                     # NVARCHAR should always preserve Unicode correctly
                     assert nvarchar_result == unicode_text, f"NVARCHAR should preserve {test_name}"
 
@@ -3963,7 +3963,7 @@ def test_cpp_encoding_validation(db_connection):
 
 def test_cpp_error_mode_validation(db_connection):
     """Test C++ layer error mode validation (is_valid_error_mode function).
-    
+
     Note: The C++ code validates error modes in extract_encoding_settings.
     Valid modes: strict, ignore, replace, xmlcharrefreplace, backslashreplace.
     This is tested indirectly through encoding/decoding operations.
@@ -4076,7 +4076,7 @@ def test_encoding_large_data_sets(db_connection):
 
             assert len(result[0]) == size, f"Length mismatch: expected {size}, got {len(result[0])}"
             assert result[0] == large_string, "Data mismatch"
-            
+
             lob_marker = " (LOB)" if size > 8000 else ""
             print(f"  [OK] {size} characters successfully processed{lob_marker}")
 
@@ -4088,7 +4088,7 @@ def test_encoding_large_data_sets(db_connection):
 
 def test_executemany_with_encoding(db_connection):
     """Test encoding with executemany operations.
-    
+
     Note: When using VARCHAR (SQL_CHAR), the database's collation determines encoding.
     For SQL Server, use NVARCHAR for Unicode data or ensure database collation is UTF-8.
     """
@@ -4099,7 +4099,9 @@ def test_executemany_with_encoding(db_connection):
     cursor = db_connection.cursor()
     try:
         # Use NVARCHAR to properly handle Unicode data
-        cursor.execute("CREATE TABLE #test_executemany (id INT, name NVARCHAR(50), data NVARCHAR(100))")
+        cursor.execute(
+            "CREATE TABLE #test_executemany (id INT, name NVARCHAR(50), data NVARCHAR(100))"
+        )
 
         # Prepare batch data with Unicode characters
         batch_data = [
@@ -4116,15 +4118,16 @@ def test_executemany_with_encoding(db_connection):
 
         # Insert batch
         cursor.executemany(
-            "INSERT INTO #test_executemany (id, name, data) VALUES (?, ?, ?)",
-            batch_data
+            "INSERT INTO #test_executemany (id, name, data) VALUES (?, ?, ?)", batch_data
         )
 
         # Verify all rows
         cursor.execute("SELECT id, name, data FROM #test_executemany ORDER BY id")
         results = cursor.fetchall()
 
-        assert len(results) == len(batch_data), f"Expected {len(batch_data)} rows, got {len(results)}"
+        assert len(results) == len(
+            batch_data
+        ), f"Expected {len(batch_data)} rows, got {len(results)}"
 
         for i, (expected_id, expected_name, expected_data) in enumerate(batch_data):
             actual_id, actual_name, actual_data = results[i]
@@ -4417,7 +4420,7 @@ def test_sql_wmetadata_decoding_rules(db_connection):
     db_connection.setdecoding(SQL_WMETADATA, encoding="utf-8")
     settings = db_connection.getdecoding(SQL_WMETADATA)
     assert settings["encoding"] == "utf-8"
-    
+
     # Test with other encodings
     db_connection.setdecoding(SQL_WMETADATA, encoding="ascii")
     settings = db_connection.getdecoding(SQL_WMETADATA)
@@ -4621,10 +4624,10 @@ def test_setencoding_thread_safety(db_connection):
     """Test that setencoding is thread-safe and prevents race conditions."""
     import threading
     import time
-    
+
     errors = []
     results = {}
-    
+
     def set_encoding_worker(thread_id, encoding, ctype):
         """Worker function that sets encoding."""
         try:
@@ -4634,7 +4637,7 @@ def test_setencoding_thread_safety(db_connection):
             results[thread_id] = settings
         except Exception as e:
             errors.append((thread_id, str(e)))
-    
+
     # Create threads that set different encodings concurrently
     threads = []
     encodings = [
@@ -4643,22 +4646,22 @@ def test_setencoding_thread_safety(db_connection):
         (2, "utf-16le", mssql_python.SQL_WCHAR),
         (3, "utf-16be", mssql_python.SQL_WCHAR),
     ]
-    
+
     for thread_id, encoding, ctype in encodings:
         t = threading.Thread(target=set_encoding_worker, args=(thread_id, encoding, ctype))
         threads.append(t)
-    
+
     # Start all threads simultaneously
     for t in threads:
         t.start()
-    
+
     # Wait for all threads to complete
     for t in threads:
         t.join()
-    
+
     # Check for errors
     assert len(errors) == 0, f"Errors occurred in threads: {errors}"
-    
+
     # Verify that the last setting is consistent
     final_settings = db_connection.getencoding()
     assert final_settings["encoding"] in ["utf-16le", "utf-16be"]
@@ -4669,9 +4672,9 @@ def test_setdecoding_thread_safety(db_connection):
     """Test that setdecoding is thread-safe for different SQL types."""
     import threading
     import time
-    
+
     errors = []
-    
+
     def set_decoding_worker(thread_id, sqltype, encoding):
         """Worker function that sets decoding for a SQL type."""
         try:
@@ -4682,7 +4685,7 @@ def test_setdecoding_thread_safety(db_connection):
                 assert "encoding" in settings, f"Thread {thread_id}: Missing encoding in settings"
         except Exception as e:
             errors.append((thread_id, str(e)))
-    
+
     # Create threads that modify DIFFERENT SQL types (no conflicts)
     threads = []
     operations = [
@@ -4690,19 +4693,19 @@ def test_setdecoding_thread_safety(db_connection):
         (1, mssql_python.SQL_WCHAR, "utf-16le"),
         (2, mssql_python.SQL_WMETADATA, "utf-16be"),
     ]
-    
+
     for thread_id, sqltype, encoding in operations:
         t = threading.Thread(target=set_decoding_worker, args=(thread_id, sqltype, encoding))
         threads.append(t)
-    
+
     # Start all threads
     for t in threads:
         t.start()
-    
+
     # Wait for completion
     for t in threads:
         t.join()
-    
+
     # Check for errors
     assert len(errors) == 0, f"Errors occurred in threads: {errors}"
 
@@ -4710,14 +4713,14 @@ def test_setdecoding_thread_safety(db_connection):
 def test_getencoding_concurrent_reads(db_connection):
     """Test that getencoding can handle concurrent reads safely."""
     import threading
-    
+
     # Set initial encoding
     db_connection.setencoding(encoding="utf-16le", ctype=mssql_python.SQL_WCHAR)
-    
+
     errors = []
     read_count = [0]
     lock = threading.Lock()
-    
+
     def read_encoding_worker(thread_id):
         """Worker function that reads encoding repeatedly."""
         try:
@@ -4729,21 +4732,21 @@ def test_getencoding_concurrent_reads(db_connection):
                     read_count[0] += 1
         except Exception as e:
             errors.append((thread_id, str(e)))
-    
+
     # Create multiple reader threads
     threads = []
     for i in range(10):
         t = threading.Thread(target=read_encoding_worker, args=(i,))
         threads.append(t)
-    
+
     # Start all threads
     for t in threads:
         t.start()
-    
+
     # Wait for completion
     for t in threads:
         t.join()
-    
+
     # Check results
     assert len(errors) == 0, f"Errors occurred: {errors}"
     assert read_count[0] == 1000, f"Expected 1000 reads, got {read_count[0]}"
@@ -4752,11 +4755,11 @@ def test_getencoding_concurrent_reads(db_connection):
 def test_concurrent_encoding_decoding_operations(db_connection):
     """Test concurrent setencoding and setdecoding operations."""
     import threading
-    
+
     errors = []
     operation_count = [0]
     lock = threading.Lock()
-    
+
     def encoding_worker(thread_id):
         """Worker that modifies encoding."""
         try:
@@ -4769,7 +4772,7 @@ def test_concurrent_encoding_decoding_operations(db_connection):
                     operation_count[0] += 1
         except Exception as e:
             errors.append((thread_id, "encoding", str(e)))
-    
+
     def decoding_worker(thread_id, sqltype):
         """Worker that modifies decoding."""
         try:
@@ -4785,53 +4788,54 @@ def test_concurrent_encoding_decoding_operations(db_connection):
                     operation_count[0] += 1
         except Exception as e:
             errors.append((thread_id, "decoding", str(e)))
-    
+
     # Create mixed threads
     threads = []
-    
+
     # Encoding threads
     for i in range(3):
         t = threading.Thread(target=encoding_worker, args=(f"enc_{i}",))
         threads.append(t)
-    
+
     # Decoding threads for different SQL types
     for i in range(3):
-        t = threading.Thread(target=decoding_worker,
-                             args=(f"dec_char_{i}", mssql_python.SQL_CHAR))
+        t = threading.Thread(target=decoding_worker, args=(f"dec_char_{i}", mssql_python.SQL_CHAR))
         threads.append(t)
-    
+
     for i in range(3):
-        t = threading.Thread(target=decoding_worker,
-                             args=(f"dec_wchar_{i}", mssql_python.SQL_WCHAR))
+        t = threading.Thread(
+            target=decoding_worker, args=(f"dec_wchar_{i}", mssql_python.SQL_WCHAR)
+        )
         threads.append(t)
-    
+
     # Start all threads
     for t in threads:
         t.start()
-    
+
     # Wait for completion
     for t in threads:
         t.join()
-    
+
     # Check results
     assert len(errors) == 0, f"Errors occurred: {errors}"
     expected_ops = 9 * 20  # 9 threads × 20 operations each
-    assert operation_count[0] == expected_ops, \
-        f"Expected {expected_ops} operations, got {operation_count[0]}"
+    assert (
+        operation_count[0] == expected_ops
+    ), f"Expected {expected_ops} operations, got {operation_count[0]}"
 
 
 def test_multiple_cursors_concurrent_access(db_connection):
     """Test that multiple cursors can access encoding settings concurrently."""
     import threading
-    
+
     # Set initial encodings
     db_connection.setencoding(encoding="utf-16le", ctype=mssql_python.SQL_WCHAR)
     db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding="utf-16le")
-    
+
     errors = []
     query_count = [0]
     lock = threading.Lock()
-    
+
     def cursor_worker(thread_id):
         """Worker that creates cursor and executes queries."""
         try:
@@ -4849,21 +4853,21 @@ def test_multiple_cursors_concurrent_access(db_connection):
                 cursor.close()
         except Exception as e:
             errors.append((thread_id, str(e)))
-    
+
     # Create multiple threads with cursors
     threads = []
     for i in range(5):
         t = threading.Thread(target=cursor_worker, args=(i,))
         threads.append(t)
-    
+
     # Start all threads
     for t in threads:
         t.start()
-    
+
     # Wait for completion
     for t in threads:
         t.join()
-    
+
     # Check results
     assert len(errors) == 0, f"Errors occurred: {errors}"
     assert query_count[0] == 25, f"Expected 25 queries, got {query_count[0]}"
@@ -4873,9 +4877,9 @@ def test_encoding_modification_during_query(db_connection):
     """Test that encoding can be safely modified while queries are running."""
     import threading
     import time
-    
+
     errors = []
-    
+
     def query_worker(thread_id):
         """Worker that executes queries."""
         try:
@@ -4890,7 +4894,7 @@ def test_encoding_modification_during_query(db_connection):
                 cursor.close()
         except Exception as e:
             errors.append((thread_id, "query", str(e)))
-    
+
     def encoding_modifier(thread_id):
         """Worker that modifies encoding during queries."""
         try:
@@ -4901,27 +4905,27 @@ def test_encoding_modification_during_query(db_connection):
                 time.sleep(0.02)
         except Exception as e:
             errors.append((thread_id, "encoding", str(e)))
-    
+
     # Create threads
     threads = []
-    
+
     # Query threads
     for i in range(3):
         t = threading.Thread(target=query_worker, args=(f"query_{i}",))
         threads.append(t)
-    
+
     # Encoding modifier thread
     t = threading.Thread(target=encoding_modifier, args=("modifier",))
     threads.append(t)
-    
+
     # Start all threads
     for t in threads:
         t.start()
-    
+
     # Wait for completion
     for t in threads:
         t.join()
-    
+
     # Check results
     assert len(errors) == 0, f"Errors occurred: {errors}"
 
@@ -4929,58 +4933,55 @@ def test_encoding_modification_during_query(db_connection):
 def test_stress_rapid_encoding_changes(db_connection):
     """Stress test with rapid encoding changes from multiple threads."""
     import threading
-    
+
     errors = []
     change_count = [0]
     lock = threading.Lock()
-    
+
     def rapid_changer(thread_id):
         """Worker that rapidly changes encodings."""
         try:
             encodings = ["utf-16le", "utf-16be"]
             sqltypes = [mssql_python.SQL_WCHAR, mssql_python.SQL_WMETADATA]
-            
+
             for i in range(50):
                 # Alternate between setencoding and setdecoding
                 if i % 2 == 0:
                     db_connection.setencoding(
-                        encoding=encodings[i % 2],
-                        ctype=mssql_python.SQL_WCHAR
+                        encoding=encodings[i % 2], ctype=mssql_python.SQL_WCHAR
                     )
                 else:
-                    db_connection.setdecoding(
-                        sqltypes[i % 2],
-                        encoding=encodings[i % 2]
-                    )
-                
+                    db_connection.setdecoding(sqltypes[i % 2], encoding=encodings[i % 2])
+
                 # Verify settings
                 enc_settings = db_connection.getencoding()
                 assert enc_settings is not None
-                
+
                 with lock:
                     change_count[0] += 1
         except Exception as e:
             errors.append((thread_id, str(e)))
-    
+
     # Create many threads
     threads = []
     for i in range(10):
         t = threading.Thread(target=rapid_changer, args=(i,))
         threads.append(t)
-    
+
     import time
+
     start_time = time.time()
-    
+
     # Start all threads
     for t in threads:
         t.start()
-    
+
     # Wait for completion
     for t in threads:
         t.join()
-    
+
     elapsed_time = time.time() - start_time
-    
+
     # Check results
     assert len(errors) == 0, f"Errors occurred: {errors}"
     assert change_count[0] == 500, f"Expected 500 changes, got {change_count[0]}"
@@ -4991,26 +4992,26 @@ def test_encoding_isolation_between_connections(conn_str):
     # Create multiple connections
     conn1 = mssql_python.connect(conn_str)
     conn2 = mssql_python.connect(conn_str)
-    
+
     try:
         # Set different encodings on each connection
         conn1.setencoding(encoding="utf-16le", ctype=mssql_python.SQL_WCHAR)
         conn2.setencoding(encoding="utf-16be", ctype=mssql_python.SQL_WCHAR)
-        
+
         conn1.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8")
         conn2.setdecoding(mssql_python.SQL_CHAR, encoding="latin-1")
-        
+
         # Verify isolation
         enc1 = conn1.getencoding()
         enc2 = conn2.getencoding()
         assert enc1["encoding"] == "utf-16le"
         assert enc2["encoding"] == "utf-16be"
-        
+
         dec1 = conn1.getdecoding(mssql_python.SQL_CHAR)
         dec2 = conn2.getdecoding(mssql_python.SQL_CHAR)
         assert dec1["encoding"] == "utf-8"
         assert dec2["encoding"] == "latin-1"
-        
+
     finally:
         conn1.close()
         conn2.close()
@@ -5026,7 +5027,7 @@ def reset_pooling_state():
     """Reset pooling state before each test to ensure clean test isolation."""
     from mssql_python import pooling
     from mssql_python.pooling import PoolingManager
-    
+
     yield
     # Cleanup after each test
     try:
@@ -5039,40 +5040,40 @@ def reset_pooling_state():
 def test_pooled_connections_have_independent_encoding_settings(conn_str, reset_pooling_state):
     """Test that each pooled connection maintains independent encoding settings."""
     from mssql_python import pooling
-    
+
     # Enable pooling with multiple connections
     pooling(max_size=3, idle_timeout=30)
-    
+
     # Create three connections with different encoding settings
     conn1 = mssql_python.connect(conn_str)
     conn1.setencoding(encoding="utf-16le", ctype=mssql_python.SQL_WCHAR)
-    
+
     conn2 = mssql_python.connect(conn_str)
     conn2.setencoding(encoding="utf-16be", ctype=mssql_python.SQL_WCHAR)
-    
+
     conn3 = mssql_python.connect(conn_str)
     conn3.setencoding(encoding="utf-16le", ctype=mssql_python.SQL_WCHAR)
-    
+
     # Verify each connection has its own settings
     enc1 = conn1.getencoding()
     enc2 = conn2.getencoding()
     enc3 = conn3.getencoding()
-    
+
     assert enc1["encoding"] == "utf-16le"
     assert enc2["encoding"] == "utf-16be"
     assert enc3["encoding"] == "utf-16le"
-    
+
     # Modify one connection and verify others are unaffected
     conn1.setdecoding(mssql_python.SQL_CHAR, encoding="latin-1")
-    
+
     dec1 = conn1.getdecoding(mssql_python.SQL_CHAR)
     dec2 = conn2.getdecoding(mssql_python.SQL_CHAR)
     dec3 = conn3.getdecoding(mssql_python.SQL_CHAR)
-    
+
     assert dec1["encoding"] == "latin-1"
     assert dec2["encoding"] == "utf-8"
     assert dec3["encoding"] == "utf-8"
-    
+
     conn1.close()
     conn2.close()
     conn3.close()
@@ -5081,41 +5082,41 @@ def test_pooled_connections_have_independent_encoding_settings(conn_str, reset_p
 def test_encoding_settings_persist_across_pool_reuse(conn_str, reset_pooling_state):
     """Test that encoding settings behavior when connection is reused from pool."""
     from mssql_python import pooling
-    
+
     # Enable pooling with max_size=1 to force reuse
     pooling(max_size=1, idle_timeout=30)
-    
+
     # First connection: set custom encoding
     conn1 = mssql_python.connect(conn_str)
     cursor1 = conn1.cursor()
     cursor1.execute("SELECT @@SPID")
     spid1 = cursor1.fetchone()[0]
-    
+
     conn1.setencoding(encoding="utf-16le", ctype=mssql_python.SQL_WCHAR)
     conn1.setdecoding(mssql_python.SQL_CHAR, encoding="latin-1")
-    
+
     enc1 = conn1.getencoding()
     dec1 = conn1.getdecoding(mssql_python.SQL_CHAR)
-    
+
     assert enc1["encoding"] == "utf-16le"
     assert dec1["encoding"] == "latin-1"
-    
+
     conn1.close()
-    
+
     # Second connection: should get same SPID (pool reuse)
     conn2 = mssql_python.connect(conn_str)
     cursor2 = conn2.cursor()
     cursor2.execute("SELECT @@SPID")
     spid2 = cursor2.fetchone()[0]
-    
+
     # Should reuse same SPID (pool reuse)
     assert spid1 == spid2
-    
+
     # Check if settings persist or reset
     enc2 = conn2.getencoding()
     # Encoding may persist or reset depending on implementation
     assert enc2["encoding"] in ["utf-16le", "utf-8"]
-    
+
     conn2.close()
 
 
@@ -5123,42 +5124,39 @@ def test_concurrent_threads_with_pooled_connections(conn_str, reset_pooling_stat
     """Test that concurrent threads can safely use pooled connections."""
     from mssql_python import pooling
     import threading
-    
+
     # Enable pooling
     pooling(max_size=5, idle_timeout=30)
-    
+
     errors = []
     results = {}
     lock = threading.Lock()
-    
+
     def worker(thread_id, encoding):
         """Worker that gets connection, sets encoding, executes query."""
         try:
             conn = mssql_python.connect(conn_str)
-            
+
             # Set thread-specific encoding
             conn.setencoding(encoding=encoding, ctype=mssql_python.SQL_WCHAR)
             conn.setdecoding(mssql_python.SQL_WCHAR, encoding=encoding)
-            
+
             # Verify settings
             enc = conn.getencoding()
             assert enc["encoding"] == encoding
-            
+
             # Execute query with encoding
             cursor = conn.cursor()
             cursor.execute("SELECT CAST(N'Test' AS NVARCHAR(50)) AS data")
             result = cursor.fetchone()
-            
+
             with lock:
-                results[thread_id] = {
-                    "encoding": encoding,
-                    "result": result[0] if result else None
-                }
-            
+                results[thread_id] = {"encoding": encoding, "result": result[0] if result else None}
+
             conn.close()
         except Exception as e:
             errors.append((thread_id, str(e)))
-    
+
     # Create threads with different encodings
     threads = []
     encodings = {
@@ -5168,19 +5166,19 @@ def test_concurrent_threads_with_pooled_connections(conn_str, reset_pooling_stat
         3: "utf-16be",
         4: "utf-16le",
     }
-    
+
     for thread_id, encoding in encodings.items():
         t = threading.Thread(target=worker, args=(thread_id, encoding))
         threads.append(t)
-    
+
     # Start all threads
     for t in threads:
         t.start()
-    
+
     # Wait for completion
     for t in threads:
         t.join()
-    
+
     # Verify results
     assert len(errors) == 0, f"Errors occurred: {errors}"
     assert len(results) == 5
@@ -5190,10 +5188,10 @@ def test_connection_pool_with_threadpool_executor(conn_str, reset_pooling_state)
     """Test connection pooling with ThreadPoolExecutor for realistic concurrent workload."""
     from mssql_python import pooling
     import concurrent.futures
-    
+
     # Enable pooling
     pooling(max_size=10, idle_timeout=30)
-    
+
     def execute_query_with_encoding(task_id):
         """Execute a query with specific encoding."""
         conn = mssql_python.connect(conn_str)
@@ -5202,30 +5200,30 @@ def test_connection_pool_with_threadpool_executor(conn_str, reset_pooling_state)
             encoding = "utf-16le" if task_id % 2 == 0 else "utf-16be"
             conn.setencoding(encoding=encoding, ctype=mssql_python.SQL_WCHAR)
             conn.setdecoding(mssql_python.SQL_WCHAR, encoding=encoding)
-            
+
             # Execute query
             cursor = conn.cursor()
             cursor.execute("SELECT CAST(N'Result' AS NVARCHAR(50))")
             result = cursor.fetchone()
-            
+
             # Verify encoding is still correct
             enc = conn.getencoding()
             assert enc["encoding"] == encoding
-            
+
             return {
                 "task_id": task_id,
                 "encoding": encoding,
                 "result": result[0] if result else None,
-                "success": True
+                "success": True,
             }
         finally:
             conn.close()
-    
+
     # Use ThreadPoolExecutor with more workers than pool size
     with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
         futures = [executor.submit(execute_query_with_encoding, i) for i in range(50)]
         results = [f.result() for f in concurrent.futures.as_completed(futures)]
-    
+
     # Verify all results
     assert len(results) == 50
 
@@ -5233,29 +5231,29 @@ def test_connection_pool_with_threadpool_executor(conn_str, reset_pooling_state)
 def test_pooling_disabled_encoding_still_works(conn_str, reset_pooling_state):
     """Test that encoding/decoding works correctly when pooling is disabled."""
     from mssql_python import pooling
-    
+
     # Ensure pooling is disabled
     pooling(enabled=False)
-    
+
     # Create connection and set encoding
     conn = mssql_python.connect(conn_str)
     conn.setencoding(encoding="utf-16le", ctype=mssql_python.SQL_WCHAR)
     conn.setdecoding(mssql_python.SQL_WCHAR, encoding="utf-16le")
-    
+
     # Verify settings
     enc = conn.getencoding()
     dec = conn.getdecoding(mssql_python.SQL_WCHAR)
-    
+
     assert enc["encoding"] == "utf-16le"
     assert dec["encoding"] == "utf-16le"
-    
+
     # Execute query
     cursor = conn.cursor()
     cursor.execute("SELECT CAST(N'Test' AS NVARCHAR(50))")
     result = cursor.fetchone()
-    
+
     assert result[0] == "Test"
-    
+
     conn.close()
 
 

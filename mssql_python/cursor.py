@@ -20,7 +20,13 @@ from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error
 from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
-from mssql_python.exceptions import InterfaceError, NotSupportedError, ProgrammingError, OperationalError, DatabaseError
+from mssql_python.exceptions import (
+    InterfaceError,
+    NotSupportedError,
+    ProgrammingError,
+    OperationalError,
+    DatabaseError,
+)
 from mssql_python.row import Row
 from mssql_python import get_settings
 
@@ -292,23 +298,21 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Returns:
             dict: A dictionary with 'encoding' and 'ctype' keys, or default settings if not available
         """
-        if hasattr(self._connection, 'getencoding'):
+        if hasattr(self._connection, "getencoding"):
             try:
                 return self._connection.getencoding()
             except (OperationalError, DatabaseError) as db_error:
                 # Only catch database-related errors, not programming errors
                 from mssql_python.helpers import log
-                log('warning', f"Failed to get encoding settings from connection due to database error: {db_error}")
-                return {
-                    'encoding': 'utf-16le',
-                    'ctype': ddbc_sql_const.SQL_WCHAR.value
-                }
+
+                log(
+                    "warning",
+                    f"Failed to get encoding settings from connection due to database error: {db_error}",
+                )
+                return {"encoding": "utf-16le", "ctype": ddbc_sql_const.SQL_WCHAR.value}
 
         # Return default encoding settings if getencoding is not available
-        return {
-            'encoding': 'utf-16le',
-            'ctype': ddbc_sql_const.SQL_WCHAR.value
-        }
+        return {"encoding": "utf-16le", "ctype": ddbc_sql_const.SQL_WCHAR.value}
 
     def _get_decoding_settings(self, sql_type):
         """
@@ -326,11 +330,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         except (OperationalError, DatabaseError) as db_error:
             # Only handle expected database-related errors
             from mssql_python.helpers import log
-            log('warning', f"Failed to get decoding settings for SQL type {sql_type} due to database error: {db_error}")
+
+            log(
+                "warning",
+                f"Failed to get decoding settings for SQL type {sql_type} due to database error: {db_error}",
+            )
             if sql_type == ddbc_sql_const.SQL_WCHAR.value:
-                return {'encoding': 'utf-16le', 'ctype': ddbc_sql_const.SQL_WCHAR.value}
+                return {"encoding": "utf-16le", "ctype": ddbc_sql_const.SQL_WCHAR.value}
             else:
-                return {'encoding': 'utf-8', 'ctype': ddbc_sql_const.SQL_CHAR.value}
+                return {"encoding": "utf-8", "ctype": ddbc_sql_const.SQL_CHAR.value}
 
     def _map_sql_type(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements,too-many-branches
         self,
@@ -1252,7 +1260,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             parameters_type,
             self.is_stmt_prepared,
             use_prepare,
-            encoding_settings
+            encoding_settings,
         )
         # Check return code
         try:
@@ -2130,7 +2138,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         row_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data, char_decoding.get('encoding', 'utf-8'), wchar_decoding.get('encoding', 'utf-16le'))
+            ret = ddbc_bindings.DDBCSQLFetchOne(
+                self.hstmt,
+                row_data,
+                char_decoding.get("encoding", "utf-8"),
+                wchar_decoding.get("encoding", "utf-16le"),
+            )
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
@@ -2184,7 +2197,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         rows_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size, char_decoding.get('encoding', 'utf-8'), wchar_decoding.get('encoding', 'utf-16le'))
+            ret = ddbc_bindings.DDBCSQLFetchMany(
+                self.hstmt,
+                rows_data,
+                size,
+                char_decoding.get("encoding", "utf-8"),
+                wchar_decoding.get("encoding", "utf-16le"),
+            )
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
@@ -2230,7 +2249,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         rows_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data, char_decoding.get('encoding', 'utf-8'), wchar_decoding.get('encoding', 'utf-16le'))
+            ret = ddbc_bindings.DDBCSQLFetchAll(
+                self.hstmt,
+                rows_data,
+                char_decoding.get("encoding", "utf-8"),
+                wchar_decoding.get("encoding", "utf-16le"),
+            )
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
