@@ -1597,6 +1597,7 @@ def test_executemany_empty_parameter_list(cursor, db_connection):
         cursor.execute("DROP TABLE IF EXISTS #pytest_empty_params")
         db_connection.commit()
 
+
 def test_executemany_NONE_parameter_list(cursor, db_connection):
     """Test executemany with an NONE parameter list."""
     try:
@@ -1617,7 +1618,7 @@ def test_executemany_MIX_NONE_parameter_list(cursor, db_connection):
     """Test executemany with an NONE parameter list."""
     try:
         cursor.execute("CREATE TABLE #pytest_empty_params (val VARCHAR(50))")
-        data = [(None,), ('Test',),(None,)]
+        data = [(None,), ("Test",), (None,)]
         cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
         db_connection.commit()
 
