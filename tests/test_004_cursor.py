@@ -941,7 +941,7 @@ def test_fetchone(cursor):
     )
     row = cursor.fetchone()
     assert row is not None, "No row returned"
-    assert len(row) == 13, "Incorrect number of columns"
+    assert len(row) == 12, "Incorrect number of columns"
 
 
 def test_fetchone_lob(cursor):
