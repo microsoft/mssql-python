@@ -825,8 +825,9 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
         }
     } else {
         // Slow path: LOB data requires separate fetch call
-        PyList_SET_ITEM(row, col - 1,
-                        FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true, "").release().ptr());
+        PyList_SET_ITEM(
+            row, col - 1,
+            FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true, "").release().ptr());
     }
 }
 

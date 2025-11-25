@@ -315,20 +315,23 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 } else {
                     // Use Python's codec system to encode the string with specified encoding
                     std::string encodedStr;
-                    
+
                     if (py::isinstance<py::str>(param)) {
                         // Encode Unicode string using the specified encoding (like pyodbc does)
                         try {
                             py::object encoded = param.attr("encode")(charEncoding, "strict");
                             encodedStr = encoded.cast<std::string>();
-                            LOG("BindParameters: param[%d] SQL_C_CHAR - Encoded with '%s', size=%zu bytes",
+                            LOG("BindParameters: param[%d] SQL_C_CHAR - Encoded with '%s', "
+                                "size=%zu bytes",
                                 paramIndex, charEncoding.c_str(), encodedStr.size());
                         } catch (const py::error_already_set& e) {
-                            LOG_ERROR("BindParameters: param[%d] SQL_C_CHAR - Failed to encode with '%s': %s",
+                            LOG_ERROR("BindParameters: param[%d] SQL_C_CHAR - Failed to encode "
+                                      "with '%s': %s",
                                       paramIndex, charEncoding.c_str(), e.what());
-                            throw std::runtime_error(
-                                std::string("Failed to encode parameter ") + std::to_string(paramIndex) +
-                                " with encoding '" + charEncoding + "': " + e.what());
+                            throw std::runtime_error(std::string("Failed to encode parameter ") +
+                                                     std::to_string(paramIndex) +
+                                                     " with encoding '" + charEncoding +
+                                                     "': " + e.what());
                         }
                     } else {
                         // bytes/bytearray - use as-is (already encoded)
@@ -343,8 +346,9 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                         LOG("BindParameters: param[%d] SQL_C_CHAR - Using raw bytes, size=%zu",
                             paramIndex, encodedStr.size());
                     }
-                    
-                    std::string* strParam = AllocateParamBuffer<std::string>(paramBuffers, encodedStr);
+
+                    std::string* strParam =
+                        AllocateParamBuffer<std::string>(paramBuffers, encodedStr);
                     dataPtr = const_cast<void*>(static_cast<const void*>(strParam->c_str()));
                     bufferLength = strParam->size() + 1;
                     strLenOrIndPtr = AllocateParamBuffer<SQLLEN>(paramBuffers);
@@ -1660,7 +1664,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
         if (encodingSettings.contains("encoding")) {
             charEncoding = encodingSettings["encoding"].cast<std::string>();
         }
-        
+
         std::vector<std::shared_ptr<void>> paramBuffers;
         rc = BindParameters(hStmt, params, paramInfos, paramBuffers, charEncoding);
         if (!SQL_SUCCEEDED(rc)) {
@@ -1739,7 +1743,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                                       charEncoding.c_str(), e.what());
                             throw;
                         }
-                        
+
                         size_t totalBytes = encodedStr.size();
                         const char* dataPtr = encodedStr.data();
                         size_t offset = 0;
@@ -2458,13 +2462,13 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::wst
         }
     }
     LOG("SQLExecuteMany: Parameter analysis - hasDAE=%s", hasDAE ? "true" : "false");
-    
+
     // Extract char encoding from encodingSettings dictionary
     std::string charEncoding = "utf-8";  // default
     if (encodingSettings.contains("encoding")) {
         charEncoding = encodingSettings["encoding"].cast<std::string>();
     }
-    
+
     if (!hasDAE) {
         LOG("SQLExecuteMany: Using array binding (non-DAE) - calling "
             "BindParameterArray");
@@ -2682,8 +2686,7 @@ SQLRETURN SQLFetch_wrap(SqlHandlePtr StatementHandle) {
 
 // Non-static so it can be called from inline functions in header
 py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT cType,
-                              bool isWideChar, bool isBinary, 
-                              const std::string& charEncoding) {
+                              bool isWideChar, bool isBinary, const std::string& charEncoding) {
     std::vector<char> buffer;
     SQLRETURN ret = SQL_SUCCESS_WITH_INFO;
     int loopCount = 0;
@@ -2789,12 +2792,13 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
             buffer.size(), colIndex);
         return py::bytes(buffer.data(), buffer.size());
     }
-    
+
     // For SQL_C_CHAR data, decode using the specified encoding (like pyodbc does)
     try {
         py::bytes raw_bytes(buffer.data(), buffer.size());
         py::object decoded = raw_bytes.attr("decode")(charEncoding, "strict");
-        LOG("FetchLobColumnData: Decoded narrow string with '%s' - %zu bytes -> %zu chars for column %d",
+        LOG("FetchLobColumnData: Decoded narrow string with '%s' - %zu bytes -> %zu chars for "
+            "column %d",
             charEncoding.c_str(), buffer.size(), py::len(decoded), colIndex);
         return decoded;
     } catch (const py::error_already_set& e) {
@@ -2812,7 +2816,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
     // Note: wcharEncoding parameter is reserved for future use
     // Currently WCHAR data always uses UTF-16LE for Windows compatibility
     (void)wcharEncoding;  // Suppress unused parameter warning
-    
+
     LOG("SQLGetData: Getting data from %d columns for statement_handle=%p", colCount,
         (void*)StatementHandle->get());
     if (!SQLGetData_ptr) {
@@ -2853,7 +2857,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     LOG("SQLGetData: Streaming LOB for column %d (SQL_C_CHAR) "
                         "- columnSize=%lu",
                         i, (unsigned long)columnSize);
-                    row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false, charEncoding));
+                    row.append(
+                        FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false, charEncoding));
                 } else {
                     uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
                     std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
@@ -2866,25 +2871,24 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
                             if (numCharsInData < dataBuffer.size()) {
                                 // SQLGetData will null-terminate the data
-                                // Use Python's codec system to decode bytes with specified encoding (like pyodbc does)
+                                // Use Python's codec system to decode bytes with specified encoding
+                                // (like pyodbc does)
                                 try {
-                                    py::bytes raw_bytes(
-                                        reinterpret_cast<char*>(dataBuffer.data()), 
-                                        static_cast<size_t>(dataLen)
-                                    );
-                                    py::object decoded = raw_bytes.attr("decode")(charEncoding, "strict");
+                                    py::bytes raw_bytes(reinterpret_cast<char*>(dataBuffer.data()),
+                                                        static_cast<size_t>(dataLen));
+                                    py::object decoded =
+                                        raw_bytes.attr("decode")(charEncoding, "strict");
                                     row.append(decoded);
-                                    LOG("SQLGetData: CHAR column %d decoded with '%s', %zu bytes -> %zu chars",
-                                        i, charEncoding.c_str(), (size_t)dataLen, 
-                                        py::len(decoded));
+                                    LOG("SQLGetData: CHAR column %d decoded with '%s', %zu bytes "
+                                        "-> %zu chars",
+                                        i, charEncoding.c_str(), (size_t)dataLen, py::len(decoded));
                                 } catch (const py::error_already_set& e) {
-                                    LOG_ERROR("SQLGetData: Failed to decode CHAR column %d with '%s': %s",
-                                              i, charEncoding.c_str(), e.what());
+                                    LOG_ERROR(
+                                        "SQLGetData: Failed to decode CHAR column %d with '%s': %s",
+                                        i, charEncoding.c_str(), e.what());
                                     // Return raw bytes as fallback
-                                    py::bytes raw_bytes(
-                                        reinterpret_cast<char*>(dataBuffer.data()), 
-                                        static_cast<size_t>(dataLen)
-                                    );
+                                    py::bytes raw_bytes(reinterpret_cast<char*>(dataBuffer.data()),
+                                                        static_cast<size_t>(dataLen));
                                     row.append(raw_bytes);
                                 }
                             } else {
@@ -2892,7 +2896,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 LOG("SQLGetData: CHAR column %d data truncated "
                                     "(buffer_size=%zu), using streaming LOB",
                                     i, dataBuffer.size());
-                                row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false, charEncoding));
+                                row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false,
+                                                              charEncoding));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             LOG("SQLGetData: Column %d is NULL (CHAR)", i);
@@ -2962,7 +2967,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 LOG("SQLGetData: NVARCHAR column %d data "
                                     "truncated, using streaming LOB",
                                     i);
-                                row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, "utf-16le"));
+                                row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false,
+                                                              "utf-16le"));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             LOG("SQLGetData: Column %d is NULL (NVARCHAR)", i);
@@ -3224,7 +3230,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 row.append(py::bytes(
                                     reinterpret_cast<const char*>(dataBuffer.data()), dataLen));
                             } else {
-                                row.append(FetchLobColumnData(hStmt, i, SQL_C_BINARY, false, true, ""));
+                                row.append(
+                                    FetchLobColumnData(hStmt, i, SQL_C_BINARY, false, true, ""));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             row.append(py::none());
@@ -3936,7 +3943,7 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
 // the result set and populates the provided Python list with the row data. If
 // there are no more rows to fetch, it returns SQL_NO_DATA. If an error occurs
 // during fetching, it throws a runtime error.
-SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetchSize, 
+SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetchSize,
                          const std::string& charEncoding = "utf-8",
                          const std::string& wcharEncoding = "utf-16le") {
     SQLRETURN ret;
@@ -3979,8 +3986,8 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
                 return ret;
 
             py::list row;
-            SQLGetData_wrap(StatementHandle, numCols,
-                            row, charEncoding, wcharEncoding);  // <-- streams LOBs correctly
+            SQLGetData_wrap(StatementHandle, numCols, row, charEncoding,
+                            wcharEncoding);  // <-- streams LOBs correctly
             rows.append(row);
         }
         return SQL_SUCCESS;
@@ -4028,7 +4035,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 // populates the provided Python list with the row data. If there are no more
 // rows to fetch, it returns SQL_NO_DATA. If an error occurs during fetching, it
 // throws a runtime error.
-SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows, 
+SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
                         const std::string& charEncoding = "utf-8",
                         const std::string& wcharEncoding = "utf-16le") {
     SQLRETURN ret;
@@ -4111,8 +4118,8 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
                 return ret;
 
             py::list row;
-            SQLGetData_wrap(StatementHandle, numCols,
-                            row, charEncoding, wcharEncoding);  // <-- streams LOBs correctly
+            SQLGetData_wrap(StatementHandle, numCols, row, charEncoding,
+                            wcharEncoding);  // <-- streams LOBs correctly
             rows.append(row);
         }
         return SQL_SUCCESS;
@@ -4163,7 +4170,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 // result set and populates the provided Python list with the row data. If there
 // are no more rows to fetch, it returns SQL_NO_DATA. If an error occurs during
 // fetching, it throws a runtime error.
-SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row, 
+SQLRETURN FetchOne_wrap(SqlHandlePtr StatementHandle, py::list& row,
                         const std::string& charEncoding = "utf-8",
                         const std::string& wcharEncoding = "utf-16le") {
     SQLRETURN ret;
@@ -4308,9 +4315,8 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("close_pooling", []() { ConnectionPoolManager::getInstance().closePools(); });
     m.def("DDBCSQLExecDirect", &SQLExecDirect_wrap, "Execute a SQL query directly");
     m.def("DDBCSQLExecute", &SQLExecute_wrap, "Prepare and execute T-SQL statements",
-          py::arg("statementHandle"), py::arg("query"), py::arg("params"), 
-          py::arg("paramInfos"), py::arg("isStmtPrepared"), py::arg("usePrepare"),
-          py::arg("encodingSettings"));
+          py::arg("statementHandle"), py::arg("query"), py::arg("params"), py::arg("paramInfos"),
+          py::arg("isStmtPrepared"), py::arg("usePrepare"), py::arg("encodingSettings"));
     m.def("SQLExecuteMany", &SQLExecuteMany_wrap, "Execute statement with multiple parameter sets",
           py::arg("statementHandle"), py::arg("query"), py::arg("columnwise_params"),
           py::arg("paramInfos"), py::arg("paramSetSize"), py::arg("encodingSettings"));
@@ -4324,15 +4330,14 @@ PYBIND11_MODULE(ddbc_bindings, m) {
     m.def("DDBCSQLGetData", &SQLGetData_wrap, "Retrieve data from the result set");
     m.def("DDBCSQLMoreResults", &SQLMoreResults_wrap, "Check for more results in the result set");
     m.def("DDBCSQLFetchOne", &FetchOne_wrap, "Fetch one row from the result set",
-          py::arg("StatementHandle"), py::arg("row"), 
-          py::arg("charEncoding") = "utf-8", py::arg("wcharEncoding") = "utf-16le");
+          py::arg("StatementHandle"), py::arg("row"), py::arg("charEncoding") = "utf-8",
+          py::arg("wcharEncoding") = "utf-16le");
     m.def("DDBCSQLFetchMany", &FetchMany_wrap, py::arg("StatementHandle"), py::arg("rows"),
-          py::arg("fetchSize"), py::arg("charEncoding") = "utf-8", 
-          py::arg("wcharEncoding") = "utf-16le", 
-          "Fetch many rows from the result set");
+          py::arg("fetchSize"), py::arg("charEncoding") = "utf-8",
+          py::arg("wcharEncoding") = "utf-16le", "Fetch many rows from the result set");
     m.def("DDBCSQLFetchAll", &FetchAll_wrap, "Fetch all rows from the result set",
-          py::arg("StatementHandle"), py::arg("rows"), 
-          py::arg("charEncoding") = "utf-8", py::arg("wcharEncoding") = "utf-16le");
+          py::arg("StatementHandle"), py::arg("rows"), py::arg("charEncoding") = "utf-8",
+          py::arg("wcharEncoding") = "utf-16le");
     m.def("DDBCSQLFreeHandle", &SQLFreeHandle_wrap, "Free a handle");
     m.def("DDBCSQLCheckError", &SQLCheckError_Wrap, "Check for driver errors");
     m.def("DDBCSQLGetAllDiagRecords", &SQLGetAllDiagRecords,
