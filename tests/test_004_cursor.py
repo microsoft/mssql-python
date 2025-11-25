@@ -10668,7 +10668,9 @@ def test_procedures_result_set_info(cursor, db_connection):
         # Test execution of the procedures to verify they work
         cursor.execute("EXEC pytest_proc_schema.test_no_results")
         # Procedures with no results should have no description and calling fetchall() should raise an error
-        assert cursor.description is None, "test_no_results should have no description (no result set)"
+        assert (
+            cursor.description is None,
+        ), "test_no_results should have no description (no result set)"
         # Don't call fetchall() on procedures with no results - this is invalid in ODBC
 
         cursor.execute("EXEC pytest_proc_schema.test_one_result")
