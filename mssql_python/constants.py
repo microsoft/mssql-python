@@ -127,6 +127,7 @@ class ConstantsDDBC(Enum):
     SQL_ENSURE = 1
 
     # Connection Attribute Constants for set_attr()
+    SQL_ATTR_QUERY_TIMEOUT = 0
     SQL_ATTR_ACCESS_MODE = 101
     SQL_ATTR_AUTOCOMMIT = 102
     SQL_ATTR_CURSOR_TYPE = 6

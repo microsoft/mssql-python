@@ -4353,8 +4353,17 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           "Set the decimal separator character");
     m.def(
         "DDBCSQLSetStmtAttr",
-        [](SqlHandlePtr stmt, SQLINTEGER attr, SQLPOINTER value) {
-            return SQLSetStmtAttr_ptr(stmt->get(), attr, value, 0);
+        [](SqlHandlePtr stmt, SQLINTEGER attr, py::object value) {
+            SQLPOINTER ptr_value;
+            if (py::isinstance<py::int_>(value)) {
+                // For integer attributes like SQL_ATTR_QUERY_TIMEOUT
+                ptr_value =
+                    reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value.cast<int64_t>()));
+            } else {
+                // For pointer attributes
+                ptr_value = value.cast<SQLPOINTER>();
+            }
+            return SQLSetStmtAttr_ptr(stmt->get(), attr, ptr_value, 0);
         },
         "Set statement attributes");
     m.def("DDBCSQLGetTypeInfo", &SQLGetTypeInfo_Wrapper,
