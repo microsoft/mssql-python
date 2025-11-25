@@ -10,6 +10,7 @@ import importlib.util
 import sys
 import platform
 
+
 def normalize_architecture(platform_name_param, architecture_param):
     """
     Normalize architecture names for the given platform.
@@ -119,10 +120,8 @@ if not os.path.exists(module_path):
             f"with extension {extension}"
         )
     module_path = os.path.join(module_dir, module_files[0])
-    print(
-        f"Warning: Using fallback module file {module_files[0]} instead of "
-        f"{expected_module}"
-    )
+    print(f"Warning: Using fallback module file {module_files[0]} instead of " f"{expected_module}")
+
 
 # Use the original module name 'ddbc_bindings' that the C extension was compiled with
 module_name = "ddbc_bindings"

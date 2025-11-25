@@ -160,9 +160,7 @@ def test_pool_exhaustion_max_size_1(conn_str):
     assert results, "Second connection attempt did not complete"
     # If pool blocks, the thread may not finish until conn1 is closed, so allow both outcomes
     assert (
-        results[0] == "success"
-        or "pool" in results[0].lower()
-        or "timeout" in results[0].lower()
+        results[0] == "success" or "pool" in results[0].lower() or "timeout" in results[0].lower()
     ), f"Unexpected pool exhaustion result: {results[0]}"
 
 
@@ -259,9 +257,7 @@ def test_pool_removes_invalid_connections(conn_str):
     try:
         new_cursor.execute("SELECT 1")
         result = new_cursor.fetchone()
-        assert (
-            result is not None and result[0] == 1
-        ), "Pool did not remove invalid connection"
+        assert result is not None and result[0] == 1, "Pool did not remove invalid connection"
     finally:
         new_conn.close()
 
@@ -283,9 +279,7 @@ def test_pool_recovery_after_failed_connection(conn_str):
     cursor = conn.cursor()
     cursor.execute("SELECT 1")
     result = cursor.fetchone()
-    assert (
-        result is not None and result[0] == 1
-    ), "Pool did not recover after failed connection"
+    assert result is not None and result[0] == 1, "Pool did not recover after failed connection"
     conn.close()
 
 
@@ -341,9 +335,7 @@ def test_pooling_disable_without_closing_connection(conn_str):
 
     # Should complete quickly (within 2 seconds)
     assert elapsed < 2.0, f"pooling(enabled=False) took too long: {elapsed:.2f}s"
-    print(
-        f"pooling(enabled=False) with unclosed connection completed in {elapsed:.3f}s"
-    )
+    print(f"pooling(enabled=False) with unclosed connection completed in {elapsed:.3f}s")
 
 
 def test_multiple_pooling_disable_calls(conn_str):
@@ -363,9 +355,7 @@ def test_multiple_pooling_disable_calls(conn_str):
     elapsed = time.time() - start_time
 
     # Should complete quickly
-    assert (
-        elapsed < 2.0
-    ), f"Multiple pooling disable calls took too long: {elapsed:.2f}s"
+    assert elapsed < 2.0, f"Multiple pooling disable calls took too long: {elapsed:.2f}s"
     print(f"Multiple disable calls completed in {elapsed:.3f}s")
 
 
@@ -411,12 +401,8 @@ def test_pooling_enable_disable_cycle(conn_str):
         pooling(enabled=False)
         elapsed = time.time() - start_time
 
-        assert (
-            not PoolingManager.is_enabled()
-        ), f"Pooling not disabled in cycle {cycle + 1}"
-        assert (
-            elapsed < 2.0
-        ), f"Disable took too long in cycle {cycle + 1}: {elapsed:.2f}s"
+        assert not PoolingManager.is_enabled(), f"Pooling not disabled in cycle {cycle + 1}"
+        assert elapsed < 2.0, f"Disable took too long in cycle {cycle + 1}: {elapsed:.2f}s"
 
     print("All enable/disable cycles completed successfully")
 
@@ -443,8 +429,6 @@ def test_pooling_state_consistency(conn_str):
     # Disable pooling
     pooling(enabled=False)
     assert not PoolingManager.is_enabled(), "Should be disabled after disable call"
-    assert (
-        PoolingManager.is_initialized()
-    ), "Should remain initialized after disable call"
+    assert PoolingManager.is_initialized(), "Should remain initialized after disable call"
 
     print("Pooling state consistency verified")

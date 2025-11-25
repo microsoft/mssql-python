@@ -47,10 +47,7 @@ def test_raise_exception():
 def test_warning_exception():
     with pytest.raises(Warning) as excinfo:
         raise_exception("01000", "General warning")
-    assert (
-        str(excinfo.value)
-        == "Driver Error: General warning; DDBC Error: General warning"
-    )
+    assert str(excinfo.value) == "Driver Error: General warning; DDBC Error: General warning"
 
 
 def test_data_error_exception():
@@ -130,9 +127,7 @@ def test_table_not_found_error(cursor):
 
 def test_data_truncation_error(cursor, db_connection):
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_test_truncation (id INT, name NVARCHAR(5))"
-        )
+        cursor.execute("CREATE TABLE #pytest_test_truncation (id INT, name NVARCHAR(5))")
         cursor.execute(
             "INSERT INTO #pytest_test_truncation (id, name) VALUES (?, ?)",
             [1, "TooLongName"],
@@ -150,16 +145,10 @@ def test_data_truncation_error(cursor, db_connection):
 def test_unique_constraint_error(cursor, db_connection):
     try:
         drop_table_if_exists(cursor, "#pytest_test_unique")
-        cursor.execute(
-            "CREATE TABLE #pytest_test_unique (id INT PRIMARY KEY, name NVARCHAR(50))"
-        )
-        cursor.execute(
-            "INSERT INTO #pytest_test_unique (id, name) VALUES (?, ?)", [1, "Name1"]
-        )
+        cursor.execute("CREATE TABLE #pytest_test_unique (id INT PRIMARY KEY, name NVARCHAR(50))")
+        cursor.execute("INSERT INTO #pytest_test_unique (id, name) VALUES (?, ?)", [1, "Name1"])
         with pytest.raises(IntegrityError) as excinfo:
-            cursor.execute(
-                "INSERT INTO #pytest_test_unique (id, name) VALUES (?, ?)", [1, "Name2"]
-            )
+            cursor.execute("INSERT INTO #pytest_test_unique (id, name) VALUES (?, ?)", [1, "Name2"])
         assert "Integrity constraint violation" in str(excinfo.value)
     except Exception as e:
         pytest.fail(f"Test failed: {e}")

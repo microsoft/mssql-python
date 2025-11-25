@@ -10,11 +10,6 @@ pr: none
 
 # Parameters for release pipeline
 parameters:
-  - name: packageVersion
-    displayName: 'Package Version (e.g., 0.13.0)'
-    type: string
-    default: '0.13.0'
-
   - name: publishSymbols
     displayName: 'Publish Symbols to Symbol Servers'
     type: boolean
@@ -27,14 +22,6 @@ parameters:
 
 # Variables
 variables:
-  - name: PACKAGE_VERSION
-    value: '${{ parameters.packageVersion }}'
-    readonly: true
-  
-  - name: packageVersion
-    value: '${{ parameters.packageVersion }}'
-    readonly: true
-  
   # Common variables
   - template: /OneBranchPipelines/variables/common-variables.yml@self
   - template: /OneBranchPipelines/variables/onebranch-variables.yml@self
@@ -266,11 +253,10 @@ extends:
                     inputs:
                       targetType: 'inline'
                       script: |
-                        Write-Host "====================================="
+                        Write-Host "===================================="
                         Write-Host "ESRP Release Completed"
-                        Write-Host "====================================="
+                        Write-Host "===================================="
                         Write-Host "Package: mssql-python"
-                        Write-Host "Version: ${{ parameters.packageVersion }}"
                         Write-Host "Target: PyPI"
                         Write-Host "Owners: $(owner)"
                         Write-Host "Approvers: $(approver)"
@@ -290,11 +276,10 @@ extends:
                     inputs:
                       targetType: 'inline'
                       script: |
-                        Write-Host "====================================="
+                        Write-Host "===================================="
                         Write-Host "DRY RUN MODE - No Release Performed"
-                        Write-Host "====================================="
+                        Write-Host "===================================="
                         Write-Host "Package: mssql-python"
-                        Write-Host "Version: ${{ parameters.packageVersion }}"
                         Write-Host ""
                         Write-Host "Actions performed:"
                         Write-Host "- Downloaded wheels from build pipeline"

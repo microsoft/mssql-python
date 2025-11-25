@@ -19,7 +19,6 @@ import re
 from conftest import is_azure_sql_connection
 
 
-
 # Setup test table
 TEST_TABLE = """
 CREATE TABLE #pytest_all_data_types (
@@ -120,9 +119,7 @@ def test_empty_string_handling(cursor, db_connection):
     try:
         # Create test table
         drop_table_if_exists(cursor, "#pytest_empty_string")
-        cursor.execute(
-            "CREATE TABLE #pytest_empty_string (id INT, text_col NVARCHAR(100))"
-        )
+        cursor.execute("CREATE TABLE #pytest_empty_string (id INT, text_col NVARCHAR(100))")
         db_connection.commit()
 
         # Insert empty string
@@ -153,15 +150,11 @@ def test_empty_binary_handling(cursor, db_connection):
     try:
         # Create test table
         drop_table_if_exists(cursor, "#pytest_empty_binary")
-        cursor.execute(
-            "CREATE TABLE #pytest_empty_binary (id INT, binary_col VARBINARY(100))"
-        )
+        cursor.execute("CREATE TABLE #pytest_empty_binary (id INT, binary_col VARBINARY(100))")
         db_connection.commit()
 
         # Insert empty binary data
-        cursor.execute(
-            "INSERT INTO #pytest_empty_binary VALUES (1, 0x)"
-        )  # Empty binary literal
+        cursor.execute("INSERT INTO #pytest_empty_binary VALUES (1, 0x)")  # Empty binary literal
         db_connection.commit()
 
         # Fetch the empty binary - this would previously cause assertion failure
@@ -199,18 +192,14 @@ def test_mixed_empty_and_null_values(cursor, db_connection):
         cursor.execute(
             "INSERT INTO #pytest_empty_vs_null VALUES (1, '', 0x)"
         )  # Empty string and binary
-        cursor.execute(
-            "INSERT INTO #pytest_empty_vs_null VALUES (2, NULL, NULL)"
-        )  # NULL values
+        cursor.execute("INSERT INTO #pytest_empty_vs_null VALUES (2, NULL, NULL)")  # NULL values
         cursor.execute(
             "INSERT INTO #pytest_empty_vs_null VALUES (3, 'data', 0x1234)"
         )  # Non-empty values
         db_connection.commit()
 
         # Fetch all rows
-        cursor.execute(
-            "SELECT id, text_col, binary_col FROM #pytest_empty_vs_null ORDER BY id"
-        )
+        cursor.execute("SELECT id, text_col, binary_col FROM #pytest_empty_vs_null ORDER BY id")
         rows = cursor.fetchall()
 
         # Validate row 1: empty values
@@ -248,9 +237,7 @@ def test_empty_string_edge_cases(cursor, db_connection):
         db_connection.commit()
 
         # Verify all are empty strings
-        cursor.execute(
-            "SELECT id, data, LEN(data) as length FROM #pytest_empty_edge ORDER BY id"
-        )
+        cursor.execute("SELECT id, data, LEN(data) as length FROM #pytest_empty_edge ORDER BY id")
         rows = cursor.fetchall()
 
         for row in rows:
@@ -303,13 +290,9 @@ def test_insert_bit_column(cursor, db_connection):
 def test_insert_nvarchar_column(cursor, db_connection):
     """Test inserting data into the nvarchar_column"""
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_single_column (nvarchar_column NVARCHAR(255))"
-        )
+        cursor.execute("CREATE TABLE #pytest_single_column (nvarchar_column NVARCHAR(255))")
         db_connection.commit()
-        cursor.execute(
-            "INSERT INTO #pytest_single_column (nvarchar_column) VALUES (?)", ["test"]
-        )
+        cursor.execute("INSERT INTO #pytest_single_column (nvarchar_column) VALUES (?)", ["test"])
         db_connection.commit()
         cursor.execute("SELECT nvarchar_column FROM #pytest_single_column")
         row = cursor.fetchone()
@@ -369,9 +352,7 @@ def test_insert_datetime2_column(cursor, db_connection):
     """Test inserting data into the datetime2_column"""
     try:
         drop_table_if_exists(cursor, "#pytest_single_column")
-        cursor.execute(
-            "CREATE TABLE #pytest_single_column (datetime2_column DATETIME2)"
-        )
+        cursor.execute("CREATE TABLE #pytest_single_column (datetime2_column DATETIME2)")
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_single_column (datetime2_column) VALUES (?)",
@@ -394,9 +375,7 @@ def test_insert_smalldatetime_column(cursor, db_connection):
     """Test inserting data into the smalldatetime_column"""
     try:
         drop_table_if_exists(cursor, "#pytest_single_column")
-        cursor.execute(
-            "CREATE TABLE #pytest_single_column (smalldatetime_column SMALLDATETIME)"
-        )
+        cursor.execute("CREATE TABLE #pytest_single_column (smalldatetime_column SMALLDATETIME)")
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_single_column (smalldatetime_column) VALUES (?)",
@@ -442,9 +421,7 @@ def test_insert_real_column(cursor, db_connection):
         drop_table_if_exists(cursor, "#pytest_single_column")
         cursor.execute("CREATE TABLE #pytest_single_column (real_column REAL)")
         db_connection.commit()
-        cursor.execute(
-            "INSERT INTO #pytest_single_column (real_column) VALUES (?)", [1.23456789]
-        )
+        cursor.execute("INSERT INTO #pytest_single_column (real_column) VALUES (?)", [1.23456789])
         db_connection.commit()
         cursor.execute("SELECT real_column FROM #pytest_single_column")
         row = cursor.fetchone()
@@ -459,9 +436,7 @@ def test_insert_real_column(cursor, db_connection):
 def test_insert_decimal_column(cursor, db_connection):
     """Test inserting data into the decimal_column"""
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_single_column (decimal_column DECIMAL(10, 2))"
-        )
+        cursor.execute("CREATE TABLE #pytest_single_column (decimal_column DECIMAL(10, 2))")
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_single_column (decimal_column) VALUES (?)",
@@ -496,9 +471,7 @@ def test_insert_tinyint_column(cursor, db_connection):
     try:
         cursor.execute("CREATE TABLE #pytest_single_column (tinyint_column TINYINT)")
         db_connection.commit()
-        cursor.execute(
-            "INSERT INTO #pytest_single_column (tinyint_column) VALUES (?)", [127]
-        )
+        cursor.execute("INSERT INTO #pytest_single_column (tinyint_column) VALUES (?)", [127])
         db_connection.commit()
         cursor.execute("SELECT tinyint_column FROM #pytest_single_column")
         row = cursor.fetchone()
@@ -515,9 +488,7 @@ def test_insert_smallint_column(cursor, db_connection):
     try:
         cursor.execute("CREATE TABLE #pytest_single_column (smallint_column SMALLINT)")
         db_connection.commit()
-        cursor.execute(
-            "INSERT INTO #pytest_single_column (smallint_column) VALUES (?)", [32767]
-        )
+        cursor.execute("INSERT INTO #pytest_single_column (smallint_column) VALUES (?)", [32767])
         db_connection.commit()
         cursor.execute("SELECT smallint_column FROM #pytest_single_column")
         row = cursor.fetchone()
@@ -574,9 +545,7 @@ def test_insert_float_column(cursor, db_connection):
     try:
         cursor.execute("CREATE TABLE #pytest_single_column (float_column FLOAT)")
         db_connection.commit()
-        cursor.execute(
-            "INSERT INTO #pytest_single_column (float_column) VALUES (?)", [1.23456789]
-        )
+        cursor.execute("INSERT INTO #pytest_single_column (float_column) VALUES (?)", [1.23456789])
         db_connection.commit()
         cursor.execute("SELECT float_column FROM #pytest_single_column")
         row = cursor.fetchone()
@@ -618,13 +587,9 @@ def test_varchar_full_capacity(cursor, db_connection):
 def test_wvarchar_full_capacity(cursor, db_connection):
     """Test SQL_WVARCHAR"""
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_wvarchar_test (wvarchar_column NVARCHAR(6))"
-        )
+        cursor.execute("CREATE TABLE #pytest_wvarchar_test (wvarchar_column NVARCHAR(6))")
         db_connection.commit()
-        cursor.execute(
-            "INSERT INTO #pytest_wvarchar_test (wvarchar_column) VALUES (?)", ["123456"]
-        )
+        cursor.execute("INSERT INTO #pytest_wvarchar_test (wvarchar_column) VALUES (?)", ["123456"])
         db_connection.commit()
         # fetchone test
         cursor.execute("SELECT wvarchar_column FROM #pytest_wvarchar_test")
@@ -645,9 +610,7 @@ def test_wvarchar_full_capacity(cursor, db_connection):
 def test_varbinary_full_capacity(cursor, db_connection):
     """Test SQL_VARBINARY"""
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_varbinary_test (varbinary_column VARBINARY(8))"
-        )
+        cursor.execute("CREATE TABLE #pytest_varbinary_test (varbinary_column VARBINARY(8))")
         db_connection.commit()
         # Try inserting binary using both bytes & bytearray
         cursor.execute(
@@ -693,9 +656,7 @@ def test_varbinary_full_capacity(cursor, db_connection):
 def test_varbinary_max(cursor, db_connection):
     """Test SQL_VARBINARY with MAX length"""
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_varbinary_test (varbinary_column VARBINARY(MAX))"
-        )
+        cursor.execute("CREATE TABLE #pytest_varbinary_test (varbinary_column VARBINARY(MAX))")
         db_connection.commit()
         # TODO: Uncomment this execute after adding null binary support
         # cursor.execute("INSERT INTO #pytest_varbinary_test (varbinary_column) VALUES (?)", [None])
@@ -738,9 +699,7 @@ def test_varbinary_max(cursor, db_connection):
 def test_longvarchar(cursor, db_connection):
     """Test SQL_LONGVARCHAR"""
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_longvarchar_test (longvarchar_column TEXT)"
-        )
+        cursor.execute("CREATE TABLE #pytest_longvarchar_test (longvarchar_column TEXT)")
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_longvarchar_test (longvarchar_column) VALUES (?), (?)",
@@ -756,16 +715,12 @@ def test_longvarchar(cursor, db_connection):
         assert (
             cursor.fetchone() == None
         ), "longvarchar_column is expected to have only {} rows".format(expectedRows)
-        assert rows[0] == [
-            "ABCDEFGHI"
-        ], "SQL_LONGVARCHAR parsing failed for fetchone - row 0"
+        assert rows[0] == ["ABCDEFGHI"], "SQL_LONGVARCHAR parsing failed for fetchone - row 0"
         assert rows[1] == [None], "SQL_LONGVARCHAR parsing failed for fetchone - row 1"
         # fetchall test
         cursor.execute("SELECT longvarchar_column FROM #pytest_longvarchar_test")
         rows = cursor.fetchall()
-        assert rows[0] == [
-            "ABCDEFGHI"
-        ], "SQL_LONGVARCHAR parsing failed for fetchall - row 0"
+        assert rows[0] == ["ABCDEFGHI"], "SQL_LONGVARCHAR parsing failed for fetchall - row 0"
         assert rows[1] == [None], "SQL_LONGVARCHAR parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_LONGVARCHAR parsing test failed: {e}")
@@ -777,9 +732,7 @@ def test_longvarchar(cursor, db_connection):
 def test_longwvarchar(cursor, db_connection):
     """Test SQL_LONGWVARCHAR"""
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_longwvarchar_test (longwvarchar_column NTEXT)"
-        )
+        cursor.execute("CREATE TABLE #pytest_longwvarchar_test (longwvarchar_column NTEXT)")
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_longwvarchar_test (longwvarchar_column) VALUES (?), (?)",
@@ -795,16 +748,12 @@ def test_longwvarchar(cursor, db_connection):
         assert (
             cursor.fetchone() == None
         ), "longwvarchar_column is expected to have only {} rows".format(expectedRows)
-        assert rows[0] == [
-            "ABCDEFGHI"
-        ], "SQL_LONGWVARCHAR parsing failed for fetchone - row 0"
+        assert rows[0] == ["ABCDEFGHI"], "SQL_LONGWVARCHAR parsing failed for fetchone - row 0"
         assert rows[1] == [None], "SQL_LONGWVARCHAR parsing failed for fetchone - row 1"
         # fetchall test
         cursor.execute("SELECT longwvarchar_column FROM #pytest_longwvarchar_test")
         rows = cursor.fetchall()
-        assert rows[0] == [
-            "ABCDEFGHI"
-        ], "SQL_LONGWVARCHAR parsing failed for fetchall - row 0"
+        assert rows[0] == ["ABCDEFGHI"], "SQL_LONGWVARCHAR parsing failed for fetchall - row 0"
         assert rows[1] == [None], "SQL_LONGWVARCHAR parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_LONGWVARCHAR parsing test failed: {e}")
@@ -816,9 +765,7 @@ def test_longwvarchar(cursor, db_connection):
 def test_longvarbinary(cursor, db_connection):
     """Test SQL_LONGVARBINARY"""
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_longvarbinary_test (longvarbinary_column IMAGE)"
-        )
+        cursor.execute("CREATE TABLE #pytest_longvarbinary_test (longvarbinary_column IMAGE)")
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_longvarbinary_test (longvarbinary_column) VALUES (?), (?)",
@@ -944,9 +891,7 @@ def test_rowcount(cursor, db_connection):
             ('JohnDoe6');
         """
         )
-        assert (
-            cursor.rowcount == 3
-        ), "Rowcount should be 3 after inserting multiple rows"
+        assert cursor.rowcount == 3, "Rowcount should be 3 after inserting multiple rows"
 
         cursor.execute("SELECT * FROM #pytest_test_rowcount;")
         assert cursor.rowcount == -1, "Rowcount should be -1 after a SELECT statement"
@@ -1155,9 +1100,7 @@ def test_executemany_empty_strings_various_types(cursor, db_connection):
         ]
 
         # Execute the batch insert
-        cursor.executemany(
-            "INSERT INTO #pytest_string_types VALUES (?, ?, ?, ?, ?)", test_data
-        )
+        cursor.executemany("INSERT INTO #pytest_string_types VALUES (?, ?, ?, ?, ?)", test_data)
         db_connection.commit()
 
         # Verify the data was inserted correctly
@@ -1281,9 +1224,7 @@ def test_executemany_large_batch_with_empty_strings(cursor, db_connection):
         ]
 
         for actual, expected in zip(results, expected_subset):
-            assert (
-                actual[0] == expected[0]
-            ), f"ID mismatch: expected {expected[0]}, got {actual[0]}"
+            assert actual[0] == expected[0], f"ID mismatch: expected {expected[0]}, got {actual[0]}"
             assert (
                 actual[1] == expected[1]
             ), f"Data mismatch for ID {actual[0]}: expected '{expected[1]}', got '{actual[1]}'"
@@ -1340,9 +1281,7 @@ def test_executemany_compare_with_execute(cursor, db_connection):
             executemany_results
         ), "Row count mismatch between execute and executemany"
 
-        for i, (exec_row, batch_row) in enumerate(
-            zip(execute_results, executemany_results)
-        ):
+        for i, (exec_row, batch_row) in enumerate(zip(execute_results, executemany_results)):
             assert (
                 exec_row[0] == batch_row[0]
             ), f"Row {i}: ID mismatch between execute and executemany"
@@ -1396,15 +1335,11 @@ def test_executemany_edge_cases_empty_strings(cursor, db_connection):
         db_connection.commit()
 
         # Verify the data was inserted correctly
-        cursor.execute(
-            "SELECT id, varchar_data, nvarchar_data FROM #pytest_edge_cases ORDER BY id"
-        )
+        cursor.execute("SELECT id, varchar_data, nvarchar_data FROM #pytest_edge_cases ORDER BY id")
         results = cursor.fetchall()
 
         # Check that we got the right number of rows
-        assert len(results) == len(
-            test_data
-        ), f"Expected {len(test_data)} rows, got {len(results)}"
+        assert len(results) == len(test_data), f"Expected {len(test_data)} rows, got {len(results)}"
 
         # Check each row
         for i, (actual, expected_row) in enumerate(zip(results, test_data)):
@@ -1698,7 +1633,7 @@ def test_executemany_Decimal_list(cursor, db_connection):
     """Test executemany with an decimal parameter list."""
     try:
         cursor.execute("CREATE TABLE #pytest_empty_params (val DECIMAL(30, 20))")
-        data = [(decimal.Decimal('35.1128407822'),), (decimal.Decimal('40000.5640564065406'),)]
+        data = [(decimal.Decimal("35.1128407822"),), (decimal.Decimal("40000.5640564065406"),)]
         cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
         db_connection.commit()
 
@@ -1714,11 +1649,16 @@ def test_executemany_DecimalString_list(cursor, db_connection):
     """Test executemany with an string of decimal parameter list."""
     try:
         cursor.execute("CREATE TABLE #pytest_empty_params (val DECIMAL(30, 20))")
-        data = [(str(decimal.Decimal('35.1128407822')),), (str(decimal.Decimal('40000.5640564065406')),)]
+        data = [
+            (str(decimal.Decimal("35.1128407822")),),
+            (str(decimal.Decimal("40000.5640564065406")),),
+        ]
         cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
         db_connection.commit()
 
-        cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params where val IN (35.1128407822,40000.5640564065406)")
+        cursor.execute(
+            "SELECT COUNT(*) FROM #pytest_empty_params where val IN (35.1128407822,40000.5640564065406)"
+        )
         count = cursor.fetchone()[0]
         assert count == 2
     finally:
@@ -1730,7 +1670,7 @@ def test_executemany_DecimalPrecision_list(cursor, db_connection):
     """Test executemany with an decimal Precision parameter list."""
     try:
         cursor.execute("CREATE TABLE #pytest_empty_params (val DECIMAL(30, 20))")
-        data = [(decimal.Decimal('35112'),), (decimal.Decimal('35.112'),)]
+        data = [(decimal.Decimal("35112"),), (decimal.Decimal("35.112"),)]
         cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
         db_connection.commit()
 
@@ -1746,7 +1686,7 @@ def test_executemany_Decimal_Batch_List(cursor, db_connection):
     """Test executemany with an decimal Batch parameter list."""
     try:
         cursor.execute("CREATE TABLE #pytest_empty_params (val DECIMAL(10, 4))")
-        data = [(decimal.Decimal('1.2345'),), (decimal.Decimal('9999.0000'),)]
+        data = [(decimal.Decimal("1.2345"),), (decimal.Decimal("9999.0000"),)]
         cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
         db_connection.commit()
 
@@ -1764,11 +1704,11 @@ def test_executemany_DecimalMix_List(cursor, db_connection):
         cursor.execute("CREATE TABLE #pytest_empty_params (val DECIMAL(30, 20))")
         # Test with mixed precision and scale requirements
         data = [
-            (decimal.Decimal('1.2345'),),           # 5 digits, 4 decimal places
-            (decimal.Decimal('999999.12'),),        # 8 digits, 2 decimal places  
-            (decimal.Decimal('0.000123456789'),),   # 12 digits, 12 decimal places
-            (decimal.Decimal('1234567890'),),       # 10 digits, 0 decimal places
-            (decimal.Decimal('99.999999999'),)      # 11 digits, 9 decimal places
+            (decimal.Decimal("1.2345"),),  # 5 digits, 4 decimal places
+            (decimal.Decimal("999999.12"),),  # 8 digits, 2 decimal places
+            (decimal.Decimal("0.000123456789"),),  # 12 digits, 12 decimal places
+            (decimal.Decimal("1234567890"),),  # 10 digits, 0 decimal places
+            (decimal.Decimal("99.999999999"),),  # 11 digits, 9 decimal places
         ]
         cursor.executemany("INSERT INTO #pytest_empty_params VALUES (?)", data)
         db_connection.commit()
@@ -1908,9 +1848,7 @@ def test_join_operations_with_parameters(cursor):
         """
         cursor.execute(query, employee_ids)
         rows = cursor.fetchall()
-        assert (
-            len(rows) == 2
-        ), "Join operation with parameters returned incorrect number of rows"
+        assert len(rows) == 2, "Join operation with parameters returned incorrect number of rows"
         assert rows[0] == [
             "Alice",
             "HR",
@@ -1953,9 +1891,7 @@ def test_execute_stored_procedure_with_parameters(cursor):
     try:
         cursor.execute("{CALL dbo.GetEmployeeProjects(?)}", [1])
         rows = cursor.fetchall()
-        assert (
-            len(rows) == 1
-        ), "Stored procedure with parameters returned incorrect number of rows"
+        assert len(rows) == 1, "Stored procedure with parameters returned incorrect number of rows"
         assert rows[0] == [
             "Alice",
             "Project A",
@@ -2030,9 +1966,7 @@ def test_parse_datetime(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT datetime_column FROM #pytest_datetime_test")
         row = cursor.fetchone()
-        assert row[0] == datetime(
-            2024, 5, 20, 12, 34, 56, 123000
-        ), "Datetime parsing failed"
+        assert row[0] == datetime(2024, 5, 20, 12, 34, 56, 123000), "Datetime parsing failed"
     except Exception as e:
         pytest.fail(f"Datetime parsing test failed: {e}")
     finally:
@@ -2045,9 +1979,7 @@ def test_parse_date(cursor, db_connection):
     try:
         cursor.execute("CREATE TABLE #pytest_date_test (date_column DATE)")
         db_connection.commit()
-        cursor.execute(
-            "INSERT INTO #pytest_date_test (date_column) VALUES (?)", ["2024-05-20"]
-        )
+        cursor.execute("INSERT INTO #pytest_date_test (date_column) VALUES (?)", ["2024-05-20"])
         db_connection.commit()
         cursor.execute("SELECT date_column FROM #pytest_date_test")
         row = cursor.fetchone()
@@ -2064,9 +1996,7 @@ def test_parse_time(cursor, db_connection):
     try:
         cursor.execute("CREATE TABLE #pytest_time_test (time_column TIME)")
         db_connection.commit()
-        cursor.execute(
-            "INSERT INTO #pytest_time_test (time_column) VALUES (?)", ["12:34:56"]
-        )
+        cursor.execute("INSERT INTO #pytest_time_test (time_column) VALUES (?)", ["12:34:56"])
         db_connection.commit()
         cursor.execute("SELECT time_column FROM #pytest_time_test")
         row = cursor.fetchone()
@@ -2103,9 +2033,7 @@ def test_parse_smalldatetime(cursor, db_connection):
 def test_parse_datetime2(cursor, db_connection):
     """Test _parse_datetime2"""
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_datetime2_test (datetime2_column DATETIME2)"
-        )
+        cursor.execute("CREATE TABLE #pytest_datetime2_test (datetime2_column DATETIME2)")
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_datetime2_test (datetime2_column) VALUES (?)",
@@ -2114,9 +2042,7 @@ def test_parse_datetime2(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT datetime2_column FROM #pytest_datetime2_test")
         row = cursor.fetchone()
-        assert row[0] == datetime(
-            2024, 5, 20, 12, 34, 56, 123456
-        ), "Datetime2 parsing failed"
+        assert row[0] == datetime(2024, 5, 20, 12, 34, 56, 123456), "Datetime2 parsing failed"
     except Exception as e:
         pytest.fail(f"Datetime2 parsing test failed: {e}")
     finally:
@@ -2146,9 +2072,7 @@ def test_boolean(cursor, db_connection):
     try:
         cursor.execute("CREATE TABLE #pytest_boolean_test (boolean_column BIT)")
         db_connection.commit()
-        cursor.execute(
-            "INSERT INTO #pytest_boolean_test (boolean_column) VALUES (?)", [True]
-        )
+        cursor.execute("INSERT INTO #pytest_boolean_test (boolean_column) VALUES (?)", [True])
         db_connection.commit()
         cursor.execute("SELECT boolean_column FROM #pytest_boolean_test")
         row = cursor.fetchone()
@@ -2163,9 +2087,7 @@ def test_boolean(cursor, db_connection):
 def test_sql_wvarchar(cursor, db_connection):
     """Test SQL_WVARCHAR"""
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_wvarchar_test (wvarchar_column NVARCHAR(255))"
-        )
+        cursor.execute("CREATE TABLE #pytest_wvarchar_test (wvarchar_column NVARCHAR(255))")
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_wvarchar_test (wvarchar_column) VALUES (?)",
@@ -2185,9 +2107,7 @@ def test_sql_wvarchar(cursor, db_connection):
 def test_sql_varchar(cursor, db_connection):
     """Test SQL_VARCHAR"""
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_varchar_test (varchar_column VARCHAR(255))"
-        )
+        cursor.execute("CREATE TABLE #pytest_varchar_test (varchar_column VARCHAR(255))")
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_varchar_test (varchar_column) VALUES (?)",
@@ -2241,15 +2161,9 @@ def test_row_attribute_access(cursor, db_connection):
 
         # Compare attribute access with index access
         assert row.id == row[0], "Attribute access for 'id' doesn't match index access"
-        assert (
-            row.name == row[1]
-        ), "Attribute access for 'name' doesn't match index access"
-        assert (
-            row.email == row[2]
-        ), "Attribute access for 'email' doesn't match index access"
-        assert (
-            row.age == row[3]
-        ), "Attribute access for 'age' doesn't match index access"
+        assert row.name == row[1], "Attribute access for 'name' doesn't match index access"
+        assert row.email == row[2], "Attribute access for 'email' doesn't match index access"
+        assert row.age == row[3], "Attribute access for 'age' doesn't match index access"
 
         # Test attribute that doesn't exist
         with pytest.raises(AttributeError):
@@ -2272,9 +2186,7 @@ def test_row_comparison_with_list(cursor, db_connection):
         db_connection.commit()
 
         # Insert test data
-        cursor.execute(
-            "INSERT INTO #pytest_row_comparison_test VALUES (10, 'test_string', 3.14)"
-        )
+        cursor.execute("INSERT INTO #pytest_row_comparison_test VALUES (10, 'test_string', 3.14)")
         db_connection.commit()
 
         # Test fetchone comparison with list
@@ -2295,9 +2207,7 @@ def test_row_comparison_with_list(cursor, db_connection):
         assert row1 == row2, "Identical rows should be equal"
 
         # Insert different data
-        cursor.execute(
-            "INSERT INTO #pytest_row_comparison_test VALUES (20, 'other_string', 2.71)"
-        )
+        cursor.execute("INSERT INTO #pytest_row_comparison_test VALUES (20, 'other_string', 2.71)")
         db_connection.commit()
 
         # Test different rows are not equal
@@ -2357,15 +2267,11 @@ def test_row_string_representation(cursor, db_connection):
 
         # Test str()
         str_representation = str(row)
-        assert (
-            str_representation == "(1, 'test', None)"
-        ), "Row str() representation incorrect"
+        assert str_representation == "(1, 'test', None)", "Row str() representation incorrect"
 
         # Test repr()
         repr_representation = repr(row)
-        assert (
-            repr_representation == "(1, 'test', None)"
-        ), "Row repr() representation incorrect"
+        assert repr_representation == "(1, 'test', None)", "Row repr() representation incorrect"
 
     except Exception as e:
         pytest.fail(f"Row string representation test failed: {e}")
@@ -2408,12 +2314,8 @@ def test_row_column_mapping(cursor, db_connection):
         # Test column map completeness
         assert len(row._column_map) >= 3, "Column map size incorrect"
         assert "FirstColumn" in row._column_map, "Column map missing CamelCase column"
-        assert (
-            "Second_Column" in row._column_map
-        ), "Column map missing snake_case column"
-        assert (
-            "Complex Name!" in row._column_map
-        ), "Column map missing complex name column"
+        assert "Second_Column" in row._column_map, "Column map missing snake_case column"
+        assert "Complex Name!" in row._column_map, "Column map missing complex name column"
 
     except Exception as e:
         pytest.fail(f"Row column mapping test failed: {e}")
@@ -2437,12 +2339,8 @@ def test_lowercase_setting_after_cursor_creation(cursor, db_connection):
 
         # The existing cursor should still use the original casing
         column_names = [desc[0] for desc in cursor.description]
-        assert (
-            "UserName" in column_names
-        ), "Column casing should not change after cursor creation"
-        assert (
-            "username" not in column_names
-        ), "Lowercase should not apply to existing cursor"
+        assert "UserName" in column_names, "Column casing should not change after cursor creation"
+        assert "username" not in column_names, "Lowercase should not apply to existing cursor"
 
     finally:
         mssql_python.lowercase = original_lowercase
@@ -2453,9 +2351,7 @@ def test_lowercase_setting_after_cursor_creation(cursor, db_connection):
             pass  # Suppress cleanup errors
 
 
-@pytest.mark.skip(
-    reason="Future work: relevant if per-cursor lowercase settings are implemented."
-)
+@pytest.mark.skip(reason="Future work: relevant if per-cursor lowercase settings are implemented.")
 def test_concurrent_cursors_different_lowercase_settings():
     """Test behavior when multiple cursors exist with different lowercase settings"""
     # This test is a placeholder for when per-cursor settings might be supported.
@@ -2490,9 +2386,7 @@ def test_cursor_context_manager_autocommit_true(db_connection):
 
         # Test cursor context manager closes cursor
         with db_connection.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO #test_autocommit (id, value) VALUES (1, 'test')"
-            )
+            cursor.execute("INSERT INTO #test_autocommit (id, value) VALUES (1, 'test')")
 
         # Cursor should be closed
         assert cursor.closed, "Cursor should be closed after context exit"
@@ -2537,9 +2431,7 @@ def test_cursor_context_manager_no_auto_commit(db_connection):
         cursor.close()
 
         with db_connection.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO #test_no_autocommit (id, value) VALUES (1, 'test')"
-            )
+            cursor.execute("INSERT INTO #test_no_autocommit (id, value) VALUES (1, 'test')")
             # Note: No explicit commit() call here
 
         # After context exit, check what actually happened
@@ -2574,9 +2466,7 @@ def test_cursor_context_manager_exception_handling(db_connection):
         # Create test table first
         cursor = db_connection.cursor()
         cursor.execute("CREATE TABLE #test_exception (id INT, value NVARCHAR(50))")
-        cursor.execute(
-            "INSERT INTO #test_exception (id, value) VALUES (1, 'before_exception')"
-        )
+        cursor.execute("INSERT INTO #test_exception (id, value) VALUES (1, 'before_exception')")
         db_connection.commit()
         cursor.close()
 
@@ -2585,9 +2475,7 @@ def test_cursor_context_manager_exception_handling(db_connection):
         with pytest.raises(ValueError):
             with db_connection.cursor() as cursor:
                 cursor_ref = cursor
-                cursor.execute(
-                    "INSERT INTO #test_exception (id, value) VALUES (2, 'in_context')"
-                )
+                cursor.execute("INSERT INTO #test_exception (id, value) VALUES (2, 'in_context')")
                 # This should cause an exception
                 raise ValueError("Test exception")
 
@@ -2624,9 +2512,7 @@ def test_cursor_context_manager_transaction_behavior(db_connection):
 
         # Test 1: Insert in context manager without explicit commit
         with db_connection.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO #test_tx_behavior (id, value) VALUES (1, 'test1')"
-            )
+            cursor.execute("INSERT INTO #test_tx_behavior (id, value) VALUES (1, 'test1')")
             # No commit here
 
         # Check if data was committed automatically
@@ -2636,9 +2522,7 @@ def test_cursor_context_manager_transaction_behavior(db_connection):
 
         # Test 2: Insert and then rollback
         with db_connection.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO #test_tx_behavior (id, value) VALUES (2, 'test2')"
-            )
+            cursor.execute("INSERT INTO #test_tx_behavior (id, value) VALUES (2, 'test2')")
             # No commit here
 
         db_connection.rollback()  # Explicit rollback
@@ -2675,18 +2559,12 @@ def test_cursor_context_manager_nested(db_connection):
 
         with db_connection.cursor() as outer_cursor:
             cursor1_ref = outer_cursor
-            outer_cursor.execute(
-                "CREATE TABLE #test_nested (id INT, value NVARCHAR(50))"
-            )
-            outer_cursor.execute(
-                "INSERT INTO #test_nested (id, value) VALUES (1, 'outer')"
-            )
+            outer_cursor.execute("CREATE TABLE #test_nested (id INT, value NVARCHAR(50))")
+            outer_cursor.execute("INSERT INTO #test_nested (id, value) VALUES (1, 'outer')")
 
             with db_connection.cursor() as inner_cursor:
                 cursor2_ref = inner_cursor
-                inner_cursor.execute(
-                    "INSERT INTO #test_nested (id, value) VALUES (2, 'inner')"
-                )
+                inner_cursor.execute("INSERT INTO #test_nested (id, value) VALUES (2, 'inner')")
                 # Inner context exit should only close inner cursor
 
             # Inner cursor should be closed, outer cursor should still be open
@@ -2723,9 +2601,7 @@ def test_cursor_context_manager_multiple_operations(db_connection):
 
             # Multiple inserts
             cursor.execute("INSERT INTO #test_multiple (id, value) VALUES (1, 'first')")
-            cursor.execute(
-                "INSERT INTO #test_multiple (id, value) VALUES (2, 'second')"
-            )
+            cursor.execute("INSERT INTO #test_multiple (id, value) VALUES (2, 'second')")
             cursor.execute("INSERT INTO #test_multiple (id, value) VALUES (3, 'third')")
 
             # Query within same context
@@ -2795,23 +2671,17 @@ def test_execute_fetchone_chaining(cursor, db_connection):
         db_connection.commit()
 
         # Insert test data
-        cursor.execute(
-            "INSERT INTO #test_chaining (id, value) VALUES (?, ?)", 1, "test_value"
-        )
+        cursor.execute("INSERT INTO #test_chaining (id, value) VALUES (?, ?)", 1, "test_value")
         db_connection.commit()
 
         # Test execute().fetchone() chaining
-        row = cursor.execute(
-            "SELECT id, value FROM #test_chaining WHERE id = ?", 1
-        ).fetchone()
+        row = cursor.execute("SELECT id, value FROM #test_chaining WHERE id = ?", 1).fetchone()
         assert row is not None, "Should return a row"
         assert row[0] == 1, "First column should be 1"
         assert row[1] == "test_value", "Second column should be 'test_value'"
 
         # Test with non-existent row
-        row = cursor.execute(
-            "SELECT id, value FROM #test_chaining WHERE id = ?", 999
-        ).fetchone()
+        row = cursor.execute("SELECT id, value FROM #test_chaining WHERE id = ?", 999).fetchone()
         assert row is None, "Should return None for non-existent row"
 
     finally:
@@ -2836,18 +2706,14 @@ def test_execute_fetchall_chaining(cursor, db_connection):
         db_connection.commit()
 
         # Test execute().fetchall() chaining
-        rows = cursor.execute(
-            "SELECT id, value FROM #test_chaining ORDER BY id"
-        ).fetchall()
+        rows = cursor.execute("SELECT id, value FROM #test_chaining ORDER BY id").fetchall()
         assert len(rows) == 3, "Should return 3 rows"
         assert rows[0] == [1, "first"], "First row incorrect"
         assert rows[1] == [2, "second"], "Second row incorrect"
         assert rows[2] == [3, "third"], "Third row incorrect"
 
         # Test with WHERE clause
-        rows = cursor.execute(
-            "SELECT id, value FROM #test_chaining WHERE id > ?", 1
-        ).fetchall()
+        rows = cursor.execute("SELECT id, value FROM #test_chaining WHERE id > ?", 1).fetchall()
         assert len(rows) == 2, "Should return 2 rows with WHERE clause"
         assert rows[0] == [2, "second"], "Filtered first row incorrect"
         assert rows[1] == [3, "third"], "Filtered second row incorrect"
@@ -2869,15 +2735,11 @@ def test_execute_fetchmany_chaining(cursor, db_connection):
 
         # Insert test data
         for i in range(1, 6):  # Insert 5 records
-            cursor.execute(
-                "INSERT INTO #test_chaining (id, value) VALUES (?, ?)", i, f"value_{i}"
-            )
+            cursor.execute("INSERT INTO #test_chaining (id, value) VALUES (?, ?)", i, f"value_{i}")
         db_connection.commit()
 
         # Test execute().fetchmany() chaining with size parameter
-        rows = cursor.execute(
-            "SELECT id, value FROM #test_chaining ORDER BY id"
-        ).fetchmany(3)
+        rows = cursor.execute("SELECT id, value FROM #test_chaining ORDER BY id").fetchmany(3)
         assert len(rows) == 3, "Should return 3 rows with fetchmany(3)"
         assert rows[0] == [1, "value_1"], "First row incorrect"
         assert rows[1] == [2, "value_2"], "Second row incorrect"
@@ -2885,9 +2747,7 @@ def test_execute_fetchmany_chaining(cursor, db_connection):
 
         # Test execute().fetchmany() chaining with arraysize
         cursor.arraysize = 2
-        rows = cursor.execute(
-            "SELECT id, value FROM #test_chaining ORDER BY id"
-        ).fetchmany()
+        rows = cursor.execute("SELECT id, value FROM #test_chaining ORDER BY id").fetchmany()
         assert len(rows) == 2, "Should return 2 rows with default arraysize"
         assert rows[0] == [1, "value_1"], "First row incorrect"
         assert rows[1] == [2, "value_2"], "Second row incorrect"
@@ -2968,9 +2828,7 @@ def test_multiple_chaining_operations(cursor, db_connection):
     """Test multiple chaining operations in sequence"""
     try:
         # Create test table
-        cursor.execute(
-            "CREATE TABLE #test_multi_chain (id INT IDENTITY(1,1), value NVARCHAR(50))"
-        )
+        cursor.execute("CREATE TABLE #test_multi_chain (id INT IDENTITY(1,1), value NVARCHAR(50))")
         db_connection.commit()
 
         # Chain multiple operations: execute -> rowcount, then execute -> fetchone
@@ -2991,9 +2849,7 @@ def test_multiple_chaining_operations(cursor, db_connection):
         ).rowcount
         assert insert_count == 1, "Second insert should affect 1 row"
 
-        all_rows = cursor.execute(
-            "SELECT value FROM #test_multi_chain ORDER BY id"
-        ).fetchall()
+        all_rows = cursor.execute("SELECT value FROM #test_multi_chain ORDER BY id").fetchall()
         assert len(all_rows) == 2, "Should have 2 rows total"
         assert all_rows[0] == ["first"], "First row should be 'first'"
         assert all_rows[1] == ["second"], "Second row should be 'second'"
@@ -3014,15 +2870,11 @@ def test_chaining_with_parameters(cursor, db_connection):
         db_connection.commit()
 
         # Test chaining with tuple parameters
-        row = cursor.execute(
-            "INSERT INTO #test_params VALUES (?, ?, ?)", (1, "Alice", 25)
-        ).rowcount
+        row = cursor.execute("INSERT INTO #test_params VALUES (?, ?, ?)", (1, "Alice", 25)).rowcount
         assert row == 1, "Tuple parameter insert should affect 1 row"
 
         # Test chaining with individual parameters
-        row = cursor.execute(
-            "INSERT INTO #test_params VALUES (?, ?, ?)", 2, "Bob", 30
-        ).rowcount
+        row = cursor.execute("INSERT INTO #test_params VALUES (?, ?, ?)", 2, "Bob", 30).rowcount
         assert row == 1, "Individual parameter insert should affect 1 row"
 
         # Test chaining with list parameters
@@ -3032,9 +2884,7 @@ def test_chaining_with_parameters(cursor, db_connection):
         assert row == 1, "List parameter insert should affect 1 row"
 
         # Test chaining query with parameters and fetchall
-        rows = cursor.execute(
-            "SELECT name, age FROM #test_params WHERE age > ?", 28
-        ).fetchall()
+        rows = cursor.execute("SELECT name, age FROM #test_params WHERE age > ?", 28).fetchall()
         assert len(rows) == 2, "Should find 2 people over 28"
         assert rows[0] == ["Bob", 30], "First result should be Bob"
         assert rows[1] == ["Charlie", 35], "Second result should be Charlie"
@@ -3299,9 +3149,7 @@ def test_future_iterator_protocol_compatibility(cursor, db_connection):
             results2.append(row[0])
 
         expected2 = [3, 2, 1]
-        assert (
-            results2 == expected2
-        ), f"Chained results should be {expected2}, got {results2}"
+        assert results2 == expected2, f"Chained results should be {expected2}, got {results2}"
 
     finally:
         try:
@@ -3382,12 +3230,8 @@ def test_execute_chaining_compatibility_examples(cursor, db_connection):
         db_connection.commit()
 
         # Insert test users
-        cursor.execute(
-            "INSERT INTO #users (user_name, status) VALUES ('john_doe', 'active')"
-        )
-        cursor.execute(
-            "INSERT INTO #users (user_name, status) VALUES ('jane_smith', 'inactive')"
-        )
+        cursor.execute("INSERT INTO #users (user_name, status) VALUES ('john_doe', 'active')")
+        cursor.execute("INSERT INTO #users (user_name, status) VALUES ('jane_smith', 'inactive')")
         db_connection.commit()
 
         # Example 1: Iterate over results directly (pyodbc style)
@@ -3400,15 +3244,11 @@ def test_execute_chaining_compatibility_examples(cursor, db_connection):
         assert "john_doe" in user_names[0], "Should contain john_doe"
 
         # Example 2: Single row fetch chaining
-        user = cursor.execute(
-            "SELECT user_name FROM #users WHERE user_id = ?", 1
-        ).fetchone()
+        user = cursor.execute("SELECT user_name FROM #users WHERE user_id = ?", 1).fetchone()
         assert user[0] == "john_doe", "Should return john_doe"
 
         # Example 3: All rows fetch chaining
-        all_users = cursor.execute(
-            "SELECT user_name FROM #users ORDER BY user_id"
-        ).fetchall()
+        all_users = cursor.execute("SELECT user_name FROM #users ORDER BY user_id").fetchall()
         assert len(all_users) == 2, "Should return 2 users"
         assert all_users[0] == ["john_doe"], "First user should be john_doe"
         assert all_users[1] == ["jane_smith"], "Second user should be jane_smith"
@@ -3423,9 +3263,7 @@ def test_execute_chaining_compatibility_examples(cursor, db_connection):
         assert updated_count == 1, "Should update 1 user"
 
         # Example 5: Delete with rowcount chaining
-        deleted_count = cursor.execute(
-            "DELETE FROM #users WHERE status = ?", "inactive"
-        ).rowcount
+        deleted_count = cursor.execute("DELETE FROM #users WHERE status = ?", "inactive").rowcount
         assert deleted_count == 1, "Should delete 1 inactive user"
 
         # Verify final state
@@ -3458,9 +3296,7 @@ def test_rownumber_basic_functionality(cursor, db_connection):
 
         # Initial rownumber should be -1 (before any fetch)
         initial_rownumber = cursor.rownumber
-        assert (
-            initial_rownumber == -1
-        ), f"Initial rownumber should be -1, got {initial_rownumber}"
+        assert initial_rownumber == -1, f"Initial rownumber should be -1, got {initial_rownumber}"
 
         # Fetch first row and check rownumber (0-based indexing)
         row1 = cursor.fetchone()
@@ -3511,15 +3347,11 @@ def test_cursor_rownumber_mixed_fetches(cursor, db_connection):
     """Test cursor.rownumber with mixed fetch methods"""
     try:
         # Create test table with 10 rows
-        cursor.execute(
-            "CREATE TABLE #pytest_rownumber_mixed_test (id INT, value VARCHAR(50))"
-        )
+        cursor.execute("CREATE TABLE #pytest_rownumber_mixed_test (id INT, value VARCHAR(50))")
         db_connection.commit()
 
         test_data = [(i, f"mixed_{i}") for i in range(1, 11)]
-        cursor.executemany(
-            "INSERT INTO #pytest_rownumber_mixed_test VALUES (?, ?)", test_data
-        )
+        cursor.executemany("INSERT INTO #pytest_rownumber_mixed_test VALUES (?, ?)", test_data)
         db_connection.commit()
 
         # Test mixed fetch scenario
@@ -3542,9 +3374,7 @@ def test_cursor_rownumber_mixed_fetches(cursor, db_connection):
         remaining_rows = cursor.fetchall()
         assert cursor.rownumber == 9, "After fetchall(), rownumber should be 9"
         assert len(remaining_rows) == 6, "Should fetch remaining 6 rows"
-        assert (
-            remaining_rows[0][0] == 5 and remaining_rows[5][0] == 10
-        ), "Should have rows 5-10"
+        assert remaining_rows[0][0] == 5 and remaining_rows[5][0] == 10, "Should have rows 5-10"
 
     except Exception as e:
         pytest.fail(f"Mixed fetches rownumber test failed: {e}")
@@ -3563,9 +3393,7 @@ def test_cursor_rownumber_empty_results(cursor, db_connection):
         # Try to fetch from empty result
         row = cursor.fetchone()
         assert row is None, "Should return None for empty result"
-        assert (
-            cursor.rownumber == -1
-        ), "Rownumber should remain -1 after fetchone() on empty result"
+        assert cursor.rownumber == -1, "Rownumber should remain -1 after fetchone() on empty result"
 
         # Try fetchmany on empty result
         rows = cursor.fetchmany(5)
@@ -3577,9 +3405,7 @@ def test_cursor_rownumber_empty_results(cursor, db_connection):
         # Try fetchall on empty result
         all_rows = cursor.fetchall()
         assert all_rows == [], "Should return empty list for fetchall() on empty result"
-        assert (
-            cursor.rownumber == -1
-        ), "Rownumber should remain -1 after fetchall() on empty result"
+        assert cursor.rownumber == -1, "Rownumber should remain -1 after fetchall() on empty result"
 
     except Exception as e:
         pytest.fail(f"Empty results rownumber test failed: {e}")
@@ -3610,10 +3436,10 @@ def test_rownumber_warning_logged(cursor, db_connection):
         if driver_logger:
             # Save original log level
             original_level = driver_logger.level
-            
+
             # Enable WARNING level logging
             driver_logger.setLevel(logging.WARNING)
-            
+
             # Create a test handler to capture log messages
             import io
 
@@ -3633,9 +3459,7 @@ def test_rownumber_warning_logged(cursor, db_connection):
                 ), f"Expected warning message not found in logs: {log_contents}"
 
                 # Verify rownumber functionality still works
-                assert (
-                    rownumber == -1
-                ), f"Expected rownumber -1 before fetch, got {rownumber}"
+                assert rownumber == -1, f"Expected rownumber -1 before fetch, got {rownumber}"
 
             finally:
                 # Clean up: remove our test handler and restore level
@@ -3644,9 +3468,7 @@ def test_rownumber_warning_logged(cursor, db_connection):
         else:
             # If no logger configured, just test that rownumber works
             rownumber = cursor.rownumber
-            assert (
-                rownumber == -1
-            ), f"Expected rownumber -1 before fetch, got {rownumber}"
+            assert rownumber == -1, f"Expected rownumber -1 before fetch, got {rownumber}"
 
             # Now fetch a row and check rownumber
             row = cursor.fetchone()
@@ -3713,16 +3535,12 @@ def test_cursor_rownumber_fetchall(cursor, db_connection):
     """Test cursor.rownumber with fetchall()"""
     try:
         # Create test table
-        cursor.execute(
-            "CREATE TABLE #pytest_rownumber_all_test (id INT, value VARCHAR(50))"
-        )
+        cursor.execute("CREATE TABLE #pytest_rownumber_all_test (id INT, value VARCHAR(50))")
         db_connection.commit()
 
         # Insert test data
         test_data = [(i, f"row_{i}") for i in range(1, 6)]
-        cursor.executemany(
-            "INSERT INTO #pytest_rownumber_all_test VALUES (?, ?)", test_data
-        )
+        cursor.executemany("INSERT INTO #pytest_rownumber_all_test VALUES (?, ?)", test_data)
         db_connection.commit()
 
         # Test fetchall() rownumber tracking
@@ -3756,9 +3574,7 @@ def test_nextset_with_different_result_sizes_safe(cursor, db_connection):
 
     try:
         # Create test table with more data
-        cursor.execute(
-            "CREATE TABLE #test_nextset_sizes (id INT, category VARCHAR(10))"
-        )
+        cursor.execute("CREATE TABLE #test_nextset_sizes (id INT, category VARCHAR(10))")
         db_connection.commit()
 
         # Insert test data with different categories
@@ -3775,20 +3591,14 @@ def test_nextset_with_different_result_sizes_safe(cursor, db_connection):
 
         # Test individual queries first (safer approach)
         # First result set: 2 rows
-        cursor.execute(
-            "SELECT id FROM #test_nextset_sizes WHERE category = 'A' ORDER BY id"
-        )
+        cursor.execute("SELECT id FROM #test_nextset_sizes WHERE category = 'A' ORDER BY id")
         assert cursor.rownumber == -1, "Initial rownumber should be -1"
         first_set = cursor.fetchall()
         assert len(first_set) == 2, "First set should have 2 rows"
-        assert (
-            cursor.rownumber == 1
-        ), "After fetchall() of 2 rows, rownumber should be 1"
+        assert cursor.rownumber == 1, "After fetchall() of 2 rows, rownumber should be 1"
 
         # Second result set: 3 rows
-        cursor.execute(
-            "SELECT id FROM #test_nextset_sizes WHERE category = 'B' ORDER BY id"
-        )
+        cursor.execute("SELECT id FROM #test_nextset_sizes WHERE category = 'B' ORDER BY id")
         assert cursor.rownumber == -1, "rownumber should reset for new query"
 
         # Fetch one by one from second set
@@ -3800,16 +3610,12 @@ def test_nextset_with_different_result_sizes_safe(cursor, db_connection):
         assert cursor.rownumber == 2, "After third fetchone(), rownumber should be 2"
 
         # Third result set: 1 row
-        cursor.execute(
-            "SELECT id FROM #test_nextset_sizes WHERE category = 'C' ORDER BY id"
-        )
+        cursor.execute("SELECT id FROM #test_nextset_sizes WHERE category = 'C' ORDER BY id")
         assert cursor.rownumber == -1, "rownumber should reset for new query"
 
         third_set = cursor.fetchmany(5)  # Request more than available
         assert len(third_set) == 1, "Third set should have 1 row"
-        assert (
-            cursor.rownumber == 0
-        ), "After fetchmany() of 1 row, rownumber should be 0"
+        assert cursor.rownumber == 0, "After fetchmany() of 1 row, rownumber should be 0"
 
         # Fourth result set: count query
         cursor.execute("SELECT COUNT(*) FROM #test_nextset_sizes")
@@ -3828,17 +3634,13 @@ def test_nextset_with_different_result_sizes_safe(cursor, db_connection):
             # First result
             count_a = cursor.fetchone()[0]
             assert count_a == 2, "Should have 2 A category rows"
-            assert (
-                cursor.rownumber == 0
-            ), "After fetching first count, rownumber should be 0"
+            assert cursor.rownumber == 0, "After fetching first count, rownumber should be 0"
 
             # Try nextset with minimal complexity
             try:
                 has_next = cursor.nextset()
                 if has_next:
-                    assert (
-                        cursor.rownumber == -1
-                    ), "rownumber should reset after nextset()"
+                    assert cursor.rownumber == -1, "rownumber should reset after nextset()"
                     count_b = cursor.fetchone()[0]
                     assert count_b == 3, "Should have 3 B category rows"
                     assert (
@@ -3857,9 +3659,7 @@ def test_nextset_with_different_result_sizes_safe(cursor, db_connection):
             # If multi-statement queries cause issues, skip but don't fail
             import warnings
 
-            warnings.warn(
-                f"Multi-statement query test skipped due to driver limitation: {e}"
-            )
+            warnings.warn(f"Multi-statement query test skipped due to driver limitation: {e}")
 
     except Exception as e:
         pytest.fail(f"Safe nextset() different sizes test failed: {e}")
@@ -3892,9 +3692,7 @@ def test_nextset_basic_functionality_only(cursor, db_connection):
         # Test nextset() when no next set is available
         has_next = cursor.nextset()
         assert has_next is False, "nextset() should return False when no next set"
-        assert (
-            cursor.rownumber == -1
-        ), "nextset() should clear rownumber when no next set"
+        assert cursor.rownumber == -1, "nextset() should clear rownumber when no next set"
 
         # Test simple two-statement query if supported
         try:
@@ -3910,9 +3708,7 @@ def test_nextset_basic_functionality_only(cursor, db_connection):
             if has_next:
                 second_result = cursor.fetchone()
                 assert second_result[0] == 2, "Second result should be 2"
-                assert (
-                    cursor.rownumber == 0
-                ), "After second result, rownumber should be 0"
+                assert cursor.rownumber == 0, "After second result, rownumber should be 0"
 
                 # No more sets
                 has_next = cursor.nextset()
@@ -3954,9 +3750,7 @@ def test_nextset_memory_safety_check(cursor, db_connection):
             # Fetch all rows
             rows = cursor.fetchall()
             assert len(rows) == 3, f"Iteration {iteration}: Should have 3 rows"
-            assert (
-                cursor.rownumber == 2
-            ), f"Iteration {iteration}: rownumber should be 2"
+            assert cursor.rownumber == 2, f"Iteration {iteration}: rownumber should be 2"
 
             # Test nextset on single result set
             has_next = cursor.nextset()
@@ -4013,9 +3807,7 @@ def test_nextset_error_conditions_safe(cursor, db_connection):
         # nextset() should work and return False
         has_next = cursor.nextset()
         assert has_next is False, "nextset() should return False when no next set"
-        assert (
-            cursor.rownumber == -1
-        ), "nextset() should clear rownumber when no next set"
+        assert cursor.rownumber == -1, "nextset() should clear rownumber when no next set"
 
         # Test nextset() after failed query
         try:
@@ -4041,9 +3833,7 @@ def test_nextset_error_conditions_safe(cursor, db_connection):
         # Test recovery - cursor should still be usable
         cursor.execute("SELECT 42 as recovery_test")
         row = cursor.fetchone()
-        assert (
-            cursor.rownumber == 0
-        ), "Cursor should recover and track rownumber normally"
+        assert cursor.rownumber == 0, "Cursor should recover and track rownumber normally"
         assert row[0] == 42, "Should fetch correct data after recovery"
 
     except Exception as e:
@@ -4251,9 +4041,7 @@ def test_fetchval_no_results(cursor, db_connection):
         # Query with WHERE clause that matches nothing
         cursor.execute("SELECT col FROM #pytest_fetchval_empty WHERE col = 999")
         result = cursor.fetchval()
-        assert (
-            result is None
-        ), "fetchval should return None when WHERE clause matches no rows"
+        assert result is None, "fetchval should return None when WHERE clause matches no rows"
 
     except Exception as e:
         pytest.fail(f"fetchval no results test failed: {e}")
@@ -4272,9 +4060,7 @@ def test_fetchval_multiple_columns(cursor, db_connection):
         cursor.execute(
             "CREATE TABLE #pytest_fetchval_multi (col1 INTEGER, col2 VARCHAR(50), col3 FLOAT)"
         )
-        cursor.execute(
-            "INSERT INTO #pytest_fetchval_multi VALUES (100, 'second column', 3.14)"
-        )
+        cursor.execute("INSERT INTO #pytest_fetchval_multi VALUES (100, 'second column', 3.14)")
         db_connection.commit()
 
         # Query multiple columns - should return first column
@@ -4339,9 +4125,7 @@ def test_fetchval_method_chaining(cursor, db_connection):
 
         # Test with parameterized query
         result = cursor.execute("SELECT ?", 123).fetchval()
-        assert (
-            result == 123
-        ), "fetchval should work with method chaining on parameterized queries"
+        assert result == 123, "fetchval should work with method chaining on parameterized queries"
 
     except Exception as e:
         pytest.fail(f"fetchval method chaining test failed: {e}")
@@ -4385,9 +4169,7 @@ def test_fetchval_rownumber_tracking(cursor, db_connection):
         assert result == 1, "fetchval should return first row value"
 
         # Check that rownumber was incremented
-        assert (
-            cursor.rownumber == initial_rownumber + 1
-        ), "fetchval should increment rownumber"
+        assert cursor.rownumber == initial_rownumber + 1, "fetchval should increment rownumber"
 
         # Verify next fetch gets the second row
         next_row = cursor.fetchone()
@@ -4408,9 +4190,7 @@ def test_fetchval_aggregate_functions(cursor, db_connection):
     try:
         drop_table_if_exists(cursor, "#pytest_fetchval_agg")
         cursor.execute("CREATE TABLE #pytest_fetchval_agg (value INTEGER)")
-        cursor.execute(
-            "INSERT INTO #pytest_fetchval_agg VALUES (10), (20), (30), (40), (50)"
-        )
+        cursor.execute("INSERT INTO #pytest_fetchval_agg VALUES (10), (20), (30), (40), (50)")
         db_connection.commit()
 
         # Test various aggregate functions
@@ -4502,9 +4282,7 @@ def test_fetchval_performance_common_patterns(cursor, db_connection):
 
         # Insert some test data
         for i in range(10):
-            cursor.execute(
-                "INSERT INTO #pytest_fetchval_perf (data) VALUES (?)", f"data_{i}"
-            )
+            cursor.execute("INSERT INTO #pytest_fetchval_perf (data) VALUES (?)", f"data_{i}")
         db_connection.commit()
 
         # Test EXISTS pattern
@@ -4543,9 +4321,7 @@ def test_cursor_commit_basic(cursor, db_connection):
 
         # Create test table
         drop_table_if_exists(cursor, "#pytest_cursor_commit")
-        cursor.execute(
-            "CREATE TABLE #pytest_cursor_commit (id INTEGER, name VARCHAR(50))"
-        )
+        cursor.execute("CREATE TABLE #pytest_cursor_commit (id INTEGER, name VARCHAR(50))")
         cursor.commit()  # Commit table creation
 
         # Insert data using cursor
@@ -4592,9 +4368,7 @@ def test_cursor_rollback_basic(cursor, db_connection):
 
         # Create test table
         drop_table_if_exists(cursor, "#pytest_cursor_rollback")
-        cursor.execute(
-            "CREATE TABLE #pytest_cursor_rollback (id INTEGER, name VARCHAR(50))"
-        )
+        cursor.execute("CREATE TABLE #pytest_cursor_rollback (id INTEGER, name VARCHAR(50))")
         cursor.commit()  # Commit table creation
 
         # Insert initial data and commit
@@ -4608,9 +4382,7 @@ def test_cursor_rollback_basic(cursor, db_connection):
         # Before rollback, data should be visible in same transaction
         cursor.execute("SELECT COUNT(*) FROM #pytest_cursor_rollback")
         count = cursor.fetchval()
-        assert (
-            count == 3
-        ), "All data should be visible before rollback in same transaction"
+        assert count == 3, "All data should be visible before rollback in same transaction"
 
         # Rollback using cursor
         cursor.rollback()
@@ -4649,9 +4421,7 @@ def test_cursor_commit_affects_all_cursors(db_connection):
 
         # Create test table using cursor1
         drop_table_if_exists(cursor1, "#pytest_multi_cursor")
-        cursor1.execute(
-            "CREATE TABLE #pytest_multi_cursor (id INTEGER, source VARCHAR(10))"
-        )
+        cursor1.execute("CREATE TABLE #pytest_multi_cursor (id INTEGER, source VARCHAR(10))")
         cursor1.commit()  # Commit table creation
 
         # Insert data using cursor1
@@ -4711,9 +4481,7 @@ def test_cursor_rollback_affects_all_cursors(db_connection):
 
         # Create test table and insert initial data
         drop_table_if_exists(cursor1, "#pytest_multi_rollback")
-        cursor1.execute(
-            "CREATE TABLE #pytest_multi_rollback (id INTEGER, source VARCHAR(10))"
-        )
+        cursor1.execute("CREATE TABLE #pytest_multi_rollback (id INTEGER, source VARCHAR(10))")
         cursor1.execute("INSERT INTO #pytest_multi_rollback VALUES (0, 'baseline')")
         cursor1.commit()  # Commit initial state
 
@@ -4803,9 +4571,7 @@ def test_cursor_commit_equivalent_to_connection_commit(cursor, db_connection):
 
         # Create test table
         drop_table_if_exists(cursor, "#pytest_commit_equiv")
-        cursor.execute(
-            "CREATE TABLE #pytest_commit_equiv (id INTEGER, method VARCHAR(20))"
-        )
+        cursor.execute("CREATE TABLE #pytest_commit_equiv (id INTEGER, method VARCHAR(20))")
         cursor.commit()
 
         # Test 1: Use cursor.commit()
@@ -4813,9 +4579,7 @@ def test_cursor_commit_equivalent_to_connection_commit(cursor, db_connection):
         cursor.commit()
 
         # Verify the chained operation worked
-        result = cursor.execute(
-            "SELECT method FROM #pytest_commit_equiv WHERE id = 1"
-        ).fetchval()
+        result = cursor.execute("SELECT method FROM #pytest_commit_equiv WHERE id = 1").fetchval()
         assert result == "cursor_commit", "Method chaining with commit should work"
 
         # Test 2: Use connection.commit()
@@ -4858,9 +4622,7 @@ def test_cursor_transaction_boundary_behavior(cursor, db_connection):
 
         # Create test table
         drop_table_if_exists(cursor, "#pytest_transaction")
-        cursor.execute(
-            "CREATE TABLE #pytest_transaction (id INTEGER, step VARCHAR(20))"
-        )
+        cursor.execute("CREATE TABLE #pytest_transaction (id INTEGER, step VARCHAR(20))")
         cursor.commit()
 
         # Transaction 1: Insert and commit
@@ -4925,9 +4687,7 @@ def test_cursor_commit_with_method_chaining(cursor, db_connection):
         cursor.commit()
 
         # Verify the chained operation worked
-        result = cursor.execute(
-            "SELECT value FROM #pytest_chaining WHERE id = 1"
-        ).fetchval()
+        result = cursor.execute("SELECT value FROM #pytest_chaining WHERE id = 1").fetchval()
         assert result == "chained", "Method chaining with commit should work"
 
         # Verify rollback worked
@@ -5006,9 +4766,7 @@ def test_cursor_commit_performance_patterns(cursor, db_connection):
 
         # Create test table
         drop_table_if_exists(cursor, "#pytest_commit_perf")
-        cursor.execute(
-            "CREATE TABLE #pytest_commit_perf (id INTEGER, batch_num INTEGER)"
-        )
+        cursor.execute("CREATE TABLE #pytest_commit_perf (id INTEGER, batch_num INTEGER)")
         cursor.commit()
 
         # Test batch insert with periodic commits
@@ -5017,9 +4775,7 @@ def test_cursor_commit_performance_patterns(cursor, db_connection):
 
         for i in range(total_records):
             batch_num = i // batch_size
-            cursor.execute(
-                "INSERT INTO #pytest_commit_perf VALUES (?, ?)", i, batch_num
-            )
+            cursor.execute("INSERT INTO #pytest_commit_perf VALUES (?, ?)", i, batch_num)
 
             # Commit every batch_size records
             if (i + 1) % batch_size == 0:
@@ -5059,7 +4815,7 @@ def test_cursor_rollback_error_scenarios(cursor, db_connection, conn_str):
     # Skip this test for Azure SQL Database
     if is_azure_sql_connection(conn_str):
         pytest.skip("Skipping for Azure SQL - transaction-heavy tests may cause timeouts")
-    
+
     try:
         # Set autocommit to False
         original_autocommit = db_connection.autocommit
@@ -5079,9 +4835,7 @@ def test_cursor_rollback_error_scenarios(cursor, db_connection, conn_str):
         # Start a transaction with multiple operations
         cursor.execute("INSERT INTO #pytest_rollback_errors VALUES (2, 'temp1')")
         cursor.execute("INSERT INTO #pytest_rollback_errors VALUES (3, 'temp2')")
-        cursor.execute(
-            "UPDATE #pytest_rollback_errors SET value = 'modified' WHERE id = 1"
-        )
+        cursor.execute("UPDATE #pytest_rollback_errors SET value = 'modified' WHERE id = 1")
 
         # Verify uncommitted changes are visible within transaction
         cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_errors")
@@ -5102,14 +4856,10 @@ def test_cursor_rollback_error_scenarios(cursor, db_connection, conn_str):
 
         cursor.execute("SELECT value FROM #pytest_rollback_errors WHERE id = 1")
         original_value = cursor.fetchval()
-        assert (
-            original_value == "committed"
-        ), "Original value should be restored after rollback"
+        assert original_value == "committed", "Original value should be restored after rollback"
 
         # Verify cursor is still usable after rollback
-        cursor.execute(
-            "INSERT INTO #pytest_rollback_errors VALUES (4, 'after_rollback')"
-        )
+        cursor.execute("INSERT INTO #pytest_rollback_errors VALUES (4, 'after_rollback')")
         cursor.commit()
 
         cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_errors")
@@ -5120,9 +4870,7 @@ def test_cursor_rollback_error_scenarios(cursor, db_connection, conn_str):
         cursor.execute("SELECT value FROM #pytest_rollback_errors ORDER BY id")
         rows = cursor.fetchall()
         assert rows[0][0] == "committed", "First row should be unchanged"
-        assert (
-            rows[1][0] == "after_rollback"
-        ), "Second row should be the recovery insert"
+        assert rows[1][0] == "after_rollback", "Second row should be the recovery insert"
 
     except Exception as e:
         pytest.fail(f"Cursor rollback error scenarios test failed: {e}")
@@ -5140,7 +4888,7 @@ def test_cursor_rollback_with_method_chaining(cursor, db_connection, conn_str):
     # Skip this test for Azure SQL Database
     if is_azure_sql_connection(conn_str):
         pytest.skip("Skipping for Azure SQL - transaction-heavy tests may cause timeouts")
-    
+
     try:
         # Set autocommit to False
         original_autocommit = db_connection.autocommit
@@ -5148,9 +4896,7 @@ def test_cursor_rollback_with_method_chaining(cursor, db_connection, conn_str):
 
         # Create test table
         drop_table_if_exists(cursor, "#pytest_rollback_chaining")
-        cursor.execute(
-            "CREATE TABLE #pytest_rollback_chaining (id INTEGER, value VARCHAR(20))"
-        )
+        cursor.execute("CREATE TABLE #pytest_rollback_chaining (id INTEGER, value VARCHAR(20))")
         cursor.commit()
 
         # Insert initial committed data
@@ -5161,18 +4907,14 @@ def test_cursor_rollback_with_method_chaining(cursor, db_connection, conn_str):
         cursor.execute("INSERT INTO #pytest_rollback_chaining VALUES (2, 'temporary')")
 
         # Verify temporary data is visible before rollback
-        result = cursor.execute(
-            "SELECT COUNT(*) FROM #pytest_rollback_chaining"
-        ).fetchval()
+        result = cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_chaining").fetchval()
         assert result == 2, "Should see temporary data before rollback"
 
         # Rollback the temporary insert
         cursor.rollback()
 
         # Verify rollback worked with method chaining
-        count = cursor.execute(
-            "SELECT COUNT(*) FROM #pytest_rollback_chaining"
-        ).fetchval()
+        count = cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_chaining").fetchval()
         assert count == 1, "Should only have permanent data after rollback"
 
         # Test chaining after rollback
@@ -5201,9 +4943,7 @@ def test_cursor_rollback_savepoints_simulation(cursor, db_connection):
 
         # Create test table
         drop_table_if_exists(cursor, "#pytest_rollback_savepoints")
-        cursor.execute(
-            "CREATE TABLE #pytest_rollback_savepoints (id INTEGER, stage VARCHAR(20))"
-        )
+        cursor.execute("CREATE TABLE #pytest_rollback_savepoints (id INTEGER, stage VARCHAR(20))")
         cursor.commit()
 
         # Stage 1: Insert and commit (simulated savepoint)
@@ -5215,9 +4955,7 @@ def test_cursor_rollback_savepoints_simulation(cursor, db_connection):
         cursor.execute("INSERT INTO #pytest_rollback_savepoints VALUES (3, 'stage2')")
 
         # Verify stage 2 data is visible
-        cursor.execute(
-            "SELECT COUNT(*) FROM #pytest_rollback_savepoints WHERE stage = 'stage2'"
-        )
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_savepoints WHERE stage = 'stage2'")
         stage2_count = cursor.fetchval()
         assert stage2_count == 2, "Should see stage 2 data before rollback"
 
@@ -5235,9 +4973,7 @@ def test_cursor_rollback_savepoints_simulation(cursor, db_connection):
 
         # Stage 3: Try different operations and rollback
         cursor.execute("INSERT INTO #pytest_rollback_savepoints VALUES (4, 'stage3')")
-        cursor.execute(
-            "UPDATE #pytest_rollback_savepoints SET stage = 'modified' WHERE id = 1"
-        )
+        cursor.execute("UPDATE #pytest_rollback_savepoints SET stage = 'modified' WHERE id = 1")
         cursor.execute("INSERT INTO #pytest_rollback_savepoints VALUES (5, 'stage3')")
 
         # Verify stage 3 changes
@@ -5322,9 +5058,7 @@ def test_cursor_rollback_performance_patterns(cursor, db_connection):
         # Verify only successful batches were committed
         cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_perf")
         total_count = cursor.fetchval()
-        assert (
-            total_count == 10
-        ), "Should have 10 records (2 successful batches of 5 each)"
+        assert total_count == 10, "Should have 10 records (2 successful batches of 5 each)"
 
         # Verify batch distribution
         cursor.execute(
@@ -5332,17 +5066,11 @@ def test_cursor_rollback_performance_patterns(cursor, db_connection):
         )
         batches = cursor.fetchall()
         assert len(batches) == 2, "Should have 2 successful batches"
-        assert (
-            batches[0][0] == 0 and batches[0][1] == 5
-        ), "Batch 0 should have 5 records"
-        assert (
-            batches[1][0] == 2 and batches[1][1] == 5
-        ), "Batch 2 should have 5 records"
+        assert batches[0][0] == 0 and batches[0][1] == 5, "Batch 0 should have 5 records"
+        assert batches[1][0] == 2 and batches[1][1] == 5, "Batch 2 should have 5 records"
 
         # Verify no error records exist (they were rolled back)
-        cursor.execute(
-            "SELECT COUNT(*) FROM #pytest_rollback_perf WHERE status = 'error'"
-        )
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_perf WHERE status = 'error'")
         error_count = cursor.fetchval()
         assert error_count == 0, "No error records should exist after rollbacks"
 
@@ -5366,15 +5094,11 @@ def test_cursor_rollback_equivalent_to_connection_rollback(cursor, db_connection
 
         # Create test table
         drop_table_if_exists(cursor, "#pytest_rollback_equiv")
-        cursor.execute(
-            "CREATE TABLE #pytest_rollback_equiv (id INTEGER, method VARCHAR(20))"
-        )
+        cursor.execute("CREATE TABLE #pytest_rollback_equiv (id INTEGER, method VARCHAR(20))")
         cursor.commit()
 
         # Test 1: Use cursor.rollback()
-        cursor.execute(
-            "INSERT INTO #pytest_rollback_equiv VALUES (1, 'cursor_rollback')"
-        )
+        cursor.execute("INSERT INTO #pytest_rollback_equiv VALUES (1, 'cursor_rollback')")
         cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_equiv")
         count = cursor.fetchval()
         assert count == 1, "Data should be visible before rollback"
@@ -5449,30 +5173,20 @@ def test_cursor_rollback_nested_transactions_simulation(cursor, db_connection):
         cursor.commit()
 
         # Outer transaction level
-        cursor.execute(
-            "INSERT INTO #pytest_rollback_nested VALUES (1, 'outer', 'insert')"
-        )
-        cursor.execute(
-            "INSERT INTO #pytest_rollback_nested VALUES (2, 'outer', 'insert')"
-        )
+        cursor.execute("INSERT INTO #pytest_rollback_nested VALUES (1, 'outer', 'insert')")
+        cursor.execute("INSERT INTO #pytest_rollback_nested VALUES (2, 'outer', 'insert')")
 
         # Verify outer level data
-        cursor.execute(
-            "SELECT COUNT(*) FROM #pytest_rollback_nested WHERE level = 'outer'"
-        )
+        cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_nested WHERE level = 'outer'")
         outer_count = cursor.fetchval()
         assert outer_count == 2, "Should have 2 outer level records"
 
         # Simulate inner transaction
-        cursor.execute(
-            "INSERT INTO #pytest_rollback_nested VALUES (3, 'inner', 'insert')"
-        )
+        cursor.execute("INSERT INTO #pytest_rollback_nested VALUES (3, 'inner', 'insert')")
         cursor.execute(
             "UPDATE #pytest_rollback_nested SET operation = 'updated' WHERE level = 'outer' AND id = 1"
         )
-        cursor.execute(
-            "INSERT INTO #pytest_rollback_nested VALUES (4, 'inner', 'insert')"
-        )
+        cursor.execute("INSERT INTO #pytest_rollback_nested VALUES (4, 'inner', 'insert')")
 
         # Verify inner changes are visible
         cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_nested")
@@ -5493,18 +5207,12 @@ def test_cursor_rollback_nested_transactions_simulation(cursor, db_connection):
 
         # Test successful nested-like pattern
         # Outer level
-        cursor.execute(
-            "INSERT INTO #pytest_rollback_nested VALUES (1, 'outer', 'insert')"
-        )
+        cursor.execute("INSERT INTO #pytest_rollback_nested VALUES (1, 'outer', 'insert')")
         cursor.commit()  # Commit outer level
 
         # Inner level
-        cursor.execute(
-            "INSERT INTO #pytest_rollback_nested VALUES (2, 'inner', 'insert')"
-        )
-        cursor.execute(
-            "INSERT INTO #pytest_rollback_nested VALUES (3, 'inner', 'insert')"
-        )
+        cursor.execute("INSERT INTO #pytest_rollback_nested VALUES (2, 'inner', 'insert')")
+        cursor.execute("INSERT INTO #pytest_rollback_nested VALUES (3, 'inner', 'insert')")
         cursor.rollback()  # Rollback only inner level
 
         # Verify only outer level remains
@@ -5561,21 +5269,15 @@ def test_cursor_rollback_data_consistency(cursor, db_connection):
 
         # Insert initial data
         cursor.execute("INSERT INTO #pytest_rollback_customers VALUES (1, 'John Doe')")
-        cursor.execute(
-            "INSERT INTO #pytest_rollback_customers VALUES (2, 'Jane Smith')"
-        )
+        cursor.execute("INSERT INTO #pytest_rollback_customers VALUES (2, 'Jane Smith')")
         cursor.commit()
 
         # Start transaction with multiple related operations
-        cursor.execute(
-            "INSERT INTO #pytest_rollback_customers VALUES (3, 'Bob Wilson')"
-        )
+        cursor.execute("INSERT INTO #pytest_rollback_customers VALUES (3, 'Bob Wilson')")
         cursor.execute("INSERT INTO #pytest_rollback_orders VALUES (1, 1, 100.00)")
         cursor.execute("INSERT INTO #pytest_rollback_orders VALUES (2, 2, 200.00)")
         cursor.execute("INSERT INTO #pytest_rollback_orders VALUES (3, 3, 300.00)")
-        cursor.execute(
-            "UPDATE #pytest_rollback_customers SET name = 'John Updated' WHERE id = 1"
-        )
+        cursor.execute("UPDATE #pytest_rollback_customers SET name = 'John Updated' WHERE id = 1")
 
         # Verify uncommitted changes
         cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_customers")
@@ -5596,9 +5298,7 @@ def test_cursor_rollback_data_consistency(cursor, db_connection):
         # Verify data consistency after rollback
         cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_customers")
         final_customer_count = cursor.fetchval()
-        assert (
-            final_customer_count == 2
-        ), "Should have original 2 customers after rollback"
+        assert final_customer_count == 2, "Should have original 2 customers after rollback"
 
         cursor.execute("SELECT COUNT(*) FROM #pytest_rollback_orders")
         final_order_count = cursor.fetchval()
@@ -5632,7 +5332,7 @@ def test_cursor_rollback_large_transaction(cursor, db_connection, conn_str):
     # Skip this test for Azure SQL Database
     if is_azure_sql_connection(conn_str):
         pytest.skip("Skipping for Azure SQL - large transaction tests may cause timeouts")
-    
+
     try:
         # Set autocommit to False
         original_autocommit = db_connection.autocommit
@@ -5640,9 +5340,7 @@ def test_cursor_rollback_large_transaction(cursor, db_connection, conn_str):
 
         # Create test table
         drop_table_if_exists(cursor, "#pytest_rollback_large")
-        cursor.execute(
-            "CREATE TABLE #pytest_rollback_large (id INTEGER, data VARCHAR(100))"
-        )
+        cursor.execute("CREATE TABLE #pytest_rollback_large (id INTEGER, data VARCHAR(100))")
         cursor.commit()
 
         # Insert committed baseline data
@@ -5715,14 +5413,13 @@ def _drop_if_exists_scroll(cursor, name):
     except Exception:
         pass
 
+
 def test_cursor_skip_past_end(cursor, db_connection):
     """Test skip past end of result set"""
     try:
         _drop_if_exists_scroll(cursor, "#test_skip_end")
         cursor.execute("CREATE TABLE #test_skip_end (id INTEGER)")
-        cursor.executemany(
-            "INSERT INTO #test_skip_end VALUES (?)", [(i,) for i in range(1, 4)]
-        )
+        cursor.executemany("INSERT INTO #test_skip_end VALUES (?)", [(i,) for i in range(1, 4)])
         db_connection.commit()
 
         # Execute query
@@ -5786,9 +5483,7 @@ def test_cursor_skip_integration_with_fetch_methods(cursor, db_connection):
     try:
         _drop_if_exists_scroll(cursor, "#test_skip_fetch")
         cursor.execute("CREATE TABLE #test_skip_fetch (id INTEGER)")
-        cursor.executemany(
-            "INSERT INTO #test_skip_fetch VALUES (?)", [(i,) for i in range(1, 11)]
-        )
+        cursor.executemany("INSERT INTO #test_skip_fetch VALUES (?)", [(i,) for i in range(1, 11)])
         db_connection.commit()
 
         # Test with fetchone
@@ -5838,9 +5533,7 @@ def test_cursor_messages_basic(cursor):
     assert len(cursor.messages) == 1, "Should capture one message"
     assert isinstance(cursor.messages[0], tuple), "Message should be a tuple"
     assert len(cursor.messages[0]) == 2, "Message tuple should have 2 elements"
-    assert (
-        "Hello world!" in cursor.messages[0][1]
-    ), "Message text should contain 'Hello world!'"
+    assert "Hello world!" in cursor.messages[0][1], "Message text should contain 'Hello world!'"
 
 
 def test_cursor_messages_clearing(cursor):
@@ -5852,9 +5545,7 @@ def test_cursor_messages_clearing(cursor):
     # Execute another operation - should clear messages
     cursor.execute("PRINT 'Second message'")
     assert len(cursor.messages) == 1, "Should have cleared previous messages"
-    assert (
-        "Second message" in cursor.messages[0][1]
-    ), "Should contain only second message"
+    assert "Second message" in cursor.messages[0][1], "Should contain only second message"
 
     # Test that other operations clear messages too
     cursor.execute("SELECT 1")
@@ -5959,9 +5650,7 @@ def test_cursor_messages_with_warnings(cursor, db_connection):
     """Test that warning messages are captured correctly"""
     try:
         # Create a test case that might generate a warning
-        cursor.execute(
-            "CREATE TABLE #test_messages_warnings (id INT, value DECIMAL(5,2))"
-        )
+        cursor.execute("CREATE TABLE #test_messages_warnings (id INT, value DECIMAL(5,2))")
         db_connection.commit()
 
         # Clear messages
@@ -5992,16 +5681,12 @@ def test_cursor_messages_manual_clearing(cursor):
 
     # Clear messages manually
     del cursor.messages[:]
-    assert (
-        len(cursor.messages) == 0
-    ), "Messages should be cleared after del cursor.messages[:]"
+    assert len(cursor.messages) == 0, "Messages should be cleared after del cursor.messages[:]"
 
     # Verify we can still add messages after clearing
     cursor.execute("PRINT 'New message after clearing'")
     assert len(cursor.messages) == 1, "Should capture new message after clearing"
-    assert (
-        "New message after clearing" in cursor.messages[0][1]
-    ), "New message should be correct"
+    assert "New message after clearing" in cursor.messages[0][1], "New message should be correct"
 
 
 def test_cursor_messages_executemany(cursor, db_connection):
@@ -6044,9 +5729,7 @@ def test_cursor_messages_with_error(cursor):
 
     # Check that messages were cleared before the new execute
     assert len(cursor.messages) == 1, "Should have only the new message"
-    assert (
-        "After error" in cursor.messages[0][1]
-    ), "Message should be from after the error"
+    assert "After error" in cursor.messages[0][1], "Message should be from after the error"
 
 
 def test_tables_setup(cursor, db_connection):
@@ -6128,9 +5811,7 @@ def test_tables_all(cursor, db_connection):
         # Verify structure of results
         first_row = tables_list[0]
         assert hasattr(first_row, "table_cat"), "Result should have table_cat column"
-        assert hasattr(
-            first_row, "table_schem"
-        ), "Result should have table_schem column"
+        assert hasattr(first_row, "table_schem"), "Result should have table_schem column"
         assert hasattr(first_row, "table_name"), "Result should have table_name column"
         assert hasattr(first_row, "table_type"), "Result should have table_type column"
         assert hasattr(first_row, "remarks"), "Result should have remarks column"
@@ -6144,18 +5825,14 @@ def test_tables_specific_table(cursor, db_connection):
     """Test tables returns information about a specific table"""
     try:
         # Get specific table
-        tables_list = cursor.tables(
-            table="regular_table", schema="pytest_tables_schema"
-        ).fetchall()
+        tables_list = cursor.tables(table="regular_table", schema="pytest_tables_schema").fetchall()
 
         # Verify we got the right result
         assert len(tables_list) == 1, "Should find exactly 1 table"
 
         # Verify table details
         table = tables_list[0]
-        assert (
-            table.table_name.lower() == "regular_table"
-        ), "Table name should be 'regular_table'"
+        assert table.table_name.lower() == "regular_table", "Table name should be 'regular_table'"
         assert (
             table.table_schem.lower() == "pytest_tables_schema"
         ), "Schema should be 'pytest_tables_schema'"
@@ -6170,9 +5847,7 @@ def test_tables_with_table_pattern(cursor, db_connection):
     """Test tables with table name pattern"""
     try:
         # Get tables with pattern
-        tables_list = cursor.tables(
-            table="%table", schema="pytest_tables_schema"
-        ).fetchall()
+        tables_list = cursor.tables(table="%table", schema="pytest_tables_schema").fetchall()
 
         # Should find both test tables
         assert len(tables_list) == 2, "Should find 2 tables matching '%table'"
@@ -6204,8 +5879,7 @@ def test_tables_with_schema_pattern(cursor, db_connection):
                 table.table_schem
                 and table.table_schem.lower() == "pytest_tables_schema"
                 and table.table_name
-                and table.table_name.lower()
-                in ("regular_table", "another_table", "test_view")
+                and table.table_name.lower() in ("regular_table", "another_table", "test_view")
             ):
                 test_tables.append(table.table_name.lower())
 
@@ -6223,9 +5897,7 @@ def test_tables_with_type_filter(cursor, db_connection):
     """Test tables with table type filter"""
     try:
         # Get only tables
-        tables_list = cursor.tables(
-            schema="pytest_tables_schema", tableType="TABLE"
-        ).fetchall()
+        tables_list = cursor.tables(schema="pytest_tables_schema", tableType="TABLE").fetchall()
 
         # Verify only regular tables
         table_types = set()
@@ -6243,9 +5915,7 @@ def test_tables_with_type_filter(cursor, db_connection):
         assert "test_view" not in table_names, "Should not find test_view"
 
         # Get only views
-        views_list = cursor.tables(
-            schema="pytest_tables_schema", tableType="VIEW"
-        ).fetchall()
+        views_list = cursor.tables(schema="pytest_tables_schema", tableType="VIEW").fetchall()
 
         # Verify only views
         view_names = set()
@@ -6294,9 +5964,7 @@ def test_tables_catalog_filter(cursor, db_connection):
         current_db = cursor.fetchone().current_db
 
         # Get tables with current catalog
-        tables_list = cursor.tables(
-            catalog=current_db, schema="pytest_tables_schema"
-        ).fetchall()
+        tables_list = cursor.tables(catalog=current_db, schema="pytest_tables_schema").fetchall()
 
         # Verify catalog filter worked
         assert len(tables_list) > 0, "Should find tables with correct catalog"
@@ -6305,17 +5973,13 @@ def test_tables_catalog_filter(cursor, db_connection):
         for table in tables_list:
             # Some drivers might return None for catalog
             if table.table_cat is not None:
-                assert (
-                    table.table_cat.lower() == current_db.lower()
-                ), "Wrong table catalog"
+                assert table.table_cat.lower() == current_db.lower(), "Wrong table catalog"
 
         # Test with non-existent catalog
         fake_tables = cursor.tables(
             catalog="nonexistent_db_xyz123", schema="pytest_tables_schema"
         ).fetchall()
-        assert (
-            len(fake_tables) == 0
-        ), "Should return empty list for non-existent catalog"
+        assert len(fake_tables) == 0, "Should return empty list for non-existent catalog"
 
     finally:
         # Clean up happens in test_tables_cleanup
@@ -6342,15 +6006,11 @@ def test_tables_combined_filters(cursor, db_connection):
     """Test tables with multiple combined filters"""
     try:
         # Test with schema and table pattern
-        tables_list = cursor.tables(
-            schema="pytest_tables_schema", table="regular%"
-        ).fetchall()
+        tables_list = cursor.tables(schema="pytest_tables_schema", table="regular%").fetchall()
 
         # Should find only regular_table
         assert len(tables_list) == 1, "Should find 1 table with combined filters"
-        assert (
-            tables_list[0].table_name.lower() == "regular_table"
-        ), "Should find regular_table"
+        assert tables_list[0].table_name.lower() == "regular_table", "Should find regular_table"
 
         # Test with schema, table pattern, and type
         tables_list = cursor.tables(
@@ -6401,18 +6061,12 @@ def test_tables_result_processing(cursor, db_connection):
 
         # Test 4: Check indexing and attribute access
         first_table = tables_list[0]
-        assert (
-            first_table[0] == first_table.table_cat
-        ), "Index 0 should match table_cat attribute"
+        assert first_table[0] == first_table.table_cat, "Index 0 should match table_cat attribute"
         assert (
             first_table[1] == first_table.table_schem
         ), "Index 1 should match table_schem attribute"
-        assert (
-            first_table[2] == first_table.table_name
-        ), "Index 2 should match table_name attribute"
-        assert (
-            first_table[3] == first_table.table_type
-        ), "Index 3 should match table_type attribute"
+        assert first_table[2] == first_table.table_name, "Index 2 should match table_name attribute"
+        assert first_table[3] == first_table.table_type, "Index 3 should match table_type attribute"
 
     finally:
         # Clean up happens in test_tables_cleanup
@@ -6429,9 +6083,7 @@ def test_tables_method_chaining(cursor, db_connection):
 
         # Verify chained result
         assert len(chained_result) == 1, "Chained result should find 1 table"
-        assert (
-            chained_result[0].table_name.lower() == "regular_table"
-        ), "Should find regular_table"
+        assert chained_result[0].table_name.lower() == "regular_table", "Should find regular_table"
 
     finally:
         # Clean up happens in test_tables_cleanup
@@ -6488,9 +6140,7 @@ def test_emoji_round_trip(cursor, db_connection):
                 [text],
             )
             inserted_id = cursor.fetchone()[0]
-            cursor.execute(
-                "SELECT content FROM #pytest_emoji_test WHERE id = ?", [inserted_id]
-            )
+            cursor.execute("SELECT content FROM #pytest_emoji_test WHERE id = ?", [inserted_id])
             result = cursor.fetchone()
             assert result is not None, f"No row returned for ID {inserted_id}"
             assert result[0] == text, f"Mismatch! Sent: {text}, Got: {result[0]}"
@@ -6511,9 +6161,7 @@ def test_varcharmax_transaction_rollback(cursor, db_connection):
         rollback_str = "ROLLBACK" * 2000
         cursor.execute("INSERT INTO #pytest_varcharmax VALUES (?)", [rollback_str])
         db_connection.rollback()
-        cursor.execute(
-            "SELECT COUNT(*) FROM #pytest_varcharmax WHERE col = ?", [rollback_str]
-        )
+        cursor.execute("SELECT COUNT(*) FROM #pytest_varcharmax WHERE col = ?", [rollback_str])
         assert cursor.fetchone()[0] == 0
     finally:
         db_connection.autocommit = True  # reset state
@@ -6533,9 +6181,7 @@ def test_nvarcharmax_transaction_rollback(cursor, db_connection):
         rollback_str = "ROLLBACK" * 2000
         cursor.execute("INSERT INTO #pytest_nvarcharmax VALUES (?)", [rollback_str])
         db_connection.rollback()
-        cursor.execute(
-            "SELECT COUNT(*) FROM #pytest_nvarcharmax WHERE col = ?", [rollback_str]
-        )
+        cursor.execute("SELECT COUNT(*) FROM #pytest_nvarcharmax WHERE col = ?", [rollback_str])
         assert cursor.fetchone()[0] == 0
     finally:
         db_connection.autocommit = True
@@ -6548,9 +6194,7 @@ def test_empty_char_single_and_batch_fetch(cursor, db_connection):
     try:
         # Create test table with regular VARCHAR (CHAR is fixed-length and pads with spaces)
         drop_table_if_exists(cursor, "#pytest_empty_char")
-        cursor.execute(
-            "CREATE TABLE #pytest_empty_char (id INT, char_col VARCHAR(100))"
-        )
+        cursor.execute("CREATE TABLE #pytest_empty_char (id INT, char_col VARCHAR(100))")
         db_connection.commit()
 
         # Insert empty VARCHAR data
@@ -6596,30 +6240,22 @@ def test_empty_varbinary_batch_fetch(cursor, db_connection):
         db_connection.commit()
 
         # Insert multiple rows with empty binary data
-        cursor.execute(
-            "INSERT INTO #pytest_empty_varbinary_batch VALUES (1, 0x)"
-        )  # Empty binary
-        cursor.execute(
-            "INSERT INTO #pytest_empty_varbinary_batch VALUES (2, 0x)"
-        )  # Empty binary
+        cursor.execute("INSERT INTO #pytest_empty_varbinary_batch VALUES (1, 0x)")  # Empty binary
+        cursor.execute("INSERT INTO #pytest_empty_varbinary_batch VALUES (2, 0x)")  # Empty binary
         cursor.execute(
             "INSERT INTO #pytest_empty_varbinary_batch VALUES (3, 0x1234)"
         )  # Non-empty for comparison
         db_connection.commit()
 
         # Test fetchall for batch processing
-        cursor.execute(
-            "SELECT id, binary_col FROM #pytest_empty_varbinary_batch ORDER BY id"
-        )
+        cursor.execute("SELECT id, binary_col FROM #pytest_empty_varbinary_batch ORDER BY id")
         rows = cursor.fetchall()
         assert len(rows) == 3, "Should return 3 rows"
 
         # Check empty binary rows
         assert rows[0][1] == b"", "Row 1 should have empty bytes"
         assert rows[1][1] == b"", "Row 2 should have empty bytes"
-        assert isinstance(
-            rows[0][1], bytes
-        ), "Should return bytes type for empty binary"
+        assert isinstance(rows[0][1], bytes), "Should return bytes type for empty binary"
         assert len(rows[0][1]) == 0, "Should be zero-length bytes"
 
         # Check non-empty row for comparison
@@ -6681,9 +6317,7 @@ def test_empty_values_fetchmany(cursor, db_connection):
             assert row[0] == "", f"Row {i+1} VARCHAR should be empty string"
             assert row[1] == "", f"Row {i+1} NVARCHAR should be empty string"
             assert row[2] == b"", f"Row {i+1} VARBINARY should be empty bytes"
-            assert isinstance(
-                row[2], bytes
-            ), f"Row {i+1} VARBINARY should be bytes type"
+            assert isinstance(row[2], bytes), f"Row {i+1} VARBINARY should be bytes type"
 
         # Fetch remaining rows
         remaining_rows = cursor.fetchmany(5)  # Ask for 5 but should get 2
@@ -6749,13 +6383,9 @@ def test_sql_no_total_large_data_scenario(cursor, db_connection):
         # Both rows should behave consistently
         for i, row in enumerate(rows):
             if row[0] is not None:
-                assert isinstance(
-                    row[0], str
-                ), f"Row {i+1} text should be str if not None"
+                assert isinstance(row[0], str), f"Row {i+1} text should be str if not None"
             if row[1] is not None:
-                assert isinstance(
-                    row[1], bytes
-                ), f"Row {i+1} binary should be bytes if not None"
+                assert isinstance(row[1], bytes), f"Row {i+1} binary should be bytes if not None"
 
         # Test fetchmany - should handle SQL_NO_TOTAL consistently
         cursor.execute("SELECT large_text FROM #pytest_large_data_no_total ORDER BY id")
@@ -6764,15 +6394,11 @@ def test_sql_no_total_large_data_scenario(cursor, db_connection):
 
         for i, row in enumerate(many_rows):
             if row[0] is not None:
-                assert isinstance(
-                    row[0], str
-                ), f"fetchmany row {i+1} should be str if not None"
+                assert isinstance(row[0], str), f"fetchmany row {i+1} should be str if not None"
 
     except Exception as e:
         # Should not crash with assertion errors about dataLen
-        assert "Data length must be" not in str(
-            e
-        ), "Should not fail with dataLen assertion"
+        assert "Data length must be" not in str(e), "Should not fail with dataLen assertion"
         assert "assert" not in str(e).lower(), "Should not fail with assertion errors"
         # If it fails for other reasons (like memory), that's acceptable
         print(f"Large data test completed with expected limitation: {e}")
@@ -6857,13 +6483,9 @@ def test_batch_fetch_empty_values_no_assertion_failure(cursor, db_connection):
         # All batches should have correct empty values
         all_batch_rows = first_batch + second_batch
         for i, row in enumerate(all_batch_rows):
-            assert (
-                row[0] == ""
-            ), f"Batch row {i+1} empty_nvarchar should be empty string"
+            assert row[0] == "", f"Batch row {i+1} empty_nvarchar should be empty string"
             assert row[1] == b"", f"Batch row {i+1} empty_binary should be empty bytes"
-            assert isinstance(
-                row[1], bytes
-            ), f"Batch row {i+1} should return bytes type"
+            assert isinstance(row[1], bytes), f"Batch row {i+1} should return bytes type"
 
     except Exception as e:
         # Should specifically not fail with dataLen assertion errors
@@ -6908,9 +6530,7 @@ def test_executemany_utf16_length_validation(cursor, db_connection):
             (4, "12345", "1234567890"),  # Exactly at limits
         ]
 
-        cursor.executemany(
-            "INSERT INTO #pytest_utf16_validation VALUES (?, ?, ?)", valid_data
-        )
+        cursor.executemany("INSERT INTO #pytest_utf16_validation VALUES (?, ?, ?)", valid_data)
         db_connection.commit()
 
         # Verify valid data was inserted correctly
@@ -6977,9 +6597,7 @@ def test_executemany_utf16_length_validation(cursor, db_connection):
         db_connection.commit()
 
         # Verify emoji string was inserted correctly
-        cursor.execute(
-            "SELECT short_text, medium_text FROM #pytest_utf16_validation WHERE id = 7"
-        )
+        cursor.execute("SELECT short_text, medium_text FROM #pytest_utf16_validation WHERE id = 7")
         result = cursor.fetchone()
         assert result[0] == "😀😀", "Valid emoji string should be stored correctly"
         assert result[1] == "Hello🌟", "Valid emoji string should be stored correctly"
@@ -7032,9 +6650,7 @@ def test_executemany_utf16_length_validation(cursor, db_connection):
             # This would happen if UTF-16 conversion was truncated mid-character
             assert len(text) > 0, "String should not be empty due to truncation"
 
-        print(
-            f"UTF-16 length validation test completed successfully on {platform.system()}"
-        )
+        print(f"UTF-16 length validation test completed successfully on {platform.system()}")
 
     except Exception as e:
         pytest.fail(f"UTF-16 length validation test failed: {e}")
@@ -7063,12 +6679,8 @@ def test_binary_data_over_8000_bytes(cursor, db_connection):
         small_data = b"C" * 1000  # 1,000 bytes - well under limits
 
         # These should work fine
-        cursor.execute(
-            "INSERT INTO #pytest_small_binary VALUES (?, ?)", (1, medium_data)
-        )
-        cursor.execute(
-            "INSERT INTO #pytest_small_binary VALUES (?, ?)", (2, small_data)
-        )
+        cursor.execute("INSERT INTO #pytest_small_binary VALUES (?, ?)", (1, medium_data))
+        cursor.execute("INSERT INTO #pytest_small_binary VALUES (?, ?)", (2, small_data))
         db_connection.commit()
 
         # Verify the data was inserted correctly
@@ -7076,12 +6688,8 @@ def test_binary_data_over_8000_bytes(cursor, db_connection):
         results = cursor.fetchall()
 
         assert len(results) == 2, f"Expected 2 rows, got {len(results)}"
-        assert (
-            len(results[0][1]) == 3000
-        ), f"Expected 3000 bytes, got {len(results[0][1])}"
-        assert (
-            len(results[1][1]) == 1000
-        ), f"Expected 1000 bytes, got {len(results[1][1])}"
+        assert len(results[0][1]) == 3000, f"Expected 3000 bytes, got {len(results[0][1])}"
+        assert len(results[1][1]) == 1000, f"Expected 1000 bytes, got {len(results[1][1])}"
         assert results[0][1] == medium_data, "Medium binary data mismatch"
         assert results[1][1] == small_data, "Small binary data mismatch"
 
@@ -7119,9 +6727,7 @@ def test_varbinarymax_insert_fetch(cursor, db_connection):
 
         # Insert each row using execute
         for row_id, binary in test_data:
-            cursor.execute(
-                "INSERT INTO #pytest_varbinarymax VALUES (?, ?)", (row_id, binary)
-            )
+            cursor.execute("INSERT INTO #pytest_varbinarymax VALUES (?, ?)", (row_id, binary))
         db_connection.commit()
 
         # ---------- FETCHONE TEST (multi-column) ----------
@@ -7133,9 +6739,7 @@ def test_varbinarymax_insert_fetch(cursor, db_connection):
                 break
             rows.append(row)
 
-        assert len(rows) == len(
-            test_data
-        ), f"Expected {len(test_data)} rows, got {len(rows)}"
+        assert len(rows) == len(test_data), f"Expected {len(test_data)} rows, got {len(rows)}"
 
         # Validate each row
         for i, (expected_id, expected_data) in enumerate(test_data):
@@ -7194,15 +6798,11 @@ def test_all_empty_binaries(cursor, db_connection):
             (5, b""),
         ]
 
-        cursor.executemany(
-            "INSERT INTO #pytest_all_empty_binary VALUES (?, ?)", test_data
-        )
+        cursor.executemany("INSERT INTO #pytest_all_empty_binary VALUES (?, ?)", test_data)
         db_connection.commit()
 
         # Verify all data is empty binary
-        cursor.execute(
-            "SELECT id, empty_binary FROM #pytest_all_empty_binary ORDER BY id"
-        )
+        cursor.execute("SELECT id, empty_binary FROM #pytest_all_empty_binary ORDER BY id")
         results = cursor.fetchall()
 
         assert len(results) == 5, f"Expected 5 rows, got {len(results)}"
@@ -7248,15 +6848,11 @@ def test_mixed_bytes_and_bytearray_types(cursor, db_connection):
         ]
 
         # Execute with mixed types
-        cursor.executemany(
-            "INSERT INTO #pytest_mixed_binary_types VALUES (?, ?)", test_data
-        )
+        cursor.executemany("INSERT INTO #pytest_mixed_binary_types VALUES (?, ?)", test_data)
         db_connection.commit()
 
         # Verify the data was inserted correctly
-        cursor.execute(
-            "SELECT id, binary_data FROM #pytest_mixed_binary_types ORDER BY id"
-        )
+        cursor.execute("SELECT id, binary_data FROM #pytest_mixed_binary_types ORDER BY id")
         results = cursor.fetchall()
 
         assert len(results) == 8, f"Expected 8 rows, got {len(results)}"
@@ -7317,15 +6913,11 @@ def test_binary_mostly_small_one_large(cursor, db_connection):
         ]
 
         # Execute with mixed sizes
-        cursor.executemany(
-            "INSERT INTO #pytest_mixed_size_binary VALUES (?, ?)", test_data
-        )
+        cursor.executemany("INSERT INTO #pytest_mixed_size_binary VALUES (?, ?)", test_data)
         db_connection.commit()
 
         # Verify the data was inserted correctly
-        cursor.execute(
-            "SELECT id, binary_data FROM #pytest_mixed_size_binary ORDER BY id"
-        )
+        cursor.execute("SELECT id, binary_data FROM #pytest_mixed_size_binary ORDER BY id")
         results = cursor.fetchall()
 
         assert len(results) == 8, f"Expected 8 rows, got {len(results)}"
@@ -7420,9 +7012,7 @@ def test_sql_double_type(cursor, db_connection):
         ]
 
         for row in test_data:
-            cursor.execute(
-                "INSERT INTO #pytest_double_type VALUES (?, ?, ?)", row
-            )
+            cursor.execute("INSERT INTO #pytest_double_type VALUES (?, ?, ?)", row)
         db_connection.commit()
 
         # Fetch and verify
@@ -7437,10 +7027,14 @@ def test_sql_double_type(cursor, db_connection):
             assert isinstance(fetched_double, float), f"Row {i+1} double_col should be float type"
             assert isinstance(fetched_float, float), f"Row {i+1} float_col should be float type"
             # Use relative tolerance for floating point comparison
-            assert abs(fetched_double - expected_double) < abs(expected_double * 1e-10) or abs(fetched_double - expected_double) < 1e-10, \
-                f"Row {i+1} double_col mismatch: expected {expected_double}, got {fetched_double}"
-            assert abs(fetched_float - expected_float) < abs(expected_float * 1e-5) or abs(fetched_float - expected_float) < 1e-5, \
-                f"Row {i+1} float_col mismatch: expected {expected_float}, got {fetched_float}"
+            assert (
+                abs(fetched_double - expected_double) < abs(expected_double * 1e-10)
+                or abs(fetched_double - expected_double) < 1e-10
+            ), f"Row {i+1} double_col mismatch: expected {expected_double}, got {fetched_double}"
+            assert (
+                abs(fetched_float - expected_float) < abs(expected_float * 1e-5)
+                or abs(fetched_float - expected_float) < 1e-5
+            ), f"Row {i+1} float_col mismatch: expected {expected_float}, got {fetched_float}"
 
     except Exception as e:
         pytest.fail(f"SQL_DOUBLE type test failed: {e}")
@@ -7469,14 +7063,11 @@ def test_null_guid_type(cursor, db_connection):
         test_data = [
             (1, test_guid, None),  # NULL GUID
             (2, uuid.uuid4(), uuid.uuid4()),  # Both non-NULL
-            (3, uuid.UUID('12345678-1234-5678-1234-567812345678'), None),  # NULL GUID
+            (3, uuid.UUID("12345678-1234-5678-1234-567812345678"), None),  # NULL GUID
         ]
 
         for row_id, guid1, guid2 in test_data:
-            cursor.execute(
-                "INSERT INTO #pytest_null_guid VALUES (?, ?, ?)", 
-                (row_id, guid1, guid2)
-            )
+            cursor.execute("INSERT INTO #pytest_null_guid VALUES (?, ?, ?)", (row_id, guid1, guid2))
         db_connection.commit()
 
         # Fetch and verify
@@ -7488,16 +7079,20 @@ def test_null_guid_type(cursor, db_connection):
         for i, (expected_id, expected_guid1, expected_guid2) in enumerate(test_data):
             fetched_id, fetched_guid1, fetched_guid2 = rows[i]
             assert fetched_id == expected_id, f"Row {i+1} ID mismatch"
-            
+
             # C++ layer returns uuid.UUID objects
-            assert isinstance(fetched_guid1, uuid.UUID), f"Row {i+1} guid_col should be UUID type, got {type(fetched_guid1)}"
+            assert isinstance(
+                fetched_guid1, uuid.UUID
+            ), f"Row {i+1} guid_col should be UUID type, got {type(fetched_guid1)}"
             assert fetched_guid1 == expected_guid1, f"Row {i+1} guid_col mismatch"
-            
+
             # Verify NULL handling (NULL GUIDs are returned as None)
             if expected_guid2 is None:
                 assert fetched_guid2 is None, f"Row {i+1} guid_nullable should be None"
             else:
-                assert isinstance(fetched_guid2, uuid.UUID), f"Row {i+1} guid_nullable should be UUID type, got {type(fetched_guid2)}"
+                assert isinstance(
+                    fetched_guid2, uuid.UUID
+                ), f"Row {i+1} guid_nullable should be UUID type, got {type(fetched_guid2)}"
                 assert fetched_guid2 == expected_guid2, f"Row {i+1} guid_nullable mismatch"
 
     except Exception as e:
@@ -7533,15 +7128,11 @@ def test_only_null_and_empty_binary(cursor, db_connection):
         ]
 
         # Execute with only NULL and empty values
-        cursor.executemany(
-            "INSERT INTO #pytest_null_empty_binary VALUES (?, ?)", test_data
-        )
+        cursor.executemany("INSERT INTO #pytest_null_empty_binary VALUES (?, ?)", test_data)
         db_connection.commit()
 
         # Verify the data was inserted correctly
-        cursor.execute(
-            "SELECT id, binary_data FROM #pytest_null_empty_binary ORDER BY id"
-        )
+        cursor.execute("SELECT id, binary_data FROM #pytest_null_empty_binary ORDER BY id")
         results = cursor.fetchall()
 
         assert len(results) == 6, f"Expected 6 rows, got {len(results)}"
@@ -7561,9 +7152,7 @@ def test_only_null_and_empty_binary(cursor, db_connection):
                 assert len(row[1]) == 0, f"Row {i+1} should have zero length"
 
         # Test specific queries to ensure NULL vs empty distinction
-        cursor.execute(
-            "SELECT COUNT(*) FROM #pytest_null_empty_binary WHERE binary_data IS NULL"
-        )
+        cursor.execute("SELECT COUNT(*) FROM #pytest_null_empty_binary WHERE binary_data IS NULL")
         null_count = cursor.fetchone()[0]
         assert null_count == 3, f"Expected 3 NULL values, got {null_count}"
 
@@ -7934,9 +7523,7 @@ def test_money_smallmoney_insert_fetch(cursor, db_connection):
                 if exp_val is None:
                     assert val is None, f"Row {i+1} col{j}: expected None, got {val}"
                 else:
-                    assert (
-                        val == exp_val
-                    ), f"Row {i+1} col{j}: expected {exp_val}, got {val}"
+                    assert val == exp_val, f"Row {i+1} col{j}: expected {exp_val}, got {val}"
                     assert isinstance(
                         val, decimal.Decimal
                     ), f"Row {i+1} col{j}: expected Decimal, got {type(val)}"
@@ -7963,9 +7550,7 @@ def test_money_smallmoney_null_handling(cursor, db_connection):
         db_connection.commit()
 
         # Row with both NULLs
-        cursor.execute(
-            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", (None, None)
-        )
+        cursor.execute("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", (None, None))
 
         # Row with m filled, sm NULL
         cursor.execute(
@@ -7996,9 +7581,7 @@ def test_money_smallmoney_null_handling(cursor, db_connection):
                 if exp_val is None:
                     assert val is None, f"Row {i+1} col{j}: expected None, got {val}"
                 else:
-                    assert (
-                        val == exp_val
-                    ), f"Row {i+1} col{j}: expected {exp_val}, got {val}"
+                    assert val == exp_val, f"Row {i+1} col{j}: expected {exp_val}, got {val}"
                     assert isinstance(
                         val, decimal.Decimal
                     ), f"Row {i+1} col{j}: expected Decimal, got {type(val)}"
@@ -8031,12 +7614,8 @@ def test_money_smallmoney_roundtrip(cursor, db_connection):
         cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id DESC")
         row = cursor.fetchone()
         for i, (val, exp_val) in enumerate(zip(row, values), 1):
-            assert (
-                val == exp_val
-            ), f"col{i} roundtrip mismatch, got {val}, expected {exp_val}"
-            assert isinstance(
-                val, decimal.Decimal
-            ), f"col{i} should be Decimal, got {type(val)}"
+            assert val == exp_val, f"col{i} roundtrip mismatch, got {val}, expected {exp_val}"
+            assert isinstance(val, decimal.Decimal), f"col{i} should be Decimal, got {type(val)}"
 
     except Exception as e:
         pytest.fail(f"MONEY and SMALLMONEY roundtrip test failed: {e}")
@@ -8082,9 +7661,7 @@ def test_money_smallmoney_boundaries(cursor, db_connection):
         ]
         for i, (row, exp_row) in enumerate(zip(results, expected), 1):
             for j, (val, exp_val) in enumerate(zip(row, exp_row), 1):
-                assert (
-                    val == exp_val
-                ), f"Row {i} col{j} mismatch, got {val}, expected {exp_val}"
+                assert val == exp_val, f"Row {i} col{j} mismatch, got {val}, expected {exp_val}"
                 assert isinstance(
                     val, decimal.Decimal
                 ), f"Row {i} col{j} should be Decimal, got {type(val)}"
@@ -8126,9 +7703,7 @@ def test_money_smallmoney_invalid_values(cursor, db_connection):
 
         # Invalid string
         with pytest.raises(Exception):
-            cursor.execute(
-                "INSERT INTO #pytest_money_test (m) VALUES (?)", ("invalid_string",)
-            )
+            cursor.execute("INSERT INTO #pytest_money_test (m) VALUES (?)", ("invalid_string",))
 
     except Exception as e:
         pytest.fail(f"MONEY and SMALLMONEY invalid values test failed: {e}")
@@ -8159,9 +7734,7 @@ def test_money_smallmoney_roundtrip_executemany(cursor, db_connection):
         ]
 
         # Insert using executemany directly with Decimals
-        cursor.executemany(
-            "INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", test_data
-        )
+        cursor.executemany("INSERT INTO #pytest_money_test (m, sm) VALUES (?, ?)", test_data)
         db_connection.commit()
 
         cursor.execute("SELECT m, sm FROM #pytest_money_test ORDER BY id")
@@ -8261,9 +7834,7 @@ def test_uuid_insert_and_select_none(cursor, db_connection):
         db_connection.commit()
 
         # Insert a row with None for the UUID
-        cursor.execute(
-            f"INSERT INTO {table_name} (id, name) VALUES (?, ?)", [None, "Bob"]
-        )
+        cursor.execute(f"INSERT INTO {table_name} (id, name) VALUES (?, ?)", [None, "Bob"])
         db_connection.commit()
 
         # Fetch the row
@@ -8298,9 +7869,7 @@ def test_insert_multiple_uuids(cursor, db_connection):
 
         # Insert UUIDs and descriptions
         for desc, uid in uuids_to_insert.items():
-            cursor.execute(
-                f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", [uid, desc]
-            )
+            cursor.execute(f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", [uid, desc])
         db_connection.commit()
 
         # Fetch all rows
@@ -8311,9 +7880,13 @@ def test_insert_multiple_uuids(cursor, db_connection):
         assert len(rows) == len(uuids_to_insert), "Fetched row count mismatch"
 
         for retrieved_uuid, retrieved_desc in rows:
-            assert isinstance(retrieved_uuid, uuid.UUID), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
+            assert isinstance(
+                retrieved_uuid, uuid.UUID
+            ), f"Expected uuid.UUID, got {type(retrieved_uuid)}"
             expected_uuid = uuids_to_insert[retrieved_desc]
-            assert retrieved_uuid == expected_uuid, f"UUID mismatch for '{retrieved_desc}': expected {expected_uuid}, got {retrieved_uuid}"
+            assert (
+                retrieved_uuid == expected_uuid
+            ), f"UUID mismatch for '{retrieved_desc}': expected {expected_uuid}, got {retrieved_uuid}"
     finally:
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         db_connection.commit()
@@ -8337,9 +7910,7 @@ def test_fetchmany_uuids(cursor, db_connection):
         uuids_to_insert = {f"Item {i}": uuid.uuid4() for i in range(10)}
 
         for desc, uid in uuids_to_insert.items():
-            cursor.execute(
-                f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", [uid, desc]
-            )
+            cursor.execute(f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", [uid, desc])
         db_connection.commit()
 
         cursor.execute(f"SELECT id, description FROM {table_name}")
@@ -8379,9 +7950,7 @@ def test_uuid_insert_with_none(cursor, db_connection):
         )
         db_connection.commit()
 
-        cursor.execute(
-            f"INSERT INTO {table_name} (id, name) VALUES (?, ?)", [None, "Alice"]
-        )
+        cursor.execute(f"INSERT INTO {table_name} (id, name) VALUES (?, ?)", [None, "Alice"])
         db_connection.commit()
 
         cursor.execute(f"SELECT id, name FROM {table_name}")
@@ -8493,18 +8062,14 @@ def test_executemany_uuid_insert_and_select(cursor, db_connection):
         db_connection.commit()
 
         # Verify the number of rows inserted
-        assert (
-            cursor.rowcount == 5
-        ), f"Expected 5 rows inserted, but got {cursor.rowcount}"
+        assert cursor.rowcount == 5, f"Expected 5 rows inserted, but got {cursor.rowcount}"
 
         # Fetch all data from the table
         cursor.execute(f"SELECT id, description FROM {table_name} ORDER BY description")
         rows = cursor.fetchall()
 
         # Verify the number of fetched rows
-        assert len(rows) == len(
-            data_to_insert
-        ), "Number of fetched rows does not match."
+        assert len(rows) == len(data_to_insert), "Number of fetched rows does not match."
 
         # Compare inserted and retrieved rows by index
         for i, (retrieved_uuid, retrieved_desc) in enumerate(rows):
@@ -8512,9 +8077,7 @@ def test_executemany_uuid_insert_and_select(cursor, db_connection):
 
             # Assert the type is correct
             if isinstance(retrieved_uuid, str):
-                retrieved_uuid = uuid.UUID(
-                    retrieved_uuid
-                )  # convert if driver returns str
+                retrieved_uuid = uuid.UUID(retrieved_uuid)  # convert if driver returns str
 
             assert isinstance(
                 retrieved_uuid, uuid.UUID
@@ -8660,9 +8223,7 @@ def test_decimal_separator_calculations(cursor, db_connection):
         db_connection.commit()
 
         # Test with default separator
-        cursor.execute(
-            "SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test"
-        )
+        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
         row = cursor.fetchone()
         assert row.sum_result == decimal.Decimal(
             "16.00"
@@ -8672,18 +8233,14 @@ def test_decimal_separator_calculations(cursor, db_connection):
         mssql_python.setDecimalSeparator(",")
 
         # Calculations should still work correctly
-        cursor.execute(
-            "SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test"
-        )
+        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
         row = cursor.fetchone()
         assert row.sum_result == decimal.Decimal(
             "16.00"
         ), "Sum calculation affected by separator change"
 
         # But string representation should use comma
-        assert "16,00" in str(
-            row
-        ), "Sum result not formatted with comma in string representation"
+        assert "16,00" in str(row), "Sum result not formatted with comma in string representation"
 
     finally:
         # Restore original separator
@@ -8726,9 +8283,7 @@ def test_decimal_separator_function(cursor, db_connection):
         cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
         row = cursor.fetchone()
         default_str = str(row)
-        assert (
-            "123.45" in default_str
-        ), "Default separator not found in string representation"
+        assert "123.45" in default_str, "Default separator not found in string representation"
 
         # Now change to comma separator and test string representation
         mssql_python.setDecimalSeparator(",")
@@ -8757,9 +8312,7 @@ def test_decimal_separator_basic_functionality():
 
     try:
         # Test default value
-        assert (
-            mssql_python.getDecimalSeparator() == "."
-        ), "Default decimal separator should be '.'"
+        assert mssql_python.getDecimalSeparator() == ".", "Default decimal separator should be '.'"
 
         # Test setting to comma
         mssql_python.setDecimalSeparator(",")
@@ -8826,9 +8379,7 @@ def test_lowercase_attribute(cursor, db_connection):
         # Description column names should preserve original case
         column_names1 = [desc[0] for desc in cursor1.description]
         assert "ID" in column_names1, "Column 'ID' should be present with original case"
-        assert (
-            "UserName" in column_names1
-        ), "Column 'UserName' should be present with original case"
+        assert "UserName" in column_names1, "Column 'UserName' should be present with original case"
 
         # Make sure to consume all results and close the cursor
         cursor1.fetchall()
@@ -8841,12 +8392,8 @@ def test_lowercase_attribute(cursor, db_connection):
 
         # Description column names should be lowercase
         column_names2 = [desc[0] for desc in cursor2.description]
-        assert (
-            "id" in column_names2
-        ), "Column names should be lowercase when lowercase=True"
-        assert (
-            "username" in column_names2
-        ), "Column names should be lowercase when lowercase=True"
+        assert "id" in column_names2, "Column names should be lowercase when lowercase=True"
+        assert "username" in column_names2, "Column names should be lowercase when lowercase=True"
 
         # Make sure to consume all results and close the cursor
         cursor2.fetchall()
@@ -8901,9 +8448,7 @@ def test_decimal_separator_function(cursor, db_connection):
         cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
         row = cursor.fetchone()
         default_str = str(row)
-        assert (
-            "123.45" in default_str
-        ), "Default separator not found in string representation"
+        assert "123.45" in default_str, "Default separator not found in string representation"
 
         # Now change to comma separator and test string representation
         mssql_python.setDecimalSeparator(",")
@@ -8932,9 +8477,7 @@ def test_decimal_separator_basic_functionality():
 
     try:
         # Test default value
-        assert (
-            mssql_python.getDecimalSeparator() == "."
-        ), "Default decimal separator should be '.'"
+        assert mssql_python.getDecimalSeparator() == ".", "Default decimal separator should be '.'"
 
         # Test setting to comma
         mssql_python.setDecimalSeparator(",")
@@ -9044,9 +8587,7 @@ def test_decimal_separator_calculations(cursor, db_connection):
         db_connection.commit()
 
         # Test with default separator
-        cursor.execute(
-            "SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test"
-        )
+        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
         row = cursor.fetchone()
         assert row.sum_result == decimal.Decimal(
             "16.00"
@@ -9056,18 +8597,14 @@ def test_decimal_separator_calculations(cursor, db_connection):
         mssql_python.setDecimalSeparator(",")
 
         # Calculations should still work correctly
-        cursor.execute(
-            "SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test"
-        )
+        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
         row = cursor.fetchone()
         assert row.sum_result == decimal.Decimal(
             "16.00"
         ), "Sum calculation affected by separator change"
 
         # But string representation should use comma
-        assert "16,00" in str(
-            row
-        ), "Sum result not formatted with comma in string representation"
+        assert "16,00" in str(row), "Sum result not formatted with comma in string representation"
 
     finally:
         # Restore original separator
@@ -9083,12 +8620,8 @@ def test_datetimeoffset_read_write(cursor, db_connection):
     try:
         test_cases = [
             # Valid timezone-aware datetimes
-            datetime(
-                2023, 10, 26, 10, 30, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))
-            ),
-            datetime(
-                2023, 10, 27, 15, 45, 10, 123456, tzinfo=timezone(timedelta(hours=-8))
-            ),
+            datetime(2023, 10, 26, 10, 30, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))),
+            datetime(2023, 10, 27, 15, 45, 10, 123456, tzinfo=timezone(timedelta(hours=-8))),
             datetime(2023, 10, 28, 20, 0, 5, 987654, tzinfo=timezone.utc),
         ]
 
@@ -9097,14 +8630,14 @@ def test_datetimeoffset_read_write(cursor, db_connection):
         )
         db_connection.commit()
 
-        insert_stmt = "INSERT INTO #pytest_datetimeoffset_read_write (id, dto_column) VALUES (?, ?);"
+        insert_stmt = (
+            "INSERT INTO #pytest_datetimeoffset_read_write (id, dto_column) VALUES (?, ?);"
+        )
         for i, dt in enumerate(test_cases):
             cursor.execute(insert_stmt, i, dt)
         db_connection.commit()
 
-        cursor.execute(
-            "SELECT id, dto_column FROM #pytest_datetimeoffset_read_write ORDER BY id;"
-        )
+        cursor.execute("SELECT id, dto_column FROM #pytest_datetimeoffset_read_write ORDER BY id;")
         for i, dt in enumerate(test_cases):
             row = cursor.fetchone()
             assert row is not None
@@ -9138,14 +8671,14 @@ def test_datetimeoffset_max_min_offsets(cursor, db_connection):
             ),  # min offset
         ]
 
-        insert_stmt = "INSERT INTO #pytest_datetimeoffset_read_write (id, dto_column) VALUES (?, ?);"
+        insert_stmt = (
+            "INSERT INTO #pytest_datetimeoffset_read_write (id, dto_column) VALUES (?, ?);"
+        )
         for row_id, dt in test_cases:
             cursor.execute(insert_stmt, row_id, dt)
         db_connection.commit()
 
-        cursor.execute(
-            "SELECT id, dto_column FROM #pytest_datetimeoffset_read_write ORDER BY id;"
-        )
+        cursor.execute("SELECT id, dto_column FROM #pytest_datetimeoffset_read_write ORDER BY id;")
 
         for expected_id, expected_dt in test_cases:
             row = cursor.fetchone()
@@ -9225,7 +8758,9 @@ def test_datetimeoffset_dst_transitions(cursor, db_connection):
             ),  # Just after fall back
         ]
 
-        insert_stmt = "INSERT INTO #pytest_datetimeoffset_dst_transitions (id, dto_column) VALUES (?, ?);"
+        insert_stmt = (
+            "INSERT INTO #pytest_datetimeoffset_dst_transitions (id, dto_column) VALUES (?, ?);"
+        )
         for row_id, dt in dst_test_cases:
             cursor.execute(insert_stmt, row_id, dt)
         db_connection.commit()
@@ -9263,9 +8798,7 @@ def test_datetimeoffset_leap_second(cursor, db_connection):
         )
         db_connection.commit()
 
-        leap_second_sim = datetime(
-            2023, 12, 31, 23, 59, 59, 999999, tzinfo=timezone.utc
-        )
+        leap_second_sim = datetime(2023, 12, 31, 23, 59, 59, 999999, tzinfo=timezone.utc)
         cursor.execute(
             "INSERT INTO #pytest_datetimeoffset_leap_second (id, dto_column) VALUES (?, ?);",
             1,
@@ -9336,9 +8869,7 @@ def test_datetimeoffset_executemany(cursor, db_connection):
             ),
             (
                 "2023-10-28 20:00:05.9876543 +00:00",
-                datetime(
-                    2023, 10, 28, 20, 0, 5, 987654, tzinfo=timezone(timedelta(hours=0))
-                ),
+                datetime(2023, 10, 28, 20, 0, 5, 987654, tzinfo=timezone(timedelta(hours=0))),
             ),
         ]
 
@@ -9346,18 +8877,12 @@ def test_datetimeoffset_executemany(cursor, db_connection):
         cursor.execute(
             "IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;"
         )
-        cursor.execute(
-            "CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);"
-        )
+        cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
         db_connection.commit()
 
         # Prepare data for executemany
-        param_list = [
-            (i, python_dt) for i, (_, python_dt) in enumerate(datetimeoffset_test_cases)
-        ]
-        cursor.executemany(
-            "INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);", param_list
-        )
+        param_list = [(i, python_dt) for i, (_, python_dt) in enumerate(datetimeoffset_test_cases)]
+        cursor.executemany("INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);", param_list)
         db_connection.commit()
 
         # Read back and validate
@@ -9397,15 +8922,11 @@ def test_datetimeoffset_execute_vs_executemany_consistency(cursor, db_connection
         cursor.execute(
             "IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;"
         )
-        cursor.execute(
-            "CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);"
-        )
+        cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
         db_connection.commit()
 
         # Insert using execute()
-        cursor.execute(
-            "INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);", 1, test_dt
-        )
+        cursor.execute("INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);", 1, test_dt)
         db_connection.commit()
 
         # Insert using executemany()
@@ -9419,13 +8940,9 @@ def test_datetimeoffset_execute_vs_executemany_consistency(cursor, db_connection
         assert len(rows) == 2
 
         # Compare textual representation to ensure binding semantics match
-        cursor.execute(
-            "SELECT CONVERT(VARCHAR(35), dto_column, 127) FROM #pytest_dto ORDER BY id;"
-        )
+        cursor.execute("SELECT CONVERT(VARCHAR(35), dto_column, 127) FROM #pytest_dto ORDER BY id;")
         textual_rows = [r[0] for r in cursor.fetchall()]
-        assert (
-            textual_rows[0] == textual_rows[1]
-        ), "execute() and executemany() results differ"
+        assert textual_rows[0] == textual_rows[1], "execute() and executemany() results differ"
 
     finally:
         cursor.execute(
@@ -9447,15 +8964,11 @@ def test_datetimeoffset_extreme_offsets(cursor, db_connection):
         cursor.execute(
             "IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;"
         )
-        cursor.execute(
-            "CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);"
-        )
+        cursor.execute("CREATE TABLE #pytest_dto (id INT PRIMARY KEY, dto_column DATETIMEOFFSET);")
         db_connection.commit()
 
         param_list = [(i, dt) for i, dt in enumerate(extreme_offsets)]
-        cursor.executemany(
-            "INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);", param_list
-        )
+        cursor.executemany("INSERT INTO #pytest_dto (id, dto_column) VALUES (?, ?);", param_list)
         db_connection.commit()
 
         cursor.execute("SELECT id, dto_column FROM #pytest_dto ORDER BY id;")
@@ -9464,9 +8977,7 @@ def test_datetimeoffset_extreme_offsets(cursor, db_connection):
         for i, dt in enumerate(extreme_offsets):
             _, fetched = rows[i]
             assert fetched.tzinfo is not None
-            assert (
-                fetched == dt
-            ), f"Value mismatch for id {i}: expected {dt}, got {fetched}"
+            assert fetched == dt, f"Value mismatch for id {i}: expected {dt}, got {fetched}"
     finally:
         cursor.execute(
             "IF OBJECT_ID('tempdb..#pytest_dto', 'U') IS NOT NULL DROP TABLE #pytest_dto;"
@@ -9489,9 +9000,7 @@ def test_datetimeoffset_native_vs_string_simple(cursor, db_connection):
         test_rows = [
             (
                 1,
-                datetime(
-                    2025, 5, 14, 12, 35, 52, 501000, tzinfo=timezone(timedelta(hours=1))
-                ),
+                datetime(2025, 5, 14, 12, 35, 52, 501000, tzinfo=timezone(timedelta(hours=1))),
             ),
             (
                 2,
@@ -9509,9 +9018,7 @@ def test_datetimeoffset_native_vs_string_simple(cursor, db_connection):
         ]
 
         for i, dt in test_rows:
-            cursor.execute(
-                "INSERT INTO #pytest_dto_user_test (id, Systime) VALUES (?, ?);", i, dt
-            )
+            cursor.execute("INSERT INTO #pytest_dto_user_test (id, Systime) VALUES (?, ?);", i, dt)
         db_connection.commit()
 
         # Native fetch (like the user's first execute)
@@ -9570,9 +9077,7 @@ def test_lowercase_attribute(cursor, db_connection):
         # Description column names should preserve original case
         column_names1 = [desc[0] for desc in cursor1.description]
         assert "ID" in column_names1, "Column 'ID' should be present with original case"
-        assert (
-            "UserName" in column_names1
-        ), "Column 'UserName' should be present with original case"
+        assert "UserName" in column_names1, "Column 'UserName' should be present with original case"
 
         # Make sure to consume all results and close the cursor
         cursor1.fetchall()
@@ -9585,12 +9090,8 @@ def test_lowercase_attribute(cursor, db_connection):
 
         # Description column names should be lowercase
         column_names2 = [desc[0] for desc in cursor2.description]
-        assert (
-            "id" in column_names2
-        ), "Column names should be lowercase when lowercase=True"
-        assert (
-            "username" in column_names2
-        ), "Column names should be lowercase when lowercase=True"
+        assert "id" in column_names2, "Column names should be lowercase when lowercase=True"
+        assert "username" in column_names2, "Column names should be lowercase when lowercase=True"
 
         # Make sure to consume all results and close the cursor
         cursor2.fetchall()
@@ -9645,9 +9146,7 @@ def test_decimal_separator_function(cursor, db_connection):
         cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
         row = cursor.fetchone()
         default_str = str(row)
-        assert (
-            "123.45" in default_str
-        ), "Default separator not found in string representation"
+        assert "123.45" in default_str, "Default separator not found in string representation"
 
         # Now change to comma separator and test string representation
         mssql_python.setDecimalSeparator(",")
@@ -9676,9 +9175,7 @@ def test_decimal_separator_basic_functionality():
 
     try:
         # Test default value
-        assert (
-            mssql_python.getDecimalSeparator() == "."
-        ), "Default decimal separator should be '.'"
+        assert mssql_python.getDecimalSeparator() == ".", "Default decimal separator should be '.'"
 
         # Test setting to comma
         mssql_python.setDecimalSeparator(",")
@@ -9788,9 +9285,7 @@ def test_decimal_separator_calculations(cursor, db_connection):
         db_connection.commit()
 
         # Test with default separator
-        cursor.execute(
-            "SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test"
-        )
+        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
         row = cursor.fetchone()
         assert row.sum_result == decimal.Decimal(
             "16.00"
@@ -9800,18 +9295,14 @@ def test_decimal_separator_calculations(cursor, db_connection):
         mssql_python.setDecimalSeparator(",")
 
         # Calculations should still work correctly
-        cursor.execute(
-            "SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test"
-        )
+        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
         row = cursor.fetchone()
         assert row.sum_result == decimal.Decimal(
             "16.00"
         ), "Sum calculation affected by separator change"
 
         # But string representation should use comma
-        assert "16,00" in str(
-            row
-        ), "Sum result not formatted with comma in string representation"
+        assert "16,00" in str(row), "Sum result not formatted with comma in string representation"
 
     finally:
         # Restore original separator
@@ -9839,9 +9330,7 @@ def test_cursor_setinputsizes_basic(db_connection):
     )
 
     # Set input sizes for parameters
-    cursor.setinputsizes(
-        [(mssql_python.SQL_WVARCHAR, 100, 0), (mssql_python.SQL_INTEGER, 0, 0)]
-    )
+    cursor.setinputsizes([(mssql_python.SQL_WVARCHAR, 100, 0), (mssql_python.SQL_INTEGER, 0, 0)])
 
     # Execute with parameters
     cursor.execute("INSERT INTO #test_inputsizes VALUES (?, ?)", "Test String", 42)
@@ -9919,22 +9408,16 @@ def test_cursor_setinputsizes_reset(db_connection):
     )
 
     # Set input sizes for parameters
-    cursor.setinputsizes(
-        [(mssql_python.SQL_WVARCHAR, 100, 0), (mssql_python.SQL_INTEGER, 0, 0)]
-    )
+    cursor.setinputsizes([(mssql_python.SQL_WVARCHAR, 100, 0), (mssql_python.SQL_INTEGER, 0, 0)])
 
     # Execute with parameters
-    cursor.execute(
-        "INSERT INTO #test_inputsizes_reset VALUES (?, ?)", "Test String", 42
-    )
+    cursor.execute("INSERT INTO #test_inputsizes_reset VALUES (?, ?)", "Test String", 42)
 
     # Verify inputsizes was reset
     assert cursor._inputsizes is None
 
     # Now execute again without setting input sizes
-    cursor.execute(
-        "INSERT INTO #test_inputsizes_reset VALUES (?, ?)", "Another String", 84
-    )
+    cursor.execute("INSERT INTO #test_inputsizes_reset VALUES (?, ?)", "Another String", 84)
 
     # Verify both rows were inserted correctly
     cursor.execute("SELECT * FROM #test_inputsizes_reset ORDER BY col2")
@@ -10091,9 +9574,7 @@ def test_setinputsizes_parameter_count_mismatch_more(db_connection):
 
     # Execute with fewer parameters than specified input sizes
     with warnings.catch_warnings(record=True) as w:
-        cursor.execute(
-            "INSERT INTO #test_inputsizes_mismatch VALUES (?, ?)", 1, "Test String"
-        )
+        cursor.execute("INSERT INTO #test_inputsizes_mismatch VALUES (?, ?)", 1, "Test String")
         assert len(w) > 0, "Warning should be issued for parameter count mismatch"
         assert "number of input sizes" in str(w[0].message).lower()
 
@@ -10205,9 +9686,7 @@ def test_setinputsizes_sql_injection_protection(db_connection):
     injection_attempt = "x'; DROP TABLE #test_sql_injection; --"
 
     # This should safely parameterize without executing the injection
-    cursor.execute(
-        "SELECT * FROM #test_sql_injection WHERE name = ?", injection_attempt
-    )
+    cursor.execute("SELECT * FROM #test_sql_injection WHERE name = ?", injection_attempt)
 
     # Verify table still exists and injection didn't work
     cursor.execute("SELECT COUNT(*) FROM #test_sql_injection")
@@ -10229,12 +9708,8 @@ def test_gettypeinfo_all_types(cursor):
 
     # Verify common data types are present
     type_names = [str(row.type_name).upper() for row in type_info]
-    assert any(
-        "VARCHAR" in name for name in type_names
-    ), "VARCHAR type should be in results"
-    assert any(
-        "INT" in name for name in type_names
-    ), "INTEGER type should be in results"
+    assert any("VARCHAR" in name for name in type_names), "VARCHAR type should be in results"
+    assert any("INT" in name for name in type_names), "INTEGER type should be in results"
 
     # Verify first row has expected columns
     first_row = type_info[0]
@@ -10253,9 +9728,7 @@ def test_gettypeinfo_specific_type(cursor):
 
     # Verify we got results specific to VARCHAR
     assert varchar_info is not None, "getTypeInfo(SQL_VARCHAR) should return results"
-    assert (
-        len(varchar_info) > 0
-    ), "getTypeInfo(SQL_VARCHAR) should return at least one row"
+    assert len(varchar_info) > 0, "getTypeInfo(SQL_VARCHAR) should return at least one row"
 
     # All rows should be related to VARCHAR type
     for row in varchar_info:
@@ -10335,9 +9808,7 @@ def test_gettypeinfo_datetime_types(cursor):
 
     # Get information about TIMESTAMP type instead of DATETIME
     # SQL_TYPE_TIMESTAMP (93) is more commonly used for datetime in ODBC
-    datetime_info = cursor.getTypeInfo(
-        ConstantsDDBC.SQL_TYPE_TIMESTAMP.value
-    ).fetchall()
+    datetime_info = cursor.getTypeInfo(ConstantsDDBC.SQL_TYPE_TIMESTAMP.value).fetchall()
 
     # Verify we got datetime-related results
     assert len(datetime_info) > 0, "getTypeInfo for TIMESTAMP should return results"
@@ -10481,28 +9952,16 @@ def test_procedures_all(cursor, db_connection):
 
         # Verify structure of results
         first_row = procs[0]
-        assert hasattr(
-            first_row, "procedure_cat"
-        ), "Result should have procedure_cat column"
-        assert hasattr(
-            first_row, "procedure_schem"
-        ), "Result should have procedure_schem column"
-        assert hasattr(
-            first_row, "procedure_name"
-        ), "Result should have procedure_name column"
-        assert hasattr(
-            first_row, "num_input_params"
-        ), "Result should have num_input_params column"
+        assert hasattr(first_row, "procedure_cat"), "Result should have procedure_cat column"
+        assert hasattr(first_row, "procedure_schem"), "Result should have procedure_schem column"
+        assert hasattr(first_row, "procedure_name"), "Result should have procedure_name column"
+        assert hasattr(first_row, "num_input_params"), "Result should have num_input_params column"
         assert hasattr(
             first_row, "num_output_params"
         ), "Result should have num_output_params column"
-        assert hasattr(
-            first_row, "num_result_sets"
-        ), "Result should have num_result_sets column"
+        assert hasattr(first_row, "num_result_sets"), "Result should have num_result_sets column"
         assert hasattr(first_row, "remarks"), "Result should have remarks column"
-        assert hasattr(
-            first_row, "procedure_type"
-        ), "Result should have procedure_type column"
+        assert hasattr(first_row, "procedure_type"), "Result should have procedure_type column"
 
     finally:
         # Clean up happens in test_procedures_cleanup
@@ -10513,9 +9972,7 @@ def test_procedures_specific(cursor, db_connection):
     """Test getting information about a specific procedure"""
     try:
         # Get specific procedure
-        procs = cursor.procedures(
-            procedure="test_proc1", schema="pytest_proc_schema"
-        ).fetchall()
+        procs = cursor.procedures(procedure="test_proc1", schema="pytest_proc_schema").fetchall()
 
         # Verify we got the correct procedure
         assert len(procs) == 1, "Should find exactly one procedure"
@@ -10569,9 +10026,7 @@ def test_procedures_catalog_filter(cursor, db_connection):
 
     try:
         # Get procedures with current catalog
-        procs = cursor.procedures(
-            catalog=current_db, schema="pytest_proc_schema"
-        ).fetchall()
+        procs = cursor.procedures(catalog=current_db, schema="pytest_proc_schema").fetchall()
 
         # Verify catalog filter worked
         assert len(procs) >= 2, "Should find procedures in current catalog"
@@ -10616,12 +10071,8 @@ def test_procedures_with_parameters(cursor, db_connection):
         proc = procs[0]
 
         # Just check if columns exist, don't check specific values
-        assert hasattr(
-            proc, "num_input_params"
-        ), "Result should have num_input_params column"
-        assert hasattr(
-            proc, "num_output_params"
-        ), "Result should have num_output_params column"
+        assert hasattr(proc, "num_input_params"), "Result should have num_input_params column"
+        assert hasattr(proc, "num_output_params"), "Result should have num_output_params column"
 
         # Test simple execution without output parameters
         cursor.execute("EXEC pytest_proc_schema.test_params_proc 10, 'Test'")
@@ -10675,9 +10126,7 @@ def test_procedures_result_set_info(cursor, db_connection):
         db_connection.commit()
 
         # Get procedure info for all test procedures
-        procs = cursor.procedures(
-            schema="pytest_proc_schema", procedure="test_%"
-        ).fetchall()
+        procs = cursor.procedures(schema="pytest_proc_schema", procedure="test_%").fetchall()
 
         # Verify we found at least some procedures
         assert len(procs) > 0, "Should find at least some test procedures"
@@ -10692,9 +10141,7 @@ def test_procedures_result_set_info(cursor, db_connection):
 
         # The num_result_sets column exists but might not have correct values
         for proc in procs:
-            assert hasattr(
-                proc, "num_result_sets"
-            ), "Result should have num_result_sets column"
+            assert hasattr(proc, "num_result_sets"), "Result should have num_result_sets column"
 
         # Test execution of the procedures to verify they work
         cursor.execute("EXEC pytest_proc_schema.test_no_results")
@@ -10718,9 +10165,7 @@ def test_procedures_result_set_info(cursor, db_connection):
     finally:
         cursor.execute("DROP PROCEDURE IF EXISTS pytest_proc_schema.test_no_results")
         cursor.execute("DROP PROCEDURE IF EXISTS pytest_proc_schema.test_one_result")
-        cursor.execute(
-            "DROP PROCEDURE IF EXISTS pytest_proc_schema.test_multiple_results"
-        )
+        cursor.execute("DROP PROCEDURE IF EXISTS pytest_proc_schema.test_multiple_results")
         db_connection.commit()
 
 
@@ -10733,9 +10178,7 @@ def test_procedures_cleanup(cursor, db_connection):
         cursor.execute("DROP PROCEDURE IF EXISTS pytest_proc_schema.test_params_proc")
         cursor.execute("DROP PROCEDURE IF EXISTS pytest_proc_schema.test_no_results")
         cursor.execute("DROP PROCEDURE IF EXISTS pytest_proc_schema.test_one_result")
-        cursor.execute(
-            "DROP PROCEDURE IF EXISTS pytest_proc_schema.test_multiple_results"
-        )
+        cursor.execute("DROP PROCEDURE IF EXISTS pytest_proc_schema.test_multiple_results")
 
         # Drop the test schema
         cursor.execute("DROP SCHEMA IF EXISTS pytest_proc_schema")
@@ -10817,10 +10260,7 @@ def test_foreignkeys_all(cursor, db_connection):
         # Search case-insensitively since the database might return different case
         found_test_fk = False
         for fk in fks:
-            if (
-                fk.fktable_name.lower() == "orders"
-                and fk.pktable_name.lower() == "customers"
-            ):
+            if fk.fktable_name.lower() == "orders" and fk.pktable_name.lower() == "customers":
                 found_test_fk = True
                 break
 
@@ -10849,12 +10289,8 @@ def test_foreignkeys_specific_table(cursor, db_connection):
         fk = fks[0]
         assert fk.fktable_name.lower() == "orders", "Wrong foreign key table name"
         assert fk.pktable_name.lower() == "customers", "Wrong primary key table name"
-        assert (
-            fk.fkcolumn_name.lower() == "customer_id"
-        ), "Wrong foreign key column name"
-        assert (
-            fk.pkcolumn_name.lower() == "customer_id"
-        ), "Wrong primary key column name"
+        assert fk.fkcolumn_name.lower() == "customer_id", "Wrong foreign key column name"
+        assert fk.pkcolumn_name.lower() == "customer_id", "Wrong primary key column name"
 
     finally:
         # Clean up
@@ -10875,17 +10311,12 @@ def test_foreignkeys_specific_foreign_table(cursor, db_connection):
         ).fetchall()
 
         # Verify we got results
-        assert (
-            len(fks) > 0
-        ), "Should find at least one foreign key referencing customers table"
+        assert len(fks) > 0, "Should find at least one foreign key referencing customers table"
 
         # Verify our test FK is in the results
         found_test_fk = False
         for fk in fks:
-            if (
-                fk.fktable_name.lower() == "orders"
-                and fk.pktable_name.lower() == "customers"
-            ):
+            if fk.fktable_name.lower() == "orders" and fk.pktable_name.lower() == "customers":
                 found_test_fk = True
                 break
 
@@ -10913,20 +10344,14 @@ def test_foreignkeys_both_tables(cursor, db_connection):
         ).fetchall()
 
         # Verify we got results
-        assert (
-            len(fks) == 1
-        ), "Should find exactly one foreign key between specified tables"
+        assert len(fks) == 1, "Should find exactly one foreign key between specified tables"
 
         # Verify the foreign key details
         fk = fks[0]
         assert fk.fktable_name.lower() == "orders", "Wrong foreign key table name"
         assert fk.pktable_name.lower() == "customers", "Wrong primary key table name"
-        assert (
-            fk.fkcolumn_name.lower() == "customer_id"
-        ), "Wrong foreign key column name"
-        assert (
-            fk.pkcolumn_name.lower() == "customer_id"
-        ), "Wrong primary key column name"
+        assert fk.fkcolumn_name.lower() == "customer_id", "Wrong foreign key column name"
+        assert fk.pkcolumn_name.lower() == "customer_id", "Wrong primary key column name"
 
     finally:
         # Clean up
@@ -10967,9 +10392,7 @@ def test_foreignkeys_catalog_schema(cursor, db_connection):
         # Verify catalog/schema in results
         for fk in fks:
             assert fk.fktable_cat == current_db, "Wrong foreign key table catalog"
-            assert (
-                fk.fktable_schem == "pytest_fk_schema"
-            ), "Wrong foreign key table schema"
+            assert fk.fktable_schem == "pytest_fk_schema", "Wrong foreign key table schema"
 
     finally:
         # Clean up
@@ -11010,23 +10433,13 @@ def test_foreignkeys_result_structure(cursor, db_connection):
         ]
 
         for column in required_columns:
-            assert hasattr(
-                first_row, column
-            ), f"Result missing required column: {column}"
+            assert hasattr(first_row, column), f"Result missing required column: {column}"
 
         # Verify specific values
-        assert (
-            first_row.fktable_name.lower() == "orders"
-        ), "Wrong foreign key table name"
-        assert (
-            first_row.pktable_name.lower() == "customers"
-        ), "Wrong primary key table name"
-        assert (
-            first_row.fkcolumn_name.lower() == "customer_id"
-        ), "Wrong foreign key column name"
-        assert (
-            first_row.pkcolumn_name.lower() == "customer_id"
-        ), "Wrong primary key column name"
+        assert first_row.fktable_name.lower() == "orders", "Wrong foreign key table name"
+        assert first_row.pktable_name.lower() == "customers", "Wrong primary key table name"
+        assert first_row.fkcolumn_name.lower() == "customer_id", "Wrong foreign key column name"
+        assert first_row.pkcolumn_name.lower() == "customer_id", "Wrong primary key column name"
         assert first_row.key_seq == 1, "Wrong key sequence number"
         assert first_row.fk_name is not None, "Foreign key name should not be None"
         assert first_row.pk_name is not None, "Primary key name should not be None"
@@ -11080,14 +10493,10 @@ def test_foreignkeys_multiple_column_fk(cursor, db_connection):
         db_connection.commit()
 
         # Get foreign keys for the order_details table
-        fks = cursor.foreignKeys(
-            table="order_details", schema="pytest_fk_schema"
-        ).fetchall()
+        fks = cursor.foreignKeys(table="order_details", schema="pytest_fk_schema").fetchall()
 
         # Verify we got results
-        assert (
-            len(fks) == 2
-        ), "Should find two rows for the composite foreign key (one per column)"
+        assert len(fks) == 2, "Should find two rows for the composite foreign key (one per column)"
 
         # Group by key_seq to verify both columns
         fk_columns = {}
@@ -11199,9 +10608,7 @@ def test_primarykeys_composite(cursor, db_connection):
     """Test primaryKeys with a composite primary key"""
     try:
         # Get primary key information
-        pks = cursor.primaryKeys(
-            "composite_pk_test", schema="pytest_pk_schema"
-        ).fetchall()
+        pks = cursor.primaryKeys("composite_pk_test", schema="pytest_pk_schema").fetchall()
 
         # Verify we got results for both columns
         assert len(pks) == 2, "Should find two primary key columns"
@@ -11211,16 +10618,12 @@ def test_primarykeys_composite(cursor, db_connection):
 
         # Verify first column
         assert pks[0].table_name.lower() == "composite_pk_test", "Wrong table name"
-        assert (
-            pks[0].column_name.lower() == "dept_id"
-        ), "Wrong first primary key column name"
+        assert pks[0].column_name.lower() == "dept_id", "Wrong first primary key column name"
         assert pks[0].key_seq == 1, "Wrong key sequence number for first column"
 
         # Verify second column
         assert pks[1].table_name.lower() == "composite_pk_test", "Wrong table name"
-        assert (
-            pks[1].column_name.lower() == "emp_id"
-        ), "Wrong second primary key column name"
+        assert pks[1].column_name.lower() == "emp_id", "Wrong second primary key column name"
         assert pks[1].key_seq == 2, "Wrong key sequence number for second column"
 
         # Both should have the same PK name
@@ -11287,14 +10690,10 @@ def test_primarykeys_catalog_filter(cursor, db_connection):
         # Verify catalog filter worked
         assert len(pks) == 1, "Should find exactly one primary key column"
         pk = pks[0]
-        assert (
-            pk.table_cat == current_db
-        ), f"Expected catalog {current_db}, got {pk.table_cat}"
+        assert pk.table_cat == current_db, f"Expected catalog {current_db}, got {pk.table_cat}"
 
         # Get primary keys with non-existent catalog
-        fake_pks = cursor.primaryKeys(
-            "single_pk_test", catalog="nonexistent_db_xyz123"
-        ).fetchall()
+        fake_pks = cursor.primaryKeys("single_pk_test", catalog="nonexistent_db_xyz123").fetchall()
         assert len(fake_pks) == 0, "Should return empty list for non-existent catalog"
 
     finally:
@@ -11320,9 +10719,7 @@ def test_rowcount_after_fetch_operations(cursor, db_connection):
     """Test that rowcount is updated correctly after various fetch operations."""
     try:
         # Create a test table
-        cursor.execute(
-            "CREATE TABLE #rowcount_fetch_test (id INT PRIMARY KEY, name NVARCHAR(100))"
-        )
+        cursor.execute("CREATE TABLE #rowcount_fetch_test (id INT PRIMARY KEY, name NVARCHAR(100))")
 
         # Insert some test data
         cursor.execute("INSERT INTO #rowcount_fetch_test VALUES (1, 'Row 1')")
@@ -11335,9 +10732,7 @@ def test_rowcount_after_fetch_operations(cursor, db_connection):
         # Test fetchone
         cursor.execute("SELECT * FROM #rowcount_fetch_test ORDER BY id")
         # Initially, rowcount should be -1 after a SELECT statement
-        assert (
-            cursor.rowcount == -1
-        ), "rowcount should be -1 right after SELECT statement"
+        assert cursor.rowcount == -1, "rowcount should be -1 right after SELECT statement"
 
         # After fetchone, rowcount should be 1
         row = cursor.fetchone()
@@ -11351,9 +10746,7 @@ def test_rowcount_after_fetch_operations(cursor, db_connection):
 
         # Test fetchmany
         cursor.execute("SELECT * FROM #rowcount_fetch_test ORDER BY id")
-        assert (
-            cursor.rowcount == -1
-        ), "rowcount should be -1 right after SELECT statement"
+        assert cursor.rowcount == -1, "rowcount should be -1 right after SELECT statement"
 
         # After fetchmany(2), rowcount should be 2
         rows = cursor.fetchmany(2)
@@ -11367,9 +10760,7 @@ def test_rowcount_after_fetch_operations(cursor, db_connection):
 
         # Test fetchall
         cursor.execute("SELECT * FROM #rowcount_fetch_test ORDER BY id")
-        assert (
-            cursor.rowcount == -1
-        ), "rowcount should be -1 right after SELECT statement"
+        assert cursor.rowcount == -1, "rowcount should be -1 right after SELECT statement"
 
         # After fetchall, rowcount should be the total number of rows fetched (5)
         rows = cursor.fetchall()
@@ -11387,24 +10778,18 @@ def test_rowcount_after_fetch_operations(cursor, db_connection):
         # Fetch two more rows with fetchmany
         rows = cursor.fetchmany(2)
         assert len(rows) == 2, "Should fetch two more rows"
-        assert (
-            cursor.rowcount == 3
-        ), "rowcount should be 3 after fetchone + fetchmany(2)"
+        assert cursor.rowcount == 3, "rowcount should be 3 after fetchone + fetchmany(2)"
 
         # Fetch remaining rows with fetchall
         rows = cursor.fetchall()
         assert len(rows) == 2, "Should fetch remaining two rows"
-        assert (
-            cursor.rowcount == 5
-        ), "rowcount should be 5 after fetchone + fetchmany(2) + fetchall"
+        assert cursor.rowcount == 5, "rowcount should be 5 after fetchone + fetchmany(2) + fetchall"
 
         # Test fetchall on an empty result
         cursor.execute("SELECT * FROM #rowcount_fetch_test WHERE id > 100")
         rows = cursor.fetchall()
         assert len(rows) == 0, "Should fetch zero rows"
-        assert (
-            cursor.rowcount == 0
-        ), "rowcount should be 0 after fetchall on empty result"
+        assert cursor.rowcount == 0, "rowcount should be 0 after fetchall on empty result"
 
     finally:
         # Clean up
@@ -11451,9 +10836,7 @@ def test_rowcount_guid_table(cursor, db_connection):
         # Fetch remaining row
         rows = cursor.fetchall()
         assert len(rows) == 1, "Should fetch 1 remaining row"
-        assert (
-            cursor.rowcount == 3
-        ), "Rowcount should be 3 after fetchmany(2) + fetchall"
+        assert cursor.rowcount == 3, "Rowcount should be 3 after fetchmany(2) + fetchall"
 
         # Execute SELECT again
         cursor.execute("SELECT * FROM #test_log")
@@ -11473,9 +10856,7 @@ def test_rowcount_guid_table(cursor, db_connection):
 
         row4 = cursor.fetchone()
         assert row4 is None, "Fourth row should be None (no more rows)"
-        assert (
-            cursor.rowcount == 3
-        ), "Rowcount should remain 3 when fetchone returns None"
+        assert cursor.rowcount == 3, "Rowcount should remain 3 when fetchone returns None"
 
     finally:
         # Clean up
@@ -11512,9 +10893,7 @@ def test_rowcount(cursor, db_connection):
             ('JohnDoe6');
         """
         )
-        assert (
-            cursor.rowcount == 3
-        ), "Rowcount should be 3 after inserting multiple rows"
+        assert cursor.rowcount == 3, "Rowcount should be 3 after inserting multiple rows"
 
         cursor.execute("SELECT * FROM #pytest_test_rowcount;")
         assert (
@@ -11544,9 +10923,7 @@ def test_specialcolumns_setup(cursor, db_connection):
         # Drop tables if they exist
         cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.rowid_test")
         cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.timestamp_test")
-        cursor.execute(
-            "DROP TABLE IF EXISTS pytest_special_schema.multiple_unique_test"
-        )
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.multiple_unique_test")
         cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.identity_test")
 
         # Create table with primary key (for rowIdColumns)
@@ -11610,9 +10987,7 @@ def test_rowid_columns_basic(cursor, db_connection):
         ).fetchall()
 
         # LIMITATION: Only returns first column of primary key
-        assert (
-            len(rowid_cols) == 1
-        ), "Should find exactly one ROWID column (first column of PK)"
+        assert len(rowid_cols) == 1, "Should find exactly one ROWID column (first column of PK)"
 
         # Verify column name in the results
         col = rowid_cols[0]
@@ -11627,9 +11002,7 @@ def test_rowid_columns_basic(cursor, db_connection):
         assert hasattr(col, "type_name"), "Result should have type_name column"
         assert hasattr(col, "column_size"), "Result should have column_size column"
         assert hasattr(col, "buffer_length"), "Result should have buffer_length column"
-        assert hasattr(
-            col, "decimal_digits"
-        ), "Result should have decimal_digits column"
+        assert hasattr(col, "decimal_digits"), "Result should have decimal_digits column"
         assert hasattr(col, "pseudo_column"), "Result should have pseudo_column column"
 
         # The scope should be one of the valid values or NULL
@@ -11659,15 +11032,11 @@ def test_rowid_columns_identity(cursor, db_connection):
         ).fetchall()
 
         # LIMITATION: Only returns the identity column if it's the primary key
-        assert (
-            len(rowid_cols) == 1
-        ), "Should find exactly one ROWID column (identity column as PK)"
+        assert len(rowid_cols) == 1, "Should find exactly one ROWID column (identity column as PK)"
 
         # Verify it's the identity column
         col = rowid_cols[0]
-        assert (
-            col.column_name.lower() == "id"
-        ), "Identity column should be included as it's the PK"
+        assert col.column_name.lower() == "id", "Identity column should be included as it's the PK"
 
     except Exception as e:
         pytest.fail(f"rowIdColumns identity test failed: {e}")
@@ -11685,9 +11054,7 @@ def test_rowid_columns_composite(cursor, db_connection):
         ).fetchall()
 
         # LIMITATION: Only returns first column of composite primary key
-        assert (
-            len(rowid_cols) >= 1
-        ), "Should find at least one ROWID column (first column of PK)"
+        assert len(rowid_cols) >= 1, "Should find at least one ROWID column (first column of PK)"
 
         # Verify column names in the results - should be the first PK column
         col_names = [col.column_name.lower() for col in rowid_cols]
@@ -11739,9 +11106,7 @@ def test_rowid_columns_nullable(cursor, db_connection):
         ).fetchall()
 
         # Verify PK column is included
-        assert (
-            len(rowid_cols_with_nullable) == 1
-        ), "Should return exactly one column (PK)"
+        assert len(rowid_cols_with_nullable) == 1, "Should return exactly one column (PK)"
         assert (
             rowid_cols_with_nullable[0].column_name.lower() == "id"
         ), "PK column should be returned"
@@ -11788,23 +11153,13 @@ def test_rowver_columns_basic(cursor, db_connection):
 
         # Verify result structure - allowing for NULL values
         assert hasattr(rowver_col, "scope"), "Result should have scope column"
-        assert hasattr(
-            rowver_col, "column_name"
-        ), "Result should have column_name column"
+        assert hasattr(rowver_col, "column_name"), "Result should have column_name column"
         assert hasattr(rowver_col, "data_type"), "Result should have data_type column"
         assert hasattr(rowver_col, "type_name"), "Result should have type_name column"
-        assert hasattr(
-            rowver_col, "column_size"
-        ), "Result should have column_size column"
-        assert hasattr(
-            rowver_col, "buffer_length"
-        ), "Result should have buffer_length column"
-        assert hasattr(
-            rowver_col, "decimal_digits"
-        ), "Result should have decimal_digits column"
-        assert hasattr(
-            rowver_col, "pseudo_column"
-        ), "Result should have pseudo_column column"
+        assert hasattr(rowver_col, "column_size"), "Result should have column_size column"
+        assert hasattr(rowver_col, "buffer_length"), "Result should have buffer_length column"
+        assert hasattr(rowver_col, "decimal_digits"), "Result should have decimal_digits column"
+        assert hasattr(rowver_col, "pseudo_column"), "Result should have pseudo_column column"
 
         # The scope should be one of the valid values or NULL
         assert rowver_col.scope in [
@@ -11851,9 +11206,7 @@ def test_rowver_columns_nullable(cursor, db_connection):
         ).fetchall()
 
         # Verify rowversion column is included (rowversion can't be nullable)
-        assert (
-            len(rowver_cols_with_nullable) == 1
-        ), "Should find exactly one ROWVER column"
+        assert len(rowver_cols_with_nullable) == 1, "Should find exactly one ROWVER column"
         assert (
             rowver_cols_with_nullable[0].column_name.lower() == "ts"
         ), "ROWVERSION column should be included"
@@ -11864,9 +11217,7 @@ def test_rowver_columns_nullable(cursor, db_connection):
         ).fetchall()
 
         # Verify rowversion column is still included
-        assert (
-            len(rowver_cols_no_nullable) == 1
-        ), "Should find exactly one ROWVER column"
+        assert len(rowver_cols_no_nullable) == 1, "Should find exactly one ROWVER column"
         assert (
             rowver_cols_no_nullable[0].column_name.lower() == "ts"
         ), "ROWVERSION column should be included even with nullable=False"
@@ -11874,9 +11225,7 @@ def test_rowver_columns_nullable(cursor, db_connection):
     except Exception as e:
         pytest.fail(f"rowVerColumns nullable test failed: {e}")
     finally:
-        cursor.execute(
-            "DROP TABLE IF EXISTS pytest_special_schema.nullable_rowver_test"
-        )
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.nullable_rowver_test")
         db_connection.commit()
 
 
@@ -11901,9 +11250,7 @@ def test_specialcolumns_catalog_filter(cursor, db_connection):
             catalog="nonexistent_db_xyz123",
             schema="pytest_special_schema",
         ).fetchall()
-        assert (
-            len(fake_rowid_cols) == 0
-        ), "Should return empty list for non-existent catalog"
+        assert len(fake_rowid_cols) == 0, "Should return empty list for non-existent catalog"
 
         # Test rowVerColumns with current catalog
         rowver_cols = cursor.rowVerColumns(
@@ -11919,9 +11266,7 @@ def test_specialcolumns_catalog_filter(cursor, db_connection):
             catalog="nonexistent_db_xyz123",
             schema="pytest_special_schema",
         ).fetchall()
-        assert (
-            len(fake_rowver_cols) == 0
-        ), "Should return empty list for non-existent catalog"
+        assert len(fake_rowver_cols) == 0, "Should return empty list for non-existent catalog"
 
     except Exception as e:
         pytest.fail(f"Special columns catalog filter test failed: {e}")
@@ -11936,16 +11281,10 @@ def test_specialcolumns_cleanup(cursor, db_connection):
         # Drop all test tables
         cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.rowid_test")
         cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.timestamp_test")
-        cursor.execute(
-            "DROP TABLE IF EXISTS pytest_special_schema.multiple_unique_test"
-        )
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.multiple_unique_test")
         cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.identity_test")
-        cursor.execute(
-            "DROP TABLE IF EXISTS pytest_special_schema.nullable_unique_test"
-        )
-        cursor.execute(
-            "DROP TABLE IF EXISTS pytest_special_schema.nullable_timestamp_test"
-        )
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.nullable_unique_test")
+        cursor.execute("DROP TABLE IF EXISTS pytest_special_schema.nullable_timestamp_test")
 
         # Drop the test schema
         cursor.execute("DROP SCHEMA IF EXISTS pytest_special_schema")
@@ -12016,9 +11355,7 @@ def test_statistics_basic(cursor, db_connection):
         test_statistics_setup(cursor, db_connection)
 
         # Get statistics for the test table (all indexes)
-        stats = cursor.statistics(
-            table="stats_test", schema="pytest_stats_schema"
-        ).fetchall()
+        stats = cursor.statistics(table="stats_test", schema="pytest_stats_schema").fetchall()
 
         # Verify we got results - should include PK, unique index on email, and non-unique index
         assert stats is not None, "statistics() should return results"
@@ -12040,18 +11377,12 @@ def test_statistics_basic(cursor, db_connection):
         assert hasattr(first_row, "non_unique"), "Result should have non_unique column"
         assert hasattr(first_row, "index_name"), "Result should have index_name column"
         assert hasattr(first_row, "type"), "Result should have type column"
-        assert hasattr(
-            first_row, "column_name"
-        ), "Result should have column_name column"
+        assert hasattr(first_row, "column_name"), "Result should have column_name column"
 
         # Check that we can find the primary key
         pk_found = False
         for stat in stats:
-            if (
-                hasattr(stat, "index_name")
-                and stat.index_name
-                and "pk" in stat.index_name.lower()
-            ):
+            if hasattr(stat, "index_name") and stat.index_name and "pk" in stat.index_name.lower():
                 pk_found = True
                 break
 
@@ -12070,9 +11401,7 @@ def test_statistics_basic(cursor, db_connection):
                 email_index_found = True
                 break
 
-        assert (
-            email_index_found
-        ), "Unique index on email should be included in statistics results"
+        assert email_index_found, "Unique index on email should be included in statistics results"
 
     finally:
         # Clean up happens in test_statistics_cleanup
@@ -12089,19 +11418,13 @@ def test_statistics_unique_only(cursor, db_connection):
 
         # Verify we got results
         assert stats is not None, "statistics() with unique=True should return results"
-        assert (
-            len(stats) > 0
-        ), "statistics() with unique=True should return at least one row"
+        assert len(stats) > 0, "statistics() with unique=True should return at least one row"
 
         # All index entries should be for unique indexes (non_unique = 0)
         for stat in stats:
             if hasattr(stat, "type") and stat.type != 0:  # Skip TABLE_STAT entries
-                assert hasattr(
-                    stat, "non_unique"
-                ), "Index entry should have non_unique column"
-                assert (
-                    stat.non_unique == 0
-                ), "With unique=True, all indexes should be unique"
+                assert hasattr(stat, "non_unique"), "Index entry should have non_unique column"
+                assert stat.non_unique == 0, "With unique=True, all indexes should be unique"
 
         # Count different types of indexes
         indexes = [s for s in stats if hasattr(s, "type") and s.type != 0]
@@ -12118,32 +11441,20 @@ def test_statistics_empty_table(cursor, db_connection):
     """Test statistics on a table with no data (just schema)"""
     try:
         # Get statistics for the empty table
-        stats = cursor.statistics(
-            table="empty_stats_test", schema="pytest_stats_schema"
-        ).fetchall()
+        stats = cursor.statistics(table="empty_stats_test", schema="pytest_stats_schema").fetchall()
 
         # Should still return metadata about the primary key
-        assert (
-            stats is not None
-        ), "statistics() should return results even for empty table"
-        assert (
-            len(stats) > 0
-        ), "statistics() should return at least one row for empty table"
+        assert stats is not None, "statistics() should return results even for empty table"
+        assert len(stats) > 0, "statistics() should return at least one row for empty table"
 
         # Check for primary key
         pk_found = False
         for stat in stats:
-            if (
-                hasattr(stat, "index_name")
-                and stat.index_name
-                and "pk" in stat.index_name.lower()
-            ):
+            if hasattr(stat, "index_name") and stat.index_name and "pk" in stat.index_name.lower():
                 pk_found = True
                 break
 
-        assert (
-            pk_found
-        ), "Primary key should be included in statistics results for empty table"
+        assert pk_found, "Primary key should be included in statistics results for empty table"
 
     finally:
         # Clean up happens in test_statistics_cleanup
@@ -12164,9 +11475,7 @@ def test_statistics_result_structure(cursor, db_connection):
     """Test the complete structure of statistics result rows"""
     try:
         # Get statistics for the test table
-        stats = cursor.statistics(
-            table="stats_test", schema="pytest_stats_schema"
-        ).fetchall()
+        stats = cursor.statistics(table="stats_test", schema="pytest_stats_schema").fetchall()
 
         # Verify we have results
         assert len(stats) > 0, "Should have statistics results"
@@ -12198,9 +11507,7 @@ def test_statistics_result_structure(cursor, db_connection):
         ]
 
         for column in required_columns:
-            assert hasattr(
-                index_row, column
-            ), f"Result missing required column: {column}"
+            assert hasattr(index_row, column), f"Result missing required column: {column}"
 
         # Check types of key columns
         assert isinstance(index_row.table_name, str), "table_name should be a string"
@@ -12232,9 +11539,7 @@ def test_statistics_catalog_filter(cursor, db_connection):
         # Verify catalog in results
         for stat in stats:
             if hasattr(stat, "table_cat"):
-                assert (
-                    stat.table_cat.lower() == current_db.lower()
-                ), "Wrong table catalog"
+                assert stat.table_cat.lower() == current_db.lower(), "Wrong table catalog"
 
         # Get statistics with non-existent catalog
         fake_stats = cursor.statistics(
@@ -12373,45 +11678,25 @@ def test_columns_all(cursor, db_connection):
         # Verify structure of results
         first_row = cols[0]
         assert hasattr(first_row, "table_cat"), "Result should have table_cat column"
-        assert hasattr(
-            first_row, "table_schem"
-        ), "Result should have table_schem column"
+        assert hasattr(first_row, "table_schem"), "Result should have table_schem column"
         assert hasattr(first_row, "table_name"), "Result should have table_name column"
-        assert hasattr(
-            first_row, "column_name"
-        ), "Result should have column_name column"
+        assert hasattr(first_row, "column_name"), "Result should have column_name column"
         assert hasattr(first_row, "data_type"), "Result should have data_type column"
         assert hasattr(first_row, "type_name"), "Result should have type_name column"
-        assert hasattr(
-            first_row, "column_size"
-        ), "Result should have column_size column"
-        assert hasattr(
-            first_row, "buffer_length"
-        ), "Result should have buffer_length column"
-        assert hasattr(
-            first_row, "decimal_digits"
-        ), "Result should have decimal_digits column"
-        assert hasattr(
-            first_row, "num_prec_radix"
-        ), "Result should have num_prec_radix column"
+        assert hasattr(first_row, "column_size"), "Result should have column_size column"
+        assert hasattr(first_row, "buffer_length"), "Result should have buffer_length column"
+        assert hasattr(first_row, "decimal_digits"), "Result should have decimal_digits column"
+        assert hasattr(first_row, "num_prec_radix"), "Result should have num_prec_radix column"
         assert hasattr(first_row, "nullable"), "Result should have nullable column"
         assert hasattr(first_row, "remarks"), "Result should have remarks column"
         assert hasattr(first_row, "column_def"), "Result should have column_def column"
-        assert hasattr(
-            first_row, "sql_data_type"
-        ), "Result should have sql_data_type column"
-        assert hasattr(
-            first_row, "sql_datetime_sub"
-        ), "Result should have sql_datetime_sub column"
+        assert hasattr(first_row, "sql_data_type"), "Result should have sql_data_type column"
+        assert hasattr(first_row, "sql_datetime_sub"), "Result should have sql_datetime_sub column"
         assert hasattr(
             first_row, "char_octet_length"
         ), "Result should have char_octet_length column"
-        assert hasattr(
-            first_row, "ordinal_position"
-        ), "Result should have ordinal_position column"
-        assert hasattr(
-            first_row, "is_nullable"
-        ), "Result should have is_nullable column"
+        assert hasattr(first_row, "ordinal_position"), "Result should have ordinal_position column"
+        assert hasattr(first_row, "is_nullable"), "Result should have is_nullable column"
 
     finally:
         # Clean up happens in test_columns_cleanup
@@ -12422,9 +11707,7 @@ def test_columns_specific_table(cursor, db_connection):
     """Test columns returns information about a specific table"""
     try:
         # Get columns for the test table
-        cols = cursor.columns(
-            table="columns_test", schema="pytest_cols_schema"
-        ).fetchall()
+        cols = cursor.columns(table="columns_test", schema="pytest_cols_schema").fetchall()
 
         # Verify we got results
         assert len(cols) == 9, "Should find exactly 9 columns in columns_test"
@@ -12460,9 +11743,7 @@ def test_columns_specific_table(cursor, db_connection):
         # Check a nullable column
         desc_col = next(col for col in cols if col.column_name.lower() == "description")
         assert desc_col.nullable == 1, "description column should be nullable"
-        assert (
-            desc_col.is_nullable == "YES"
-        ), "is_nullable should be YES for description column"
+        assert desc_col.is_nullable == "YES", "is_nullable should be YES for description column"
 
     finally:
         # Clean up happens in test_columns_cleanup
@@ -12473,9 +11754,7 @@ def test_columns_special_chars(cursor, db_connection):
     """Test columns with special characters and edge cases"""
     try:
         # Get columns for the special table
-        cols = cursor.columns(
-            table="columns_special_test", schema="pytest_cols_schema"
-        ).fetchall()
+        cols = cursor.columns(table="columns_special_test", schema="pytest_cols_schema").fetchall()
 
         # Verify we got results
         assert len(cols) == 9, "Should find exactly 9 columns in columns_special_test"
@@ -12491,15 +11770,11 @@ def test_columns_special_chars(cursor, db_connection):
         assert any(
             "user name" in name.lower() for name in col_names
         ), "Column with spaces should be in results"
-        assert any(
-            "id" == name.lower() for name in col_names
-        ), "ID column should be in results"
+        assert any("id" == name.lower() for name in col_names), "ID column should be in results"
         assert any(
             "123_numeric_start" in name.lower() for name in col_names
         ), "Column starting with numbers should be in results"
-        assert any(
-            "max" == name.lower() for name in col_names
-        ), "MAX column should be in results"
+        assert any("max" == name.lower() for name in col_names), "MAX column should be in results"
         assert any(
             "select" == name.lower() for name in col_names
         ), "SELECT column should be in results"
@@ -12532,9 +11807,7 @@ def test_columns_specific_column(cursor, db_connection):
         # Verify column details
         col = cols[0]
         assert col.column_name.lower() == "name", "Column name should be 'name'"
-        assert (
-            col.table_name.lower() == "columns_test"
-        ), "Table name should be 'columns_test'"
+        assert col.table_name.lower() == "columns_test", "Table name should be 'columns_test'"
         assert (
             col.table_schem.lower() == "pytest_cols_schema"
         ), "Schema should be 'pytest_cols_schema'"
@@ -12583,10 +11856,7 @@ def test_columns_with_underscore_pattern(cursor):
         # Should find 'id' column
         id_found = False
         for col in cols:
-            if (
-                col.column_name.lower() == "id"
-                and col.table_name.lower() == "columns_test"
-            ):
+            if col.column_name.lower() == "id" and col.table_name.lower() == "columns_test":
                 id_found = True
                 break
 
@@ -12638,9 +11908,7 @@ def test_columns_data_types(cursor):
     """Test columns returns correct data type information"""
     try:
         # Get all columns from test table
-        cols = cursor.columns(
-            table="columns_test", schema="pytest_cols_schema"
-        ).fetchall()
+        cols = cursor.columns(table="columns_test", schema="pytest_cols_schema").fetchall()
 
         # Create a dictionary mapping column names to their details
         col_dict = {col.column_name.lower(): col for col in cols}
@@ -12660,20 +11928,17 @@ def test_columns_data_types(cursor):
 
         # DECIMAL column
         assert any(
-            name in col_dict["price"].type_name.lower()
-            for name in ["decimal", "numeric", "money"]
+            name in col_dict["price"].type_name.lower() for name in ["decimal", "numeric", "money"]
         ), "price should be DECIMAL type"
 
         # BIT column
         assert any(
-            name in col_dict["is_active"].type_name.lower()
-            for name in ["bit", "boolean"]
+            name in col_dict["is_active"].type_name.lower() for name in ["bit", "boolean"]
         ), "is_active should be BIT type"
 
         # TEXT column
         assert any(
-            name in col_dict["notes"].type_name.lower()
-            for name in ["text", "char", "varchar"]
+            name in col_dict["notes"].type_name.lower() for name in ["text", "char", "varchar"]
         ), "notes should be TEXT type"
 
         # Check nullable flag
@@ -12684,9 +11949,7 @@ def test_columns_data_types(cursor):
         assert col_dict["name"].column_size == 100, "name should have size 100"
 
         # Check decimal digits for numeric type
-        assert (
-            col_dict["price"].decimal_digits == 2
-        ), "price should have 2 decimal digits"
+        assert col_dict["price"].decimal_digits == 2, "price should have 2 decimal digits"
 
     finally:
         # Clean up happens in test_columns_cleanup
@@ -12733,9 +11996,7 @@ def test_columns_catalog_filter(cursor):
         for col in cols:
             # Some drivers might return None for catalog
             if col.table_cat is not None:
-                assert (
-                    col.table_cat.lower() == current_db.lower()
-                ), "Wrong table catalog"
+                assert col.table_cat.lower() == current_db.lower(), "Wrong table catalog"
 
         # Test with non-existent catalog
         fake_cols = cursor.columns(
@@ -12761,14 +12022,10 @@ def test_columns_schema_pattern(cursor):
         assert len(test_cols) > 0, "Should find columns using schema pattern"
 
         # Try a more specific pattern
-        specific_cols = cursor.columns(
-            table="columns_test", schema="pytest_cols%"
-        ).fetchall()
+        specific_cols = cursor.columns(table="columns_test", schema="pytest_cols%").fetchall()
 
         # Should still find our test table columns
-        test_cols = [
-            col for col in specific_cols if col.table_name.lower() == "columns_test"
-        ]
+        test_cols = [col for col in specific_cols if col.table_name.lower() == "columns_test"]
         assert len(test_cols) > 0, "Should find columns using specific schema pattern"
 
     finally:
@@ -12788,9 +12045,7 @@ def test_columns_table_pattern(cursor):
             if col.table_name:
                 tables_found.add(col.table_name.lower())
 
-        assert (
-            "columns_test" in tables_found
-        ), "Should find columns_test with pattern columns_%"
+        assert "columns_test" in tables_found, "Should find columns_test with pattern columns_%"
         assert (
             "columns_special_test" in tables_found
         ), "Should find columns_special_test with pattern columns_%"
@@ -12804,9 +12059,7 @@ def test_columns_ordinal_position(cursor):
     """Test ordinal_position is correct in columns results"""
     try:
         # Get columns for the test table
-        cols = cursor.columns(
-            table="columns_test", schema="pytest_cols_schema"
-        ).fetchall()
+        cols = cursor.columns(table="columns_test", schema="pytest_cols_schema").fetchall()
 
         # Sort by ordinal position
         sorted_cols = sorted(cols, key=lambda col: col.ordinal_position)
@@ -12877,9 +12130,7 @@ def test_lowercase_attribute(cursor, db_connection):
         # Description column names should preserve original case
         column_names1 = [desc[0] for desc in cursor1.description]
         assert "ID" in column_names1, "Column 'ID' should be present with original case"
-        assert (
-            "UserName" in column_names1
-        ), "Column 'UserName' should be present with original case"
+        assert "UserName" in column_names1, "Column 'UserName' should be present with original case"
 
         # Make sure to consume all results and close the cursor
         cursor1.fetchall()
@@ -12892,12 +12143,8 @@ def test_lowercase_attribute(cursor, db_connection):
 
         # Description column names should be lowercase
         column_names2 = [desc[0] for desc in cursor2.description]
-        assert (
-            "id" in column_names2
-        ), "Column names should be lowercase when lowercase=True"
-        assert (
-            "username" in column_names2
-        ), "Column names should be lowercase when lowercase=True"
+        assert "id" in column_names2, "Column names should be lowercase when lowercase=True"
+        assert "username" in column_names2, "Column names should be lowercase when lowercase=True"
 
         # Make sure to consume all results and close the cursor
         cursor2.fetchall()
@@ -12952,9 +12199,7 @@ def test_decimal_separator_function(cursor, db_connection):
         cursor.execute("SELECT id, decimal_value FROM #pytest_decimal_separator_test")
         row = cursor.fetchone()
         default_str = str(row)
-        assert (
-            "123.45" in default_str
-        ), "Default separator not found in string representation"
+        assert "123.45" in default_str, "Default separator not found in string representation"
 
         # Now change to comma separator and test string representation
         mssql_python.setDecimalSeparator(",")
@@ -12983,9 +12228,7 @@ def test_decimal_separator_basic_functionality():
 
     try:
         # Test default value
-        assert (
-            mssql_python.getDecimalSeparator() == "."
-        ), "Default decimal separator should be '.'"
+        assert mssql_python.getDecimalSeparator() == ".", "Default decimal separator should be '.'"
 
         # Test setting to comma
         mssql_python.setDecimalSeparator(",")
@@ -13095,9 +12338,7 @@ def test_decimal_separator_calculations(cursor, db_connection):
         db_connection.commit()
 
         # Test with default separator
-        cursor.execute(
-            "SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test"
-        )
+        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
         row = cursor.fetchone()
         assert row.sum_result == decimal.Decimal(
             "16.00"
@@ -13107,18 +12348,14 @@ def test_decimal_separator_calculations(cursor, db_connection):
         mssql_python.setDecimalSeparator(",")
 
         # Calculations should still work correctly
-        cursor.execute(
-            "SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test"
-        )
+        cursor.execute("SELECT value1 + value2 AS sum_result FROM #pytest_decimal_calc_test")
         row = cursor.fetchone()
         assert row.sum_result == decimal.Decimal(
             "16.00"
         ), "Sum calculation affected by separator change"
 
         # But string representation should use comma
-        assert "16,00" in str(
-            row
-        ), "Sum result not formatted with comma in string representation"
+        assert "16,00" in str(row), "Sum result not formatted with comma in string representation"
 
     finally:
         # Restore original separator
@@ -13157,18 +12394,14 @@ def test_executemany_with_uuids(cursor, db_connection):
         uuid_map = {desc: uid for uid, desc in test_data}
 
         # Execute batch insert
-        cursor.executemany(
-            f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", test_data
-        )
+        cursor.executemany(f"INSERT INTO {table_name} (id, description) VALUES (?, ?)", test_data)
         cursor.connection.commit()
 
         # Fetch and verify
         cursor.execute(f"SELECT id, description FROM {table_name}")
         rows = cursor.fetchall()
 
-        assert len(rows) == len(
-            test_data
-        ), "Number of fetched rows does not match inserted rows."
+        assert len(rows) == len(test_data), "Number of fetched rows does not match inserted rows."
 
         for retrieved_uuid, retrieved_desc in rows:
             expected_uuid = uuid_map[retrieved_desc]
@@ -13185,9 +12418,7 @@ def test_executemany_with_uuids(cursor, db_connection):
                 assert isinstance(
                     retrieved_uuid, uuid.UUID
                 ), f"Expected UUID, got {type(retrieved_uuid)}"
-                assert (
-                    retrieved_uuid == expected_uuid
-                ), f"UUID mismatch for '{retrieved_desc}'"
+                assert retrieved_uuid == expected_uuid, f"UUID mismatch for '{retrieved_desc}'"
 
     finally:
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
@@ -13202,9 +12433,7 @@ def test_nvarcharmax_executemany_streaming(cursor, db_connection):
         db_connection.commit()
 
         # --- executemany insert ---
-        cursor.executemany(
-            "INSERT INTO #pytest_nvarcharmax VALUES (?)", [(v,) for v in values]
-        )
+        cursor.executemany("INSERT INTO #pytest_nvarcharmax VALUES (?)", [(v,) for v in values])
         db_connection.commit()
 
         # --- fetchall ---
@@ -13236,9 +12465,7 @@ def test_varcharmax_executemany_streaming(cursor, db_connection):
         db_connection.commit()
 
         # --- executemany insert ---
-        cursor.executemany(
-            "INSERT INTO #pytest_varcharmax VALUES (?)", [(v,) for v in values]
-        )
+        cursor.executemany("INSERT INTO #pytest_varcharmax VALUES (?)", [(v,) for v in values])
         db_connection.commit()
 
         # --- fetchall ---
@@ -13270,9 +12497,7 @@ def test_varbinarymax_executemany_streaming(cursor, db_connection):
         db_connection.commit()
 
         # --- executemany insert ---
-        cursor.executemany(
-            "INSERT INTO #pytest_varbinarymax VALUES (?)", [(v,) for v in values]
-        )
+        cursor.executemany("INSERT INTO #pytest_varbinarymax VALUES (?)", [(v,) for v in values])
         db_connection.commit()
 
         # --- fetchall ---
@@ -13308,9 +12533,7 @@ def test_date_string_parameter_binding(cursor, db_connection):
             )
         """
         )
-        cursor.execute(
-            f"INSERT INTO {table_name} (a_column) VALUES ('string1'), ('string2')"
-        )
+        cursor.execute(f"INSERT INTO {table_name} (a_column) VALUES ('string1'), ('string2')")
         db_connection.commit()
 
         date_str = "2025-08-12"
@@ -13343,18 +12566,14 @@ def test_time_string_parameter_binding(cursor, db_connection):
             )
         """
         )
-        cursor.execute(
-            f"INSERT INTO {table_name} (time_col) VALUES ('prefix_14:30:45_suffix')"
-        )
+        cursor.execute(f"INSERT INTO {table_name} (time_col) VALUES ('prefix_14:30:45_suffix')")
         db_connection.commit()
 
         time_str = "14:30:45"
 
         # This should fail because '14:30:45' gets converted to TIME type
         # and SQL Server can't compare TIME against VARCHAR with prefix/suffix
-        cursor.execute(
-            f"SELECT time_col FROM {table_name} WHERE time_col = ?", (time_str,)
-        )
+        cursor.execute(f"SELECT time_col FROM {table_name} WHERE time_col = ?", (time_str,))
         rows = cursor.fetchall()
 
         assert rows == [], f"Expected no match for time-like string, got {rows}"
@@ -13401,6 +12620,7 @@ def test_datetime_string_parameter_binding(cursor, db_connection):
         drop_table_if_exists(cursor, table_name)
         db_connection.commit()
 
+
 # ---------------------------------------------------------
 # Test 1: Basic numeric insertion and fetch roundtrip
 # ---------------------------------------------------------
@@ -13425,9 +12645,7 @@ def test_numeric_basic_roundtrip(cursor, db_connection, precision, scale, value)
         assert row is not None, "Expected one row to be returned"
         fetched = row[0]
 
-        expected = (
-            value.quantize(decimal.Decimal(f"1e-{scale}")) if scale > 0 else value
-        )
+        expected = value.quantize(decimal.Decimal(f"1e-{scale}")) if scale > 0 else value
         assert fetched == expected, f"Expected {expected}, got {fetched}"
 
     finally:
@@ -13457,9 +12675,7 @@ def test_numeric_high_precision_roundtrip(cursor, db_connection, value):
         cursor.execute(f"SELECT val FROM {table_name}")
         row = cursor.fetchone()
         assert row is not None
-        assert (
-            row[0] == value
-        ), f"High-precision roundtrip failed. Expected {value}, got {row[0]}"
+        assert row[0] == value, f"High-precision roundtrip failed. Expected {value}, got {row[0]}"
 
     finally:
         cursor.execute(f"DROP TABLE {table_name}")
@@ -13538,9 +12754,7 @@ def test_numeric_boundary_precision(cursor, db_connection):
 
         cursor.execute(f"SELECT val FROM {table_name}")
         row = cursor.fetchone()
-        assert (
-            row[0] == value
-        ), f"Boundary precision mismatch: expected {value}, got {row[0]}"
+        assert row[0] == value, f"Boundary precision mismatch: expected {value}, got {row[0]}"
 
     finally:
         cursor.execute(f"DROP TABLE {table_name}")
@@ -13552,9 +12766,7 @@ def test_numeric_boundary_precision(cursor, db_connection):
 # ---------------------------------------------------------
 def test_numeric_precision_scale_positive_exponent(cursor, db_connection):
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_numeric_test (numeric_column DECIMAL(10, 2))"
-        )
+        cursor.execute("CREATE TABLE #pytest_numeric_test (numeric_column DECIMAL(10, 2))")
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_numeric_test (numeric_column) VALUES (?)",
@@ -13580,9 +12792,7 @@ def test_numeric_precision_scale_positive_exponent(cursor, db_connection):
 # ---------------------------------------------------------
 def test_numeric_precision_scale_negative_exponent(cursor, db_connection):
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_numeric_test (numeric_column DECIMAL(10, 5))"
-        )
+        cursor.execute("CREATE TABLE #pytest_numeric_test (numeric_column DECIMAL(10, 5))")
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_numeric_test (numeric_column) VALUES (?)",
@@ -13734,9 +12944,7 @@ def test_numeric_leading_zeros_precision_loss(
         (decimal.Decimal("2.5E-25"), "2.5E-25 exponent"),
     ],
 )
-def test_numeric_extreme_exponents_precision_loss(
-    cursor, db_connection, value, description
-):
+def test_numeric_extreme_exponents_precision_loss(cursor, db_connection, value, description):
     """Test precision loss with values having extreme small magnitudes"""
     # Scientific notation values like 1E-20 create scale > precision situations
     # that violate SQL Server's NUMERIC(P,S) rules - this is expected behavior
@@ -13767,6 +12975,7 @@ def test_numeric_extreme_exponents_precision_loss(
         except:
             pass  # Table might not exist if creation failed
 
+
 # ---------------------------------------------------------
 # Test 12: 38-digit precision boundary limits
 # ---------------------------------------------------------
@@ -13774,9 +12983,7 @@ def test_numeric_extreme_exponents_precision_loss(
     "value",
     [
         # 38 digits with negative exponent
-        decimal.Decimal(
-            "0." + "0" * 36 + "1"
-        ),  # 38 digits total (1 + 37 decimal places)
+        decimal.Decimal("0." + "0" * 36 + "1"),  # 38 digits total (1 + 37 decimal places)
         # very large numbers at 38-digit limit
         decimal.Decimal("9" * 38),  # Maximum 38-digit integer
         decimal.Decimal("1" + "0" * 37),  # Large 38-digit number
@@ -13840,9 +13047,7 @@ def test_numeric_precision_boundary_limits(cursor, db_connection, value):
         ),  # 47 total digits
     ],
 )
-def test_numeric_beyond_38_digit_precision_negative(
-    cursor, db_connection, value, description
-):
+def test_numeric_beyond_38_digit_precision_negative(cursor, db_connection, value, description):
     """
     Negative test: Ensure proper error handling for values exceeding SQL Server's 38-digit precision limit.
 
@@ -13868,31 +13073,31 @@ def test_numeric_beyond_38_digit_precision_negative(
         # Small decimal values with scientific notation
         (
             [
-                decimal.Decimal('0.70000000000696'),
-                decimal.Decimal('1E-7'),
-                decimal.Decimal('0.00001'),
-                decimal.Decimal('6.96E-12'),
+                decimal.Decimal("0.70000000000696"),
+                decimal.Decimal("1E-7"),
+                decimal.Decimal("0.00001"),
+                decimal.Decimal("6.96E-12"),
             ],
-            "Small decimals with scientific notation"
+            "Small decimals with scientific notation",
         ),
         # Large decimal values with scientific notation
         (
             [
-                decimal.Decimal('4E+8'),
-                decimal.Decimal('1.521E+15'),
-                decimal.Decimal('5.748E+18'),
-                decimal.Decimal('1E+11')
+                decimal.Decimal("4E+8"),
+                decimal.Decimal("1.521E+15"),
+                decimal.Decimal("5.748E+18"),
+                decimal.Decimal("1E+11"),
             ],
-            "Large decimals with positive exponents"
+            "Large decimals with positive exponents",
         ),
         # Medium-sized decimals
         (
             [
-                decimal.Decimal('123.456'),
-                decimal.Decimal('9999.9999'),
-                decimal.Decimal('1000000.50')
+                decimal.Decimal("123.456"),
+                decimal.Decimal("9999.9999"),
+                decimal.Decimal("1000000.50"),
             ],
-            "Medium-sized decimals"
+            "Medium-sized decimals",
         ),
     ],
 )
@@ -13905,28 +13110,29 @@ def test_decimal_scientific_notation_to_varchar(cursor, db_connection, values, d
     table_name = "#pytest_decimal_varchar_conversion"
     try:
         cursor.execute(f"CREATE TABLE {table_name} (id INT IDENTITY(1,1), val VARCHAR(50))")
-        
+
         for val in values:
             cursor.execute(f"INSERT INTO {table_name} (val) VALUES (?)", (val,))
         db_connection.commit()
-        
+
         cursor.execute(f"SELECT val FROM {table_name} ORDER BY id")
         rows = cursor.fetchall()
-        
+
         assert len(rows) == len(values), f"Expected {len(values)} rows, got {len(rows)}"
-        
+
         for i, (row, expected_val) in enumerate(zip(rows, values)):
             stored_val = decimal.Decimal(row[0])
-            assert stored_val == expected_val, (
-                f"{description}: Row {i} mismatch - expected {expected_val}, got {stored_val}"
-            )
-        
+            assert (
+                stored_val == expected_val
+            ), f"{description}: Row {i} mismatch - expected {expected_val}, got {stored_val}"
+
     finally:
         try:
             cursor.execute(f"DROP TABLE {table_name}")
             db_connection.commit()
         except:
             pass
+
 
 SMALL_XML = "<root><item>1</item></root>"
 LARGE_XML = "<root>" + "".join(f"<item>{i}</item>" for i in range(10000)) + "</root>"
@@ -13960,9 +13166,7 @@ def test_xml_empty_and_null(cursor, db_connection):
         )
         db_connection.commit()
 
-        cursor.execute(
-            "INSERT INTO #pytest_xml_empty_null (xml_col) VALUES (?);", EMPTY_XML
-        )
+        cursor.execute("INSERT INTO #pytest_xml_empty_null (xml_col) VALUES (?);", EMPTY_XML)
         cursor.execute("INSERT INTO #pytest_xml_empty_null (xml_col) VALUES (?);", None)
         db_connection.commit()
 
@@ -14013,9 +13217,7 @@ def test_xml_batch_insert(cursor, db_connection):
 
         rows = [
             r[0]
-            for r in cursor.execute(
-                "SELECT xml_col FROM #pytest_xml_batch ORDER BY id;"
-            ).fetchall()
+            for r in cursor.execute("SELECT xml_col FROM #pytest_xml_batch ORDER BY id;").fetchall()
         ]
         assert rows == xmls
     finally:
@@ -14032,9 +13234,7 @@ def test_xml_malformed_input(cursor, db_connection):
         db_connection.commit()
 
         with pytest.raises(Exception):
-            cursor.execute(
-                "INSERT INTO #pytest_xml_invalid (xml_col) VALUES (?);", INVALID_XML
-            )
+            cursor.execute("INSERT INTO #pytest_xml_invalid (xml_col) VALUES (?);", INVALID_XML)
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_xml_invalid;")
         db_connection.commit()
@@ -14184,9 +13384,7 @@ def test_executemany_decimal_column_size_adjustment(cursor, db_connection):
 
     try:
         # Create table with decimal column
-        cursor.execute(
-            "CREATE TABLE #test_decimal_adjust (id INT, decimal_col DECIMAL(38,10))"
-        )
+        cursor.execute("CREATE TABLE #test_decimal_adjust (id INT, decimal_col DECIMAL(38,10))")
 
         # Test with decimal parameters that should trigger column size adjustment
         params = [
@@ -14247,9 +13445,7 @@ def test_column_description_validation(cursor):
     """Test column description validation (Lines 1116-1124)."""
 
     # Execute query to get column descriptions
-    cursor.execute(
-        "SELECT CAST('test' AS NVARCHAR(50)) as col1, CAST(123 as INT) as col2"
-    )
+    cursor.execute("SELECT CAST('test' AS NVARCHAR(50)) as col1, CAST(123 as INT) as col2")
 
     # The description should be populated and validated
     assert cursor.description is not None
@@ -14257,9 +13453,7 @@ def test_column_description_validation(cursor):
 
     # Each description should have 7 elements per PEP-249
     for desc in cursor.description:
-        assert (
-            len(desc) == 7
-        ), f"Column description should have 7 elements, got {len(desc)}"
+        assert len(desc) == 7, f"Column description should have 7 elements, got {len(desc)}"
 
 
 def test_column_metadata_error_handling(cursor):
@@ -14336,9 +13530,7 @@ def test_callproc_not_supported_error(cursor):
     """Test callproc NotSupportedError (Lines 2413-2421)."""
 
     # This should always raise NotSupportedError (lines 2417-2420)
-    with pytest.raises(
-        mssql_python.NotSupportedError, match="callproc.*is not yet implemented"
-    ):
+    with pytest.raises(mssql_python.NotSupportedError, match="callproc.*is not yet implemented"):
         cursor.callproc("test_proc")
 
 
@@ -14402,17 +13594,12 @@ def test_row_uuid_processing_with_braces(cursor, db_connection):
 
         # Insert a GUID with braces (this is how SQL Server often returns them)
         test_guid = "12345678-1234-5678-9ABC-123456789ABC"
-        cursor.execute(
-            "INSERT INTO #pytest_uuid_braces (guid_col) VALUES (?)", [test_guid]
-        )
+        cursor.execute("INSERT INTO #pytest_uuid_braces (guid_col) VALUES (?)", [test_guid])
         db_connection.commit()
 
         # Configure native_uuid=True to trigger UUID processing
         original_setting = None
-        if (
-            hasattr(cursor.connection, "_settings")
-            and "native_uuid" in cursor.connection._settings
-        ):
+        if hasattr(cursor.connection, "_settings") and "native_uuid" in cursor.connection._settings:
             original_setting = cursor.connection._settings["native_uuid"]
             cursor.connection._settings["native_uuid"] = True
 
@@ -14466,10 +13653,7 @@ def test_row_uuid_processing_sql_guid_type(cursor, db_connection):
 
         # Configure native_uuid=True to trigger UUID processing
         original_setting = None
-        if (
-            hasattr(cursor.connection, "_settings")
-            and "native_uuid" in cursor.connection._settings
-        ):
+        if hasattr(cursor.connection, "_settings") and "native_uuid" in cursor.connection._settings:
             original_setting = cursor.connection._settings["native_uuid"]
             cursor.connection._settings["native_uuid"] = True
 
@@ -14496,6 +13680,7 @@ def test_row_uuid_processing_sql_guid_type(cursor, db_connection):
         drop_table_if_exists(cursor, "#pytest_sql_guid_type")
         db_connection.commit()
 
+
 def test_row_output_converter_overflow_error(cursor, db_connection):
     """Test Row output converter OverflowError handling (Lines 186-195)."""
 
@@ -14512,9 +13697,7 @@ def test_row_output_converter_overflow_error(cursor, db_connection):
         )
 
         # Insert a valid value first
-        cursor.execute(
-            "INSERT INTO #pytest_overflow_test (id, small_int) VALUES (?, ?)", [1, 100]
-        )
+        cursor.execute("INSERT INTO #pytest_overflow_test (id, small_int) VALUES (?, ?)", [1, 100])
         db_connection.commit()
 
         # Create a custom output converter that will cause OverflowError
@@ -14529,9 +13712,7 @@ def test_row_output_converter_overflow_error(cursor, db_connection):
         if hasattr(cursor.connection, "_output_converters"):
             # Create a converter that will trigger the overflow
             original_converters = getattr(cursor.connection, "_output_converters", {})
-            cursor.connection._output_converters = {
-                -6: problematic_converter
-            }  # TINYINT SQL type
+            cursor.connection._output_converters = {-6: problematic_converter}  # TINYINT SQL type
 
         # Fetch the data - this should trigger lines 186-195 in row.py
         cursor.execute("SELECT id, small_int FROM #pytest_overflow_test")
@@ -14544,9 +13725,7 @@ def test_row_output_converter_overflow_error(cursor, db_connection):
         assert row[0] == 1, "ID should be 1"
 
         # The overflow should be handled and original value kept
-        assert (
-            row[1] == 100
-        ), "Value should be kept as original due to overflow handling"
+        assert row[1] == 100, "Value should be kept as original due to overflow handling"
 
         # Restore original converters
         if hasattr(cursor.connection, "_output_converters"):
@@ -14591,9 +13770,7 @@ def test_row_output_converter_general_exception(cursor, db_connection):
         original_converters = {}
         if hasattr(cursor.connection, "_output_converters"):
             original_converters = getattr(cursor.connection, "_output_converters", {})
-            cursor.connection._output_converters = {
-                12: failing_converter
-            }  # VARCHAR SQL type
+            cursor.connection._output_converters = {12: failing_converter}  # VARCHAR SQL type
 
         # Fetch the data - this should trigger lines 198-206 in row.py
         cursor.execute("SELECT id, text_col FROM #pytest_exception_test")
@@ -14606,9 +13783,7 @@ def test_row_output_converter_general_exception(cursor, db_connection):
         assert row[0] == 1, "ID should be 1"
 
         # The exception should be handled and original value kept
-        assert (
-            row[1] == "test_value"
-        ), "Value should be kept as original due to exception handling"
+        assert row[1] == "test_value", "Value should be kept as original due to exception handling"
 
         # Restore original converters
         if hasattr(cursor.connection, "_output_converters"):
@@ -14636,9 +13811,7 @@ def test_row_cursor_log_method_availability(cursor, db_connection):
         """
         )
 
-        cursor.execute(
-            "INSERT INTO #pytest_log_check (id, value_col) VALUES (?, ?)", [1, 42]
-        )
+        cursor.execute("INSERT INTO #pytest_log_check (id, value_col) VALUES (?, ?)", [1, 42])
         db_connection.commit()
 
         # Test that cursor has log method or doesn't have it
@@ -14703,7 +13876,9 @@ def test_all_numeric_types_with_nulls(cursor, db_connection):
         assert rows[1][3] == 255, "TINYINT column should be 255"
         assert rows[1][4] == True, "BIT column should be True"
         assert abs(rows[1][5] - 3.14) < 0.01, "REAL column should be approximately 3.14"
-        assert abs(rows[1][6] - 2.718281828) < 0.0001, "FLOAT column should be approximately 2.718281828"
+        assert (
+            abs(rows[1][6] - 2.718281828) < 0.0001
+        ), "FLOAT column should be approximately 2.718281828"
 
     except Exception as e:
         pytest.fail(f"All numeric types NULL test failed: {e}")
@@ -14729,13 +13904,13 @@ def test_lob_data_types(cursor, db_connection):
         db_connection.commit()
 
         # Create large data that will trigger LOB handling
-        large_text = 'A' * 10000  # 10KB text
-        large_ntext = 'B' * 10000  # 10KB unicode text
-        large_binary = b'\x01\x02\x03\x04' * 2500  # 10KB binary
+        large_text = "A" * 10000  # 10KB text
+        large_ntext = "B" * 10000  # 10KB unicode text
+        large_binary = b"\x01\x02\x03\x04" * 2500  # 10KB binary
 
         cursor.execute(
             "INSERT INTO #pytest_lob_test VALUES (?, ?, ?, ?)",
-            (1, large_text, large_ntext, large_binary)
+            (1, large_text, large_ntext, large_binary),
         )
         db_connection.commit()
 
@@ -14769,12 +13944,9 @@ def test_lob_char_column_types(cursor, db_connection):
         db_connection.commit()
 
         # Create data large enough to trigger LOB path (>8000 bytes)
-        large_char_data = 'X' * 20000  # 20KB text
-        
-        cursor.execute(
-            "INSERT INTO #pytest_lob_char VALUES (?, ?)",
-            (1, large_char_data)
-        )
+        large_char_data = "X" * 20000  # 20KB text
+
+        cursor.execute("INSERT INTO #pytest_lob_char VALUES (?, ?)", (1, large_char_data))
         db_connection.commit()
 
         cursor.execute("SELECT id, char_lob FROM #pytest_lob_char")
@@ -14806,12 +13978,9 @@ def test_lob_wchar_column_types(cursor, db_connection):
         db_connection.commit()
 
         # Create unicode data large enough to trigger LOB path (>4000 characters for NVARCHAR)
-        large_wchar_data = '🔥' * 5000 + 'Unicode™' * 1000  # Mix of emoji and special chars
-        
-        cursor.execute(
-            "INSERT INTO #pytest_lob_wchar VALUES (?, ?)",
-            (1, large_wchar_data)
-        )
+        large_wchar_data = "🔥" * 5000 + "Unicode™" * 1000  # Mix of emoji and special chars
+
+        cursor.execute("INSERT INTO #pytest_lob_wchar VALUES (?, ?)", (1, large_wchar_data))
         db_connection.commit()
 
         cursor.execute("SELECT id, wchar_lob FROM #pytest_lob_wchar")
@@ -14819,7 +13988,7 @@ def test_lob_wchar_column_types(cursor, db_connection):
 
         assert row[0] == 1, "ID should be 1"
         assert row[1] == large_wchar_data, "NVARCHAR(MAX) LOB data should match"
-        assert '🔥' in row[1], "Should contain emoji characters"
+        assert "🔥" in row[1], "Should contain emoji characters"
 
     except Exception as e:
         pytest.fail(f"LOB WCHAR column test failed: {e}")
@@ -14844,11 +14013,8 @@ def test_lob_binary_column_types(cursor, db_connection):
 
         # Create binary data large enough to trigger LOB path (>8000 bytes)
         large_binary_data = bytes(range(256)) * 100  # 25.6KB of varied binary data
-        
-        cursor.execute(
-            "INSERT INTO #pytest_lob_binary VALUES (?, ?)",
-            (1, large_binary_data)
-        )
+
+        cursor.execute("INSERT INTO #pytest_lob_binary VALUES (?, ?)", (1, large_binary_data))
         db_connection.commit()
 
         cursor.execute("SELECT id, binary_lob FROM #pytest_lob_binary")
@@ -14882,19 +14048,18 @@ def test_zero_length_complex_types(cursor, db_connection):
         db_connection.commit()
 
         # Insert empty (non-NULL) values
-        cursor.execute(
-            "INSERT INTO #pytest_zero_length VALUES (?, ?, ?, ?)",
-            (1, '', '', b'')
-        )
+        cursor.execute("INSERT INTO #pytest_zero_length VALUES (?, ?, ?, ?)", (1, "", "", b""))
         db_connection.commit()
 
-        cursor.execute("SELECT id, empty_varchar, empty_nvarchar, empty_binary FROM #pytest_zero_length")
+        cursor.execute(
+            "SELECT id, empty_varchar, empty_nvarchar, empty_binary FROM #pytest_zero_length"
+        )
         row = cursor.fetchone()
 
         assert row[0] == 1, "ID should be 1"
-        assert row[1] == '', "Empty VARCHAR should be empty string"
-        assert row[2] == '', "Empty NVARCHAR should be empty string"
-        assert row[3] == b'', "Empty VARBINARY should be empty bytes"
+        assert row[1] == "", "Empty VARCHAR should be empty string"
+        assert row[2] == "", "Empty NVARCHAR should be empty string"
+        assert row[3] == b"", "Empty VARBINARY should be empty bytes"
 
     except Exception as e:
         pytest.fail(f"Zero-length complex types test failed: {e}")
@@ -14993,13 +14158,12 @@ def test_decimal_conversion_edge_cases(cursor, db_connection):
             (4, "999999999999.9999"),
             (5, "0.0000"),
         ]
-        
+
         for id_val, dec_val in test_values:
             cursor.execute(
-                "INSERT INTO #pytest_decimal_edge VALUES (?, ?)",
-                (id_val, decimal.Decimal(dec_val))
+                "INSERT INTO #pytest_decimal_edge VALUES (?, ?)", (id_val, decimal.Decimal(dec_val))
             )
-        
+
         # Also insert NULL
         cursor.execute("INSERT INTO #pytest_decimal_edge VALUES (6, NULL)")
         db_connection.commit()
@@ -15008,12 +14172,14 @@ def test_decimal_conversion_edge_cases(cursor, db_connection):
         rows = cursor.fetchall()
 
         assert len(rows) == 6, "Should have exactly 6 rows"
-        
+
         # Verify the values
         for i, (id_val, expected_str) in enumerate(test_values):
             assert rows[i][0] == id_val, f"Row {i} ID should be {id_val}"
-            assert rows[i][1] == decimal.Decimal(expected_str), f"Row {i} decimal should match {expected_str}"
-        
+            assert rows[i][1] == decimal.Decimal(
+                expected_str
+            ), f"Row {i} decimal should match {expected_str}"
+
         # Verify NULL
         assert rows[5][0] == 6, "Last row ID should be 6"
         assert rows[5][1] is None, "Last decimal should be NULL"
@@ -15031,15 +14197,15 @@ def test_fixed_length_char_type(cursor, db_connection):
         cursor.execute("CREATE TABLE #pytest_char_test (id INT, char_col CHAR(10))")
         cursor.execute("INSERT INTO #pytest_char_test VALUES (1, 'hello')")
         cursor.execute("INSERT INTO #pytest_char_test VALUES (2, 'world')")
-        
+
         cursor.execute("SELECT char_col FROM #pytest_char_test ORDER BY id")
         rows = cursor.fetchall()
-        
+
         # CHAR pads with spaces to fixed length
         assert len(rows) == 2, "Should fetch 2 rows"
         assert rows[0][0].rstrip() == "hello", "First CHAR value should be 'hello'"
         assert rows[1][0].rstrip() == "world", "Second CHAR value should be 'world'"
-        
+
         cursor.execute("DROP TABLE #pytest_char_test")
     except Exception as e:
         pytest.fail(f"Fixed-length CHAR test failed: {e}")
@@ -15051,15 +14217,15 @@ def test_fixed_length_nchar_type(cursor, db_connection):
         cursor.execute("CREATE TABLE #pytest_nchar_test (id INT, nchar_col NCHAR(10))")
         cursor.execute("INSERT INTO #pytest_nchar_test VALUES (1, N'hello')")
         cursor.execute("INSERT INTO #pytest_nchar_test VALUES (2, N'世界')")  # Unicode test
-        
+
         cursor.execute("SELECT nchar_col FROM #pytest_nchar_test ORDER BY id")
         rows = cursor.fetchall()
-        
+
         # NCHAR pads with spaces to fixed length
         assert len(rows) == 2, "Should fetch 2 rows"
         assert rows[0][0].rstrip() == "hello", "First NCHAR value should be 'hello'"
         assert rows[1][0].rstrip() == "世界", "Second NCHAR value should be '世界'"
-        
+
         cursor.execute("DROP TABLE #pytest_nchar_test")
     except Exception as e:
         pytest.fail(f"Fixed-length NCHAR test failed: {e}")
@@ -15071,23 +14237,25 @@ def test_fixed_length_binary_type(cursor, db_connection):
         cursor.execute("CREATE TABLE #pytest_binary_test (id INT, binary_col BINARY(8))")
         cursor.execute("INSERT INTO #pytest_binary_test VALUES (1, 0x0102030405)")
         cursor.execute("INSERT INTO #pytest_binary_test VALUES (2, 0xAABBCCDD)")
-        
+
         cursor.execute("SELECT binary_col FROM #pytest_binary_test ORDER BY id")
         rows = cursor.fetchall()
-        
+
         # BINARY pads with zeros to fixed length (8 bytes)
         assert len(rows) == 2, "Should fetch 2 rows"
         assert len(rows[0][0]) == 8, "BINARY(8) should be 8 bytes"
         assert len(rows[1][0]) == 8, "BINARY(8) should be 8 bytes"
         # First 5 bytes should match, rest padded with zeros
-        assert rows[0][0][:5] == b'\x01\x02\x03\x04\x05', "First BINARY value should start with inserted bytes"
-        assert rows[0][0][5:] == b'\x00\x00\x00', "BINARY should be zero-padded"
-        
+        assert (
+            rows[0][0][:5] == b"\x01\x02\x03\x04\x05"
+        ), "First BINARY value should start with inserted bytes"
+        assert rows[0][0][5:] == b"\x00\x00\x00", "BINARY should be zero-padded"
+
         cursor.execute("DROP TABLE #pytest_binary_test")
     except Exception as e:
         pytest.fail(f"Fixed-length BINARY test failed: {e}")
-       # The hasattr check should complete without error
-        # This covers the conditional log method availability checks
+    # The hasattr check should complete without error
+    # This covers the conditional log method availability checks
 
     except Exception as e:
         pytest.fail(f"Cursor log method availability test failed: {e}")
@@ -15139,7 +14307,9 @@ def test_all_numeric_types_with_nulls(cursor, db_connection):
         assert rows[1][3] == 255, "TINYINT column should be 255"
         assert rows[1][4] == True, "BIT column should be True"
         assert abs(rows[1][5] - 3.14) < 0.01, "REAL column should be approximately 3.14"
-        assert abs(rows[1][6] - 2.718281828) < 0.0001, "FLOAT column should be approximately 2.718281828"
+        assert (
+            abs(rows[1][6] - 2.718281828) < 0.0001
+        ), "FLOAT column should be approximately 2.718281828"
 
     except Exception as e:
         pytest.fail(f"All numeric types NULL test failed: {e}")
@@ -15165,13 +14335,13 @@ def test_lob_data_types(cursor, db_connection):
         db_connection.commit()
 
         # Create large data that will trigger LOB handling
-        large_text = 'A' * 10000  # 10KB text
-        large_ntext = 'B' * 10000  # 10KB unicode text
-        large_binary = b'\x01\x02\x03\x04' * 2500  # 10KB binary
+        large_text = "A" * 10000  # 10KB text
+        large_ntext = "B" * 10000  # 10KB unicode text
+        large_binary = b"\x01\x02\x03\x04" * 2500  # 10KB binary
 
         cursor.execute(
             "INSERT INTO #pytest_lob_test VALUES (?, ?, ?, ?)",
-            (1, large_text, large_ntext, large_binary)
+            (1, large_text, large_ntext, large_binary),
         )
         db_connection.commit()
 
@@ -15205,12 +14375,9 @@ def test_lob_char_column_types(cursor, db_connection):
         db_connection.commit()
 
         # Create data large enough to trigger LOB path (>8000 bytes)
-        large_char_data = 'X' * 20000  # 20KB text
-        
-        cursor.execute(
-            "INSERT INTO #pytest_lob_char VALUES (?, ?)",
-            (1, large_char_data)
-        )
+        large_char_data = "X" * 20000  # 20KB text
+
+        cursor.execute("INSERT INTO #pytest_lob_char VALUES (?, ?)", (1, large_char_data))
         db_connection.commit()
 
         cursor.execute("SELECT id, char_lob FROM #pytest_lob_char")
@@ -15242,12 +14409,9 @@ def test_lob_wchar_column_types(cursor, db_connection):
         db_connection.commit()
 
         # Create unicode data large enough to trigger LOB path (>4000 characters for NVARCHAR)
-        large_wchar_data = '🔥' * 5000 + 'Unicode™' * 1000  # Mix of emoji and special chars
-        
-        cursor.execute(
-            "INSERT INTO #pytest_lob_wchar VALUES (?, ?)",
-            (1, large_wchar_data)
-        )
+        large_wchar_data = "🔥" * 5000 + "Unicode™" * 1000  # Mix of emoji and special chars
+
+        cursor.execute("INSERT INTO #pytest_lob_wchar VALUES (?, ?)", (1, large_wchar_data))
         db_connection.commit()
 
         cursor.execute("SELECT id, wchar_lob FROM #pytest_lob_wchar")
@@ -15255,7 +14419,7 @@ def test_lob_wchar_column_types(cursor, db_connection):
 
         assert row[0] == 1, "ID should be 1"
         assert row[1] == large_wchar_data, "NVARCHAR(MAX) LOB data should match"
-        assert '🔥' in row[1], "Should contain emoji characters"
+        assert "🔥" in row[1], "Should contain emoji characters"
 
     except Exception as e:
         pytest.fail(f"LOB WCHAR column test failed: {e}")
@@ -15280,11 +14444,8 @@ def test_lob_binary_column_types(cursor, db_connection):
 
         # Create binary data large enough to trigger LOB path (>8000 bytes)
         large_binary_data = bytes(range(256)) * 100  # 25.6KB of varied binary data
-        
-        cursor.execute(
-            "INSERT INTO #pytest_lob_binary VALUES (?, ?)",
-            (1, large_binary_data)
-        )
+
+        cursor.execute("INSERT INTO #pytest_lob_binary VALUES (?, ?)", (1, large_binary_data))
         db_connection.commit()
 
         cursor.execute("SELECT id, binary_lob FROM #pytest_lob_binary")
@@ -15318,19 +14479,18 @@ def test_zero_length_complex_types(cursor, db_connection):
         db_connection.commit()
 
         # Insert empty (non-NULL) values
-        cursor.execute(
-            "INSERT INTO #pytest_zero_length VALUES (?, ?, ?, ?)",
-            (1, '', '', b'')
-        )
+        cursor.execute("INSERT INTO #pytest_zero_length VALUES (?, ?, ?, ?)", (1, "", "", b""))
         db_connection.commit()
 
-        cursor.execute("SELECT id, empty_varchar, empty_nvarchar, empty_binary FROM #pytest_zero_length")
+        cursor.execute(
+            "SELECT id, empty_varchar, empty_nvarchar, empty_binary FROM #pytest_zero_length"
+        )
         row = cursor.fetchone()
 
         assert row[0] == 1, "ID should be 1"
-        assert row[1] == '', "Empty VARCHAR should be empty string"
-        assert row[2] == '', "Empty NVARCHAR should be empty string"
-        assert row[3] == b'', "Empty VARBINARY should be empty bytes"
+        assert row[1] == "", "Empty VARCHAR should be empty string"
+        assert row[2] == "", "Empty NVARCHAR should be empty string"
+        assert row[3] == b"", "Empty VARBINARY should be empty bytes"
 
     except Exception as e:
         pytest.fail(f"Zero-length complex types test failed: {e}")
@@ -15429,13 +14589,12 @@ def test_decimal_conversion_edge_cases(cursor, db_connection):
             (4, "999999999999.9999"),
             (5, "0.0000"),
         ]
-        
+
         for id_val, dec_val in test_values:
             cursor.execute(
-                "INSERT INTO #pytest_decimal_edge VALUES (?, ?)",
-                (id_val, decimal.Decimal(dec_val))
+                "INSERT INTO #pytest_decimal_edge VALUES (?, ?)", (id_val, decimal.Decimal(dec_val))
             )
-        
+
         # Also insert NULL
         cursor.execute("INSERT INTO #pytest_decimal_edge VALUES (6, NULL)")
         db_connection.commit()
@@ -15444,12 +14603,14 @@ def test_decimal_conversion_edge_cases(cursor, db_connection):
         rows = cursor.fetchall()
 
         assert len(rows) == 6, "Should have exactly 6 rows"
-        
+
         # Verify the values
         for i, (id_val, expected_str) in enumerate(test_values):
             assert rows[i][0] == id_val, f"Row {i} ID should be {id_val}"
-            assert rows[i][1] == decimal.Decimal(expected_str), f"Row {i} decimal should match {expected_str}"
-        
+            assert rows[i][1] == decimal.Decimal(
+                expected_str
+            ), f"Row {i} decimal should match {expected_str}"
+
         # Verify NULL
         assert rows[5][0] == 6, "Last row ID should be 6"
         assert rows[5][1] is None, "Last decimal should be NULL"
@@ -15467,15 +14628,15 @@ def test_fixed_length_char_type(cursor, db_connection):
         cursor.execute("CREATE TABLE #pytest_char_test (id INT, char_col CHAR(10))")
         cursor.execute("INSERT INTO #pytest_char_test VALUES (1, 'hello')")
         cursor.execute("INSERT INTO #pytest_char_test VALUES (2, 'world')")
-        
+
         cursor.execute("SELECT char_col FROM #pytest_char_test ORDER BY id")
         rows = cursor.fetchall()
-        
+
         # CHAR pads with spaces to fixed length
         assert len(rows) == 2, "Should fetch 2 rows"
         assert rows[0][0].rstrip() == "hello", "First CHAR value should be 'hello'"
         assert rows[1][0].rstrip() == "world", "Second CHAR value should be 'world'"
-        
+
         cursor.execute("DROP TABLE #pytest_char_test")
     except Exception as e:
         pytest.fail(f"Fixed-length CHAR test failed: {e}")
@@ -15487,15 +14648,15 @@ def test_fixed_length_nchar_type(cursor, db_connection):
         cursor.execute("CREATE TABLE #pytest_nchar_test (id INT, nchar_col NCHAR(10))")
         cursor.execute("INSERT INTO #pytest_nchar_test VALUES (1, N'hello')")
         cursor.execute("INSERT INTO #pytest_nchar_test VALUES (2, N'世界')")  # Unicode test
-        
+
         cursor.execute("SELECT nchar_col FROM #pytest_nchar_test ORDER BY id")
         rows = cursor.fetchall()
-        
+
         # NCHAR pads with spaces to fixed length
         assert len(rows) == 2, "Should fetch 2 rows"
         assert rows[0][0].rstrip() == "hello", "First NCHAR value should be 'hello'"
         assert rows[1][0].rstrip() == "世界", "Second NCHAR value should be '世界'"
-        
+
         cursor.execute("DROP TABLE #pytest_nchar_test")
     except Exception as e:
         pytest.fail(f"Fixed-length NCHAR test failed: {e}")
@@ -15507,18 +14668,20 @@ def test_fixed_length_binary_type(cursor, db_connection):
         cursor.execute("CREATE TABLE #pytest_binary_test (id INT, binary_col BINARY(8))")
         cursor.execute("INSERT INTO #pytest_binary_test VALUES (1, 0x0102030405)")
         cursor.execute("INSERT INTO #pytest_binary_test VALUES (2, 0xAABBCCDD)")
-        
+
         cursor.execute("SELECT binary_col FROM #pytest_binary_test ORDER BY id")
         rows = cursor.fetchall()
-        
+
         # BINARY pads with zeros to fixed length (8 bytes)
         assert len(rows) == 2, "Should fetch 2 rows"
         assert len(rows[0][0]) == 8, "BINARY(8) should be 8 bytes"
         assert len(rows[1][0]) == 8, "BINARY(8) should be 8 bytes"
         # First 5 bytes should match, rest padded with zeros
-        assert rows[0][0][:5] == b'\x01\x02\x03\x04\x05', "First BINARY value should start with inserted bytes"
-        assert rows[0][0][5:] == b'\x00\x00\x00', "BINARY should be zero-padded"
-        
+        assert (
+            rows[0][0][:5] == b"\x01\x02\x03\x04\x05"
+        ), "First BINARY value should start with inserted bytes"
+        assert rows[0][0][5:] == b"\x00\x00\x00", "BINARY should be zero-padded"
+
         cursor.execute("DROP TABLE #pytest_binary_test")
     except Exception as e:
         pytest.fail(f"Fixed-length BINARY test failed: {e}")
