@@ -309,7 +309,9 @@ def test_pool_idle_timeout_removes_connections(conn_str):
 # =============================================================================
 
 
-@pytest.mark.skip("Test causes fatal crash - forcibly closing underlying connection leads to undefined behavior")
+@pytest.mark.skip(
+    "Test causes fatal crash - forcibly closing underlying connection leads to undefined behavior"
+)
 def test_pool_removes_invalid_connections(conn_str):
     """Test that the pool removes connections that become invalid (simulate by closing underlying connection)."""
     pooling(max_size=1, idle_timeout=30)
