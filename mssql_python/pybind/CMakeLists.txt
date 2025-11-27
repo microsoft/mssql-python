@@ -9,7 +9,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_VERBOSE_MAKEFILE ON CACHE BOOL "Verbose output" FORCE)
 
 # Treat CMake warnings as errors
-set(CMAKE_WARN_DEPRECATED_DEPRECATION FALSE)
 set(CMAKE_ERROR_DEPRECATED TRUE)
 set(CMAKE_WARN_DEPRECATED TRUE)
 
@@ -310,10 +309,16 @@ endif()
 # Add warning flags for GCC/Clang on Linux and macOS
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     target_compile_options(ddbc_bindings PRIVATE 
-        -Werror
-        -Wattributes
-        -Wint-to-pointer-cast
+        -Werror        # Treat warnings as errors
+        -Wattributes   # Enable attribute warnings (cross-compiler)
     )
+    
+    # GCC-specific warning flags
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(ddbc_bindings PRIVATE 
+            -Wint-to-pointer-cast  # GCC-specific warning for integer-to-pointer casts
+        )
+    endif()
 endif()
 
 # Add macOS-specific string conversion fix

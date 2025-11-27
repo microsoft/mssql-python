@@ -114,6 +114,9 @@ py::object get_uuid_class() {
 
 // Struct to hold parameter information for binding. Used by SQLBindParameter.
 // This struct is shared between C++ & Python code.
+// Suppress -Wattributes warning for ParamInfo struct
+// The warning is triggered because pybind11 handles visibility attributes automatically,
+// and having additional attributes on the struct can cause conflicts on Linux with GCC
 #ifdef __GNUC__
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wattributes"
@@ -728,7 +731,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 return rc;
             }
 
-            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_SCALE, reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(numericPtr->scale)), 0);
+            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_SCALE, reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(numericPtr->scale)), 0);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameters: SQLSetDescField(SQL_DESC_SCALE) failed "
                     "for param[%d] - SQLRETURN=%d",
