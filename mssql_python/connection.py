@@ -437,8 +437,7 @@ class Connection:
         # Validate encoding using cached validation for better performance
         if not _validate_encoding(encoding):
             # Log the sanitized encoding for security
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid encoding attempted: %s",
                 sanitize_user_input(str(encoding)),
             )
@@ -453,8 +452,7 @@ class Connection:
 
         # Reject 'utf-16' with BOM for SQL_WCHAR (ambiguous byte order)
         if encoding == "utf-16" and ctype == ConstantsDDBC.SQL_WCHAR.value:
-            logger.debug(
-                "warning",
+            logger.warning(
                 "utf-16 with BOM rejected for SQL_WCHAR",
             )
             raise ProgrammingError(
@@ -478,8 +476,7 @@ class Connection:
         valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
         if ctype not in valid_ctypes:
             # Log the sanitized ctype for security
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid ctype attempted: %s",
                 sanitize_user_input(str(ctype)),
             )
@@ -502,8 +499,7 @@ class Connection:
                     ),
                 )
             elif encoding not in UTF16_ENCODINGS:
-                logger.debug(
-                    "warning",
+                logger.warning(
                     "Non-UTF-16 encoding %s attempted with SQL_WCHAR ctype",
                     sanitize_user_input(encoding),
                 )
@@ -520,8 +516,7 @@ class Connection:
             self._encoding_settings = {"encoding": encoding, "ctype": ctype}
 
         # Log with sanitized values for security
-        logger.debug(
-            "info",
+        logger.info(
             "Text encoding set to %s with ctype %s",
             sanitize_user_input(encoding),
             sanitize_user_input(str(ctype)),
@@ -604,8 +599,7 @@ class Connection:
             SQL_WMETADATA,
         ]
         if sqltype not in valid_sqltypes:
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid sqltype attempted: %s",
                 sanitize_user_input(str(sqltype)),
             )
@@ -627,8 +621,7 @@ class Connection:
 
         # Validate encoding using cached validation for better performance
         if not _validate_encoding(encoding):
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid encoding attempted: %s",
                 sanitize_user_input(str(encoding)),
             )
@@ -642,8 +635,7 @@ class Connection:
 
         # Reject 'utf-16' with BOM for SQL_WCHAR (ambiguous byte order)
         if sqltype == ConstantsDDBC.SQL_WCHAR.value and encoding == "utf-16":
-            logger.debug(
-                "warning",
+            logger.warning(
                 "utf-16 with BOM rejected for SQL_WCHAR",
             )
             raise ProgrammingError(
@@ -656,8 +648,7 @@ class Connection:
 
         # Validate SQL_WCHAR only supports UTF-16 encodings (SQL_WMETADATA is more flexible)
         if sqltype == ConstantsDDBC.SQL_WCHAR.value and encoding not in UTF16_ENCODINGS:
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Non-UTF-16 encoding %s attempted with SQL_WCHAR sqltype",
                 sanitize_user_input(encoding),
             )
@@ -682,8 +673,7 @@ class Connection:
         # Validate ctype
         valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
         if ctype not in valid_ctypes:
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid ctype attempted: %s",
                 sanitize_user_input(str(ctype)),
             )
@@ -706,8 +696,7 @@ class Connection:
                     ),
                 )
             elif encoding not in UTF16_ENCODINGS:
-                logger.debug(
-                    "warning",
+                logger.warning(
                     "Non-UTF-16 encoding %s attempted with SQL_WCHAR ctype",
                     sanitize_user_input(encoding),
                 )
@@ -730,8 +719,7 @@ class Connection:
             SQL_WMETADATA: "SQL_WMETADATA",
         }.get(sqltype, str(sqltype))
 
-        logger.debug(
-            "info",
+        logger.info(
             "Text decoding set for %s to %s with ctype %s",
             sqltype_name,
             sanitize_user_input(encoding),
