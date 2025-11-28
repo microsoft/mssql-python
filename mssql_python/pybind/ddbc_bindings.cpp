@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-// INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
-//             taken up in beta release
 #include "ddbc_bindings.h"
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
@@ -2713,9 +2711,15 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_INTEGER: {
                 SQLINTEGER intValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_LONG, &intValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_LONG, &intValue, 0, &indicator);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<int>(intValue));
+                    if (indicator == SQL_NULL_DATA) {
+                        LOG("SQLGetData: Column %d is NULL (INTEGER)", i);
+                        row.append(py::none());
+                    } else {
+                        row.append(static_cast<int>(intValue));
+                    }
                 } else {
                     row.append(py::none());
                 }
@@ -2723,9 +2727,15 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_SMALLINT: {
                 SQLSMALLINT smallIntValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_SHORT, &smallIntValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_SHORT, &smallIntValue, 0, &indicator);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<int>(smallIntValue));
+                    if (indicator == SQL_NULL_DATA) {
+                        LOG("SQLGetData: Column %d is NULL (SMALLINT)", i);
+                        row.append(py::none());
+                    } else {
+                        row.append(static_cast<int>(smallIntValue));
+                    }
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_SMALLINT for column %d - SQLRETURN=%d", i, ret);
                     row.append(py::none());
@@ -2734,9 +2744,15 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_REAL: {
                 SQLREAL realValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_FLOAT, &realValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_FLOAT, &realValue, 0, &indicator);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(realValue);
+                    if (indicator == SQL_NULL_DATA) {
+                        LOG("SQLGetData: Column %d is NULL (REAL)", i);
+                        row.append(py::none());
+                    } else {
+                        row.append(realValue);
+                    }
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_REAL for column %d - SQLRETURN=%d", i, ret);
                     row.append(py::none());
@@ -2795,9 +2811,15 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_DOUBLE:
             case SQL_FLOAT: {
                 SQLDOUBLE doubleValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_DOUBLE, &doubleValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_DOUBLE, &doubleValue, 0, &indicator);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(doubleValue);
+                    if (indicator == SQL_NULL_DATA) {
+                        LOG("SQLGetData: Column %d is NULL (DOUBLE/FLOAT)", i);
+                        row.append(py::none());
+                    } else {
+                        row.append(doubleValue);
+                    }
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_DOUBLE/FLOAT for column %d - SQLRETURN=%d", i, ret);
                     row.append(py::none());
@@ -2806,9 +2828,15 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_BIGINT: {
                 SQLBIGINT bigintValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_SBIGINT, &bigintValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_SBIGINT, &bigintValue, 0, &indicator);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<long long>(bigintValue));
+                    if (indicator == SQL_NULL_DATA) {
+                        LOG("SQLGetData: Column %d is NULL (BIGINT)", i);
+                        row.append(py::none());
+                    } else {
+                        row.append(static_cast<long long>(bigintValue));
+                    }
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_BIGINT for column %d - SQLRETURN=%d", i, ret);
                     row.append(py::none());
@@ -2817,16 +2845,22 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_TYPE_DATE: {
                 SQL_DATE_STRUCT dateValue;
+                SQLLEN indicator = 0;
                 ret =
-                    SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue), NULL);
+                    SQLGetData_ptr(hStmt, i, SQL_C_TYPE_DATE, &dateValue, sizeof(dateValue), &indicator);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(
-                        PythonObjectCache::get_date_class()(
-                            dateValue.year,
-                            dateValue.month,
-                            dateValue.day
-                        )
-                    );
+                    if (indicator == SQL_NULL_DATA) {
+                        LOG("SQLGetData: Column %d is NULL (DATE)", i);
+                        row.append(py::none());
+                    } else {
+                        row.append(
+                            PythonObjectCache::get_date_class()(
+                                dateValue.year,
+                                dateValue.month,
+                                dateValue.day
+                            )
+                        );
+                    }
                 } else {
                     row.append(py::none());
                 }
@@ -2836,16 +2870,22 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_TYPE_TIME:
             case SQL_SS_TIME2: {
                 SQL_TIME_STRUCT timeValue;
+                SQLLEN indicator = 0;
                 ret =
-                    SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIME, &timeValue, sizeof(timeValue), NULL);
+                    SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIME, &timeValue, sizeof(timeValue), &indicator);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(
-                        PythonObjectCache::get_time_class()(
-                            timeValue.hour,
-                            timeValue.minute,
-                            timeValue.second
-                        )
-                    );
+                    if (indicator == SQL_NULL_DATA) {
+                        LOG("SQLGetData: Column %d is NULL (TIME)", i);
+                        row.append(py::none());
+                    } else {
+                        row.append(
+                            PythonObjectCache::get_time_class()(
+                                timeValue.hour,
+                                timeValue.minute,
+                                timeValue.second
+                            )
+                        );
+                    }
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_TYPE_TIME for column %d - SQLRETURN=%d", i, ret);
                     row.append(py::none());
@@ -2856,20 +2896,26 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_TYPE_TIMESTAMP:
             case SQL_DATETIME: {
                 SQL_TIMESTAMP_STRUCT timestampValue;
+                SQLLEN indicator = 0;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIMESTAMP, &timestampValue,
-                                     sizeof(timestampValue), NULL);
+                                     sizeof(timestampValue), &indicator);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(
-                        PythonObjectCache::get_datetime_class()(
-                            timestampValue.year,
-                            timestampValue.month,
-                            timestampValue.day,
-                            timestampValue.hour,
-                            timestampValue.minute,
-                            timestampValue.second,
-                            timestampValue.fraction / 1000  // Convert back ns to µs
-                        )
-                    );
+                    if (indicator == SQL_NULL_DATA) {
+                        LOG("SQLGetData: Column %d is NULL (TIMESTAMP)", i);
+                        row.append(py::none());
+                    } else {
+                        row.append(
+                            PythonObjectCache::get_datetime_class()(
+                                timestampValue.year,
+                                timestampValue.month,
+                                timestampValue.day,
+                                timestampValue.hour,
+                                timestampValue.minute,
+                                timestampValue.second,
+                                timestampValue.fraction / 1000  // Convert back ns to µs
+                            )
+                        );
+                    }
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_TYPE_TIMESTAMP for column %d - SQLRETURN=%d", i, ret);
                     row.append(py::none());
@@ -2965,9 +3011,14 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_TINYINT: {
                 SQLCHAR tinyIntValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_TINYINT, &tinyIntValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_TINYINT, &tinyIntValue, 0, &indicator);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<int>(tinyIntValue));
+                    if (indicator == SQL_NULL_DATA) {
+                        row.append(py::none());
+                    } else {
+                        row.append(static_cast<int>(tinyIntValue));
+                    }
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_TINYINT for column %d - SQLRETURN=%d", i, ret);
                     row.append(py::none());
@@ -2976,9 +3027,14 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_BIT: {
                 SQLCHAR bitValue;
-                ret = SQLGetData_ptr(hStmt, i, SQL_C_BIT, &bitValue, 0, NULL);
+                SQLLEN indicator = 0;
+                ret = SQLGetData_ptr(hStmt, i, SQL_C_BIT, &bitValue, 0, &indicator);
                 if (SQL_SUCCEEDED(ret)) {
-                    row.append(static_cast<bool>(bitValue));
+                    if (indicator == SQL_NULL_DATA) {
+                        row.append(py::none());
+                    } else {
+                        row.append(static_cast<bool>(bitValue));
+                    }
                 } else {
                     LOG("SQLGetData: Error retrieving SQL_BIT for column %d - SQLRETURN=%d", i, ret);
                     row.append(py::none());

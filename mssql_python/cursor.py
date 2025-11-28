@@ -2067,6 +2067,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         try:
             ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
 
+            # Check for errors
+            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
@@ -2116,7 +2119,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Fetch raw data
         rows_data = []
         try:
-            _ = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
+            ret = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
+
+            # Check for errors
+            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
