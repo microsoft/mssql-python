@@ -297,21 +297,33 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         Returns:
             dict: A dictionary with 'encoding' and 'ctype' keys, or default settings if not available
+
+        Raises:
+            OperationalError, DatabaseError: If there are unexpected database connection issues
+            that indicate a broken connection state. These should not be silently ignored
+            as they can lead to data corruption or inconsistent behavior.
         """
         if hasattr(self._connection, "getencoding"):
             try:
                 return self._connection.getencoding()
             except (OperationalError, DatabaseError) as db_error:
-                # Only catch database-related errors, not programming errors
-                from mssql_python.helpers import log
-
-                log(
-                    "warning",
-                    f"Failed to get encoding settings from connection due to database error: {db_error}",
+                # Log the error for debugging but re-raise for fail-fast behavior
+                # Silently returning defaults can lead to data corruption and hard-to-debug issues
+                logger.error(
+                    "Failed to get encoding settings from connection due to database error: %s. "
+                    "This indicates a broken connection state that should not be ignored.",
+                    db_error,
                 )
-                return {"encoding": "utf-16le", "ctype": ddbc_sql_const.SQL_WCHAR.value}
+                # Re-raise to fail fast - users should know their connection is broken
+                raise
+            except Exception as unexpected_error:
+                # Handle other unexpected errors (connection closed, programming errors, etc.)
+                logger.error("Unexpected error getting encoding settings: %s", unexpected_error)
+                # Re-raise unexpected errors as well
+                raise
 
         # Return default encoding settings if getencoding is not available
+        # This is the only case where defaults are appropriate (method doesn't exist)
         return {"encoding": "utf-16le", "ctype": ddbc_sql_const.SQL_WCHAR.value}
 
     def _get_decoding_settings(self, sql_type):
@@ -323,22 +335,35 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         Returns:
             Dictionary containing the decoding settings.
+
+        Raises:
+            OperationalError, DatabaseError: If there are unexpected database connection issues
+            that indicate a broken connection state. These should not be silently ignored
+            as they can lead to data corruption or inconsistent behavior.
         """
         try:
             # Get decoding settings from connection for this SQL type
             return self._connection.getdecoding(sql_type)
         except (OperationalError, DatabaseError) as db_error:
-            # Only handle expected database-related errors
-            from mssql_python.helpers import log
-
-            log(
-                "warning",
-                f"Failed to get decoding settings for SQL type {sql_type} due to database error: {db_error}",
+            # Log the error for debugging but re-raise for fail-fast behavior
+            # Silently returning defaults can lead to data corruption and hard-to-debug issues
+            logger.error(
+                "Failed to get decoding settings for SQL type %s due to database error: %s. "
+                "This indicates a broken connection state that should not be ignored.",
+                sql_type,
+                db_error,
             )
-            if sql_type == ddbc_sql_const.SQL_WCHAR.value:
-                return {"encoding": "utf-16le", "ctype": ddbc_sql_const.SQL_WCHAR.value}
-            else:
-                return {"encoding": "utf-8", "ctype": ddbc_sql_const.SQL_CHAR.value}
+            # Re-raise to fail fast - users should know their connection is broken
+            raise
+        except Exception as unexpected_error:
+            # Handle other unexpected errors (connection closed, programming errors, etc.)
+            logger.error(
+                "Unexpected error getting decoding settings for SQL type %s: %s",
+                sql_type,
+                unexpected_error,
+            )
+            # Re-raise unexpected errors as well
+            raise
 
     def _map_sql_type(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements,too-many-branches
         self,
