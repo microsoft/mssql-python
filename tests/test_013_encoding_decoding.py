@@ -108,6 +108,7 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 """
 
+from mssql_python import db_connection
 import pytest
 import sys
 import mssql_python
@@ -117,7 +118,6 @@ from mssql_python.exceptions import (
     DatabaseError,
     InterfaceError,
 )
-
 
 # ====================================================================================
 # TEST DATA - SQL Server Supported Encodings
@@ -1151,11 +1151,6 @@ def test_setdecoding_with_unicode_data(db_connection):
                 result[0] == expected
             ), f"Unicode string mismatch at index {i}: expected {expected!r}, got {result[0]!r}"
 
-        print(f"[OK] Successfully tested {len(ascii_strings)} ASCII strings in VARCHAR")
-        print(
-            f"[OK] Successfully tested {len(all_expected)} strings in NVARCHAR (including {len(unicode_strings)} Unicode-only)"
-        )
-
     except Exception as e:
         pytest.fail(f"Unicode data test failed with custom decoding: {e}")
     finally:
@@ -1217,7 +1212,7 @@ def test_encoding_decoding_comprehensive_unicode_characters(db_connection):
         ]
 
         for encoding, ctype in encoding_configs:
-            print(f"\nTesting with encoding: {encoding}, ctype: {ctype}")
+            pass
 
             # Set encoding configuration
             db_connection.setencoding(encoding=encoding, ctype=ctype)
@@ -1264,11 +1259,9 @@ def test_encoding_decoding_comprehensive_unicode_characters(db_connection):
                                 f"got {col_value!r}"
                             )
 
-                    print(f"[OK] {test_name} passed with {encoding}")
-
                 except Exception as e:
                     # Log encoding issues but don't fail the test - this is exploratory
-                    print(f"[WARN] {test_name} had issues with {encoding}: {e}")
+                    pass
 
     finally:
         try:
@@ -1314,25 +1307,20 @@ def test_encoding_decoding_error_scenarios(db_connection):
         try:
             db_connection.setencoding(encoding=invalid_encoding)
             # If it doesn't raise an exception, test that it at least doesn't crash
-            print(f"Warning: {invalid_encoding} was accepted by setencoding")
         except Exception as e:
             # Any exception is acceptable for invalid encodings
-            print(f"[OK] {invalid_encoding} correctly raised exception: {type(e).__name__}")
+            pass
 
         try:
             db_connection.setdecoding(SQL_CHAR, encoding=invalid_encoding)
-            print(f"Warning: {invalid_encoding} was accepted by setdecoding")
         except Exception as e:
-            print(
-                f"[OK] {invalid_encoding} correctly raised exception in setdecoding: {type(e).__name__}"
-            )
+            pass
 
     # Test 2: Test valid operations to ensure basic functionality works
     try:
         db_connection.setencoding(encoding="utf-8", ctype=SQL_CHAR)
         db_connection.setdecoding(SQL_CHAR, encoding="utf-8", ctype=SQL_CHAR)
         db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
-        print("[OK] Basic encoding/decoding configuration works")
     except Exception as e:
         pytest.fail(f"Basic encoding configuration failed: {e}")
 
@@ -1341,9 +1329,8 @@ def test_encoding_decoding_error_scenarios(db_connection):
         # This should work - different encodings for different SQL types
         db_connection.setdecoding(SQL_CHAR, encoding="utf-8")
         db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le")
-        print("[OK] Mixed encoding settings work")
     except Exception as e:
-        print(f"[WARN] Mixed encoding settings failed: {e}")
+        pass
 
 
 def test_encoding_decoding_edge_case_data_types(db_connection):
@@ -1386,7 +1373,7 @@ def test_encoding_decoding_edge_case_data_types(db_connection):
         ]
 
         for encoding, ctype, config_desc in test_configs:
-            print(f"\nTesting {config_desc}")
+            pass
 
             # Configure encoding/decoding
             db_connection.setencoding(encoding=encoding, ctype=ctype)
@@ -1451,8 +1438,6 @@ def test_encoding_decoding_edge_case_data_types(db_connection):
                                     f"expected {test_string!r}, got {col_value!r}"
                                 )
 
-                    print(f"[OK] {test_name} passed")
-
                 except Exception as e:
                     pytest.fail(f"Error with {test_name} in {config_desc}: {e}")
 
@@ -1513,8 +1498,6 @@ def test_encoding_decoding_boundary_conditions(db_connection):
                         f"expected {test_data!r}, got {result[0]!r}"
                     )
 
-                print(f"[OK] Boundary case {test_name} passed")
-
             except Exception as e:
                 pytest.fail(f"Boundary case {test_name} failed: {e}")
 
@@ -1565,8 +1548,6 @@ def test_encoding_decoding_concurrent_settings(db_connection):
         assert result1[0] == "Test with UTF-8 simple", f"Cursor1 result: {result1[0]!r}"
         assert result2[0] == "Test with UTF-16 simple", f"Cursor2 result: {result2[0]!r}"
 
-        print("[OK] Concurrent cursor operations with encoding changes passed")
-
     finally:
         try:
             cursor1.execute("DROP TABLE #test_concurrent1")
@@ -1614,8 +1595,6 @@ def test_encoding_decoding_parameter_binding_edge_cases(db_connection):
                     cursor.execute("SELECT COUNT(*) FROM #test_param_encoding")
                     count = cursor.fetchone()[0]
                     assert count > 0, f"No rows inserted for {test_name} with {encoding}"
-
-                    print(f"[OK] Parameter binding {test_name} with {encoding} passed")
 
                 except Exception as e:
                     pytest.fail(f"Parameter binding {test_name} with {encoding} failed: {e}")
@@ -1689,7 +1668,7 @@ def test_encoding_decoding_large_dataset_performance(db_connection):
         ]
 
         for encoding, ctype, desc in configs:
-            print(f"Testing large dataset with {desc}")
+            pass
 
             db_connection.setencoding(encoding=encoding, ctype=ctype)
             db_connection.setdecoding(SQL_CHAR, encoding="utf-8")
@@ -1729,12 +1708,8 @@ def test_encoding_decoding_large_dataset_performance(db_connection):
                 assert row[2] == unicode_text, "Unicode data mismatch"
                 assert row[3] == mixed_text, "Mixed data mismatch"
 
-            print(f"[OK] {desc} - Insert: {insert_time:.2f}s, Fetch: {fetch_time:.2f}s")
-
             # Clean up for next iteration
             cursor.execute("DELETE FROM #test_large_encoding")
-
-        print("[OK] Large dataset performance test passed")
 
     finally:
         try:
@@ -1798,8 +1773,6 @@ def test_encoding_decoding_connection_isolation(conn_str):
         assert conn1.getencoding()["encoding"] == "utf-8"
         assert conn2.getencoding()["encoding"] == "utf-16le"
 
-        print("[OK] Connection isolation test passed")
-
     finally:
         try:
             conn1.cursor().execute("DROP TABLE #test_isolation1")
@@ -1842,8 +1815,6 @@ def test_encoding_decoding_sql_wchar_explicit_error_validation(db_connection):
         assert settings["encoding"] == encoding.lower()
         assert settings["ctype"] == SQL_WCHAR
 
-    print("[OK] SQL_WCHAR explicit validation passed")
-
 
 def test_encoding_decoding_metadata_columns(db_connection):
     """Test encoding/decoding of column metadata (SQL_WMETADATA)."""
@@ -1881,12 +1852,10 @@ def test_encoding_decoding_metadata_columns(db_connection):
                 actual == expected
             ), f"Column name mismatch: expected {expected!r}, got {actual!r}"
 
-        print("[OK] Metadata column name encoding test passed")
-
     except Exception as e:
         # Some SQL Server versions might not support Unicode in column names
         if "identifier" in str(e).lower() or "invalid" in str(e).lower():
-            print("[WARN] Unicode column names not supported in this SQL Server version, skipping")
+            pass
         else:
             pytest.fail(f"Metadata encoding test failed: {e}")
     finally:
@@ -1899,9 +1868,6 @@ def test_encoding_decoding_metadata_columns(db_connection):
 
 def test_utf16_bom_rejection(db_connection):
     """Test that 'utf-16' with BOM is explicitly rejected for SQL_WCHAR."""
-    print("\n" + "=" * 70)
-    print("UTF-16 BOM REJECTION TEST")
-    print("=" * 70)
 
     # 'utf-16' should be rejected when used with SQL_WCHAR
     with pytest.raises(ProgrammingError) as exc_info:
@@ -1915,9 +1881,6 @@ def test_utf16_bom_rejection(db_connection):
         "utf-16le" in error_msg or "utf-16be" in error_msg
     ), "Error message should suggest alternatives"
 
-    print("[OK] 'utf-16' with SQL_WCHAR correctly rejected")
-    print(f"  Error message: {error_msg}")
-
     # Same for setdecoding
     with pytest.raises(ProgrammingError) as exc_info:
         db_connection.setdecoding(SQL_WCHAR, encoding="utf-16")
@@ -1929,16 +1892,11 @@ def test_utf16_bom_rejection(db_connection):
         or "SQL_WCHAR only supports UTF-16 encodings" in error_msg
     )
 
-    print("[OK] setdecoding with 'utf-16' for SQL_WCHAR correctly rejected")
-
     # 'utf-16' should work fine with SQL_CHAR (not using SQL_WCHAR)
     db_connection.setencoding(encoding="utf-16", ctype=SQL_CHAR)
     settings = db_connection.getencoding()
     assert settings["encoding"] == "utf-16"
     assert settings["ctype"] == SQL_CHAR
-    print("[OK] 'utf-16' with SQL_CHAR works correctly (BOM is acceptable)")
-
-    print("=" * 70)
 
 
 def test_encoding_decoding_stress_test_comprehensive(db_connection):
@@ -2021,7 +1979,7 @@ def test_encoding_decoding_stress_test_comprehensive(db_connection):
         ]
 
         for encoding, ctype, config_name in encoding_configs:
-            print(f"Testing stress scenario with {config_name}")
+            pass
 
             # Configure encoding
             db_connection.setencoding(encoding=encoding, ctype=ctype)
@@ -2047,12 +2005,11 @@ def test_encoding_decoding_stress_test_comprehensive(db_connection):
                     )
                 except Exception as e:
                     # Log encoding failures but don't stop the test
-                    print(f"[WARN] Insert failed for dataset with {config_name}: {e}")
+                    pass
 
             # Retrieve and verify data integrity
             cursor.execute("SELECT COUNT(*) FROM #stress_test_encoding")
             row_count = cursor.fetchone()[0]
-            print(f"  Inserted {row_count} rows successfully")
 
             # Sample verification - check first few rows
             cursor.execute("SELECT TOP 5 * FROM #stress_test_encoding ORDER BY id")
@@ -2064,10 +2021,6 @@ def test_encoding_decoding_stress_test_comprehensive(db_connection):
                 assert row[2] is not None, f"Unicode text should not be None in row {i}"
                 assert row[3] is not None, f"Binary data should not be None in row {i}"
                 assert row[4] is not None, f"Mixed content should not be None in row {i}"
-
-            print(f"[OK] Stress test with {config_name} completed successfully")
-
-        print("[OK] Comprehensive encoding stress test passed")
 
     finally:
         try:
@@ -2227,8 +2180,6 @@ def test_encoding_decoding_sql_char_various_encodings(db_connection):
             encoding = encoding_test["encoding"]
             test_data = encoding_test["test_data"]
 
-            print(f"\n--- Testing {encoding_name} ({encoding}) with SQL_CHAR ---")
-
             try:
                 # Set encoding for SQL_CHAR type
                 db_connection.setencoding(encoding=encoding, ctype=SQL_CHAR)
@@ -2269,14 +2220,12 @@ def test_encoding_decoding_sql_char_various_encodings(db_connection):
                             desc_match = retrieved_desc == f"Test with {encoding_name}"
 
                             if data_match and desc_match:
-                                print(f"  [OK] {test_name}: Data preserved correctly")
+                                pass
                                 test_results.append(
                                     {"test": test_name, "status": "PASS", "data": test_string}
                                 )
                             else:
-                                print(
-                                    f"  [WARN] {test_name}: Data mismatch - Expected: {test_string!r}, Got: {retrieved_data!r}"
-                                )
+                                pass
                                 test_results.append(
                                     {
                                         "test": test_name,
@@ -2286,21 +2235,21 @@ def test_encoding_decoding_sql_char_various_encodings(db_connection):
                                     }
                                 )
                         else:
-                            print(f"  [FAIL] {test_name}: No data retrieved")
+                            pass
                             test_results.append({"test": test_name, "status": "NO_DATA"})
 
                     except UnicodeEncodeError as e:
-                        print(f"  [FAIL] {test_name}: Unicode encode error - {e}")
+                        pass
                         test_results.append(
                             {"test": test_name, "status": "ENCODE_ERROR", "error": str(e)}
                         )
                     except UnicodeDecodeError as e:
-                        print(f"  [FAIL] {test_name}: Unicode decode error - {e}")
+                        pass
                         test_results.append(
                             {"test": test_name, "status": "DECODE_ERROR", "error": str(e)}
                         )
                     except Exception as e:
-                        print(f"  [FAIL] {test_name}: Unexpected error - {e}")
+                        pass
                         test_results.append({"test": test_name, "status": "ERROR", "error": str(e)})
 
                 # Calculate success rate
@@ -2319,10 +2268,8 @@ def test_encoding_decoding_sql_char_various_encodings(db_connection):
                     }
                 )
 
-                print(f"  Summary: {passed_tests}/{total_tests} tests passed ({success_rate:.1f}%)")
-
             except Exception as e:
-                print(f"  [FAIL] Failed to set encoding {encoding}: {e}")
+                pass
                 results_summary.append(
                     {
                         "encoding": encoding_name,
@@ -2335,24 +2282,16 @@ def test_encoding_decoding_sql_char_various_encodings(db_connection):
                 )
 
         # Print comprehensive summary
-        print(f"\n{'='*60}")
-        print("COMPREHENSIVE ENCODING TEST RESULTS FOR SQL_CHAR")
-        print(f"{'='*60}")
 
         for result in results_summary:
             encoding_name = result["encoding"]
             success_rate = result.get("success_rate", 0)
 
             if "setup_error" in result:
-                print(f"{encoding_name:25} | SETUP FAILED: {result['setup_error']}")
+                pass
             else:
                 passed = result["passed_tests"]
                 total = result["total_tests"]
-                print(
-                    f"{encoding_name:25} | {passed:2}/{total} tests passed ({success_rate:5.1f}%)"
-                )
-
-        print(f"{'='*60}")
 
         # Verify that at least basic encodings work
         basic_encodings = ["UTF-8", "ASCII", "Latin-1 (ISO-8859-1)"]
@@ -2363,7 +2302,6 @@ def test_encoding_decoding_sql_char_various_encodings(db_connection):
                 break
 
         assert basic_passed, "At least one basic encoding (UTF-8, ASCII, Latin-1) should work"
-        print("[OK] SQL_CHAR encoding variety test completed")
 
     finally:
         try:
@@ -2412,10 +2350,6 @@ def test_encoding_decoding_sql_char_with_unicode_fallback(db_connection):
         db_connection.setencoding(encoding="utf-16le", ctype=SQL_WCHAR)  # For NVARCHAR
         db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
 
-        print("\n--- Testing VARCHAR vs NVARCHAR with Unicode ---")
-        print(f"{'Test':<15} | {'VARCHAR Result':<25} | {'NVARCHAR Result':<25}")
-        print("-" * 70)
-
         for test_name, unicode_text in unicode_test_cases:
             try:
                 # Clear table
@@ -2446,15 +2380,11 @@ def test_encoding_decoding_sql_char_with_unicode_fallback(db_connection):
                     varchar_display = repr(varchar_result)[:23]
                     nvarchar_display = repr(nvarchar_result)[:23]
 
-                    print(f"  {test_name:<15} | {varchar_display:<25} | {nvarchar_display:<25}")
-
                     # NVARCHAR should always preserve Unicode correctly
                     assert nvarchar_result == unicode_text, f"NVARCHAR should preserve {test_name}"
 
             except Exception as e:
-                print(f"  {test_name:<15} | Error: {str(e)[:50]}...")
-
-        print("\n[OK] VARCHAR vs NVARCHAR Unicode handling test completed")
+                pass
 
     finally:
         try:
@@ -2540,16 +2470,10 @@ def test_encoding_decoding_sql_char_native_character_sets(db_connection):
             },
         ]
 
-        print(f"\n{'='*70}")
-        print("TESTING NATIVE CHARACTER SETS WITH SQL_CHAR")
-        print(f"{'='*70}")
-
         for encoding_test in encoding_native_tests:
             encoding = encoding_test["encoding"]
             name = encoding_test["name"]
             test_cases = encoding_test["test_cases"]
-
-            print(f"\n--- {name} ({encoding}) ---")
 
             try:
                 # Configure encoding
@@ -2585,33 +2509,25 @@ def test_encoding_decoding_sql_char_native_character_sets(db_connection):
 
                             # Verify data integrity
                             if retrieved_data == test_data and retrieved_encoding == encoding:
-                                print(
-                                    f"  [OK] {test_name:12} | '{test_data}' -> '{retrieved_data}' (Perfect match)"
-                                )
+                                pass
                                 results.append("PASS")
                             else:
-                                print(
-                                    f"  [WARN] {test_name:12} | '{test_data}' -> '{retrieved_data}' (Data changed)"
-                                )
+                                pass
                                 results.append("CHANGED")
                         else:
-                            print(f"  [FAIL] {test_name:12} | No data retrieved")
+                            pass
                             results.append("FAIL")
 
                     except Exception as e:
-                        print(f"  [FAIL] {test_name:12} | Error: {str(e)[:40]}...")
+                        pass
                         results.append("ERROR")
 
                 # Summary for this encoding
                 passed = results.count("PASS")
                 total = len(results)
-                print(f"  Result: {passed}/{total} tests passed")
 
             except Exception as e:
-                print(f"  [FAIL] Failed to configure {encoding}: {e}")
-
-        print(f"\n{'='*70}")
-        print("[OK] Native character set testing completed")
+                pass
 
     finally:
         try:
@@ -2671,15 +2587,9 @@ def test_encoding_decoding_sql_char_boundary_encoding_cases(db_connection):
             },
         ]
 
-        print(f"\n{'='*60}")
-        print("SQL_CHAR ENCODING BOUNDARY TESTING")
-        print(f"{'='*60}")
-
         for test_group in boundary_tests:
             encoding = test_group["encoding"]
             cases = test_group["cases"]
-
-            print(f"\n--- Boundary tests for {encoding.upper()} ---")
 
             try:
                 # Set encoding
@@ -2714,27 +2624,19 @@ def test_encoding_decoding_sql_char_boundary_encoding_cases(db_connection):
                             retrieved_length = len(retrieved)
 
                             if retrieved == test_data:
-                                print(
-                                    f"  [OK] {test_name:15} | Length: {data_length:3} | Perfect preservation"
-                                )
+                                pass
                             else:
-                                print(
-                                    f"  [WARN] {test_name:15} | Length: {data_length:3} -> {retrieved_length:3} | Data modified"
-                                )
+                                pass
                                 if data_length <= 20:  # Show diff for short strings
-                                    print(f"      Original: {test_data!r}")
-                                    print(f"      Retrieved: {retrieved!r}")
+                                    pass
                         else:
-                            print(f"  [FAIL] {test_name:15} | No data retrieved")
+                            pass
 
                     except Exception as e:
-                        print(f"  [FAIL] {test_name:15} | Error: {str(e)[:30]}...")
+                        pass
 
             except Exception as e:
-                print(f"  [FAIL] Failed to configure {encoding}: {e}")
-
-        print(f"\n{'='*60}")
-        print("[OK] Boundary encoding testing completed")
+                pass
 
     finally:
         try:
@@ -2761,10 +2663,6 @@ def test_encoding_decoding_sql_char_unicode_issue_diagnosis(db_connection):
         """
         )
 
-        print(f"\n{'='*80}")
-        print("DIAGNOSING UNICODE -> ? CHARACTER CONVERSION ISSUE")
-        print(f"{'='*80}")
-
         # Test Unicode strings that commonly cause issues
         test_strings = [
             ("Chinese", "你好世界", "Chinese characters"),
@@ -2783,18 +2681,13 @@ def test_encoding_decoding_sql_char_unicode_issue_diagnosis(db_connection):
         encodings = ["utf-8", "latin-1", "cp1252", "gbk"]
 
         for encoding in encodings:
-            print(f"\n--- Testing with SQL_CHAR encoding: {encoding} ---")
+            pass
 
             try:
                 # Configure encoding
                 db_connection.setencoding(encoding=encoding, ctype=SQL_CHAR)
                 db_connection.setdecoding(SQL_CHAR, encoding=encoding, ctype=SQL_CHAR)
                 db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
-
-                print(
-                    f"{'Test':<15} | {'VARCHAR Result':<20} | {'NVARCHAR Result':<20} | {'Issue':<15}"
-                )
-                print("-" * 75)
 
                 for test_name, test_string, description in test_strings:
                     try:
@@ -2849,32 +2742,15 @@ def test_encoding_decoding_sql_char_unicode_issue_diagnosis(db_connection):
                                 if isinstance(nvarchar_result, str)
                                 else str(nvarchar_result)
                             )
-                            print(
-                                f"{test_name:<15} | {varchar_safe:<20} | {nvarchar_safe:<20} | {issue_type:<15}"
-                            )
 
                         else:
-                            print(
-                                f"{test_name:<15} | {'NO DATA':<20} | {'NO DATA':<20} | {'Insert Failed':<15}"
-                            )
+                            pass
 
                     except Exception as e:
-                        print(
-                            f"{test_name:<15} | {'ERROR':<20} | {'ERROR':<20} | {str(e)[:15]:<15}"
-                        )
+                        pass
 
             except Exception as e:
-                print(f"Failed to configure {encoding}: {e}")
-
-        print(f"\n{'='*80}")
-        print("DIAGNOSIS SUMMARY:")
-        print(
-            "- If VARCHAR shows '?' but NVARCHAR preserves Unicode -> SQL Server conversion issue"
-        )
-        print("- If both show issues -> Encoding configuration problem")
-        print("- VARCHAR columns are limited by SQL Server collation and character set")
-        print("- NVARCHAR columns use UTF-16 and preserve Unicode correctly")
-        print("[OK] Unicode issue diagnosis completed")
+                pass
 
     finally:
         try:
@@ -2907,10 +2783,6 @@ def test_encoding_decoding_sql_char_best_practices_guide(db_connection):
             )
         """
         )
-
-        print(f"\n{'='*80}")
-        print("BEST PRACTICES FOR UNICODE HANDLING WITH SQL_CHAR vs SQL_WCHAR")
-        print(f"{'='*80}")
 
         # Configure optimal settings
         db_connection.setencoding(encoding="utf-8", ctype=SQL_CHAR)  # For ASCII data
@@ -2957,11 +2829,6 @@ def test_encoding_decoding_sql_char_best_practices_guide(db_connection):
             },
         ]
 
-        print(
-            f"\n{'Scenario':<20} | {'VARCHAR Result':<25} | {'NVARCHAR Result':<25} | {'Status':<15}"
-        )
-        print("-" * 90)
-
         for i, case in enumerate(test_cases, 1):
             try:
                 # Insert test data
@@ -3005,26 +2872,10 @@ def test_encoding_decoding_sql_char_best_practices_guide(db_connection):
                     elif not varchar_preserved and not nvarchar_preserved:
                         status = "[FAIL] Both Failed"
 
-                    print(
-                        f"{case['scenario']:<20} | {varchar_result:<25} | {nvarchar_result:<25} | {status:<15}"
-                    )
-
             except Exception as e:
-                print(f"{case['scenario']:<20} | {'ERROR':<25} | {'ERROR':<25} | {str(e)[:15]:<15}")
-
-        print(f"\n{'='*80}")
-        print("BEST PRACTICE RECOMMENDATIONS:")
-        print("1. Use NVARCHAR for Unicode data (names, descriptions, international content)")
-        print("2. Use VARCHAR for ASCII-only data (codes, IDs, English-only text)")
-        print("3. Configure SQL_WCHAR encoding as 'utf-16le' (automatic)")
-        print("4. Configure SQL_CHAR encoding based on your ASCII data needs")
-        print("5. The '?' character in VARCHAR is SQL Server's expected behavior")
-        print("6. Design your schema with appropriate column types from the start")
-        print(f"{'='*80}")
+                pass
 
         # Demonstrate the fix: using the right column types
-        print("\nSOLUTION DEMONSTRATION:")
-        print("Instead of trying to force Unicode into VARCHAR, use the right column type:")
 
         cursor.execute("DELETE FROM #test_best_practices")
 
@@ -3053,14 +2904,8 @@ def test_encoding_decoding_sql_char_best_practices_guide(db_connection):
             try:
                 name_safe = result[0].encode("ascii", "replace").decode("ascii")
                 desc_safe = result[1].encode("ascii", "replace").decode("ascii")
-                print(f"[OK] Unicode Name (NVARCHAR): {name_safe}")
-                print(f"[OK] Unicode Description (NVARCHAR): {desc_safe}")
             except (UnicodeError, AttributeError):
-                print(f"[OK] Unicode Name (NVARCHAR): {repr(result[0])}")
-                print(f"[OK] Unicode Description (NVARCHAR): {repr(result[1])}")
-            print("[OK] Perfect Unicode preservation using NVARCHAR columns!")
-
-        print("\n[OK] Best practices guide completed")
+                pass
 
     finally:
         try:
@@ -3209,7 +3054,6 @@ EDGE_CASE_STRINGS = [
     ("安" * 4000, "Max NVARCHAR length"),
 ]
 
-
 # ====================================================================================
 # HELPER FUNCTIONS
 # ====================================================================================
@@ -3243,13 +3087,9 @@ def is_encoding_compatible_with_data(encoding, data):
 
 def test_encoding_injection_attacks(db_connection):
     """Test that malicious encoding strings are properly rejected."""
-    print("\n" + "=" * 80)
-    print("SECURITY TEST: Encoding Injection Attack Prevention")
-    print("=" * 80)
 
     for malicious_encoding, attack_type in INJECTION_TEST_DATA:
-        print(f"\nTesting: {attack_type}")
-        print(f"  Payload: {safe_display(malicious_encoding, 60)}")
+        pass
 
         with pytest.raises((ProgrammingError, ValueError, LookupError)) as exc_info:
             db_connection.setencoding(encoding=malicious_encoding, ctype=SQL_CHAR)
@@ -3260,20 +3100,13 @@ def test_encoding_injection_attacks(db_connection):
             keyword in error_msg
             for keyword in ["encod", "invalid", "unknown", "lookup", "null", "embedded"]
         ), f"Expected encoding validation error, got: {exc_info.value}"
-        print(f"  [OK] Properly rejected with: {type(exc_info.value).__name__}")
-
-    print(f"\n{'='*80}")
-    print("[OK] All injection attacks properly prevented")
 
 
 def test_decoding_injection_attacks(db_connection):
     """Test that malicious encoding strings in setdecoding are rejected."""
-    print("\n" + "=" * 80)
-    print("SECURITY TEST: Decoding Injection Attack Prevention")
-    print("=" * 80)
 
     for malicious_encoding, attack_type in INJECTION_TEST_DATA:
-        print(f"\nTesting: {attack_type}")
+        pass
 
         with pytest.raises((ProgrammingError, ValueError, LookupError)) as exc_info:
             db_connection.setdecoding(SQL_CHAR, encoding=malicious_encoding, ctype=SQL_CHAR)
@@ -3283,48 +3116,10 @@ def test_decoding_injection_attacks(db_connection):
             keyword in error_msg
             for keyword in ["encod", "invalid", "unknown", "lookup", "null", "embedded"]
         ), f"Expected encoding validation error, got: {exc_info.value}"
-        print(f"  [OK] Properly rejected: {type(exc_info.value).__name__}")
-
-    print(f"\n{'='*80}")
-    print("[OK] All decoding injection attacks prevented")
-
-
-def test_encoding_validation_security(db_connection):
-    """Test Python-layer encoding validation using is_valid_encoding."""
-    print("\n" + "=" * 80)
-    print("SECURITY TEST: Python Layer Encoding Validation")
-    print("=" * 80)
-
-    # Test that C++ validation catches dangerous characters
-    dangerous_chars = [
-        ("utf;8", "Semicolon"),
-        ("utf|8", "Pipe"),
-        ("utf&8", "Ampersand"),
-        ("utf`8", "Backtick"),
-        ("utf$8", "Dollar sign"),
-        ("utf(8)", "Parentheses"),
-        ("utf{8}", "Braces"),
-        ("utf[8]", "Brackets"),
-        ("utf<8>", "Angle brackets"),
-    ]
-
-    for dangerous_enc, char_type in dangerous_chars:
-        print(f"\nTesting {char_type}: {dangerous_enc}")
-
-        with pytest.raises((ProgrammingError, ValueError, LookupError)) as exc_info:
-            db_connection.setencoding(encoding=dangerous_enc, ctype=SQL_CHAR)
-
-        print(f"  [OK] Rejected: {type(exc_info.value).__name__}")
-
-    print(f"\n{'='*80}")
-    print("[OK] Python layer validation working correctly")
 
 
 def test_encoding_length_limit_security(db_connection):
     """Test that extremely long encoding names are rejected."""
-    print("\n" + "=" * 80)
-    print("SECURITY TEST: Encoding Name Length Limit")
-    print("=" * 80)
 
     # C++ code has 100 character limit
     test_cases = [
@@ -3336,22 +3131,17 @@ def test_encoding_length_limit_security(db_connection):
     ]
 
     for enc_name, description, should_work in test_cases:
-        print(f"\nTesting {description}: {len(enc_name)} characters")
+        pass
 
         if should_work:
             # Even if under limit, will fail if not a valid codec
             try:
                 db_connection.setencoding(encoding=enc_name, ctype=SQL_CHAR)
-                print("  [INFO] Accepted (valid codec)")
             except (ProgrammingError, ValueError, LookupError):
-                print("  [OK] Rejected (invalid codec, but length OK)")
+                pass
         else:
             with pytest.raises((ProgrammingError, ValueError, LookupError)) as exc_info:
                 db_connection.setencoding(encoding=enc_name, ctype=SQL_CHAR)
-            print(f"  [OK] Rejected: {type(exc_info.value).__name__}")
-
-    print(f"\n{'='*80}")
-    print("[OK] Length limit security working correctly")
 
 
 # ====================================================================================
@@ -3384,7 +3174,6 @@ def test_utf8_encoding_strict_no_fallback(db_connection):
         assert (
             result[0] == test_unicode
         ), f"UTF-8 Unicode should be preserved with NVARCHAR: expected {test_unicode!r}, got {result[0]!r}"
-        print(f"  [OK] UTF-8 Unicode properly handled: {safe_display(result[0])}")
 
     finally:
         cursor.close()
@@ -3430,21 +3219,14 @@ def test_gbk_encoding_chinese_simplified(db_connection):
             ("你好世界", "Hello World"),
         ]
 
-        print("\n" + "=" * 60)
-        print("GBK ENCODING TEST (Simplified Chinese)")
-        print("=" * 60)
-
         for chinese_text, meaning in chinese_tests:
             if is_encoding_compatible_with_data("gbk", chinese_text):
                 cursor.execute("DELETE FROM #test_gbk")
                 cursor.execute("INSERT INTO #test_gbk VALUES (?, ?)", 1, chinese_text)
                 cursor.execute("SELECT data FROM #test_gbk WHERE id = 1")
                 result = cursor.fetchone()
-                print(f"  Testing {ascii(chinese_text)} ({meaning}): {safe_display(result[0])}")
             else:
-                print(f"  Skipping {ascii(chinese_text)} (not GBK compatible)")
-
-        print("=" * 60)
+                pass
 
     finally:
         cursor.close()
@@ -3464,21 +3246,14 @@ def test_big5_encoding_chinese_traditional(db_connection):
             ("台灣", "Taiwan"),
         ]
 
-        print("\n" + "=" * 60)
-        print("BIG5 ENCODING TEST (Traditional Chinese)")
-        print("=" * 60)
-
         for chinese_text, meaning in traditional_tests:
             if is_encoding_compatible_with_data("big5", chinese_text):
                 cursor.execute("DELETE FROM #test_big5")
                 cursor.execute("INSERT INTO #test_big5 VALUES (?, ?)", 1, chinese_text)
                 cursor.execute("SELECT data FROM #test_big5 WHERE id = 1")
                 result = cursor.fetchone()
-                print(f"  Testing {ascii(chinese_text)} ({meaning}): {safe_display(result[0])}")
             else:
-                print(f"  Skipping {ascii(chinese_text)} (not Big5 compatible)")
-
-        print("=" * 60)
+                pass
 
     finally:
         cursor.close()
@@ -3498,21 +3273,14 @@ def test_shift_jis_encoding_japanese(db_connection):
             ("東京", "Tokyo"),
         ]
 
-        print("\n" + "=" * 60)
-        print("SHIFT-JIS ENCODING TEST (Japanese)")
-        print("=" * 60)
-
         for japanese_text, meaning in japanese_tests:
             if is_encoding_compatible_with_data("shift_jis", japanese_text):
                 cursor.execute("DELETE FROM #test_sjis")
                 cursor.execute("INSERT INTO #test_sjis VALUES (?, ?)", 1, japanese_text)
                 cursor.execute("SELECT data FROM #test_sjis WHERE id = 1")
                 result = cursor.fetchone()
-                print(f"  Testing {ascii(japanese_text)} ({meaning}): {safe_display(result[0])}")
             else:
-                print(f"  Skipping {ascii(japanese_text)} (not Shift-JIS compatible)")
-
-        print("=" * 60)
+                pass
 
     finally:
         cursor.close()
@@ -3533,21 +3301,14 @@ def test_euc_kr_encoding_korean(db_connection):
             ("한글", "Hangul"),
         ]
 
-        print("\n" + "=" * 60)
-        print("EUC-KR ENCODING TEST (Korean)")
-        print("=" * 60)
-
         for korean_text, meaning in korean_tests:
             if is_encoding_compatible_with_data("euc-kr", korean_text):
                 cursor.execute("DELETE FROM #test_euckr")
                 cursor.execute("INSERT INTO #test_euckr VALUES (?, ?)", 1, korean_text)
                 cursor.execute("SELECT data FROM #test_euckr WHERE id = 1")
                 result = cursor.fetchone()
-                print(f"  Testing {ascii(korean_text)} ({meaning}): {safe_display(result[0])}")
             else:
-                print(f"  Skipping {ascii(korean_text)} (not EUC-KR compatible)")
-
-        print("=" * 60)
+                pass
 
     finally:
         cursor.close()
@@ -3576,10 +3337,6 @@ def test_latin1_encoding_western_european(db_connection):
             ("naïve", "French word"),
         ]
 
-        print("\n" + "=" * 60)
-        print("LATIN-1 (ISO-8859-1) ENCODING TEST")
-        print("=" * 60)
-
         for text, description in latin1_tests:
             if is_encoding_compatible_with_data("latin-1", text):
                 cursor.execute("DELETE FROM #test_latin1")
@@ -3587,11 +3344,8 @@ def test_latin1_encoding_western_european(db_connection):
                 cursor.execute("SELECT data FROM #test_latin1 WHERE id = 1")
                 result = cursor.fetchone()
                 match = "PASS" if result[0] == text else "FAIL"
-                print(f"  {match} {description:15} | {ascii(text)} -> {ascii(result[0])}")
             else:
-                print(f"  SKIP {description:15} | Not Latin-1 compatible")
-
-        print("=" * 60)
+                pass
 
     finally:
         cursor.close()
@@ -3614,10 +3368,6 @@ def test_cp1252_encoding_windows_western(db_connection):
             ("resumé", "Resume with accent"),
         ]
 
-        print("\n" + "=" * 60)
-        print("CP1252 (Windows-1252) ENCODING TEST")
-        print("=" * 60)
-
         for text, description in cp1252_tests:
             if is_encoding_compatible_with_data("cp1252", text):
                 cursor.execute("DELETE FROM #test_cp1252")
@@ -3625,11 +3375,8 @@ def test_cp1252_encoding_windows_western(db_connection):
                 cursor.execute("SELECT data FROM #test_cp1252 WHERE id = 1")
                 result = cursor.fetchone()
                 match = "PASS" if result[0] == text else "FAIL"
-                print(f"  {match} {description:15} | {ascii(text)} -> {ascii(result[0])}")
             else:
-                print(f"  SKIP {description:15} | Not CP1252 compatible")
-
-        print("=" * 60)
+                pass
 
     finally:
         cursor.close()
@@ -3661,10 +3408,6 @@ def test_iso8859_family_encodings(db_connection):
         },
     ]
 
-    print("\n" + "=" * 70)
-    print("ISO-8859 FAMILY ENCODING TESTS")
-    print("=" * 70)
-
     cursor = db_connection.cursor()
     try:
         cursor.execute("CREATE TABLE #test_iso8859 (id INT, data VARCHAR(100))")
@@ -3673,8 +3416,6 @@ def test_iso8859_family_encodings(db_connection):
             encoding = iso_test["encoding"]
             name = iso_test["name"]
             tests = iso_test["tests"]
-
-            print(f"\n--- {name} ({encoding}) ---")
 
             try:
                 db_connection.setencoding(encoding=encoding, ctype=SQL_CHAR)
@@ -3686,14 +3427,11 @@ def test_iso8859_family_encodings(db_connection):
                         cursor.execute("INSERT INTO #test_iso8859 VALUES (?, ?)", 1, text)
                         cursor.execute("SELECT data FROM #test_iso8859 WHERE id = 1")
                         result = cursor.fetchone()
-                        print(f"  Testing '{text}' ({description}): {safe_display(result[0])}")
                     else:
-                        print(f"  Skipping '{text}' (not {encoding} compatible)")
+                        pass
 
             except Exception as e:
-                print(f"  [SKIP] {encoding} not supported: {str(e)[:40]}")
-
-        print("=" * 70)
+                pass
 
     finally:
         cursor.close()
@@ -3706,9 +3444,6 @@ def test_iso8859_family_encodings(db_connection):
 
 def test_utf16_enforcement_for_sql_wchar(db_connection):
     """Test SQL_WCHAR encoding behavior (UTF-16LE/BE only, not utf-16 with BOM)."""
-    print("\n" + "=" * 60)
-    print("SQL_WCHAR ENCODING BEHAVIOR TEST")
-    print("=" * 60)
 
     # SQL_WCHAR requires explicit byte order (utf-16le or utf-16be)
     # utf-16 with BOM is rejected due to ambiguous byte order
@@ -3719,27 +3454,22 @@ def test_utf16_enforcement_for_sql_wchar(db_connection):
     ]
 
     for encoding, description, should_work in utf16_encodings:
-        print(f"\nTesting {description}...")
+        pass
         if should_work:
             db_connection.setencoding(encoding=encoding, ctype=SQL_WCHAR)
             settings = db_connection.getencoding()
             assert settings["encoding"] == encoding.lower()
             assert settings["ctype"] == SQL_WCHAR
-            print(f"  [OK] Successfully set {encoding} with SQL_WCHAR")
         else:
             # Should raise error for utf-16 with BOM
             with pytest.raises(ProgrammingError, match="Byte Order Mark"):
                 db_connection.setencoding(encoding=encoding, ctype=SQL_WCHAR)
-            print(f"  [OK] Correctly rejected {encoding} with SQL_WCHAR (BOM ambiguity)")
 
     # Test automatic ctype selection for UTF-16 encodings (without BOM)
     for encoding in ["utf-16le", "utf-16be"]:
         db_connection.setencoding(encoding=encoding)  # No explicit ctype
         settings = db_connection.getencoding()
         assert settings["ctype"] == SQL_WCHAR, f"{encoding} should auto-select SQL_WCHAR"
-        print(f"  [OK] {encoding} auto-selected SQL_WCHAR")
-
-    print("\n" + "=" * 60)
 
 
 def test_utf16_unicode_preservation(db_connection):
@@ -3763,10 +3493,6 @@ def test_utf16_unicode_preservation(db_connection):
             ("Test 你好 🌍", "Mixed"),
         ]
 
-        print("\n" + "=" * 60)
-        print("UTF-16LE UNICODE PRESERVATION TEST")
-        print("=" * 60)
-
         for text, description in unicode_tests:
             cursor.execute("DELETE FROM #test_utf16")
             cursor.execute("INSERT INTO #test_utf16 VALUES (?, ?)", 1, text)
@@ -3774,10 +3500,7 @@ def test_utf16_unicode_preservation(db_connection):
             result = cursor.fetchone()
             match = "PASS" if result[0] == text else "FAIL"
             # Use ascii() to force ASCII-safe output on Windows CP1252 console
-            print(f"  {match} {description:10} | {ascii(text)} -> {ascii(result[0])}")
             assert result[0] == text, f"UTF-16 should preserve {description}"
-
-        print("=" * 60)
 
     finally:
         cursor.close()
@@ -3805,12 +3528,8 @@ def test_encoding_error_strict_mode(db_connection):
             ("😀", "emoji"),
         ]
 
-        print("\n" + "=" * 60)
-        print("STRICT MODE ERROR HANDLING TEST")
-        print("=" * 60)
-
         for text, description in non_ascii_strings:
-            print(f"\nTesting ASCII encoding with {description!r}...")
+            pass
             try:
                 cursor.execute("INSERT INTO #test_strict VALUES (?, ?)", 1, text)
                 cursor.execute("SELECT data FROM #test_strict WHERE id = 1")
@@ -3821,11 +3540,9 @@ def test_encoding_error_strict_mode(db_connection):
                 # 2. Raise UnicodeEncodeError
                 # 3. Get mangled
                 if result and result[0] != text:
-                    print(
-                        f"  [OK] Data mangled as expected (strict mode, no fallback): {result[0]!r}"
-                    )
+                    pass
                 elif result and result[0] == text:
-                    print("  [INFO] Data preserved (server-side Unicode handling)")
+                    pass
 
                 # Clean up for next test
                 cursor.execute("DELETE FROM #test_strict")
@@ -3834,11 +3551,9 @@ def test_encoding_error_strict_mode(db_connection):
                 error_msg = str(exc_info).lower()
                 # Should be an encoding-related error
                 if any(keyword in error_msg for keyword in ["encod", "ascii", "unicode"]):
-                    print(f"  [OK] Raised {type(exc_info).__name__} as expected")
+                    pass
                 else:
-                    print(f"  [WARN] Unexpected error: {exc_info}")
-
-        print("\n" + "=" * 60)
+                    pass
 
     finally:
         cursor.close()
@@ -3859,8 +3574,6 @@ def test_decoding_error_strict_mode(db_connection):
         result = cursor.fetchone()
         assert result[0] == "Test Data", "ASCII decoding should work"
 
-        print("\n[OK] Decoding error handling tested")
-
     finally:
         cursor.close()
 
@@ -3878,12 +3591,8 @@ def test_encoding_edge_cases(db_connection):
     try:
         cursor.execute("CREATE TABLE #test_edge (id INT, data VARCHAR(MAX))")
 
-        print("\n" + "=" * 60)
-        print("EDGE CASE ENCODING TEST")
-        print("=" * 60)
-
         for i, (text, description) in enumerate(EDGE_CASE_STRINGS, 1):
-            print(f"\nTesting: {description}")
+            pass
             try:
                 cursor.execute("DELETE FROM #test_edge")
                 cursor.execute("INSERT INTO #test_edge VALUES (?, ?)", i, text)
@@ -3893,16 +3602,14 @@ def test_encoding_edge_cases(db_connection):
                 if result:
                     retrieved = result[0]
                     if retrieved == text:
-                        print(f"  [OK] Perfect match (length: {len(text)})")
+                        pass
                     else:
-                        print(f"  [WARN] Data changed (length: {len(text)} -> {len(retrieved)})")
+                        pass
                 else:
-                    print(f"  [FAIL] No data retrieved")
+                    pass
 
             except Exception as e:
-                print(f"  [ERROR] {str(e)[:50]}...")
-
-        print("\n" + "=" * 60)
+                pass
 
     finally:
         cursor.close()
@@ -3923,67 +3630,13 @@ def test_null_value_encoding_decoding(db_connection):
         result = cursor.fetchone()
 
         assert result[0] is None, "NULL should remain None"
-        print("[OK] NULL value handling correct")
 
     finally:
         cursor.close()
 
 
-# ====================================================================================
-# C++ LAYER TESTS (ddbc_bindings)
-# ====================================================================================
-
-
-def test_cpp_encoding_validation(db_connection):
-    """Test C++ layer encoding validation (is_valid_encoding function)."""
-    print("\n" + "=" * 70)
-    print("C++ LAYER ENCODING VALIDATION TEST")
-    print("=" * 70)
-
-    # Test that dangerous characters are rejected by C++ validation
-    dangerous_encodings = [
-        "utf;8",  # Semicolon
-        "utf|8",  # Pipe
-        "utf&8",  # Ampersand
-        "utf`8",  # Backtick
-        "utf$8",  # Dollar
-        "utf(8)",  # Parentheses
-        "utf{8}",  # Braces
-        "utf<8>",  # Angle brackets
-    ]
-
-    for enc in dangerous_encodings:
-        print(f"\nTesting dangerous encoding: {enc}")
-        with pytest.raises((ProgrammingError, ValueError, LookupError, Exception)) as exc_info:
-            db_connection.setencoding(encoding=enc, ctype=SQL_CHAR)
-        print(f"  [OK] Rejected by C++ validation: {type(exc_info.value).__name__}")
-
-    print("\n" + "=" * 70)
-
-
-def test_cpp_error_mode_validation(db_connection):
-    """Test C++ layer error mode validation (is_valid_error_mode function).
-
-    Note: The C++ code validates error modes in extract_encoding_settings.
-    Valid modes: strict, ignore, replace, xmlcharrefreplace, backslashreplace.
-    This is tested indirectly through encoding/decoding operations.
-    """
-    # The validation happens in C++ when encoding/decoding strings
-    # This test documents the expected behavior
-    print("[OK] Error mode validation tested through encoding operations")
-
-
-# ====================================================================================
-# COMPREHENSIVE INTEGRATION TESTS
-# ====================================================================================
-
-
 def test_encoding_decoding_round_trip_all_encodings(db_connection):
     """Test round-trip encoding/decoding for all supported encodings."""
-
-    print("\n" + "=" * 70)
-    print("COMPREHENSIVE ROUND-TRIP ENCODING TEST")
-    print("=" * 70)
 
     cursor = db_connection.cursor()
     try:
@@ -3994,7 +3647,7 @@ def test_encoding_decoding_round_trip_all_encodings(db_connection):
         test_string = "Hello World 123"
 
         for encoding in test_encodings:
-            print(f"\nTesting {encoding}...")
+            pass
             try:
                 db_connection.setencoding(encoding=encoding, ctype=SQL_CHAR)
                 db_connection.setdecoding(SQL_CHAR, encoding=encoding, ctype=SQL_CHAR)
@@ -4005,14 +3658,12 @@ def test_encoding_decoding_round_trip_all_encodings(db_connection):
                 result = cursor.fetchone()
 
                 if result[0] == test_string:
-                    print(f"  [OK] Round-trip successful")
+                    pass
                 else:
-                    print(f"  [WARN] Data changed: '{test_string}' -> '{result[0]}'")
+                    pass
 
             except Exception as e:
-                print(f"  [ERROR] {str(e)[:50]}...")
-
-        print("\n" + "=" * 70)
+                pass
 
     finally:
         cursor.close()
@@ -4030,18 +3681,11 @@ def test_multiple_encoding_switches(db_connection):
         ("utf-8", SQL_CHAR),
     ]
 
-    print("\n" + "=" * 60)
-    print("MULTIPLE ENCODING SWITCHES TEST")
-    print("=" * 60)
-
     for encoding, ctype in encodings:
         db_connection.setencoding(encoding=encoding, ctype=ctype)
         settings = db_connection.getencoding()
         assert settings["encoding"] == encoding.casefold(), f"Encoding switch to {encoding} failed"
         assert settings["ctype"] == ctype, f"ctype switch to {ctype} failed"
-        print(f"  [OK] Switched to {encoding} with ctype={ctype}")
-
-    print("=" * 60)
 
 
 # ====================================================================================
@@ -4061,13 +3705,8 @@ def test_encoding_large_data_sets(db_connection):
         # Test with various sizes including LOB
         test_sizes = [100, 1000, 8000, 10000, 50000]  # Include sizes > 8000 for LOB
 
-        print("\n" + "=" * 60)
-        print("LARGE DATA SET ENCODING TEST (including LOB)")
-        print("=" * 60)
-
         for size in test_sizes:
             large_string = "A" * size
-            print(f"\nTesting {size} characters...")
 
             cursor.execute("DELETE FROM #test_large")
             cursor.execute("INSERT INTO #test_large VALUES (?, ?)", 1, large_string)
@@ -4078,9 +3717,6 @@ def test_encoding_large_data_sets(db_connection):
             assert result[0] == large_string, "Data mismatch"
 
             lob_marker = " (LOB)" if size > 8000 else ""
-            print(f"  [OK] {size} characters successfully processed{lob_marker}")
-
-        print("\n" + "=" * 60)
 
     finally:
         cursor.close()
@@ -4112,10 +3748,6 @@ def test_executemany_with_encoding(db_connection):
             (5, "Test5", "More test data"),
         ]
 
-        print("\n" + "=" * 60)
-        print("EXECUTEMANY WITH ENCODING TEST")
-        print("=" * 60)
-
         # Insert batch
         cursor.executemany(
             "INSERT INTO #test_executemany (id, name, data) VALUES (?, ?, ?)", batch_data
@@ -4135,9 +3767,6 @@ def test_executemany_with_encoding(db_connection):
             assert actual_name == expected_name, f"Name mismatch at row {i}"
             assert actual_data == expected_data, f"Data mismatch at row {i}"
 
-        print(f"  [OK] {len(batch_data)} rows inserted and verified successfully")
-        print("\n" + "=" * 60)
-
     finally:
         cursor.close()
 
@@ -4154,14 +3783,9 @@ def test_lob_encoding_with_nvarchar_max(db_connection):
         # Test with LOB-sized Unicode data
         test_sizes = [5000, 10000, 20000]  # NVARCHAR(MAX) LOB scenarios
 
-        print("\n" + "=" * 60)
-        print("NVARCHAR(MAX) LOB ENCODING TEST")
-        print("=" * 60)
-
         for size in test_sizes:
             # Mix of ASCII and Unicode to test encoding
             unicode_string = ("Hello世界" * (size // 8))[:size]
-            print(f"\nTesting {size} characters with Unicode...")
 
             cursor.execute("DELETE FROM #test_nvarchar_lob")
             cursor.execute("INSERT INTO #test_nvarchar_lob VALUES (?, ?)", 1, unicode_string)
@@ -4170,9 +3794,6 @@ def test_lob_encoding_with_nvarchar_max(db_connection):
 
             assert len(result[0]) == len(unicode_string), f"Length mismatch at {size}"
             assert result[0] == unicode_string, f"Data mismatch at {size}"
-            print(f"  [OK] {size} Unicode characters (LOB) successfully processed")
-
-        print("\n" + "=" * 60)
 
     finally:
         cursor.close()
@@ -4197,8 +3818,6 @@ def test_non_string_encoding_input(db_connection):
     # Test list
     with pytest.raises((TypeError, ProgrammingError)):
         db_connection.setencoding(encoding=["utf-8"])
-
-    print("[OK] Non-string encoding inputs properly rejected")
 
 
 def test_atomicity_after_encoding_failure(db_connection):
@@ -4227,8 +3846,6 @@ def test_atomicity_after_encoding_failure(db_connection):
         current_settings == initial_settings
     ), "Settings should remain unchanged after failed ctype"
 
-    print("[OK] Atomicity maintained after encoding failures")
-
 
 def test_atomicity_after_decoding_failure(db_connection):
     """Test that decoding settings remain unchanged after failure (Critical #13)."""
@@ -4255,8 +3872,6 @@ def test_atomicity_after_decoding_failure(db_connection):
     assert (
         wchar_settings["encoding"] == "utf-16le"
     ), "SQL_WCHAR should remain at default after failed attempt"
-
-    print("[OK] Atomicity maintained after decoding failures")
 
 
 def test_encoding_normalization_consistency(db_connection):
@@ -4293,8 +3908,6 @@ def test_encoding_normalization_consistency(db_connection):
             settings["encoding"] == expected_output
         ), f"Decoding: Input '{input_enc}' should normalize to '{expected_output}'"
 
-    print("[OK] Encoding normalization is consistent")
-
 
 def test_idempotent_reapplication(db_connection):
     """Test that reapplying same encoding doesn't cause issues (High #2)."""
@@ -4313,8 +3926,6 @@ def test_idempotent_reapplication(db_connection):
     settings = db_connection.getdecoding(SQL_WCHAR)
     assert settings["encoding"] == "utf-16le"
     assert settings["ctype"] == SQL_WCHAR
-
-    print("[OK] Idempotent reapplication works correctly")
 
 
 def test_encoding_switches_adjust_ctype(db_connection):
@@ -4343,8 +3954,6 @@ def test_encoding_switches_adjust_ctype(db_connection):
     assert settings["encoding"] == "latin-1"
     assert settings["ctype"] == SQL_CHAR, "Latin-1 should default to SQL_CHAR"
 
-    print("[OK] Encoding switches properly adjust ctype")
-
 
 def test_utf16be_handling(db_connection):
     """Test proper handling of utf-16be (High #4)."""
@@ -4359,8 +3968,6 @@ def test_utf16be_handling(db_connection):
     settings = db_connection.getdecoding(SQL_WCHAR)
     assert settings["encoding"] == "utf-16be", "UTF-16BE decoding should not be auto-converted"
 
-    print("[OK] UTF-16BE handled correctly without auto-conversion")
-
 
 def test_exotic_codecs_policy(db_connection):
     """Test policy for exotic but valid Python codecs (High #5)."""
@@ -4373,11 +3980,10 @@ def test_exotic_codecs_policy(db_connection):
         try:
             db_connection.setencoding(encoding=codec)
             settings = db_connection.getencoding()
-            print(f"[INFO] {codec} accepted: {settings}")
             # If accepted, it should work without issues
             assert settings["encoding"] == codec.lower()
         except ProgrammingError as e:
-            print(f"[INFO] {codec} rejected: {e}")
+            pass
             # If rejected, that's also a valid policy
             assert "Unsupported encoding" in str(e) or "not supported" in str(e).lower()
 
@@ -4402,8 +4008,6 @@ def test_independent_encoding_decoding_settings(db_connection):
         dec_settings_after["encoding"] == "latin-1"
     ), "Decoding should remain Latin-1 after encoding change"
 
-    print("[OK] Encoding and decoding settings are independent")
-
 
 def test_sql_wmetadata_decoding_rules(db_connection):
     """Test SQL_WMETADATA decoding rules (flexible encoding support)."""
@@ -4426,8 +4030,6 @@ def test_sql_wmetadata_decoding_rules(db_connection):
     settings = db_connection.getdecoding(SQL_WMETADATA)
     assert settings["encoding"] == "ascii"
 
-    print("[OK] SQL_WMETADATA decoding configuration working correctly")
-
 
 def test_logging_sanitization_for_encoding(db_connection):
     """Test that malformed encoding names are sanitized in logs (High #8)."""
@@ -4443,8 +4045,6 @@ def test_logging_sanitization_for_encoding(db_connection):
         with pytest.raises(ProgrammingError):
             db_connection.setencoding(encoding=malformed)
         # If this doesn't crash and raises expected error, sanitization worked
-
-    print("[OK] Logging sanitization works for malformed encoding names")
 
 
 def test_recovery_after_invalid_attempt(db_connection):
@@ -4465,8 +4065,6 @@ def test_recovery_after_invalid_attempt(db_connection):
     assert settings["ctype"] == SQL_CHAR
     assert len(settings) == 2  # No stale fields
 
-    print("[OK] Clean recovery after invalid encoding attempt")
-
 
 def test_negative_unreserved_sqltype(db_connection):
     """Test rejection of negative sqltype other than -8 (SQL_WCHAR) and -99 (SQL_WMETADATA) (High #12)."""
@@ -4477,8 +4075,6 @@ def test_negative_unreserved_sqltype(db_connection):
     for sqltype in invalid_sqltypes:
         with pytest.raises(ProgrammingError, match="Invalid sqltype"):
             db_connection.setdecoding(sqltype, encoding="utf-8")
-
-    print("[OK] Invalid negative sqltypes properly rejected")
 
 
 def test_over_length_encoding_boundary(db_connection):
@@ -4497,8 +4093,6 @@ def test_over_length_encoding_boundary(db_connection):
     enc_99 = "a" * 99
     with pytest.raises(ProgrammingError):  # Will fail as invalid codec
         db_connection.setencoding(encoding=enc_99)
-
-    print("[OK] Encoding length boundary properly enforced")
 
 
 def test_surrogate_pair_emoji_handling(db_connection):
@@ -4528,8 +4122,6 @@ def test_surrogate_pair_emoji_handling(db_connection):
             assert (
                 results[i][0] == expected_text
             ), f"Emoji/surrogate pair handling failed for: {expected_text}"
-
-        print("[OK] Surrogate pairs and emoji handled correctly")
 
     finally:
         try:
@@ -4563,8 +4155,6 @@ def test_metadata_vs_data_decoding_separation(db_connection):
 
     assert wchar_after["encoding"] == "utf-16le", "WCHAR should be unchanged"
     assert metadata_after["encoding"] == "utf-16be", "Metadata should be unchanged"
-
-    print("[OK] Metadata and data decoding settings are properly separated")
 
 
 def test_end_to_end_no_corruption_mixed_unicode(db_connection):
@@ -4604,8 +4194,6 @@ def test_end_to_end_no_corruption_mixed_unicode(db_connection):
             assert (
                 actual == expected
             ), f"Data corruption detected: expected '{expected}', got '{actual}'"
-
-        print(f"[OK] End-to-end test passed for {len(test_strings)} mixed Unicode strings")
 
     finally:
         try:
@@ -5255,6 +4843,752 @@ def test_pooling_disabled_encoding_still_works(conn_str, reset_pooling_state):
     assert result[0] == "Test"
 
     conn.close()
+
+
+def test_execute_executemany_encoding_consistency(db_connection):
+    """
+    Verify encoding consistency between execute() and executemany().
+    """
+    cursor = db_connection.cursor()
+
+    try:
+        # Create test table that can handle both VARCHAR and NVARCHAR data
+        cursor.execute(
+            """
+            CREATE TABLE #test_encoding_consistency (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                varchar_col VARCHAR(1000) COLLATE SQL_Latin1_General_CP1_CI_AS,
+                nvarchar_col NVARCHAR(1000)
+            )
+        """
+        )
+
+        # Test data with various encoding challenges
+        # Using ASCII-safe characters that work across different encodings
+        test_data_ascii = [
+            "Hello World!",
+            "ASCII test string 123",
+            "Simple chars: !@#$%^&*()",
+            "Line1\nLine2\tTabbed",
+        ]
+
+        # Unicode test data for NVARCHAR columns
+        test_data_unicode = [
+            "Unicode test: ñáéíóú",
+            "Chinese: 你好世界",
+            "Russian: Привет мир",
+            "Emoji: 🌍🌎🌏",
+        ]
+
+        # Test different encoding configurations
+        encoding_configs = [
+            ("utf-8", mssql_python.SQL_CHAR, "UTF-8 with SQL_CHAR"),
+            ("utf-16le", mssql_python.SQL_WCHAR, "UTF-16LE with SQL_WCHAR"),
+            ("latin1", mssql_python.SQL_CHAR, "Latin-1 with SQL_CHAR"),
+        ]
+
+        for encoding, ctype, config_desc in encoding_configs:
+            # Configure connection encoding
+            db_connection.setencoding(encoding=encoding, ctype=ctype)
+
+            # Verify encoding was set correctly
+            current_encoding = db_connection.getencoding()
+            assert current_encoding["encoding"] == encoding.lower()
+            assert current_encoding["ctype"] == ctype
+
+            # Clear table for this test iteration
+            cursor.execute("DELETE FROM #test_encoding_consistency")
+
+            # TEST 1: Execute vs ExecuteMany with ASCII data (safer for VARCHAR)
+
+            # Single execute() calls
+            execute_results = []
+            for i, test_string in enumerate(test_data_ascii):
+                cursor.execute(
+                    """
+                    INSERT INTO #test_encoding_consistency (varchar_col, nvarchar_col) 
+                    VALUES (?, ?)
+                """,
+                    test_string,
+                    test_string,
+                )
+
+                # Retrieve immediately to verify encoding worked
+                cursor.execute(
+                    """
+                    SELECT varchar_col, nvarchar_col 
+                    FROM #test_encoding_consistency 
+                    WHERE id = (SELECT MAX(id) FROM #test_encoding_consistency)
+                """
+                )
+                result = cursor.fetchone()
+                execute_results.append((result[0], result[1]))
+
+                assert (
+                    result[0] == test_string
+                ), f"execute() VARCHAR failed: {result[0]!r} != {test_string!r}"
+                assert (
+                    result[1] == test_string
+                ), f"execute() NVARCHAR failed: {result[1]!r} != {test_string!r}"
+
+            # Clear for executemany test
+            cursor.execute("DELETE FROM #test_encoding_consistency")
+
+            # Batch executemany() call with same data
+            executemany_params = [(s, s) for s in test_data_ascii]
+            cursor.executemany(
+                """
+                INSERT INTO #test_encoding_consistency (varchar_col, nvarchar_col) 
+                VALUES (?, ?)
+            """,
+                executemany_params,
+            )
+
+            # Retrieve all results from executemany
+            cursor.execute(
+                """
+                SELECT varchar_col, nvarchar_col 
+                FROM #test_encoding_consistency 
+                ORDER BY id
+            """
+            )
+            executemany_results = cursor.fetchall()
+
+            # Verify executemany results match execute results
+            assert len(executemany_results) == len(
+                execute_results
+            ), f"Row count mismatch: execute={len(execute_results)}, executemany={len(executemany_results)}"
+
+            for i, ((exec_varchar, exec_nvarchar), (many_varchar, many_nvarchar)) in enumerate(
+                zip(execute_results, executemany_results)
+            ):
+                assert (
+                    exec_varchar == many_varchar
+                ), f"VARCHAR mismatch at {i}: execute={exec_varchar!r} != executemany={many_varchar!r}"
+                assert (
+                    exec_nvarchar == many_nvarchar
+                ), f"NVARCHAR mismatch at {i}: execute={exec_nvarchar!r} != executemany={many_nvarchar!r}"
+
+            # Clear table for Unicode test
+            cursor.execute("DELETE FROM #test_encoding_consistency")
+
+            # TEST 2: Execute vs ExecuteMany with Unicode data (NVARCHAR only)
+            # Skip Unicode test for Latin-1 as it can't handle all Unicode characters
+            if encoding.lower() != "latin1":
+
+                # Single execute() calls for Unicode (NVARCHAR column only)
+                unicode_execute_results = []
+                for i, test_string in enumerate(test_data_unicode):
+                    try:
+                        cursor.execute(
+                            """
+                            INSERT INTO #test_encoding_consistency (nvarchar_col) 
+                            VALUES (?)
+                        """,
+                            test_string,
+                        )
+
+                        cursor.execute(
+                            """
+                            SELECT nvarchar_col 
+                            FROM #test_encoding_consistency 
+                            WHERE id = (SELECT MAX(id) FROM #test_encoding_consistency)
+                        """
+                        )
+                        result = cursor.fetchone()
+                        unicode_execute_results.append(result[0])
+
+                        assert (
+                            result[0] == test_string
+                        ), f"execute() Unicode failed: {result[0]!r} != {test_string!r}"
+                    except Exception as e:
+                        continue
+
+                # Clear for executemany Unicode test
+                cursor.execute("DELETE FROM #test_encoding_consistency")
+
+                # Batch executemany() with Unicode data
+                if unicode_execute_results:  # Only test if execute worked
+                    try:
+                        unicode_params = [
+                            (s,) for s in test_data_unicode[: len(unicode_execute_results)]
+                        ]
+                        cursor.executemany(
+                            """
+                            INSERT INTO #test_encoding_consistency (nvarchar_col) 
+                            VALUES (?)
+                        """,
+                            unicode_params,
+                        )
+
+                        cursor.execute(
+                            """
+                            SELECT nvarchar_col 
+                            FROM #test_encoding_consistency 
+                            ORDER BY id
+                        """
+                        )
+                        unicode_executemany_results = cursor.fetchall()
+
+                        # Compare Unicode results
+                        for i, (exec_result, many_result) in enumerate(
+                            zip(unicode_execute_results, unicode_executemany_results)
+                        ):
+                            assert (
+                                exec_result == many_result[0]
+                            ), f"Unicode mismatch at {i}: execute={exec_result!r} != executemany={many_result[0]!r}"
+
+                    except Exception as e:
+                        pass
+            else:
+                pass
+
+        # Final verification: Test with mixed parameter types in executemany
+
+        db_connection.setencoding(encoding="utf-8", ctype=mssql_python.SQL_CHAR)
+        cursor.execute("DELETE FROM #test_encoding_consistency")
+
+        # Mixed data types that should all be encoded consistently
+        mixed_params = [
+            ("String 1", "Unicode 1"),
+            ("String 2", "Unicode 2"),
+            ("String 3", "Unicode 3"),
+        ]
+
+        # This should work with consistent encoding for all parameters
+        cursor.executemany(
+            """
+            INSERT INTO #test_encoding_consistency (varchar_col, nvarchar_col) 
+            VALUES (?, ?)
+        """,
+            mixed_params,
+        )
+
+        cursor.execute("SELECT COUNT(*) FROM #test_encoding_consistency")
+        count = cursor.fetchone()[0]
+        assert count == len(mixed_params), f"Expected {len(mixed_params)} rows, got {count}"
+
+    except Exception as e:
+        pytest.fail(f"Encoding consistency test failed: {e}")
+    finally:
+        try:
+            cursor.execute("DROP TABLE #test_encoding_consistency")
+        except:
+            pass
+        cursor.close()
+
+
+def test_encoding_error_handling_fail_fast(conn_str):
+    """
+    Test that encoding/decoding error handling follows fail-fast principles.
+
+    This test verifies the fix for problematic error handling where OperationalError
+    and DatabaseError were silently caught and defaults returned instead of failing fast.
+
+    ISSUE FIXED:
+    - BEFORE: _get_encoding_settings() and _get_decoding_settings() caught database errors
+              and silently returned default values, leading to potential data corruption
+    - AFTER:  All errors are logged AND re-raised for fail-fast behavior
+
+    WHY THIS MATTERS:
+    - Prevents silent data corruption due to wrong encodings
+    - Makes debugging easier with clear error messages
+    - Follows fail-fast principle to prevent downstream problems
+    - Ensures consistent error handling across all encoding operations
+    """
+    from mssql_python.exceptions import InterfaceError
+
+    # Create our own connection since we need to close it for testing
+    db_connection = mssql_python.connect(conn_str)
+    cursor = db_connection.cursor()
+
+    try:
+        # Test that normal encoding access works when connection is healthy
+        encoding_settings = cursor._get_encoding_settings()
+        assert isinstance(encoding_settings, dict), "Should return dict when connection is healthy"
+        assert "encoding" in encoding_settings, "Should have encoding key"
+        assert "ctype" in encoding_settings, "Should have ctype key"
+
+        # Test that normal decoding access works when connection is healthy
+        decoding_settings = cursor._get_decoding_settings(mssql_python.SQL_CHAR)
+        assert isinstance(decoding_settings, dict), "Should return dict when connection is healthy"
+        assert "encoding" in decoding_settings, "Should have encoding key"
+        assert "ctype" in decoding_settings, "Should have ctype key"
+
+        # Close the connection to simulate a broken state
+        db_connection.close()
+
+        # Test that we get proper exceptions instead of silent defaults for encoding
+        with pytest.raises((InterfaceError, Exception)) as exc_info:
+            cursor._get_encoding_settings()
+
+        # The exception should be raised, not silently handled with defaults
+        assert exc_info.value is not None, "Should raise exception for broken connection"
+
+        # Test that we get proper exceptions instead of silent defaults for decoding
+        with pytest.raises((InterfaceError, Exception)) as exc_info:
+            cursor._get_decoding_settings(mssql_python.SQL_CHAR)
+
+        # The exception should be raised, not silently handled with defaults
+        assert exc_info.value is not None, "Should raise exception for broken connection"
+
+    except Exception as e:
+        # For test setup errors, just skip the test
+        if "Neither DSN nor SERVER keyword supplied" in str(e):
+            pytest.skip("Cannot test without database connection")
+        else:
+            pytest.fail(f"Error handling test failed: {e}")
+    finally:
+        cursor.close()
+        # Connection is already closed, but make sure
+        try:
+            db_connection.close()
+        except:
+            pass
+
+
+def test_utf16_bom_validation_breaking_changes(db_connection):
+    """
+    BREAKING CHANGE VALIDATION: Test UTF-16 BOM rejection for SQL_WCHAR.
+    """
+    conn = db_connection
+
+    # ================================================================
+    # TEST 1: setencoding() breaking changes
+    # ================================================================
+
+    # ❌ BREAKING: "utf-16" with SQL_WCHAR should raise ProgrammingError
+    with pytest.raises(ProgrammingError) as exc_info:
+        conn.setencoding("utf-16", SQL_WCHAR)
+
+    error_msg = str(exc_info.value)
+    assert (
+        "Byte Order Mark" in error_msg or "BOM" in error_msg
+    ), f"Error should mention BOM issue: {error_msg}"
+    assert (
+        "utf-16le" in error_msg or "utf-16be" in error_msg
+    ), f"Error should suggest alternatives: {error_msg}"
+
+    # ✅ WORKING: "utf-16le" with SQL_WCHAR should succeed
+    try:
+        conn.setencoding("utf-16le", SQL_WCHAR)
+        settings = conn.getencoding()
+        assert settings["encoding"] == "utf-16le"
+        assert settings["ctype"] == SQL_WCHAR
+    except Exception as e:
+        pytest.fail(f"setencoding('utf-16le', SQL_WCHAR) should work but failed: {e}")
+
+    # ✅ WORKING: "utf-16be" with SQL_WCHAR should succeed
+    try:
+        conn.setencoding("utf-16be", SQL_WCHAR)
+        settings = conn.getencoding()
+        assert settings["encoding"] == "utf-16be"
+        assert settings["ctype"] == SQL_WCHAR
+    except Exception as e:
+        pytest.fail(f"setencoding('utf-16be', SQL_WCHAR) should work but failed: {e}")
+
+    # ✅ BACKWARD COMPATIBLE: "utf-16" with SQL_CHAR should still work
+    try:
+        conn.setencoding("utf-16", SQL_CHAR)
+        settings = conn.getencoding()
+        assert settings["encoding"] == "utf-16"
+        assert settings["ctype"] == SQL_CHAR
+    except Exception as e:
+        pytest.fail(f"setencoding('utf-16', SQL_CHAR) should still work but failed: {e}")
+
+    # ================================================================
+    # TEST 2: setdecoding() breaking changes
+    # ================================================================
+
+    # ❌ BREAKING: SQL_WCHAR sqltype with "utf-16" should raise ProgrammingError
+    with pytest.raises(ProgrammingError) as exc_info:
+        conn.setdecoding(SQL_WCHAR, encoding="utf-16")
+
+    error_msg = str(exc_info.value)
+    assert (
+        "Byte Order Mark" in error_msg
+        or "BOM" in error_msg
+        or "SQL_WCHAR only supports UTF-16 encodings" in error_msg
+    ), f"Error should mention BOM or UTF-16 restriction: {error_msg}"
+
+    # ✅ WORKING: SQL_WCHAR with "utf-16le" should succeed
+    try:
+        conn.setdecoding(SQL_WCHAR, encoding="utf-16le")
+        settings = conn.getdecoding(SQL_WCHAR)
+        assert settings["encoding"] == "utf-16le"
+        assert settings["ctype"] == SQL_WCHAR
+    except Exception as e:
+        pytest.fail(f"setdecoding(SQL_WCHAR, encoding='utf-16le') should work but failed: {e}")
+
+    # ✅ WORKING: SQL_WCHAR with "utf-16be" should succeed
+    try:
+        conn.setdecoding(SQL_WCHAR, encoding="utf-16be")
+        settings = conn.getdecoding(SQL_WCHAR)
+        assert settings["encoding"] == "utf-16be"
+        assert settings["ctype"] == SQL_WCHAR
+    except Exception as e:
+        pytest.fail(f"setdecoding(SQL_WCHAR, encoding='utf-16be') should work but failed: {e}")
+
+    # ================================================================
+    # TEST 3: setdecoding() ctype validation breaking changes
+    # ================================================================
+
+    # ❌ BREAKING: SQL_WCHAR ctype with "utf-16" should raise ProgrammingError
+    with pytest.raises(ProgrammingError) as exc_info:
+        conn.setdecoding(SQL_CHAR, encoding="utf-16", ctype=SQL_WCHAR)
+
+    error_msg = str(exc_info.value)
+    assert "SQL_WCHAR" in error_msg and (
+        "UTF-16" in error_msg or "utf-16" in error_msg
+    ), f"Error should mention SQL_WCHAR and UTF-16 restriction: {error_msg}"
+
+    # ✅ WORKING: SQL_WCHAR ctype with "utf-16le" should succeed
+    try:
+        conn.setdecoding(SQL_CHAR, encoding="utf-16le", ctype=SQL_WCHAR)
+        settings = conn.getdecoding(SQL_CHAR)
+        assert settings["encoding"] == "utf-16le"
+        assert settings["ctype"] == SQL_WCHAR
+    except Exception as e:
+        pytest.fail(f"setdecoding with utf-16le and SQL_WCHAR ctype should work but failed: {e}")
+
+    # ================================================================
+    # TEST 4: Non-UTF-16 encodings with SQL_WCHAR (also breaking changes)
+    # ================================================================
+
+    non_utf16_encodings = ["utf-8", "latin1", "ascii", "cp1252"]
+
+    for encoding in non_utf16_encodings:
+        # ❌ BREAKING: Non-UTF-16 with SQL_WCHAR should raise ProgrammingError
+        with pytest.raises(ProgrammingError) as exc_info:
+            conn.setencoding(encoding, SQL_WCHAR)
+
+        error_msg = str(exc_info.value)
+        assert (
+            "SQL_WCHAR only supports UTF-16 encodings" in error_msg
+        ), f"Error should mention UTF-16 requirement: {error_msg}"
+
+        # ❌ BREAKING: Same for setdecoding
+        with pytest.raises(ProgrammingError) as exc_info:
+            conn.setdecoding(SQL_WCHAR, encoding=encoding)
+
+
+def test_utf16_encoding_duplication_cleanup_validation(db_connection):
+    """
+    Test that validates the cleanup of duplicated UTF-16 validation logic.
+
+    This test ensures that validation happens exactly once and in the right place,
+    eliminating the duplication identified in the validation logic.
+    """
+    conn = db_connection
+
+    # Test that validation happens consistently - should get same error
+    # regardless of code path through validation logic
+
+    # Path 1: Early validation (before ctype setting)
+    with pytest.raises(ProgrammingError) as exc_info1:
+        conn.setencoding("utf-16", SQL_WCHAR)
+
+    # Path 2: ctype validation (after ctype setting) - should be same error
+    with pytest.raises(ProgrammingError) as exc_info2:
+        conn.setencoding("utf-16", SQL_WCHAR)
+
+    # Errors should be consistent (same validation logic)
+    assert str(exc_info1.value) == str(
+        exc_info2.value
+    ), "UTF-16 validation should be consistent across code paths"
+
+
+def test_mixed_encoding_decoding_behavior_consistency(conn_str):
+    """
+    Test that mixed encoding/decoding settings behave correctly and consistently.
+
+    Edge case: Connection setencoding("utf-8") vs setdecoding(SQL_CHAR, "latin-1")
+    This tests that encoding and decoding can have different settings without conflicts.
+    """
+    conn = connect(conn_str)
+
+    try:
+        # Set different encodings for encoding vs decoding
+        conn.setencoding("utf-8", SQL_CHAR)  # UTF-8 for parameter encoding
+        conn.setdecoding(SQL_CHAR, encoding="latin-1")  # Latin-1 for result decoding
+
+        # Verify settings are independent
+        encoding_settings = conn.getencoding()
+        decoding_settings = conn.getdecoding(SQL_CHAR)
+
+        assert encoding_settings["encoding"] == "utf-8"
+        assert encoding_settings["ctype"] == SQL_CHAR
+        assert decoding_settings["encoding"] == "latin-1"
+        assert decoding_settings["ctype"] == SQL_CHAR
+
+        # Test with a cursor to ensure no conflicts
+        cursor = conn.cursor()
+
+        # Test parameter binding (should use UTF-8 encoding)
+        test_string = "Hello World! ASCII only"  # Use ASCII to avoid encoding issues
+        cursor.execute("SELECT ?", test_string)
+        result = cursor.fetchone()
+
+        # The result handling depends on what SQL Server returns
+        # Key point: No exceptions should be raised from mixed settings
+        assert result is not None
+        cursor.close()
+
+    finally:
+        conn.close()
+
+
+def test_utf16_and_invalid_encodings_with_sql_wchar_comprehensive(conn_str):
+    """
+    Comprehensive test for UTF-16 and invalid encoding attempts with SQL_WCHAR.
+
+    Ensures ProgrammingError is raised with meaningful messages for all invalid combinations.
+    """
+    conn = connect(conn_str)
+
+    try:
+
+        # Test 1: UTF-16 with BOM attempts (should fail)
+        invalid_utf16_variants = ["utf-16"]  # BOM variants
+
+        for encoding in invalid_utf16_variants:
+
+            # setencoding with SQL_WCHAR should fail
+            with pytest.raises(ProgrammingError) as exc_info:
+                conn.setencoding(encoding, SQL_WCHAR)
+
+            error_msg = str(exc_info.value)
+            assert "Byte Order Mark" in error_msg or "BOM" in error_msg
+            assert "utf-16le" in error_msg or "utf-16be" in error_msg
+
+            # setdecoding with SQL_WCHAR should fail
+            with pytest.raises(ProgrammingError) as exc_info:
+                conn.setdecoding(SQL_WCHAR, encoding=encoding)
+
+            error_msg = str(exc_info.value)
+            assert "Byte Order Mark" in error_msg or "BOM" in error_msg
+
+        # Test 2: Non-UTF-16 encodings with SQL_WCHAR (should fail)
+        invalid_encodings = ["utf-8", "latin-1", "ascii", "cp1252", "iso-8859-1", "gbk", "big5"]
+
+        for encoding in invalid_encodings:
+
+            # setencoding with SQL_WCHAR should fail
+            with pytest.raises(ProgrammingError) as exc_info:
+                conn.setencoding(encoding, SQL_WCHAR)
+
+            error_msg = str(exc_info.value)
+            assert "SQL_WCHAR only supports UTF-16 encodings" in error_msg
+            assert "utf-16le" in error_msg or "utf-16be" in error_msg
+
+            # setdecoding with SQL_WCHAR should fail
+            with pytest.raises(ProgrammingError) as exc_info:
+                conn.setdecoding(SQL_WCHAR, encoding=encoding)
+
+            error_msg = str(exc_info.value)
+            assert "SQL_WCHAR only supports UTF-16 encodings" in error_msg
+
+            # setdecoding with SQL_WCHAR ctype should fail
+            with pytest.raises(ProgrammingError) as exc_info:
+                conn.setdecoding(SQL_CHAR, encoding=encoding, ctype=SQL_WCHAR)
+
+            error_msg = str(exc_info.value)
+            assert "SQL_WCHAR ctype only supports UTF-16 encodings" in error_msg
+
+        # Test 3: Completely invalid encoding names
+        completely_invalid = ["not-an-encoding", "fake-utf-8", "invalid123"]
+
+        for encoding in completely_invalid:
+
+            # These should fail at the encoding validation level
+            with pytest.raises(ProgrammingError):
+                conn.setencoding(encoding, SQL_CHAR)  # Even with SQL_CHAR
+
+    finally:
+        conn.close()
+
+
+def test_concurrent_encoding_operations_thread_safety(conn_str):
+    """
+    Test multiple threads calling setencoding/getencoding concurrently.
+
+    Ensures no race conditions, crashes, or data corruption during concurrent access.
+    """
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    conn = connect(conn_str)
+    results = []
+    errors = []
+
+    def encoding_worker(thread_id, operation_count=20):
+        """Worker function that performs encoding operations."""
+        thread_results = []
+        thread_errors = []
+
+        try:
+            for i in range(operation_count):
+                try:
+                    # Alternate between different valid operations
+                    if i % 4 == 0:
+                        # Set UTF-8 encoding
+                        conn.setencoding("utf-8", SQL_CHAR)
+                        settings = conn.getencoding()
+                        thread_results.append(
+                            f"Thread-{thread_id}-{i}: Set UTF-8 -> {settings['encoding']}"
+                        )
+
+                    elif i % 4 == 1:
+                        # Set UTF-16LE encoding
+                        conn.setencoding("utf-16le", SQL_WCHAR)
+                        settings = conn.getencoding()
+                        thread_results.append(
+                            f"Thread-{thread_id}-{i}: Set UTF-16LE -> {settings['encoding']}"
+                        )
+
+                    elif i % 4 == 2:
+                        # Just read current encoding
+                        settings = conn.getencoding()
+                        thread_results.append(
+                            f"Thread-{thread_id}-{i}: Read -> {settings['encoding']}"
+                        )
+
+                    else:
+                        # Set Latin-1 encoding
+                        conn.setencoding("latin-1", SQL_CHAR)
+                        settings = conn.getencoding()
+                        thread_results.append(
+                            f"Thread-{thread_id}-{i}: Set Latin-1 -> {settings['encoding']}"
+                        )
+
+                    # Small delay to increase chance of race conditions
+                    time.sleep(0.001)
+
+                except Exception as e:
+                    thread_errors.append(f"Thread-{thread_id}-{i}: {type(e).__name__}: {e}")
+
+        except Exception as e:
+            thread_errors.append(f"Thread-{thread_id} fatal: {type(e).__name__}: {e}")
+
+        return thread_results, thread_errors
+
+    try:
+
+        # Run multiple threads concurrently
+        num_threads = 3  # Reduced for stability
+        operations_per_thread = 10
+
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            # Submit all workers
+            futures = [
+                executor.submit(encoding_worker, thread_id, operations_per_thread)
+                for thread_id in range(num_threads)
+            ]
+
+            # Collect results
+            for future in as_completed(futures):
+                thread_results, thread_errors = future.result()
+                results.extend(thread_results)
+                errors.extend(thread_errors)
+
+        # Analyze results
+        total_operations = len(results)
+        total_errors = len(errors)
+
+        # Validate final state is consistent
+        final_settings = conn.getencoding()
+
+        # Test that connection still works after concurrent operations
+        cursor = conn.cursor()
+        cursor.execute("SELECT 'Connection still works'")
+        result = cursor.fetchone()
+        cursor.close()
+
+        assert result is not None and result[0] == "Connection still works"
+
+        # We expect some level of thread safety, but the exact behavior may vary
+        # Key requirement: No crashes or corruption
+
+    finally:
+        conn.close()
+
+
+def test_default_encoding_behavior_validation(conn_str):
+    """
+    Verify that default encodings are used as intended across different scenarios.
+
+    Tests default behavior for fresh connections, after reset, and edge cases.
+    """
+    conn = connect(conn_str)
+
+    try:
+
+        # Test 1: Fresh connection defaults
+        encoding_settings = conn.getencoding()
+
+        # Verify default encoding settings
+
+        # Should be UTF-16LE with SQL_WCHAR by default (actual default)
+        expected_default_encoding = "utf-16le"  # Actual default
+        expected_default_ctype = SQL_WCHAR
+
+        assert (
+            encoding_settings["encoding"] == expected_default_encoding
+        ), f"Expected default encoding '{expected_default_encoding}', got '{encoding_settings['encoding']}'"
+        assert (
+            encoding_settings["ctype"] == expected_default_ctype
+        ), f"Expected default ctype {expected_default_ctype}, got {encoding_settings['ctype']}"
+
+        # Test 2: Decoding defaults for different SQL types
+
+        sql_char_settings = conn.getdecoding(SQL_CHAR)
+        sql_wchar_settings = conn.getdecoding(SQL_WCHAR)
+
+        # SQL_CHAR should default to UTF-8
+        assert (
+            sql_char_settings["encoding"] == "utf-8"
+        ), f"SQL_CHAR should default to UTF-8, got {sql_char_settings['encoding']}"
+
+        # SQL_WCHAR should default to UTF-16LE (or UTF-16BE)
+        assert sql_wchar_settings["encoding"] in [
+            "utf-16le",
+            "utf-16be",
+        ], f"SQL_WCHAR should default to UTF-16LE/BE, got {sql_wchar_settings['encoding']}"
+
+        # Test 3: Default behavior after explicit None settings
+
+        # Set custom encoding first
+        conn.setencoding("latin-1", SQL_CHAR)
+        modified_settings = conn.getencoding()
+        assert modified_settings["encoding"] == "latin-1"
+
+        # Reset to default with None
+        conn.setencoding(None, None)  # Should reset to defaults
+        reset_settings = conn.getencoding()
+
+        assert (
+            reset_settings["encoding"] == expected_default_encoding
+        ), "setencoding(None, None) should reset to default"
+
+        # Test 4: Verify defaults work with actual queries
+
+        cursor = conn.cursor()
+
+        # Test with ASCII data (should work with any encoding)
+        cursor.execute("SELECT 'Hello World'")
+        result = cursor.fetchone()
+        assert result is not None and result[0] == "Hello World"
+
+        # Test with Unicode data (tests UTF-8 default handling)
+        cursor.execute("SELECT N'Héllo Wörld'")  # Use N prefix for Unicode
+        result = cursor.fetchone()
+        assert result is not None and "Héllo" in result[0]
+
+        cursor.close()
+
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

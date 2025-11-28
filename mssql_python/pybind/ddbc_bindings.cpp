@@ -1821,7 +1821,8 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
 
 SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                              const std::vector<ParamInfo>& paramInfos, size_t paramSetSize,
-                             std::vector<std::shared_ptr<void>>& paramBuffers) {
+                             std::vector<std::shared_ptr<void>>& paramBuffers,
+                             const std::string& charEncoding = "utf-8") {
     LOG("BindParameterArray: Starting column-wise array binding - "
         "param_count=%zu, param_set_size=%zu",
         columnwise_params.size(), paramSetSize);
@@ -2023,8 +2024,8 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                 case SQL_C_CHAR:
                 case SQL_C_BINARY: {
                     LOG("BindParameterArray: Binding SQL_C_CHAR/BINARY array - "
-                        "param_index=%d, count=%zu, column_size=%zu",
-                        paramIndex, paramSetSize, info.columnSize);
+                        "param_index=%d, count=%zu, column_size=%zu, encoding='%s'",
+                        paramIndex, paramSetSize, info.columnSize, charEncoding.c_str());
                     char* charArray = AllocateParamBufferArray<char>(
                         tempBuffers, paramSetSize * (info.columnSize + 1));
                     strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
@@ -2034,18 +2035,45 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                             std::memset(charArray + i * (info.columnSize + 1), 0,
                                         info.columnSize + 1);
                         } else {
-                            std::string str = columnValues[i].cast<std::string>();
-                            if (str.size() > info.columnSize) {
+                            std::string encodedStr;
+
+                            if (py::isinstance<py::str>(columnValues[i])) {
+                                // Use Python's codec system to encode the string with specified
+                                // encoding (like pyodbc does)
+                                try {
+                                    py::object encoded =
+                                        columnValues[i].attr("encode")(charEncoding, "strict");
+                                    encodedStr = encoded.cast<std::string>();
+                                    LOG("BindParameterArray: param[%d] row[%zu] SQL_C_CHAR - "
+                                        "Encoded with '%s', "
+                                        "size=%zu bytes",
+                                        paramIndex, i, charEncoding.c_str(), encodedStr.size());
+                                } catch (const py::error_already_set& e) {
+                                    LOG_ERROR("BindParameterArray: param[%d] row[%zu] SQL_C_CHAR - "
+                                              "Failed to encode "
+                                              "with '%s': %s",
+                                              paramIndex, i, charEncoding.c_str(), e.what());
+                                    throw std::runtime_error(
+                                        std::string("Failed to encode parameter ") +
+                                        std::to_string(paramIndex) + " row " + std::to_string(i) +
+                                        " with encoding '" + charEncoding + "': " + e.what());
+                                }
+                            } else {
+                                // bytes/bytearray - use as-is (already encoded)
+                                encodedStr = columnValues[i].cast<std::string>();
+                            }
+
+                            if (encodedStr.size() > info.columnSize) {
                                 LOG("BindParameterArray: String/binary too "
                                     "long - param_index=%d, row=%zu, size=%zu, "
                                     "max=%zu",
-                                    paramIndex, i, str.size(), info.columnSize);
+                                    paramIndex, i, encodedStr.size(), info.columnSize);
                                 ThrowStdException("Input exceeds column size at index " +
                                                   std::to_string(i));
                             }
-                            std::memcpy(charArray + i * (info.columnSize + 1), str.c_str(),
-                                        str.size());
-                            strLenOrIndArray[i] = static_cast<SQLLEN>(str.size());
+                            std::memcpy(charArray + i * (info.columnSize + 1), encodedStr.c_str(),
+                                        encodedStr.size());
+                            strLenOrIndArray[i] = static_cast<SQLLEN>(encodedStr.size());
                         }
                     }
                     LOG("BindParameterArray: SQL_C_CHAR/BINARY bound - "
@@ -2481,10 +2509,11 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::wst
 
     if (!hasDAE) {
         LOG("SQLExecuteMany: Using array binding (non-DAE) - calling "
-            "BindParameterArray");
+            "BindParameterArray with encoding '%s'",
+            charEncoding.c_str());
         std::vector<std::shared_ptr<void>> paramBuffers;
-        // TODO: Pass charEncoding to BindParameterArray when it's updated to support encoding
-        rc = BindParameterArray(hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers);
+        rc = BindParameterArray(hStmt, columnwise_params, paramInfos, paramSetSize, paramBuffers,
+                                charEncoding);
         if (!SQL_SUCCEEDED(rc)) {
             LOG("SQLExecuteMany: BindParameterArray failed - rc=%d", rc);
             return rc;
@@ -2510,7 +2539,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::wst
 
             std::vector<std::shared_ptr<void>> paramBuffers;
             rc = BindParameters(hStmt, rowParams, const_cast<std::vector<ParamInfo>&>(paramInfos),
-                                paramBuffers);
+                                paramBuffers, charEncoding);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("SQLExecuteMany: BindParameters failed for row %zu - rc=%d", rowIndex, rc);
                 return rc;
