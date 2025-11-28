@@ -114,6 +114,13 @@ py::object get_uuid_class() {
 
 // Struct to hold parameter information for binding. Used by SQLBindParameter.
 // This struct is shared between C++ & Python code.
+// Suppress -Wattributes warning for ParamInfo struct
+// The warning is triggered because pybind11 handles visibility attributes automatically,
+// and having additional attributes on the struct can cause conflicts on Linux with GCC
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattributes"
+#endif
 struct ParamInfo {
     SQLSMALLINT inputOutputType;
     SQLSMALLINT paramCType;
@@ -124,6 +131,9 @@ struct ParamInfo {
     bool isDAE = false;      // Indicates if we need to stream
     py::object dataPtr;
 };
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 
 // Mirrors the SQL_NUMERIC_STRUCT. But redefined to replace val char array
 // with std::string, because pybind doesn't allow binding char array.
@@ -713,7 +723,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
             }
             SQL_NUMERIC_STRUCT* numericPtr = reinterpret_cast<SQL_NUMERIC_STRUCT*>(dataPtr);
             rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_PRECISION,
-                                     (SQLPOINTER)numericPtr->precision, 0);
+                                     reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(numericPtr->precision)), 0);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameters: SQLSetDescField(SQL_DESC_PRECISION) "
                     "failed for param[%d] - SQLRETURN=%d",
@@ -721,7 +731,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 return rc;
             }
 
-            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_SCALE, (SQLPOINTER)numericPtr->scale, 0);
+            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_SCALE, reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(numericPtr->scale)), 0);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameters: SQLSetDescField(SQL_DESC_SCALE) failed "
                     "for param[%d] - SQLRETURN=%d",
@@ -729,7 +739,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 return rc;
             }
 
-            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_DATA_PTR, (SQLPOINTER)numericPtr, 0);
+            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_DATA_PTR, reinterpret_cast<SQLPOINTER>(numericPtr), 0);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameters: SQLSetDescField(SQL_DESC_DATA_PTR) failed "
                     "for param[%d] - SQLRETURN=%d",
