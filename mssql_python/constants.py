@@ -127,7 +127,6 @@ class ConstantsDDBC(Enum):
     SQL_ENSURE = 1
 
     # Connection Attribute Constants for set_attr()
-    SQL_ATTR_QUERY_TIMEOUT = 0
     SQL_ATTR_ACCESS_MODE = 101
     SQL_ATTR_AUTOCOMMIT = 102
     SQL_ATTR_CURSOR_TYPE = 6
@@ -180,6 +179,9 @@ class ConstantsDDBC(Enum):
 
     # Reset Connection Constants
     SQL_RESET_CONNECTION_YES = 1
+
+    # Query Timeout Constants
+    SQL_ATTR_QUERY_TIMEOUT = 0
 
 
 class GetInfoConstants(Enum):
