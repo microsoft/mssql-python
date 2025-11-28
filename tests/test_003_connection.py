@@ -88,9 +88,7 @@ def handle_datetimeoffset(dto_value):
 
     # The format depends on the ODBC driver and how it returns binary data
     # This matches SQL Server's format for DATETIMEOFFSET
-    tup = struct.unpack(
-        "<6hI2h", dto_value
-    )  # e.g., (2017, 3, 16, 10, 35, 18, 500000000, -6, 0)
+    tup = struct.unpack("<6hI2h", dto_value)  # e.g., (2017, 3, 16, 10, 35, 18, 500000000, -6, 0)
     return datetime(
         tup[0],
         tup[1],
@@ -125,45 +123,81 @@ def test_connection(db_connection):
 def test_construct_connection_string(db_connection):
     # Check if the connection string is constructed correctly with kwargs
     # Using official ODBC parameter names
-    conn_str = db_connection._construct_connection_string(Server="localhost", UID="me", PWD="mypwd", Database="mydb", Encrypt="yes", TrustServerCertificate="yes")
+    conn_str = db_connection._construct_connection_string(
+        Server="localhost",
+        UID="me",
+        PWD="mypwd",
+        Database="mydb",
+        Encrypt="yes",
+        TrustServerCertificate="yes",
+    )
     # With the new allow-list implementation, parameters are normalized and validated
     assert "Server=localhost" in conn_str, "Connection string should contain 'Server=localhost'"
     assert "UID=me" in conn_str, "Connection string should contain 'UID=me'"
     assert "PWD=mypwd" in conn_str, "Connection string should contain 'PWD=mypwd'"
     assert "Database=mydb" in conn_str, "Connection string should contain 'Database=mydb'"
     assert "Encrypt=yes" in conn_str, "Connection string should contain 'Encrypt=yes'"
-    assert "TrustServerCertificate=yes" in conn_str, "Connection string should contain 'TrustServerCertificate=yes'"
+    assert (
+        "TrustServerCertificate=yes" in conn_str
+    ), "Connection string should contain 'TrustServerCertificate=yes'"
     assert "APP=MSSQL-Python" in conn_str, "Connection string should contain 'APP=MSSQL-Python'"
-    assert "Driver={ODBC Driver 18 for SQL Server}" in conn_str, "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
+    assert (
+        "Driver={ODBC Driver 18 for SQL Server}" in conn_str
+    ), "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
+
 
 def test_connection_string_with_attrs_before(db_connection):
     # Check if the connection string is constructed correctly with attrs_before
     # Using official ODBC parameter names
-    conn_str = db_connection._construct_connection_string(Server="localhost", UID="me", PWD="mypwd", Database="mydb", Encrypt="yes", TrustServerCertificate="yes", attrs_before={1256: "token"})
+    conn_str = db_connection._construct_connection_string(
+        Server="localhost",
+        UID="me",
+        PWD="mypwd",
+        Database="mydb",
+        Encrypt="yes",
+        TrustServerCertificate="yes",
+        attrs_before={1256: "token"},
+    )
     # With the new allow-list implementation, parameters are normalized and validated
     assert "Server=localhost" in conn_str, "Connection string should contain 'Server=localhost'"
     assert "UID=me" in conn_str, "Connection string should contain 'UID=me'"
     assert "PWD=mypwd" in conn_str, "Connection string should contain 'PWD=mypwd'"
     assert "Database=mydb" in conn_str, "Connection string should contain 'Database=mydb'"
     assert "Encrypt=yes" in conn_str, "Connection string should contain 'Encrypt=yes'"
-    assert "TrustServerCertificate=yes" in conn_str, "Connection string should contain 'TrustServerCertificate=yes'"
+    assert (
+        "TrustServerCertificate=yes" in conn_str
+    ), "Connection string should contain 'TrustServerCertificate=yes'"
     assert "APP=MSSQL-Python" in conn_str, "Connection string should contain 'APP=MSSQL-Python'"
-    assert "Driver={ODBC Driver 18 for SQL Server}" in conn_str, "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
+    assert (
+        "Driver={ODBC Driver 18 for SQL Server}" in conn_str
+    ), "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
     assert "{1256: token}" not in conn_str, "Connection string should not contain '{1256: token}'"
+
 
 def test_connection_string_with_odbc_param(db_connection):
     # Check if the connection string is constructed correctly with ODBC parameters
     # Using lowercase synonyms that normalize to uppercase (uid->UID, pwd->PWD)
-    conn_str = db_connection._construct_connection_string(server="localhost", uid="me", pwd="mypwd", database="mydb", encrypt="yes", trust_server_certificate="yes")
+    conn_str = db_connection._construct_connection_string(
+        server="localhost",
+        uid="me",
+        pwd="mypwd",
+        database="mydb",
+        encrypt="yes",
+        trust_server_certificate="yes",
+    )
     # With the new allow-list implementation, parameters are normalized and validated
     assert "Server=localhost" in conn_str, "Connection string should contain 'Server=localhost'"
     assert "UID=me" in conn_str, "Connection string should contain 'UID=me'"
     assert "PWD=mypwd" in conn_str, "Connection string should contain 'PWD=mypwd'"
     assert "Database=mydb" in conn_str, "Connection string should contain 'Database=mydb'"
     assert "Encrypt=yes" in conn_str, "Connection string should contain 'Encrypt=yes'"
-    assert "TrustServerCertificate=yes" in conn_str, "Connection string should contain 'TrustServerCertificate=yes'"
+    assert (
+        "TrustServerCertificate=yes" in conn_str
+    ), "Connection string should contain 'TrustServerCertificate=yes'"
     assert "APP=MSSQL-Python" in conn_str, "Connection string should contain 'APP=MSSQL-Python'"
-    assert "Driver={ODBC Driver 18 for SQL Server}" in conn_str, "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
+    assert (
+        "Driver={ODBC Driver 18 for SQL Server}" in conn_str
+    ), "Connection string should contain 'Driver={ODBC Driver 18 for SQL Server}'"
 
 
 def test_autocommit_default(db_connection):
@@ -179,9 +213,7 @@ def test_autocommit_setter(db_connection):
         cursor.execute(
             "CREATE TABLE #pytest_test_autocommit (id INT PRIMARY KEY, value VARCHAR(50));"
         )
-        cursor.execute(
-            "INSERT INTO #pytest_test_autocommit (id, value) VALUES (1, 'test');"
-        )
+        cursor.execute("INSERT INTO #pytest_test_autocommit (id, value) VALUES (1, 'test');")
         cursor.execute("SELECT * FROM #pytest_test_autocommit WHERE id = 1;")
         result = cursor.fetchone()
         assert result is not None, "Autocommit failed: No data found"
@@ -201,9 +233,7 @@ def test_autocommit_setter(db_connection):
         cursor.execute(
             "CREATE TABLE #pytest_test_autocommit (id INT PRIMARY KEY, value VARCHAR(50));"
         )
-        cursor.execute(
-            "INSERT INTO #pytest_test_autocommit (id, value) VALUES (1, 'test');"
-        )
+        cursor.execute("INSERT INTO #pytest_test_autocommit (id, value) VALUES (1, 'test');")
         cursor.execute("SELECT * FROM #pytest_test_autocommit WHERE id = 1;")
         result = cursor.fetchone()
         assert result is not None, "Autocommit failed: No data found"
@@ -232,12 +262,8 @@ def test_commit(db_connection):
     cursor = db_connection.cursor()
     drop_table_if_exists(cursor, "#pytest_test_commit")
     try:
-        cursor.execute(
-            "CREATE TABLE #pytest_test_commit (id INT PRIMARY KEY, value VARCHAR(50));"
-        )
-        cursor.execute(
-            "INSERT INTO #pytest_test_commit (id, value) VALUES (1, 'test');"
-        )
+        cursor.execute("CREATE TABLE #pytest_test_commit (id INT PRIMARY KEY, value VARCHAR(50));")
+        cursor.execute("INSERT INTO #pytest_test_commit (id, value) VALUES (1, 'test');")
         db_connection.commit()
         cursor.execute("SELECT * FROM #pytest_test_commit WHERE id = 1;")
         result = cursor.fetchone()
@@ -273,12 +299,8 @@ def test_rollback_on_close(conn_str, db_connection):
         # Verify data is visible within the same transaction
         temp_cursor.execute("SELECT * FROM pytest_test_rollback_on_close WHERE id = 1;")
         result = temp_cursor.fetchone()
-        assert (
-            result is not None
-        ), "Rollback on close failed: No data found before close"
-        assert (
-            result[1] == "test"
-        ), "Rollback on close failed: Incorrect data before close"
+        assert result is not None, "Rollback on close failed: No data found before close"
+        assert result[1] == "test", "Rollback on close failed: Incorrect data before close"
 
         # Close the temporary connection without committing
         temp_conn.close()
@@ -303,9 +325,7 @@ def test_rollback(db_connection):
         cursor.execute(
             "CREATE TABLE #pytest_test_rollback (id INT PRIMARY KEY, value VARCHAR(50));"
         )
-        cursor.execute(
-            "INSERT INTO #pytest_test_rollback (id, value) VALUES (1, 'test');"
-        )
+        cursor.execute("INSERT INTO #pytest_test_rollback (id, value) VALUES (1, 'test');")
         db_connection.commit()
 
         # Check if the data is present before rollback
@@ -315,9 +335,7 @@ def test_rollback(db_connection):
         assert result[1] == "test", "Rollback failed: Incorrect data"
 
         # Insert data and rollback
-        cursor.execute(
-            "INSERT INTO #pytest_test_rollback (id, value) VALUES (2, 'test');"
-        )
+        cursor.execute("INSERT INTO #pytest_test_rollback (id, value) VALUES (2, 'test');")
         db_connection.rollback()
 
         # Check if the data is not present after rollback
@@ -483,15 +501,11 @@ def test_close_with_autocommit_true(conn_str):
         # Verify the data was committed automatically despite connection.close()
         verify_conn = connect(conn_str)
         verify_cursor = verify_conn.cursor()
-        verify_cursor.execute(
-            "SELECT * FROM pytest_autocommit_close_test WHERE id = 1;"
-        )
+        verify_cursor.execute("SELECT * FROM pytest_autocommit_close_test WHERE id = 1;")
         result = verify_cursor.fetchone()
 
         # Data should be present if autocommit worked and wasn't affected by close()
-        assert (
-            result is not None
-        ), "Autocommit failed: Data not found after connection close"
+        assert result is not None, "Autocommit failed: Data not found after connection close"
         assert (
             result[1] == "test_autocommit"
         ), "Autocommit failed: Incorrect data after connection close"
@@ -568,17 +582,13 @@ def test_setencoding_none_parameters(db_connection):
     # Test with encoding=None (should use default)
     db_connection.setencoding(encoding=None)
     settings = db_connection.getencoding()
-    assert (
-        settings["encoding"] == "utf-16le"
-    ), "encoding=None should use default utf-16le"
+    assert settings["encoding"] == "utf-16le", "encoding=None should use default utf-16le"
     assert settings["ctype"] == -8, "ctype should be SQL_WCHAR for utf-16le"
 
     # Test with both None (should use defaults)
     db_connection.setencoding(encoding=None, ctype=None)
     settings = db_connection.getencoding()
-    assert (
-        settings["encoding"] == "utf-16le"
-    ), "encoding=None should use default utf-16le"
+    assert settings["encoding"] == "utf-16le", "encoding=None should use default utf-16le"
     assert settings["ctype"] == -8, "ctype=None should use default SQL_WCHAR"
 
 
@@ -602,12 +612,8 @@ def test_setencoding_invalid_ctype(db_connection):
     with pytest.raises(ProgrammingError) as exc_info:
         db_connection.setencoding(encoding="utf-8", ctype=999)
 
-    assert "Invalid ctype" in str(
-        exc_info.value
-    ), "Should raise ProgrammingError for invalid ctype"
-    assert "999" in str(
-        exc_info.value
-    ), "Error message should include the invalid ctype value"
+    assert "Invalid ctype" in str(exc_info.value), "Should raise ProgrammingError for invalid ctype"
+    assert "999" in str(exc_info.value), "Error message should include the invalid ctype value"
 
 
 def test_setencoding_closed_connection(conn_str):
@@ -647,9 +653,7 @@ def test_setencoding_with_constants(db_connection):
     # Test with SQL_WCHAR constant
     db_connection.setencoding(encoding="utf-16le", ctype=mssql_python.SQL_WCHAR)
     settings = db_connection.getencoding()
-    assert (
-        settings["ctype"] == mssql_python.SQL_WCHAR
-    ), "Should accept SQL_WCHAR constant"
+    assert settings["ctype"] == mssql_python.SQL_WCHAR, "Should accept SQL_WCHAR constant"
 
 
 def test_setencoding_common_encodings(db_connection):
@@ -668,9 +672,7 @@ def test_setencoding_common_encodings(db_connection):
         try:
             db_connection.setencoding(encoding=encoding)
             settings = db_connection.getencoding()
-            assert (
-                settings["encoding"] == encoding
-            ), f"Failed to set encoding {encoding}"
+            assert settings["encoding"] == encoding, f"Failed to set encoding {encoding}"
         except Exception as e:
             pytest.fail(f"Failed to set valid encoding {encoding}: {e}")
 
@@ -687,9 +689,7 @@ def test_setencoding_persistence_across_cursors(db_connection):
     cursor2 = db_connection.cursor()
     settings2 = db_connection.getencoding()
 
-    assert (
-        settings1 == settings2
-    ), "Encoding settings should persist across cursor creation"
+    assert settings1 == settings2, "Encoding settings should persist across cursor creation"
     assert settings1["encoding"] == "utf-8", "Encoding should remain utf-8"
     assert settings1["ctype"] == 1, "ctype should remain SQL_CHAR"
 
@@ -719,9 +719,7 @@ def test_setencoding_with_unicode_data(db_connection):
 
         for test_string in test_strings:
             # Insert data
-            cursor.execute(
-                "INSERT INTO #test_encoding_unicode (text_col) VALUES (?)", test_string
-            )
+            cursor.execute("INSERT INTO #test_encoding_unicode (text_col) VALUES (?)", test_string)
 
             # Retrieve and verify
             cursor.execute(
@@ -730,9 +728,7 @@ def test_setencoding_with_unicode_data(db_connection):
             )
             result = cursor.fetchone()
 
-            assert (
-                result is not None
-            ), f"Failed to retrieve Unicode string: {test_string}"
+            assert result is not None, f"Failed to retrieve Unicode string: {test_string}"
             assert (
                 result[0] == test_string
             ), f"Unicode string mismatch: expected {test_string}, got {result[0]}"
@@ -766,16 +762,12 @@ def test_setencoding_before_and_after_operations(db_connection):
         # Change encoding after operation
         db_connection.setencoding(encoding="utf-8")
         settings = db_connection.getencoding()
-        assert (
-            settings["encoding"] == "utf-8"
-        ), "Failed to change encoding after operation"
+        assert settings["encoding"] == "utf-8", "Failed to change encoding after operation"
 
         # Perform another operation with new encoding
         cursor.execute("SELECT 'Changed encoding test' as message")
         result2 = cursor.fetchone()
-        assert (
-            result2[0] == "Changed encoding test"
-        ), "Operation after encoding change failed"
+        assert result2[0] == "Changed encoding test", "Operation after encoding change failed"
 
     except Exception as e:
         pytest.fail(f"Encoding change test failed: {e}")
@@ -992,9 +984,7 @@ def test_setdecoding_default_settings(db_connection):
 
     # Check SQL_CHAR defaults
     sql_char_settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert (
-        sql_char_settings["encoding"] == "utf-8"
-    ), "Default SQL_CHAR encoding should be utf-8"
+    assert sql_char_settings["encoding"] == "utf-8", "Default SQL_CHAR encoding should be utf-8"
     assert (
         sql_char_settings["ctype"] == mssql_python.SQL_CHAR
     ), "Default SQL_CHAR ctype should be SQL_CHAR"
@@ -1024,9 +1014,7 @@ def test_setdecoding_basic_functionality(db_connection):
     # Test setting SQL_CHAR decoding
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="latin-1")
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert (
-        settings["encoding"] == "latin-1"
-    ), "SQL_CHAR encoding should be set to latin-1"
+    assert settings["encoding"] == "latin-1", "SQL_CHAR encoding should be set to latin-1"
     assert (
         settings["ctype"] == mssql_python.SQL_CHAR
     ), "SQL_CHAR ctype should default to SQL_CHAR for latin-1"
@@ -1034,9 +1022,7 @@ def test_setdecoding_basic_functionality(db_connection):
     # Test setting SQL_WCHAR decoding
     db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding="utf-16be")
     settings = db_connection.getdecoding(mssql_python.SQL_WCHAR)
-    assert (
-        settings["encoding"] == "utf-16be"
-    ), "SQL_WCHAR encoding should be set to utf-16be"
+    assert settings["encoding"] == "utf-16be", "SQL_WCHAR encoding should be set to utf-16be"
     assert (
         settings["ctype"] == mssql_python.SQL_WCHAR
     ), "SQL_WCHAR ctype should default to SQL_WCHAR for utf-16be"
@@ -1044,9 +1030,7 @@ def test_setdecoding_basic_functionality(db_connection):
     # Test setting SQL_WMETADATA decoding
     db_connection.setdecoding(mssql_python.SQL_WMETADATA, encoding="utf-16le")
     settings = db_connection.getdecoding(mssql_python.SQL_WMETADATA)
-    assert (
-        settings["encoding"] == "utf-16le"
-    ), "SQL_WMETADATA encoding should be set to utf-16le"
+    assert settings["encoding"] == "utf-16le", "SQL_WMETADATA encoding should be set to utf-16le"
     assert (
         settings["ctype"] == mssql_python.SQL_WCHAR
     ), "SQL_WMETADATA ctype should default to SQL_WCHAR"
@@ -1078,9 +1062,7 @@ def test_setdecoding_explicit_ctype_override(db_connection):
     """Test that explicit ctype parameter overrides automatic detection."""
 
     # Set SQL_CHAR with UTF-8 encoding but explicit SQL_WCHAR ctype
-    db_connection.setdecoding(
-        mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_WCHAR
-    )
+    db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_WCHAR)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
     assert settings["encoding"] == "utf-8", "Encoding should be utf-8"
     assert (
@@ -1104,12 +1086,8 @@ def test_setdecoding_none_parameters(db_connection):
     # Test SQL_CHAR with encoding=None (should use utf-8 default)
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding=None)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert (
-        settings["encoding"] == "utf-8"
-    ), "SQL_CHAR with encoding=None should use utf-8 default"
-    assert (
-        settings["ctype"] == mssql_python.SQL_CHAR
-    ), "ctype should be SQL_CHAR for utf-8"
+    assert settings["encoding"] == "utf-8", "SQL_CHAR with encoding=None should use utf-8 default"
+    assert settings["ctype"] == mssql_python.SQL_CHAR, "ctype should be SQL_CHAR for utf-8"
 
     # Test SQL_WCHAR with encoding=None (should use utf-16le default)
     db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding=None)
@@ -1117,19 +1095,13 @@ def test_setdecoding_none_parameters(db_connection):
     assert (
         settings["encoding"] == "utf-16le"
     ), "SQL_WCHAR with encoding=None should use utf-16le default"
-    assert (
-        settings["ctype"] == mssql_python.SQL_WCHAR
-    ), "ctype should be SQL_WCHAR for utf-16le"
+    assert settings["ctype"] == mssql_python.SQL_WCHAR, "ctype should be SQL_WCHAR for utf-16le"
 
     # Test with both parameters None
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding=None, ctype=None)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert (
-        settings["encoding"] == "utf-8"
-    ), "SQL_CHAR with both None should use utf-8 default"
-    assert (
-        settings["ctype"] == mssql_python.SQL_CHAR
-    ), "ctype should default to SQL_CHAR"
+    assert settings["encoding"] == "utf-8", "SQL_CHAR with both None should use utf-8 default"
+    assert settings["ctype"] == mssql_python.SQL_CHAR, "ctype should default to SQL_CHAR"
 
 
 def test_setdecoding_invalid_sqltype(db_connection):
@@ -1141,18 +1113,14 @@ def test_setdecoding_invalid_sqltype(db_connection):
     assert "Invalid sqltype" in str(
         exc_info.value
     ), "Should raise ProgrammingError for invalid sqltype"
-    assert "999" in str(
-        exc_info.value
-    ), "Error message should include the invalid sqltype value"
+    assert "999" in str(exc_info.value), "Error message should include the invalid sqltype value"
 
 
 def test_setdecoding_invalid_encoding(db_connection):
     """Test setdecoding with invalid encoding raises ProgrammingError."""
 
     with pytest.raises(ProgrammingError) as exc_info:
-        db_connection.setdecoding(
-            mssql_python.SQL_CHAR, encoding="invalid-encoding-name"
-        )
+        db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="invalid-encoding-name")
 
     assert "Unsupported encoding" in str(
         exc_info.value
@@ -1168,12 +1136,8 @@ def test_setdecoding_invalid_ctype(db_connection):
     with pytest.raises(ProgrammingError) as exc_info:
         db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8", ctype=999)
 
-    assert "Invalid ctype" in str(
-        exc_info.value
-    ), "Should raise ProgrammingError for invalid ctype"
-    assert "999" in str(
-        exc_info.value
-    ), "Error message should include the invalid ctype value"
+    assert "Invalid ctype" in str(exc_info.value), "Should raise ProgrammingError for invalid ctype"
+    assert "999" in str(exc_info.value), "Error message should include the invalid ctype value"
 
 
 def test_setdecoding_closed_connection(conn_str):
@@ -1196,9 +1160,7 @@ def test_setdecoding_constants_access():
     # Test constants exist and have correct values
     assert hasattr(mssql_python, "SQL_CHAR"), "SQL_CHAR constant should be available"
     assert hasattr(mssql_python, "SQL_WCHAR"), "SQL_WCHAR constant should be available"
-    assert hasattr(
-        mssql_python, "SQL_WMETADATA"
-    ), "SQL_WMETADATA constant should be available"
+    assert hasattr(mssql_python, "SQL_WMETADATA"), "SQL_WMETADATA constant should be available"
 
     assert mssql_python.SQL_CHAR == 1, "SQL_CHAR should have value 1"
     assert mssql_python.SQL_WCHAR == -8, "SQL_WCHAR should have value -8"
@@ -1209,9 +1171,7 @@ def test_setdecoding_with_constants(db_connection):
     """Test setdecoding using module constants."""
 
     # Test with SQL_CHAR constant
-    db_connection.setdecoding(
-        mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_CHAR
-    )
+    db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_CHAR)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
     assert settings["ctype"] == mssql_python.SQL_CHAR, "Should accept SQL_CHAR constant"
 
@@ -1220,9 +1180,7 @@ def test_setdecoding_with_constants(db_connection):
         mssql_python.SQL_WCHAR, encoding="utf-16le", ctype=mssql_python.SQL_WCHAR
     )
     settings = db_connection.getdecoding(mssql_python.SQL_WCHAR)
-    assert (
-        settings["ctype"] == mssql_python.SQL_WCHAR
-    ), "Should accept SQL_WCHAR constant"
+    assert settings["ctype"] == mssql_python.SQL_WCHAR, "Should accept SQL_WCHAR constant"
 
     # Test with SQL_WMETADATA constant
     db_connection.setdecoding(mssql_python.SQL_WMETADATA, encoding="utf-16be")
@@ -1270,9 +1228,7 @@ def test_setdecoding_case_insensitive_encoding(db_connection):
 
     db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding="Utf-16LE")
     settings = db_connection.getdecoding(mssql_python.SQL_WCHAR)
-    assert (
-        settings["encoding"] == "utf-16le"
-    ), "Encoding should be normalized to lowercase"
+    assert settings["encoding"] == "utf-16le", "Encoding should be normalized to lowercase"
 
 
 def test_setdecoding_independent_sql_types(db_connection):
@@ -1289,9 +1245,7 @@ def test_setdecoding_independent_sql_types(db_connection):
     sql_wmetadata_settings = db_connection.getdecoding(mssql_python.SQL_WMETADATA)
 
     assert sql_char_settings["encoding"] == "utf-8", "SQL_CHAR should maintain utf-8"
-    assert (
-        sql_wchar_settings["encoding"] == "utf-16le"
-    ), "SQL_WCHAR should maintain utf-16le"
+    assert sql_wchar_settings["encoding"] == "utf-16le", "SQL_WCHAR should maintain utf-16le"
     assert (
         sql_wmetadata_settings["encoding"] == "utf-16be"
     ), "SQL_WMETADATA should maintain utf-16be"
@@ -1304,9 +1258,7 @@ def test_setdecoding_override_previous(db_connection):
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8")
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
     assert settings["encoding"] == "utf-8", "Initial encoding should be utf-8"
-    assert (
-        settings["ctype"] == mssql_python.SQL_CHAR
-    ), "Initial ctype should be SQL_CHAR"
+    assert settings["ctype"] == mssql_python.SQL_CHAR, "Initial ctype should be SQL_CHAR"
 
     # Override with different settings
     db_connection.setdecoding(
@@ -1314,9 +1266,7 @@ def test_setdecoding_override_previous(db_connection):
     )
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
     assert settings["encoding"] == "latin-1", "Encoding should be overridden to latin-1"
-    assert (
-        settings["ctype"] == mssql_python.SQL_WCHAR
-    ), "ctype should be overridden to SQL_WCHAR"
+    assert settings["ctype"] == mssql_python.SQL_WCHAR, "ctype should be overridden to SQL_WCHAR"
 
 
 def test_getdecoding_invalid_sqltype(db_connection):
@@ -1328,9 +1278,7 @@ def test_getdecoding_invalid_sqltype(db_connection):
     assert "Invalid sqltype" in str(
         exc_info.value
     ), "Should raise ProgrammingError for invalid sqltype"
-    assert "999" in str(
-        exc_info.value
-    ), "Error message should include the invalid sqltype value"
+    assert "999" in str(exc_info.value), "Error message should include the invalid sqltype value"
 
 
 def test_getdecoding_closed_connection(conn_str):
@@ -1363,9 +1311,7 @@ def test_getdecoding_returns_copy(db_connection):
 
     # Modifying one shouldn't affect the other
     settings1["encoding"] = "modified"
-    assert (
-        settings2["encoding"] != "modified"
-    ), "Modification should not affect other copy"
+    assert settings2["encoding"] != "modified", "Modification should not affect other copy"
 
 
 def test_setdecoding_getdecoding_consistency(db_connection):
@@ -1382,9 +1328,7 @@ def test_setdecoding_getdecoding_consistency(db_connection):
     for sqltype, encoding, expected_ctype in test_cases:
         db_connection.setdecoding(sqltype, encoding=encoding)
         settings = db_connection.getdecoding(sqltype)
-        assert (
-            settings["encoding"] == encoding.lower()
-        ), f"Encoding should be {encoding.lower()}"
+        assert settings["encoding"] == encoding.lower(), f"Encoding should be {encoding.lower()}"
         assert settings["ctype"] == expected_ctype, f"ctype should be {expected_ctype}"
 
 
@@ -1409,19 +1353,11 @@ def test_setdecoding_persistence_across_cursors(db_connection):
     wchar_settings2 = db_connection.getdecoding(mssql_python.SQL_WCHAR)
 
     # Settings should persist across cursor creation
-    assert (
-        char_settings1 == char_settings2
-    ), "SQL_CHAR settings should persist across cursors"
-    assert (
-        wchar_settings1 == wchar_settings2
-    ), "SQL_WCHAR settings should persist across cursors"
+    assert char_settings1 == char_settings2, "SQL_CHAR settings should persist across cursors"
+    assert wchar_settings1 == wchar_settings2, "SQL_WCHAR settings should persist across cursors"
 
-    assert (
-        char_settings1["encoding"] == "latin-1"
-    ), "SQL_CHAR encoding should remain latin-1"
-    assert (
-        wchar_settings1["encoding"] == "utf-16be"
-    ), "SQL_WCHAR encoding should remain utf-16be"
+    assert char_settings1["encoding"] == "latin-1", "SQL_CHAR encoding should remain latin-1"
+    assert wchar_settings1["encoding"] == "utf-16be", "SQL_WCHAR encoding should remain utf-16be"
 
     cursor1.close()
     cursor2.close()
@@ -1443,16 +1379,12 @@ def test_setdecoding_before_and_after_operations(db_connection):
         # Change decoding after operation
         db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="latin-1")
         settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-        assert (
-            settings["encoding"] == "latin-1"
-        ), "Failed to change decoding after operation"
+        assert settings["encoding"] == "latin-1", "Failed to change decoding after operation"
 
         # Perform another operation with new decoding
         cursor.execute("SELECT 'Changed decoding test' as message")
         result2 = cursor.fetchone()
-        assert (
-            result2[0] == "Changed decoding test"
-        ), "Operation after decoding change failed"
+        assert result2[0] == "Changed decoding test", "Operation after decoding change failed"
 
     except Exception as e:
         pytest.fail(f"Decoding change test failed: {e}")
@@ -1475,12 +1407,8 @@ def test_setdecoding_all_sql_types_independently(conn_str):
         for sqltype, encoding, ctype in test_configs:
             conn.setdecoding(sqltype, encoding=encoding, ctype=ctype)
             settings = conn.getdecoding(sqltype)
-            assert (
-                settings["encoding"] == encoding
-            ), f"Failed to set encoding for sqltype {sqltype}"
-            assert (
-                settings["ctype"] == ctype
-            ), f"Failed to set ctype for sqltype {sqltype}"
+            assert settings["encoding"] == encoding, f"Failed to set encoding for sqltype {sqltype}"
+            assert settings["ctype"] == ctype, f"Failed to set ctype for sqltype {sqltype}"
 
     finally:
         conn.close()
@@ -1545,9 +1473,7 @@ def test_setdecoding_with_unicode_data(db_connection):
             )
             result = cursor.fetchone()
 
-            assert (
-                result is not None
-            ), f"Failed to retrieve Unicode string: {test_string}"
+            assert result is not None, f"Failed to retrieve Unicode string: {test_string}"
             assert (
                 result[0] == test_string
             ), f"CHAR column mismatch: expected {test_string}, got {result[0]}"
@@ -1577,21 +1503,15 @@ def test_connection_exception_attributes_exist(db_connection):
     assert hasattr(
         db_connection, "InterfaceError"
     ), "Connection should have InterfaceError attribute"
-    assert hasattr(
-        db_connection, "DatabaseError"
-    ), "Connection should have DatabaseError attribute"
-    assert hasattr(
-        db_connection, "DataError"
-    ), "Connection should have DataError attribute"
+    assert hasattr(db_connection, "DatabaseError"), "Connection should have DatabaseError attribute"
+    assert hasattr(db_connection, "DataError"), "Connection should have DataError attribute"
     assert hasattr(
         db_connection, "OperationalError"
     ), "Connection should have OperationalError attribute"
     assert hasattr(
         db_connection, "IntegrityError"
     ), "Connection should have IntegrityError attribute"
-    assert hasattr(
-        db_connection, "InternalError"
-    ), "Connection should have InternalError attribute"
+    assert hasattr(db_connection, "InternalError"), "Connection should have InternalError attribute"
     assert hasattr(
         db_connection, "ProgrammingError"
     ), "Connection should have ProgrammingError attribute"
@@ -1603,9 +1523,7 @@ def test_connection_exception_attributes_exist(db_connection):
 def test_connection_exception_attributes_are_classes(db_connection):
     """Test that all exception attributes are actually exception classes"""
     # Test that the attributes are the correct exception classes
-    assert (
-        db_connection.Warning is Warning
-    ), "Connection.Warning should be the Warning class"
+    assert db_connection.Warning is Warning, "Connection.Warning should be the Warning class"
     assert db_connection.Error is Error, "Connection.Error should be the Error class"
     assert (
         db_connection.InterfaceError is InterfaceError
@@ -1670,20 +1588,14 @@ def test_connection_exception_instantiation(db_connection):
     """Test that exception classes can be instantiated from Connection attributes"""
     # Test that we can create instances of exceptions using connection attributes
     warning = db_connection.Warning("Test warning", "DDBC warning")
-    assert isinstance(
-        warning, db_connection.Warning
-    ), "Should be able to create Warning instance"
+    assert isinstance(warning, db_connection.Warning), "Should be able to create Warning instance"
     assert "Test warning" in str(warning), "Warning should contain driver error message"
 
     error = db_connection.Error("Test error", "DDBC error")
-    assert isinstance(
-        error, db_connection.Error
-    ), "Should be able to create Error instance"
+    assert isinstance(error, db_connection.Error), "Should be able to create Error instance"
     assert "Test error" in str(error), "Error should contain driver error message"
 
-    interface_error = db_connection.InterfaceError(
-        "Interface error", "DDBC interface error"
-    )
+    interface_error = db_connection.InterfaceError("Interface error", "DDBC interface error")
     assert isinstance(
         interface_error, db_connection.InterfaceError
     ), "Should be able to create InterfaceError instance"
@@ -1695,9 +1607,7 @@ def test_connection_exception_instantiation(db_connection):
     assert isinstance(
         db_error, db_connection.DatabaseError
     ), "Should be able to create DatabaseError instance"
-    assert "Database error" in str(
-        db_error
-    ), "DatabaseError should contain driver error message"
+    assert "Database error" in str(db_error), "DatabaseError should contain driver error message"
 
 
 def test_connection_exception_catching_with_connection_attributes(db_connection):
@@ -1712,9 +1622,7 @@ def test_connection_exception_catching_with_connection_attributes(db_connection)
     except db_connection.ProgrammingError as e:
         assert "closed" in str(e).lower(), "Error message should mention closed cursor"
     except Exception as e:
-        pytest.fail(
-            f"Should have caught InterfaceError, but got {type(e).__name__}: {e}"
-        )
+        pytest.fail(f"Should have caught InterfaceError, but got {type(e).__name__}: {e}")
 
 
 def test_connection_exception_error_handling_example(db_connection):
@@ -1728,18 +1636,14 @@ def test_connection_exception_error_handling_example(db_connection):
     except db_connection.ProgrammingError as e:
         # This is the expected exception for syntax errors
         assert (
-            "syntax" in str(e).lower()
-            or "incorrect" in str(e).lower()
-            or "near" in str(e).lower()
+            "syntax" in str(e).lower() or "incorrect" in str(e).lower() or "near" in str(e).lower()
         ), "Should be a syntax-related error"
     except db_connection.DatabaseError as e:
         # ProgrammingError inherits from DatabaseError, so this might catch it too
         # This is acceptable according to DB-API 2.0
         pass
     except Exception as e:
-        pytest.fail(
-            f"Expected ProgrammingError or DatabaseError, got {type(e).__name__}: {e}"
-        )
+        pytest.fail(f"Expected ProgrammingError or DatabaseError, got {type(e).__name__}: {e}")
 
 
 def test_connection_exception_multi_connection_scenario(conn_str):
@@ -1811,9 +1715,7 @@ def test_connection_exception_attributes_consistency(conn_str):
 
     try:
         # Test that the same exception classes are referenced by different connections
-        assert (
-            conn1.Error is conn2.Error
-        ), "All connections should reference the same Error class"
+        assert conn1.Error is conn2.Error, "All connections should reference the same Error class"
         assert (
             conn1.InterfaceError is conn2.InterfaceError
         ), "All connections should reference the same InterfaceError class"
@@ -1825,9 +1727,7 @@ def test_connection_exception_attributes_consistency(conn_str):
         ), "All connections should reference the same ProgrammingError class"
 
         # Test that the classes are the same as module-level imports
-        assert (
-            conn1.Error is Error
-        ), "Connection.Error should be the same as module-level Error"
+        assert conn1.Error is Error, "Connection.Error should be the same as module-level Error"
         assert (
             conn1.InterfaceError is InterfaceError
         ), "Connection.InterfaceError should be the same as module-level InterfaceError"
@@ -1857,9 +1757,7 @@ def test_connection_exception_attributes_comprehensive_list():
     ]
 
     for exc_name in required_exceptions:
-        assert hasattr(
-            Connection, exc_name
-        ), f"Connection class should have {exc_name} attribute"
+        assert hasattr(Connection, exc_name), f"Connection class should have {exc_name} attribute"
         exc_class = getattr(Connection, exc_name)
         assert isinstance(exc_class, type), f"Connection.{exc_name} should be a class"
         assert issubclass(
@@ -1965,15 +1863,11 @@ def test_close_with_autocommit_true(conn_str):
         # Verify the data was committed automatically despite connection.close()
         verify_conn = connect(conn_str)
         verify_cursor = verify_conn.cursor()
-        verify_cursor.execute(
-            "SELECT * FROM pytest_autocommit_close_test WHERE id = 1;"
-        )
+        verify_cursor.execute("SELECT * FROM pytest_autocommit_close_test WHERE id = 1;")
         result = verify_cursor.fetchone()
 
         # Data should be present if autocommit worked and wasn't affected by close()
-        assert (
-            result is not None
-        ), "Autocommit failed: Data not found after connection close"
+        assert result is not None, "Autocommit failed: Data not found after connection close"
         assert (
             result[1] == "test_autocommit"
         ), "Autocommit failed: Incorrect data after connection close"
@@ -2050,17 +1944,13 @@ def test_setencoding_none_parameters(db_connection):
     # Test with encoding=None (should use default)
     db_connection.setencoding(encoding=None)
     settings = db_connection.getencoding()
-    assert (
-        settings["encoding"] == "utf-16le"
-    ), "encoding=None should use default utf-16le"
+    assert settings["encoding"] == "utf-16le", "encoding=None should use default utf-16le"
     assert settings["ctype"] == -8, "ctype should be SQL_WCHAR for utf-16le"
 
     # Test with both None (should use defaults)
     db_connection.setencoding(encoding=None, ctype=None)
     settings = db_connection.getencoding()
-    assert (
-        settings["encoding"] == "utf-16le"
-    ), "encoding=None should use default utf-16le"
+    assert settings["encoding"] == "utf-16le", "encoding=None should use default utf-16le"
     assert settings["ctype"] == -8, "ctype=None should use default SQL_WCHAR"
 
 
@@ -2084,12 +1974,8 @@ def test_setencoding_invalid_ctype(db_connection):
     with pytest.raises(ProgrammingError) as exc_info:
         db_connection.setencoding(encoding="utf-8", ctype=999)
 
-    assert "Invalid ctype" in str(
-        exc_info.value
-    ), "Should raise ProgrammingError for invalid ctype"
-    assert "999" in str(
-        exc_info.value
-    ), "Error message should include the invalid ctype value"
+    assert "Invalid ctype" in str(exc_info.value), "Should raise ProgrammingError for invalid ctype"
+    assert "999" in str(exc_info.value), "Error message should include the invalid ctype value"
 
 
 def test_setencoding_closed_connection(conn_str):
@@ -2129,9 +2015,7 @@ def test_setencoding_with_constants(db_connection):
     # Test with SQL_WCHAR constant
     db_connection.setencoding(encoding="utf-16le", ctype=mssql_python.SQL_WCHAR)
     settings = db_connection.getencoding()
-    assert (
-        settings["ctype"] == mssql_python.SQL_WCHAR
-    ), "Should accept SQL_WCHAR constant"
+    assert settings["ctype"] == mssql_python.SQL_WCHAR, "Should accept SQL_WCHAR constant"
 
 
 def test_setencoding_common_encodings(db_connection):
@@ -2150,9 +2034,7 @@ def test_setencoding_common_encodings(db_connection):
         try:
             db_connection.setencoding(encoding=encoding)
             settings = db_connection.getencoding()
-            assert (
-                settings["encoding"] == encoding
-            ), f"Failed to set encoding {encoding}"
+            assert settings["encoding"] == encoding, f"Failed to set encoding {encoding}"
         except Exception as e:
             pytest.fail(f"Failed to set valid encoding {encoding}: {e}")
 
@@ -2169,9 +2051,7 @@ def test_setencoding_persistence_across_cursors(db_connection):
     cursor2 = db_connection.cursor()
     settings2 = db_connection.getencoding()
 
-    assert (
-        settings1 == settings2
-    ), "Encoding settings should persist across cursor creation"
+    assert settings1 == settings2, "Encoding settings should persist across cursor creation"
     assert settings1["encoding"] == "utf-8", "Encoding should remain utf-8"
     assert settings1["ctype"] == 1, "ctype should remain SQL_CHAR"
 
@@ -2201,9 +2081,7 @@ def test_setencoding_with_unicode_data(db_connection):
 
         for test_string in test_strings:
             # Insert data
-            cursor.execute(
-                "INSERT INTO #test_encoding_unicode (text_col) VALUES (?)", test_string
-            )
+            cursor.execute("INSERT INTO #test_encoding_unicode (text_col) VALUES (?)", test_string)
 
             # Retrieve and verify
             cursor.execute(
@@ -2212,9 +2090,7 @@ def test_setencoding_with_unicode_data(db_connection):
             )
             result = cursor.fetchone()
 
-            assert (
-                result is not None
-            ), f"Failed to retrieve Unicode string: {test_string}"
+            assert result is not None, f"Failed to retrieve Unicode string: {test_string}"
             assert (
                 result[0] == test_string
             ), f"Unicode string mismatch: expected {test_string}, got {result[0]}"
@@ -2248,16 +2124,12 @@ def test_setencoding_before_and_after_operations(db_connection):
         # Change encoding after operation
         db_connection.setencoding(encoding="utf-8")
         settings = db_connection.getencoding()
-        assert (
-            settings["encoding"] == "utf-8"
-        ), "Failed to change encoding after operation"
+        assert settings["encoding"] == "utf-8", "Failed to change encoding after operation"
 
         # Perform another operation with new encoding
         cursor.execute("SELECT 'Changed encoding test' as message")
         result2 = cursor.fetchone()
-        assert (
-            result2[0] == "Changed encoding test"
-        ), "Operation after encoding change failed"
+        assert result2[0] == "Changed encoding test", "Operation after encoding change failed"
 
     except Exception as e:
         pytest.fail(f"Encoding change test failed: {e}")
@@ -2474,9 +2346,7 @@ def test_setdecoding_default_settings(db_connection):
 
     # Check SQL_CHAR defaults
     sql_char_settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert (
-        sql_char_settings["encoding"] == "utf-8"
-    ), "Default SQL_CHAR encoding should be utf-8"
+    assert sql_char_settings["encoding"] == "utf-8", "Default SQL_CHAR encoding should be utf-8"
     assert (
         sql_char_settings["ctype"] == mssql_python.SQL_CHAR
     ), "Default SQL_CHAR ctype should be SQL_CHAR"
@@ -2506,9 +2376,7 @@ def test_setdecoding_basic_functionality(db_connection):
     # Test setting SQL_CHAR decoding
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="latin-1")
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert (
-        settings["encoding"] == "latin-1"
-    ), "SQL_CHAR encoding should be set to latin-1"
+    assert settings["encoding"] == "latin-1", "SQL_CHAR encoding should be set to latin-1"
     assert (
         settings["ctype"] == mssql_python.SQL_CHAR
     ), "SQL_CHAR ctype should default to SQL_CHAR for latin-1"
@@ -2516,9 +2384,7 @@ def test_setdecoding_basic_functionality(db_connection):
     # Test setting SQL_WCHAR decoding
     db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding="utf-16be")
     settings = db_connection.getdecoding(mssql_python.SQL_WCHAR)
-    assert (
-        settings["encoding"] == "utf-16be"
-    ), "SQL_WCHAR encoding should be set to utf-16be"
+    assert settings["encoding"] == "utf-16be", "SQL_WCHAR encoding should be set to utf-16be"
     assert (
         settings["ctype"] == mssql_python.SQL_WCHAR
     ), "SQL_WCHAR ctype should default to SQL_WCHAR for utf-16be"
@@ -2526,9 +2392,7 @@ def test_setdecoding_basic_functionality(db_connection):
     # Test setting SQL_WMETADATA decoding
     db_connection.setdecoding(mssql_python.SQL_WMETADATA, encoding="utf-16le")
     settings = db_connection.getdecoding(mssql_python.SQL_WMETADATA)
-    assert (
-        settings["encoding"] == "utf-16le"
-    ), "SQL_WMETADATA encoding should be set to utf-16le"
+    assert settings["encoding"] == "utf-16le", "SQL_WMETADATA encoding should be set to utf-16le"
     assert (
         settings["ctype"] == mssql_python.SQL_WCHAR
     ), "SQL_WMETADATA ctype should default to SQL_WCHAR"
@@ -2560,9 +2424,7 @@ def test_setdecoding_explicit_ctype_override(db_connection):
     """Test that explicit ctype parameter overrides automatic detection."""
 
     # Set SQL_CHAR with UTF-8 encoding but explicit SQL_WCHAR ctype
-    db_connection.setdecoding(
-        mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_WCHAR
-    )
+    db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_WCHAR)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
     assert settings["encoding"] == "utf-8", "Encoding should be utf-8"
     assert (
@@ -2586,12 +2448,8 @@ def test_setdecoding_none_parameters(db_connection):
     # Test SQL_CHAR with encoding=None (should use utf-8 default)
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding=None)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert (
-        settings["encoding"] == "utf-8"
-    ), "SQL_CHAR with encoding=None should use utf-8 default"
-    assert (
-        settings["ctype"] == mssql_python.SQL_CHAR
-    ), "ctype should be SQL_CHAR for utf-8"
+    assert settings["encoding"] == "utf-8", "SQL_CHAR with encoding=None should use utf-8 default"
+    assert settings["ctype"] == mssql_python.SQL_CHAR, "ctype should be SQL_CHAR for utf-8"
 
     # Test SQL_WCHAR with encoding=None (should use utf-16le default)
     db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding=None)
@@ -2599,19 +2457,13 @@ def test_setdecoding_none_parameters(db_connection):
     assert (
         settings["encoding"] == "utf-16le"
     ), "SQL_WCHAR with encoding=None should use utf-16le default"
-    assert (
-        settings["ctype"] == mssql_python.SQL_WCHAR
-    ), "ctype should be SQL_WCHAR for utf-16le"
+    assert settings["ctype"] == mssql_python.SQL_WCHAR, "ctype should be SQL_WCHAR for utf-16le"
 
     # Test with both parameters None
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding=None, ctype=None)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert (
-        settings["encoding"] == "utf-8"
-    ), "SQL_CHAR with both None should use utf-8 default"
-    assert (
-        settings["ctype"] == mssql_python.SQL_CHAR
-    ), "ctype should default to SQL_CHAR"
+    assert settings["encoding"] == "utf-8", "SQL_CHAR with both None should use utf-8 default"
+    assert settings["ctype"] == mssql_python.SQL_CHAR, "ctype should default to SQL_CHAR"
 
 
 def test_setdecoding_invalid_sqltype(db_connection):
@@ -2623,18 +2475,14 @@ def test_setdecoding_invalid_sqltype(db_connection):
     assert "Invalid sqltype" in str(
         exc_info.value
     ), "Should raise ProgrammingError for invalid sqltype"
-    assert "999" in str(
-        exc_info.value
-    ), "Error message should include the invalid sqltype value"
+    assert "999" in str(exc_info.value), "Error message should include the invalid sqltype value"
 
 
 def test_setdecoding_invalid_encoding(db_connection):
     """Test setdecoding with invalid encoding raises ProgrammingError."""
 
     with pytest.raises(ProgrammingError) as exc_info:
-        db_connection.setdecoding(
-            mssql_python.SQL_CHAR, encoding="invalid-encoding-name"
-        )
+        db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="invalid-encoding-name")
 
     assert "Unsupported encoding" in str(
         exc_info.value
@@ -2650,12 +2498,8 @@ def test_setdecoding_invalid_ctype(db_connection):
     with pytest.raises(ProgrammingError) as exc_info:
         db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8", ctype=999)
 
-    assert "Invalid ctype" in str(
-        exc_info.value
-    ), "Should raise ProgrammingError for invalid ctype"
-    assert "999" in str(
-        exc_info.value
-    ), "Error message should include the invalid ctype value"
+    assert "Invalid ctype" in str(exc_info.value), "Should raise ProgrammingError for invalid ctype"
+    assert "999" in str(exc_info.value), "Error message should include the invalid ctype value"
 
 
 def test_setdecoding_closed_connection(conn_str):
@@ -2678,9 +2522,7 @@ def test_setdecoding_constants_access():
     # Test constants exist and have correct values
     assert hasattr(mssql_python, "SQL_CHAR"), "SQL_CHAR constant should be available"
     assert hasattr(mssql_python, "SQL_WCHAR"), "SQL_WCHAR constant should be available"
-    assert hasattr(
-        mssql_python, "SQL_WMETADATA"
-    ), "SQL_WMETADATA constant should be available"
+    assert hasattr(mssql_python, "SQL_WMETADATA"), "SQL_WMETADATA constant should be available"
 
     assert mssql_python.SQL_CHAR == 1, "SQL_CHAR should have value 1"
     assert mssql_python.SQL_WCHAR == -8, "SQL_WCHAR should have value -8"
@@ -2691,9 +2533,7 @@ def test_setdecoding_with_constants(db_connection):
     """Test setdecoding using module constants."""
 
     # Test with SQL_CHAR constant
-    db_connection.setdecoding(
-        mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_CHAR
-    )
+    db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_CHAR)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
     assert settings["ctype"] == mssql_python.SQL_CHAR, "Should accept SQL_CHAR constant"
 
@@ -2702,9 +2542,7 @@ def test_setdecoding_with_constants(db_connection):
         mssql_python.SQL_WCHAR, encoding="utf-16le", ctype=mssql_python.SQL_WCHAR
     )
     settings = db_connection.getdecoding(mssql_python.SQL_WCHAR)
-    assert (
-        settings["ctype"] == mssql_python.SQL_WCHAR
-    ), "Should accept SQL_WCHAR constant"
+    assert settings["ctype"] == mssql_python.SQL_WCHAR, "Should accept SQL_WCHAR constant"
 
     # Test with SQL_WMETADATA constant
     db_connection.setdecoding(mssql_python.SQL_WMETADATA, encoding="utf-16be")
@@ -2752,9 +2590,7 @@ def test_setdecoding_case_insensitive_encoding(db_connection):
 
     db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding="Utf-16LE")
     settings = db_connection.getdecoding(mssql_python.SQL_WCHAR)
-    assert (
-        settings["encoding"] == "utf-16le"
-    ), "Encoding should be normalized to lowercase"
+    assert settings["encoding"] == "utf-16le", "Encoding should be normalized to lowercase"
 
 
 def test_setdecoding_independent_sql_types(db_connection):
@@ -2771,9 +2607,7 @@ def test_setdecoding_independent_sql_types(db_connection):
     sql_wmetadata_settings = db_connection.getdecoding(mssql_python.SQL_WMETADATA)
 
     assert sql_char_settings["encoding"] == "utf-8", "SQL_CHAR should maintain utf-8"
-    assert (
-        sql_wchar_settings["encoding"] == "utf-16le"
-    ), "SQL_WCHAR should maintain utf-16le"
+    assert sql_wchar_settings["encoding"] == "utf-16le", "SQL_WCHAR should maintain utf-16le"
     assert (
         sql_wmetadata_settings["encoding"] == "utf-16be"
     ), "SQL_WMETADATA should maintain utf-16be"
@@ -2786,9 +2620,7 @@ def test_setdecoding_override_previous(db_connection):
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8")
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
     assert settings["encoding"] == "utf-8", "Initial encoding should be utf-8"
-    assert (
-        settings["ctype"] == mssql_python.SQL_CHAR
-    ), "Initial ctype should be SQL_CHAR"
+    assert settings["ctype"] == mssql_python.SQL_CHAR, "Initial ctype should be SQL_CHAR"
 
     # Override with different settings
     db_connection.setdecoding(
@@ -2796,9 +2628,7 @@ def test_setdecoding_override_previous(db_connection):
     )
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
     assert settings["encoding"] == "latin-1", "Encoding should be overridden to latin-1"
-    assert (
-        settings["ctype"] == mssql_python.SQL_WCHAR
-    ), "ctype should be overridden to SQL_WCHAR"
+    assert settings["ctype"] == mssql_python.SQL_WCHAR, "ctype should be overridden to SQL_WCHAR"
 
 
 def test_getdecoding_invalid_sqltype(db_connection):
@@ -2810,9 +2640,7 @@ def test_getdecoding_invalid_sqltype(db_connection):
     assert "Invalid sqltype" in str(
         exc_info.value
     ), "Should raise ProgrammingError for invalid sqltype"
-    assert "999" in str(
-        exc_info.value
-    ), "Error message should include the invalid sqltype value"
+    assert "999" in str(exc_info.value), "Error message should include the invalid sqltype value"
 
 
 def test_getdecoding_closed_connection(conn_str):
@@ -2845,9 +2673,7 @@ def test_getdecoding_returns_copy(db_connection):
 
     # Modifying one shouldn't affect the other
     settings1["encoding"] = "modified"
-    assert (
-        settings2["encoding"] != "modified"
-    ), "Modification should not affect other copy"
+    assert settings2["encoding"] != "modified", "Modification should not affect other copy"
 
 
 def test_setdecoding_getdecoding_consistency(db_connection):
@@ -2864,9 +2690,7 @@ def test_setdecoding_getdecoding_consistency(db_connection):
     for sqltype, encoding, expected_ctype in test_cases:
         db_connection.setdecoding(sqltype, encoding=encoding)
         settings = db_connection.getdecoding(sqltype)
-        assert (
-            settings["encoding"] == encoding.lower()
-        ), f"Encoding should be {encoding.lower()}"
+        assert settings["encoding"] == encoding.lower(), f"Encoding should be {encoding.lower()}"
         assert settings["ctype"] == expected_ctype, f"ctype should be {expected_ctype}"
 
 
@@ -2891,19 +2715,11 @@ def test_setdecoding_persistence_across_cursors(db_connection):
     wchar_settings2 = db_connection.getdecoding(mssql_python.SQL_WCHAR)
 
     # Settings should persist across cursor creation
-    assert (
-        char_settings1 == char_settings2
-    ), "SQL_CHAR settings should persist across cursors"
-    assert (
-        wchar_settings1 == wchar_settings2
-    ), "SQL_WCHAR settings should persist across cursors"
+    assert char_settings1 == char_settings2, "SQL_CHAR settings should persist across cursors"
+    assert wchar_settings1 == wchar_settings2, "SQL_WCHAR settings should persist across cursors"
 
-    assert (
-        char_settings1["encoding"] == "latin-1"
-    ), "SQL_CHAR encoding should remain latin-1"
-    assert (
-        wchar_settings1["encoding"] == "utf-16be"
-    ), "SQL_WCHAR encoding should remain utf-16be"
+    assert char_settings1["encoding"] == "latin-1", "SQL_CHAR encoding should remain latin-1"
+    assert wchar_settings1["encoding"] == "utf-16be", "SQL_WCHAR encoding should remain utf-16be"
 
     cursor1.close()
     cursor2.close()
@@ -2925,16 +2741,12 @@ def test_setdecoding_before_and_after_operations(db_connection):
         # Change decoding after operation
         db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="latin-1")
         settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-        assert (
-            settings["encoding"] == "latin-1"
-        ), "Failed to change decoding after operation"
+        assert settings["encoding"] == "latin-1", "Failed to change decoding after operation"
 
         # Perform another operation with new decoding
         cursor.execute("SELECT 'Changed decoding test' as message")
         result2 = cursor.fetchone()
-        assert (
-            result2[0] == "Changed decoding test"
-        ), "Operation after decoding change failed"
+        assert result2[0] == "Changed decoding test", "Operation after decoding change failed"
 
     except Exception as e:
         pytest.fail(f"Decoding change test failed: {e}")
@@ -2957,12 +2769,8 @@ def test_setdecoding_all_sql_types_independently(conn_str):
         for sqltype, encoding, ctype in test_configs:
             conn.setdecoding(sqltype, encoding=encoding, ctype=ctype)
             settings = conn.getdecoding(sqltype)
-            assert (
-                settings["encoding"] == encoding
-            ), f"Failed to set encoding for sqltype {sqltype}"
-            assert (
-                settings["ctype"] == ctype
-            ), f"Failed to set ctype for sqltype {sqltype}"
+            assert settings["encoding"] == encoding, f"Failed to set encoding for sqltype {sqltype}"
+            assert settings["ctype"] == ctype, f"Failed to set ctype for sqltype {sqltype}"
 
     finally:
         conn.close()
@@ -3027,9 +2835,7 @@ def test_setdecoding_with_unicode_data(db_connection):
             )
             result = cursor.fetchone()
 
-            assert (
-                result is not None
-            ), f"Failed to retrieve Unicode string: {test_string}"
+            assert result is not None, f"Failed to retrieve Unicode string: {test_string}"
             assert (
                 result[0] == test_string
             ), f"CHAR column mismatch: expected {test_string}, got {result[0]}"
@@ -3059,21 +2865,15 @@ def test_connection_exception_attributes_exist(db_connection):
     assert hasattr(
         db_connection, "InterfaceError"
     ), "Connection should have InterfaceError attribute"
-    assert hasattr(
-        db_connection, "DatabaseError"
-    ), "Connection should have DatabaseError attribute"
-    assert hasattr(
-        db_connection, "DataError"
-    ), "Connection should have DataError attribute"
+    assert hasattr(db_connection, "DatabaseError"), "Connection should have DatabaseError attribute"
+    assert hasattr(db_connection, "DataError"), "Connection should have DataError attribute"
     assert hasattr(
         db_connection, "OperationalError"
     ), "Connection should have OperationalError attribute"
     assert hasattr(
         db_connection, "IntegrityError"
     ), "Connection should have IntegrityError attribute"
-    assert hasattr(
-        db_connection, "InternalError"
-    ), "Connection should have InternalError attribute"
+    assert hasattr(db_connection, "InternalError"), "Connection should have InternalError attribute"
     assert hasattr(
         db_connection, "ProgrammingError"
     ), "Connection should have ProgrammingError attribute"
@@ -3085,9 +2885,7 @@ def test_connection_exception_attributes_exist(db_connection):
 def test_connection_exception_attributes_are_classes(db_connection):
     """Test that all exception attributes are actually exception classes"""
     # Test that the attributes are the correct exception classes
-    assert (
-        db_connection.Warning is Warning
-    ), "Connection.Warning should be the Warning class"
+    assert db_connection.Warning is Warning, "Connection.Warning should be the Warning class"
     assert db_connection.Error is Error, "Connection.Error should be the Error class"
     assert (
         db_connection.InterfaceError is InterfaceError
@@ -3152,20 +2950,14 @@ def test_connection_exception_instantiation(db_connection):
     """Test that exception classes can be instantiated from Connection attributes"""
     # Test that we can create instances of exceptions using connection attributes
     warning = db_connection.Warning("Test warning", "DDBC warning")
-    assert isinstance(
-        warning, db_connection.Warning
-    ), "Should be able to create Warning instance"
+    assert isinstance(warning, db_connection.Warning), "Should be able to create Warning instance"
     assert "Test warning" in str(warning), "Warning should contain driver error message"
 
     error = db_connection.Error("Test error", "DDBC error")
-    assert isinstance(
-        error, db_connection.Error
-    ), "Should be able to create Error instance"
+    assert isinstance(error, db_connection.Error), "Should be able to create Error instance"
     assert "Test error" in str(error), "Error should contain driver error message"
 
-    interface_error = db_connection.InterfaceError(
-        "Interface error", "DDBC interface error"
-    )
+    interface_error = db_connection.InterfaceError("Interface error", "DDBC interface error")
     assert isinstance(
         interface_error, db_connection.InterfaceError
     ), "Should be able to create InterfaceError instance"
@@ -3177,9 +2969,7 @@ def test_connection_exception_instantiation(db_connection):
     assert isinstance(
         db_error, db_connection.DatabaseError
     ), "Should be able to create DatabaseError instance"
-    assert "Database error" in str(
-        db_error
-    ), "DatabaseError should contain driver error message"
+    assert "Database error" in str(db_error), "DatabaseError should contain driver error message"
 
 
 def test_connection_exception_catching_with_connection_attributes(db_connection):
@@ -3194,9 +2984,7 @@ def test_connection_exception_catching_with_connection_attributes(db_connection)
     except db_connection.ProgrammingError as e:
         assert "closed" in str(e).lower(), "Error message should mention closed cursor"
     except Exception as e:
-        pytest.fail(
-            f"Should have caught InterfaceError, but got {type(e).__name__}: {e}"
-        )
+        pytest.fail(f"Should have caught InterfaceError, but got {type(e).__name__}: {e}")
 
 
 def test_connection_exception_error_handling_example(db_connection):
@@ -3210,18 +2998,14 @@ def test_connection_exception_error_handling_example(db_connection):
     except db_connection.ProgrammingError as e:
         # This is the expected exception for syntax errors
         assert (
-            "syntax" in str(e).lower()
-            or "incorrect" in str(e).lower()
-            or "near" in str(e).lower()
+            "syntax" in str(e).lower() or "incorrect" in str(e).lower() or "near" in str(e).lower()
         ), "Should be a syntax-related error"
     except db_connection.DatabaseError as e:
         # ProgrammingError inherits from DatabaseError, so this might catch it too
         # This is acceptable according to DB-API 2.0
         pass
     except Exception as e:
-        pytest.fail(
-            f"Expected ProgrammingError or DatabaseError, got {type(e).__name__}: {e}"
-        )
+        pytest.fail(f"Expected ProgrammingError or DatabaseError, got {type(e).__name__}: {e}")
 
 
 def test_connection_exception_multi_connection_scenario(conn_str):
@@ -3293,9 +3077,7 @@ def test_connection_exception_attributes_consistency(conn_str):
 
     try:
         # Test that the same exception classes are referenced by different connections
-        assert (
-            conn1.Error is conn2.Error
-        ), "All connections should reference the same Error class"
+        assert conn1.Error is conn2.Error, "All connections should reference the same Error class"
         assert (
             conn1.InterfaceError is conn2.InterfaceError
         ), "All connections should reference the same InterfaceError class"
@@ -3307,9 +3089,7 @@ def test_connection_exception_attributes_consistency(conn_str):
         ), "All connections should reference the same ProgrammingError class"
 
         # Test that the classes are the same as module-level imports
-        assert (
-            conn1.Error is Error
-        ), "Connection.Error should be the same as module-level Error"
+        assert conn1.Error is Error, "Connection.Error should be the same as module-level Error"
         assert (
             conn1.InterfaceError is InterfaceError
         ), "Connection.InterfaceError should be the same as module-level InterfaceError"
@@ -3339,9 +3119,7 @@ def test_connection_exception_attributes_comprehensive_list():
     ]
 
     for exc_name in required_exceptions:
-        assert hasattr(
-            Connection, exc_name
-        ), f"Connection class should have {exc_name} attribute"
+        assert hasattr(Connection, exc_name), f"Connection class should have {exc_name} attribute"
         exc_class = getattr(Connection, exc_name)
         assert isinstance(exc_class, type), f"Connection.{exc_name} should be a class"
         assert issubclass(
@@ -3364,9 +3142,7 @@ def test_connection_execute(db_connection):
     assert result[0] == 42, "Execute with parameters failed: Incorrect result"
 
     # Test that cursor is tracked by connection
-    assert (
-        cursor in db_connection._cursors
-    ), "Cursor from execute() not tracked by connection"
+    assert cursor in db_connection._cursors, "Cursor from execute() not tracked by connection"
 
     # Test with data modification and verify it requires commit
     if not db_connection.autocommit:
@@ -3374,16 +3150,12 @@ def test_connection_execute(db_connection):
         cursor1 = db_connection.execute(
             "CREATE TABLE #pytest_test_execute (id INT, value VARCHAR(50))"
         )
-        cursor2 = db_connection.execute(
-            "INSERT INTO #pytest_test_execute VALUES (1, 'test_value')"
-        )
+        cursor2 = db_connection.execute("INSERT INTO #pytest_test_execute VALUES (1, 'test_value')")
         cursor3 = db_connection.execute("SELECT * FROM #pytest_test_execute")
         result = cursor3.fetchone()
         assert result is not None, "Execute with table creation failed"
         assert result[0] == 1, "Execute with table creation returned wrong id"
-        assert (
-            result[1] == "test_value"
-        ), "Execute with table creation returned wrong value"
+        assert result[1] == "test_value", "Execute with table creation returned wrong value"
 
         # Clean up
         db_connection.execute("DROP TABLE #pytest_test_execute")
@@ -3398,9 +3170,7 @@ def test_connection_execute_error_handling(db_connection):
 
 def test_connection_execute_empty_result(db_connection):
     """Test execute() with a query that returns no rows"""
-    cursor = db_connection.execute(
-        "SELECT * FROM sys.tables WHERE name = 'nonexistent_table_name'"
-    )
+    cursor = db_connection.execute("SELECT * FROM sys.tables WHERE name = 'nonexistent_table_name'")
     result = cursor.fetchone()
     assert result is None, "Query should return no results"
 
@@ -3550,36 +3320,26 @@ def test_execute_after_connection_close(conn_str):
     # 1. Test direct execute method
     with pytest.raises(InterfaceError) as excinfo:
         connection.execute("SELECT 1")
-    assert (
-        "closed" in str(excinfo.value).lower()
-    ), "Error should mention the connection is closed"
+    assert "closed" in str(excinfo.value).lower(), "Error should mention the connection is closed"
 
     # 2. Test batch_execute method
     with pytest.raises(InterfaceError) as excinfo:
         connection.batch_execute(["SELECT 1"])
-    assert (
-        "closed" in str(excinfo.value).lower()
-    ), "Error should mention the connection is closed"
+    assert "closed" in str(excinfo.value).lower(), "Error should mention the connection is closed"
 
     # 3. Test creating a cursor
     with pytest.raises(InterfaceError) as excinfo:
         cursor = connection.cursor()
-    assert (
-        "closed" in str(excinfo.value).lower()
-    ), "Error should mention the connection is closed"
+    assert "closed" in str(excinfo.value).lower(), "Error should mention the connection is closed"
 
     # 4. Test transaction operations
     with pytest.raises(InterfaceError) as excinfo:
         connection.commit()
-    assert (
-        "closed" in str(excinfo.value).lower()
-    ), "Error should mention the connection is closed"
+    assert "closed" in str(excinfo.value).lower(), "Error should mention the connection is closed"
 
     with pytest.raises(InterfaceError) as excinfo:
         connection.rollback()
-    assert (
-        "closed" in str(excinfo.value).lower()
-    ), "Error should mention the connection is closed"
+    assert "closed" in str(excinfo.value).lower(), "Error should mention the connection is closed"
 
 
 def test_execute_multiple_simultaneous_cursors(db_connection, conn_str):
@@ -3710,9 +3470,7 @@ def test_execute_with_large_parameters(db_connection, conn_str):
             # Build a parameterized query with multiple value sets for this batch
             for i in range(batch_start, batch_end):
                 large_inserts.append("(?, ?, ?)")
-                params.extend(
-                    [i, f"Text{i}", bytes([i % 256] * 100)]
-                )  # 100 bytes per row
+                params.extend([i, f"Text{i}", bytes([i % 256] * 100)])  # 100 bytes per row
 
             # Execute this batch
             sql = f"INSERT INTO #large_params_test VALUES {', '.join(large_inserts)}"
@@ -3780,10 +3538,7 @@ def test_execute_with_large_parameters(db_connection, conn_str):
         for batch_start in range(0, total_rows, rows_per_batch):
             batch_end = min(batch_start + rows_per_batch, total_rows)
             values = ", ".join(
-                [
-                    f"({i}, 'Small Text {i}', NULL)"
-                    for i in range(batch_start, batch_end)
-                ]
+                [f"({i}, 'Small Text {i}', NULL)" for i in range(batch_start, batch_end)]
             )
             cursor = db_connection.execute(
                 f"INSERT INTO #large_params_test (id, large_text, large_binary) VALUES {values}"
@@ -3793,9 +3548,7 @@ def test_execute_with_large_parameters(db_connection, conn_str):
         start_time = time.time()
 
         # Fetch all rows to test large result set handling
-        cursor = db_connection.execute(
-            "SELECT id, large_text FROM #large_params_test ORDER BY id"
-        )
+        cursor = db_connection.execute("SELECT id, large_text FROM #large_params_test ORDER BY id")
         rows = cursor.fetchall()
         cursor.close()
 
@@ -3878,9 +3631,7 @@ def test_connection_execute_cursor_lifecycle(db_connection):
         gc.collect()
 
     # Verify cursor was eventually removed from tracking after collection
-    assert (
-        cursor_ref() is None
-    ), "Cursor should be garbage collected after going out of scope"
+    assert cursor_ref() is None, "Cursor should be garbage collected after going out of scope"
     assert (
         len(db_connection._cursors) == initial_cursor_count
     ), "All created cursors should be removed from tracking after collection"
@@ -3956,9 +3707,7 @@ def test_batch_execute_basic(db_connection):
     assert results[1][0][0] == "test", "Second result should be 'test'"
 
     assert len(results[2]) == 1, "Expected 1 row in third result"
-    assert isinstance(
-        results[2][0][0], (str, datetime)
-    ), "Third result should be a date"
+    assert isinstance(results[2][0][0], (str, datetime)), "Third result should be a date"
 
     # Cursor should be usable after batch execution
     cursor.execute("SELECT 2 AS another_value")
@@ -3993,13 +3742,9 @@ def test_batch_execute_with_parameters(db_connection):
 
     # Verify each parameter was correctly applied
     assert results[0][0][0] == 123, "Integer parameter not handled correctly"
-    assert (
-        abs(results[1][0][0] - 3.14159) < 0.00001
-    ), "Float parameter not handled correctly"
+    assert abs(results[1][0][0] - 3.14159) < 0.00001, "Float parameter not handled correctly"
     assert results[2][0][0] == "test string", "String parameter not handled correctly"
-    assert results[3][0][0] == bytearray(
-        b"binary data"
-    ), "Binary parameter not handled correctly"
+    assert results[3][0][0] == bytearray(b"binary data"), "Binary parameter not handled correctly"
     assert results[4][0][0] == True, "Boolean parameter not handled correctly"
     assert results[5][0][0] is None, "NULL parameter not handled correctly"
 
@@ -4070,9 +3815,7 @@ def test_batch_execute_reuse_cursor(db_connection):
     # Use the cursor in batch_execute
     statements = ["SELECT 'during batch' AS batch_state"]
 
-    results, returned_cursor = db_connection.batch_execute(
-        statements, reuse_cursor=cursor
-    )
+    results, returned_cursor = db_connection.batch_execute(statements, reuse_cursor=cursor)
 
     # Verify we got the same cursor back
     assert returned_cursor is cursor, "Batch should return the same cursor object"
@@ -4083,9 +3826,7 @@ def test_batch_execute_reuse_cursor(db_connection):
     # Verify cursor is still usable
     cursor.execute("SELECT 'after batch' AS final_state")
     final_result = cursor.fetchall()
-    assert (
-        final_result[0][0] == "after batch"
-    ), "Cursor should remain usable after batch"
+    assert final_result[0][0] == "after batch", "Cursor should remain usable after batch"
 
     cursor.close()
 
@@ -4138,9 +3879,7 @@ def test_batch_execute_transaction(db_connection):
 
     try:
         # Create a test table outside the implicit transaction
-        cursor.execute(
-            "CREATE TABLE ##batch_transaction_test (id INT, value VARCHAR(50))"
-        )
+        cursor.execute("CREATE TABLE ##batch_transaction_test (id INT, value VARCHAR(50))")
         db_connection.commit()  # Commit the table creation
 
         # Execute a batch of statements
@@ -4196,9 +3935,7 @@ def test_batch_execute_error_handling(db_connection):
         db_connection.batch_execute(statements)
 
     # Verify error message contains something about the nonexistent table
-    assert (
-        "nonexistent_table" in str(excinfo.value).lower()
-    ), "Error should mention the problem"
+    assert "nonexistent_table" in str(excinfo.value).lower(), "Error should mention the problem"
 
     # Test with a cursor that gets auto-closed on error
     cursor = db_connection.cursor()
@@ -4213,9 +3950,7 @@ def test_batch_execute_error_handling(db_connection):
     # Test that the connection is still usable after an error
     new_cursor = db_connection.cursor()
     new_cursor.execute("SELECT 1")
-    assert (
-        new_cursor.fetchone()[0] == 1
-    ), "Connection should be usable after batch error"
+    assert new_cursor.fetchone()[0] == 1, "Connection should be usable after batch error"
     new_cursor.close()
 
 
@@ -4290,9 +4025,7 @@ def test_connection_execute(db_connection):
     assert result[0] == 42, "Execute with parameters failed: Incorrect result"
 
     # Test that cursor is tracked by connection
-    assert (
-        cursor in db_connection._cursors
-    ), "Cursor from execute() not tracked by connection"
+    assert cursor in db_connection._cursors, "Cursor from execute() not tracked by connection"
 
     # Test with data modification and verify it requires commit
     if not db_connection.autocommit:
@@ -4300,16 +4033,12 @@ def test_connection_execute(db_connection):
         cursor1 = db_connection.execute(
             "CREATE TABLE #pytest_test_execute (id INT, value VARCHAR(50))"
         )
-        cursor2 = db_connection.execute(
-            "INSERT INTO #pytest_test_execute VALUES (1, 'test_value')"
-        )
+        cursor2 = db_connection.execute("INSERT INTO #pytest_test_execute VALUES (1, 'test_value')")
         cursor3 = db_connection.execute("SELECT * FROM #pytest_test_execute")
         result = cursor3.fetchone()
         assert result is not None, "Execute with table creation failed"
         assert result[0] == 1, "Execute with table creation returned wrong id"
-        assert (
-            result[1] == "test_value"
-        ), "Execute with table creation returned wrong value"
+        assert result[1] == "test_value", "Execute with table creation returned wrong value"
 
         # Clean up
         db_connection.execute("DROP TABLE #pytest_test_execute")
@@ -4324,9 +4053,7 @@ def test_connection_execute_error_handling(db_connection):
 
 def test_connection_execute_empty_result(db_connection):
     """Test execute() with a query that returns no rows"""
-    cursor = db_connection.execute(
-        "SELECT * FROM sys.tables WHERE name = 'nonexistent_table_name'"
-    )
+    cursor = db_connection.execute("SELECT * FROM sys.tables WHERE name = 'nonexistent_table_name'")
     result = cursor.fetchone()
     assert result is None, "Query should return no results"
 
@@ -4726,9 +4453,7 @@ def test_output_converter_exception_handling(db_connection):
 
         # If we got here, the exception was caught and handled internally
         assert row is not None, "Row should still be returned despite converter error"
-        assert (
-            row[0] is not None
-        ), "Column value shouldn't be None despite converter error"
+        assert row[0] is not None, "Column value shouldn't be None despite converter error"
 
         # Verify we can continue using the connection
         cursor.execute("SELECT 1 AS test")
@@ -4737,18 +4462,12 @@ def test_output_converter_exception_handling(db_connection):
     except Exception as e:
         # If an exception is raised, ensure it doesn't contain the sensitive info
         error_str = str(e)
-        assert (
-            "sensitive data" not in error_str
-        ), f"Exception leaked sensitive data: {error_str}"
-        assert not isinstance(
-            e, ValueError
-        ), "Original exception type should not be exposed"
+        assert "sensitive data" not in error_str, f"Exception leaked sensitive data: {error_str}"
+        assert not isinstance(e, ValueError), "Original exception type should not be exposed"
 
         # Verify we can continue using the connection after the error
         cursor.execute("SELECT 1 AS test")
-        assert (
-            cursor.fetchone()[0] == 1
-        ), "Connection should still be usable after converter error"
+        assert cursor.fetchone()[0] == 1, "Connection should still be usable after converter error"
 
     finally:
         # Clean up
@@ -4757,9 +4476,7 @@ def test_output_converter_exception_handling(db_connection):
 
 def test_timeout_default(db_connection):
     """Test that the default timeout value is 0 (no timeout)"""
-    assert hasattr(
-        db_connection, "timeout"
-    ), "Connection should have a timeout attribute"
+    assert hasattr(db_connection, "timeout"), "Connection should have a timeout attribute"
     assert db_connection.timeout == 0, "Default timeout should be 0"
 
 
@@ -4846,9 +4563,7 @@ def test_connection_execute(db_connection):
     assert result[0] == 42, "Execute with parameters failed: Incorrect result"
 
     # Test that cursor is tracked by connection
-    assert (
-        cursor in db_connection._cursors
-    ), "Cursor from execute() not tracked by connection"
+    assert cursor in db_connection._cursors, "Cursor from execute() not tracked by connection"
 
     # Test with data modification and verify it requires commit
     if not db_connection.autocommit:
@@ -4856,16 +4571,12 @@ def test_connection_execute(db_connection):
         cursor1 = db_connection.execute(
             "CREATE TABLE #pytest_test_execute (id INT, value VARCHAR(50))"
         )
-        cursor2 = db_connection.execute(
-            "INSERT INTO #pytest_test_execute VALUES (1, 'test_value')"
-        )
+        cursor2 = db_connection.execute("INSERT INTO #pytest_test_execute VALUES (1, 'test_value')")
         cursor3 = db_connection.execute("SELECT * FROM #pytest_test_execute")
         result = cursor3.fetchone()
         assert result is not None, "Execute with table creation failed"
         assert result[0] == 1, "Execute with table creation returned wrong id"
-        assert (
-            result[1] == "test_value"
-        ), "Execute with table creation returned wrong value"
+        assert result[1] == "test_value", "Execute with table creation returned wrong value"
 
         # Clean up
         db_connection.execute("DROP TABLE #pytest_test_execute")
@@ -4880,9 +4591,7 @@ def test_connection_execute_error_handling(db_connection):
 
 def test_connection_execute_empty_result(db_connection):
     """Test execute() with a query that returns no rows"""
-    cursor = db_connection.execute(
-        "SELECT * FROM sys.tables WHERE name = 'nonexistent_table_name'"
-    )
+    cursor = db_connection.execute("SELECT * FROM sys.tables WHERE name = 'nonexistent_table_name'")
     result = cursor.fetchone()
     assert result is None, "Query should return no results"
 
@@ -5251,9 +4960,7 @@ def test_multiple_output_converters(db_connection):
 
 def test_timeout_default(db_connection):
     """Test that the default timeout value is 0 (no timeout)"""
-    assert hasattr(
-        db_connection, "timeout"
-    ), "Connection should have a timeout attribute"
+    assert hasattr(db_connection, "timeout"), "Connection should have a timeout attribute"
     assert db_connection.timeout == 0, "Default timeout should be 0"
 
 
@@ -5319,7 +5026,7 @@ def test_timeout_long_query(db_connection):
         start_time = time.perf_counter()
         max_retries = 3
         retry_count = 0
-        
+
         try:
             # Method 1: CPU-intensive query with REPLICATE and large result set
             cpu_intensive_query = """
@@ -5363,13 +5070,18 @@ def test_timeout_long_query(db_connection):
                             break  # Success, exit retry loop
                         except Exception as retry_e:
                             from mssql_python.exceptions import DataError
-                            if isinstance(retry_e, DataError) and "overflow" in str(retry_e).lower():
+
+                            if (
+                                isinstance(retry_e, DataError)
+                                and "overflow" in str(retry_e).lower()
+                            ):
                                 retry_count += 1
                                 if retry_count >= max_retries:
                                     # After max retries with overflow, skip this method
                                     break
                                 # Wait a bit and retry
                                 import time as time_module
+
                                 time_module.sleep(0.1)
                             else:
                                 # Not an overflow error, re-raise to be handled by outer exception handler
@@ -5381,10 +5093,11 @@ def test_timeout_long_query(db_connection):
 
         except Exception as e:
             from mssql_python.exceptions import DataError
+
             # Check if this is a DataError with overflow (flaky test condition)
             if isinstance(e, DataError) and "overflow" in str(e).lower():
                 pytest.skip(f"Skipping timeout test due to arithmetic overflow in test query: {e}")
-            
+
             # Verify this is a timeout exception
             elapsed_time = time.perf_counter() - start_time
             assert elapsed_time < 4.5, "Exception occurred but after expected timeout"
@@ -5500,34 +5213,22 @@ def test_getinfo_numeric_limits(db_connection):
 
     try:
         # Max column name length - should be a positive integer
-        max_col_name_len = db_connection.getinfo(
-            sql_const.SQL_MAX_COLUMN_NAME_LEN.value
-        )
-        assert isinstance(
-            max_col_name_len, int
-        ), "Max column name length should be an integer"
+        max_col_name_len = db_connection.getinfo(sql_const.SQL_MAX_COLUMN_NAME_LEN.value)
+        assert isinstance(max_col_name_len, int), "Max column name length should be an integer"
         assert max_col_name_len >= 0, "Max column name length should be non-negative"
 
         # Max table name length
-        max_table_name_len = db_connection.getinfo(
-            sql_const.SQL_MAX_TABLE_NAME_LEN.value
-        )
-        assert isinstance(
-            max_table_name_len, int
-        ), "Max table name length should be an integer"
+        max_table_name_len = db_connection.getinfo(sql_const.SQL_MAX_TABLE_NAME_LEN.value)
+        assert isinstance(max_table_name_len, int), "Max table name length should be an integer"
         assert max_table_name_len >= 0, "Max table name length should be non-negative"
 
         # Max statement length - may return 0 for "unlimited"
         max_statement_len = db_connection.getinfo(sql_const.SQL_MAX_STATEMENT_LEN.value)
-        assert isinstance(
-            max_statement_len, int
-        ), "Max statement length should be an integer"
+        assert isinstance(max_statement_len, int), "Max statement length should be an integer"
         assert max_statement_len >= 0, "Max statement length should be non-negative"
 
         # Max connections - may return 0 for "unlimited"
-        max_connections = db_connection.getinfo(
-            sql_const.SQL_MAX_DRIVER_CONNECTIONS.value
-        )
+        max_connections = db_connection.getinfo(sql_const.SQL_MAX_DRIVER_CONNECTIONS.value)
         assert isinstance(max_connections, int), "Max connections should be an integer"
         assert max_connections >= 0, "Max connections should be non-negative"
 
@@ -5545,9 +5246,7 @@ def test_getinfo_catalog_support(db_connection):
         assert catalog_term is not None, "Catalog term should not be None"
 
         # Catalog name separator
-        catalog_separator = db_connection.getinfo(
-            sql_const.SQL_CATALOG_NAME_SEPARATOR.value
-        )
+        catalog_separator = db_connection.getinfo(sql_const.SQL_CATALOG_NAME_SEPARATOR.value)
         print(f"Catalog name separator: '{catalog_separator}'")
         assert catalog_separator is not None, "Catalog separator should not be None"
 
@@ -5575,20 +5274,14 @@ def test_getinfo_transaction_support(db_connection):
         assert txn_capable is not None, "Transaction capability should not be None"
 
         # Default transaction isolation
-        default_txn_isolation = db_connection.getinfo(
-            sql_const.SQL_DEFAULT_TXN_ISOLATION.value
-        )
+        default_txn_isolation = db_connection.getinfo(sql_const.SQL_DEFAULT_TXN_ISOLATION.value)
         print("Default Transaction isolation = ", default_txn_isolation)
-        assert (
-            default_txn_isolation is not None
-        ), "Default transaction isolation should not be None"
+        assert default_txn_isolation is not None, "Default transaction isolation should not be None"
 
         # Multiple active transactions support
         multiple_txn = db_connection.getinfo(sql_const.SQL_MULTIPLE_ACTIVE_TXN.value)
         print("Multiple transaction = ", multiple_txn)
-        assert (
-            multiple_txn is not None
-        ), "Multiple active transactions support should not be None"
+        assert multiple_txn is not None, "Multiple active transactions support should not be None"
 
     except Exception as e:
         pytest.fail(f"getinfo failed for transaction support info: {e}")
@@ -5600,23 +5293,15 @@ def test_getinfo_data_types(db_connection):
     try:
         # Numeric functions
         numeric_functions = db_connection.getinfo(sql_const.SQL_NUMERIC_FUNCTIONS.value)
-        assert isinstance(
-            numeric_functions, int
-        ), "Numeric functions should be an integer"
+        assert isinstance(numeric_functions, int), "Numeric functions should be an integer"
 
         # String functions
         string_functions = db_connection.getinfo(sql_const.SQL_STRING_FUNCTIONS.value)
-        assert isinstance(
-            string_functions, int
-        ), "String functions should be an integer"
+        assert isinstance(string_functions, int), "String functions should be an integer"
 
         # Date/time functions
-        datetime_functions = db_connection.getinfo(
-            sql_const.SQL_DATETIME_FUNCTIONS.value
-        )
-        assert isinstance(
-            datetime_functions, int
-        ), "Datetime functions should be an integer"
+        datetime_functions = db_connection.getinfo(sql_const.SQL_DATETIME_FUNCTIONS.value)
+        assert isinstance(datetime_functions, int), "Datetime functions should be an integer"
 
     except Exception as e:
         pytest.fail(f"getinfo failed for data type support info: {e}")
@@ -5635,9 +5320,7 @@ def test_getinfo_invalid_info_type(db_connection):
     # Test with a negative info_type number
     negative_type = -1  # Negative values are invalid for info types
     result = db_connection.getinfo(negative_type)
-    assert (
-        result is None
-    ), f"getinfo should return None for negative info type {negative_type}"
+    assert result is None, f"getinfo should return None for negative info type {negative_type}"
 
     # Test with non-integer info_type
     with pytest.raises(Exception):
@@ -5665,9 +5348,7 @@ def test_getinfo_type_consistency(db_connection):
         result2 = db_connection.getinfo(info_type)
 
         # Results should be consistent in type and value
-        assert type(result1) == type(
-            result2
-        ), f"Type inconsistency for info type {info_type}"
+        assert type(result1) == type(result2), f"Type inconsistency for info type {info_type}"
         assert result1 == result2, f"Value inconsistency for info type {info_type}"
 
 
@@ -5696,9 +5377,7 @@ def test_getinfo_standard_types(db_connection):
 
             # Check type, allowing empty strings for string types
             if expected_type == str:
-                assert isinstance(
-                    info_value, str
-                ), f"Info type {info_type} should return a string"
+                assert isinstance(info_value, str), f"Info type {info_type} should return a string"
             elif expected_type == int:
                 assert isinstance(
                     info_value, int
@@ -5714,37 +5393,25 @@ def test_getinfo_numeric_limits(db_connection):
 
     try:
         # Max column name length - should be an integer
-        max_col_name_len = db_connection.getinfo(
-            sql_const.SQL_MAX_COLUMN_NAME_LEN.value
-        )
-        assert isinstance(
-            max_col_name_len, int
-        ), "Max column name length should be an integer"
+        max_col_name_len = db_connection.getinfo(sql_const.SQL_MAX_COLUMN_NAME_LEN.value)
+        assert isinstance(max_col_name_len, int), "Max column name length should be an integer"
         assert max_col_name_len >= 0, "Max column name length should be non-negative"
         print(f"Max column name length: {max_col_name_len}")
 
         # Max table name length
-        max_table_name_len = db_connection.getinfo(
-            sql_const.SQL_MAX_TABLE_NAME_LEN.value
-        )
-        assert isinstance(
-            max_table_name_len, int
-        ), "Max table name length should be an integer"
+        max_table_name_len = db_connection.getinfo(sql_const.SQL_MAX_TABLE_NAME_LEN.value)
+        assert isinstance(max_table_name_len, int), "Max table name length should be an integer"
         assert max_table_name_len >= 0, "Max table name length should be non-negative"
         print(f"Max table name length: {max_table_name_len}")
 
         # Max statement length - may return 0 for "unlimited"
         max_statement_len = db_connection.getinfo(sql_const.SQL_MAX_STATEMENT_LEN.value)
-        assert isinstance(
-            max_statement_len, int
-        ), "Max statement length should be an integer"
+        assert isinstance(max_statement_len, int), "Max statement length should be an integer"
         assert max_statement_len >= 0, "Max statement length should be non-negative"
         print(f"Max statement length: {max_statement_len}")
 
         # Max connections - may return 0 for "unlimited"
-        max_connections = db_connection.getinfo(
-            sql_const.SQL_MAX_DRIVER_CONNECTIONS.value
-        )
+        max_connections = db_connection.getinfo(sql_const.SQL_MAX_DRIVER_CONNECTIONS.value)
         assert isinstance(max_connections, int), "Max connections should be an integer"
         assert max_connections >= 0, "Max connections should be non-negative"
         print(f"Max connections: {max_connections}")
@@ -5759,25 +5426,17 @@ def test_getinfo_data_types(db_connection):
     try:
         # Numeric functions - should return an integer (bit mask)
         numeric_functions = db_connection.getinfo(sql_const.SQL_NUMERIC_FUNCTIONS.value)
-        assert isinstance(
-            numeric_functions, int
-        ), "Numeric functions should be an integer"
+        assert isinstance(numeric_functions, int), "Numeric functions should be an integer"
         print(f"Numeric functions: {numeric_functions}")
 
         # String functions - should return an integer (bit mask)
         string_functions = db_connection.getinfo(sql_const.SQL_STRING_FUNCTIONS.value)
-        assert isinstance(
-            string_functions, int
-        ), "String functions should be an integer"
+        assert isinstance(string_functions, int), "String functions should be an integer"
         print(f"String functions: {string_functions}")
 
         # Date/time functions - should return an integer (bit mask)
-        datetime_functions = db_connection.getinfo(
-            sql_const.SQL_DATETIME_FUNCTIONS.value
-        )
-        assert isinstance(
-            datetime_functions, int
-        ), "Datetime functions should be an integer"
+        datetime_functions = db_connection.getinfo(sql_const.SQL_DATETIME_FUNCTIONS.value)
+        assert isinstance(datetime_functions, int), "Datetime functions should be an integer"
         print(f"Datetime functions: {datetime_functions}")
 
     except Exception as e:
@@ -5806,9 +5465,7 @@ def test_getinfo_zero_length_return(db_connection):
     # Test with SQL_SPECIAL_CHARACTERS (might return empty in some drivers)
     special_chars = db_connection.getinfo(sql_const.SQL_SPECIAL_CHARACTERS.value)
     # Should be a string (potentially empty)
-    assert isinstance(
-        special_chars, str
-    ), "Special characters should be returned as a string"
+    assert isinstance(special_chars, str), "Special characters should be returned as a string"
     print(f"Special characters: '{special_chars}'")
 
     # Test with a potentially invalid info type (try/except pattern)
@@ -5924,9 +5581,7 @@ def test_connection_searchescape_with_percent(db_connection):
             len(results) == 1
         ), f"Escaped LIKE query for % matched {len(results)} rows instead of 1"
         if results:
-            assert (
-                "abc%def" in results[0][1]
-            ), "Escaped LIKE query did not match correct row"
+            assert "abc%def" in results[0][1], "Escaped LIKE query did not match correct row"
 
     except Exception as e:
         print(f"Note: LIKE escape test with % failed: {e}")
@@ -5946,16 +5601,12 @@ def test_connection_searchescape_with_underscore(db_connection):
     cursor = db_connection.cursor()
     try:
         # Create a temporary table with data containing _ character
-        cursor.execute(
-            "CREATE TABLE #test_escape_underscore (id INT, text VARCHAR(50))"
-        )
+        cursor.execute("CREATE TABLE #test_escape_underscore (id INT, text VARCHAR(50))")
         cursor.execute("INSERT INTO #test_escape_underscore VALUES (1, 'abc_def')")
         cursor.execute(
             "INSERT INTO #test_escape_underscore VALUES (2, 'abcXdef')"
         )  # 'X' could match '_'
-        cursor.execute(
-            "INSERT INTO #test_escape_underscore VALUES (3, 'abcdef')"
-        )  # No match
+        cursor.execute("INSERT INTO #test_escape_underscore VALUES (3, 'abcdef')")  # No match
 
         # Use the escape character to find the exact _ character
         query = f"SELECT * FROM #test_escape_underscore WHERE text LIKE 'abc{escape_char}_def' ESCAPE '{escape_char}'"
@@ -5967,9 +5618,7 @@ def test_connection_searchescape_with_underscore(db_connection):
             len(results) == 1
         ), f"Escaped LIKE query for _ matched {len(results)} rows instead of 1"
         if results:
-            assert (
-                "abc_def" in results[0][1]
-            ), "Escaped LIKE query did not match correct row"
+            assert "abc_def" in results[0][1], "Escaped LIKE query did not match correct row"
 
     except Exception as e:
         print(f"Note: LIKE escape test with _ failed: {e}")
@@ -6042,9 +5691,7 @@ def test_connection_searchescape_multiple_escapes(db_connection):
             len(results) <= 1
         ), f"Multiple escapes query matched {len(results)} rows instead of at most 1"
         if len(results) == 1:
-            assert (
-                "abc%def_ghi" in results[0][1]
-            ), "Multiple escapes query matched incorrect row"
+            assert "abc%def_ghi" in results[0][1], "Multiple escapes query matched incorrect row"
 
     except Exception as e:
         print(f"Note: Multiple escapes test failed: {e}")
@@ -6069,9 +5716,7 @@ def test_connection_searchescape_consistency(db_connection):
         try:
             new_conn = connect(conn_str)
             new_escape = new_conn.searchescape
-            assert (
-                new_escape == escape1
-            ), "Searchescape should be consistent across connections"
+            assert new_escape == escape1, "Searchescape should be consistent across connections"
             new_conn.close()
         except Exception as e:
             print(f"Note: New connection comparison failed: {e}")
@@ -6136,17 +5781,13 @@ def test_setencoding_none_parameters(db_connection):
     # Test with encoding=None (should use default)
     db_connection.setencoding(encoding=None)
     settings = db_connection.getencoding()
-    assert (
-        settings["encoding"] == "utf-16le"
-    ), "encoding=None should use default utf-16le"
+    assert settings["encoding"] == "utf-16le", "encoding=None should use default utf-16le"
     assert settings["ctype"] == -8, "ctype should be SQL_WCHAR for utf-16le"
 
     # Test with both None (should use defaults)
     db_connection.setencoding(encoding=None, ctype=None)
     settings = db_connection.getencoding()
-    assert (
-        settings["encoding"] == "utf-16le"
-    ), "encoding=None should use default utf-16le"
+    assert settings["encoding"] == "utf-16le", "encoding=None should use default utf-16le"
     assert settings["ctype"] == -8, "ctype=None should use default SQL_WCHAR"
 
 
@@ -6170,12 +5811,8 @@ def test_setencoding_invalid_ctype(db_connection):
     with pytest.raises(ProgrammingError) as exc_info:
         db_connection.setencoding(encoding="utf-8", ctype=999)
 
-    assert "Invalid ctype" in str(
-        exc_info.value
-    ), "Should raise ProgrammingError for invalid ctype"
-    assert "999" in str(
-        exc_info.value
-    ), "Error message should include the invalid ctype value"
+    assert "Invalid ctype" in str(exc_info.value), "Should raise ProgrammingError for invalid ctype"
+    assert "999" in str(exc_info.value), "Error message should include the invalid ctype value"
 
 
 def test_setencoding_closed_connection(conn_str):
@@ -6213,9 +5850,7 @@ def test_setencoding_with_constants(db_connection):
     # Test with SQL_WCHAR constant
     db_connection.setencoding(encoding="utf-16le", ctype=mssql_python.SQL_WCHAR)
     settings = db_connection.getencoding()
-    assert (
-        settings["ctype"] == mssql_python.SQL_WCHAR
-    ), "Should accept SQL_WCHAR constant"
+    assert settings["ctype"] == mssql_python.SQL_WCHAR, "Should accept SQL_WCHAR constant"
 
 
 def test_setencoding_common_encodings(db_connection):
@@ -6234,9 +5869,7 @@ def test_setencoding_common_encodings(db_connection):
         try:
             db_connection.setencoding(encoding=encoding)
             settings = db_connection.getencoding()
-            assert (
-                settings["encoding"] == encoding
-            ), f"Failed to set encoding {encoding}"
+            assert settings["encoding"] == encoding, f"Failed to set encoding {encoding}"
         except Exception as e:
             pytest.fail(f"Failed to set valid encoding {encoding}: {e}")
 
@@ -6253,9 +5886,7 @@ def test_setencoding_persistence_across_cursors(db_connection):
     cursor2 = db_connection.cursor()
     settings2 = db_connection.getencoding()
 
-    assert (
-        settings1 == settings2
-    ), "Encoding settings should persist across cursor creation"
+    assert settings1 == settings2, "Encoding settings should persist across cursor creation"
     assert settings1["encoding"] == "utf-8", "Encoding should remain utf-8"
     assert settings1["ctype"] == 1, "ctype should remain SQL_CHAR"
 
@@ -6285,9 +5916,7 @@ def test_setencoding_with_unicode_data(db_connection):
 
         for test_string in test_strings:
             # Insert data
-            cursor.execute(
-                "INSERT INTO #test_encoding_unicode (text_col) VALUES (?)", test_string
-            )
+            cursor.execute("INSERT INTO #test_encoding_unicode (text_col) VALUES (?)", test_string)
 
             # Retrieve and verify
             cursor.execute(
@@ -6296,9 +5925,7 @@ def test_setencoding_with_unicode_data(db_connection):
             )
             result = cursor.fetchone()
 
-            assert (
-                result is not None
-            ), f"Failed to retrieve Unicode string: {test_string}"
+            assert result is not None, f"Failed to retrieve Unicode string: {test_string}"
             assert (
                 result[0] == test_string
             ), f"Unicode string mismatch: expected {test_string}, got {result[0]}"
@@ -6332,16 +5959,12 @@ def test_setencoding_before_and_after_operations(db_connection):
         # Change encoding after operation
         db_connection.setencoding(encoding="utf-8")
         settings = db_connection.getencoding()
-        assert (
-            settings["encoding"] == "utf-8"
-        ), "Failed to change encoding after operation"
+        assert settings["encoding"] == "utf-8", "Failed to change encoding after operation"
 
         # Perform another operation with new encoding
         cursor.execute("SELECT 'Changed encoding test' as message")
         result2 = cursor.fetchone()
-        assert (
-            result2[0] == "Changed encoding test"
-        ), "Operation after encoding change failed"
+        assert result2[0] == "Changed encoding test", "Operation after encoding change failed"
 
     except Exception as e:
         pytest.fail(f"Encoding change test failed: {e}")
@@ -6558,9 +6181,7 @@ def test_setdecoding_default_settings(db_connection):
 
     # Check SQL_CHAR defaults
     sql_char_settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert (
-        sql_char_settings["encoding"] == "utf-8"
-    ), "Default SQL_CHAR encoding should be utf-8"
+    assert sql_char_settings["encoding"] == "utf-8", "Default SQL_CHAR encoding should be utf-8"
     assert (
         sql_char_settings["ctype"] == mssql_python.SQL_CHAR
     ), "Default SQL_CHAR ctype should be SQL_CHAR"
@@ -6590,9 +6211,7 @@ def test_setdecoding_basic_functionality(db_connection):
     # Test setting SQL_CHAR decoding
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="latin-1")
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert (
-        settings["encoding"] == "latin-1"
-    ), "SQL_CHAR encoding should be set to latin-1"
+    assert settings["encoding"] == "latin-1", "SQL_CHAR encoding should be set to latin-1"
     assert (
         settings["ctype"] == mssql_python.SQL_CHAR
     ), "SQL_CHAR ctype should default to SQL_CHAR for latin-1"
@@ -6600,9 +6219,7 @@ def test_setdecoding_basic_functionality(db_connection):
     # Test setting SQL_WCHAR decoding
     db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding="utf-16be")
     settings = db_connection.getdecoding(mssql_python.SQL_WCHAR)
-    assert (
-        settings["encoding"] == "utf-16be"
-    ), "SQL_WCHAR encoding should be set to utf-16be"
+    assert settings["encoding"] == "utf-16be", "SQL_WCHAR encoding should be set to utf-16be"
     assert (
         settings["ctype"] == mssql_python.SQL_WCHAR
     ), "SQL_WCHAR ctype should default to SQL_WCHAR for utf-16be"
@@ -6610,9 +6227,7 @@ def test_setdecoding_basic_functionality(db_connection):
     # Test setting SQL_WMETADATA decoding
     db_connection.setdecoding(mssql_python.SQL_WMETADATA, encoding="utf-16le")
     settings = db_connection.getdecoding(mssql_python.SQL_WMETADATA)
-    assert (
-        settings["encoding"] == "utf-16le"
-    ), "SQL_WMETADATA encoding should be set to utf-16le"
+    assert settings["encoding"] == "utf-16le", "SQL_WMETADATA encoding should be set to utf-16le"
     assert (
         settings["ctype"] == mssql_python.SQL_WCHAR
     ), "SQL_WMETADATA ctype should default to SQL_WCHAR"
@@ -6644,9 +6259,7 @@ def test_setdecoding_explicit_ctype_override(db_connection):
     """Test that explicit ctype parameter overrides automatic detection."""
 
     # Set SQL_CHAR with UTF-8 encoding but explicit SQL_WCHAR ctype
-    db_connection.setdecoding(
-        mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_WCHAR
-    )
+    db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_WCHAR)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
     assert settings["encoding"] == "utf-8", "Encoding should be utf-8"
     assert (
@@ -6670,12 +6283,8 @@ def test_setdecoding_none_parameters(db_connection):
     # Test SQL_CHAR with encoding=None (should use utf-8 default)
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding=None)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert (
-        settings["encoding"] == "utf-8"
-    ), "SQL_CHAR with encoding=None should use utf-8 default"
-    assert (
-        settings["ctype"] == mssql_python.SQL_CHAR
-    ), "ctype should be SQL_CHAR for utf-8"
+    assert settings["encoding"] == "utf-8", "SQL_CHAR with encoding=None should use utf-8 default"
+    assert settings["ctype"] == mssql_python.SQL_CHAR, "ctype should be SQL_CHAR for utf-8"
 
     # Test SQL_WCHAR with encoding=None (should use utf-16le default)
     db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding=None)
@@ -6683,19 +6292,13 @@ def test_setdecoding_none_parameters(db_connection):
     assert (
         settings["encoding"] == "utf-16le"
     ), "SQL_WCHAR with encoding=None should use utf-16le default"
-    assert (
-        settings["ctype"] == mssql_python.SQL_WCHAR
-    ), "ctype should be SQL_WCHAR for utf-16le"
+    assert settings["ctype"] == mssql_python.SQL_WCHAR, "ctype should be SQL_WCHAR for utf-16le"
 
     # Test with both parameters None
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding=None, ctype=None)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-    assert (
-        settings["encoding"] == "utf-8"
-    ), "SQL_CHAR with both None should use utf-8 default"
-    assert (
-        settings["ctype"] == mssql_python.SQL_CHAR
-    ), "ctype should default to SQL_CHAR"
+    assert settings["encoding"] == "utf-8", "SQL_CHAR with both None should use utf-8 default"
+    assert settings["ctype"] == mssql_python.SQL_CHAR, "ctype should default to SQL_CHAR"
 
 
 def test_setdecoding_invalid_sqltype(db_connection):
@@ -6707,18 +6310,14 @@ def test_setdecoding_invalid_sqltype(db_connection):
     assert "Invalid sqltype" in str(
         exc_info.value
     ), "Should raise ProgrammingError for invalid sqltype"
-    assert "999" in str(
-        exc_info.value
-    ), "Error message should include the invalid sqltype value"
+    assert "999" in str(exc_info.value), "Error message should include the invalid sqltype value"
 
 
 def test_setdecoding_invalid_encoding(db_connection):
     """Test setdecoding with invalid encoding raises ProgrammingError."""
 
     with pytest.raises(ProgrammingError) as exc_info:
-        db_connection.setdecoding(
-            mssql_python.SQL_CHAR, encoding="invalid-encoding-name"
-        )
+        db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="invalid-encoding-name")
 
     assert "Unsupported encoding" in str(
         exc_info.value
@@ -6734,12 +6333,8 @@ def test_setdecoding_invalid_ctype(db_connection):
     with pytest.raises(ProgrammingError) as exc_info:
         db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8", ctype=999)
 
-    assert "Invalid ctype" in str(
-        exc_info.value
-    ), "Should raise ProgrammingError for invalid ctype"
-    assert "999" in str(
-        exc_info.value
-    ), "Error message should include the invalid ctype value"
+    assert "Invalid ctype" in str(exc_info.value), "Should raise ProgrammingError for invalid ctype"
+    assert "999" in str(exc_info.value), "Error message should include the invalid ctype value"
 
 
 def test_setdecoding_closed_connection(conn_str):
@@ -6762,9 +6357,7 @@ def test_setdecoding_constants_access():
     # Test constants exist and have correct values
     assert hasattr(mssql_python, "SQL_CHAR"), "SQL_CHAR constant should be available"
     assert hasattr(mssql_python, "SQL_WCHAR"), "SQL_WCHAR constant should be available"
-    assert hasattr(
-        mssql_python, "SQL_WMETADATA"
-    ), "SQL_WMETADATA constant should be available"
+    assert hasattr(mssql_python, "SQL_WMETADATA"), "SQL_WMETADATA constant should be available"
 
     assert mssql_python.SQL_CHAR == 1, "SQL_CHAR should have value 1"
     assert mssql_python.SQL_WCHAR == -8, "SQL_WCHAR should have value -8"
@@ -6775,9 +6368,7 @@ def test_setdecoding_with_constants(db_connection):
     """Test setdecoding using module constants."""
 
     # Test with SQL_CHAR constant
-    db_connection.setdecoding(
-        mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_CHAR
-    )
+    db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8", ctype=mssql_python.SQL_CHAR)
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
     assert settings["ctype"] == mssql_python.SQL_CHAR, "Should accept SQL_CHAR constant"
 
@@ -6786,9 +6377,7 @@ def test_setdecoding_with_constants(db_connection):
         mssql_python.SQL_WCHAR, encoding="utf-16le", ctype=mssql_python.SQL_WCHAR
     )
     settings = db_connection.getdecoding(mssql_python.SQL_WCHAR)
-    assert (
-        settings["ctype"] == mssql_python.SQL_WCHAR
-    ), "Should accept SQL_WCHAR constant"
+    assert settings["ctype"] == mssql_python.SQL_WCHAR, "Should accept SQL_WCHAR constant"
 
     # Test with SQL_WMETADATA constant
     db_connection.setdecoding(mssql_python.SQL_WMETADATA, encoding="utf-16be")
@@ -6836,9 +6425,7 @@ def test_setdecoding_case_insensitive_encoding(db_connection):
 
     db_connection.setdecoding(mssql_python.SQL_WCHAR, encoding="Utf-16LE")
     settings = db_connection.getdecoding(mssql_python.SQL_WCHAR)
-    assert (
-        settings["encoding"] == "utf-16le"
-    ), "Encoding should be normalized to lowercase"
+    assert settings["encoding"] == "utf-16le", "Encoding should be normalized to lowercase"
 
 
 def test_setdecoding_independent_sql_types(db_connection):
@@ -6855,9 +6442,7 @@ def test_setdecoding_independent_sql_types(db_connection):
     sql_wmetadata_settings = db_connection.getdecoding(mssql_python.SQL_WMETADATA)
 
     assert sql_char_settings["encoding"] == "utf-8", "SQL_CHAR should maintain utf-8"
-    assert (
-        sql_wchar_settings["encoding"] == "utf-16le"
-    ), "SQL_WCHAR should maintain utf-16le"
+    assert sql_wchar_settings["encoding"] == "utf-16le", "SQL_WCHAR should maintain utf-16le"
     assert (
         sql_wmetadata_settings["encoding"] == "utf-16be"
     ), "SQL_WMETADATA should maintain utf-16be"
@@ -6870,9 +6455,7 @@ def test_setdecoding_override_previous(db_connection):
     db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="utf-8")
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
     assert settings["encoding"] == "utf-8", "Initial encoding should be utf-8"
-    assert (
-        settings["ctype"] == mssql_python.SQL_CHAR
-    ), "Initial ctype should be SQL_CHAR"
+    assert settings["ctype"] == mssql_python.SQL_CHAR, "Initial ctype should be SQL_CHAR"
 
     # Override with different settings
     db_connection.setdecoding(
@@ -6880,9 +6463,7 @@ def test_setdecoding_override_previous(db_connection):
     )
     settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
     assert settings["encoding"] == "latin-1", "Encoding should be overridden to latin-1"
-    assert (
-        settings["ctype"] == mssql_python.SQL_WCHAR
-    ), "ctype should be overridden to SQL_WCHAR"
+    assert settings["ctype"] == mssql_python.SQL_WCHAR, "ctype should be overridden to SQL_WCHAR"
 
 
 def test_getdecoding_invalid_sqltype(db_connection):
@@ -6894,9 +6475,7 @@ def test_getdecoding_invalid_sqltype(db_connection):
     assert "Invalid sqltype" in str(
         exc_info.value
     ), "Should raise ProgrammingError for invalid sqltype"
-    assert "999" in str(
-        exc_info.value
-    ), "Error message should include the invalid sqltype value"
+    assert "999" in str(exc_info.value), "Error message should include the invalid sqltype value"
 
 
 def test_getdecoding_closed_connection(conn_str):
@@ -6929,9 +6508,7 @@ def test_getdecoding_returns_copy(db_connection):
 
     # Modifying one shouldn't affect the other
     settings1["encoding"] = "modified"
-    assert (
-        settings2["encoding"] != "modified"
-    ), "Modification should not affect other copy"
+    assert settings2["encoding"] != "modified", "Modification should not affect other copy"
 
 
 def test_setdecoding_getdecoding_consistency(db_connection):
@@ -6948,9 +6525,7 @@ def test_setdecoding_getdecoding_consistency(db_connection):
     for sqltype, encoding, expected_ctype in test_cases:
         db_connection.setdecoding(sqltype, encoding=encoding)
         settings = db_connection.getdecoding(sqltype)
-        assert (
-            settings["encoding"] == encoding.lower()
-        ), f"Encoding should be {encoding.lower()}"
+        assert settings["encoding"] == encoding.lower(), f"Encoding should be {encoding.lower()}"
         assert settings["ctype"] == expected_ctype, f"ctype should be {expected_ctype}"
 
 
@@ -6975,19 +6550,11 @@ def test_setdecoding_persistence_across_cursors(db_connection):
     wchar_settings2 = db_connection.getdecoding(mssql_python.SQL_WCHAR)
 
     # Settings should persist across cursor creation
-    assert (
-        char_settings1 == char_settings2
-    ), "SQL_CHAR settings should persist across cursors"
-    assert (
-        wchar_settings1 == wchar_settings2
-    ), "SQL_WCHAR settings should persist across cursors"
+    assert char_settings1 == char_settings2, "SQL_CHAR settings should persist across cursors"
+    assert wchar_settings1 == wchar_settings2, "SQL_WCHAR settings should persist across cursors"
 
-    assert (
-        char_settings1["encoding"] == "latin-1"
-    ), "SQL_CHAR encoding should remain latin-1"
-    assert (
-        wchar_settings1["encoding"] == "utf-16be"
-    ), "SQL_WCHAR encoding should remain utf-16be"
+    assert char_settings1["encoding"] == "latin-1", "SQL_CHAR encoding should remain latin-1"
+    assert wchar_settings1["encoding"] == "utf-16be", "SQL_WCHAR encoding should remain utf-16be"
 
     cursor1.close()
     cursor2.close()
@@ -7009,16 +6576,12 @@ def test_setdecoding_before_and_after_operations(db_connection):
         # Change decoding after operation
         db_connection.setdecoding(mssql_python.SQL_CHAR, encoding="latin-1")
         settings = db_connection.getdecoding(mssql_python.SQL_CHAR)
-        assert (
-            settings["encoding"] == "latin-1"
-        ), "Failed to change decoding after operation"
+        assert settings["encoding"] == "latin-1", "Failed to change decoding after operation"
 
         # Perform another operation with new decoding
         cursor.execute("SELECT 'Changed decoding test' as message")
         result2 = cursor.fetchone()
-        assert (
-            result2[0] == "Changed decoding test"
-        ), "Operation after decoding change failed"
+        assert result2[0] == "Changed decoding test", "Operation after decoding change failed"
 
     except Exception as e:
         pytest.fail(f"Decoding change test failed: {e}")
@@ -7041,12 +6604,8 @@ def test_setdecoding_all_sql_types_independently(conn_str):
         for sqltype, encoding, ctype in test_configs:
             conn.setdecoding(sqltype, encoding=encoding, ctype=ctype)
             settings = conn.getdecoding(sqltype)
-            assert (
-                settings["encoding"] == encoding
-            ), f"Failed to set encoding for sqltype {sqltype}"
-            assert (
-                settings["ctype"] == ctype
-            ), f"Failed to set ctype for sqltype {sqltype}"
+            assert settings["encoding"] == encoding, f"Failed to set encoding for sqltype {sqltype}"
+            assert settings["ctype"] == ctype, f"Failed to set ctype for sqltype {sqltype}"
 
     finally:
         conn.close()
@@ -7111,9 +6670,7 @@ def test_setdecoding_with_unicode_data(db_connection):
             )
             result = cursor.fetchone()
 
-            assert (
-                result is not None
-            ), f"Failed to retrieve Unicode string: {test_string}"
+            assert result is not None, f"Failed to retrieve Unicode string: {test_string}"
             assert (
                 result[0] == test_string
             ), f"CHAR column mismatch: expected {test_string}, got {result[0]}"
@@ -7192,9 +6749,7 @@ def test_set_attr_constants_access():
 
     # Check driver-manager–dependent constants are NOT present
     for const_name in dm_attr_constants + dm_value_constants:
-        assert not hasattr(
-            mssql_python, const_name
-        ), f"{const_name} should NOT be public API"
+        assert not hasattr(mssql_python, const_name), f"{const_name} should NOT be public API"
 
 
 def test_set_attr_basic_functionality(db_connection):
@@ -7249,9 +6804,7 @@ def test_set_attr_invalid_value_type(db_connection):
 
     for invalid_value in invalid_values:
         with pytest.raises(ProgrammingError) as exc_info:
-            db_connection.set_attr(
-                mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, invalid_value
-            )
+            db_connection.set_attr(mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, invalid_value)
 
         assert "Unsupported attribute value type" in str(
             exc_info.value
@@ -7266,9 +6819,7 @@ def test_set_attr_value_out_of_range(db_connection):
 
     for invalid_value in out_of_range_values:
         with pytest.raises(ProgrammingError) as exc_info:
-            db_connection.set_attr(
-                mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, invalid_value
-            )
+            db_connection.set_attr(mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, invalid_value)
 
         assert "Integer value cannot be negative" in str(
             exc_info.value
@@ -7309,9 +6860,7 @@ def test_set_attr_invalid_attribute_id(db_connection):
             or "not supported" in str(e).lower()
         )
     except Exception as e:
-        pytest.fail(
-            f"Unexpected exception type for invalid attribute: {type(e).__name__}: {e}"
-        )
+        pytest.fail(f"Unexpected exception type for invalid attribute: {type(e).__name__}: {e}")
 
 
 def test_set_attr_valid_range_values(db_connection):
@@ -7327,10 +6876,7 @@ def test_set_attr_valid_range_values(db_connection):
             # If we get here, the value was accepted
         except Exception as e:
             # Some values might not be valid for specific attributes
-            if (
-                "invalid" not in str(e).lower()
-                and "not supported" not in str(e).lower()
-            ):
+            if "invalid" not in str(e).lower() and "not supported" not in str(e).lower():
                 pytest.fail(f"Unexpected error for valid value {value}: {e}")
 
 
@@ -7357,9 +6903,7 @@ def test_set_attr_multiple_attributes(db_connection):
                 phrase in error_str
                 for phrase in ["not supported", "failed to set", "invalid", "error"]
             ):
-                pytest.fail(
-                    f"Unexpected error setting attribute {attr_id} to {value}: {e}"
-                )
+                pytest.fail(f"Unexpected error setting attribute {attr_id} to {value}: {e}")
 
     # At least one attribute setting should succeed on most drivers
     if successful_sets == 0:
@@ -7451,10 +6995,7 @@ def test_set_attr_edge_cases(db_connection):
             # Some edge values might not be valid for specific attributes
             if "out of range" in str(e).lower():
                 pytest.fail(f"Edge case value {value} should be in valid range")
-            elif (
-                "not supported" not in str(e).lower()
-                and "invalid" not in str(e).lower()
-            ):
+            elif "not supported" not in str(e).lower() and "invalid" not in str(e).lower():
                 pytest.fail(f"Unexpected error for edge case {attr_id}, {value}: {e}")
 
 
@@ -7485,9 +7026,7 @@ def test_set_attr_txn_isolation_effect(db_connection):
             # Start transaction in first connection
             cursor1 = conn1.cursor()
             cursor1.execute("BEGIN TRANSACTION")
-            cursor1.execute(
-                "UPDATE ##test_isolation SET value = 'updated' WHERE id = 1"
-            )
+            cursor1.execute("UPDATE ##test_isolation SET value = 'updated' WHERE id = 1")
 
             # Try to read from second connection - should be blocked or timeout
             cursor2 = conn2.cursor()
@@ -7520,9 +7059,7 @@ def test_set_attr_txn_isolation_effect(db_connection):
             # Start transaction in first connection
             cursor1 = conn1.cursor()
             cursor1.execute("BEGIN TRANSACTION")
-            cursor1.execute(
-                "UPDATE ##test_isolation SET value = 'dirty read' WHERE id = 1"
-            )
+            cursor1.execute("UPDATE ##test_isolation SET value = 'dirty read' WHERE id = 1")
 
             # Try to read from second connection - should succeed with READ UNCOMMITTED
             cursor2 = conn2.cursor()
@@ -7544,9 +7081,7 @@ def test_set_attr_txn_isolation_effect(db_connection):
             if "not supported" not in str(e).lower():
                 pytest.fail(f"Unexpected error in transaction isolation test: {e}")
             else:
-                pytest.skip(
-                    "Transaction isolation level changes not supported by driver"
-                )
+                pytest.skip("Transaction isolation level changes not supported by driver")
 
     finally:
         # Clean up
@@ -7577,24 +7112,16 @@ def test_set_attr_connection_timeout_effect(db_connection):
                 end_time = time.time()
                 elapsed = end_time - start_time
                 if elapsed >= 4.5:
-                    pytest.skip(
-                        "Connection timeout attribute not effective with this driver"
-                    )
+                    pytest.skip("Connection timeout attribute not effective with this driver")
             except Exception as exc:
                 # If we got an exception, check if it's a timeout-related exception
                 error_msg = str(exc).lower()
-                if (
-                    "timeout" in error_msg
-                    or "timed out" in error_msg
-                    or "canceled" in error_msg
-                ):
+                if "timeout" in error_msg or "timed out" in error_msg or "canceled" in error_msg:
                     # This is the expected behavior if timeout works
                     assert True
                 else:
                     # It's some other error, not a timeout
-                    pytest.skip(
-                        f"Connection timeout test encountered non-timeout error: {exc}"
-                    )
+                    pytest.skip(f"Connection timeout test encountered non-timeout error: {exc}")
 
         except Exception as e:
             if "not supported" not in str(e).lower():
@@ -7666,15 +7193,11 @@ def test_set_attr_packet_size_effect(conn_str):
 
         # Create a temp table with a large string column
         drop_table_if_exists(cursor, "##test_packet_size")
-        cursor.execute(
-            "CREATE TABLE ##test_packet_size (id INT, large_data NVARCHAR(MAX))"
-        )
+        cursor.execute("CREATE TABLE ##test_packet_size (id INT, large_data NVARCHAR(MAX))")
 
         # Insert a very large string
         large_string = "X" * (packet_size // 2)  # Unicode chars take 2 bytes each
-        cursor.execute(
-            "INSERT INTO ##test_packet_size VALUES (?, ?)", (1, large_string)
-        )
+        cursor.execute("INSERT INTO ##test_packet_size VALUES (?, ?)", (1, large_string))
         conn.commit()
 
         # Fetch the large string
@@ -7706,9 +7229,7 @@ def test_set_attr_current_catalog_effect(db_connection, conn_str):
         original_db = cursor.fetchone()[0]
 
         # Get list of other databases
-        cursor.execute(
-            "SELECT name FROM sys.databases WHERE database_id > 4 AND name != DB_NAME()"
-        )
+        cursor.execute("SELECT name FROM sys.databases WHERE database_id > 4 AND name != DB_NAME()")
         rows = cursor.fetchall()
         if not rows:
             pytest.skip("No other user databases available for testing")
@@ -7723,9 +7244,7 @@ def test_set_attr_current_catalog_effect(db_connection, conn_str):
             cursor.execute("SELECT DB_NAME()")
             new_db = cursor.fetchone()[0]
 
-            assert (
-                new_db == other_db
-            ), f"Database should have changed to {other_db} but is {new_db}"
+            assert new_db == other_db, f"Database should have changed to {other_db} but is {new_db}"
 
             # Switch back
             db_connection.set_attr(mssql_python.SQL_ATTR_CURRENT_CATALOG, original_db)
@@ -7772,9 +7291,7 @@ def test_attrs_before_packet_size(conn_str):
     """Test setting packet size before connection via attrs_before."""
     # Use a valid packet size value
     packet_size = 8192  # 8KB packet size
-    conn = connect(
-        conn_str, attrs_before={ConstantsDDBC.SQL_ATTR_PACKET_SIZE.value: packet_size}
-    )
+    conn = connect(conn_str, attrs_before={ConstantsDDBC.SQL_ATTR_PACKET_SIZE.value: packet_size})
 
     # Verify connection was successful
     cursor = conn.cursor()
@@ -7820,11 +7337,14 @@ def test_set_attr_access_mode_after_connect(db_connection):
     result = cursor.fetchall()
     assert result[0][0] == 1
 
+
 def test_set_attr_current_catalog_after_connect(db_connection, conn_str):
     """Test setting current catalog after connection via set_attr."""
     # Skip this test for Azure SQL Database - it doesn't support changing database after connection
     if is_azure_sql_connection(conn_str):
-        pytest.skip("Skipping for Azure SQL - SQL_ATTR_CURRENT_CATALOG not supported after connection")
+        pytest.skip(
+            "Skipping for Azure SQL - SQL_ATTR_CURRENT_CATALOG not supported after connection"
+        )
     # Get current database name
     cursor = db_connection.cursor()
     cursor.execute("SELECT DB_NAME()")
@@ -7872,9 +7392,7 @@ def test_set_attr_before_only_attributes_error(db_connection):
 def test_attrs_before_after_only_attributes(conn_str):
     """Test that setting after-only attributes before connection is ignored."""
     # Try to set connection dead before connection (should be ignored)
-    conn = connect(
-        conn_str, attrs_before={ConstantsDDBC.SQL_ATTR_CONNECTION_DEAD.value: 0}
-    )
+    conn = connect(conn_str, attrs_before={ConstantsDDBC.SQL_ATTR_CONNECTION_DEAD.value: 0})
 
     # Verify connection was successful
     cursor = conn.cursor()
@@ -7929,9 +7447,7 @@ def test_set_attr_programming_error_exception_path_no_mock(db_connection):
     # but not contain 'invalid', 'unsupported', or 'cast' keywords
     try:
         # Use a valid attribute but with extreme values that might cause driver errors
-        db_connection.set_attr(
-            mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, 2147483647
-        )  # Max int32
+        db_connection.set_attr(mssql_python.SQL_ATTR_CONNECTION_TIMEOUT, 2147483647)  # Max int32
         pass
     except (ProgrammingError, InterfaceError):
         # Either exception type is acceptable for this test
@@ -7961,9 +7477,7 @@ def test_set_attr_with_string_attributes_real():
     try:
         # Test with a string attribute - even if it fails, it will trigger C++ code paths
         # Use SQL_ATTR_CURRENT_CATALOG which accepts string values
-        conn = connect(
-            conn_str_base, attrs_before={1006: "tempdb"}
-        )  # SQL_ATTR_CURRENT_CATALOG
+        conn = connect(conn_str_base, attrs_before={1006: "tempdb"})  # SQL_ATTR_CURRENT_CATALOG
         conn.close()
     except Exception:
         # Expected to potentially fail, but should trigger C++ string paths
@@ -7980,9 +7494,7 @@ def test_set_attr_with_binary_attributes_real():
         # Test with binary data - this will likely fail but trigger C++ binary handling
         binary_value = b"test_binary_data_for_coverage"
         # Use an attribute that might accept binary data
-        conn = connect(
-            conn_str_base, attrs_before={1045: binary_value}
-        )  # Some random attribute
+        conn = connect(conn_str_base, attrs_before={1045: binary_value})  # Some random attribute
         conn.close()
     except Exception:
         # Expected to fail, but should trigger C++ binary paths
@@ -8113,8 +7625,8 @@ def test_validate_attribute_edge_cases():
     ]
 
     for attr, value in edge_cases:
-        is_valid, error_message, sanitized_attr, sanitized_val = (
-            validate_attribute_value(attr, value)
+        is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
+            attr, value
         )
         # Just verify the function completes and returns expected tuple structure
         assert isinstance(is_valid, bool)
@@ -8254,18 +7766,14 @@ def test_searchescape_caching_behavior(db_connection):
     assert escape_char1 == escape_char2, "Cached searchescape should be consistent"
 
     # The property should be cached now
-    assert hasattr(
-        db_connection, "_searchescape"
-    ), "Should cache searchescape after first access"
+    assert hasattr(db_connection, "_searchescape"), "Should cache searchescape after first access"
 
 
 def test_batch_execute_auto_close_behavior(db_connection):
     """Test batch_execute auto_close functionality with valid operations."""
 
     # Test successful execution with auto_close=True
-    results, cursor = db_connection.batch_execute(
-        ["SELECT 1 as test_col"], auto_close=True
-    )
+    results, cursor = db_connection.batch_execute(["SELECT 1 as test_col"], auto_close=True)
 
     # Verify results
     assert len(results) == 1, "Should have one result set"
@@ -8303,9 +7811,7 @@ def test_getinfo_different_return_types(db_connection):
     from mssql_python.constants import GetInfoConstants
 
     # Test Y/N type (should return "Y" or "N")
-    accessible_tables = db_connection.getinfo(
-        GetInfoConstants.SQL_ACCESSIBLE_TABLES.value
-    )
+    accessible_tables = db_connection.getinfo(GetInfoConstants.SQL_ACCESSIBLE_TABLES.value)
     assert accessible_tables in ("Y", "N"), "Accessible tables should be Y or N"
 
     # Test numeric type (should return integer)
@@ -8337,9 +7843,7 @@ def test_connection_cursor_lifecycle_management(conn_str):
         cursor1.close()
 
         # The closed cursor should be removed from tracking
-        assert (
-            cursor1 not in conn._cursors
-        ), "Closed cursor should be removed from tracking"
+        assert cursor1 not in conn._cursors, "Closed cursor should be removed from tracking"
         assert len(conn._cursors) == 1, "Should only track open cursor"
 
         # Connection close should handle remaining cursors
@@ -8371,9 +7875,7 @@ def test_connection_remove_cursor_edge_cases(conn_str):
         conn._remove_cursor(cursor)
 
         # Cursor should no longer be in the set
-        assert (
-            cursor not in conn._cursors
-        ), "Cursor should not be in cursor set after removal"
+        assert cursor not in conn._cursors, "Cursor should not be in cursor set after removal"
 
     finally:
         if not conn._closed:
@@ -8404,9 +7906,7 @@ def test_connection_multiple_cursor_operations(conn_str):
             cursor.close()
 
         # All cursors should be removed from tracking
-        assert (
-            len(conn._cursors) == 0
-        ), "All cursors should be removed after individual close"
+        assert len(conn._cursors) == 0, "All cursors should be removed after individual close"
 
     finally:
         if not conn._closed:
@@ -8430,9 +7930,7 @@ def test_batch_execute_error_handling_with_invalid_sql(db_connection):
     results, cursor = db_connection.batch_execute(
         ["SELECT 'recovery_test' as recovery"], auto_close=True
     )
-    assert (
-        results[0][0][0] == "recovery_test"
-    ), "Connection should be usable after error"
+    assert results[0][0][0] == "recovery_test", "Connection should be usable after error"
     assert cursor.closed, "Cursor should be closed with auto_close=True"
 
 
@@ -8474,9 +7972,7 @@ def test_comprehensive_getinfo_scenarios(db_connection):
                     "N",
                 ), f"Y/N type should return 'Y' or 'N', got {result}"
             elif expected_type == int:
-                assert (
-                    result >= 0
-                ), f"Numeric info type should return non-negative integer"
+                assert result >= 0, f"Numeric info type should return non-negative integer"
 
     # Test boundary cases that might trigger fallback paths
     edge_case_info_types = [999, 9999, 0]  # Various potentially unsupported types
@@ -8528,9 +8024,7 @@ def test_batch_execute_with_existing_cursor_reuse(db_connection):
         )
 
         # Should return the same cursor we passed in
-        assert (
-            returned_cursor is existing_cursor
-        ), "Should return the same cursor when reusing"
+        assert returned_cursor is existing_cursor, "Should return the same cursor when reusing"
         assert not returned_cursor.closed, "Existing cursor should not be auto-closed"
         assert results[0][0][0] == "reuse_test", "Should execute successfully"
 
