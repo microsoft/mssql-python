@@ -4985,8 +4985,8 @@ SQLRETURN FetchArrowBatch_wrap(
     }
 
     auto arrow_schema_batch = new ArrowSchema({
-        .format = strdup("+s"),
-        .name = strdup(""),
+        .format = []{ char* f = new char[3]; std::strcpy(f, "+s"); return f; }(),
+        .name = []{ char* n = new char[1]; n[0] = '\0'; return n; }(),
         .n_children = numCols,
         .children = batch_children,
         .release = ArrowSchema_release,
