@@ -4837,7 +4837,7 @@ SQLRETURN FetchArrowBatch_wrap(
 
                         // Convert GUID to string format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
                         snprintf(reinterpret_cast<char*>(&target_vec->data()[start]), 37,
-                                "%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                                "%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X",
                                 guidValue.Data1,
                                 guidValue.Data2,
                                 guidValue.Data3,

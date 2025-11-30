@@ -15059,6 +15059,7 @@ def get_arrow_test_data(include_lobs: bool, batch_length: int):
         (pa.binary(), "binary(9)", [b"asdfghjkl", None, b"lkjhgfdsa"]),
         (pa.string(), "varchar(100)", ["asdfghjkl", None, "lkjhgfdsa"]),
         (pa.string(), "nvarchar(100)", ["asdfghjkl", None, "lkjhgfdsa"]),
+        (pa.string(), "uniqueidentifier", ["58185E0D-3A91-44D8-BC46-7107217E0A6D", None]),
         (pa.date32(), "date", [date(1, 1, 1), None, date(2345, 12, 31), date(9999, 12, 31)]),
         (
             pa.time32("s"),
