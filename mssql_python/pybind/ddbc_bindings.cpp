@@ -4462,6 +4462,7 @@ SQLRETURN FetchArrowBatch_wrap(
             case SQL_BIT:
                 format = "b";
                 buffersArrow.bit[i] = std::make_unique<uint8_t[]>((arrowBatchSize + 7) / 8);
+                std::memset(buffersArrow.bit[i].get(), 0, (arrowBatchSize + 7) / 8);
                 break;
             default:
                 std::wstring columnName = colMeta["ColumnName"].cast<std::wstring>();
