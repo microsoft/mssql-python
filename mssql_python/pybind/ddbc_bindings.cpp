@@ -4967,7 +4967,7 @@ SQLRETURN FetchArrowBatch_wrap(
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
 
-    // Transfer ownerhip of buffers to Arrow structures
+    // Transfer ownership of buffers to Arrow structures
     // Exceptions beyond this point would cause memory leaks
     auto batch_children = new ArrowSchema* [numCols];
     for (SQLSMALLINT i = 0; i < numCols; i++) {
