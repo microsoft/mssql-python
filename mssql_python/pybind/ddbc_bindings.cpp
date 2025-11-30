@@ -4812,6 +4812,9 @@ SQLRETURN FetchArrowBatch_wrap(
 #else
                         // On Unix, use the SQLWCHARToWString utility and then convert to UTF-8
                         std::string utf8str = WideToUTF8(SQLWCHARToWString(wcharSource, dataLenW));
+                        while (target_vec->size() < start + utf8str.size()) {
+                            target_vec->resize(target_vec->size() * 2);
+                        }
                         std::memcpy(&(*target_vec)[start], utf8str.data(), utf8str.size());
                         buffersArrow.var[col - 1][idxRowArrow + 1] = start + utf8str.size();
 #endif
