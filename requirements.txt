@@ -4,6 +4,7 @@ pytest-cov
 coverage
 unittest-xml-reporting
 psutil
+pyarrow
 
 # Build dependencies
 pybind11
