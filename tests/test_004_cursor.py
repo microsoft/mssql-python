@@ -15264,3 +15264,14 @@ def test_arrow_reader(cursor: mssql_python.Cursor):
     batches = list(reader)
     assert [len(b) for b in batches] == [4, 4, 3]
     assert sum(len(b) for b in batches) == 11
+
+
+@pytest.mark.skipif(pa is None, reason="pyarrow is not installed")
+def test_arrow_long_string(cursor: mssql_python.Cursor):
+    "Make sure resizing the data buffer works"
+    long_string = "A" * 100000  # 100k characters
+    cursor.execute("select cast(? as nvarchar(max))", (long_string,))
+    batch = cursor.arrow_batch(10)
+    assert batch.num_rows == 1
+    assert batch.num_columns == 1
+    assert batch.column(0).to_pylist() == [long_string]
