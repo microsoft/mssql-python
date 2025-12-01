@@ -180,6 +180,9 @@ class ConstantsDDBC(Enum):
     # Reset Connection Constants
     SQL_RESET_CONNECTION_YES = 1
 
+    # Query Timeout Constants
+    SQL_ATTR_QUERY_TIMEOUT = 0
+
 
 class GetInfoConstants(Enum):
     """
