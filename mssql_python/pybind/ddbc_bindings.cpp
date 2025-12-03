@@ -3880,12 +3880,13 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         }
     }
 
+    SQLULEN numRowsFetched = 0;
     // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
     if (!lobColumns.empty()) {
         LOG("FetchMany_wrap: LOB columns detected (%zu columns), using per-row "
             "SQLGetData path",
             lobColumns.size());
-        while (true) {
+        while (numRowsFetched < (SQLULEN)fetchSize) {
             ret = SQLFetch_ptr(hStmt);
             if (ret == SQL_NO_DATA)
                 break;
@@ -3893,9 +3894,9 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
                 return ret;
 
             py::list row;
-            SQLGetData_wrap(StatementHandle, numCols,
-                            row);  // <-- streams LOBs correctly
+            SQLGetData_wrap(StatementHandle, numCols, row);  // <-- streams LOBs correctly
             rows.append(row);
+            numRowsFetched++;
         }
         return SQL_SUCCESS;
     }
@@ -3909,8 +3910,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         LOG("FetchMany_wrap: Error when binding columns - SQLRETURN=%d", ret);
         return ret;
     }
-
-    SQLULEN numRowsFetched;
+    
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
