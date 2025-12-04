@@ -293,8 +293,12 @@ class Connection:
 
         # Initialize encoding/decoding settings lock for thread safety
         # This lock protects both _encoding_settings and _decoding_settings dictionaries
-        # to prevent race conditions when multiple threads are reading/writing encoding settings
-        self._encoding_lock = threading.RLock()  # RLock allows recursive locking
+        # from concurrent modification. We use a simple Lock (not RLock) because:
+        # - Write operations (setencoding/setdecoding) replace the entire dict atomically
+        # - Read operations (getencoding/getdecoding) return a copy, so they're safe
+        # - No recursive locking is needed in our usage pattern
+        # This is more performant than RLock for the multiple-readers-single-writer pattern
+        self._encoding_lock = threading.Lock()
 
         # Initialize search escape character
         self._searchescape = None
@@ -559,6 +563,7 @@ class Connection:
 
         Note:
             This method is thread-safe and can be called from multiple threads concurrently.
+            Returns a copy of the settings to prevent external modification.
         """
         if self._closed:
             raise InterfaceError(
@@ -725,6 +730,7 @@ class Connection:
 
         Note:
             This method is thread-safe and can be called from multiple threads concurrently.
+            Returns a copy of the settings to prevent external modification.
         """
         if self._closed:
             raise InterfaceError(

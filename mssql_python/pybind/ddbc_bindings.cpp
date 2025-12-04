@@ -757,8 +757,9 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 return rc;
             }
             SQL_NUMERIC_STRUCT* numericPtr = reinterpret_cast<SQL_NUMERIC_STRUCT*>(dataPtr);
-            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_PRECISION,
-                                     reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(numericPtr->precision)), 0);
+            rc = SQLSetDescField_ptr(
+                hDesc, 1, SQL_DESC_PRECISION,
+                reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(numericPtr->precision)), 0);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameters: SQLSetDescField(SQL_DESC_PRECISION) "
                     "failed for param[%d] - SQLRETURN=%d",
@@ -766,7 +767,9 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 return rc;
             }
 
-            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_SCALE, reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(numericPtr->scale)), 0);
+            rc = SQLSetDescField_ptr(
+                hDesc, 1, SQL_DESC_SCALE,
+                reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(numericPtr->scale)), 0);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameters: SQLSetDescField(SQL_DESC_SCALE) failed "
                     "for param[%d] - SQLRETURN=%d",
@@ -774,7 +777,8 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 return rc;
             }
 
-            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_DATA_PTR, reinterpret_cast<SQLPOINTER>(numericPtr), 0);
+            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_DATA_PTR,
+                                     reinterpret_cast<SQLPOINTER>(numericPtr), 0);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameters: SQLSetDescField(SQL_DESC_DATA_PTR) failed "
                     "for param[%d] - SQLRETURN=%d",
@@ -2833,8 +2837,9 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
     }
 
     // For SQL_C_CHAR data, decode using the specified encoding (like pyodbc does)
+    // Create py::bytes once to avoid double allocation
+    py::bytes raw_bytes(buffer.data(), buffer.size());
     try {
-        py::bytes raw_bytes(buffer.data(), buffer.size());
         py::object decoded = raw_bytes.attr("decode")(charEncoding, "strict");
         LOG("FetchLobColumnData: Decoded narrow string with '%s' - %zu bytes -> %zu chars for "
             "column %d",
@@ -2844,7 +2849,7 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         LOG_ERROR("FetchLobColumnData: Failed to decode with '%s' for column %d: %s",
                   charEncoding.c_str(), colIndex, e.what());
         // Return raw bytes as fallback
-        return py::bytes(buffer.data(), buffer.size());
+        return raw_bytes;
     }
 }
 
@@ -2912,9 +2917,10 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 // SQLGetData will null-terminate the data
                                 // Use Python's codec system to decode bytes with specified encoding
                                 // (like pyodbc does)
+                                // Create py::bytes once to avoid double allocation
+                                py::bytes raw_bytes(reinterpret_cast<char*>(dataBuffer.data()),
+                                                    static_cast<size_t>(dataLen));
                                 try {
-                                    py::bytes raw_bytes(reinterpret_cast<char*>(dataBuffer.data()),
-                                                        static_cast<size_t>(dataLen));
                                     py::object decoded =
                                         raw_bytes.attr("decode")(charEncoding, "strict");
                                     row.append(decoded);
@@ -2926,8 +2932,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                         "SQLGetData: Failed to decode CHAR column %d with '%s': %s",
                                         i, charEncoding.c_str(), e.what());
                                     // Return raw bytes as fallback
-                                    py::bytes raw_bytes(reinterpret_cast<char*>(dataBuffer.data()),
-                                                        static_cast<size_t>(dataLen));
                                     row.append(raw_bytes);
                                 }
                             } else {
