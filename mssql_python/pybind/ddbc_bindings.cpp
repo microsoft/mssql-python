@@ -327,7 +327,7 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                     std::string encodedStr;
 
                     if (py::isinstance<py::str>(param)) {
-                        // Encode Unicode string using the specified encoding (like pyodbc does)
+                        // Encode Unicode string using the specified encoding
                         try {
                             py::object encoded = param.attr("encode")(charEncoding, "strict");
                             encodedStr = encoded.cast<std::string>();
@@ -1741,7 +1741,7 @@ SQLRETURN SQLExecute_wrap(const SqlHandlePtr statementHandle,
                             offset += len;
                         }
                     } else if (matchedInfo->paramCType == SQL_C_CHAR) {
-                        // Encode the string using the specified encoding (like pyodbc does)
+                        // Encode the string using the specified encoding
                         std::string encodedStr;
                         try {
                             if (py::isinstance<py::str>(pyObj)) {
@@ -2043,7 +2043,7 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
 
                             if (py::isinstance<py::str>(columnValues[i])) {
                                 // Use Python's codec system to encode the string with specified
-                                // encoding (like pyodbc does)
+                                // encoding
                                 try {
                                     py::object encoded =
                                         columnValues[i].attr("encode")(charEncoding, "strict");
@@ -2836,7 +2836,7 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         return py::bytes(buffer.data(), buffer.size());
     }
 
-    // For SQL_C_CHAR data, decode using the specified encoding (like pyodbc does)
+    // For SQL_C_CHAR data, decode using the specified encoding
     // Create py::bytes once to avoid double allocation
     py::bytes raw_bytes(buffer.data(), buffer.size());
     try {
@@ -2916,7 +2916,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             if (numCharsInData < dataBuffer.size()) {
                                 // SQLGetData will null-terminate the data
                                 // Use Python's codec system to decode bytes with specified encoding
-                                // (like pyodbc does)
                                 // Create py::bytes once to avoid double allocation
                                 py::bytes raw_bytes(reinterpret_cast<char*>(dataBuffer.data()),
                                                     static_cast<size_t>(dataLen));
