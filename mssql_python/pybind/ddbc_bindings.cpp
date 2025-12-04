@@ -1124,9 +1124,9 @@ void SqlHandle::free() {
         // Check if Python is shutting down using centralized helper function
         bool pythonShuttingDown = is_python_finalizing();
 
-        // CRITICAL FIX: During Python shutdown, don't free STMT handles as
-        // their parent DBC may already be freed This prevents segfault when
-        // handles are freed in wrong order during interpreter shutdown Type 3 =
+        // CRITICAL FIX: During Python shutdown, don't free STMT or DBC handles as
+        // their parent handles may already be freed. This prevents segfaults when
+        // handles are freed in the wrong order during interpreter shutdown.
         // Type 3 = SQL_HANDLE_STMT (parent: DBC)
         // Type 2 = SQL_HANDLE_DBC (parent: ENV, which is static and may destruct first)
         // Type 1 = SQL_HANDLE_ENV (no parent)

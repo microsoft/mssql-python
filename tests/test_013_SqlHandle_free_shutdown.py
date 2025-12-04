@@ -26,7 +26,6 @@ Test Strategy:
 """
 
 import os
-import pytest
 import subprocess
 import sys
 import textwrap
