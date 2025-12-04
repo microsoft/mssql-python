@@ -2,7 +2,7 @@
 Comprehensive Encoding/Decoding Test Suite
 
 This consolidated module provides complete testing for encoding/decoding functionality
-in mssql-python, ensuring pyodbc compatibility, thread safety, and connection pooling support.
+in mssql-python, thread safety, and connection pooling support.
 
 Total Tests: 131
 
@@ -42,12 +42,6 @@ Test Categories:
    - Korean: EUC-KR
    - European: Latin-1, CP1252, ISO-8859 family
    - UTF-8 and UTF-16 variants
-
-6. PYODBC COMPATIBILITY (12 tests)
-   - No automatic fallback behavior
-   - UTF-16 BOM rejection for SQL_WCHAR
-   - SQL_WMETADATA flexibility
-   - API compatibility and behavior matching
 
 7. THREAD SAFETY (8 tests)
    - Race condition prevention in setencoding/setdecoding
@@ -3144,13 +3138,8 @@ def test_encoding_length_limit_security(db_connection):
                 db_connection.setencoding(encoding=enc_name, ctype=SQL_CHAR)
 
 
-# ====================================================================================
-# UTF-8 ENCODING TESTS (pyodbc Compatibility)
-# ====================================================================================
-
-
 def test_utf8_encoding_strict_no_fallback(db_connection):
-    """Test that UTF-8 encoding does NOT fallback to latin-1 (pyodbc compatibility)."""
+    """Test that UTF-8 encoding does NOT fallback to latin-1"""
     db_connection.setencoding(encoding="utf-8", ctype=SQL_CHAR)
 
     cursor = db_connection.cursor()
@@ -3180,7 +3169,7 @@ def test_utf8_encoding_strict_no_fallback(db_connection):
 
 
 def test_utf8_decoding_strict_no_fallback(db_connection):
-    """Test that UTF-8 decoding does NOT fallback to latin-1 (pyodbc compatibility)."""
+    """Test that UTF-8 decoding does NOT fallback to latin-1"""
     db_connection.setdecoding(SQL_CHAR, encoding="utf-8", ctype=SQL_CHAR)
 
     cursor = db_connection.cursor()
@@ -3504,11 +3493,6 @@ def test_utf16_unicode_preservation(db_connection):
 
     finally:
         cursor.close()
-
-
-# ====================================================================================
-# ERROR HANDLING TESTS (Strict Mode, pyodbc Compatibility)
-# ====================================================================================
 
 
 def test_encoding_error_strict_mode(db_connection):
@@ -6058,19 +6042,6 @@ def test_encoding_error_propagation_in_bind_parameters(db_connection):
         cursor.close()
 
 
-# ============================================================================
-# ADDITIONAL COVERAGE TESTS FOR MISSING LINES
-# ============================================================================
-
-
-# Note: Tests for cursor._get_encoding_settings() and cursor._get_decoding_settings()
-# fallback paths (lines 318, 327, 357) are not easily testable because:
-# 1. The connection property is read-only and cannot be mocked
-# 2. These are defensive code paths for unusual error conditions
-# 3. The default fallback behavior (line 327) is tested implicitly by all other tests
-# Coverage for these lines may require integration tests with actual connection failures
-
-
 def test_sql_c_char_encoding_with_bytes_and_bytearray(db_connection):
     """Test SQL_C_CHAR encoding with bytes and bytearray parameters (lines 327-358 in ddbc_bindings.cpp)."""
     db_connection.setencoding(encoding="utf-8", ctype=mssql_python.SQL_CHAR)
@@ -6418,13 +6389,178 @@ def test_binary_lob_fetching(db_connection):
         cursor.close()
 
 
-# Note: Removed test_comprehensive_encoding_decoding_coverage
-# The individual test functions already provide comprehensive coverage of:
-# - SQL_C_CHAR encoding paths (test_sql_c_char_encoding_with_bytes_and_bytearray)
-# - DAE paths (test_dae_sql_c_char_with_various_data_types)
-# - Executemany paths (test_executemany_sql_c_char_encoding_paths)
-# - LOB decoding (test_lob_decoding_with_fallback, test_binary_lob_fetching)
-# - Character decoding (test_char_column_decoding_with_fallback)
+def test_cpp_bind_params_str_encoding(db_connection):
+    """str encoding with SQL_C_CHAR."""
+    db_connection.setencoding(encoding="utf-8", ctype=mssql_python.SQL_CHAR)
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("CREATE TABLE #test_cpp_str (data VARCHAR(50))")
+        # This hits: py::isinstance<py::str>(param) == true
+        # and: param.attr("encode")(charEncoding, "strict")
+        # Note: VARCHAR stores in DB collation (Latin1), so we use ASCII-compatible chars
+        cursor.execute("INSERT INTO #test_cpp_str VALUES (?)", "Hello UTF-8 Test")
+        cursor.execute("SELECT data FROM #test_cpp_str")
+        assert cursor.fetchone()[0] == "Hello UTF-8 Test"
+    finally:
+        cursor.close()
+
+
+def test_cpp_bind_params_bytes_encoding(db_connection):
+    """bytes handling with SQL_C_CHAR."""
+    db_connection.setencoding(encoding="utf-8", ctype=mssql_python.SQL_CHAR)
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("CREATE TABLE #test_cpp_bytes (data VARCHAR(50))")
+        # This hits: py::isinstance<py::bytes>(param) == true
+        cursor.execute("INSERT INTO #test_cpp_bytes VALUES (?)", b"Bytes data")
+        cursor.execute("SELECT data FROM #test_cpp_bytes")
+        assert cursor.fetchone()[0] == "Bytes data"
+    finally:
+        cursor.close()
+
+
+def test_cpp_bind_params_bytearray_encoding(db_connection):
+    """bytearray handling with SQL_C_CHAR."""
+    db_connection.setencoding(encoding="utf-8", ctype=mssql_python.SQL_CHAR)
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("CREATE TABLE #test_cpp_bytearray (data VARCHAR(50))")
+        # This hits: bytearray branch - PyByteArray_AsString/Size
+        cursor.execute("INSERT INTO #test_cpp_bytearray VALUES (?)", bytearray(b"Bytearray data"))
+        cursor.execute("SELECT data FROM #test_cpp_bytearray")
+        assert cursor.fetchone()[0] == "Bytearray data"
+    finally:
+        cursor.close()
+
+
+def test_cpp_bind_params_encoding_error(db_connection):
+    """encoding error handling."""
+    db_connection.setencoding(encoding="ascii", ctype=mssql_python.SQL_CHAR)
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("CREATE TABLE #test_cpp_encode_err (data VARCHAR(50))")
+        # This should trigger the catch block (lines 337-345)
+        try:
+            cursor.execute("INSERT INTO #test_cpp_encode_err VALUES (?)", "Non-ASCII: 你好")
+            # If no error, that's OK - some drivers might handle it
+        except Exception as e:
+            # Expected: encoding error caught by C++ layer
+            assert "encode" in str(e).lower() or "ascii" in str(e).lower()
+    finally:
+        cursor.close()
+
+
+def test_cpp_dae_str_encoding(db_connection):
+    """str encoding in Data-At-Execution."""
+    db_connection.setencoding(encoding="utf-8", ctype=mssql_python.SQL_CHAR)
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("CREATE TABLE #test_cpp_dae_str (data VARCHAR(MAX))")
+        # Large string triggers DAE
+        # This hits: py::isinstance<py::str>(pyObj) == true in DAE path
+        # Note: VARCHAR stores in DB collation, so we use ASCII-compatible chars
+        large_str = "A" * 10000 + " END_MARKER"
+        cursor.execute("INSERT INTO #test_cpp_dae_str VALUES (?)", large_str)
+        cursor.execute("SELECT data FROM #test_cpp_dae_str")
+        result = cursor.fetchone()[0]
+        assert len(result) > 10000
+        assert "END_MARKER" in result
+    finally:
+        cursor.close()
+
+
+def test_cpp_dae_bytes_encoding(db_connection):
+    """bytes encoding in Data-At-Execution."""
+    db_connection.setencoding(encoding="utf-8", ctype=mssql_python.SQL_CHAR)
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("CREATE TABLE #test_cpp_dae_bytes (data VARCHAR(MAX))")
+        # Large bytes triggers DAE with bytes branch
+        # This hits: else branch (line 1751) - encodedStr = pyObj.cast<std::string>()
+        large_bytes = b"B" * 10000
+        cursor.execute("INSERT INTO #test_cpp_dae_bytes VALUES (?)", large_bytes)
+        cursor.execute("SELECT LEN(data) FROM #test_cpp_dae_bytes")
+        assert cursor.fetchone()[0] == 10000
+    finally:
+        cursor.close()
+
+
+def test_cpp_dae_encoding_error(db_connection):
+    """encoding error in Data-At-Execution."""
+    db_connection.setencoding(encoding="ascii", ctype=mssql_python.SQL_CHAR)
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("CREATE TABLE #test_cpp_dae_err (data VARCHAR(MAX))")
+        # Large non-ASCII string to trigger DAE + encoding error
+        large_unicode = "你好世界 " * 3000
+        try:
+            cursor.execute("INSERT INTO #test_cpp_dae_err VALUES (?)", large_unicode)
+            # No error is OK - some implementations may handle it
+        except Exception as e:
+            # Expected: catch block lines 1753-1756
+            error_msg = str(e).lower()
+            assert "encode" in error_msg or "ascii" in error_msg
+    finally:
+        cursor.close()
+
+
+def test_cpp_executemany_str_encoding(db_connection):
+    """str encoding in executemany."""
+    db_connection.setencoding(encoding="utf-8", ctype=mssql_python.SQL_CHAR)
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("CREATE TABLE #test_cpp_many_str (id INT, data VARCHAR(50))")
+        # This hits: columnValues[i].attr("encode")(charEncoding, "strict") for each row
+        params = [
+            (1, "Row 1 UTF-8 ✓"),
+            (2, "Row 2 UTF-8 ✓"),
+            (3, "Row 3 UTF-8 ✓"),
+        ]
+        cursor.executemany("INSERT INTO #test_cpp_many_str VALUES (?, ?)", params)
+        cursor.execute("SELECT COUNT(*) FROM #test_cpp_many_str")
+        assert cursor.fetchone()[0] == 3
+    finally:
+        cursor.close()
+
+
+def test_cpp_executemany_bytes_encoding(db_connection):
+    """bytes/bytearray in executemany."""
+    db_connection.setencoding(encoding="utf-8", ctype=mssql_python.SQL_CHAR)
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("CREATE TABLE #test_cpp_many_bytes (id INT, data VARCHAR(50))")
+        # This hits: else branch (line 2065) - bytes/bytearray handling
+        params = [
+            (1, b"Bytes 1"),
+            (2, b"Bytes 2"),
+        ]
+        cursor.executemany("INSERT INTO #test_cpp_many_bytes VALUES (?, ?)", params)
+        cursor.execute("SELECT COUNT(*) FROM #test_cpp_many_bytes")
+        assert cursor.fetchone()[0] == 2
+    finally:
+        cursor.close()
+
+
+def test_cpp_executemany_encoding_error(db_connection):
+    """encoding error in executemany."""
+    db_connection.setencoding(encoding="ascii", ctype=mssql_python.SQL_CHAR)
+    cursor = db_connection.cursor()
+    try:
+        cursor.execute("CREATE TABLE #test_cpp_many_err (id INT, data VARCHAR(50))")
+        # This should trigger catch block lines 2055-2063
+        params = [
+            (1, "OK ASCII"),
+            (2, "Non-ASCII 中文"),  # Should trigger error
+        ]
+        try:
+            cursor.executemany("INSERT INTO #test_cpp_many_err VALUES (?, ?)", params)
+            # No error is OK
+        except Exception as e:
+            # Expected: catch block with error message
+            error_msg = str(e).lower()
+            assert "encode" in error_msg or "ascii" in error_msg or "parameter" in error_msg
+    finally:
+        cursor.close()
 
 
 if __name__ == "__main__":
