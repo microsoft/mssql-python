@@ -5730,49 +5730,6 @@ def test_default_encoding_behavior_validation(conn_str):
         conn.close()
 
 
-def test_cursor_encoding_settings_connection_broken(conn_str):
-    """Test _get_encoding_settings with broken connection to trigger fallback path."""
-    import mssql_python
-    from mssql_python.exceptions import InterfaceError
-
-    # Create connection and cursor
-    conn = mssql_python.connect(conn_str)
-    cursor = conn.cursor()
-
-    # Verify normal operation works
-    settings = cursor._get_encoding_settings()
-    assert isinstance(settings, dict)
-    assert "encoding" in settings
-    assert "ctype" in settings
-
-    # Close connection to break it
-    conn.close()
-
-    # Now _get_encoding_settings should raise an exception (not return defaults silently)
-    with pytest.raises(Exception):
-        cursor._get_encoding_settings()
-
-
-def test_cursor_decoding_settings_connection_broken(conn_str):
-    """Test _get_decoding_settings with broken connection to trigger error path."""
-    import mssql_python
-    from mssql_python.exceptions import InterfaceError
-
-    conn = mssql_python.connect(conn_str)
-    cursor = conn.cursor()
-
-    # Verify normal operation
-    settings = cursor._get_decoding_settings(mssql_python.SQL_CHAR)
-    assert isinstance(settings, dict)
-
-    # Close connection
-    conn.close()
-
-    # Should raise exception with broken connection
-    with pytest.raises(Exception):
-        cursor._get_decoding_settings(mssql_python.SQL_CHAR)
-
-
 def test_encoding_with_bytes_and_bytearray_parameters(db_connection):
     """Test encoding with bytes and bytearray parameters (SQL_C_CHAR path)."""
     db_connection.setencoding(encoding="utf-8", ctype=mssql_python.SQL_CHAR)
@@ -6037,40 +5994,6 @@ def test_encoding_error_propagation_in_bind_parameters(db_connection):
             cursor.execute("SELECT COUNT(*) FROM #test_encode_fail")
             count = cursor.fetchone()[0]
             assert count >= 0
-
-    finally:
-        cursor.close()
-
-
-def test_sql_c_char_encoding_with_bytes_and_bytearray(db_connection):
-    """Test SQL_C_CHAR encoding with bytes and bytearray parameters (lines 327-358 in ddbc_bindings.cpp)."""
-    db_connection.setencoding(encoding="utf-8", ctype=mssql_python.SQL_CHAR)
-
-    cursor = db_connection.cursor()
-    try:
-        cursor.execute("CREATE TABLE #test_bytes_params (id INT, data VARCHAR(100))")
-
-        # Test with Unicode string (normal path)
-        cursor.execute("INSERT INTO #test_bytes_params (id, data) VALUES (?, ?)", 1, "Test string")
-
-        # Test with bytes object (lines 348-349)
-        cursor.execute("INSERT INTO #test_bytes_params (id, data) VALUES (?, ?)", 2, b"Bytes data")
-
-        # Test with bytearray (lines 352-355)
-        cursor.execute(
-            "INSERT INTO #test_bytes_params (id, data) VALUES (?, ?)",
-            3,
-            bytearray(b"Bytearray data"),
-        )
-
-        # Verify all inserted correctly
-        cursor.execute("SELECT id, data FROM #test_bytes_params ORDER BY id")
-        rows = cursor.fetchall()
-
-        assert len(rows) == 3
-        assert rows[0][1] == "Test string"
-        assert rows[1][1] == "Bytes data"
-        assert rows[2][1] == "Bytearray data"
 
     finally:
         cursor.close()
@@ -6561,6 +6484,149 @@ def test_cpp_executemany_encoding_error(db_connection):
             assert "encode" in error_msg or "ascii" in error_msg or "parameter" in error_msg
     finally:
         cursor.close()
+
+
+def test_cursor_get_encoding_settings_database_error(conn_str):
+    """Test DatabaseError/OperationalError in _get_encoding_settings raises (line 318)."""
+    import mssql_python
+    from mssql_python.exceptions import DatabaseError, OperationalError
+    from unittest.mock import patch
+
+    conn = mssql_python.connect(conn_str)
+    cursor = conn.cursor()
+
+    try:
+        db_error = DatabaseError("Simulated DB error", "DDBC error details")
+        with patch.object(conn, "getencoding", side_effect=db_error):
+            with pytest.raises(DatabaseError) as exc_info:
+                cursor._get_encoding_settings()
+            assert "Simulated DB error" in str(exc_info.value)
+
+        op_error = OperationalError("Simulated OP error", "DDBC op error details")
+        with patch.object(conn, "getencoding", side_effect=op_error):
+            with pytest.raises(OperationalError) as exc_info:
+                cursor._get_encoding_settings()
+            assert "Simulated OP error" in str(exc_info.value)
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def test_cursor_get_encoding_settings_generic_exception(conn_str):
+    """Test generic Exception in _get_encoding_settings raises (line 323)."""
+    import mssql_python
+    from unittest.mock import patch
+
+    conn = mssql_python.connect(conn_str)
+    cursor = conn.cursor()
+
+    try:
+        with patch.object(
+            conn, "getencoding", side_effect=RuntimeError("Unexpected error in getencoding")
+        ):
+            with pytest.raises(RuntimeError) as exc_info:
+                cursor._get_encoding_settings()
+            assert "Unexpected error in getencoding" in str(exc_info.value)
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def test_cursor_get_encoding_settings_no_method(conn_str):
+    """Test fallback when getencoding method doesn't exist (line 327)."""
+    import mssql_python
+    from unittest.mock import patch
+
+    conn = mssql_python.connect(conn_str)
+    cursor = conn.cursor()
+
+    try:
+
+        def mock_hasattr(obj, name):
+            if name == "getencoding":
+                return False
+            return hasattr(type(obj), name)
+
+        with patch("builtins.hasattr", side_effect=mock_hasattr):
+            settings = cursor._get_encoding_settings()
+            assert isinstance(settings, dict)
+            assert settings["encoding"] == "utf-16le"
+            assert settings["ctype"] == mssql_python.SQL_WCHAR
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def test_cursor_get_decoding_settings_database_error(conn_str):
+    """Test DatabaseError/OperationalError in _get_decoding_settings raises (line 357)."""
+    import mssql_python
+    from mssql_python.exceptions import DatabaseError, OperationalError
+    from unittest.mock import patch
+
+    conn = mssql_python.connect(conn_str)
+    cursor = conn.cursor()
+
+    try:
+        db_error = DatabaseError("Simulated DB error", "DDBC error details")
+        with patch.object(conn, "getdecoding", side_effect=db_error):
+            with pytest.raises(DatabaseError) as exc_info:
+                cursor._get_decoding_settings(mssql_python.SQL_CHAR)
+            assert "Simulated DB error" in str(exc_info.value)
+
+        op_error = OperationalError("Simulated OP error", "DDBC op error details")
+        with patch.object(conn, "getdecoding", side_effect=op_error):
+            with pytest.raises(OperationalError) as exc_info:
+                cursor._get_decoding_settings(mssql_python.SQL_CHAR)
+            assert "Simulated OP error" in str(exc_info.value)
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def test_cursor_get_decoding_settings_generic_exception(conn_str):
+    """Test generic Exception in _get_decoding_settings raises (line 363)."""
+    import mssql_python
+    from unittest.mock import patch
+
+    conn = mssql_python.connect(conn_str)
+    cursor = conn.cursor()
+
+    try:
+        # Mock getdecoding to raise generic exception
+        with patch.object(
+            conn, "getdecoding", side_effect=RuntimeError("Unexpected error in getdecoding")
+        ):
+            with pytest.raises(RuntimeError) as exc_info:
+                cursor._get_decoding_settings(mssql_python.SQL_CHAR)
+            assert "Unexpected error in getdecoding" in str(exc_info.value)
+    finally:
+        cursor.close()
+        conn.close()
+
+
+def test_cursor_error_paths_integration(conn_str):
+    """Integration test to verify error paths work correctly in real scenarios."""
+    import mssql_python
+    from mssql_python.exceptions import InterfaceError
+
+    conn = mssql_python.connect(conn_str)
+    cursor = conn.cursor()
+
+    # Test 1: Normal operation should work
+    enc_settings = cursor._get_encoding_settings()
+    assert isinstance(enc_settings, dict)
+
+    dec_settings = cursor._get_decoding_settings(mssql_python.SQL_CHAR)
+    assert isinstance(dec_settings, dict)
+
+    # Test 2: After closing connection, both methods should raise
+    conn.close()
+
+    with pytest.raises(Exception):  # Could be InterfaceError or other
+        cursor._get_encoding_settings()
+
+    with pytest.raises(Exception):  # Could be InterfaceError or other
+        cursor._get_decoding_settings(mssql_python.SQL_CHAR)
 
 
 if __name__ == "__main__":
