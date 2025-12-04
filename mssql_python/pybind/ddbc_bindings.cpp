@@ -1127,8 +1127,10 @@ void SqlHandle::free() {
         // CRITICAL FIX: During Python shutdown, don't free STMT handles as
         // their parent DBC may already be freed This prevents segfault when
         // handles are freed in wrong order during interpreter shutdown Type 3 =
-        // SQL_HANDLE_STMT, Type 2 = SQL_HANDLE_DBC, Type 1 = SQL_HANDLE_ENV
-        if (pythonShuttingDown && _type == 3) {
+        // Type 3 = SQL_HANDLE_STMT (parent: DBC)
+        // Type 2 = SQL_HANDLE_DBC (parent: ENV, which is static and may destruct first)
+        // Type 1 = SQL_HANDLE_ENV (no parent)
+        if (pythonShuttingDown && (_type == 3 || _type == 2)) {
             _handle = nullptr;  // Mark as freed to prevent double-free attempts
             return;
         }
