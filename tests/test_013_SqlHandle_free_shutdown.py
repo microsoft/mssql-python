@@ -91,7 +91,9 @@ class TestHandleFreeShutdown:
         # Check for segfault
         if result.returncode < 0:
             signal_num = -result.returncode
-            print(f"WARNING: SEGFAULT DETECTED! Process killed by signal {signal_num} (likely SIGSEGV=11)")
+            print(
+                f"WARNING: SEGFAULT DETECTED! Process killed by signal {signal_num} (likely SIGSEGV=11)"
+            )
             print(f"stderr: {result.stderr}")
             print(f"This confirms DBC handles (Type 2) need protection during shutdown")
             assert (
