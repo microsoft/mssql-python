@@ -91,7 +91,7 @@ class TestHandleFreeShutdown:
         # Check for segfault
         if result.returncode < 0:
             signal_num = -result.returncode
-            print(f"⚠ SEGFAULT DETECTED! Process killed by signal {signal_num} (likely SIGSEGV=11)")
+            print(f"WARNING: SEGFAULT DETECTED! Process killed by signal {signal_num} (likely SIGSEGV=11)")
             print(f"stderr: {result.stderr}")
             print(f"This confirms DBC handles (Type 2) need protection during shutdown")
             assert (
@@ -100,7 +100,7 @@ class TestHandleFreeShutdown:
         else:
             assert result.returncode == 0, f"Process failed. stderr: {result.stderr}"
             assert "Created 10 DBC handles" in result.stdout
-            print(f"✓ No segfault - DBC handles properly protected during shutdown")
+            print(f"PASS: No segfault - DBC handles properly protected during shutdown")
 
     def test_dbc_handle_outlives_env_handle(self, conn_str):
         """
@@ -146,12 +146,12 @@ class TestHandleFreeShutdown:
 
         if result.returncode < 0:
             signal_num = -result.returncode
-            print(f"⚠ SEGFAULT DETECTED! Process killed by signal {signal_num}")
+            print(f"WARNING: SEGFAULT DETECTED! Process killed by signal {signal_num}")
             print(f"This confirms DBC outlived ENV handle")
             assert False, f"SEGFAULT: DBC handle outlived ENV handle, signal {signal_num}"
         else:
             assert result.returncode == 0, f"Process failed. stderr: {result.stderr}"
-            print(f"✓ DBC handle cleanup properly skipped during shutdown")
+            print(f"PASS: DBC handle cleanup properly skipped during shutdown")
 
     def test_force_gc_finalization_order_issue(self, conn_str):
         """
@@ -212,11 +212,11 @@ class TestHandleFreeShutdown:
 
         if result.returncode < 0:
             signal_num = -result.returncode
-            print(f"⚠ SEGFAULT DETECTED! Process killed by signal {signal_num}")
+            print(f"WARNING: SEGFAULT DETECTED! Process killed by signal {signal_num}")
             assert False, f"SEGFAULT during forced GC finalization, signal {signal_num}"
         else:
             assert result.returncode == 0, f"Process failed. stderr: {result.stderr}"
-            print(f"✓ Forced GC finalization order handled safely")
+            print(f"PASS: Forced GC finalization order handled safely")
 
     def test_stmt_handle_cleanup_at_shutdown(self, conn_str):
         """
