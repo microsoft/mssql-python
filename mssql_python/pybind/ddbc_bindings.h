@@ -7,8 +7,6 @@
 #pragma once
 
 // pybind11.h must be the first include
-#include <clocale>
-#include <cwchar>
 #include <memory>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
@@ -460,33 +458,8 @@ inline std::wstring Utf8ToWString(const std::string& str) {
         return {};
     return result;
 #else
-    // Use mbstowcs as a replacement for deprecated wstring_convert
-    // Set locale to UTF-8 for proper conversion
-    const char* old_locale = setlocale(LC_CTYPE, nullptr);
-    setlocale(LC_CTYPE, "en_US.UTF-8");
-
-    // Get the required buffer size (excluding null terminator)
-    size_t size_needed = mbstowcs(nullptr, str.c_str(), 0);
-    if (size_needed == static_cast<size_t>(-1)) {
-        LOG_ERROR("mbstowcs failed for UTF8 to wide string conversion");
-        setlocale(LC_CTYPE, old_locale);
-        return {};
-    }
-
-    // Allocate buffer with space for null terminator
-    std::wstring result(size_needed + 1, 0);
-    // Convert with proper buffer size to prevent overflow
-    size_t converted = mbstowcs(&result[0], str.c_str(), result.size());
-    if (converted == static_cast<size_t>(-1)) {
-        LOG_ERROR("mbstowcs failed for UTF8 to wide string conversion");
-        setlocale(LC_CTYPE, old_locale);
-        return {};
-    }
-
-    // Resize to actual content length (excluding null terminator)
-    result.resize(converted);
-    setlocale(LC_CTYPE, old_locale);
-    return result;
+    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+    return converter.from_bytes(str);
 #endif
 }
 
