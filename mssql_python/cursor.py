@@ -20,7 +20,13 @@ from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error
 from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
-from mssql_python.exceptions import InterfaceError, NotSupportedError, ProgrammingError
+from mssql_python.exceptions import (
+    InterfaceError,
+    NotSupportedError,
+    ProgrammingError,
+    OperationalError,
+    DatabaseError,
+)
 from mssql_python.row import Row
 from mssql_python import get_settings
 
@@ -284,6 +290,80 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         numeric_data.val = bytes(byte_array)
         return numeric_data
+
+    def _get_encoding_settings(self):
+        """
+        Get the encoding settings from the connection.
+
+        Returns:
+            dict: A dictionary with 'encoding' and 'ctype' keys, or default settings if not available
+
+        Raises:
+            OperationalError, DatabaseError: If there are unexpected database connection issues
+            that indicate a broken connection state. These should not be silently ignored
+            as they can lead to data corruption or inconsistent behavior.
+        """
+        if hasattr(self._connection, "getencoding"):
+            try:
+                return self._connection.getencoding()
+            except (OperationalError, DatabaseError) as db_error:
+                # Log the error for debugging but re-raise for fail-fast behavior
+                # Silently returning defaults can lead to data corruption and hard-to-debug issues
+                logger.error(
+                    "Failed to get encoding settings from connection due to database error: %s. "
+                    "This indicates a broken connection state that should not be ignored.",
+                    db_error,
+                )
+                # Re-raise to fail fast - users should know their connection is broken
+                raise
+            except Exception as unexpected_error:
+                # Handle other unexpected errors (connection closed, programming errors, etc.)
+                logger.error("Unexpected error getting encoding settings: %s", unexpected_error)
+                # Re-raise unexpected errors as well
+                raise
+
+        # Return default encoding settings if getencoding is not available
+        # This is the only case where defaults are appropriate (method doesn't exist)
+        return {"encoding": "utf-16le", "ctype": ddbc_sql_const.SQL_WCHAR.value}
+
+    def _get_decoding_settings(self, sql_type):
+        """
+        Get decoding settings for a specific SQL type.
+
+        Args:
+            sql_type: SQL type constant (SQL_CHAR, SQL_WCHAR, etc.)
+
+        Returns:
+            Dictionary containing the decoding settings.
+
+        Raises:
+            OperationalError, DatabaseError: If there are unexpected database connection issues
+            that indicate a broken connection state. These should not be silently ignored
+            as they can lead to data corruption or inconsistent behavior.
+        """
+        try:
+            # Get decoding settings from connection for this SQL type
+            return self._connection.getdecoding(sql_type)
+        except (OperationalError, DatabaseError) as db_error:
+            # Log the error for debugging but re-raise for fail-fast behavior
+            # Silently returning defaults can lead to data corruption and hard-to-debug issues
+            logger.error(
+                "Failed to get decoding settings for SQL type %s due to database error: %s. "
+                "This indicates a broken connection state that should not be ignored.",
+                sql_type,
+                db_error,
+            )
+            # Re-raise to fail fast - users should know their connection is broken
+            raise
+        except Exception as unexpected_error:
+            # Handle other unexpected errors (connection closed, programming errors, etc.)
+            logger.error(
+                "Unexpected error getting decoding settings for SQL type %s: %s",
+                sql_type,
+                unexpected_error,
+            )
+            # Re-raise unexpected errors as well
+            raise
 
     def _map_sql_type(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements,too-many-branches
         self,
@@ -1132,6 +1212,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Clear any previous messages
         self.messages = []
 
+        # Getting encoding setting
+        encoding_settings = self._get_encoding_settings()
+
         # Apply timeout if set (non-zero)
         if self._timeout > 0:
             logger.debug("execute: Setting query timeout=%d seconds", self._timeout)
@@ -1202,6 +1285,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             parameters_type,
             self.is_stmt_prepared,
             use_prepare,
+            encoding_settings,
         )
         # Check return code
         try:
@@ -2027,6 +2111,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Now transpose the processed parameters
         columnwise_params, row_count = self._transpose_rowwise_to_columnwise(processed_parameters)
 
+        # Get encoding settings
+        encoding_settings = self._get_encoding_settings()
+
         # Add debug logging
         logger.debug(
             "Executing batch query with %d parameter sets:\n%s",
@@ -2038,7 +2125,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         )
 
         ret = ddbc_bindings.SQLExecuteMany(
-            self.hstmt, operation, columnwise_params, parameters_type, row_count
+            self.hstmt, operation, columnwise_params, parameters_type, row_count, encoding_settings
         )
 
         # Capture any diagnostic messages after execution
@@ -2070,10 +2157,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         self._check_closed()  # Check if the cursor is closed
 
+        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
+        wchar_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value)
+
         # Fetch raw data
         row_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
+            ret = ddbc_bindings.DDBCSQLFetchOne(
+                self.hstmt,
+                row_data,
+                char_decoding.get("encoding", "utf-8"),
+                wchar_decoding.get("encoding", "utf-16le"),
+            )
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
@@ -2121,10 +2216,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if size <= 0:
             return []
 
+        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
+        wchar_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value)
+
         # Fetch raw data
         rows_data = []
         try:
-            _ = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
+            ret = ddbc_bindings.DDBCSQLFetchMany(
+                self.hstmt,
+                rows_data,
+                size,
+                char_decoding.get("encoding", "utf-8"),
+                wchar_decoding.get("encoding", "utf-16le"),
+            )
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
@@ -2164,10 +2268,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if not self._has_result_set and self.description:
             self._reset_rownumber()
 
+        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
+        wchar_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value)
+
         # Fetch raw data
         rows_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+            ret = ddbc_bindings.DDBCSQLFetchAll(
+                self.hstmt,
+                rows_data,
+                char_decoding.get("encoding", "utf-8"),
+                wchar_decoding.get("encoding", "utf-16le"),
+            )
 
             # Check for errors
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)

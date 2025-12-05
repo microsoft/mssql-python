@@ -18,6 +18,7 @@ const char* kOdbcEncoding = "utf-16-le";  // ODBC uses UTF-16LE for SQLWCHAR
 const size_t kUcsLength = 2;              // SQLWCHAR is 2 bytes on all platforms
 
 // Function to convert SQLWCHAR strings to std::wstring on macOS
+// THREAD-SAFE: Uses thread_local converter to avoid std::wstring_convert race conditions
 std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
     if (!sqlwStr) {
         return std::wstring();
@@ -40,9 +41,13 @@ std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS)
 
     // Convert UTF-16LE to std::wstring (UTF-32 on macOS)
     try {
-        // Use C++11 codecvt to convert between UTF-16LE and wstring
-        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t, 0x10ffff, std::little_endian>>
+        // CRITICAL FIX: Use thread_local to make std::wstring_convert thread-safe
+        // std::wstring_convert is NOT thread-safe and its use is deprecated in C++17
+        // Each thread gets its own converter instance, eliminating race conditions
+        thread_local std::wstring_convert<
+            std::codecvt_utf8_utf16<wchar_t, 0x10ffff, std::little_endian>>
             converter;
+
         std::wstring result = converter.from_bytes(
             reinterpret_cast<const char*>(utf16Bytes.data()),
             reinterpret_cast<const char*>(utf16Bytes.data() + utf16Bytes.size()));
@@ -59,11 +64,16 @@ std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS)
 }
 
 // Function to convert std::wstring to SQLWCHAR array on macOS
+// THREAD-SAFE: Uses thread_local converter to avoid std::wstring_convert race conditions
 std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
     try {
-        // Convert wstring (UTF-32 on macOS) to UTF-16LE bytes
-        std::wstring_convert<std::codecvt_utf8_utf16<wchar_t, 0x10ffff, std::little_endian>>
+        // CRITICAL FIX: Use thread_local to make std::wstring_convert thread-safe
+        // std::wstring_convert is NOT thread-safe and its use is deprecated in C++17
+        // Each thread gets its own converter instance, eliminating race conditions
+        thread_local std::wstring_convert<
+            std::codecvt_utf8_utf16<wchar_t, 0x10ffff, std::little_endian>>
             converter;
+
         std::string utf16Bytes = converter.to_bytes(str);
 
         // Convert the bytes to SQLWCHAR array
