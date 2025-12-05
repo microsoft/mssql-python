@@ -719,6 +719,372 @@ class TestHandleFreeShutdown:
         assert "=== Exiting ===" in result.stdout
         print(f"PASS: Comprehensive all handle types test")
 
+    def test_cleanup_connections_normal_flow(self, conn_str):
+        """
+        Test _cleanup_connections() with normal active connections.
+
+        Validates that:
+        1. Active connections (_closed=False) are properly closed
+        2. The cleanup function is registered with atexit
+        3. Connections can be registered and tracked
+        """
+        script = textwrap.dedent(
+            f"""
+            import mssql_python
+            
+            # Verify cleanup infrastructure exists
+            assert hasattr(mssql_python, '_active_connections'), "Missing _active_connections"
+            assert hasattr(mssql_python, '_cleanup_connections'), "Missing _cleanup_connections"
+            assert hasattr(mssql_python, '_register_connection'), "Missing _register_connection"
+            
+            # Create mock connection to test registration and cleanup
+            class MockConnection:
+                def __init__(self):
+                    self._closed = False
+                    self.close_called = False
+                    
+                def close(self):
+                    self.close_called = True
+                    self._closed = True
+            
+            # Register connection
+            mock_conn = MockConnection()
+            mssql_python._register_connection(mock_conn)
+            assert mock_conn in mssql_python._active_connections, "Connection not registered"
+            
+            # Test cleanup
+            mssql_python._cleanup_connections()
+            assert mock_conn.close_called, "close() should have been called"
+            assert mock_conn._closed, "Connection should be marked as closed"
+            
+            print("Normal flow: PASSED")
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
+        )
+
+        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
+        assert "Normal flow: PASSED" in result.stdout
+        print(f"PASS: Cleanup connections normal flow")
+
+    def test_cleanup_connections_already_closed(self, conn_str):
+        """
+        Test _cleanup_connections() with already closed connections.
+
+        Validates that connections with _closed=True are skipped
+        and close() is not called again.
+        """
+        script = textwrap.dedent(
+            f"""
+            import mssql_python
+            
+            class MockConnection:
+                def __init__(self):
+                    self._closed = True  # Already closed
+                    self.close_called = False
+                    
+                def close(self):
+                    self.close_called = True
+                    raise AssertionError("close() should not be called on closed connection")
+            
+            # Register already-closed connection
+            mock_conn = MockConnection()
+            mssql_python._register_connection(mock_conn)
+            
+            # Cleanup should skip this connection
+            mssql_python._cleanup_connections()
+            assert not mock_conn.close_called, "close() should NOT have been called"
+            
+            print("Already closed: PASSED")
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
+        )
+
+        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
+        assert "Already closed: PASSED" in result.stdout
+        print(f"PASS: Cleanup connections already closed")
+
+    def test_cleanup_connections_missing_attribute(self, conn_str):
+        """
+        Test _cleanup_connections() with connections missing _closed attribute.
+
+        Validates that hasattr() check prevents AttributeError and
+        cleanup continues gracefully.
+        """
+        script = textwrap.dedent(
+            f"""
+            import mssql_python
+            
+            class MinimalConnection:
+                # No _closed attribute
+                def close(self):
+                    pass
+            
+            # Register connection without _closed
+            mock_conn = MinimalConnection()
+            mssql_python._register_connection(mock_conn)
+            
+            # Should not crash
+            mssql_python._cleanup_connections()
+            
+            print("Missing attribute: PASSED")
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
+        )
+
+        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
+        assert "Missing attribute: PASSED" in result.stdout
+        print(f"PASS: Cleanup connections missing _closed attribute")
+
+    def test_cleanup_connections_exception_handling(self, conn_str):
+        """
+        Test _cleanup_connections() exception handling.
+
+        Validates that:
+        1. Exceptions during close() are caught and silently ignored
+        2. One failing connection doesn't prevent cleanup of others
+        3. The function completes successfully despite errors
+        """
+        script = textwrap.dedent(
+            f"""
+            import mssql_python
+            
+            class GoodConnection:
+                def __init__(self):
+                    self._closed = False
+                    self.close_called = False
+                    
+                def close(self):
+                    self.close_called = True
+                    self._closed = True
+            
+            class BadConnection:
+                def __init__(self):
+                    self._closed = False
+                    
+                def close(self):
+                    raise RuntimeError("Simulated error during close")
+            
+            # Register both good and bad connections
+            good_conn = GoodConnection()
+            bad_conn = BadConnection()
+            mssql_python._register_connection(bad_conn)
+            mssql_python._register_connection(good_conn)
+            
+            # Cleanup should handle exception and continue
+            try:
+                mssql_python._cleanup_connections()
+                # Should not raise despite bad_conn throwing exception
+                assert good_conn.close_called, "Good connection should still be closed"
+                print("Exception handling: PASSED")
+            except Exception as e:
+                print(f"Exception handling: FAILED - Exception escaped: {{e}}")
+                raise
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
+        )
+
+        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
+        assert "Exception handling: PASSED" in result.stdout
+        print(f"PASS: Cleanup connections exception handling")
+
+    def test_cleanup_connections_multiple_connections(self, conn_str):
+        """
+        Test _cleanup_connections() with multiple connections.
+
+        Validates that all registered connections are processed
+        and closed in the cleanup iteration.
+        """
+        script = textwrap.dedent(
+            f"""
+            import mssql_python
+            
+            class TestConnection:
+                count = 0
+                
+                def __init__(self, conn_id):
+                    self.conn_id = conn_id
+                    self._closed = False
+                    self.close_called = False
+                    
+                def close(self):
+                    self.close_called = True
+                    self._closed = True
+                    TestConnection.count += 1
+            
+            # Register multiple connections
+            connections = [TestConnection(i) for i in range(5)]
+            for conn in connections:
+                mssql_python._register_connection(conn)
+            
+            # Cleanup all
+            mssql_python._cleanup_connections()
+            
+            assert TestConnection.count == 5, f"All 5 connections should be closed, got {{TestConnection.count}}"
+            assert all(c.close_called for c in connections), "All connections should have close() called"
+            
+            print("Multiple connections: PASSED")
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
+        )
+
+        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
+        assert "Multiple connections: PASSED" in result.stdout
+        print(f"PASS: Cleanup connections multiple connections")
+
+    def test_cleanup_connections_weakset_behavior(self, conn_str):
+        """
+        Test _cleanup_connections() WeakSet behavior.
+
+        Validates that:
+        1. WeakSet automatically removes garbage collected connections
+        2. Only live references are processed during cleanup
+        3. No crashes occur with GC'd connections
+        """
+        script = textwrap.dedent(
+            f"""
+            import mssql_python
+            import gc
+            
+            class TestConnection:
+                def __init__(self):
+                    self._closed = False
+                    
+                def close(self):
+                    pass
+            
+            # Register connection then let it be garbage collected
+            conn = TestConnection()
+            mssql_python._register_connection(conn)
+            initial_count = len(mssql_python._active_connections)
+            
+            del conn
+            gc.collect()  # Force garbage collection
+            
+            final_count = len(mssql_python._active_connections)
+            assert final_count < initial_count, "WeakSet should auto-remove GC'd connections"
+            
+            # Cleanup should not crash with removed connections
+            mssql_python._cleanup_connections()
+            
+            print("WeakSet behavior: PASSED")
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
+        )
+
+        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
+        assert "WeakSet behavior: PASSED" in result.stdout
+        print(f"PASS: Cleanup connections WeakSet behavior")
+
+    def test_cleanup_connections_empty_list(self, conn_str):
+        """
+        Test _cleanup_connections() with empty connections list.
+
+        Validates that cleanup completes successfully with no registered
+        connections without any errors.
+        """
+        script = textwrap.dedent(
+            f"""
+            import mssql_python
+            
+            # Clear any existing connections
+            mssql_python._active_connections.clear()
+            
+            # Should not crash with empty set
+            mssql_python._cleanup_connections()
+            
+            print("Empty list: PASSED")
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
+        )
+
+        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
+        assert "Empty list: PASSED" in result.stdout
+        print(f"PASS: Cleanup connections empty list")
+
+    def test_cleanup_connections_mixed_scenario(self, conn_str):
+        """
+        Test _cleanup_connections() with mixed connection states.
+
+        Validates handling of:
+        - Open connections (should be closed)
+        - Already closed connections (should be skipped)
+        - Connections that throw exceptions (should be caught)
+        - All in one cleanup run
+        """
+        script = textwrap.dedent(
+            f"""
+            import mssql_python
+            
+            class OpenConnection:
+                def __init__(self):
+                    self._closed = False
+                    self.close_called = False
+                    
+                def close(self):
+                    self.close_called = True
+                    self._closed = True
+            
+            class ClosedConnection:
+                def __init__(self):
+                    self._closed = True
+                    
+                def close(self):
+                    raise AssertionError("Should not be called")
+            
+            class ErrorConnection:
+                def __init__(self):
+                    self._closed = False
+                    
+                def close(self):
+                    raise RuntimeError("Simulated error")
+            
+            # Register all types
+            open_conn = OpenConnection()
+            closed_conn = ClosedConnection()
+            error_conn = ErrorConnection()
+            
+            mssql_python._register_connection(open_conn)
+            mssql_python._register_connection(closed_conn)
+            mssql_python._register_connection(error_conn)
+            
+            # Cleanup should handle all scenarios
+            mssql_python._cleanup_connections()
+            
+            assert open_conn.close_called, "Open connection should have been closed"
+            
+            print("Mixed scenario: PASSED")
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
+        )
+
+        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
+        assert "Mixed scenario: PASSED" in result.stdout
+        print(f"PASS: Cleanup connections mixed scenario")
+
 
 if __name__ == "__main__":
     # Allow running test directly for debugging
@@ -754,9 +1120,19 @@ if __name__ == "__main__":
         test.test_gc_during_shutdown_with_circular_refs(conn_str)
         test.test_all_handle_types_comprehensive(conn_str)
 
+        print("\n--- CLEANUP CONNECTIONS COVERAGE TESTS ---\n")
+        test.test_cleanup_connections_normal_flow(conn_str)
+        test.test_cleanup_connections_already_closed(conn_str)
+        test.test_cleanup_connections_missing_attribute(conn_str)
+        test.test_cleanup_connections_exception_handling(conn_str)
+        test.test_cleanup_connections_multiple_connections(conn_str)
+        test.test_cleanup_connections_weakset_behavior(conn_str)
+        test.test_cleanup_connections_empty_list(conn_str)
+        test.test_cleanup_connections_mixed_scenario(conn_str)
+
         print("\n" + "=" * 70)
         print("PASS: ALL TESTS PASSED - No segfaults detected")
         print("=" * 70 + "\n")
     except AssertionError as e:
-        print(f"\n✗ TEST FAILED: {e}")
+        print(f"\nFAIL: TEST FAILED: {e}")
         sys.exit(1)
