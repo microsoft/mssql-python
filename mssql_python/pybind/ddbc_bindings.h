@@ -465,6 +465,7 @@ inline std::wstring Utf8ToWString(const std::string& str) {
     const char* old_locale = setlocale(LC_CTYPE, nullptr);
     setlocale(LC_CTYPE, "en_US.UTF-8");
 
+    // Get the required buffer size (excluding null terminator)
     size_t size_needed = mbstowcs(nullptr, str.c_str(), 0);
     if (size_needed == static_cast<size_t>(-1)) {
         LOG_ERROR("mbstowcs failed for UTF8 to wide string conversion");
@@ -472,14 +473,18 @@ inline std::wstring Utf8ToWString(const std::string& str) {
         return {};
     }
 
-    std::wstring result(size_needed, 0);
-    size_t converted = mbstowcs(&result[0], str.c_str(), size_needed);
+    // Allocate buffer with space for null terminator
+    std::wstring result(size_needed + 1, 0);
+    // Convert with proper buffer size to prevent overflow
+    size_t converted = mbstowcs(&result[0], str.c_str(), result.size());
     if (converted == static_cast<size_t>(-1)) {
         LOG_ERROR("mbstowcs failed for UTF8 to wide string conversion");
         setlocale(LC_CTYPE, old_locale);
         return {};
     }
 
+    // Resize to actual content length (excluding null terminator)
+    result.resize(converted);
     setlocale(LC_CTYPE, old_locale);
     return result;
 #endif
