@@ -6635,50 +6635,50 @@ def test_latin1_encoding_german_characters(db_connection):
     db_connection.setencoding(encoding="latin-1", ctype=SQL_CHAR)
     # Set decoding for SELECT (NVARCHAR uses UTF-16LE)
     db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
-    
+
     cursor = db_connection.cursor()
     try:
         # Drop table if it exists from previous test run
         cursor.execute("IF OBJECT_ID('tempdb..#test_latin1') IS NOT NULL DROP TABLE #test_latin1")
         # Use NVARCHAR to properly store Unicode characters
         cursor.execute("CREATE TABLE #test_latin1 (id INT, data NVARCHAR(100))")
-        
+
         # German characters that are valid in Latin-1
         german_strings = [
-            "Müller",           # ü - u with umlaut
-            "Köln",             # ö - o with umlaut
-            "Größe",            # ö, ß - eszett/sharp s
-            "Äpfel",            # Ä - A with umlaut
-            "Straße",           # ß - eszett
-            "Grüße",            # ü, ß
-            "Übung",            # Ü - capital U with umlaut
-            "Österreich",       # Ö - capital O with umlaut
-            "Zürich",           # ü
-            "Bräutigam",        # ä, u
+            "Müller",  # ü - u with umlaut
+            "Köln",  # ö - o with umlaut
+            "Größe",  # ö, ß - eszett/sharp s
+            "Äpfel",  # Ä - A with umlaut
+            "Straße",  # ß - eszett
+            "Grüße",  # ü, ß
+            "Übung",  # Ü - capital U with umlaut
+            "Österreich",  # Ö - capital O with umlaut
+            "Zürich",  # ü
+            "Bräutigam",  # ä, u
         ]
-        
+
         for i, text in enumerate(german_strings, 1):
             # Insert data - Latin-1 encoding will be attempted in ddbc_bindings.cpp (lines 329-345)
             cursor.execute("INSERT INTO #test_latin1 (id, data) VALUES (?, ?)", i, text)
-        
+
         # Verify data was inserted
         cursor.execute("SELECT COUNT(*) FROM #test_latin1")
         count = cursor.fetchone()[0]
         assert count == len(german_strings), f"Expected {len(german_strings)} rows, got {count}"
-        
+
         # Retrieve and verify each entry matches what was inserted (round-trip test)
         cursor.execute("SELECT id, data FROM #test_latin1 ORDER BY id")
         results = cursor.fetchall()
-        
+
         assert len(results) == len(german_strings), f"Expected {len(german_strings)} results"
-        
+
         for i, (row_id, retrieved_text) in enumerate(results):
             expected_text = german_strings[i]
             assert retrieved_text == expected_text, (
                 f"Round-trip failed for German text at index {i}: "
                 f"expected '{expected_text}', got '{retrieved_text}'"
             )
-        
+
     finally:
         cursor.close()
 
@@ -6688,44 +6688,44 @@ def test_latin1_encoding_french_characters(db_connection):
     # Set encoding for INSERT (Latin-1) and decoding for SELECT (UTF-16LE from NVARCHAR)
     db_connection.setencoding(encoding="latin-1", ctype=SQL_CHAR)
     db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
-    
+
     cursor = db_connection.cursor()
     try:
         cursor.execute("IF OBJECT_ID('tempdb..#test_french') IS NOT NULL DROP TABLE #test_french")
         cursor.execute("CREATE TABLE #test_french (id INT, data NVARCHAR(100))")
-        
+
         # French characters valid in Latin-1
         french_strings = [
-            "Café",             # é - e with acute
-            "Crème",            # è - e with grave
-            "Être",             # Ê - E with circumflex
-            "Français",         # ç - c with cedilla
-            "Où",               # ù - u with grave
-            "Noël",             # ë - e with diaeresis
-            "Hôtel",            # ô - o with circumflex
-            "Île",              # Î - I with circumflex
-            "Événement",        # É, é
-            "Garçon",           # ç
+            "Café",  # é - e with acute
+            "Crème",  # è - e with grave
+            "Être",  # Ê - E with circumflex
+            "Français",  # ç - c with cedilla
+            "Où",  # ù - u with grave
+            "Noël",  # ë - e with diaeresis
+            "Hôtel",  # ô - o with circumflex
+            "Île",  # Î - I with circumflex
+            "Événement",  # É, é
+            "Garçon",  # ç
         ]
-        
+
         for i, text in enumerate(french_strings, 1):
             cursor.execute("INSERT INTO #test_french (id, data) VALUES (?, ?)", i, text)
-        
+
         cursor.execute("SELECT COUNT(*) FROM #test_french")
         count = cursor.fetchone()[0]
         assert count == len(french_strings), f"Expected {len(french_strings)} rows, got {count}"
-        
+
         # Retrieve and verify round-trip integrity
         cursor.execute("SELECT id, data FROM #test_french ORDER BY id")
         results = cursor.fetchall()
-        
+
         for i, (row_id, retrieved_text) in enumerate(results):
             expected_text = french_strings[i]
             assert retrieved_text == expected_text, (
                 f"Round-trip failed for French text at index {i}: "
                 f"expected '{expected_text}', got '{retrieved_text}'"
             )
-        
+
     finally:
         cursor.close()
 
@@ -6735,28 +6735,28 @@ def test_gbk_encoding_simplified_chinese(db_connection):
     # Set encoding for INSERT (GBK) and decoding for SELECT (UTF-16LE from NVARCHAR)
     db_connection.setencoding(encoding="gbk", ctype=SQL_CHAR)
     db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
-    
+
     cursor = db_connection.cursor()
     try:
         cursor.execute("IF OBJECT_ID('tempdb..#test_gbk') IS NOT NULL DROP TABLE #test_gbk")
         cursor.execute("CREATE TABLE #test_gbk (id INT, data NVARCHAR(200))")
-        
+
         # Simplified Chinese strings (GBK encoding)
         chinese_strings = [
-            "你好",              # Hello
-            "世界",              # World
-            "中国",              # China
-            "北京",              # Beijing
-            "上海",              # Shanghai
-            "广州",              # Guangzhou
-            "深圳",              # Shenzhen
-            "计算机",            # Computer
-            "数据库",            # Database
-            "软件工程",          # Software Engineering
-            "欢迎光临",          # Welcome
-            "谢谢",              # Thank you
+            "你好",  # Hello
+            "世界",  # World
+            "中国",  # China
+            "北京",  # Beijing
+            "上海",  # Shanghai
+            "广州",  # Guangzhou
+            "深圳",  # Shenzhen
+            "计算机",  # Computer
+            "数据库",  # Database
+            "软件工程",  # Software Engineering
+            "欢迎光临",  # Welcome
+            "谢谢",  # Thank you
         ]
-        
+
         inserted_indices = []
         for i, text in enumerate(chinese_strings, 1):
             try:
@@ -6766,12 +6766,12 @@ def test_gbk_encoding_simplified_chinese(db_connection):
                 # GBK encoding might fail with VARCHAR - this is expected
                 # The test is to ensure encoding path is hit in ddbc_bindings.cpp
                 pass
-        
+
         # If any data was inserted, verify round-trip integrity
         if inserted_indices:
             cursor.execute("SELECT id, data FROM #test_gbk ORDER BY id")
             results = cursor.fetchall()
-            
+
             for idx, (row_id, retrieved_text) in enumerate(results):
                 original_idx = inserted_indices[idx]
                 expected_text = chinese_strings[original_idx]
@@ -6779,7 +6779,7 @@ def test_gbk_encoding_simplified_chinese(db_connection):
                     f"Round-trip failed for Chinese GBK text at index {original_idx}: "
                     f"expected '{expected_text}', got '{retrieved_text}'"
                 )
-        
+
     finally:
         cursor.close()
 
@@ -6789,24 +6789,24 @@ def test_big5_encoding_traditional_chinese(db_connection):
     # Set encoding for INSERT (Big5) and decoding for SELECT (UTF-16LE from NVARCHAR)
     db_connection.setencoding(encoding="big5", ctype=SQL_CHAR)
     db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
-    
+
     cursor = db_connection.cursor()
     try:
         cursor.execute("IF OBJECT_ID('tempdb..#test_big5') IS NOT NULL DROP TABLE #test_big5")
         cursor.execute("CREATE TABLE #test_big5 (id INT, data NVARCHAR(200))")
-        
+
         # Traditional Chinese strings (Big5 encoding)
         traditional_chinese = [
-            "您好",              # Hello (formal)
-            "世界",              # World
-            "台灣",              # Taiwan
-            "台北",              # Taipei
-            "資料庫",            # Database
-            "電腦",              # Computer
-            "軟體",              # Software
-            "謝謝",              # Thank you
+            "您好",  # Hello (formal)
+            "世界",  # World
+            "台灣",  # Taiwan
+            "台北",  # Taipei
+            "資料庫",  # Database
+            "電腦",  # Computer
+            "軟體",  # Software
+            "謝謝",  # Thank you
         ]
-        
+
         inserted_indices = []
         for i, text in enumerate(traditional_chinese, 1):
             try:
@@ -6815,12 +6815,12 @@ def test_big5_encoding_traditional_chinese(db_connection):
             except Exception:
                 # Big5 encoding might fail with VARCHAR - this is expected
                 pass
-        
+
         # If any data was inserted, verify round-trip integrity
         if inserted_indices:
             cursor.execute("SELECT id, data FROM #test_big5 ORDER BY id")
             results = cursor.fetchall()
-            
+
             for idx, (row_id, retrieved_text) in enumerate(results):
                 original_idx = inserted_indices[idx]
                 expected_text = traditional_chinese[original_idx]
@@ -6828,7 +6828,7 @@ def test_big5_encoding_traditional_chinese(db_connection):
                     f"Round-trip failed for Chinese Big5 text at index {original_idx}: "
                     f"expected '{expected_text}', got '{retrieved_text}'"
                 )
-        
+
     finally:
         cursor.close()
 
@@ -6838,25 +6838,27 @@ def test_shift_jis_encoding_japanese(db_connection):
     # Set encoding for INSERT (Shift-JIS) and decoding for SELECT (UTF-16LE from NVARCHAR)
     db_connection.setencoding(encoding="shift_jis", ctype=SQL_CHAR)
     db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
-    
+
     cursor = db_connection.cursor()
     try:
-        cursor.execute("IF OBJECT_ID('tempdb..#test_shift_jis') IS NOT NULL DROP TABLE #test_shift_jis")
+        cursor.execute(
+            "IF OBJECT_ID('tempdb..#test_shift_jis') IS NOT NULL DROP TABLE #test_shift_jis"
+        )
         cursor.execute("CREATE TABLE #test_shift_jis (id INT, data NVARCHAR(200))")
-        
+
         # Japanese strings (Shift-JIS encoding)
         japanese_strings = [
-            "こんにちは",        # Hello (Hiragana)
-            "ありがとう",        # Thank you (Hiragana)
-            "カタカナ",          # Katakana (in Katakana)
-            "日本",              # Japan (Kanji)
-            "東京",              # Tokyo (Kanji)
-            "大阪",              # Osaka (Kanji)
-            "京都",              # Kyoto (Kanji)
-            "コンピュータ",      # Computer (Katakana)
-            "データベース",      # Database (Katakana)
+            "こんにちは",  # Hello (Hiragana)
+            "ありがとう",  # Thank you (Hiragana)
+            "カタカナ",  # Katakana (in Katakana)
+            "日本",  # Japan (Kanji)
+            "東京",  # Tokyo (Kanji)
+            "大阪",  # Osaka (Kanji)
+            "京都",  # Kyoto (Kanji)
+            "コンピュータ",  # Computer (Katakana)
+            "データベース",  # Database (Katakana)
         ]
-        
+
         inserted_indices = []
         for i, text in enumerate(japanese_strings, 1):
             try:
@@ -6865,12 +6867,12 @@ def test_shift_jis_encoding_japanese(db_connection):
             except Exception:
                 # Shift-JIS encoding might fail with VARCHAR
                 pass
-        
+
         # If any data was inserted, verify round-trip integrity
         if inserted_indices:
             cursor.execute("SELECT id, data FROM #test_shift_jis ORDER BY id")
             results = cursor.fetchall()
-            
+
             for idx, (row_id, retrieved_text) in enumerate(results):
                 original_idx = inserted_indices[idx]
                 expected_text = japanese_strings[original_idx]
@@ -6878,7 +6880,7 @@ def test_shift_jis_encoding_japanese(db_connection):
                     f"Round-trip failed for Japanese Shift-JIS text at index {original_idx}: "
                     f"expected '{expected_text}', got '{retrieved_text}'"
                 )
-        
+
     finally:
         cursor.close()
 
@@ -6888,24 +6890,24 @@ def test_euc_kr_encoding_korean(db_connection):
     # Set encoding for INSERT (EUC-KR) and decoding for SELECT (UTF-16LE from NVARCHAR)
     db_connection.setencoding(encoding="euc_kr", ctype=SQL_CHAR)
     db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
-    
+
     cursor = db_connection.cursor()
     try:
         cursor.execute("IF OBJECT_ID('tempdb..#test_euc_kr') IS NOT NULL DROP TABLE #test_euc_kr")
         cursor.execute("CREATE TABLE #test_euc_kr (id INT, data NVARCHAR(200))")
-        
+
         # Korean strings (EUC-KR encoding)
         korean_strings = [
-            "안녕하세요",        # Hello
-            "감사합니다",        # Thank you
-            "한국",              # Korea
-            "서울",              # Seoul
-            "부산",              # Busan
-            "컴퓨터",            # Computer
-            "데이터베이스",      # Database
-            "소프트웨어",        # Software
+            "안녕하세요",  # Hello
+            "감사합니다",  # Thank you
+            "한국",  # Korea
+            "서울",  # Seoul
+            "부산",  # Busan
+            "컴퓨터",  # Computer
+            "데이터베이스",  # Database
+            "소프트웨어",  # Software
         ]
-        
+
         inserted_indices = []
         for i, text in enumerate(korean_strings, 1):
             try:
@@ -6914,12 +6916,12 @@ def test_euc_kr_encoding_korean(db_connection):
             except Exception:
                 # EUC-KR encoding might fail with VARCHAR
                 pass
-        
+
         # If any data was inserted, verify round-trip integrity
         if inserted_indices:
             cursor.execute("SELECT id, data FROM #test_euc_kr ORDER BY id")
             results = cursor.fetchall()
-            
+
             for idx, (row_id, retrieved_text) in enumerate(results):
                 original_idx = inserted_indices[idx]
                 expected_text = korean_strings[original_idx]
@@ -6927,7 +6929,7 @@ def test_euc_kr_encoding_korean(db_connection):
                     f"Round-trip failed for Korean EUC-KR text at index {original_idx}: "
                     f"expected '{expected_text}', got '{retrieved_text}'"
                 )
-        
+
     finally:
         cursor.close()
 
@@ -6937,44 +6939,44 @@ def test_cp1252_encoding_windows_characters(db_connection):
     # Set encoding for INSERT (CP1252) and decoding for SELECT (UTF-16LE from NVARCHAR)
     db_connection.setencoding(encoding="cp1252", ctype=SQL_CHAR)
     db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
-    
+
     cursor = db_connection.cursor()
     try:
         cursor.execute("IF OBJECT_ID('tempdb..#test_cp1252') IS NOT NULL DROP TABLE #test_cp1252")
         cursor.execute("CREATE TABLE #test_cp1252 (id INT, data NVARCHAR(200))")
-        
+
         # CP1252 specific characters and common Western European text
         cp1252_strings = [
-            "Windows™",          # Trademark symbol
-            "€100",              # Euro symbol
-            "Naïve café",        # Diaeresis and acute
-            "50° angle",         # Degree symbol
-            '"Smart quotes"',    # Curly quotes (escaped)
-            "©2025",             # Copyright symbol
-            "½ cup",             # Fraction
-            "São Paulo",         # Portuguese
-            "Zürich",            # Swiss German
-            "Résumé",            # French accents
+            "Windows™",  # Trademark symbol
+            "€100",  # Euro symbol
+            "Naïve café",  # Diaeresis and acute
+            "50° angle",  # Degree symbol
+            '"Smart quotes"',  # Curly quotes (escaped)
+            "©2025",  # Copyright symbol
+            "½ cup",  # Fraction
+            "São Paulo",  # Portuguese
+            "Zürich",  # Swiss German
+            "Résumé",  # French accents
         ]
-        
+
         for i, text in enumerate(cp1252_strings, 1):
             cursor.execute("INSERT INTO #test_cp1252 (id, data) VALUES (?, ?)", i, text)
-        
+
         cursor.execute("SELECT COUNT(*) FROM #test_cp1252")
         count = cursor.fetchone()[0]
         assert count == len(cp1252_strings), f"Expected {len(cp1252_strings)} rows, got {count}"
-        
+
         # Retrieve and verify round-trip integrity
         cursor.execute("SELECT id, data FROM #test_cp1252 ORDER BY id")
         results = cursor.fetchall()
-        
+
         for i, (row_id, retrieved_text) in enumerate(results):
             expected_text = cp1252_strings[i]
             assert retrieved_text == expected_text, (
                 f"Round-trip failed for CP1252 text at index {i}: "
                 f"expected '{expected_text}', got '{retrieved_text}'"
             )
-        
+
     finally:
         cursor.close()
 
@@ -6984,42 +6986,42 @@ def test_iso8859_1_encoding_western_european(db_connection):
     # Set encoding for INSERT (ISO-8859-1) and decoding for SELECT (UTF-16LE from NVARCHAR)
     db_connection.setencoding(encoding="iso-8859-1", ctype=SQL_CHAR)
     db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
-    
+
     cursor = db_connection.cursor()
     try:
         cursor.execute("IF OBJECT_ID('tempdb..#test_iso8859') IS NOT NULL DROP TABLE #test_iso8859")
         cursor.execute("CREATE TABLE #test_iso8859 (id INT, data NVARCHAR(200))")
-        
+
         # ISO-8859-1 characters (similar to Latin-1 but standardized)
         iso_strings = [
-            "Señor",             # Spanish ñ
-            "Português",         # Portuguese ê
-            "Danés",             # Spanish é
-            "Québec",            # French é
-            "Göteborg",          # Swedish ö
-            "Malmö",             # Swedish ö
-            "Århus",             # Danish å
-            "Tromsø",            # Norwegian ø
+            "Señor",  # Spanish ñ
+            "Português",  # Portuguese ê
+            "Danés",  # Spanish é
+            "Québec",  # French é
+            "Göteborg",  # Swedish ö
+            "Malmö",  # Swedish ö
+            "Århus",  # Danish å
+            "Tromsø",  # Norwegian ø
         ]
-        
+
         for i, text in enumerate(iso_strings, 1):
             cursor.execute("INSERT INTO #test_iso8859 (id, data) VALUES (?, ?)", i, text)
-        
+
         cursor.execute("SELECT COUNT(*) FROM #test_iso8859")
         count = cursor.fetchone()[0]
         assert count == len(iso_strings), f"Expected {len(iso_strings)} rows, got {count}"
-        
+
         # Retrieve and verify round-trip integrity
         cursor.execute("SELECT id, data FROM #test_iso8859 ORDER BY id")
         results = cursor.fetchall()
-        
+
         for i, (row_id, retrieved_text) in enumerate(results):
             expected_text = iso_strings[i]
             assert retrieved_text == expected_text, (
                 f"Round-trip failed for ISO-8859-1 text at index {i}: "
                 f"expected '{expected_text}', got '{retrieved_text}'"
             )
-        
+
     finally:
         cursor.close()
 
@@ -7028,12 +7030,14 @@ def test_encoding_error_path_with_incompatible_chars(db_connection):
     """Test encoding error path when characters can't be encoded (lines 337-345 in ddbc_bindings.cpp)."""
     # Set ASCII encoding (very restrictive)
     db_connection.setencoding(encoding="ascii", ctype=SQL_CHAR)
-    
+
     cursor = db_connection.cursor()
     try:
-        cursor.execute("IF OBJECT_ID('tempdb..#test_encoding_error') IS NOT NULL DROP TABLE #test_encoding_error")
+        cursor.execute(
+            "IF OBJECT_ID('tempdb..#test_encoding_error') IS NOT NULL DROP TABLE #test_encoding_error"
+        )
         cursor.execute("CREATE TABLE #test_encoding_error (id INT, data VARCHAR(100))")
-        
+
         # Characters that CANNOT be encoded in ASCII - should trigger error path
         incompatible_strings = [
             ("Café", "French e-acute"),
@@ -7047,12 +7051,12 @@ def test_encoding_error_path_with_incompatible_chars(db_connection):
             ("€100", "Euro symbol"),
             ("©2025", "Copyright"),
         ]
-        
+
         errors_caught = 0
         for i, test_data in enumerate(incompatible_strings, 1):
             text = test_data[0] if isinstance(test_data, tuple) else test_data
             desc = test_data[1] if isinstance(test_data, tuple) else "special char"
-            
+
             try:
                 # This should trigger the encoding error path in ddbc_bindings.cpp (lines 337-345)
                 cursor.execute("INSERT INTO #test_encoding_error (id, data) VALUES (?, ?)", i, text)
@@ -7062,11 +7066,11 @@ def test_encoding_error_path_with_incompatible_chars(db_connection):
                 error_msg = str(e).lower()
                 if "encod" in error_msg or "ascii" in error_msg or "unicode" in error_msg:
                     errors_caught += 1
-        
+
         # We expect at least some encoding errors since ASCII can't handle these characters
         # The important part is that the error path in ddbc_bindings.cpp is exercised
         assert errors_caught >= 0, "Test should exercise encoding error path"
-        
+
     finally:
         cursor.close()
 
@@ -7075,9 +7079,11 @@ def test_bytes_parameter_with_various_encodings(db_connection):
     """Test bytes parameters (lines 348-349 in ddbc_bindings.cpp) with pre-encoded data."""
     cursor = db_connection.cursor()
     try:
-        cursor.execute("IF OBJECT_ID('tempdb..#test_bytes_encodings') IS NOT NULL DROP TABLE #test_bytes_encodings")
+        cursor.execute(
+            "IF OBJECT_ID('tempdb..#test_bytes_encodings') IS NOT NULL DROP TABLE #test_bytes_encodings"
+        )
         cursor.execute("CREATE TABLE #test_bytes_encodings (id INT, data VARCHAR(200))")
-        
+
         # Pre-encode strings with different encodings and pass as bytes
         test_cases = [
             ("Hello World", "ascii"),
@@ -7087,24 +7093,25 @@ def test_bytes_parameter_with_various_encodings(db_connection):
             ("こんにちは", "shift_jis"),
             ("안녕하세요", "euc_kr"),
         ]
-        
+
         for i, (text, encoding) in enumerate(test_cases, 1):
             try:
                 # Encode string to bytes using specific encoding
                 encoded_bytes = text.encode(encoding)
-                
+
                 # Pass bytes parameter - should hit lines 348-349 in ddbc_bindings.cpp
                 db_connection.setencoding(encoding=encoding, ctype=SQL_CHAR)
-                cursor.execute("INSERT INTO #test_bytes_encodings (id, data) VALUES (?, ?)", 
-                             i, encoded_bytes)
+                cursor.execute(
+                    "INSERT INTO #test_bytes_encodings (id, data) VALUES (?, ?)", i, encoded_bytes
+                )
             except Exception:
                 # Some encodings may fail with VARCHAR - expected
                 pass
-        
+
         cursor.execute("SELECT COUNT(*) FROM #test_bytes_encodings")
         count = cursor.fetchone()[0]
         assert count >= 0, "Should complete without crashing"
-        
+
     finally:
         cursor.close()
 
@@ -7113,9 +7120,11 @@ def test_bytearray_parameter_with_various_encodings(db_connection):
     """Test bytearray parameters (lines 352-355 in ddbc_bindings.cpp) with pre-encoded data."""
     cursor = db_connection.cursor()
     try:
-        cursor.execute("IF OBJECT_ID('tempdb..#test_bytearray_enc') IS NOT NULL DROP TABLE #test_bytearray_enc")
+        cursor.execute(
+            "IF OBJECT_ID('tempdb..#test_bytearray_enc') IS NOT NULL DROP TABLE #test_bytearray_enc"
+        )
         cursor.execute("CREATE TABLE #test_bytearray_enc (id INT, data VARCHAR(200))")
-        
+
         # Pre-encode strings with different encodings and pass as bytearray
         test_cases = [
             ("Grüße", "latin-1"),
@@ -7125,24 +7134,25 @@ def test_bytearray_parameter_with_various_encodings(db_connection):
             ("감사합니다", "euc_kr"),
             ("Español", "cp1252"),
         ]
-        
+
         for i, (text, encoding) in enumerate(test_cases, 1):
             try:
                 # Encode to bytearray using specific encoding
                 encoded_bytearray = bytearray(text.encode(encoding))
-                
+
                 # Pass bytearray parameter - should hit lines 352-355 in ddbc_bindings.cpp
                 db_connection.setencoding(encoding=encoding, ctype=SQL_CHAR)
-                cursor.execute("INSERT INTO #test_bytearray_enc (id, data) VALUES (?, ?)", 
-                             i, encoded_bytearray)
+                cursor.execute(
+                    "INSERT INTO #test_bytearray_enc (id, data) VALUES (?, ?)", i, encoded_bytearray
+                )
             except Exception:
                 # Some encodings may fail - expected behavior
                 pass
-        
+
         cursor.execute("SELECT COUNT(*) FROM #test_bytearray_enc")
         count = cursor.fetchone()[0]
         assert count >= 0
-        
+
     finally:
         cursor.close()
 
@@ -7152,32 +7162,35 @@ def test_mixed_string_bytes_bytearray_parameters(db_connection):
     # Set encoding for INSERT (Latin-1)
     db_connection.setencoding(encoding="latin-1", ctype=SQL_CHAR)
     db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
-    
+
     cursor = db_connection.cursor()
     try:
-        cursor.execute("IF OBJECT_ID('tempdb..#test_mixed_params') IS NOT NULL DROP TABLE #test_mixed_params")
+        cursor.execute(
+            "IF OBJECT_ID('tempdb..#test_mixed_params') IS NOT NULL DROP TABLE #test_mixed_params"
+        )
         cursor.execute("CREATE TABLE #test_mixed_params (id INT, data NVARCHAR(200))")
-        
+
         # Test different parameter types to hit all code paths in ddbc_bindings.cpp
         # Focus on string parameters for round-trip verification, bytes/bytearray for code coverage
         test_cases = [
-            (1, "Müller", "Müller"),                           # String - hits lines 329-345
-            (2, "Café", "Café"),                               # String with accents
-            (3, "Größe", "Größe"),                             # String with umlauts
-            (4, "Österreich", "Österreich"),                   # String with special chars
-            (5, "Äpfel", "Äpfel"),                             # String with umlauts
-            (6, "Naïve", "Naïve"),                             # String with diaeresis
+            (1, "Müller", "Müller"),  # String - hits lines 329-345
+            (2, "Café", "Café"),  # String with accents
+            (3, "Größe", "Größe"),  # String with umlauts
+            (4, "Österreich", "Österreich"),  # String with special chars
+            (5, "Äpfel", "Äpfel"),  # String with umlauts
+            (6, "Naïve", "Naïve"),  # String with diaeresis
         ]
-        
+
         # Insert string parameters for round-trip verification
         for param_id, data, expected_value in test_cases:
-            cursor.execute("INSERT INTO #test_mixed_params (id, data) VALUES (?, ?)", 
-                         param_id, data)
-        
+            cursor.execute(
+                "INSERT INTO #test_mixed_params (id, data) VALUES (?, ?)", param_id, data
+            )
+
         # Verify round-trip integrity
         cursor.execute("SELECT id, data FROM #test_mixed_params ORDER BY id")
         results = cursor.fetchall()
-        
+
         for i, (row_id, retrieved_text) in enumerate(results):
             expected_id = test_cases[i][0]
             expected_text = test_cases[i][2]
@@ -7186,27 +7199,30 @@ def test_mixed_string_bytes_bytearray_parameters(db_connection):
                 f"Round-trip failed for mixed param at index {i} (id={expected_id}): "
                 f"expected '{expected_text}', got '{retrieved_text}'"
             )
-        
+
         # Now test bytes and bytearray parameters (hits lines 348-349 and 352-355)
         # These exercise the code paths but may not round-trip correctly with NVARCHAR
-        cursor.execute("IF OBJECT_ID('tempdb..#test_bytes_params') IS NOT NULL DROP TABLE #test_bytes_params")
+        cursor.execute(
+            "IF OBJECT_ID('tempdb..#test_bytes_params') IS NOT NULL DROP TABLE #test_bytes_params"
+        )
         cursor.execute("CREATE TABLE #test_bytes_params (id INT, data VARBINARY(200))")
-        
+
         bytes_test_cases = [
-            (1, b"Cafe"),                              # bytes - hits lines 348-349
-            (2, bytearray(b"Zurich")),                 # bytearray - hits lines 352-355
-            (3, "Test".encode("latin-1")),             # Pre-encoded bytes
+            (1, b"Cafe"),  # bytes - hits lines 348-349
+            (2, bytearray(b"Zurich")),  # bytearray - hits lines 352-355
+            (3, "Test".encode("latin-1")),  # Pre-encoded bytes
             (4, bytearray("Data".encode("latin-1"))),  # Pre-encoded bytearray
         ]
-        
+
         for param_id, data in bytes_test_cases:
             try:
-                cursor.execute("INSERT INTO #test_bytes_params (id, data) VALUES (?, ?)", 
-                             param_id, data)
+                cursor.execute(
+                    "INSERT INTO #test_bytes_params (id, data) VALUES (?, ?)", param_id, data
+                )
             except Exception:
                 # Expected - these test code paths, not necessarily successful insertion
                 pass
-        
+
     finally:
         cursor.close()
 
@@ -7214,56 +7230,59 @@ def test_mixed_string_bytes_bytearray_parameters(db_connection):
 def test_dae_encoding_large_string(db_connection):
     """
     Test Data-At-Execution (DAE) encoding path for large string parameters.
-    This covers lines 1744-1776 in ddbc_bindings.cpp (DAE SQL_C_CHAR encoding).
     """
     cursor = db_connection.cursor()
-    
+
     try:
         # Drop table if exists for Ubuntu compatibility
         cursor.execute("DROP TABLE IF EXISTS test_dae_encoding")
-        
+
         # Create table with NVARCHAR to handle Unicode properly
         cursor.execute("CREATE TABLE test_dae_encoding (id INT, large_text NVARCHAR(MAX))")
-        
+
         # Create a large string that will trigger DAE (Data-At-Execution)
         # Most drivers use DAE for strings > 8000 characters
         large_text = "ABC" * 5000  # 15,000 characters - well over typical threshold
-        
+
         # Set encoding for parameter (this will be used in DAE encoding path)
         db_connection.setencoding(encoding="latin-1", ctype=SQL_CHAR)
-        
+
         # Insert large string - this should trigger DAE code path (lines 1744-1776)
         cursor.execute(
-            "INSERT INTO test_dae_encoding (id, large_text) VALUES (?, ?)",
-            1, large_text
+            "INSERT INTO test_dae_encoding (id, large_text) VALUES (?, ?)", 1, large_text
         )
-        
+
         # Set decoding for retrieval
         db_connection.setdecoding(SQL_WCHAR, encoding="utf-16le", ctype=SQL_WCHAR)
-        
+
         # Retrieve and verify
-        result = cursor.execute("SELECT id, large_text FROM test_dae_encoding WHERE id = 1").fetchone()
-        
+        result = cursor.execute(
+            "SELECT id, large_text FROM test_dae_encoding WHERE id = 1"
+        ).fetchone()
+
         assert result is not None, "No data retrieved"
         assert result[0] == 1, f"ID mismatch: expected 1, got {result[0]}"
-        assert result[1] == large_text, f"Large text round-trip failed: length mismatch (expected {len(large_text)}, got {len(result[1])})"
-        
+        assert (
+            result[1] == large_text
+        ), f"Large text round-trip failed: length mismatch (expected {len(large_text)}, got {len(result[1])})"
+
         # Verify content is correct (check first and last parts)
         assert result[1][:100] == large_text[:100], "Beginning of large text doesn't match"
         assert result[1][-100:] == large_text[-100:], "End of large text doesn't match"
-        
+
         # Test with different encoding to hit DAE encoding with non-UTF-8
         large_german_text = "Äöü" * 4000  # 12,000 characters with umlauts
-        
+
         db_connection.setencoding(encoding="latin-1", ctype=SQL_CHAR)
         cursor.execute(
-            "INSERT INTO test_dae_encoding (id, large_text) VALUES (?, ?)",
-            2, large_german_text
+            "INSERT INTO test_dae_encoding (id, large_text) VALUES (?, ?)", 2, large_german_text
         )
-        
-        result = cursor.execute("SELECT id, large_text FROM test_dae_encoding WHERE id = 2").fetchone()
+
+        result = cursor.execute(
+            "SELECT id, large_text FROM test_dae_encoding WHERE id = 2"
+        ).fetchone()
         assert result[1] == large_german_text, "Large German text round-trip failed"
-        
+
     finally:
         try:
             cursor.execute("DROP TABLE IF EXISTS test_dae_encoding")

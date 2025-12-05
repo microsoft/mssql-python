@@ -7,6 +7,8 @@
 #pragma once
 
 // pybind11.h must be the first include
+#include <clocale>
+#include <cwchar>
 #include <memory>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
@@ -458,8 +460,28 @@ inline std::wstring Utf8ToWString(const std::string& str) {
         return {};
     return result;
 #else
-    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
-    return converter.from_bytes(str);
+    // Use mbstowcs as a replacement for deprecated wstring_convert
+    // Set locale to UTF-8 for proper conversion
+    const char* old_locale = setlocale(LC_CTYPE, nullptr);
+    setlocale(LC_CTYPE, "en_US.UTF-8");
+
+    size_t size_needed = mbstowcs(nullptr, str.c_str(), 0);
+    if (size_needed == static_cast<size_t>(-1)) {
+        LOG_ERROR("mbstowcs failed for UTF8 to wide string conversion");
+        setlocale(LC_CTYPE, old_locale);
+        return {};
+    }
+
+    std::wstring result(size_needed, 0);
+    size_t converted = mbstowcs(&result[0], str.c_str(), size_needed);
+    if (converted == static_cast<size_t>(-1)) {
+        LOG_ERROR("mbstowcs failed for UTF8 to wide string conversion");
+        setlocale(LC_CTYPE, old_locale);
+        return {};
+    }
+
+    setlocale(LC_CTYPE, old_locale);
+    return result;
 #endif
 }
 
