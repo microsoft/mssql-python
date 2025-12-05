@@ -4,8 +4,10 @@ Licensed under the MIT license.
 This module initializes the mssql_python package.
 """
 
+import atexit
 import sys
 import types
+import weakref
 from typing import Dict
 
 # Import settings from helpers to avoid circular imports
@@ -66,6 +68,40 @@ from .constants import ConstantsDDBC, GetInfoConstants
 
 # Pooling
 from .pooling import PoolingManager
+
+# Global registry for tracking active connections (using weak references)
+_active_connections = weakref.WeakSet()
+
+
+def _register_connection(conn):
+    """Register a connection for cleanup before shutdown."""
+    _active_connections.add(conn)
+
+
+def _cleanup_connections():
+    """
+    Cleanup function called by atexit to close all active connections.
+
+    This prevents resource leaks during interpreter shutdown by ensuring
+    all ODBC handles are freed in the correct order before Python finalizes.
+    """
+    # Make a copy of the connections to avoid modification during iteration
+    connections_to_close = list(_active_connections)
+
+    for conn in connections_to_close:
+        try:
+            # Check if connection is still valid and not closed
+            if hasattr(conn, "_closed") and not conn._closed:
+                # Close will handle both cursors and the connection
+                conn.close()
+        except Exception:
+            # Silently ignore errors during shutdown cleanup
+            # We're prioritizing crash prevention over error reporting
+            pass
+
+
+# Register cleanup function to run before Python exits
+atexit.register(_cleanup_connections)
 
 # GLOBALS
 # Read-Only

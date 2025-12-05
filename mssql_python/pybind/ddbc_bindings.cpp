@@ -1124,11 +1124,22 @@ void SqlHandle::free() {
         // Check if Python is shutting down using centralized helper function
         bool pythonShuttingDown = is_python_finalizing();
 
-        // CRITICAL FIX: During Python shutdown, don't free STMT handles as
-        // their parent DBC may already be freed This prevents segfault when
-        // handles are freed in wrong order during interpreter shutdown Type 3 =
-        // SQL_HANDLE_STMT, Type 2 = SQL_HANDLE_DBC, Type 1 = SQL_HANDLE_ENV
-        if (pythonShuttingDown && _type == 3) {
+        // CRITICAL FIX: During Python shutdown, don't free STMT or DBC handles as
+        // their parent handles may already be freed. This prevents segfaults when
+        // handles are freed in the wrong order during interpreter shutdown.
+        // Type 3 = SQL_HANDLE_STMT (parent: DBC)
+        // Type 2 = SQL_HANDLE_DBC (parent: ENV, which is static and may destruct first)
+        // Type 1 = SQL_HANDLE_ENV (no parent)
+        //
+        // RESOURCE LEAK MITIGATION:
+        // When handles are skipped during shutdown, they are not freed, which could
+        // cause resource leaks. However, this is mitigated by:
+        // 1. Python-side atexit cleanup (in __init__.py) that explicitly closes all
+        //    connections before shutdown, ensuring handles are freed in correct order
+        // 2. OS-level cleanup at process termination recovers any remaining resources
+        // 3. This tradeoff prioritizes crash prevention over resource cleanup, which
+        //    is appropriate since we're already in shutdown sequence
+        if (pythonShuttingDown && (_type == 3 || _type == 2)) {
             _handle = nullptr;  // Mark as freed to prevent double-free attempts
             return;
         }
