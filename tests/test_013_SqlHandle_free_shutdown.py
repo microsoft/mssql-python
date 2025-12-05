@@ -259,7 +259,7 @@ class TestHandleFreeShutdown:
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
         assert "STMT handle cleanup test: Exiting without explicit cleanup" in result.stdout
         assert "Query result: [(1,)]" in result.stdout
-        print(f"✓ STMT handle (Type 3) cleanup during shutdown: PASSED")
+        print(f"PASS: STMT handle (Type 3) cleanup during shutdown")
 
     def test_dbc_handle_cleanup_at_shutdown(self, conn_str):
         """
@@ -308,7 +308,7 @@ class TestHandleFreeShutdown:
         assert "Connection 0: created and cursor closed" in result.stdout
         assert "Connection 1: created and cursor closed" in result.stdout
         assert "Connection 2: created and cursor closed" in result.stdout
-        print(f"✓ DBC handle (Type 2) cleanup during shutdown: PASSED")
+        print(f"PASS: DBC handle (Type 2) cleanup during shutdown")
 
     def test_env_handle_cleanup_at_shutdown(self, conn_str):
         """
@@ -356,7 +356,7 @@ class TestHandleFreeShutdown:
         assert "Connection 0: properly closed" in result.stdout
         assert "Connection 1: properly closed" in result.stdout
         assert "Connection 2: properly closed" in result.stdout
-        print(f"✓ ENV handle (Type 1) cleanup during shutdown: PASSED")
+        print(f"PASS: ENV handle (Type 1) cleanup during shutdown")
 
     def test_mixed_handle_cleanup_at_shutdown(self, conn_str):
         """
@@ -430,7 +430,7 @@ class TestHandleFreeShutdown:
         assert "Connection 1: cursors left open" in result.stdout
         assert "Connection 2: cursors closed, connection left open" in result.stdout
         assert "Connection 3: everything properly closed" in result.stdout
-        print(f"✓ Mixed handle cleanup during shutdown: PASSED")
+        print(f"PASS: Mixed handle cleanup during shutdown")
 
     def test_rapid_connection_churn_with_shutdown(self, conn_str):
         """
@@ -483,7 +483,7 @@ class TestHandleFreeShutdown:
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
         assert "Created 10 connections, closed 5 explicitly" in result.stdout
         assert "Rapid churn test: Exiting with mixed cleanup" in result.stdout
-        print(f"✓ Rapid connection churn with shutdown: PASSED")
+        print(f"PASS: Rapid connection churn with shutdown")
 
     def test_exception_during_query_with_shutdown(self, conn_str):
         """
@@ -524,7 +524,7 @@ class TestHandleFreeShutdown:
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
         assert "Expected error occurred: ProgrammingError" in result.stdout
         assert "Exception test: Exiting after exception without cleanup" in result.stdout
-        print(f"✓ Exception during query with shutdown: PASSED")
+        print(f"PASS: Exception during query with shutdown")
 
     def test_weakref_cleanup_at_shutdown(self, conn_str):
         """
@@ -578,7 +578,7 @@ class TestHandleFreeShutdown:
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
         assert "Weakref test: Exiting with weakrefs active" in result.stdout
-        print(f"✓ Weakref cleanup at shutdown: PASSED")
+        print(f"PASS: Weakref cleanup at shutdown")
 
     def test_gc_during_shutdown_with_circular_refs(self, conn_str):
         """
@@ -638,7 +638,7 @@ class TestHandleFreeShutdown:
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
         assert "Circular ref test: Exiting after GC with cycles" in result.stdout
-        print(f"✓ GC during shutdown with circular refs: PASSED")
+        print(f"PASS: GC during shutdown with circular refs")
 
     def test_all_handle_types_comprehensive(self, conn_str):
         """
@@ -717,7 +717,7 @@ class TestHandleFreeShutdown:
         assert "Scenario 3: Both cursor and connection left open" in result.stdout
         assert "Scenario 4: Multiple cursors per connection left open" in result.stdout
         assert "=== Exiting ===" in result.stdout
-        print(f"✓ Comprehensive all handle types test: PASSED")
+        print(f"PASS: Comprehensive all handle types test")
 
 
 if __name__ == "__main__":
@@ -755,7 +755,7 @@ if __name__ == "__main__":
         test.test_all_handle_types_comprehensive(conn_str)
 
         print("\n" + "=" * 70)
-        print("✓ ALL TESTS PASSED - No segfaults detected")
+        print("PASS: ALL TESTS PASSED - No segfaults detected")
         print("=" * 70 + "\n")
     except AssertionError as e:
         print(f"\n✗ TEST FAILED: {e}")

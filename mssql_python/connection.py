@@ -239,6 +239,17 @@ class Connection:
         )
         self.setautocommit(autocommit)
 
+        # Register this connection for cleanup before Python shutdown
+        # This ensures ODBC handles are freed in correct order, preventing leaks
+        try:
+            import mssql_python
+
+            if hasattr(mssql_python, "_register_connection"):
+                mssql_python._register_connection(self)
+        except (ImportError, AttributeError):
+            # If registration fails, continue - cleanup will still happen via __del__
+            pass
+
     def _construct_connection_string(self, connection_str: str = "", **kwargs: Any) -> str:
         """
         Construct the connection string by parsing, validating, and merging parameters.
