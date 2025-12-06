@@ -4523,174 +4523,238 @@ SQLRETURN FetchArrowBatch_wrap(
                         case SQL_BINARY:
                         case SQL_VARBINARY:
                         case SQL_LONGVARBINARY: {
-                            GetDataVar(
+                            ret = GetDataVar(
                                 hStmt,
                                 idxCol + 1,
                                 SQL_C_BINARY,
                                 buffers.charBuffers[idxCol],
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching LOB for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_CHAR:
                         case SQL_VARCHAR:
                         case SQL_LONGVARCHAR: {
-                            GetDataVar(
+                            ret = GetDataVar(
                                 hStmt,
                                 idxCol + 1,
                                 SQL_C_CHAR,
                                 buffers.charBuffers[idxCol],
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching LOB for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_SS_XML:
                         case SQL_WCHAR:
                         case SQL_WVARCHAR:
                         case SQL_WLONGVARCHAR: {
-                            GetDataVar(
+                            ret = GetDataVar(
                                 hStmt,
                                 idxCol + 1,
                                 SQL_C_WCHAR,
                                 buffers.wcharBuffers[idxCol],
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching binary data for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_INTEGER: {
                             buffers.intBuffers[idxCol].resize(1);
-                            SQLGetData_ptr(
+                            ret = SQLGetData_ptr(
                                 hStmt, idxCol + 1, SQL_C_SLONG,
                                 buffers.intBuffers[idxCol].data(),
                                 sizeof(SQLINTEGER),
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching SLONG data for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_SMALLINT: {
                             buffers.smallIntBuffers[idxCol].resize(1);
-                            SQLGetData_ptr(
+                            ret = SQLGetData_ptr(
                                 hStmt, idxCol + 1, SQL_C_SSHORT,
                                 buffers.smallIntBuffers[idxCol].data(),
                                 sizeof(SQLSMALLINT),
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching SSHORT data for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_TINYINT: {
                             buffers.charBuffers[idxCol].resize(1);
-                            SQLGetData_ptr(
+                            ret = SQLGetData_ptr(
                                 hStmt, idxCol + 1, SQL_C_TINYINT,
                                 buffers.charBuffers[idxCol].data(),
                                 sizeof(SQLCHAR),
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching TINYINT data for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_BIT: {
                             buffers.charBuffers[idxCol].resize(1);
-                            SQLGetData_ptr(
+                            ret = SQLGetData_ptr(
                                 hStmt, idxCol + 1, SQL_C_BIT,
                                 buffers.charBuffers[idxCol].data(),
                                 sizeof(SQLCHAR),
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching BIT data for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_REAL: {
                             buffers.realBuffers[idxCol].resize(1);
-                            SQLGetData_ptr(
+                            ret = SQLGetData_ptr(
                                 hStmt, idxCol + 1, SQL_C_FLOAT,
                                 buffers.realBuffers[idxCol].data(),
                                 sizeof(SQLREAL),
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching FLOAT data for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_DECIMAL:
                         case SQL_NUMERIC: {
                             buffers.charBuffers[idxCol].resize(MAX_DIGITS_IN_NUMERIC);
-                            SQLGetData_ptr(
+                            ret = SQLGetData_ptr(
                                 hStmt, idxCol + 1, SQL_C_CHAR,
                                 buffers.charBuffers[idxCol].data(),
                                 MAX_DIGITS_IN_NUMERIC * sizeof(SQLCHAR),
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching CHAR data for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_DOUBLE:
                         case SQL_FLOAT: {
                             buffers.doubleBuffers[idxCol].resize(1);
-                            SQLGetData_ptr(
+                            ret = SQLGetData_ptr(
                                 hStmt, idxCol + 1, SQL_C_DOUBLE,
                                 buffers.doubleBuffers[idxCol].data(),
                                 sizeof(SQLDOUBLE),
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching DOUBLE data for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_TIMESTAMP:
                         case SQL_TYPE_TIMESTAMP:
                         case SQL_DATETIME: {
                             buffers.timestampBuffers[idxCol].resize(1);
-                            SQLGetData_ptr(
+                            ret = SQLGetData_ptr(
                                 hStmt, idxCol + 1, SQL_C_TYPE_TIMESTAMP,
                                 buffers.timestampBuffers[idxCol].data(),
                                 sizeof(SQL_TIMESTAMP_STRUCT),
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching TYPE_TIMESTAMP data for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_BIGINT: {
                             buffers.bigIntBuffers[idxCol].resize(1);
-                            SQLGetData_ptr(
+                            ret = SQLGetData_ptr(
                                 hStmt, idxCol + 1, SQL_C_SBIGINT,
                                 buffers.bigIntBuffers[idxCol].data(),
                                 sizeof(SQLBIGINT),
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching SBIGINT data for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_TYPE_DATE: {
                             buffers.dateBuffers[idxCol].resize(1);
-                            SQLGetData_ptr(
+                            ret = SQLGetData_ptr(
                                 hStmt, idxCol + 1, SQL_C_TYPE_DATE,
                                 buffers.dateBuffers[idxCol].data(),
                                 sizeof(SQL_DATE_STRUCT),
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching TYPE_DATE data for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_TIME:
                         case SQL_TYPE_TIME:
                         case SQL_SS_TIME2: {
                             buffers.timeBuffers[idxCol].resize(1);
-                            SQLGetData_ptr(
+                            ret = SQLGetData_ptr(
                                 hStmt, idxCol + 1, SQL_C_TYPE_TIME,
                                 buffers.timeBuffers[idxCol].data(),
                                 sizeof(SQL_TIME_STRUCT),
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching TYPE_TIME data for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_GUID: {
                             buffers.guidBuffers[idxCol].resize(1);
-                            SQLGetData_ptr(
+                            ret = SQLGetData_ptr(
                                 hStmt, idxCol + 1, SQL_C_GUID,
                                 buffers.guidBuffers[idxCol].data(),
                                 sizeof(SQLGUID),
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching GUID data for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         case SQL_SS_TIMESTAMPOFFSET: {
                             buffers.datetimeoffsetBuffers[idxCol].resize(1);
-                            SQLGetData_ptr(
+                            ret = SQLGetData_ptr(
                                 hStmt, idxCol + 1, SQL_C_SS_TIMESTAMPOFFSET,
                                 buffers.datetimeoffsetBuffers[idxCol].data(),
                                 sizeof(DateTimeOffset),
                                 buffers.indicators[idxCol].data()
                             );
+                            if (!SQL_SUCCEEDED(ret)) {
+                                LOG("Error fetching SS_TIMESTAMPOFFSET data for column %d", idxCol + 1);
+                                return ret;
+                            }
                             break;
                         }
                         default: {
