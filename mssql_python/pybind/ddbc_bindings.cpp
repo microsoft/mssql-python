@@ -4307,6 +4307,7 @@ SQLRETURN FetchArrowBatch_wrap(
     std::vector<SQLULEN> columnSizes(numCols);
     std::vector<bool> columnNullable(numCols);
     std::vector<bool> columnVarLen(numCols, false);
+    std::vector<int64_t> nullCounts(numCols, 0);
 
     std::vector<std::unique_ptr<ArrowArrayPrivateData>> arrowArrayPrivateData(numCols);
     std::vector<std::unique_ptr<ArrowSchemaPrivateData>> arrowSchemaPrivateData(numCols);
@@ -4796,6 +4797,8 @@ SQLRETURN FetchArrowBatch_wrap(
                         default:
                             break;
                     }
+
+                    nullCounts[idxCol] += 1;
                     continue;
                 } else if (dataLen < 0) {
                     // Negative value is unexpected, log column index, SQL type & raise exception
@@ -5118,7 +5121,7 @@ SQLRETURN FetchArrowBatch_wrap(
 
         *arrowArrayBatchChildPointers[col] = {
             .length = static_cast<int64_t>(idxRowArrow),
-            .null_count = 0,
+            .null_count = nullCounts[col],
             .offset = 0,
             .n_buffers = columnVarLen[col] ? 3 : 2,
             .n_children = 0,

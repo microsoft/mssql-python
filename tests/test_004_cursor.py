@@ -20,8 +20,11 @@ from conftest import is_azure_sql_connection
 
 try:
     import pyarrow as pa
+    import pyarrow.parquet as pq
+    import io
 except ImportError:
     pa = None
+    pq = None
 
 
 # Setup test table
@@ -15138,12 +15141,17 @@ def _test_arrow_test_data(cursor: mssql_python.Cursor, arrow_test_data, fetch_le
     full_query = "\nunion all\n".join(selects)
     ret = cursor.execute(full_query).arrow_batch(fetch_length)
     for i_col, col in enumerate(ret):
+        expected_data = arrow_test_data[i_col][2][:fetch_length]
         for i_row, (v_expected, v_actual) in enumerate(
-            zip(arrow_test_data[i_col][2][:fetch_length], col.to_pylist(), strict=True)
+            zip(expected_data, col.to_pylist(), strict=True)
         ):
             assert (
                 v_expected == v_actual
             ), f"Mismatch in column {i_col}, row {i_row}: expected {v_expected}, got {v_actual}"
+        # check that null counts match
+        expected_null_count = sum(1 for v in expected_data if v is None)
+        actual_null_count = col.null_count
+        assert expected_null_count == actual_null_count, (expected_null_count, actual_null_count)
     for i_col, (pa_type, sql_type, values) in enumerate(arrow_test_data):
         field = ret.schema.field(i_col)
         assert (
@@ -15152,6 +15160,22 @@ def _test_arrow_test_data(cursor: mssql_python.Cursor, arrow_test_data, fetch_le
         assert field.type.equals(
             pa_type
         ), f"Column {i_col} type mismatch: expected {pa_type}, got {field.type}"
+
+    # Validate that Parquet serialization/deserialization does not detect any issues
+    tbl = pa.Table.from_batches([ret])
+    # for some reason parquet converts seconds to milliseconds in time32
+    for i_col, col in enumerate(tbl.columns):
+        if col.type == pa.time32("s"):
+            tbl = tbl.set_column(
+                i_col,
+                tbl.schema.field(i_col).name,
+                col.cast(pa.time32("ms")),
+            )
+    buffer = io.BytesIO()
+    pq.write_table(tbl, buffer)
+    buffer.seek(0)
+    read_table = pq.read_table(buffer)
+    assert read_table.equals(tbl)
 
 
 @pytest.mark.skipif(pa is None, reason="pyarrow is not installed")
