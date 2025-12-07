@@ -58,7 +58,7 @@ class TestConnectionStringParser:
         assert result == {"server": ";local;host", "database": "mydb"}
 
     def test_parse_braced_value_with_escaped_right_brace(self):
-        """Test parsing braced values with escaped }}."""  
+        """Test parsing braced values with escaped }}."""
         parser = _ConnectionStringParser()
         result = parser._parse("PWD={p}}w{{d}")
         assert result == {"pwd": "p}w{{d"}
@@ -146,7 +146,7 @@ class TestConnectionStringParser:
         assert result == {"value": "test{value"}
 
     def test_parse_braced_value_double_left_brace(self):
-        """Test parsing braced value with {{ (not an escape sequence per ODBC spec)."""
+        """Test parsing braced value with {{ (not an escape sequence)."""
         parser = _ConnectionStringParser()
         result = parser._parse("Value={test{{value}")
         assert result == {"value": "test{{value"}
