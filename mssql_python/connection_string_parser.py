@@ -366,13 +366,8 @@ class _ConnectionStringParser:
                     # Single '}' means end of braced value
                     start_pos += 1
                     return "".join(value), start_pos
-            elif ch == "{":
-                # Opening braces do not need escaping per ODBC spec
-                # Keep them as literal characters
-                value.append(ch)
-                start_pos += 1
             else:
-                # Regular character
+                # Regular character (including '{' which doesn't need escaping per ODBC spec)
                 value.append(ch)
                 start_pos += 1
 
