@@ -458,8 +458,69 @@ inline std::wstring Utf8ToWString(const std::string& str) {
         return {};
     return result;
 #else
-    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
-    return converter.from_bytes(str);
+    // Optimized UTF-8 to UTF-32 conversion (wstring on Unix)
+    if (str.empty())
+        return {};
+    
+    // Lambda to decode UTF-8 multi-byte sequences
+    constexpr auto decodeUtf8 = [](const unsigned char* data, size_t& i, size_t len) -> wchar_t {
+        unsigned char byte = data[i];
+        
+        // 1-byte sequence (ASCII): 0xxxxxxx
+        if (byte <= 0x7F) {
+            ++i;
+            return static_cast<wchar_t>(byte);
+        }
+        // 2-byte sequence: 110xxxxx 10xxxxxx
+        if ((byte & 0xE0) == 0xC0 && i + 1 < len) {
+            uint32_t cp = ((static_cast<uint32_t>(byte & 0x1F) << 6) | (data[i + 1] & 0x3F));
+            i += 2;
+            return static_cast<wchar_t>(cp);
+        }
+        // 3-byte sequence: 1110xxxx 10xxxxxx 10xxxxxx
+        if ((byte & 0xF0) == 0xE0 && i + 2 < len) {
+            uint32_t cp = ((static_cast<uint32_t>(byte & 0x0F) << 12) |
+                          ((data[i + 1] & 0x3F) << 6) |
+                          (data[i + 2] & 0x3F));
+            i += 3;
+            return static_cast<wchar_t>(cp);
+        }
+        // 4-byte sequence: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+        if ((byte & 0xF8) == 0xF0 && i + 3 < len) {
+            uint32_t cp = ((static_cast<uint32_t>(byte & 0x07) << 18) |
+                          ((data[i + 1] & 0x3F) << 12) |
+                          ((data[i + 2] & 0x3F) << 6) |
+                          (data[i + 3] & 0x3F));
+            i += 4;
+            return static_cast<wchar_t>(cp);
+        }
+        // Invalid sequence - skip byte
+        ++i;
+        return 0xFFFD;  // Unicode replacement character
+    };
+    
+    std::wstring result;
+    result.reserve(str.size());  // Reserve assuming mostly ASCII
+    
+    const unsigned char* data = reinterpret_cast<const unsigned char*>(str.data());
+    const size_t len = str.size();
+    size_t i = 0;
+    
+    // Fast path for ASCII-only prefix (most common case)
+    while (i < len && data[i] <= 0x7F) {
+        result.push_back(static_cast<wchar_t>(data[i]));
+        ++i;
+    }
+    
+    // Handle remaining multi-byte sequences
+    while (i < len) {
+        wchar_t wc = decodeUtf8(data, i, len);
+        if (wc != 0xFFFD || data[i - 1] >= 0x80) {  // Skip invalid sequences
+            result.push_back(wc);
+        }
+    }
+    
+    return result;
 #endif
 }
 
