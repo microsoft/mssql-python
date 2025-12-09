@@ -798,7 +798,6 @@ def test_utf8_replacement_character_handling():
     assert True, "Replacement character handling passed"
 
 
-@pytest.mark.skip(reason="Skipping UTF-8 2-byte sequence test")
 def test_utf8_2byte_sequence_complete_coverage():
     """
     Comprehensive test for 2-byte UTF-8 sequence handling in ddbc_bindings.h lines 473-488.
@@ -838,7 +837,10 @@ def test_utf8_2byte_sequence_complete_coverage():
             print(f"  {test_bytes.hex()}: {binary} ({desc}) -> Exception occurred")
             # Any error handling is acceptable for invalid sequences
 
-    print("  ✓ All invalid continuation bytes handled\n")
+    try:
+        print("  ✓ All invalid continuation bytes handled\n")
+    except UnicodeEncodeError:
+        print("  All invalid continuation bytes handled\n")
 
     # TEST 2: Lines 481-484 - Valid decoding path
     # Condition: cp >= 0x80 (after continuation byte validated)
@@ -853,7 +855,10 @@ def test_utf8_2byte_sequence_complete_coverage():
     for test_bytes, expected_char, codepoint, desc in valid_2byte:
         # Test decoding
         result = test_bytes.decode("utf-8")
-        print(f"  {test_bytes.hex()}: U+{codepoint:04X} -> {repr(result)} ({desc})")
+        try:
+            print(f"  {test_bytes.hex()}: U+{codepoint:04X} -> {repr(result)} ({desc})")
+        except UnicodeEncodeError:
+            print(f"  {test_bytes.hex()}: U+{codepoint:04X} -> <result> ({desc})")
         assert result == expected_char, f"Should decode to {expected_char!r}"
         assert "\ufffd" not in result, f"Should NOT contain U+FFFD for valid sequence"
 
@@ -863,7 +868,10 @@ def test_utf8_2byte_sequence_complete_coverage():
             binary_result == test_bytes
         ), f"Binary({expected_char!r}) should encode to {test_bytes.hex()}"
 
-    print("  ✓ All valid 2-byte sequences correctly decoded\n")
+    try:
+        print("  ✓ All valid 2-byte sequences correctly decoded\n")
+    except UnicodeEncodeError:
+        print("  All valid 2-byte sequences correctly decoded\n")
 
     # TEST 3: Lines 486-487 - Overlong encoding rejection
     # Condition: cp < 0x80 (overlong encoding)
@@ -893,7 +901,10 @@ def test_utf8_2byte_sequence_complete_coverage():
                 f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> Exception occurred"
             )
 
-    print("  ✓ All overlong 2-byte encodings handled\n")
+    try:
+        print("  ✓ All overlong 2-byte encodings handled\n")
+    except UnicodeEncodeError:
+        print("  All overlong 2-byte encodings handled\n")
 
     # TEST 4: Edge cases and boundaries
     print("TEST 4: Boundary testing")
@@ -915,7 +926,10 @@ def test_utf8_2byte_sequence_complete_coverage():
     print(f"  2-byte max: {two_byte_max.hex()} -> U+07FF: {repr(result_3)}")
     assert ord(result_3) == 0x7FF
 
-    print("  ✓ Boundary cases handled correctly\n")
+    try:
+        print("  ✓ Boundary cases handled correctly\n")
+    except UnicodeEncodeError:
+        print("  Boundary cases handled correctly\n")
 
     # TEST 5: Bit pattern validation details
     print("TEST 5: Detailed bit pattern analysis")
@@ -939,7 +953,10 @@ def test_utf8_2byte_sequence_complete_coverage():
         assert (byte_val & 0xC0) == masked, f"Bit masking incorrect for 0x{byte_val:02X}"
         assert ((byte_val & 0xC0) == 0x80) == valid, f"Validation incorrect for 0x{byte_val:02X}"
 
-    print("  ✓ Bit pattern validation correct\n")
+    try:
+        print("  ✓ Bit pattern validation correct\n")
+    except UnicodeEncodeError:
+        print("  Bit pattern validation correct\n")
 
     print("=== All 2-byte UTF-8 sequence tests passed ===")
     assert True, "Complete 2-byte sequence coverage validated"
@@ -1054,7 +1071,10 @@ def test_utf8_3byte_sequence_complete_coverage():
             binary_result == test_bytes
         ), f"Binary({expected_char!r}) should encode to {test_bytes.hex()}"
 
-    print("  ✓ All valid 3-byte sequences correctly decoded\n")
+    try:
+        print("  ✓ All valid 3-byte sequences correctly decoded\n")
+    except UnicodeEncodeError:
+        print("  All valid 3-byte sequences correctly decoded\n")
 
     # TEST 3: Lines 499-502 - Surrogate range rejection
     # Condition: cp < 0xD800 || cp > 0xDFFF (must be FALSE to reject)
@@ -1084,7 +1104,10 @@ def test_utf8_3byte_sequence_complete_coverage():
             # Python may not allow creating surrogate characters directly
             pass
 
-    print("  ✓ All surrogate encodings correctly rejected\n")
+    try:
+        print("  ✓ All surrogate encodings correctly rejected\n")
+    except UnicodeEncodeError:
+        print("  All surrogate encodings correctly rejected\n")
 
     # TEST 4: Lines 504-505 - Overlong encoding rejection
     # Condition: cp < 0x800 (overlong encoding)
@@ -1115,7 +1138,10 @@ def test_utf8_3byte_sequence_complete_coverage():
                 f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> Exception occurred"
             )
 
-    print("  ✓ All overlong 3-byte encodings handled\n")
+    try:
+        print("  ✓ All overlong 3-byte encodings handled\n")
+    except UnicodeEncodeError:
+        print("  All overlong 3-byte encodings handled\n")
 
     # TEST 5: Boundary testing
     print("TEST 5: Boundary testing")
@@ -1148,7 +1174,10 @@ def test_utf8_3byte_sequence_complete_coverage():
     print(f"  3-byte max: {three_byte_max.hex()} -> U+FFFF: {repr(result_max)}")
     assert ord(result_max) == 0xFFFF
 
-    print("  ✓ Boundary cases handled correctly\n")
+    try:
+        print("  ✓ Boundary cases handled correctly\n")
+    except UnicodeEncodeError:
+        print("  Boundary cases handled correctly\n")
 
     # TEST 6: Bit pattern validation for continuation bytes
     print("TEST 6: Continuation byte bit pattern validation")
@@ -1319,7 +1348,10 @@ def test_utf8_4byte_sequence_complete_coverage():
             binary_result == test_bytes
         ), f"Binary({expected_char!r}) should encode to {test_bytes.hex()}"
 
-    print("  ✓ All valid 4-byte sequences correctly decoded\n")
+    try:
+        print("  ✓ All valid 4-byte sequences correctly decoded\n")
+    except UnicodeEncodeError:
+        print("  All valid 4-byte sequences correctly decoded\n")
 
     # TEST 3: Lines 524-525 - Overlong encoding rejection
     # Condition: cp < 0x10000 (overlong encoding)
@@ -1350,7 +1382,10 @@ def test_utf8_4byte_sequence_complete_coverage():
                 f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> Exception occurred"
             )
 
-    print("  ✓ All overlong 4-byte encodings handled\n")
+    try:
+        print("  ✓ All overlong 4-byte encodings handled\n")
+    except UnicodeEncodeError:
+        print("  All overlong 4-byte encodings handled\n")
 
     # TEST 4: Lines 524-525 - Out of range rejection
     # Condition: cp > 0x10FFFF (beyond maximum Unicode)
@@ -1368,7 +1403,10 @@ def test_utf8_4byte_sequence_complete_coverage():
         # Should be rejected (behavior may vary by platform)
         assert len(result) > 0, f"Should produce some output for out-of-range U+{codepoint:06X}"
 
-    print("  ✓ All out-of-range sequences correctly rejected\n")
+    try:
+        print("  ✓ All out-of-range sequences correctly rejected\n")
+    except UnicodeEncodeError:
+        print("  All out-of-range sequences correctly rejected\n")
 
     # TEST 5: Lines 528-529 - Invalid sequence fallback
     print("TEST 5: Invalid sequence fallback (lines 528-529)")
@@ -1393,7 +1431,10 @@ def test_utf8_4byte_sequence_complete_coverage():
         except Exception as e:
             print(f"  {test_bytes.hex()}: {desc} -> Exception occurred")
 
-    print("  ✓ Invalid sequences handled\n")
+    try:
+        print("  ✓ Invalid sequences handled\n")
+    except UnicodeEncodeError:
+        print("  Invalid sequences handled\n")
 
     # TEST 6: Boundary testing
     print("TEST 6: Boundary testing")
@@ -1421,7 +1462,10 @@ def test_utf8_4byte_sequence_complete_coverage():
     # Beyond max may be handled differently on different platforms
     assert len(result_beyond) > 0, "Should produce some output for beyond-max sequence"
 
-    print("  ✓ Boundary cases handled correctly\n")
+    try:
+        print("  ✓ Boundary cases handled correctly\n")
+    except UnicodeEncodeError:
+        print("  Boundary cases handled correctly\n")
 
     # TEST 7: Bit pattern validation for continuation bytes
     print("TEST 7: Continuation byte bit pattern validation")
