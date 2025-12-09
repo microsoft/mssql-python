@@ -15274,19 +15274,21 @@ def test_arrow_no_result_set(cursor: mssql_python.Cursor):
 @pytest.mark.skipif(pa is None, reason="pyarrow is not installed")
 def test_arrow_datetimeoffset(cursor: mssql_python.Cursor):
     "Datetimeoffset converts correctly to utc"
-    cursor.execute(
-        "declare @dt datetimeoffset(0) = '2345-02-03 12:34:56 +00:00';\n"
-        "select @dt, @dt at time zone 'Pacific Standard Time';\n"
-    )
-    batch = cursor.arrow_batch(10)
-    assert batch.num_rows == 1
-    assert batch.num_columns == 2
-    for col in batch.columns:
-        assert pa.types.is_timestamp(col.type)
-        assert col.type.tz == "+00:00", col.type.tz
-        assert col.to_pylist() == [
-            datetime(2345, 2, 3, 12, 34, 56, tzinfo=timezone.utc),
-        ]
+    for force_sqlgetdata in (False, True):
+        str_val = "cast('asdf' as nvarchar(max))" if force_sqlgetdata else "'asdf'"
+        cursor.execute(
+            "declare @dt datetimeoffset(0) = '2345-02-03 12:34:56 +00:00';\n"
+            f"select {str_val}, @dt, @dt at time zone 'Pacific Standard Time';\n"
+        )
+        batch = cursor.arrow_batch(10)
+        assert batch.num_rows == 1
+        assert batch.num_columns == 3
+        for col in batch.columns[1:]:
+            assert pa.types.is_timestamp(col.type)
+            assert col.type.tz == "+00:00", col.type.tz
+            assert col.to_pylist() == [
+                datetime(2345, 2, 3, 12, 34, 56, tzinfo=timezone.utc),
+            ]
 
 
 @pytest.mark.skipif(pa is None, reason="pyarrow is not installed")
