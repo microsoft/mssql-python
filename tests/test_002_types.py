@@ -826,11 +826,15 @@ def test_utf8_2byte_sequence_complete_coverage():
     for test_bytes, binary, desc in invalid_continuation:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            print(f"  {test_bytes.hex()}: {binary} ({desc}) -> {repr(result)}")
+            try:
+                print(f"  {test_bytes.hex()}: {binary} ({desc}) -> {repr(result)}")
+            except UnicodeEncodeError:
+                print(f"  {test_bytes.hex()}: {binary} ({desc}) -> <decoded>")
             # Check that invalid sequences are handled (may produce replacement chars or split)
             assert len(result) > 0, f"Should produce some output for {desc}"
         except Exception as e:
-            print(f"  {test_bytes.hex()}: {binary} ({desc}) -> Exception: {e}")
+            # Print without the exception message to avoid encoding errors
+            print(f"  {test_bytes.hex()}: {binary} ({desc}) -> Exception occurred")
             # Any error handling is acceptable for invalid sequences
 
     print("  ✓ All invalid continuation bytes handled\n")
@@ -873,14 +877,17 @@ def test_utf8_2byte_sequence_complete_coverage():
     for test_bytes, codepoint, desc in overlong_2byte:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            print(
-                f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> {repr(result)}"
-            )
+            try:
+                print(
+                    f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> {repr(result)}"
+                )
+            except UnicodeEncodeError:
+                print(f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> <decoded>")
             # Check that overlong sequences are handled (behavior may vary by platform)
             assert len(result) > 0, f"Should produce some output for overlong U+{codepoint:04X}"
         except Exception as e:
             print(
-                f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> Exception: {e}"
+                f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> Exception occurred"
             )
 
     print("  ✓ All overlong 2-byte encodings handled\n")
@@ -965,11 +972,14 @@ def test_utf8_3byte_sequence_complete_coverage():
     for test_bytes, desc in invalid_second_byte:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+            try:
+                print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+            except UnicodeEncodeError:
+                print(f"    {test_bytes.hex()}: {desc} -> <decoded>")
             # Check that invalid sequences are handled (may produce replacement chars or split)
             assert len(result) > 0, f"Should produce some output for {desc}"
         except Exception as e:
-            print(f"    {test_bytes.hex()}: {desc} -> Exception: {e}")
+            print(f"    {test_bytes.hex()}: {desc} -> Exception occurred")
 
     # Third byte invalid (second byte must be valid to isolate third byte error)
     invalid_third_byte = [
@@ -983,11 +993,14 @@ def test_utf8_3byte_sequence_complete_coverage():
     for test_bytes, desc in invalid_third_byte:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+            try:
+                print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+            except UnicodeEncodeError:
+                print(f"    {test_bytes.hex()}: {desc} -> <decoded>")
             # Check that invalid sequences are handled (may produce replacement chars or split)
             assert len(result) > 0, f"Should produce some output for {desc}"
         except Exception as e:
-            print(f"    {test_bytes.hex()}: {desc} -> Exception: {e}")
+            print(f"    {test_bytes.hex()}: {desc} -> Exception occurred")
 
     # Both bytes invalid
     both_invalid = [
@@ -1000,11 +1013,14 @@ def test_utf8_3byte_sequence_complete_coverage():
     for test_bytes, desc in both_invalid:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+            try:
+                print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+            except UnicodeEncodeError:
+                print(f"    {test_bytes.hex()}: {desc} -> <decoded>")
             # Check that invalid sequences are handled (may produce replacement chars or split)
             assert len(result) > 0, f"Should produce some output for {desc}"
         except Exception as e:
-            print(f"    {test_bytes.hex()}: {desc} -> Exception: {e}")
+            print(f"    {test_bytes.hex()}: {desc} -> Exception occurred")
 
     print("  ✓ All invalid continuation bytes handled\n")
 
@@ -1052,11 +1068,14 @@ def test_utf8_3byte_sequence_complete_coverage():
     for test_bytes, codepoint, desc in surrogate_encodings:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            print(f"  {test_bytes.hex()}: {desc} (0x{codepoint:04X}) -> {repr(result)}")
+            try:
+                print(f"  {test_bytes.hex()}: {desc} (0x{codepoint:04X}) -> {repr(result)}")
+            except UnicodeEncodeError:
+                print(f"  {test_bytes.hex()}: {desc} (0x{codepoint:04X}) -> <decoded>")
             # Check that surrogate sequences are handled (behavior may vary by platform)
             assert len(result) > 0, f"Should produce some output for surrogate U+{codepoint:04X}"
         except Exception as e:
-            print(f"  {test_bytes.hex()}: {desc} (0x{codepoint:04X}) -> Exception: {e}")
+            print(f"  {test_bytes.hex()}: {desc} (0x{codepoint:04X}) -> Exception occurred")
         except ValueError:
             # Python may not allow creating surrogate characters directly
             pass
@@ -1077,14 +1096,17 @@ def test_utf8_3byte_sequence_complete_coverage():
     for test_bytes, codepoint, desc in overlong_3byte:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            print(
-                f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> {repr(result)}"
-            )
+            try:
+                print(
+                    f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> {repr(result)}"
+                )
+            except UnicodeEncodeError:
+                print(f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> <decoded>")
             # Check that overlong sequences are handled (behavior may vary by platform)
             assert len(result) > 0, f"Should produce some output for overlong U+{codepoint:04X}"
         except Exception as e:
             print(
-                f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> Exception: {e}"
+                f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> Exception occurred"
             )
 
     print("  ✓ All overlong 3-byte encodings handled\n")
@@ -1190,11 +1212,14 @@ def test_utf8_4byte_sequence_complete_coverage():
     for test_bytes, desc in invalid_byte1:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+            try:
+                print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+            except UnicodeEncodeError:
+                print(f"    {test_bytes.hex()}: {desc} -> <decoded>")
             # Check that invalid sequences are handled (may produce replacement chars or split)
             assert len(result) > 0, f"Should produce some output for {desc}"
         except Exception as e:
-            print(f"    {test_bytes.hex()}: {desc} -> Exception: {e}")
+            print(f"    {test_bytes.hex()}: {desc} -> Exception occurred")
 
     # Third byte invalid (byte 2)
     invalid_byte2 = [
@@ -1208,11 +1233,14 @@ def test_utf8_4byte_sequence_complete_coverage():
     for test_bytes, desc in invalid_byte2:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+            try:
+                print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+            except UnicodeEncodeError:
+                print(f"    {test_bytes.hex()}: {desc} -> <decoded>")
             # Check that invalid sequences are handled (may produce replacement chars or split)
             assert len(result) > 0, f"Should produce some output for {desc}"
         except Exception as e:
-            print(f"    {test_bytes.hex()}: {desc} -> Exception: {e}")
+            print(f"    {test_bytes.hex()}: {desc} -> Exception occurred")
 
     # Fourth byte invalid (byte 3)
     invalid_byte3 = [
@@ -1226,11 +1254,14 @@ def test_utf8_4byte_sequence_complete_coverage():
     for test_bytes, desc in invalid_byte3:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+            try:
+                print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+            except UnicodeEncodeError:
+                print(f"    {test_bytes.hex()}: {desc} -> <decoded>")
             # Check that invalid sequences are handled (may produce replacement chars or split)
             assert len(result) > 0, f"Should produce some output for {desc}"
         except Exception as e:
-            print(f"    {test_bytes.hex()}: {desc} -> Exception: {e}")
+            print(f"    {test_bytes.hex()}: {desc} -> Exception occurred")
 
     # Multiple bytes invalid
     multiple_invalid = [
@@ -1244,11 +1275,14 @@ def test_utf8_4byte_sequence_complete_coverage():
     for test_bytes, desc in multiple_invalid:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+            try:
+                print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+            except UnicodeEncodeError:
+                print(f"    {test_bytes.hex()}: {desc} -> <decoded>")
             # Check that invalid sequences are handled (may produce replacement chars or split)
             assert len(result) > 0, f"Should produce some output for {desc}"
         except Exception as e:
-            print(f"    {test_bytes.hex()}: {desc} -> Exception: {e}")
+            print(f"    {test_bytes.hex()}: {desc} -> Exception occurred")
 
     print("  ✓ All invalid continuation bytes handled\n")
 
@@ -1294,14 +1328,17 @@ def test_utf8_4byte_sequence_complete_coverage():
     for test_bytes, codepoint, desc in overlong_4byte:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            print(
-                f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> {repr(result)}"
-            )
+            try:
+                print(
+                    f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> {repr(result)}"
+                )
+            except UnicodeEncodeError:
+                print(f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> <decoded>")
             # Check that overlong sequences are handled (behavior may vary by platform)
             assert len(result) > 0, f"Should produce some output for overlong U+{codepoint:04X}"
         except Exception as e:
             print(
-                f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> Exception: {e}"
+                f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> Exception occurred"
             )
 
     print("  ✓ All overlong 4-byte encodings handled\n")
@@ -1338,11 +1375,14 @@ def test_utf8_4byte_sequence_complete_coverage():
     for test_bytes, desc in invalid_sequences:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            print(f"  {test_bytes.hex()}: {desc} -> {repr(result)}")
+            try:
+                print(f"  {test_bytes.hex()}: {desc} -> {repr(result)}")
+            except UnicodeEncodeError:
+                print(f"  {test_bytes.hex()}: {desc} -> <decoded>")
             # Check that invalid sequences are handled
             assert len(result) > 0, f"Should produce some output for invalid sequence"
         except Exception as e:
-            print(f"  {test_bytes.hex()}: {desc} -> Exception: {e}")
+            print(f"  {test_bytes.hex()}: {desc} -> Exception occurred")
 
     print("  ✓ Invalid sequences handled\n")
 
