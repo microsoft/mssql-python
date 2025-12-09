@@ -459,11 +459,9 @@ inline std::wstring Utf8ToWString(const std::string& str) {
     return result;
 #else
     // Optimized UTF-8 to UTF-32 conversion (wstring on Unix)
-    if (str.empty())
-        return {};
 
     // Lambda to decode UTF-8 multi-byte sequences
-    constexpr auto decodeUtf8 = [](const unsigned char* data, size_t& i, size_t len) -> wchar_t {
+    auto decodeUtf8 = [](const unsigned char* data, size_t& i, size_t len) -> wchar_t {
         unsigned char byte = data[i];
 
         // 1-byte sequence (ASCII): 0xxxxxxx
@@ -473,24 +471,58 @@ inline std::wstring Utf8ToWString(const std::string& str) {
         }
         // 2-byte sequence: 110xxxxx 10xxxxxx
         if ((byte & 0xE0) == 0xC0 && i + 1 < len) {
+            // Validate continuation byte has correct bit pattern (10xxxxxx)
+            if ((data[i + 1] & 0xC0) != 0x80) {
+                ++i;
+                return 0xFFFD;  // Invalid continuation byte
+            }
             uint32_t cp = ((static_cast<uint32_t>(byte & 0x1F) << 6) | (data[i + 1] & 0x3F));
-            i += 2;
-            return static_cast<wchar_t>(cp);
+            // Reject overlong encodings (must be >= 0x80)
+            if (cp >= 0x80) {
+                i += 2;
+                return static_cast<wchar_t>(cp);
+            }
+            // Overlong encoding - invalid
+            ++i;
+            return 0xFFFD;
         }
         // 3-byte sequence: 1110xxxx 10xxxxxx 10xxxxxx
         if ((byte & 0xF0) == 0xE0 && i + 2 < len) {
+            // Validate continuation bytes have correct bit pattern (10xxxxxx)
+            if ((data[i + 1] & 0xC0) != 0x80 || (data[i + 2] & 0xC0) != 0x80) {
+                ++i;
+                return 0xFFFD;  // Invalid continuation bytes
+            }
             uint32_t cp = ((static_cast<uint32_t>(byte & 0x0F) << 12) |
                            ((data[i + 1] & 0x3F) << 6) | (data[i + 2] & 0x3F));
-            i += 3;
-            return static_cast<wchar_t>(cp);
+            // Reject overlong encodings (must be >= 0x800) and surrogates (0xD800-0xDFFF)
+            if (cp >= 0x800 && (cp < 0xD800 || cp > 0xDFFF)) {
+                i += 3;
+                return static_cast<wchar_t>(cp);
+            }
+            // Overlong encoding or surrogate - invalid
+            ++i;
+            return 0xFFFD;
         }
         // 4-byte sequence: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
         if ((byte & 0xF8) == 0xF0 && i + 3 < len) {
+            // Validate continuation bytes have correct bit pattern (10xxxxxx)
+            if ((data[i + 1] & 0xC0) != 0x80 || (data[i + 2] & 0xC0) != 0x80 ||
+                (data[i + 3] & 0xC0) != 0x80) {
+                ++i;
+                return 0xFFFD;  // Invalid continuation bytes
+            }
             uint32_t cp =
                 ((static_cast<uint32_t>(byte & 0x07) << 18) | ((data[i + 1] & 0x3F) << 12) |
                  ((data[i + 2] & 0x3F) << 6) | (data[i + 3] & 0x3F));
-            i += 4;
-            return static_cast<wchar_t>(cp);
+            // Reject overlong encodings (must be >= 0x10000) and values above max Unicode
+            if (cp >= 0x10000 && cp <= 0x10FFFF) {
+                i += 4;
+                return static_cast<wchar_t>(cp);
+            }
+            // Overlong encoding or out of range - invalid
+            ++i;
+            return 0xFFFD;
         }
         // Invalid sequence - skip byte
         ++i;
@@ -513,9 +545,9 @@ inline std::wstring Utf8ToWString(const std::string& str) {
     // Handle remaining multi-byte sequences
     while (i < len) {
         wchar_t wc = decodeUtf8(data, i, len);
-        if (wc != 0xFFFD || data[i - 1] >= 0x80) {  // Skip invalid sequences
-            result.push_back(wc);
-        }
+        // Always push the decoded character (including 0xFFFD replacement characters)
+        // This correctly handles both legitimate 0xFFFD in input and invalid sequences
+        result.push_back(wc);
     }
 
     return result;
