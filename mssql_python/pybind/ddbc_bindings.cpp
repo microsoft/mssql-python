@@ -3869,7 +3869,8 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
             lobColumns.push_back(i + 1);  // 1-based
         }
     }
-
+    
+    // Initialized to 0 for LOB path counter; overwritten by ODBC in non-LOB path; 
     SQLULEN numRowsFetched = 0;
     // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
     if (!lobColumns.empty()) {
