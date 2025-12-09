@@ -1400,7 +1400,7 @@ jobs:
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
-        alpine:latest \
+        alpine:3.22 \
         tail -f /dev/null
     displayName: 'Create Alpine x86_64 container'
 
@@ -1642,7 +1642,7 @@ jobs:
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
-        alpine:latest \
+        alpine:3.22 \
         tail -f /dev/null
     displayName: 'Create Alpine ARM64 container'
 
