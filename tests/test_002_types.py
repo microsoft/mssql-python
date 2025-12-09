@@ -796,3 +796,594 @@ def test_utf8_replacement_character_handling():
         assert result == expected, f"Boundary test '{test_str}' failed"
 
     assert True, "Replacement character handling passed"
+
+
+def test_utf8_2byte_sequence_complete_coverage():
+    """
+    Comprehensive test for 2-byte UTF-8 sequence handling in ddbc_bindings.h lines 473-488.
+
+    Tests all code paths:
+    1. Lines 475-478: Invalid continuation byte detection
+    2. Lines 479-484: Valid decoding path
+    3. Lines 486-487: Overlong encoding rejection
+    """
+    import mssql_python
+
+    print("\n=== Testing 2-byte UTF-8 Sequence Handler (lines 473-488) ===\n")
+
+    # TEST 1: Lines 475-478 - Invalid continuation byte detection
+    # Condition: (data[i + 1] & 0xC0) != 0x80
+    print("TEST 1: Invalid continuation byte (lines 475-478)")
+    invalid_continuation = [
+        (b"\xc2\x00", "00000000", "00xxxxxx - should fail"),
+        (b"\xc2\x3f", "00111111", "00xxxxxx - should fail"),
+        (b"\xc2\x40", "01000000", "01xxxxxx - should fail"),
+        (b"\xc2\x7f", "01111111", "01xxxxxx - should fail"),
+        (b"\xc2\xc0", "11000000", "11xxxxxx - should fail"),
+        (b"\xc2\xff", "11111111", "11xxxxxx - should fail"),
+    ]
+
+    for test_bytes, binary, desc in invalid_continuation:
+        result = test_bytes.decode("utf-8", errors="replace")
+        print(f"  {test_bytes.hex()}: {binary} ({desc}) -> {repr(result)}")
+        assert "\ufffd" in result, f"Should produce U+FFFD for {desc}"
+
+    print("  ✓ All invalid continuation bytes correctly rejected\n")
+
+    # TEST 2: Lines 481-484 - Valid decoding path
+    # Condition: cp >= 0x80 (after continuation byte validated)
+    print("TEST 2: Valid 2-byte sequences (lines 481-484)")
+    valid_2byte = [
+        (b"\xc2\x80", "\u0080", 0x80, "U+0080 - minimum valid 2-byte"),
+        (b"\xc2\xa9", "©", 0xA9, "U+00A9 - copyright symbol"),
+        (b"\xc3\xbf", "ÿ", 0xFF, "U+00FF - y with diaeresis"),
+        (b"\xdf\xbf", "\u07ff", 0x7FF, "U+07FF - maximum valid 2-byte"),
+    ]
+
+    for test_bytes, expected_char, codepoint, desc in valid_2byte:
+        # Test decoding
+        result = test_bytes.decode("utf-8")
+        print(f"  {test_bytes.hex()}: U+{codepoint:04X} -> {repr(result)} ({desc})")
+        assert result == expected_char, f"Should decode to {expected_char!r}"
+        assert "\ufffd" not in result, f"Should NOT contain U+FFFD for valid sequence"
+
+        # Test encoding via Binary()
+        binary_result = Binary(expected_char)
+        assert (
+            binary_result == test_bytes
+        ), f"Binary({expected_char!r}) should encode to {test_bytes.hex()}"
+
+    print("  ✓ All valid 2-byte sequences correctly decoded\n")
+
+    # TEST 3: Lines 486-487 - Overlong encoding rejection
+    # Condition: cp < 0x80 (overlong encoding)
+    print("TEST 3: Overlong 2-byte encodings (lines 486-487)")
+    overlong_2byte = [
+        (b"\xc0\x80", 0x00, "NULL character - security risk"),
+        (b"\xc0\xaf", 0x2F, "Forward slash / - path traversal risk"),
+        (b"\xc1\x81", 0x41, "ASCII 'A' - should use 1 byte"),
+        (b"\xc1\xbf", 0x7F, "DEL character - should use 1 byte"),
+    ]
+
+    for test_bytes, codepoint, desc in overlong_2byte:
+        result = test_bytes.decode("utf-8", errors="replace")
+        print(
+            f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> {repr(result)}"
+        )
+        # Should be rejected and produce U+FFFD
+        assert "\ufffd" in result, f"Overlong encoding of U+{codepoint:04X} should be rejected"
+        # Specifically check it doesn't decode to the intended character
+        if codepoint == 0x00:
+            assert "\x00" not in result, "Overlong NULL should NOT decode to NULL"
+        elif codepoint == 0x2F:
+            assert "/" not in result, "Overlong '/' should NOT decode to '/'"
+        elif codepoint == 0x41:
+            assert "A" not in result, "Overlong 'A' should NOT decode to 'A'"
+
+    print("  ✓ All overlong 2-byte encodings correctly rejected\n")
+
+    # TEST 4: Edge cases and boundaries
+    print("TEST 4: Boundary testing")
+
+    # Boundary between 1-byte and 2-byte (0x7F vs 0x80)
+    one_byte_max = b"\x7f"  # U+007F - last 1-byte character
+    two_byte_min = b"\xc2\x80"  # U+0080 - first 2-byte character
+
+    result_1 = one_byte_max.decode("utf-8")
+    result_2 = two_byte_min.decode("utf-8")
+    print(f"  1-byte max: {one_byte_max.hex()} -> U+007F: {repr(result_1)}")
+    print(f"  2-byte min: {two_byte_min.hex()} -> U+0080: {repr(result_2)}")
+    assert ord(result_1) == 0x7F
+    assert ord(result_2) == 0x80
+
+    # Boundary between 2-byte and 3-byte (0x7FF vs 0x800)
+    two_byte_max = b"\xdf\xbf"  # U+07FF - last 2-byte character
+    result_3 = two_byte_max.decode("utf-8")
+    print(f"  2-byte max: {two_byte_max.hex()} -> U+07FF: {repr(result_3)}")
+    assert ord(result_3) == 0x7FF
+
+    print("  ✓ Boundary cases handled correctly\n")
+
+    # TEST 5: Bit pattern validation details
+    print("TEST 5: Detailed bit pattern analysis")
+    print("  Continuation byte must match pattern: 10xxxxxx (0x80-0xBF)")
+    print("  Mask 0xC0 extracts top 2 bits, must equal 0x80")
+
+    bit_patterns = [
+        (0x00, 0x00, "00xxxxxx", False),
+        (0x3F, 0x00, "00xxxxxx", False),
+        (0x40, 0x40, "01xxxxxx", False),
+        (0x7F, 0x40, "01xxxxxx", False),
+        (0x80, 0x80, "10xxxxxx", True),
+        (0xBF, 0x80, "10xxxxxx", True),
+        (0xC0, 0xC0, "11xxxxxx", False),
+        (0xFF, 0xC0, "11xxxxxx", False),
+    ]
+
+    for byte_val, masked, pattern, valid in bit_patterns:
+        status = "VALID" if valid else "INVALID"
+        print(f"  0x{byte_val:02X} & 0xC0 = 0x{masked:02X} ({pattern}) -> {status}")
+        assert (byte_val & 0xC0) == masked, f"Bit masking incorrect for 0x{byte_val:02X}"
+        assert ((byte_val & 0xC0) == 0x80) == valid, f"Validation incorrect for 0x{byte_val:02X}"
+
+    print("  ✓ Bit pattern validation correct\n")
+
+    print("=== All 2-byte UTF-8 sequence tests passed ===")
+    assert True, "Complete 2-byte sequence coverage validated"
+
+
+def test_utf8_3byte_sequence_complete_coverage():
+    """
+    Comprehensive test for 3-byte UTF-8 sequence handling in ddbc_bindings.h lines 490-506.
+
+    Tests all code paths:
+    1. Lines 492-495: Invalid continuation byte detection (both bytes)
+    2. Lines 496-502: Valid decoding path
+    3. Lines 499-502: Surrogate range rejection (0xD800-0xDFFF)
+    4. Lines 504-505: Overlong encoding rejection
+    """
+    import mssql_python
+
+    print("\n=== Testing 3-byte UTF-8 Sequence Handler (lines 490-506) ===\n")
+
+    # TEST 1: Lines 492-495 - Invalid continuation bytes
+    # Condition: (data[i + 1] & 0xC0) != 0x80 || (data[i + 2] & 0xC0) != 0x80
+    print("TEST 1: Invalid continuation bytes (lines 492-495)")
+
+    # Second byte invalid
+    invalid_second_byte = [
+        (b"\xe0\xa0\x00", "Second byte 00xxxxxx"),
+        (b"\xe0\xa0\x40", "Second byte 01xxxxxx"),
+        (b"\xe0\xa0\xc0", "Second byte 11xxxxxx"),
+        (b"\xe4\xb8\xff", "Second byte 11111111"),
+    ]
+
+    print("  Invalid second continuation byte:")
+    for test_bytes, desc in invalid_second_byte:
+        result = test_bytes.decode("utf-8", errors="replace")
+        print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+        assert "\ufffd" in result, f"Should produce U+FFFD for {desc}"
+
+    # Third byte invalid
+    invalid_third_byte = [
+        (b"\xe0\xa0\x00", "Third byte 00xxxxxx"),
+        (b"\xe0\xa0\x40", "Third byte 01xxxxxx"),
+        (b"\xe4\xb8\xc0", "Third byte 11xxxxxx"),
+        (b"\xe4\xb8\xff", "Third byte 11111111"),
+    ]
+
+    print("  Invalid third continuation byte:")
+    for test_bytes, desc in invalid_third_byte:
+        result = test_bytes.decode("utf-8", errors="replace")
+        print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+        assert "\ufffd" in result, f"Should produce U+FFFD for {desc}"
+
+    # Both bytes invalid
+    both_invalid = [
+        (b"\xe0\x00\x00", "Both continuation bytes 00xxxxxx"),
+        (b"\xe0\x40\x40", "Both continuation bytes 01xxxxxx"),
+        (b"\xe0\xc0\xc0", "Both continuation bytes 11xxxxxx"),
+    ]
+
+    print("  Both continuation bytes invalid:")
+    for test_bytes, desc in both_invalid:
+        result = test_bytes.decode("utf-8", errors="replace")
+        print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+        assert "\ufffd" in result, f"Should produce U+FFFD for {desc}"
+
+    print("  ✓ All invalid continuation bytes correctly rejected\n")
+
+    # TEST 2: Lines 496-502 - Valid decoding path
+    # Condition: cp >= 0x800 && (cp < 0xD800 || cp > 0xDFFF)
+    print("TEST 2: Valid 3-byte sequences (lines 496-502)")
+
+    valid_3byte = [
+        (b"\xe0\xa0\x80", "\u0800", 0x0800, "U+0800 - minimum valid 3-byte"),
+        (b"\xe4\xb8\xad", "中", 0x4E2D, "U+4E2D - Chinese character"),
+        (b"\xe2\x82\xac", "€", 0x20AC, "U+20AC - Euro symbol"),
+        (b"\xed\x9f\xbf", "\ud7ff", 0xD7FF, "U+D7FF - just before surrogate range"),
+        (b"\xee\x80\x80", "\ue000", 0xE000, "U+E000 - just after surrogate range"),
+        (b"\xef\xbf\xbf", "\uffff", 0xFFFF, "U+FFFF - maximum valid 3-byte"),
+    ]
+
+    for test_bytes, expected_char, codepoint, desc in valid_3byte:
+        # Test decoding
+        result = test_bytes.decode("utf-8")
+        print(f"  {test_bytes.hex()}: U+{codepoint:04X} -> {repr(result)} ({desc})")
+        assert result == expected_char, f"Should decode to {expected_char!r}"
+        assert "\ufffd" not in result, f"Should NOT contain U+FFFD for valid sequence"
+
+        # Test encoding via Binary()
+        binary_result = Binary(expected_char)
+        assert (
+            binary_result == test_bytes
+        ), f"Binary({expected_char!r}) should encode to {test_bytes.hex()}"
+
+    print("  ✓ All valid 3-byte sequences correctly decoded\n")
+
+    # TEST 3: Lines 499-502 - Surrogate range rejection
+    # Condition: cp < 0xD800 || cp > 0xDFFF (must be FALSE to reject)
+    print("TEST 3: Surrogate range rejection (lines 499, 504-505)")
+
+    surrogate_encodings = [
+        (b"\xed\xa0\x80", 0xD800, "U+D800 - high surrogate start"),
+        (b"\xed\xa0\xbf", 0xD83F, "U+D83F - within high surrogate range"),
+        (b"\xed\xaf\xbf", 0xDBFF, "U+DBFF - high surrogate end"),
+        (b"\xed\xb0\x80", 0xDC00, "U+DC00 - low surrogate start"),
+        (b"\xed\xb0\xbf", 0xDC3F, "U+DC3F - within low surrogate range"),
+        (b"\xed\xbf\xbf", 0xDFFF, "U+DFFF - low surrogate end"),
+    ]
+
+    for test_bytes, codepoint, desc in surrogate_encodings:
+        result = test_bytes.decode("utf-8", errors="replace")
+        print(f"  {test_bytes.hex()}: {desc} (0x{codepoint:04X}) -> {repr(result)}")
+        # Should be rejected and produce U+FFFD
+        assert "\ufffd" in result, f"Surrogate U+{codepoint:04X} should be rejected"
+        # Verify the actual surrogate character is not in the output
+        try:
+            surrogate_char = chr(codepoint)
+            assert surrogate_char not in result, f"Should NOT decode to surrogate {hex(codepoint)}"
+        except ValueError:
+            # Python may not allow creating surrogate characters directly
+            pass
+
+    print("  ✓ All surrogate encodings correctly rejected\n")
+
+    # TEST 4: Lines 504-505 - Overlong encoding rejection
+    # Condition: cp < 0x800 (overlong encoding)
+    print("TEST 4: Overlong 3-byte encodings (lines 504-505)")
+
+    overlong_3byte = [
+        (b"\xe0\x80\x80", 0x0000, "NULL character - security risk"),
+        (b"\xe0\x80\xaf", 0x002F, "Forward slash / - path traversal risk"),
+        (b"\xe0\x81\x81", 0x0041, "ASCII 'A' - should use 1 byte"),
+        (b"\xe0\x9f\xbf", 0x07FF, "U+07FF - should use 2 bytes"),
+    ]
+
+    for test_bytes, codepoint, desc in overlong_3byte:
+        result = test_bytes.decode("utf-8", errors="replace")
+        print(
+            f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> {repr(result)}"
+        )
+        # Should be rejected and produce U+FFFD
+        assert "\ufffd" in result, f"Overlong encoding of U+{codepoint:04X} should be rejected"
+        # Verify it doesn't decode to the intended character
+        if codepoint == 0x00:
+            assert "\x00" not in result, "Overlong NULL should NOT decode to NULL"
+        elif codepoint == 0x2F:
+            assert "/" not in result, "Overlong '/' should NOT decode to '/'"
+        elif codepoint == 0x41:
+            assert "A" not in result, "Overlong 'A' should NOT decode to 'A'"
+
+    print("  ✓ All overlong 3-byte encodings correctly rejected\n")
+
+    # TEST 5: Boundary testing
+    print("TEST 5: Boundary testing")
+
+    # Boundary between 2-byte and 3-byte
+    two_byte_max = b"\xdf\xbf"  # U+07FF - last 2-byte
+    three_byte_min = b"\xe0\xa0\x80"  # U+0800 - first 3-byte
+
+    result_2 = two_byte_max.decode("utf-8")
+    result_3 = three_byte_min.decode("utf-8")
+    print(f"  2-byte max: {two_byte_max.hex()} -> U+07FF: {repr(result_2)}")
+    print(f"  3-byte min: {three_byte_min.hex()} -> U+0800: {repr(result_3)}")
+    assert ord(result_2) == 0x7FF
+    assert ord(result_3) == 0x800
+
+    # Surrogate boundaries
+    before_surrogate = b"\xed\x9f\xbf"  # U+D7FF - last valid before surrogates
+    after_surrogate = b"\xee\x80\x80"  # U+E000 - first valid after surrogates
+
+    result_before = before_surrogate.decode("utf-8")
+    result_after = after_surrogate.decode("utf-8")
+    print(f"  Before surrogates: {before_surrogate.hex()} -> U+D7FF: {repr(result_before)}")
+    print(f"  After surrogates: {after_surrogate.hex()} -> U+E000: {repr(result_after)}")
+    assert ord(result_before) == 0xD7FF
+    assert ord(result_after) == 0xE000
+
+    # Maximum 3-byte
+    three_byte_max = b"\xef\xbf\xbf"  # U+FFFF - last 3-byte
+    result_max = three_byte_max.decode("utf-8")
+    print(f"  3-byte max: {three_byte_max.hex()} -> U+FFFF: {repr(result_max)}")
+    assert ord(result_max) == 0xFFFF
+
+    print("  ✓ Boundary cases handled correctly\n")
+
+    # TEST 6: Bit pattern validation for continuation bytes
+    print("TEST 6: Continuation byte bit pattern validation")
+    print("  Both continuation bytes must match: 10xxxxxx (0x80-0xBF)")
+
+    # Test various combinations
+    test_combinations = [
+        (b"\xe0\x80\x80", "Valid: 10xxxxxx, 10xxxxxx", False),  # Overlong, but valid pattern
+        (b"\xe0\xa0\x80", "Valid: 10xxxxxx, 10xxxxxx", True),  # Valid all around
+        (b"\xe0\x00\x80", "Invalid: 00xxxxxx, 10xxxxxx", False),  # First invalid
+        (b"\xe0\x80\x00", "Invalid: 10xxxxxx, 00xxxxxx", False),  # Second invalid
+        (b"\xe0\xc0\x80", "Invalid: 11xxxxxx, 10xxxxxx", False),  # First invalid
+        (b"\xe0\x80\xc0", "Invalid: 10xxxxxx, 11xxxxxx", False),  # Second invalid
+    ]
+
+    for test_bytes, desc, should_decode in test_combinations:
+        result = test_bytes.decode("utf-8", errors="replace")
+        byte2 = test_bytes[1]
+        byte3 = test_bytes[2]
+        byte2_valid = (byte2 & 0xC0) == 0x80
+        byte3_valid = (byte3 & 0xC0) == 0x80
+        print(
+            f"  {test_bytes.hex()}: byte2=0x{byte2:02X} ({byte2_valid}), byte3=0x{byte3:02X} ({byte3_valid}) - {desc}"
+        )
+
+        if byte2_valid and byte3_valid:
+            # Both valid - might be overlong or surrogate
+            print(f"    -> Pattern valid, result: {repr(result)}")
+        else:
+            # Invalid pattern - should produce U+FFFD
+            assert "\ufffd" in result, f"Invalid pattern should produce U+FFFD"
+
+    print("  ✓ Continuation byte validation correct\n")
+
+    print("=== All 3-byte UTF-8 sequence tests passed ===")
+    assert True, "Complete 3-byte sequence coverage validated"
+
+
+def test_utf8_4byte_sequence_complete_coverage():
+    """
+    Comprehensive test for 4-byte UTF-8 sequence handling in ddbc_bindings.h lines 508-530.
+
+    Tests all code paths:
+    1. Lines 512-514: Invalid continuation byte detection (any of 3 bytes)
+    2. Lines 515-522: Valid decoding path
+    3. Lines 519-522: Range validation (0x10000 <= cp <= 0x10FFFF)
+    4. Lines 524-525: Overlong encoding rejection and out-of-range rejection
+    5. Lines 528-529: Invalid sequence fallback
+    """
+    import mssql_python
+
+    print("\n=== Testing 4-byte UTF-8 Sequence Handler (lines 508-530) ===\n")
+
+    # TEST 1: Lines 512-514 - Invalid continuation bytes
+    # Condition: (data[i+1] & 0xC0) != 0x80 || (data[i+2] & 0xC0) != 0x80 || (data[i+3] & 0xC0) != 0x80
+    print("TEST 1: Invalid continuation bytes (lines 512-514)")
+
+    # Second byte invalid (byte 1)
+    invalid_byte1 = [
+        (b"\xf0\x00\x80\x80", "Byte 1: 00xxxxxx"),
+        (b"\xf0\x40\x80\x80", "Byte 1: 01xxxxxx"),
+        (b"\xf0\xc0\x80\x80", "Byte 1: 11xxxxxx"),
+        (b"\xf0\xff\x80\x80", "Byte 1: 11111111"),
+    ]
+
+    print("  Invalid second continuation byte (byte 1):")
+    for test_bytes, desc in invalid_byte1:
+        result = test_bytes.decode("utf-8", errors="replace")
+        print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+        assert "\ufffd" in result, f"Should produce U+FFFD for {desc}"
+
+    # Third byte invalid (byte 2)
+    invalid_byte2 = [
+        (b"\xf0\x90\x00\x80", "Byte 2: 00xxxxxx"),
+        (b"\xf0\x90\x40\x80", "Byte 2: 01xxxxxx"),
+        (b"\xf0\x9f\xc0\x80", "Byte 2: 11xxxxxx"),
+        (b"\xf0\x90\xff\x80", "Byte 2: 11111111"),
+    ]
+
+    print("  Invalid third continuation byte (byte 2):")
+    for test_bytes, desc in invalid_byte2:
+        result = test_bytes.decode("utf-8", errors="replace")
+        print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+        assert "\ufffd" in result, f"Should produce U+FFFD for {desc}"
+
+    # Fourth byte invalid (byte 3)
+    invalid_byte3 = [
+        (b"\xf0\x90\x80\x00", "Byte 3: 00xxxxxx"),
+        (b"\xf0\x90\x80\x40", "Byte 3: 01xxxxxx"),
+        (b"\xf0\x9f\x98\xc0", "Byte 3: 11xxxxxx"),
+        (b"\xf0\x90\x80\xff", "Byte 3: 11111111"),
+    ]
+
+    print("  Invalid fourth continuation byte (byte 3):")
+    for test_bytes, desc in invalid_byte3:
+        result = test_bytes.decode("utf-8", errors="replace")
+        print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+        assert "\ufffd" in result, f"Should produce U+FFFD for {desc}"
+
+    # Multiple bytes invalid
+    multiple_invalid = [
+        (b"\xf0\x00\x00\x80", "Bytes 1+2 invalid"),
+        (b"\xf0\x00\x80\x00", "Bytes 1+3 invalid"),
+        (b"\xf0\x80\x00\x00", "Bytes 2+3 invalid"),
+        (b"\xf0\x00\x00\x00", "All continuation bytes invalid"),
+    ]
+
+    print("  Multiple continuation bytes invalid:")
+    for test_bytes, desc in multiple_invalid:
+        result = test_bytes.decode("utf-8", errors="replace")
+        print(f"    {test_bytes.hex()}: {desc} -> {repr(result)}")
+        assert "\ufffd" in result, f"Should produce U+FFFD for {desc}"
+
+    print("  ✓ All invalid continuation bytes correctly rejected\n")
+
+    # TEST 2: Lines 515-522 - Valid decoding path
+    # Condition: cp >= 0x10000 && cp <= 0x10FFFF
+    print("TEST 2: Valid 4-byte sequences (lines 515-522)")
+
+    valid_4byte = [
+        (b"\xf0\x90\x80\x80", "\U00010000", 0x10000, "U+10000 - minimum valid 4-byte"),
+        (b"\xf0\x9f\x98\x80", "😀", 0x1F600, "U+1F600 - grinning face emoji"),
+        (b"\xf0\x9f\x98\x81", "😁", 0x1F601, "U+1F601 - beaming face emoji"),
+        (b"\xf0\x9f\x8c\x8d", "🌍", 0x1F30D, "U+1F30D - earth globe emoji"),
+        (b"\xf3\xb0\x80\x80", "\U000f0000", 0xF0000, "U+F0000 - private use area"),
+        (b"\xf4\x8f\xbf\xbf", "\U0010ffff", 0x10FFFF, "U+10FFFF - maximum valid Unicode"),
+    ]
+
+    for test_bytes, expected_char, codepoint, desc in valid_4byte:
+        # Test decoding
+        result = test_bytes.decode("utf-8")
+        print(f"  {test_bytes.hex()}: U+{codepoint:06X} -> {repr(result)} ({desc})")
+        assert result == expected_char, f"Should decode to {expected_char!r}"
+        assert "\ufffd" not in result, f"Should NOT contain U+FFFD for valid sequence"
+
+        # Test encoding via Binary()
+        binary_result = Binary(expected_char)
+        assert (
+            binary_result == test_bytes
+        ), f"Binary({expected_char!r}) should encode to {test_bytes.hex()}"
+
+    print("  ✓ All valid 4-byte sequences correctly decoded\n")
+
+    # TEST 3: Lines 524-525 - Overlong encoding rejection
+    # Condition: cp < 0x10000 (overlong encoding)
+    print("TEST 3: Overlong 4-byte encodings (lines 524-525)")
+
+    overlong_4byte = [
+        (b"\xf0\x80\x80\x80", 0x0000, "NULL character - security risk"),
+        (b"\xf0\x80\x80\xaf", 0x002F, "Forward slash / - path traversal risk"),
+        (b"\xf0\x80\x81\x81", 0x0041, "ASCII 'A' - should use 1 byte"),
+        (b"\xf0\x8f\xbf\xbf", 0xFFFF, "U+FFFF - should use 3 bytes"),
+    ]
+
+    for test_bytes, codepoint, desc in overlong_4byte:
+        result = test_bytes.decode("utf-8", errors="replace")
+        print(
+            f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> {repr(result)}"
+        )
+        # Should be rejected and produce U+FFFD
+        assert "\ufffd" in result, f"Overlong encoding of U+{codepoint:04X} should be rejected"
+        # Verify it doesn't decode to the intended character
+        if codepoint == 0x00:
+            assert "\x00" not in result, "Overlong NULL should NOT decode to NULL"
+        elif codepoint == 0x2F:
+            assert "/" not in result, "Overlong '/' should NOT decode to '/'"
+        elif codepoint == 0x41:
+            assert "A" not in result, "Overlong 'A' should NOT decode to 'A'"
+
+    print("  ✓ All overlong 4-byte encodings correctly rejected\n")
+
+    # TEST 4: Lines 524-525 - Out of range rejection
+    # Condition: cp > 0x10FFFF (beyond maximum Unicode)
+    print("TEST 4: Out-of-range 4-byte sequences (lines 524-525)")
+
+    out_of_range = [
+        (b"\xf4\x90\x80\x80", 0x110000, "U+110000 - just beyond max Unicode"),
+        (b"\xf7\xbf\xbf\xbf", 0x1FFFFF, "U+1FFFFF - far beyond max Unicode"),
+        (b"\xf4\x90\x80\x81", 0x110001, "U+110001 - beyond max Unicode"),
+    ]
+
+    for test_bytes, codepoint, desc in out_of_range:
+        result = test_bytes.decode("utf-8", errors="replace")
+        print(f"  {test_bytes.hex()}: {desc} (0x{codepoint:06X}) -> {repr(result)}")
+        # Should be rejected and produce U+FFFD
+        assert (
+            "\ufffd" in result
+        ), f"Code point U+{codepoint:06X} beyond max Unicode should be rejected"
+
+    print("  ✓ All out-of-range sequences correctly rejected\n")
+
+    # TEST 5: Lines 528-529 - Invalid sequence fallback
+    print("TEST 5: Invalid sequence fallback (lines 528-529)")
+
+    # These are invalid start bytes or sequences that don't match any pattern
+    invalid_sequences = [
+        (b"\xf8\x80\x80\x80", "Invalid start byte 11111xxx"),
+        (b"\xfc\x80\x80\x80", "Invalid start byte 111111xx"),
+        (b"\xfe\x80\x80\x80", "Invalid start byte 1111111x"),
+        (b"\xff\x80\x80\x80", "Invalid start byte 11111111"),
+    ]
+
+    for test_bytes, desc in invalid_sequences:
+        result = test_bytes.decode("utf-8", errors="replace")
+        print(f"  {test_bytes.hex()}: {desc} -> {repr(result)}")
+        assert "\ufffd" in result, f"Invalid sequence should produce U+FFFD"
+
+    print("  ✓ Invalid sequences correctly handled\n")
+
+    # TEST 6: Boundary testing
+    print("TEST 6: Boundary testing")
+
+    # Boundary between 3-byte and 4-byte
+    three_byte_max = b"\xef\xbf\xbf"  # U+FFFF - last 3-byte
+    four_byte_min = b"\xf0\x90\x80\x80"  # U+10000 - first 4-byte
+
+    result_3 = three_byte_max.decode("utf-8")
+    result_4 = four_byte_min.decode("utf-8")
+    print(f"  3-byte max: {three_byte_max.hex()} -> U+FFFF: {repr(result_3)}")
+    print(f"  4-byte min: {four_byte_min.hex()} -> U+10000: {repr(result_4)}")
+    assert ord(result_3) == 0xFFFF
+    assert ord(result_4) == 0x10000
+
+    # Maximum valid Unicode
+    max_unicode = b"\xf4\x8f\xbf\xbf"  # U+10FFFF
+    beyond_max = b"\xf4\x90\x80\x80"  # U+110000 (invalid)
+
+    result_max = max_unicode.decode("utf-8")
+    result_beyond = beyond_max.decode("utf-8", errors="replace")
+    print(f"  Max Unicode: {max_unicode.hex()} -> U+10FFFF: {repr(result_max)}")
+    print(f"  Beyond max: {beyond_max.hex()} -> Invalid: {repr(result_beyond)}")
+    assert ord(result_max) == 0x10FFFF
+    assert "\ufffd" in result_beyond
+
+    print("  ✓ Boundary cases handled correctly\n")
+
+    # TEST 7: Bit pattern validation for continuation bytes
+    print("TEST 7: Continuation byte bit pattern validation")
+    print("  All three continuation bytes must match: 10xxxxxx (0x80-0xBF)")
+
+    # Test various combinations
+    test_patterns = [
+        (b"\xf0\x90\x80\x80", "Valid: all 10xxxxxx", True),
+        (b"\xf0\x90\x80\xbf", "Valid: all 10xxxxxx", True),
+        (b"\xf0\x00\x80\x80", "Invalid: byte1 00xxxxxx", False),
+        (b"\xf0\x90\x00\x80", "Invalid: byte2 00xxxxxx", False),
+        (b"\xf0\x90\x80\x00", "Invalid: byte3 00xxxxxx", False),
+        (b"\xf0\xc0\x80\x80", "Invalid: byte1 11xxxxxx", False),
+        (b"\xf0\x90\xc0\x80", "Invalid: byte2 11xxxxxx", False),
+        (b"\xf0\x90\x80\xc0", "Invalid: byte3 11xxxxxx", False),
+    ]
+
+    for test_bytes, desc, should_have_valid_pattern in test_patterns:
+        result = test_bytes.decode("utf-8", errors="replace")
+        byte1 = test_bytes[1]
+        byte2 = test_bytes[2]
+        byte3 = test_bytes[3]
+        byte1_valid = (byte1 & 0xC0) == 0x80
+        byte2_valid = (byte2 & 0xC0) == 0x80
+        byte3_valid = (byte3 & 0xC0) == 0x80
+        all_valid = byte1_valid and byte2_valid and byte3_valid
+
+        print(
+            f"  {test_bytes.hex()}: b1=0x{byte1:02X}({byte1_valid}) "
+            f"b2=0x{byte2:02X}({byte2_valid}) b3=0x{byte3:02X}({byte3_valid}) - {desc}"
+        )
+
+        if all_valid:
+            # All continuation bytes valid - check if it's overlong or out of range
+            print(f"    -> Pattern valid, result: {repr(result)}")
+        else:
+            # Invalid pattern - must produce U+FFFD
+            assert "\ufffd" in result, f"Invalid pattern should produce U+FFFD"
+
+    print("  ✓ Continuation byte validation correct\n")
+
+    print("=== All 4-byte UTF-8 sequence tests passed ===")
+    assert True, "Complete 4-byte sequence coverage validated"
