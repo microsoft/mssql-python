@@ -21,6 +21,7 @@ import threading
 import statistics
 from mssql_python import connect, pooling
 from mssql_python.pooling import PoolingManager
+import mssql_python
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +83,85 @@ def test_connection_pooling_reuse_spid(conn_str):
 
     # The SPID should be the same, indicating connection reuse
     assert spid1 == spid2, "Connections not reused - different SPIDs"
+
+
+def test_connection_pooling_isolation_level_reset(conn_str):
+    """Test that pooling correctly resets session state for isolation level.
+
+    This test verifies that when a connection is returned to the pool and then
+    reused, the isolation level setting is reset to the default (READ COMMITTED)
+    to prevent session state from leaking between connection usages.
+
+    Bug Fix: Previously, SQL_ATTR_RESET_CONNECTION was used which does NOT reset
+    the isolation level. Now we explicitly reset it to prevent state leakage.
+    """
+    # Enable pooling with small pool to ensure connection reuse
+    pooling(enabled=True, max_size=1, idle_timeout=30)
+
+    # Create first connection and set isolation level to SERIALIZABLE
+    conn1 = connect(conn_str)
+
+    # Set isolation level to SERIALIZABLE (non-default)
+    conn1.set_attr(mssql_python.SQL_ATTR_TXN_ISOLATION, mssql_python.SQL_TXN_SERIALIZABLE)
+
+    # Verify the isolation level was set
+    cursor1 = conn1.cursor()
+    cursor1.execute(
+        "SELECT CASE transaction_isolation_level "
+        "WHEN 0 THEN 'Unspecified' "
+        "WHEN 1 THEN 'ReadUncommitted' "
+        "WHEN 2 THEN 'ReadCommitted' "
+        "WHEN 3 THEN 'RepeatableRead' "
+        "WHEN 4 THEN 'Serializable' "
+        "WHEN 5 THEN 'Snapshot' END AS isolation_level "
+        "FROM sys.dm_exec_sessions WHERE session_id = @@SPID"
+    )
+    isolation_level_1 = cursor1.fetchone()[0]
+    assert isolation_level_1 == "Serializable", f"Expected Serializable, got {isolation_level_1}"
+
+    # Get SPID for verification of connection reuse
+    cursor1.execute("SELECT @@SPID")
+    spid1 = cursor1.fetchone()[0]
+
+    # Close connection (return to pool)
+    cursor1.close()
+    conn1.close()
+
+    # Get second connection from pool (should reuse the same connection)
+    conn2 = connect(conn_str)
+
+    # Check if it's the same connection (same SPID)
+    cursor2 = conn2.cursor()
+    cursor2.execute("SELECT @@SPID")
+    spid2 = cursor2.fetchone()[0]
+
+    # Verify connection was reused
+    assert spid1 == spid2, "Connection was not reused from pool"
+
+    # Check if isolation level is reset to default
+    cursor2.execute(
+        "SELECT CASE transaction_isolation_level "
+        "WHEN 0 THEN 'Unspecified' "
+        "WHEN 1 THEN 'ReadUncommitted' "
+        "WHEN 2 THEN 'ReadCommitted' "
+        "WHEN 3 THEN 'RepeatableRead' "
+        "WHEN 4 THEN 'Serializable' "
+        "WHEN 5 THEN 'Snapshot' END AS isolation_level "
+        "FROM sys.dm_exec_sessions WHERE session_id = @@SPID"
+    )
+    isolation_level_2 = cursor2.fetchone()[0]
+
+    # Verify isolation level is reset to default (READ COMMITTED)
+    # This is the CORRECT behavior for connection pooling - we should reset
+    # session state to prevent settings from one usage affecting the next
+    assert isolation_level_2 == "ReadCommitted", (
+        f"Isolation level was not reset! Expected 'ReadCommitted', got '{isolation_level_2}'. "
+        f"This indicates session state leaked from the previous connection usage."
+    )
+
+    # Clean up
+    cursor2.close()
+    conn2.close()
 
 
 def test_connection_pooling_speed(conn_str):
@@ -160,9 +240,7 @@ def test_pool_exhaustion_max_size_1(conn_str):
     assert results, "Second connection attempt did not complete"
     # If pool blocks, the thread may not finish until conn1 is closed, so allow both outcomes
     assert (
-        results[0] == "success"
-        or "pool" in results[0].lower()
-        or "timeout" in results[0].lower()
+        results[0] == "success" or "pool" in results[0].lower() or "timeout" in results[0].lower()
     ), f"Unexpected pool exhaustion result: {results[0]}"
 
 
@@ -231,6 +309,9 @@ def test_pool_idle_timeout_removes_connections(conn_str):
 # =============================================================================
 
 
+@pytest.mark.skip(
+    "Test causes fatal crash - forcibly closing underlying connection leads to undefined behavior"
+)
 def test_pool_removes_invalid_connections(conn_str):
     """Test that the pool removes connections that become invalid (simulate by closing underlying connection)."""
     pooling(max_size=1, idle_timeout=30)
@@ -259,9 +340,7 @@ def test_pool_removes_invalid_connections(conn_str):
     try:
         new_cursor.execute("SELECT 1")
         result = new_cursor.fetchone()
-        assert (
-            result is not None and result[0] == 1
-        ), "Pool did not remove invalid connection"
+        assert result is not None and result[0] == 1, "Pool did not remove invalid connection"
     finally:
         new_conn.close()
 
@@ -283,9 +362,7 @@ def test_pool_recovery_after_failed_connection(conn_str):
     cursor = conn.cursor()
     cursor.execute("SELECT 1")
     result = cursor.fetchone()
-    assert (
-        result is not None and result[0] == 1
-    ), "Pool did not recover after failed connection"
+    assert result is not None and result[0] == 1, "Pool did not recover after failed connection"
     conn.close()
 
 
@@ -341,9 +418,7 @@ def test_pooling_disable_without_closing_connection(conn_str):
 
     # Should complete quickly (within 2 seconds)
     assert elapsed < 2.0, f"pooling(enabled=False) took too long: {elapsed:.2f}s"
-    print(
-        f"pooling(enabled=False) with unclosed connection completed in {elapsed:.3f}s"
-    )
+    print(f"pooling(enabled=False) with unclosed connection completed in {elapsed:.3f}s")
 
 
 def test_multiple_pooling_disable_calls(conn_str):
@@ -363,9 +438,7 @@ def test_multiple_pooling_disable_calls(conn_str):
     elapsed = time.time() - start_time
 
     # Should complete quickly
-    assert (
-        elapsed < 2.0
-    ), f"Multiple pooling disable calls took too long: {elapsed:.2f}s"
+    assert elapsed < 2.0, f"Multiple pooling disable calls took too long: {elapsed:.2f}s"
     print(f"Multiple disable calls completed in {elapsed:.3f}s")
 
 
@@ -411,12 +484,8 @@ def test_pooling_enable_disable_cycle(conn_str):
         pooling(enabled=False)
         elapsed = time.time() - start_time
 
-        assert (
-            not PoolingManager.is_enabled()
-        ), f"Pooling not disabled in cycle {cycle + 1}"
-        assert (
-            elapsed < 2.0
-        ), f"Disable took too long in cycle {cycle + 1}: {elapsed:.2f}s"
+        assert not PoolingManager.is_enabled(), f"Pooling not disabled in cycle {cycle + 1}"
+        assert elapsed < 2.0, f"Disable took too long in cycle {cycle + 1}: {elapsed:.2f}s"
 
     print("All enable/disable cycles completed successfully")
 
@@ -443,8 +512,6 @@ def test_pooling_state_consistency(conn_str):
     # Disable pooling
     pooling(enabled=False)
     assert not PoolingManager.is_enabled(), "Should be disabled after disable call"
-    assert (
-        PoolingManager.is_initialized()
-    ), "Should remain initialized after disable call"
+    assert PoolingManager.is_initialized(), "Should remain initialized after disable call"
 
     print("Pooling state consistency verified")

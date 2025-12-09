@@ -13,16 +13,16 @@ import builtins
 class ConnectionStringParseError(builtins.Exception):
     """
     Exception raised when connection string parsing fails.
-    
+
     This exception is raised when the connection string parser encounters
     syntax errors, unknown keywords, duplicate keywords, or other validation
     failures. It collects all errors and reports them together.
     """
-    
+
     def __init__(self, errors: list) -> None:
         """
         Initialize the error with a list of validation errors.
-        
+
         Args:
             errors: List of error messages describing what went wrong
         """
@@ -41,9 +41,7 @@ class Exception(builtins.Exception):
         self.ddbc_error = truncate_error_message(ddbc_error)
         if self.ddbc_error:
             # Both driver and DDBC errors are present
-            self.message = (
-                f"Driver Error: {self.driver_error}; DDBC Error: {self.ddbc_error}"
-            )
+            self.message = f"Driver Error: {self.driver_error}; DDBC Error: {self.ddbc_error}"
         else:
             # Errors raised by the driver itself should not have a DDBC error message
             self.message = f"Driver Error: {self.driver_error}"
@@ -162,9 +160,7 @@ def sqlstate_to_exception(sqlstate: str, ddbc_error: str) -> Optional[Exception]
         mapping[str, Exception]: A mapping of SQLSTATE codes to custom exception classes.
     """
     mapping = {
-        "01000": Warning(
-            driver_error="General warning", ddbc_error=ddbc_error
-        ),  # General warning
+        "01000": Warning(driver_error="General warning", ddbc_error=ddbc_error),  # General warning
         "01001": OperationalError(
             driver_error="Cursor operation conflict", ddbc_error=ddbc_error
         ),  # Cursor operation conflict
@@ -186,9 +182,7 @@ def sqlstate_to_exception(sqlstate: str, ddbc_error: str) -> Optional[Exception]
         "01S00": ProgrammingError(
             driver_error="Invalid connection string attribute", ddbc_error=ddbc_error
         ),  # Invalid connection string attribute
-        "01S01": DataError(
-            driver_error="Error in row", ddbc_error=ddbc_error
-        ),  # Error in row
+        "01S01": DataError(driver_error="Error in row", ddbc_error=ddbc_error),  # Error in row
         "01S02": Warning(
             driver_error="Option value changed", ddbc_error=ddbc_error
         ),  # Option value changed
