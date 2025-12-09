@@ -157,6 +157,50 @@ struct NumericData {
     }
 };
 
+struct Int128_t {
+    uint64_t low;
+    int64_t high;
+
+    Int128_t() : low(0), high(0) {}
+    Int128_t(uint64_t l, int64_t h) : low(l), high(h) {}
+
+    Int128_t multiply_by_10() const {
+        // value * 10 = (value * 8) + (value * 2)
+        Int128_t shift3 = *this << 3;
+        Int128_t shift1 = *this << 1;
+        return shift3 + shift1;
+    }
+
+    Int128_t operator<<(int shift) const {
+        // These would require special cases. We only shift by 1 and 3 for multiply_by_10.
+        assert(shift > 0);
+        assert(shift < 64);
+        uint64_t new_low = low << shift;
+        uint64_t new_high = (static_cast<uint64_t>(high) << shift) | (low >> (64 - shift));
+        return {new_low, static_cast<int64_t>(new_high)};
+    }
+
+    Int128_t operator+(const Int128_t& other) const {
+        uint64_t sum_low = low + other.low;
+        uint64_t carry = (sum_low < low) ? 1 : 0;
+        int64_t sum_high = high + other.high + carry;
+        return {sum_low, sum_high};
+    }
+
+    Int128_t operator+(uint64_t digit) const {
+        uint64_t sum_low = low + digit;
+        uint64_t carry = (sum_low < low) ? 1 : 0;
+        int64_t sum_high = high + carry;
+        return {sum_low, sum_high};
+    }
+
+    Int128_t operator-() const {
+        uint64_t new_low = ~low + 1;
+        uint64_t new_high = ~high + (new_low == 0 ? 1 : 0);
+        return {new_low, static_cast<int64_t>(new_high)};
+    }
+};
+
 struct ArrowArrayPrivateData {
     std::unique_ptr<uint8_t[]> valid;
 
@@ -170,7 +214,7 @@ struct ArrowArrayPrivateData {
     std::unique_ptr<int32_t[]> dateVal;
     std::unique_ptr<int64_t[]> tsMicroVal;
     std::unique_ptr<int32_t[]> timeSecondVal;
-    std::unique_ptr<__int128_t[]> decimalVal;
+    std::unique_ptr<Int128_t[]> decimalVal;
 
     std::vector<uint8_t> varData;
 
@@ -4405,7 +4449,7 @@ SQLRETURN FetchArrowBatch_wrap(
                 arrowSchemaPrivateData[i]->format = std::make_unique<char[]>(formatLen);
                 std::memcpy(arrowSchemaPrivateData[i]->format.get(), formatStr.c_str(), formatLen);
                 format = arrowSchemaPrivateData[i]->format.get();
-                arrowColumnProducer->decimalVal = std::make_unique<__int128_t[]>(arrowBatchSize);
+                arrowColumnProducer->decimalVal = std::make_unique<Int128_t[]>(arrowBatchSize);
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->decimalVal.get();
                 break;
             }
@@ -4911,8 +4955,9 @@ SQLRETURN FetchArrowBatch_wrap(
                         break;
                     case SQL_DECIMAL:
                     case SQL_NUMERIC: {
+                        // Relies on overloaded operators defined in Int128_t struct
                         assert(dataLen <= MAX_DIGITS_IN_NUMERIC);
-                        __int128_t decimalValue = 0;
+                        Int128_t decimalValue(0, 0);
                         auto start = idxRowSql * MAX_DIGITS_IN_NUMERIC;
                         int sign = 1;
                         for (SQLULEN idx = start; idx < start + dataLen; idx++) {
@@ -4920,10 +4965,10 @@ SQLRETURN FetchArrowBatch_wrap(
                             if (digitChar == '-') {
                                 sign = -1;
                             } else if (digitChar >= '0' && digitChar <= '9') {
-                                decimalValue = decimalValue * 10 + (digitChar - '0');
+                                decimalValue = decimalValue.multiply_by_10() + (uint64_t)(digitChar - '0');
                             }
                         }
-                        arrowColumnProducer->decimalVal[idxRowArrow] = decimalValue * sign;
+                        arrowColumnProducer->decimalVal[idxRowArrow] = (sign > 0) ? decimalValue : -decimalValue;
                         break;
                     }
                     case SQL_TIMESTAMP:
