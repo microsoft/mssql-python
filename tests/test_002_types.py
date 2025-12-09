@@ -882,7 +882,9 @@ def test_utf8_2byte_sequence_complete_coverage():
                     f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> {repr(result)}"
                 )
             except UnicodeEncodeError:
-                print(f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> <decoded>")
+                print(
+                    f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> <decoded>"
+                )
             # Check that overlong sequences are handled (behavior may vary by platform)
             assert len(result) > 0, f"Should produce some output for overlong U+{codepoint:04X}"
         except Exception as e:
@@ -1101,7 +1103,9 @@ def test_utf8_3byte_sequence_complete_coverage():
                     f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> {repr(result)}"
                 )
             except UnicodeEncodeError:
-                print(f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> <decoded>")
+                print(
+                    f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> <decoded>"
+                )
             # Check that overlong sequences are handled (behavior may vary by platform)
             assert len(result) > 0, f"Should produce some output for overlong U+{codepoint:04X}"
         except Exception as e:
@@ -1333,7 +1337,9 @@ def test_utf8_4byte_sequence_complete_coverage():
                     f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> {repr(result)}"
                 )
             except UnicodeEncodeError:
-                print(f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> <decoded>")
+                print(
+                    f"  {test_bytes.hex()}: Overlong encoding of U+{codepoint:04X} ({desc}) -> <decoded>"
+                )
             # Check that overlong sequences are handled (behavior may vary by platform)
             assert len(result) > 0, f"Should produce some output for overlong U+{codepoint:04X}"
         except Exception as e:
