@@ -814,13 +814,9 @@ def test_utf8_2byte_sequence_complete_coverage():
     def safe_print(msg):
         try:
             print(msg)
-        except UnicodeEncodeError:
+        except (UnicodeEncodeError, UnicodeDecodeError):
             # Fallback for Windows console encoding issues
-            print(
-                msg.encode(sys.stdout.encoding or "ascii", errors="backslashreplace").decode(
-                    sys.stdout.encoding or "ascii"
-                )
-            )
+            print(msg.encode("ascii", errors="backslashreplace").decode("ascii"))
 
     safe_print("\n=== Testing 2-byte UTF-8 Sequence Handler (lines 473-488) ===\n")
 
@@ -962,13 +958,9 @@ def test_utf8_3byte_sequence_complete_coverage():
     def safe_print(msg):
         try:
             print(msg)
-        except UnicodeEncodeError:
+        except (UnicodeEncodeError, UnicodeDecodeError):
             # Fallback for Windows console encoding issues
-            print(
-                msg.encode(sys.stdout.encoding or "ascii", errors="backslashreplace").decode(
-                    sys.stdout.encoding or "ascii"
-                )
-            )
+            print(msg.encode("ascii", errors="backslashreplace").decode("ascii"))
 
     safe_print("\n=== Testing 3-byte UTF-8 Sequence Handler (lines 490-506) ===\n")
 
@@ -1191,13 +1183,9 @@ def test_utf8_4byte_sequence_complete_coverage():
     def safe_print(msg):
         try:
             print(msg)
-        except UnicodeEncodeError:
+        except (UnicodeEncodeError, UnicodeDecodeError):
             # Fallback for Windows console encoding issues
-            print(
-                msg.encode(sys.stdout.encoding or "ascii", errors="backslashreplace").decode(
-                    sys.stdout.encoding or "ascii"
-                )
-            )
+            print(msg.encode("ascii", errors="backslashreplace").decode("ascii"))
 
     safe_print("\n=== Testing 4-byte UTF-8 Sequence Handler (lines 508-530) ===\n")
 
