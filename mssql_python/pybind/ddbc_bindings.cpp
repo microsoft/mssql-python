@@ -4305,22 +4305,15 @@ SQLRETURN GetDataVar(SQLHSTMT hStmt,
     return SQL_SUCCESS;
 }
 
-int32_t dateAsDayCount(SQLUSMALLINT year, SQLUSMALLINT month, SQLUSMALLINT day) {
-    // Convert SQL_DATE_STRUCT to Arrow Date32 (days since epoch)
-    std::tm tm_date = {};
-    tm_date.tm_year = year - 1900; // tm_year is years since 1900
-    tm_date.tm_mon = month - 1;    // tm_mon is 0-11
-    tm_date.tm_mday = day;
-
-    std::time_t time_since_epoch = std::mktime(&tm_date);
-    if (time_since_epoch == -1) {
-        LOG("Failed to convert SQL_DATE_STRUCT to time_t");
-        ThrowStdException("Date conversion error");
-    }
-    // Sanity check against timezone issues. Since we only provide the date, this has to be true
-    assert(time_since_epoch % 86400 == 0);
-    // Calculate days since epoch
-    return time_since_epoch / 86400;
+int32_t days_from_civil(int y, int m, int d) {
+    // Implements the "days_from_civil" algorithm by Howard Hinnant
+    // Returns number of days since Unix epoch (1970-01-01)
+    y -= m <= 2;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = static_cast<unsigned>(y - era * 400);           // [0, 399]
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1; // [0, 365]
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;          // [0, 146096]
+    return era * 146097 + static_cast<int>(doe) - 719468;
 }
 
 SQLRETURN FetchArrowBatch_wrap(
@@ -4975,7 +4968,7 @@ SQLRETURN FetchArrowBatch_wrap(
                     case SQL_TYPE_TIMESTAMP:
                     case SQL_DATETIME: {
                         SQL_TIMESTAMP_STRUCT sql_value = buffers.timestampBuffers[idxCol][idxRowSql];
-                        int64_t days = dateAsDayCount(
+                        int64_t days = days_from_civil(
                             sql_value.year,
                             sql_value.month,
                             sql_value.day
@@ -4990,7 +4983,7 @@ SQLRETURN FetchArrowBatch_wrap(
                     }
                     case SQL_SS_TIMESTAMPOFFSET: {
                         DateTimeOffset sql_value = buffers.datetimeoffsetBuffers[idxCol][idxRowSql];
-                        int64_t days = dateAsDayCount(
+                        int64_t days = days_from_civil(
                             sql_value.year,
                             sql_value.month,
                             sql_value.day
@@ -5004,7 +4997,7 @@ SQLRETURN FetchArrowBatch_wrap(
                         break;
                     }
                     case SQL_TYPE_DATE:
-                        arrowColumnProducer->dateVal[idxRowArrow] = dateAsDayCount(
+                        arrowColumnProducer->dateVal[idxRowArrow] = days_from_civil(
                             buffers.dateBuffers[idxCol][idxRowSql].year,
                             buffers.dateBuffers[idxCol][idxRowSql].month,
                             buffers.dateBuffers[idxCol][idxRowSql].day
