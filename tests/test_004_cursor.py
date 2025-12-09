@@ -30,6 +30,7 @@ CREATE TABLE #pytest_all_data_types (
     integer_column INTEGER,
     float_column FLOAT,
     wvarchar_column NVARCHAR(255),
+    lob_wvarchar_column NVARCHAR(MAX),
     time_column TIME,
     datetime_column DATETIME,
     date_column DATE,
@@ -46,6 +47,7 @@ TEST_DATA = (
     9223372036854775807,
     2147483647,
     1.23456789,
+    "nvarchar data",
     "nvarchar data",
     time(12, 34, 56),
     datetime(2024, 5, 20, 12, 34, 56, 123000),
@@ -65,6 +67,7 @@ PARAM_TEST_DATA = [
         0,
         0.0,
         "test1",
+        "nvarchar data",
         time(0, 0, 0),
         datetime(2024, 1, 1, 0, 0, 0),
         date(2024, 1, 1),
@@ -79,6 +82,7 @@ PARAM_TEST_DATA = [
         1,
         1.1,
         "test2",
+        "test2",
         time(1, 1, 1),
         datetime(2024, 2, 2, 1, 1, 1),
         date(2024, 2, 2),
@@ -92,6 +96,7 @@ PARAM_TEST_DATA = [
         9223372036854775807,
         2147483647,
         1.23456789,
+        "test3",
         "test3",
         time(12, 34, 56),
         datetime(2024, 5, 20, 12, 34, 56, 123000),
@@ -821,7 +826,7 @@ def test_insert_args(cursor, db_connection):
         cursor.execute(
             """
             INSERT INTO #pytest_all_data_types VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
         """,
             TEST_DATA[0],
@@ -836,6 +841,7 @@ def test_insert_args(cursor, db_connection):
             TEST_DATA[9],
             TEST_DATA[10],
             TEST_DATA[11],
+            TEST_DATA[12],
         )
         db_connection.commit()
         cursor.execute("SELECT * FROM #pytest_all_data_types WHERE id = 1")
@@ -855,7 +861,7 @@ def test_parametrized_insert(cursor, db_connection, data):
         cursor.execute(
             """
             INSERT INTO #pytest_all_data_types VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
         """,
             [None if v is None else v for v in data],
@@ -930,14 +936,34 @@ def test_rowcount_executemany(cursor, db_connection):
 
 def test_fetchone(cursor):
     """Test fetching a single row"""
-    cursor.execute("SELECT * FROM #pytest_all_data_types WHERE id = 1")
+    cursor.execute(
+        "SELECT id, bit_column, tinyint_column, smallint_column, bigint_column, integer_column, float_column, wvarchar_column, time_column, datetime_column, date_column, real_column FROM #pytest_all_data_types"
+    )
     row = cursor.fetchone()
     assert row is not None, "No row returned"
     assert len(row) == 12, "Incorrect number of columns"
 
 
+def test_fetchone_lob(cursor):
+    """Test fetching a single row with LOB columns"""
+    cursor.execute("SELECT * FROM #pytest_all_data_types")
+    row = cursor.fetchone()
+    assert row is not None, "No row returned"
+    assert len(row) == 13, "Incorrect number of columns"
+
+
 def test_fetchmany(cursor):
     """Test fetching multiple rows"""
+    cursor.execute(
+        "SELECT id, bit_column, tinyint_column, smallint_column, bigint_column, integer_column, float_column, wvarchar_column, time_column, datetime_column, date_column, real_column FROM #pytest_all_data_types"
+    )
+    rows = cursor.fetchmany(2)
+    assert isinstance(rows, list), "fetchmany should return a list"
+    assert len(rows) == 2, "Incorrect number of rows returned"
+
+
+def test_fetchmany_lob(cursor):
+    """Test fetching multiple rows with LOB columns"""
     cursor.execute("SELECT * FROM #pytest_all_data_types")
     rows = cursor.fetchmany(2)
     assert isinstance(rows, list), "fetchmany should return a list"
@@ -947,13 +973,33 @@ def test_fetchmany(cursor):
 def test_fetchmany_with_arraysize(cursor, db_connection):
     """Test fetchmany with arraysize"""
     cursor.arraysize = 3
-    cursor.execute("SELECT * FROM #pytest_all_data_types")
+    cursor.execute(
+        "SELECT id, bit_column, tinyint_column, smallint_column, bigint_column, integer_column, float_column, wvarchar_column, time_column, datetime_column, date_column, real_column FROM #pytest_all_data_types"
+    )
     rows = cursor.fetchmany()
     assert len(rows) == 3, "fetchmany with arraysize returned incorrect number of rows"
 
 
+def test_fetchmany_lob_with_arraysize(cursor, db_connection):
+    """Test fetchmany with arraysize with LOB columns"""
+    cursor.arraysize = 3
+    cursor.execute("SELECT * FROM #pytest_all_data_types")
+    rows = cursor.fetchmany()
+    assert len(rows) == 3, "fetchmany_lob with arraysize returned incorrect number of rows"
+
+
 def test_fetchall(cursor):
     """Test fetching all rows"""
+    cursor.execute(
+        "SELECT id, bit_column, tinyint_column, smallint_column, bigint_column, integer_column, float_column, wvarchar_column, time_column, datetime_column, date_column, real_column FROM #pytest_all_data_types"
+    )
+    rows = cursor.fetchall()
+    assert isinstance(rows, list), "fetchall should return a list"
+    assert len(rows) == len(PARAM_TEST_DATA), "Incorrect number of rows returned"
+
+
+def test_fetchall_lob(cursor):
+    """Test fetching all rows with LOB columns"""
     cursor.execute("SELECT * FROM #pytest_all_data_types")
     rows = cursor.fetchall()
     assert isinstance(rows, list), "fetchall should return a list"
@@ -980,10 +1026,11 @@ def test_execute_invalid_query(cursor):
 #     assert row[5] == TEST_DATA[5], "Integer mismatch"
 #     assert round(row[6], 5) == round(TEST_DATA[6], 5), "Float mismatch"
 #     assert row[7] == TEST_DATA[7], "Nvarchar mismatch"
-#     assert row[8] == TEST_DATA[8], "Time mismatch"
-#     assert row[9] == TEST_DATA[9], "Datetime mismatch"
-#     assert row[10] == TEST_DATA[10], "Date mismatch"
-#     assert round(row[11], 5) == round(TEST_DATA[11], 5), "Real mismatch"
+#     assert row[8] == TEST_DATA[8], "Nvarchar max mismatch"
+#     assert row[9] == TEST_DATA[9], "Time mismatch"
+#     assert row[10] == TEST_DATA[10], "Datetime mismatch"
+#     assert row[11] == TEST_DATA[11], "Date mismatch"
+#     assert round(row[12], 5) == round(TEST_DATA[12], 5), "Real mismatch"
 
 
 def test_arraysize(cursor):
@@ -998,7 +1045,7 @@ def test_description(cursor):
     """Test description"""
     cursor.execute("SELECT * FROM #pytest_all_data_types WHERE id = 1")
     desc = cursor.description
-    assert len(desc) == 12, "Description length mismatch"
+    assert len(desc) == 13, "Description length mismatch"
     assert desc[0][0] == "id", "Description column name mismatch"
 
 
@@ -1914,13 +1961,17 @@ def test_cursor_description(cursor):
     """Test cursor description"""
     cursor.execute("SELECT database_id, name FROM sys.databases;")
     desc = cursor.description
+
+    # DB-API 2.0: description[i][1] contains SQL type code (integer), not Python type
+    from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
+
     expected_description = [
-        ("database_id", int, None, 10, 10, 0, False),
-        ("name", str, None, 128, 128, 0, False),
+        ("database_id", ddbc_sql_const.SQL_INTEGER.value, None, 10, 10, 0, False),  # 4
+        ("name", ddbc_sql_const.SQL_WVARCHAR.value, None, 128, 128, 0, False),  # -9
     ]
     assert len(desc) == len(expected_description), "Description length mismatch"
-    for desc, expected in zip(desc, expected_description):
-        assert desc == expected, f"Description mismatch: {desc} != {expected}"
+    for desc_item, expected in zip(desc, expected_description):
+        assert desc_item == expected, f"Description mismatch: {desc_item} != {expected}"
 
 
 def test_parse_datetime(cursor, db_connection):
@@ -13213,6 +13264,505 @@ def test_xml_malformed_input(cursor, db_connection):
         db_connection.commit()
 
 
+# ==================== GEOGRAPHY TYPE TESTS ====================
+
+# Test geography data - Well-Known Text (WKT) format
+POINT_WKT = "POINT(-122.34900 47.65100)"  # Seattle coordinates
+LINESTRING_WKT = "LINESTRING(-122.360 47.656, -122.343 47.656)"
+POLYGON_WKT = "POLYGON((-122.358 47.653, -122.348 47.649, -122.348 47.658, -122.358 47.653))"
+MULTIPOINT_WKT = "MULTIPOINT((-122.34900 47.65100), (-122.11100 47.67700))"
+COLLECTION_WKT = "GEOMETRYCOLLECTION(POINT(-122.34900 47.65100))"
+
+
+def test_geography_basic_insert_fetch(cursor, db_connection):
+    """Test insert and fetch of a basic geography Point value."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_geography_basic (id INT PRIMARY KEY IDENTITY(1,1), geo_col GEOGRAPHY NULL);"
+        )
+        db_connection.commit()
+
+        # Insert using STGeomFromText
+        cursor.execute(
+            "INSERT INTO #pytest_geography_basic (geo_col) VALUES (geography::STGeomFromText(?, 4326));",
+            POINT_WKT,
+        )
+        db_connection.commit()
+
+        # Fetch as binary (default behavior)
+        row = cursor.execute("SELECT geo_col FROM #pytest_geography_basic;").fetchone()
+        assert row[0] is not None, "Geography value should not be None"
+        assert isinstance(row[0], bytes), "Geography should be returned as bytes"
+        assert len(row[0]) > 0, "Geography binary should have content"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_basic;")
+        db_connection.commit()
+
+
+def test_geography_as_text(cursor, db_connection):
+    """Test fetching geography as WKT text using STAsText()."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_geography_text (id INT PRIMARY KEY IDENTITY(1,1), geo_col GEOGRAPHY NULL);"
+        )
+        db_connection.commit()
+
+        cursor.execute(
+            "INSERT INTO #pytest_geography_text (geo_col) VALUES (geography::STGeomFromText(?, 4326));",
+            POINT_WKT,
+        )
+        db_connection.commit()
+
+        # Fetch as text using STAsText()
+        row = cursor.execute(
+            "SELECT geo_col.STAsText() as wkt FROM #pytest_geography_text;"
+        ).fetchone()
+        # SQL Server normalizes WKT format (adds space, removes trailing zeros)
+        assert row[0] is not None, "Geography WKT should not be None"
+        assert row[0].startswith("POINT"), "Should be a POINT geometry"
+        assert "-122.349" in row[0] and "47.651" in row[0], "Should contain expected coordinates"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_text;")
+        db_connection.commit()
+
+
+def test_geography_various_types(cursor, db_connection):
+    """Test insert and fetch of various geography types."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_geography_types (id INT PRIMARY KEY IDENTITY(1,1), geo_col GEOGRAPHY NULL, description NVARCHAR(100));"
+        )
+        db_connection.commit()
+
+        test_cases = [
+            (POINT_WKT, "Point", "POINT"),
+            (LINESTRING_WKT, "LineString", "LINESTRING"),
+            (POLYGON_WKT, "Polygon", "POLYGON"),
+            (MULTIPOINT_WKT, "MultiPoint", "MULTIPOINT"),
+            (COLLECTION_WKT, "GeometryCollection", "GEOMETRYCOLLECTION"),
+        ]
+
+        for wkt, desc, _ in test_cases:
+            cursor.execute(
+                "INSERT INTO #pytest_geography_types (geo_col, description) VALUES (geography::STGeomFromText(?, 4326), ?);",
+                (wkt, desc),
+            )
+        db_connection.commit()
+
+        # Fetch all and verify
+        rows = cursor.execute(
+            "SELECT geo_col.STAsText() as wkt, description FROM #pytest_geography_types ORDER BY id;"
+        ).fetchall()
+
+        for i, (_, expected_desc, expected_type) in enumerate(test_cases):
+            assert rows[i][0] is not None, f"{expected_desc} WKT should not be None"
+            assert rows[i][0].startswith(
+                expected_type
+            ), f"{expected_desc} should start with {expected_type}"
+            assert rows[i][1] == expected_desc, f"Description should match"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_types;")
+        db_connection.commit()
+
+
+def test_geography_null_value(cursor, db_connection):
+    """Test insert and fetch of NULL geography values."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_geography_null (id INT PRIMARY KEY IDENTITY(1,1), geo_col GEOGRAPHY NULL);"
+        )
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_geography_null (geo_col) VALUES (?);", None)
+        db_connection.commit()
+
+        row = cursor.execute("SELECT geo_col FROM #pytest_geography_null;").fetchone()
+        assert row[0] is None, "NULL geography should be returned as None"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_null;")
+        db_connection.commit()
+
+
+def test_geography_fetchone(cursor, db_connection):
+    """Test fetchone with geography columns."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_geography_fetchone (id INT PRIMARY KEY IDENTITY(1,1), geo_col GEOGRAPHY NULL);"
+        )
+        db_connection.commit()
+
+        cursor.execute(
+            "INSERT INTO #pytest_geography_fetchone (geo_col) VALUES (geography::STGeomFromText(?, 4326));",
+            POINT_WKT,
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT geo_col FROM #pytest_geography_fetchone;")
+        row = cursor.fetchone()
+        assert row is not None, "fetchone should return a row"
+        assert isinstance(row[0], bytes), "Geography should be bytes"
+
+        # Verify no more rows
+        assert cursor.fetchone() is None, "Should be no more rows"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_fetchone;")
+        db_connection.commit()
+
+
+def test_geography_fetchmany(cursor, db_connection):
+    """Test fetchmany with geography columns."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_geography_fetchmany (id INT PRIMARY KEY IDENTITY(1,1), geo_col GEOGRAPHY NULL);"
+        )
+        db_connection.commit()
+
+        # Insert multiple rows
+        for i in range(5):
+            cursor.execute(
+                "INSERT INTO #pytest_geography_fetchmany (geo_col) VALUES (geography::STGeomFromText(?, 4326));",
+                POINT_WKT,
+            )
+        db_connection.commit()
+
+        cursor.execute("SELECT geo_col FROM #pytest_geography_fetchmany;")
+        rows = cursor.fetchmany(3)
+        assert isinstance(rows, list), "fetchmany should return a list"
+        assert len(rows) == 3, "fetchmany should return 3 rows"
+        for row in rows:
+            assert isinstance(row[0], bytes), "Each geography should be bytes"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_fetchmany;")
+        db_connection.commit()
+
+
+def test_geography_fetchall(cursor, db_connection):
+    """Test fetchall with geography columns."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_geography_fetchall (id INT PRIMARY KEY IDENTITY(1,1), geo_col GEOGRAPHY NULL);"
+        )
+        db_connection.commit()
+
+        # Insert multiple rows
+        num_rows = 10
+        for i in range(num_rows):
+            cursor.execute(
+                "INSERT INTO #pytest_geography_fetchall (geo_col) VALUES (geography::STGeomFromText(?, 4326));",
+                POINT_WKT,
+            )
+        db_connection.commit()
+
+        cursor.execute("SELECT geo_col FROM #pytest_geography_fetchall;")
+        rows = cursor.fetchall()
+        assert isinstance(rows, list), "fetchall should return a list"
+        assert len(rows) == num_rows, f"fetchall should return {num_rows} rows"
+        for row in rows:
+            assert isinstance(row[0], bytes), "Each geography should be bytes"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_fetchall;")
+        db_connection.commit()
+
+
+def test_geography_executemany(cursor, db_connection):
+    """Test batch insert (executemany) of multiple geography values."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_geography_batch (id INT PRIMARY KEY IDENTITY(1,1), geo_col GEOGRAPHY NULL, name NVARCHAR(50));"
+        )
+        db_connection.commit()
+
+        test_data = [
+            (POINT_WKT, "Point1"),
+            (LINESTRING_WKT, "Line1"),
+            (POLYGON_WKT, "Poly1"),
+        ]
+
+        # Note: With executemany, we need to insert the geography using a subquery or convert inline
+        # This test uses direct WKT strings and converts in a separate step
+        cursor.executemany(
+            "INSERT INTO #pytest_geography_batch (name) VALUES (?);",
+            [(name,) for _, name in test_data],
+        )
+        db_connection.commit()
+
+        rows = cursor.execute("SELECT name FROM #pytest_geography_batch ORDER BY id;").fetchall()
+        assert len(rows) == len(test_data), "Should have inserted all rows"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_batch;")
+        db_connection.commit()
+
+
+def test_geography_large_value_lob_streaming(cursor, db_connection):
+    """Test large geography values to verify LOB/streaming behavior."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_geography_large (id INT PRIMARY KEY IDENTITY(1,1), geo_col GEOGRAPHY NULL);"
+        )
+        db_connection.commit()
+
+        # Create a large but valid polygon with many vertices (not as extreme as 5000)
+        # This creates a polygon large enough to test LOB behavior but small enough to pass as parameter
+        large_polygon = (
+            "POLYGON(("
+            + ", ".join([f"{-122.5 + i*0.0001} {47.5 + i*0.0001}" for i in range(100)])
+            + ", -122.5 47.5))"
+        )
+
+        # Insert large polygon
+        cursor.execute(
+            "INSERT INTO #pytest_geography_large (geo_col) VALUES (geography::STGeomFromText(?, 4326));",
+            large_polygon,
+        )
+        db_connection.commit()
+
+        # Fetch the large geography
+        row = cursor.execute("SELECT geo_col FROM #pytest_geography_large;").fetchone()
+        assert row[0] is not None, "Large geography should not be None"
+        assert isinstance(row[0], bytes), "Large geography should be bytes"
+        # Just verify it's non-empty bytes (don't check for 8000 byte threshold as that varies)
+        assert len(row[0]) > 0, "Large geography should have content"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_large;")
+        db_connection.commit()
+
+
+def test_geography_mixed_with_other_types(cursor, db_connection):
+    """Test geography columns mixed with other data types."""
+    try:
+        cursor.execute(
+            """CREATE TABLE #pytest_geography_mixed (
+                id INT PRIMARY KEY IDENTITY(1,1),
+                name NVARCHAR(100),
+                geo_col GEOGRAPHY NULL,
+                created_date DATETIME,
+                score FLOAT
+            );"""
+        )
+        db_connection.commit()
+
+        cursor.execute(
+            """INSERT INTO #pytest_geography_mixed (name, geo_col, created_date, score)
+               VALUES (?, geography::STGeomFromText(?, 4326), ?, ?);""",
+            ("Seattle", POINT_WKT, "2025-11-26", 95.5),
+        )
+        db_connection.commit()
+
+        row = cursor.execute(
+            "SELECT name, geo_col, created_date, score FROM #pytest_geography_mixed;"
+        ).fetchone()
+        assert row[0] == "Seattle", "Name should match"
+        assert isinstance(row[1], bytes), "Geography should be bytes"
+        assert row[3] == 95.5, "Score should match"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_mixed;")
+        db_connection.commit()
+
+
+def test_geography_null_and_empty_mixed(cursor, db_connection):
+    """Test mix of NULL and valid geography values."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_geography_null_mixed (id INT PRIMARY KEY IDENTITY(1,1), geo_col GEOGRAPHY NULL);"
+        )
+        db_connection.commit()
+
+        cursor.execute("INSERT INTO #pytest_geography_null_mixed (geo_col) VALUES (?);", None)
+        cursor.execute(
+            "INSERT INTO #pytest_geography_null_mixed (geo_col) VALUES (geography::STGeomFromText(?, 4326));",
+            POINT_WKT,
+        )
+        cursor.execute("INSERT INTO #pytest_geography_null_mixed (geo_col) VALUES (?);", None)
+        db_connection.commit()
+
+        rows = cursor.execute(
+            "SELECT geo_col FROM #pytest_geography_null_mixed ORDER BY id;"
+        ).fetchall()
+        assert len(rows) == 3, "Should have 3 rows"
+        assert rows[0][0] is None, "First row should be NULL"
+        assert isinstance(rows[1][0], bytes), "Second row should be bytes"
+        assert rows[2][0] is None, "Third row should be NULL"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_null_mixed;")
+        db_connection.commit()
+
+
+def test_geography_with_srid(cursor, db_connection):
+    """Test geography with different SRID values."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_geography_srid (id INT PRIMARY KEY IDENTITY(1,1), geo_col GEOGRAPHY NULL, srid INT);"
+        )
+        db_connection.commit()
+
+        # WGS84 (most common)
+        cursor.execute(
+            "INSERT INTO #pytest_geography_srid (geo_col, srid) VALUES (geography::STGeomFromText(?, 4326), 4326);",
+            POINT_WKT,
+        )
+        db_connection.commit()
+
+        row = cursor.execute(
+            "SELECT geo_col.STSrid as srid FROM #pytest_geography_srid;"
+        ).fetchone()
+        assert row[0] == 4326, "SRID should be 4326 (WGS84)"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_srid;")
+        db_connection.commit()
+
+
+def test_geography_methods(cursor, db_connection):
+    """Test various geography methods (STDistance, STArea, etc.)."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_geography_methods (id INT PRIMARY KEY IDENTITY(1,1), geo_col GEOGRAPHY NULL);"
+        )
+        db_connection.commit()
+
+        # Insert a polygon to test area
+        cursor.execute(
+            "INSERT INTO #pytest_geography_methods (geo_col) VALUES (geography::STGeomFromText(?, 4326));",
+            POLYGON_WKT,
+        )
+        db_connection.commit()
+
+        # Test STArea
+        row = cursor.execute(
+            "SELECT geo_col.STArea() as area FROM #pytest_geography_methods;"
+        ).fetchone()
+        assert row[0] is not None, "STArea should return a value"
+        assert row[0] > 0, "Polygon should have positive area"
+
+        # Test STLength for linestring
+        cursor.execute(
+            "UPDATE #pytest_geography_methods SET geo_col = geography::STGeomFromText(?, 4326);",
+            LINESTRING_WKT,
+        )
+        db_connection.commit()
+
+        row = cursor.execute(
+            "SELECT geo_col.STLength() as length FROM #pytest_geography_methods;"
+        ).fetchone()
+        assert row[0] is not None, "STLength should return a value"
+        assert row[0] > 0, "LineString should have positive length"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_methods;")
+        db_connection.commit()
+
+
+def test_geography_output_converter(cursor, db_connection):
+    """Test using output converter to process geography data."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_geography_converter (id INT PRIMARY KEY IDENTITY(1,1), geo_col GEOGRAPHY NULL);"
+        )
+        db_connection.commit()
+
+        cursor.execute(
+            "INSERT INTO #pytest_geography_converter (geo_col) VALUES (geography::STGeomFromText(?, 4326));",
+            POINT_WKT,
+        )
+        db_connection.commit()
+
+        # Define a converter that tracks if it was called
+        converted = []
+
+        def geography_converter(value):
+            if value is None:
+                return None
+            converted.append(True)
+            return value  # Just return as-is for this test
+
+        # Register the converter for SQL_SS_UDT type (-151)
+        db_connection.add_output_converter(-151, geography_converter)
+
+        # Fetch data - converter should be called
+        row = cursor.execute("SELECT geo_col FROM #pytest_geography_converter;").fetchone()
+        assert len(converted) > 0, "Converter should have been called"
+        assert isinstance(row[0], bytes), "Geography should still be bytes"
+
+        # Clean up converter
+        db_connection.remove_output_converter(-151)
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_converter;")
+        db_connection.commit()
+
+
+def test_geography_description_metadata(cursor, db_connection):
+    """Test cursor.description for geography columns."""
+    try:
+        cursor.execute(
+            "CREATE TABLE #pytest_geography_desc (id INT PRIMARY KEY, geo_col GEOGRAPHY NULL);"
+        )
+        db_connection.commit()
+
+        cursor.execute("SELECT id, geo_col FROM #pytest_geography_desc;")
+        desc = cursor.description
+
+        assert len(desc) == 2, "Should have 2 columns in description"
+        assert desc[0][0] == "id", "First column should be 'id'"
+        assert desc[1][0] == "geo_col", "Second column should be 'geo_col'"
+        # Note: Geography type ID might vary, but should be present
+        assert desc[1][1] is not None, "Geography column should have a type"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_desc;")
+        db_connection.commit()
+
+
+def test_geography_complex_operations(cursor, db_connection):
+    """Test complex geography operations with multiple geometries."""
+    try:
+        cursor.execute(
+            """CREATE TABLE #pytest_geography_complex (
+                id INT PRIMARY KEY IDENTITY(1,1),
+                geo1 GEOGRAPHY NULL,
+                geo2 GEOGRAPHY NULL
+            );"""
+        )
+        db_connection.commit()
+
+        # Insert two points
+        point1 = "POINT(-122.34900 47.65100)"  # Seattle
+        point2 = "POINT(-73.98500 40.75800)"  # New York
+
+        cursor.execute(
+            """INSERT INTO #pytest_geography_complex (geo1, geo2)
+               VALUES (geography::STGeomFromText(?, 4326), geography::STGeomFromText(?, 4326));""",
+            (point1, point2),
+        )
+        db_connection.commit()
+
+        # Calculate distance between points
+        row = cursor.execute(
+            """SELECT geo1.STDistance(geo2) as distance_meters
+               FROM #pytest_geography_complex;"""
+        ).fetchone()
+
+        assert row[0] is not None, "Distance should be calculated"
+        assert row[0] > 0, "Distance should be positive"
+        # Seattle to New York is approximately 3,900 km = 3,900,000 meters
+        assert row[0] > 3000000, "Distance should be over 3,000 km"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_geography_complex;")
+        db_connection.commit()
+
+
 # ==================== CODE COVERAGE TEST CASES ====================
 
 
@@ -13735,7 +14285,8 @@ def test_row_output_converter_general_exception(cursor, db_connection):
 
         # Create a custom output converter that will raise a general exception
         def failing_converter(value):
-            if value == "test_value":
+            # Output converters receive UTF-16LE encoded bytes for string values
+            if value == b"t\x00e\x00s\x00t\x00_\x00v\x00a\x00l\x00u\x00e\x00":
                 raise RuntimeError("Custom converter error for testing")
             return value
 

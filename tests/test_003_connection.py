@@ -4273,32 +4273,15 @@ def test_converter_integration(db_connection):
     cursor = db_connection.cursor()
     sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
 
-    # Test with string converter
+    # Register converter for SQL_WVARCHAR type
     db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
 
     # Test a simple string query
     cursor.execute("SELECT N'test string' AS test_col")
     row = cursor.fetchone()
 
-    # Check if the type matches what we expect for SQL_WVARCHAR
-    # For Cursor.description, the second element is the type code
-    column_type = cursor.description[0][1]
-
-    # If the cursor description has SQL_WVARCHAR as the type code,
-    # then our converter should be applied
-    if column_type == sql_wvarchar:
-        assert row[0].startswith("CONVERTED:"), "Output converter not applied"
-    else:
-        # If the type code is different, adjust the test or the converter
-        print(f"Column type is {column_type}, not {sql_wvarchar}")
-        # Add converter for the actual type used
-        db_connection.clear_output_converters()
-        db_connection.add_output_converter(column_type, custom_string_converter)
-
-        # Re-execute the query
-        cursor.execute("SELECT N'test string' AS test_col")
-        row = cursor.fetchone()
-        assert row[0].startswith("CONVERTED:"), "Output converter not applied"
+    # The converter should be applied based on the SQL type code
+    assert row[0].startswith("CONVERTED:"), "Output converter not applied"
 
     # Clean up
     db_connection.clear_output_converters()
@@ -4385,26 +4368,23 @@ def test_multiple_output_converters(db_connection):
     """Test that multiple output converters can work together"""
     cursor = db_connection.cursor()
 
-    # Execute a query to get the actual type codes used
-    cursor.execute("SELECT CAST(42 AS INT) as int_col, N'test' as str_col")
-    int_type = cursor.description[0][1]  # Type code for integer column
-    str_type = cursor.description[1][1]  # Type code for string column
+    # Use SQL type constants directly
+    sql_integer = ConstantsDDBC.SQL_INTEGER.value  # SQL type code for INT
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value  # SQL type code for NVARCHAR
 
     # Add converter for string type
-    db_connection.add_output_converter(str_type, custom_string_converter)
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
 
     # Add converter for integer type
     def int_converter(value):
         if value is None:
             return None
-        # Convert from bytes to int and multiply by 2
-        if isinstance(value, bytes):
-            return int.from_bytes(value, byteorder="little") * 2
-        elif isinstance(value, int):
+        # Integers are already Python ints, so just multiply by 2
+        if isinstance(value, int):
             return value * 2
         return value
 
-    db_connection.add_output_converter(int_type, int_converter)
+    db_connection.add_output_converter(sql_integer, int_converter)
 
     # Test query with both types
     cursor.execute("SELECT CAST(42 AS INT) as int_col, N'test' as str_col")
@@ -4811,32 +4791,15 @@ def test_converter_integration(db_connection):
     cursor = db_connection.cursor()
     sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value
 
-    # Test with string converter
+    # Register converter for SQL_WVARCHAR type
     db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
 
     # Test a simple string query
     cursor.execute("SELECT N'test string' AS test_col")
     row = cursor.fetchone()
 
-    # Check if the type matches what we expect for SQL_WVARCHAR
-    # For Cursor.description, the second element is the type code
-    column_type = cursor.description[0][1]
-
-    # If the cursor description has SQL_WVARCHAR as the type code,
-    # then our converter should be applied
-    if column_type == sql_wvarchar:
-        assert row[0].startswith("CONVERTED:"), "Output converter not applied"
-    else:
-        # If the type code is different, adjust the test or the converter
-        print(f"Column type is {column_type}, not {sql_wvarchar}")
-        # Add converter for the actual type used
-        db_connection.clear_output_converters()
-        db_connection.add_output_converter(column_type, custom_string_converter)
-
-        # Re-execute the query
-        cursor.execute("SELECT N'test string' AS test_col")
-        row = cursor.fetchone()
-        assert row[0].startswith("CONVERTED:"), "Output converter not applied"
+    # The converter should be applied based on the SQL type code
+    assert row[0].startswith("CONVERTED:"), "Output converter not applied"
 
     # Clean up
     db_connection.clear_output_converters()
@@ -4923,26 +4886,23 @@ def test_multiple_output_converters(db_connection):
     """Test that multiple output converters can work together"""
     cursor = db_connection.cursor()
 
-    # Execute a query to get the actual type codes used
-    cursor.execute("SELECT CAST(42 AS INT) as int_col, N'test' as str_col")
-    int_type = cursor.description[0][1]  # Type code for integer column
-    str_type = cursor.description[1][1]  # Type code for string column
+    # Use SQL type constants directly
+    sql_integer = ConstantsDDBC.SQL_INTEGER.value  # SQL type code for INT
+    sql_wvarchar = ConstantsDDBC.SQL_WVARCHAR.value  # SQL type code for NVARCHAR
 
     # Add converter for string type
-    db_connection.add_output_converter(str_type, custom_string_converter)
+    db_connection.add_output_converter(sql_wvarchar, custom_string_converter)
 
     # Add converter for integer type
     def int_converter(value):
         if value is None:
             return None
-        # Convert from bytes to int and multiply by 2
-        if isinstance(value, bytes):
-            return int.from_bytes(value, byteorder="little") * 2
-        elif isinstance(value, int):
+        # Integers are already Python ints, so just multiply by 2
+        if isinstance(value, int):
             return value * 2
         return value
 
-    db_connection.add_output_converter(int_type, int_converter)
+    db_connection.add_output_converter(sql_integer, int_converter)
 
     # Test query with both types
     cursor.execute("SELECT CAST(42 AS INT) as int_col, N'test' as str_col")

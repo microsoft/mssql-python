@@ -16,6 +16,7 @@ import uuid
 import datetime
 import warnings
 from typing import List, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING
+import xml
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error
 from mssql_python.logging import logger
@@ -130,6 +131,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             False  # Track if we need to skip incrementing the row index
         )
         self.messages = []  # Store diagnostic messages
+
+        # Store raw column metadata for converter lookups
+        self._column_metadata = None
 
     def _is_unicode_string(self, param: str) -> bool:
         """
@@ -836,7 +840,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """Initialize the description attribute from column metadata."""
         if not column_metadata:
             self.description = None
+            self._column_metadata = None  # Clear metadata too
             return
+
+        # Store raw metadata for converter map building
+        self._column_metadata = column_metadata
 
         description = []
         for _, col in enumerate(column_metadata):
@@ -851,7 +859,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             description.append(
                 (
                     column_name,  # name
-                    self._map_data_type(col["DataType"]),  # type_code
+                    col["DataType"],  # type_code (SQL type integer) - CHANGED THIS LINE
                     None,  # display_size
                     col["ColumnSize"],  # internal_size
                     col["ColumnSize"],  # precision - should match ColumnSize
@@ -869,6 +877,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         if (
             not self.description
+            or not self._column_metadata
             or not hasattr(self.connection, "_output_converters")
             or not self.connection._output_converters
         ):
@@ -876,11 +885,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         converter_map = []
 
-        for desc in self.description:
-            if desc is None:
-                converter_map.append(None)
-                continue
-            sql_type = desc[1]
+        for col_meta in self._column_metadata:
+            # Use the raw SQL type code from metadata, not the mapped Python type
+            sql_type = col_meta["DataType"]
             converter = self.connection.get_output_converter(sql_type)
             # If no converter found for the SQL type, try the WVARCHAR converter as a fallback
             if converter is None:
@@ -947,6 +954,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             ddbc_sql_const.SQL_VARBINARY.value: bytes,
             ddbc_sql_const.SQL_LONGVARBINARY.value: bytes,
             ddbc_sql_const.SQL_GUID.value: uuid.UUID,
+            ddbc_sql_const.SQL_SS_UDT.value: bytes,  # UDTs mapped to bytes
+            ddbc_sql_const.SQL_XML.value: str,  # XML mapped to str
+            ddbc_sql_const.SQL_DATETIME2.value: datetime.datetime,
+            ddbc_sql_const.SQL_SMALLDATETIME.value: datetime.datetime,
+            ddbc_sql_const.SQL_DATETIMEOFFSET.value: datetime.datetime,
             # Add more mappings as needed
         }
         return sql_to_python_type.get(sql_type, str)
@@ -2373,7 +2385,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Destructor to ensure the cursor is closed when it is no longer needed.
         This is a safety net to ensure resources are cleaned up
         even if close() was not called explicitly.
-        If the cursor is already closed, it will not raise an exception during cleanup.
         """
         if "closed" not in self.__dict__ or not self.closed:
             try:
