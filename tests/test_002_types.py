@@ -915,15 +915,24 @@ def test_utf8_2byte_sequence_complete_coverage():
 
     result_1 = one_byte_max.decode("utf-8")
     result_2 = two_byte_min.decode("utf-8")
-    print(f"  1-byte max: {one_byte_max.hex()} -> U+007F: {repr(result_1)}")
-    print(f"  2-byte min: {two_byte_min.hex()} -> U+0080: {repr(result_2)}")
+    try:
+        print(f"  1-byte max: {one_byte_max.hex()} -> U+007F: {repr(result_1)}")
+    except UnicodeEncodeError:
+        print(f"  1-byte max: {one_byte_max.hex()} -> U+007F: <result>")
+    try:
+        print(f"  2-byte min: {two_byte_min.hex()} -> U+0080: {repr(result_2)}")
+    except UnicodeEncodeError:
+        print(f"  2-byte min: {two_byte_min.hex()} -> U+0080: <result>")
     assert ord(result_1) == 0x7F
     assert ord(result_2) == 0x80
 
     # Boundary between 2-byte and 3-byte (0x7FF vs 0x800)
     two_byte_max = b"\xdf\xbf"  # U+07FF - last 2-byte character
     result_3 = two_byte_max.decode("utf-8")
-    print(f"  2-byte max: {two_byte_max.hex()} -> U+07FF: {repr(result_3)}")
+    try:
+        print(f"  2-byte max: {two_byte_max.hex()} -> U+07FF: {repr(result_3)}")
+    except UnicodeEncodeError:
+        print(f"  2-byte max: {two_byte_max.hex()} -> U+07FF: <result>")
     assert ord(result_3) == 0x7FF
 
     try:
@@ -962,7 +971,6 @@ def test_utf8_2byte_sequence_complete_coverage():
     assert True, "Complete 2-byte sequence coverage validated"
 
 
-@pytest.mark.skip(reason="Skipping UTF-8 3-byte sequence test")
 def test_utf8_3byte_sequence_complete_coverage():
     """
     Comprehensive test for 3-byte UTF-8 sequence handling in ddbc_bindings.h lines 490-506.
@@ -1061,7 +1069,10 @@ def test_utf8_3byte_sequence_complete_coverage():
     for test_bytes, expected_char, codepoint, desc in valid_3byte:
         # Test decoding
         result = test_bytes.decode("utf-8")
-        print(f"  {test_bytes.hex()}: U+{codepoint:04X} -> {repr(result)} ({desc})")
+        try:
+            print(f"  {test_bytes.hex()}: U+{codepoint:04X} -> {repr(result)} ({desc})")
+        except UnicodeEncodeError:
+            print(f"  {test_bytes.hex()}: U+{codepoint:04X} -> <result> ({desc})")
         assert result == expected_char, f"Should decode to {expected_char!r}"
         assert "\ufffd" not in result, f"Should NOT contain U+FFFD for valid sequence"
 
@@ -1152,8 +1163,14 @@ def test_utf8_3byte_sequence_complete_coverage():
 
     result_2 = two_byte_max.decode("utf-8")
     result_3 = three_byte_min.decode("utf-8")
-    print(f"  2-byte max: {two_byte_max.hex()} -> U+07FF: {repr(result_2)}")
-    print(f"  3-byte min: {three_byte_min.hex()} -> U+0800: {repr(result_3)}")
+    try:
+        print(f"  2-byte max: {two_byte_max.hex()} -> U+07FF: {repr(result_2)}")
+    except UnicodeEncodeError:
+        print(f"  2-byte max: {two_byte_max.hex()} -> U+07FF: <result>")
+    try:
+        print(f"  3-byte min: {three_byte_min.hex()} -> U+0800: {repr(result_3)}")
+    except UnicodeEncodeError:
+        print(f"  3-byte min: {three_byte_min.hex()} -> U+0800: <result>")
     assert ord(result_2) == 0x7FF
     assert ord(result_3) == 0x800
 
@@ -1163,15 +1180,24 @@ def test_utf8_3byte_sequence_complete_coverage():
 
     result_before = before_surrogate.decode("utf-8")
     result_after = after_surrogate.decode("utf-8")
-    print(f"  Before surrogates: {before_surrogate.hex()} -> U+D7FF: {repr(result_before)}")
-    print(f"  After surrogates: {after_surrogate.hex()} -> U+E000: {repr(result_after)}")
+    try:
+        print(f"  Before surrogates: {before_surrogate.hex()} -> U+D7FF: {repr(result_before)}")
+    except UnicodeEncodeError:
+        print(f"  Before surrogates: {before_surrogate.hex()} -> U+D7FF: <result>")
+    try:
+        print(f"  After surrogates: {after_surrogate.hex()} -> U+E000: {repr(result_after)}")
+    except UnicodeEncodeError:
+        print(f"  After surrogates: {after_surrogate.hex()} -> U+E000: <result>")
     assert ord(result_before) == 0xD7FF
     assert ord(result_after) == 0xE000
 
     # Maximum 3-byte
     three_byte_max = b"\xef\xbf\xbf"  # U+FFFF - last 3-byte
     result_max = three_byte_max.decode("utf-8")
-    print(f"  3-byte max: {three_byte_max.hex()} -> U+FFFF: {repr(result_max)}")
+    try:
+        print(f"  3-byte max: {three_byte_max.hex()} -> U+FFFF: {repr(result_max)}")
+    except UnicodeEncodeError:
+        print(f"  3-byte max: {three_byte_max.hex()} -> U+FFFF: <result>")
     assert ord(result_max) == 0xFFFF
 
     try:
@@ -1216,7 +1242,6 @@ def test_utf8_3byte_sequence_complete_coverage():
     assert True, "Complete 3-byte sequence coverage validated"
 
 
-@pytest.mark.skip(reason="Skipping UTF-8 4-byte sequence test")
 def test_utf8_4byte_sequence_complete_coverage():
     """
     Comprehensive test for 4-byte UTF-8 sequence handling in ddbc_bindings.h lines 508-530.
@@ -1338,7 +1363,10 @@ def test_utf8_4byte_sequence_complete_coverage():
     for test_bytes, expected_char, codepoint, desc in valid_4byte:
         # Test decoding
         result = test_bytes.decode("utf-8")
-        print(f"  {test_bytes.hex()}: U+{codepoint:06X} -> {repr(result)} ({desc})")
+        try:
+            print(f"  {test_bytes.hex()}: U+{codepoint:06X} -> {repr(result)} ({desc})")
+        except UnicodeEncodeError:
+            print(f"  {test_bytes.hex()}: U+{codepoint:06X} -> <result> ({desc})")
         assert result == expected_char, f"Should decode to {expected_char!r}"
         assert "\ufffd" not in result, f"Should NOT contain U+FFFD for valid sequence"
 
@@ -1445,8 +1473,14 @@ def test_utf8_4byte_sequence_complete_coverage():
 
     result_3 = three_byte_max.decode("utf-8")
     result_4 = four_byte_min.decode("utf-8")
-    print(f"  3-byte max: {three_byte_max.hex()} -> U+FFFF: {repr(result_3)}")
-    print(f"  4-byte min: {four_byte_min.hex()} -> U+10000: {repr(result_4)}")
+    try:
+        print(f"  3-byte max: {three_byte_max.hex()} -> U+FFFF: {repr(result_3)}")
+    except UnicodeEncodeError:
+        print(f"  3-byte max: {three_byte_max.hex()} -> U+FFFF: <result>")
+    try:
+        print(f"  4-byte min: {four_byte_min.hex()} -> U+10000: {repr(result_4)}")
+    except UnicodeEncodeError:
+        print(f"  4-byte min: {four_byte_min.hex()} -> U+10000: <result>")
     assert ord(result_3) == 0xFFFF
     assert ord(result_4) == 0x10000
 
@@ -1456,8 +1490,14 @@ def test_utf8_4byte_sequence_complete_coverage():
 
     result_max = max_unicode.decode("utf-8")
     result_beyond = beyond_max.decode("utf-8", errors="replace")
-    print(f"  Max Unicode: {max_unicode.hex()} -> U+10FFFF: {repr(result_max)}")
-    print(f"  Beyond max: {beyond_max.hex()} -> Invalid: {repr(result_beyond)}")
+    try:
+        print(f"  Max Unicode: {max_unicode.hex()} -> U+10FFFF: {repr(result_max)}")
+    except UnicodeEncodeError:
+        print(f"  Max Unicode: {max_unicode.hex()} -> U+10FFFF: <result>")
+    try:
+        print(f"  Beyond max: {beyond_max.hex()} -> Invalid: {repr(result_beyond)}")
+    except UnicodeEncodeError:
+        print(f"  Beyond max: {beyond_max.hex()} -> Invalid: <result>")
     assert ord(result_max) == 0x10FFFF
     # Beyond max may be handled differently on different platforms
     assert len(result_beyond) > 0, "Should produce some output for beyond-max sequence"
