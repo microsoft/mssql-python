@@ -2837,7 +2837,6 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
     }
 
     // For SQL_C_CHAR data, decode using the specified encoding
-    // Create py::bytes once to avoid double allocation
     py::bytes raw_bytes(buffer.data(), buffer.size());
     try {
         py::object decoded = raw_bytes.attr("decode")(charEncoding, "strict");
@@ -2916,7 +2915,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             if (numCharsInData < dataBuffer.size()) {
                                 // SQLGetData will null-terminate the data
                                 // Use Python's codec system to decode bytes with specified encoding
-                                // Create py::bytes once to avoid double allocation
                                 py::bytes raw_bytes(reinterpret_cast<char*>(dataBuffer.data()),
                                                     static_cast<size_t>(dataLen));
                                 try {
@@ -4395,8 +4393,17 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           "Set the decimal separator character");
     m.def(
         "DDBCSQLSetStmtAttr",
-        [](SqlHandlePtr stmt, SQLINTEGER attr, SQLPOINTER value) {
-            return SQLSetStmtAttr_ptr(stmt->get(), attr, value, 0);
+        [](SqlHandlePtr stmt, SQLINTEGER attr, py::object value) {
+            SQLPOINTER ptr_value;
+            if (py::isinstance<py::int_>(value)) {
+                // For integer attributes like SQL_ATTR_QUERY_TIMEOUT
+                ptr_value =
+                    reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value.cast<int64_t>()));
+            } else {
+                // For pointer attributes
+                ptr_value = value.cast<SQLPOINTER>();
+            }
+            return SQLSetStmtAttr_ptr(stmt->get(), attr, ptr_value, 0);
         },
         "Set statement attributes");
     m.def("DDBCSQLGetTypeInfo", &SQLGetTypeInfo_Wrapper,

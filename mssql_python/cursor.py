@@ -681,12 +681,33 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Initialize the DDBC statement handle.
         """
         self._allocate_statement_handle()
+        self._set_timeout()
 
     def _allocate_statement_handle(self) -> None:
         """
         Allocate the DDBC statement handle.
         """
         self.hstmt = self._connection._conn.alloc_statement_handle()
+
+    def _set_timeout(self) -> None:
+        """
+        Set the query timeout attribute on the statement handle.
+        This is called once when the cursor is created and after any handle reallocation.
+        Following pyodbc's approach for better performance.
+        """
+        if self._timeout > 0:
+            logger.debug("_set_timeout: Setting query timeout=%d seconds", self._timeout)
+            try:
+                timeout_value = int(self._timeout)
+                ret = ddbc_bindings.DDBCSQLSetStmtAttr(
+                    self.hstmt,
+                    ddbc_sql_const.SQL_ATTR_QUERY_TIMEOUT.value,
+                    timeout_value,
+                )
+                check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+                logger.debug("Query timeout set to %d seconds", timeout_value)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.warning("Failed to set query timeout: %s", str(e))
 
     def _reset_cursor(self) -> None:
         """
@@ -1216,20 +1237,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         encoding_settings = self._get_encoding_settings()
 
         # Apply timeout if set (non-zero)
-        if self._timeout > 0:
-            logger.debug("execute: Setting query timeout=%d seconds", self._timeout)
-            try:
-                timeout_value = int(self._timeout)
-                ret = ddbc_bindings.DDBCSQLSetStmtAttr(
-                    self.hstmt,
-                    ddbc_sql_const.SQL_ATTR_QUERY_TIMEOUT.value,
-                    timeout_value,
-                )
-                check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-                logger.debug("Set query timeout to %d seconds", timeout_value)
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                logger.warning("Failed to set query timeout: %s", str(e))
-
         logger.debug("execute: Creating parameter type list")
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
