@@ -2288,6 +2288,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 wchar_decoding.get("encoding", "utf-16le"),
             )
 
+            # Check for errors
+            check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
 
