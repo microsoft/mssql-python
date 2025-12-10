@@ -30,6 +30,7 @@ CREATE TABLE #pytest_all_data_types (
     integer_column INTEGER,
     float_column FLOAT,
     wvarchar_column NVARCHAR(255),
+    lob_wvarchar_column NVARCHAR(MAX),
     time_column TIME,
     datetime_column DATETIME,
     date_column DATE,
@@ -46,6 +47,7 @@ TEST_DATA = (
     9223372036854775807,
     2147483647,
     1.23456789,
+    "nvarchar data",
     "nvarchar data",
     time(12, 34, 56),
     datetime(2024, 5, 20, 12, 34, 56, 123000),
@@ -65,6 +67,7 @@ PARAM_TEST_DATA = [
         0,
         0.0,
         "test1",
+        "nvarchar data",
         time(0, 0, 0),
         datetime(2024, 1, 1, 0, 0, 0),
         date(2024, 1, 1),
@@ -79,6 +82,7 @@ PARAM_TEST_DATA = [
         1,
         1.1,
         "test2",
+        "test2",
         time(1, 1, 1),
         datetime(2024, 2, 2, 1, 1, 1),
         date(2024, 2, 2),
@@ -92,6 +96,7 @@ PARAM_TEST_DATA = [
         9223372036854775807,
         2147483647,
         1.23456789,
+        "test3",
         "test3",
         time(12, 34, 56),
         datetime(2024, 5, 20, 12, 34, 56, 123000),
@@ -821,7 +826,7 @@ def test_insert_args(cursor, db_connection):
         cursor.execute(
             """
             INSERT INTO #pytest_all_data_types VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
         """,
             TEST_DATA[0],
@@ -836,6 +841,7 @@ def test_insert_args(cursor, db_connection):
             TEST_DATA[9],
             TEST_DATA[10],
             TEST_DATA[11],
+            TEST_DATA[12],
         )
         db_connection.commit()
         cursor.execute("SELECT * FROM #pytest_all_data_types WHERE id = 1")
@@ -855,7 +861,7 @@ def test_parametrized_insert(cursor, db_connection, data):
         cursor.execute(
             """
             INSERT INTO #pytest_all_data_types VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
         """,
             [None if v is None else v for v in data],
@@ -930,14 +936,34 @@ def test_rowcount_executemany(cursor, db_connection):
 
 def test_fetchone(cursor):
     """Test fetching a single row"""
-    cursor.execute("SELECT * FROM #pytest_all_data_types WHERE id = 1")
+    cursor.execute(
+        "SELECT id, bit_column, tinyint_column, smallint_column, bigint_column, integer_column, float_column, wvarchar_column, time_column, datetime_column, date_column, real_column FROM #pytest_all_data_types"
+    )
     row = cursor.fetchone()
     assert row is not None, "No row returned"
     assert len(row) == 12, "Incorrect number of columns"
 
 
+def test_fetchone_lob(cursor):
+    """Test fetching a single row with LOB columns"""
+    cursor.execute("SELECT * FROM #pytest_all_data_types")
+    row = cursor.fetchone()
+    assert row is not None, "No row returned"
+    assert len(row) == 13, "Incorrect number of columns"
+
+
 def test_fetchmany(cursor):
     """Test fetching multiple rows"""
+    cursor.execute(
+        "SELECT id, bit_column, tinyint_column, smallint_column, bigint_column, integer_column, float_column, wvarchar_column, time_column, datetime_column, date_column, real_column FROM #pytest_all_data_types"
+    )
+    rows = cursor.fetchmany(2)
+    assert isinstance(rows, list), "fetchmany should return a list"
+    assert len(rows) == 2, "Incorrect number of rows returned"
+
+
+def test_fetchmany_lob(cursor):
+    """Test fetching multiple rows with LOB columns"""
     cursor.execute("SELECT * FROM #pytest_all_data_types")
     rows = cursor.fetchmany(2)
     assert isinstance(rows, list), "fetchmany should return a list"
@@ -947,12 +973,244 @@ def test_fetchmany(cursor):
 def test_fetchmany_with_arraysize(cursor, db_connection):
     """Test fetchmany with arraysize"""
     cursor.arraysize = 3
-    cursor.execute("SELECT * FROM #pytest_all_data_types")
+    cursor.execute(
+        "SELECT id, bit_column, tinyint_column, smallint_column, bigint_column, integer_column, float_column, wvarchar_column, time_column, datetime_column, date_column, real_column FROM #pytest_all_data_types"
+    )
     rows = cursor.fetchmany()
     assert len(rows) == 3, "fetchmany with arraysize returned incorrect number of rows"
 
 
+def test_fetchmany_lob_with_arraysize(cursor, db_connection):
+    """Test fetchmany with arraysize with LOB columns"""
+    cursor.arraysize = 3
+    cursor.execute("SELECT * FROM #pytest_all_data_types")
+    rows = cursor.fetchmany()
+    assert len(rows) == 3, "fetchmany_lob with arraysize returned incorrect number of rows"
+
+
+def test_fetchmany_size_zero_lob(cursor, db_connection):
+    """Test fetchmany with size=0 for LOB columns"""
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_lob")
+        cursor.execute(
+            """
+            CREATE TABLE #test_fetchmany_lob (
+                id INT PRIMARY KEY,
+                lob_data NVARCHAR(MAX)
+            )
+        """
+        )
+
+        # Insert test data
+        test_data = [(1, "First LOB data"), (2, "Second LOB data"), (3, "Third LOB data")]
+        cursor.executemany(
+            "INSERT INTO #test_fetchmany_lob (id, lob_data) VALUES (?, ?)", test_data
+        )
+        db_connection.commit()
+
+        # Test fetchmany with size=0
+        cursor.execute("SELECT * FROM #test_fetchmany_lob ORDER BY id")
+        rows = cursor.fetchmany(0)
+
+        assert isinstance(rows, list), "fetchmany should return a list"
+        assert len(rows) == 0, "fetchmany(0) should return empty list"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_lob")
+        db_connection.commit()
+
+
+def test_fetchmany_more_than_exist_lob(cursor, db_connection):
+    """Test fetchmany requesting more rows than exist with LOB columns"""
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_lob_more")
+        cursor.execute(
+            """
+            CREATE TABLE #test_fetchmany_lob_more (
+                id INT PRIMARY KEY,
+                lob_data NVARCHAR(MAX)
+            )
+        """
+        )
+
+        # Insert only 3 rows
+        test_data = [(1, "First LOB data"), (2, "Second LOB data"), (3, "Third LOB data")]
+        cursor.executemany(
+            "INSERT INTO #test_fetchmany_lob_more (id, lob_data) VALUES (?, ?)", test_data
+        )
+        db_connection.commit()
+
+        # Request 10 rows but only 3 exist
+        cursor.execute("SELECT * FROM #test_fetchmany_lob_more ORDER BY id")
+        rows = cursor.fetchmany(10)
+
+        assert isinstance(rows, list), "fetchmany should return a list"
+        assert len(rows) == 3, "fetchmany should return all 3 available rows"
+
+        # Verify data
+        for i, row in enumerate(rows):
+            assert row[0] == i + 1, f"Row {i} id mismatch"
+            assert row[1] == test_data[i][1], f"Row {i} LOB data mismatch"
+
+        # Second call should return empty
+        rows2 = cursor.fetchmany(10)
+        assert len(rows2) == 0, "Second fetchmany should return empty list"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_lob_more")
+        db_connection.commit()
+
+
+def test_fetchmany_empty_result_lob(cursor, db_connection):
+    """Test fetchmany on empty result set with LOB columns"""
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_lob_empty")
+        cursor.execute(
+            """
+            CREATE TABLE #test_fetchmany_lob_empty (
+                id INT PRIMARY KEY,
+                lob_data NVARCHAR(MAX)
+            )
+        """
+        )
+        db_connection.commit()
+
+        # Query empty table
+        cursor.execute("SELECT * FROM #test_fetchmany_lob_empty")
+        rows = cursor.fetchmany(5)
+
+        assert isinstance(rows, list), "fetchmany should return a list"
+        assert len(rows) == 0, "fetchmany on empty result should return empty list"
+
+        # Multiple calls on empty result
+        rows2 = cursor.fetchmany(5)
+        assert len(rows2) == 0, "Subsequent fetchmany should also return empty list"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_lob_empty")
+        db_connection.commit()
+
+
+def test_fetchmany_very_large_lob(cursor, db_connection):
+    """Test fetchmany with very large LOB column data"""
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_large_lob")
+        cursor.execute(
+            """
+            CREATE TABLE #test_fetchmany_large_lob (
+                id INT PRIMARY KEY,
+                large_lob NVARCHAR(MAX)
+            )
+        """
+        )
+
+        # Create very large data (10000 characters)
+        large_data = "x" * 10000
+
+        # Insert multiple rows with large LOB data
+        test_data = [
+            (1, large_data),
+            (2, large_data + "y" * 100),  # Slightly different
+            (3, large_data + "z" * 200),
+            (4, "Small data"),
+            (5, large_data),
+        ]
+        cursor.executemany(
+            "INSERT INTO #test_fetchmany_large_lob (id, large_lob) VALUES (?, ?)", test_data
+        )
+        db_connection.commit()
+
+        # Test fetchmany with large LOB data
+        cursor.execute("SELECT * FROM #test_fetchmany_large_lob ORDER BY id")
+
+        # Fetch 2 rows at a time
+        batch1 = cursor.fetchmany(2)
+        assert len(batch1) == 2, "First batch should have 2 rows"
+        assert len(batch1[0][1]) == 10000, "First row LOB size mismatch"
+        assert len(batch1[1][1]) == 10100, "Second row LOB size mismatch"
+        assert batch1[0][1] == large_data, "First row LOB data mismatch"
+
+        batch2 = cursor.fetchmany(2)
+        assert len(batch2) == 2, "Second batch should have 2 rows"
+        assert len(batch2[0][1]) == 10200, "Third row LOB size mismatch"
+        assert batch2[1][1] == "Small data", "Fourth row data mismatch"
+
+        batch3 = cursor.fetchmany(2)
+        assert len(batch3) == 1, "Third batch should have 1 remaining row"
+        assert len(batch3[0][1]) == 10000, "Fifth row LOB size mismatch"
+
+        # Verify no more data
+        batch4 = cursor.fetchmany(2)
+        assert len(batch4) == 0, "Should have no more rows"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_large_lob")
+        db_connection.commit()
+
+
+def test_fetchmany_mixed_lob_sizes(cursor, db_connection):
+    """Test fetchmany with mixed LOB sizes including empty and NULL"""
+    try:
+        cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_mixed_lob")
+        cursor.execute(
+            """
+            CREATE TABLE #test_fetchmany_mixed_lob (
+                id INT PRIMARY KEY,
+                mixed_lob NVARCHAR(MAX)
+            )
+        """
+        )
+
+        # Mix of sizes: empty, NULL, small, medium, large
+        test_data = [
+            (1, ""),  # Empty string
+            (2, None),  # NULL
+            (3, "Small"),
+            (4, "x" * 1000),  # Medium
+            (5, "y" * 10000),  # Large
+            (6, ""),  # Empty again
+            (7, "z" * 5000),  # Another large
+        ]
+        cursor.executemany(
+            "INSERT INTO #test_fetchmany_mixed_lob (id, mixed_lob) VALUES (?, ?)", test_data
+        )
+        db_connection.commit()
+
+        # Fetch all with fetchmany
+        cursor.execute("SELECT * FROM #test_fetchmany_mixed_lob ORDER BY id")
+        rows = cursor.fetchmany(3)
+
+        assert len(rows) == 3, "First batch should have 3 rows"
+        assert rows[0][1] == "", "First row should be empty string"
+        assert rows[1][1] is None, "Second row should be NULL"
+        assert rows[2][1] == "Small", "Third row should be 'Small'"
+
+        rows2 = cursor.fetchmany(3)
+        assert len(rows2) == 3, "Second batch should have 3 rows"
+        assert len(rows2[0][1]) == 1000, "Fourth row LOB size mismatch"
+        assert len(rows2[1][1]) == 10000, "Fifth row LOB size mismatch"
+        assert rows2[2][1] == "", "Sixth row should be empty string"
+
+        rows3 = cursor.fetchmany(3)
+        assert len(rows3) == 1, "Third batch should have 1 remaining row"
+        assert len(rows3[0][1]) == 5000, "Seventh row LOB size mismatch"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #test_fetchmany_mixed_lob")
+        db_connection.commit()
+
+
 def test_fetchall(cursor):
+    """Test fetching all rows"""
+    cursor.execute(
+        "SELECT id, bit_column, tinyint_column, smallint_column, bigint_column, integer_column, float_column, wvarchar_column, time_column, datetime_column, date_column, real_column FROM #pytest_all_data_types"
+    )
+    rows = cursor.fetchall()
+    assert isinstance(rows, list), "fetchall should return a list"
+    assert len(rows) == len(PARAM_TEST_DATA), "Incorrect number of rows returned"
+
+
+def test_fetchall_lob(cursor):
     """Test fetching all rows"""
     cursor.execute("SELECT * FROM #pytest_all_data_types")
     rows = cursor.fetchall()
@@ -980,10 +1238,11 @@ def test_execute_invalid_query(cursor):
 #     assert row[5] == TEST_DATA[5], "Integer mismatch"
 #     assert round(row[6], 5) == round(TEST_DATA[6], 5), "Float mismatch"
 #     assert row[7] == TEST_DATA[7], "Nvarchar mismatch"
-#     assert row[8] == TEST_DATA[8], "Time mismatch"
-#     assert row[9] == TEST_DATA[9], "Datetime mismatch"
-#     assert row[10] == TEST_DATA[10], "Date mismatch"
-#     assert round(row[11], 5) == round(TEST_DATA[11], 5), "Real mismatch"
+#     assert row[8] == TEST_DATA[8], "Nvarchar max mismatch"
+#     assert row[9] == TEST_DATA[9], "Time mismatch"
+#     assert row[10] == TEST_DATA[10], "Datetime mismatch"
+#     assert row[11] == TEST_DATA[11], "Date mismatch"
+#     assert round(row[12], 5) == round(TEST_DATA[12], 5), "Real mismatch"
 
 
 def test_arraysize(cursor):
@@ -998,7 +1257,7 @@ def test_description(cursor):
     """Test description"""
     cursor.execute("SELECT * FROM #pytest_all_data_types WHERE id = 1")
     desc = cursor.description
-    assert len(desc) == 12, "Description length mismatch"
+    assert len(desc) == 13, "Description length mismatch"
     assert desc[0][0] == "id", "Description column name mismatch"
 
 
