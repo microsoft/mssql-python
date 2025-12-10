@@ -107,59 +107,6 @@ def _validate_utf16_wchar_compatibility(
         )
 
 
-# Note: "utf-16" with BOM is NOT included as it's problematic for SQL_WCHAR
-UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16le", "utf-16be"])
-
-
-def _validate_utf16_wchar_compatibility(
-    encoding: str, wchar_type: int, context: str = "SQL_WCHAR"
-) -> None:
-    """
-    Validates UTF-16 encoding compatibility with SQL_WCHAR.
-
-    Centralizes the validation logic to eliminate duplication across setencoding/setdecoding.
-
-    Args:
-        encoding: The encoding string (already normalized to lowercase)
-        wchar_type: The SQL_WCHAR constant value to check against
-        context: Context string for error messages ('SQL_WCHAR', 'SQL_WCHAR ctype', etc.)
-
-    Raises:
-        ProgrammingError: If encoding is incompatible with SQL_WCHAR
-    """
-    if encoding == "utf-16":
-        # UTF-16 with BOM is rejected due to byte order ambiguity
-        logger.warning("utf-16 with BOM rejected for %s", context)
-        raise ProgrammingError(
-            driver_error="UTF-16 with Byte Order Mark not supported for SQL_WCHAR",
-            ddbc_error=(
-                "Cannot use 'utf-16' encoding with SQL_WCHAR due to Byte Order Mark ambiguity. "
-                "Use 'utf-16le' or 'utf-16be' instead for explicit byte order."
-            ),
-        )
-    elif encoding not in UTF16_ENCODINGS:
-        # Non-UTF-16 encodings are not supported with SQL_WCHAR
-        logger.warning(
-            "Non-UTF-16 encoding %s attempted with %s", sanitize_user_input(encoding), context
-        )
-
-        # Generate context-appropriate error messages
-        if "ctype" in context:
-            driver_error = f"SQL_WCHAR ctype only supports UTF-16 encodings"
-            ddbc_context = "SQL_WCHAR ctype"
-        else:
-            driver_error = f"SQL_WCHAR only supports UTF-16 encodings"
-            ddbc_context = "SQL_WCHAR"
-
-        raise ProgrammingError(
-            driver_error=driver_error,
-            ddbc_error=(
-                f"Cannot use encoding '{encoding}' with {ddbc_context}. "
-                f"SQL_WCHAR requires UTF-16 encodings (utf-16le, utf-16be)"
-            ),
-        )
-
-
 def _validate_encoding(encoding: str) -> bool:
     """
     Cached encoding validation using codecs.lookup().
@@ -346,8 +293,12 @@ class Connection:
 
         # Initialize encoding/decoding settings lock for thread safety
         # This lock protects both _encoding_settings and _decoding_settings dictionaries
-        # to prevent race conditions when multiple threads are reading/writing encoding settings
-        self._encoding_lock = threading.RLock()  # RLock allows recursive locking
+        # from concurrent modification. We use a simple Lock (not RLock) because:
+        # - Write operations (setencoding/setdecoding) replace the entire dict atomically
+        # - Read operations (getencoding/getdecoding) return a copy, so they're safe
+        # - No recursive locking is needed in our usage pattern
+        # This is more performant than RLock for the multiple-readers-single-writer pattern
+        self._encoding_lock = threading.Lock()
 
         # Initialize search escape character
         self._searchescape = None
