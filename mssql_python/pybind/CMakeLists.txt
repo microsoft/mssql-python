@@ -8,6 +8,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Enable verbose output to see actual compiler/linker commands
 set(CMAKE_VERBOSE_MAKEFILE ON CACHE BOOL "Verbose output" FORCE)
 
+# Treat CMake warnings as errors
+set(CMAKE_ERROR_DEPRECATED TRUE)
+set(CMAKE_WARN_DEPRECATED TRUE)
+
 if (MSVC)
     # Security compiler options for OneBranch compliance
     message(STATUS "Applying MSVC security compiler options for OneBranch compliance")
@@ -300,6 +304,21 @@ target_compile_definitions(ddbc_bindings PRIVATE
 # Add warning level flags for MSVC
 if(MSVC)
     target_compile_options(ddbc_bindings PRIVATE /W4 /WX)
+endif()
+
+# Add warning flags for GCC/Clang on Linux and macOS
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_compile_options(ddbc_bindings PRIVATE 
+        -Werror        # Treat warnings as errors
+        -Wattributes   # Enable attribute warnings (cross-compiler)
+    )
+    
+    # GCC-specific warning flags
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(ddbc_bindings PRIVATE 
+            -Wint-to-pointer-cast  # GCC-specific warning for integer-to-pointer casts
+        )
+    endif()
 endif()
 
 # Add macOS-specific string conversion fix

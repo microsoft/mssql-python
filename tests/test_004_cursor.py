@@ -10373,7 +10373,11 @@ def test_procedures_result_set_info(cursor, db_connection):
 
         # Test execution of the procedures to verify they work
         cursor.execute("EXEC pytest_proc_schema.test_no_results")
-        assert cursor.fetchall() == [], "test_no_results should return no results"
+        # Procedures with no results should have no description and calling fetchall() should raise an error
+        assert (
+            cursor.description is None,
+        ), "test_no_results should have no description (no result set)"
+        # Don't call fetchall() on procedures with no results - this is invalid in ODBC
 
         cursor.execute("EXEC pytest_proc_schema.test_one_result")
         rows = cursor.fetchall()
@@ -14913,6 +14917,100 @@ def test_fixed_length_binary_type(cursor, db_connection):
         cursor.execute("DROP TABLE #pytest_binary_test")
     except Exception as e:
         pytest.fail(f"Fixed-length BINARY test failed: {e}")
+
+
+def test_fetchall_with_integrity_constraint(cursor, db_connection):
+    """
+    Test that UNIQUE constraint errors are appropriately triggered for multi-row INSERT
+    statements that use OUTPUT inserted.
+
+    This test covers a specific case where SQL Server's protocol has error conditions
+    that do not become apparent until rows are fetched, requiring special handling
+    in fetchall().
+    """
+    try:
+        # Setup table with unique constraint
+        cursor.execute("DROP TABLE IF EXISTS #uniq_cons_test")
+        cursor.execute(
+            """
+        CREATE TABLE #uniq_cons_test (
+            id INTEGER NOT NULL IDENTITY,
+            data VARCHAR(50) NULL,
+            PRIMARY KEY (id),
+            UNIQUE (data)
+        )
+        """
+        )
+
+        # Insert initial row - should work
+        cursor.execute(
+            "INSERT INTO #uniq_cons_test (data) OUTPUT inserted.id VALUES (?)", ("the data 1",)
+        )
+        cursor.fetchall()  # Complete the operation
+
+        # Test single row duplicate - should raise IntegrityError
+        with pytest.raises(mssql_python.IntegrityError):
+            cursor.execute(
+                "INSERT INTO #uniq_cons_test (data) OUTPUT inserted.id VALUES (?)", ("the data 1",)
+            )
+            cursor.fetchall()  # Error should be detected here
+
+        # Insert two valid rows in one statement - should work
+        cursor.execute(
+            "INSERT INTO #uniq_cons_test (data) OUTPUT inserted.id VALUES (?), (?)",
+            ("the data 2", "the data 3"),
+        )
+        cursor.fetchall()
+
+        # Verify current state
+        cursor.execute("SELECT * FROM #uniq_cons_test ORDER BY id")
+        rows = cursor.fetchall()
+        expected_before = [(1, "the data 1"), (3, "the data 2"), (4, "the data 3")]
+        actual_before = [tuple(row) for row in rows]
+        assert actual_before == expected_before
+
+        # THE CRITICAL TEST: Multi-row INSERT with duplicate values
+        # This should raise IntegrityError during fetchall()
+        with pytest.raises(mssql_python.IntegrityError):
+            cursor.execute(
+                "INSERT INTO #uniq_cons_test (data) OUTPUT inserted.id VALUES (?), (?)",
+                ("the data 4", "the data 4"),
+            )  # Duplicate in same statement
+
+            # The error should be detected HERE during fetchall()
+            cursor.fetchall()
+
+        # Verify table state after failed multi-row insert
+        cursor.execute("SELECT * FROM #uniq_cons_test ORDER BY id")
+        rows = cursor.fetchall()
+        expected_after = [(1, "the data 1"), (3, "the data 2"), (4, "the data 3")]
+        actual_after = [tuple(row) for row in rows]
+        assert actual_after == expected_after, "Table should be unchanged after failed insert"
+
+        # Test timing: execute() should succeed, error detection happens in fetchall()
+        try:
+            cursor.execute(
+                "INSERT INTO #uniq_cons_test (data) OUTPUT inserted.id VALUES (?), (?)",
+                ("the data 5", "the data 5"),
+            )
+            execute_succeeded = True
+        except Exception:
+            execute_succeeded = False
+
+        assert execute_succeeded, "execute() should succeed, error detection happens in fetchall()"
+
+        # fetchall() should raise the IntegrityError
+        with pytest.raises(mssql_python.IntegrityError):
+            cursor.fetchall()
+
+    except Exception as e:
+        pytest.fail(f"Integrity constraint multi-row test failed: {e}")
+    finally:
+        # Cleanup
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #uniq_cons_test")
+        except:
+            pass
 
 
 def test_close(db_connection):

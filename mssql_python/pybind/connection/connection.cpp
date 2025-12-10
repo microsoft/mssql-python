@@ -308,6 +308,19 @@ bool Connection::reset() {
         disconnect();
         return false;
     }
+    
+    // SQL_ATTR_RESET_CONNECTION does NOT reset the transaction isolation level.
+    // Explicitly reset it to the default (SQL_TXN_READ_COMMITTED) to prevent
+    // isolation level settings from leaking between pooled connection usages.
+    LOG("Resetting transaction isolation level to READ COMMITTED");
+    ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_TXN_ISOLATION,
+                                (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to reset transaction isolation level (ret=%d). Marking as dead.", ret);
+        disconnect();
+        return false;
+    }
+    
     updateLastUsed();
     return true;
 }
