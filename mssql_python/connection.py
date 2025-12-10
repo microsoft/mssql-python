@@ -55,7 +55,57 @@ SQL_WMETADATA: int = -99  # Special flag for column name decoding
 INFO_TYPE_STRING_THRESHOLD: int = 10000
 
 # UTF-16 encoding variants that should use SQL_WCHAR by default
-UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16", "utf-16le", "utf-16be"])
+# Note: "utf-16" with BOM is NOT included as it's problematic for SQL_WCHAR
+UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16le", "utf-16be"])
+
+
+def _validate_utf16_wchar_compatibility(
+    encoding: str, wchar_type: int, context: str = "SQL_WCHAR"
+) -> None:
+    """
+    Validates UTF-16 encoding compatibility with SQL_WCHAR.
+
+    Centralizes the validation logic to eliminate duplication across setencoding/setdecoding.
+
+    Args:
+        encoding: The encoding string (already normalized to lowercase)
+        wchar_type: The SQL_WCHAR constant value to check against
+        context: Context string for error messages ('SQL_WCHAR', 'SQL_WCHAR ctype', etc.)
+
+    Raises:
+        ProgrammingError: If encoding is incompatible with SQL_WCHAR
+    """
+    if encoding == "utf-16":
+        # UTF-16 with BOM is rejected due to byte order ambiguity
+        logger.warning("utf-16 with BOM rejected for %s", context)
+        raise ProgrammingError(
+            driver_error="UTF-16 with Byte Order Mark not supported for SQL_WCHAR",
+            ddbc_error=(
+                "Cannot use 'utf-16' encoding with SQL_WCHAR due to Byte Order Mark ambiguity. "
+                "Use 'utf-16le' or 'utf-16be' instead for explicit byte order."
+            ),
+        )
+    elif encoding not in UTF16_ENCODINGS:
+        # Non-UTF-16 encodings are not supported with SQL_WCHAR
+        logger.warning(
+            "Non-UTF-16 encoding %s attempted with %s", sanitize_user_input(encoding), context
+        )
+
+        # Generate context-appropriate error messages
+        if "ctype" in context:
+            driver_error = f"SQL_WCHAR ctype only supports UTF-16 encodings"
+            ddbc_context = "SQL_WCHAR ctype"
+        else:
+            driver_error = f"SQL_WCHAR only supports UTF-16 encodings"
+            ddbc_context = "SQL_WCHAR"
+
+        raise ProgrammingError(
+            driver_error=driver_error,
+            ddbc_error=(
+                f"Cannot use encoding '{encoding}' with {ddbc_context}. "
+                f"SQL_WCHAR requires UTF-16 encodings (utf-16le, utf-16be)"
+            ),
+        )
 
 
 def _validate_encoding(encoding: str) -> bool:
@@ -71,7 +121,21 @@ def _validate_encoding(encoding: str) -> bool:
     Note:
         Uses LRU cache to avoid repeated expensive codecs.lookup() calls.
         Cache size is limited to 128 entries which should cover most use cases.
+        Also validates that encoding name only contains safe characters.
     """
+    # Basic security checks - prevent obvious attacks
+    if not encoding or not isinstance(encoding, str):
+        return False
+
+    # Check length limit (prevent DOS)
+    if len(encoding) > 100:
+        return False
+
+    # Prevent null bytes and control characters that could cause issues
+    if "\x00" in encoding or any(ord(c) < 32 and c not in "\t\n\r" for c in encoding):
+        return False
+
+    # Then check if it's a valid Python codec
     try:
         codecs.lookup(encoding)
         return True
@@ -227,6 +291,15 @@ class Connection:
         # Initialize output converters dictionary and its lock for thread safety
         self._output_converters = {}
         self._converters_lock = threading.Lock()
+
+        # Initialize encoding/decoding settings lock for thread safety
+        # This lock protects both _encoding_settings and _decoding_settings dictionaries
+        # from concurrent modification. We use a simple Lock (not RLock) because:
+        # - Write operations (setencoding/setdecoding) replace the entire dict atomically
+        # - Read operations (getencoding/getdecoding) return a copy, so they're safe
+        # - No recursive locking is needed in our usage pattern
+        # This is more performant than RLock for the multiple-readers-single-writer pattern
+        self._encoding_lock = threading.Lock()
 
         # Initialize search escape character
         self._searchescape = None
@@ -433,8 +506,7 @@ class Connection:
         # Validate encoding using cached validation for better performance
         if not _validate_encoding(encoding):
             # Log the sanitized encoding for security
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid encoding attempted: %s",
                 sanitize_user_input(str(encoding)),
             )
@@ -446,6 +518,10 @@ class Connection:
         # Normalize encoding to casefold for more robust Unicode handling
         encoding = encoding.casefold()
         logger.debug("setencoding: Encoding normalized to %s", encoding)
+
+        # Early validation if ctype is already specified as SQL_WCHAR
+        if ctype == ConstantsDDBC.SQL_WCHAR.value:
+            _validate_utf16_wchar_compatibility(encoding, ctype, "SQL_WCHAR")
 
         # Set default ctype based on encoding if not provided
         if ctype is None:
@@ -460,8 +536,7 @@ class Connection:
         valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
         if ctype not in valid_ctypes:
             # Log the sanitized ctype for security
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid ctype attempted: %s",
                 sanitize_user_input(str(ctype)),
             )
@@ -473,12 +548,16 @@ class Connection:
                 ),
             )
 
-        # Store the encoding settings
-        self._encoding_settings = {"encoding": encoding, "ctype": ctype}
+        # Final validation: SQL_WCHAR ctype only supports UTF-16 encodings (without BOM)
+        if ctype == ConstantsDDBC.SQL_WCHAR.value:
+            _validate_utf16_wchar_compatibility(encoding, ctype, "SQL_WCHAR")
+
+        # Store the encoding settings (thread-safe with lock)
+        with self._encoding_lock:
+            self._encoding_settings = {"encoding": encoding, "ctype": ctype}
 
         # Log with sanitized values for security
-        logger.debug(
-            "info",
+        logger.info(
             "Text encoding set to %s with ctype %s",
             sanitize_user_input(encoding),
             sanitize_user_input(str(ctype)),
@@ -486,7 +565,7 @@ class Connection:
 
     def getencoding(self) -> Dict[str, Union[str, int]]:
         """
-        Gets the current text encoding settings.
+        Gets the current text encoding settings (thread-safe).
 
         Returns:
             dict: A dictionary containing 'encoding' and 'ctype' keys.
@@ -498,6 +577,10 @@ class Connection:
             settings = cnxn.getencoding()
             print(f"Current encoding: {settings['encoding']}")
             print(f"Current ctype: {settings['ctype']}")
+
+        Note:
+            This method is thread-safe and can be called from multiple threads concurrently.
+            Returns a copy of the settings to prevent external modification.
         """
         if self._closed:
             raise InterfaceError(
@@ -505,7 +588,9 @@ class Connection:
                 ddbc_error="Connection is closed",
             )
 
-        return self._encoding_settings.copy()
+        # Thread-safe read with lock to prevent race conditions
+        with self._encoding_lock:
+            return self._encoding_settings.copy()
 
     def setdecoding(
         self, sqltype: int, encoding: Optional[str] = None, ctype: Optional[int] = None
@@ -556,8 +641,7 @@ class Connection:
             SQL_WMETADATA,
         ]
         if sqltype not in valid_sqltypes:
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid sqltype attempted: %s",
                 sanitize_user_input(str(sqltype)),
             )
@@ -579,8 +663,7 @@ class Connection:
 
         # Validate encoding using cached validation for better performance
         if not _validate_encoding(encoding):
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid encoding attempted: %s",
                 sanitize_user_input(str(encoding)),
             )
@@ -592,6 +675,13 @@ class Connection:
         # Normalize encoding to lowercase for consistency
         encoding = encoding.lower()
 
+        # Validate SQL_WCHAR encoding compatibility
+        if sqltype == ConstantsDDBC.SQL_WCHAR.value:
+            _validate_utf16_wchar_compatibility(encoding, sqltype, "SQL_WCHAR sqltype")
+
+        # SQL_WMETADATA can use any valid encoding (UTF-8, UTF-16, etc.)
+        # No restriction needed here - let users configure as needed
+
         # Set default ctype based on encoding if not provided
         if ctype is None:
             if encoding in UTF16_ENCODINGS:
@@ -602,8 +692,7 @@ class Connection:
         # Validate ctype
         valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
         if ctype not in valid_ctypes:
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid ctype attempted: %s",
                 sanitize_user_input(str(ctype)),
             )
@@ -615,8 +704,13 @@ class Connection:
                 ),
             )
 
-        # Store the decoding settings for the specified sqltype
-        self._decoding_settings[sqltype] = {"encoding": encoding, "ctype": ctype}
+        # Validate SQL_WCHAR ctype encoding compatibility
+        if ctype == ConstantsDDBC.SQL_WCHAR.value:
+            _validate_utf16_wchar_compatibility(encoding, ctype, "SQL_WCHAR ctype")
+
+        # Store the decoding settings for the specified sqltype (thread-safe with lock)
+        with self._encoding_lock:
+            self._decoding_settings[sqltype] = {"encoding": encoding, "ctype": ctype}
 
         # Log with sanitized values for security
         sqltype_name = {
@@ -625,8 +719,7 @@ class Connection:
             SQL_WMETADATA: "SQL_WMETADATA",
         }.get(sqltype, str(sqltype))
 
-        logger.debug(
-            "info",
+        logger.info(
             "Text decoding set for %s to %s with ctype %s",
             sqltype_name,
             sanitize_user_input(encoding),
@@ -635,7 +728,7 @@ class Connection:
 
     def getdecoding(self, sqltype: int) -> Dict[str, Union[str, int]]:
         """
-        Gets the current text decoding settings for the specified SQL type.
+        Gets the current text decoding settings for the specified SQL type (thread-safe).
 
         Args:
             sqltype (int): The SQL type to get settings for: SQL_CHAR, SQL_WCHAR, or SQL_WMETADATA.
@@ -651,6 +744,10 @@ class Connection:
             settings = cnxn.getdecoding(mssql_python.SQL_CHAR)
             print(f"SQL_CHAR encoding: {settings['encoding']}")
             print(f"SQL_CHAR ctype: {settings['ctype']}")
+
+        Note:
+            This method is thread-safe and can be called from multiple threads concurrently.
+            Returns a copy of the settings to prevent external modification.
         """
         if self._closed:
             raise InterfaceError(
@@ -674,7 +771,9 @@ class Connection:
                 ),
             )
 
-        return self._decoding_settings[sqltype].copy()
+        # Thread-safe read with lock to prevent race conditions
+        with self._encoding_lock:
+            return self._decoding_settings[sqltype].copy()
 
     def set_attr(self, attribute: int, value: Union[int, str, bytes, bytearray]) -> None:
         """
