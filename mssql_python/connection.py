@@ -563,6 +563,7 @@ class Connection:
 
         Note:
             This method is thread-safe and can be called from multiple threads concurrently.
+            Returns a copy of the settings to prevent external modification.
         """
         if self._closed:
             raise InterfaceError(
@@ -729,6 +730,7 @@ class Connection:
 
         Note:
             This method is thread-safe and can be called from multiple threads concurrently.
+            Returns a copy of the settings to prevent external modification.
         """
         if self._closed:
             raise InterfaceError(
