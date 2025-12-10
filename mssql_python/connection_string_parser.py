@@ -7,7 +7,7 @@ ODBC connection string parser for mssql-python.
 Handles ODBC-specific syntax per MS-ODBCSTR specification:
 - Semicolon-separated key=value pairs
 - Braced values: {value}
-- Escaped braces: }} → }, {{ → {
+- Escaped braces: }} → } (only closing braces need escaping)
 
 Parser behavior:
 - Validates all key=value pairs
@@ -331,7 +331,7 @@ class _ConnectionStringParser:
         Braced values:
         - Start with '{' and end with '}'
         - '}' inside the value is escaped as '}}'
-        - '{' inside the value is escaped as '{{'
+        - '{' inside the value does not need escaping
         - Can contain semicolons and other special characters
 
         Args:
@@ -366,18 +366,8 @@ class _ConnectionStringParser:
                     # Single '}' means end of braced value
                     start_pos += 1
                     return "".join(value), start_pos
-            elif ch == "{":
-                # Check if it's an escaped left brace
-                if start_pos + 1 < str_len and connection_str[start_pos + 1] == "{":
-                    # Escaped left brace: '{{' → '{'
-                    value.append("{")
-                    start_pos += 2
-                else:
-                    # Single '{' inside braced value - keep it as is
-                    value.append(ch)
-                    start_pos += 1
             else:
-                # Regular character
+                # Regular character (including '{' which doesn't need escaping per ODBC spec)
                 value.append(ch)
                 start_pos += 1
 
