@@ -722,8 +722,9 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 return rc;
             }
             SQL_NUMERIC_STRUCT* numericPtr = reinterpret_cast<SQL_NUMERIC_STRUCT*>(dataPtr);
-            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_PRECISION,
-                                     reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(numericPtr->precision)), 0);
+            rc = SQLSetDescField_ptr(
+                hDesc, 1, SQL_DESC_PRECISION,
+                reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(numericPtr->precision)), 0);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameters: SQLSetDescField(SQL_DESC_PRECISION) "
                     "failed for param[%d] - SQLRETURN=%d",
@@ -731,7 +732,9 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 return rc;
             }
 
-            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_SCALE, reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(numericPtr->scale)), 0);
+            rc = SQLSetDescField_ptr(
+                hDesc, 1, SQL_DESC_SCALE,
+                reinterpret_cast<SQLPOINTER>(static_cast<intptr_t>(numericPtr->scale)), 0);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameters: SQLSetDescField(SQL_DESC_SCALE) failed "
                     "for param[%d] - SQLRETURN=%d",
@@ -739,7 +742,8 @@ SQLRETURN BindParameters(SQLHANDLE hStmt, const py::list& params,
                 return rc;
             }
 
-            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_DATA_PTR, reinterpret_cast<SQLPOINTER>(numericPtr), 0);
+            rc = SQLSetDescField_ptr(hDesc, 1, SQL_DESC_DATA_PTR,
+                                     reinterpret_cast<SQLPOINTER>(numericPtr), 0);
             if (!SQL_SUCCEEDED(rc)) {
                 LOG("BindParameters: SQLSetDescField(SQL_DESC_DATA_PTR) failed "
                     "for param[%d] - SQLRETURN=%d",
@@ -1124,13 +1128,6 @@ void SqlHandle::free() {
         // Check if Python is shutting down using centralized helper function
         bool pythonShuttingDown = is_python_finalizing();
 
-        // CRITICAL FIX: During Python shutdown, don't free STMT or DBC handles as
-        // their parent handles may already be freed. This prevents segfaults when
-        // handles are freed in the wrong order during interpreter shutdown.
-        // Type 3 = SQL_HANDLE_STMT (parent: DBC)
-        // Type 2 = SQL_HANDLE_DBC (parent: ENV, which is static and may destruct first)
-        // Type 1 = SQL_HANDLE_ENV (no parent)
-        //
         // RESOURCE LEAK MITIGATION:
         // When handles are skipped during shutdown, they are not freed, which could
         // cause resource leaks. However, this is mitigated by:
@@ -1139,7 +1136,7 @@ void SqlHandle::free() {
         // 2. OS-level cleanup at process termination recovers any remaining resources
         // 3. This tradeoff prioritizes crash prevention over resource cleanup, which
         //    is appropriate since we're already in shutdown sequence
-        if (pythonShuttingDown && (_type == 3 || _type == 2)) {
+        if (pythonShuttingDown && (_type == SQL_HANDLE_STMT || _type == SQL_HANDLE_DBC)) {
             _handle = nullptr;  // Mark as freed to prevent double-free attempts
             return;
         }

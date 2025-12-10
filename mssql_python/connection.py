@@ -17,6 +17,7 @@ import codecs
 from typing import Any, Dict, Optional, Union, List, Tuple, Callable, TYPE_CHECKING
 import threading
 
+import mssql_python
 from mssql_python.cursor import Cursor
 from mssql_python.helpers import (
     add_driver_to_connection_str,
@@ -242,13 +243,18 @@ class Connection:
         # Register this connection for cleanup before Python shutdown
         # This ensures ODBC handles are freed in correct order, preventing leaks
         try:
-            import mssql_python
-
             if hasattr(mssql_python, "_register_connection"):
                 mssql_python._register_connection(self)
-        except (ImportError, AttributeError):
+        except AttributeError as e:
             # If registration fails, continue - cleanup will still happen via __del__
-            pass
+            logger.warning(
+                f"Failed to register connection for shutdown cleanup: {type(e).__name__}: {e}"
+            )
+        except Exception as e:
+            # Catch any other unexpected errors during registration
+            logger.error(
+                f"Unexpected error during connection registration: {type(e).__name__}: {e}"
+            )
 
     def _construct_connection_string(self, connection_str: str = "", **kwargs: Any) -> str:
         """

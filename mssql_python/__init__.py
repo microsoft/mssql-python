@@ -6,6 +6,7 @@ This module initializes the mssql_python package.
 
 import atexit
 import sys
+import threading
 import types
 import weakref
 from typing import Dict
@@ -71,11 +72,13 @@ from .pooling import PoolingManager
 
 # Global registry for tracking active connections (using weak references)
 _active_connections = weakref.WeakSet()
+_connections_lock = threading.Lock()
 
 
 def _register_connection(conn):
     """Register a connection for cleanup before shutdown."""
-    _active_connections.add(conn)
+    with _connections_lock:
+        _active_connections.add(conn)
 
 
 def _cleanup_connections():
@@ -86,7 +89,8 @@ def _cleanup_connections():
     all ODBC handles are freed in the correct order before Python finalizes.
     """
     # Make a copy of the connections to avoid modification during iteration
-    connections_to_close = list(_active_connections)
+    with _connections_lock:
+        connections_to_close = list(_active_connections)
 
     for conn in connections_to_close:
         try:
@@ -94,10 +98,16 @@ def _cleanup_connections():
             if hasattr(conn, "_closed") and not conn._closed:
                 # Close will handle both cursors and the connection
                 conn.close()
-        except Exception:
-            # Silently ignore errors during shutdown cleanup
-            # We're prioritizing crash prevention over error reporting
-            pass
+        except Exception as e:
+            # Log errors during shutdown cleanup for debugging
+            # We're prioritizing crash prevention over error propagation
+            try:
+                driver_logger.error(
+                    f"Error during connection cleanup at shutdown: {type(e).__name__}: {e}"
+                )
+            except Exception:
+                # If logging fails during shutdown, silently ignore
+                pass
 
 
 # Register cleanup function to run before Python exits

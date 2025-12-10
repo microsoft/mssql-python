@@ -29,6 +29,8 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
+import time
 
 
 class TestHandleFreeShutdown:
@@ -1085,54 +1087,93 @@ class TestHandleFreeShutdown:
         assert "Mixed scenario: PASSED" in result.stdout
         print(f"PASS: Cleanup connections mixed scenario")
 
+    def test_active_connections_thread_safety(self, conn_str):
+        """
+        Test _active_connections thread-safety with concurrent registration.
 
-if __name__ == "__main__":
-    # Allow running test directly for debugging
-    import sys
+        Validates that:
+        - Multiple threads can safely register connections simultaneously
+        - No race conditions occur during concurrent add operations
+        - Cleanup can safely iterate while threads are registering
+        - Lock prevents data corruption in WeakSet
+        """
+        script = textwrap.dedent(
+            f"""
+            import mssql_python
+            import threading
+            import time
+            
+            class MockConnection:
+                def __init__(self, conn_id):
+                    self.conn_id = conn_id
+                    self._closed = False
+                    
+                def close(self):
+                    self._closed = True
+            
+            # Track successful registrations
+            registered = []
+            lock = threading.Lock()
+            
+            def register_connections(thread_id, count):
+                '''Register multiple connections from a thread'''
+                for i in range(count):
+                    conn = MockConnection(f"thread_{{thread_id}}_conn_{{i}}")
+                    mssql_python._register_connection(conn)
+                    with lock:
+                        registered.append(conn)
+                    # Small delay to increase chance of race conditions
+                    time.sleep(0.001)
+            
+            # Create multiple threads registering connections concurrently
+            threads = []
+            num_threads = 10
+            conns_per_thread = 20
+            
+            print(f"Creating {{num_threads}} threads, each registering {{conns_per_thread}} connections...")
+            
+            for i in range(num_threads):
+                t = threading.Thread(target=register_connections, args=(i, conns_per_thread))
+                threads.append(t)
+                t.start()
+            
+            # While threads are running, try to trigger cleanup iteration
+            # This tests lock protection during concurrent access
+            time.sleep(0.05)  # Let some registrations happen
+            
+            # Force a cleanup attempt while threads are still registering
+            # This should be safe due to lock protection
+            try:
+                mssql_python._cleanup_connections()
+            except Exception as e:
+                print(f"ERROR: Cleanup failed during concurrent registration: {{e}}")
+                raise
+            
+            # Wait for all threads to complete
+            for t in threads:
+                t.join()
+            
+            print(f"All threads completed. Registered {{len(registered)}} connections")
+            
+            # Verify all connections were registered
+            expected_count = num_threads * conns_per_thread
+            assert len(registered) == expected_count, f"Expected {{expected_count}}, got {{len(registered)}}"
+            
+            # Final cleanup should work without errors
+            mssql_python._cleanup_connections()
+            
+            # Verify cleanup worked
+            for conn in registered:
+                assert conn._closed, f"Connection {{conn.conn_id}} was not closed"
+            
+            print("Thread safety test: PASSED")
+        """
+        )
 
-    conn_str = os.environ.get("DB_CONNECTION_STRING")
-    if not conn_str:
-        print("ERROR: DB_CONNECTION_STRING environment variable not set")
-        sys.exit(1)
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+        )
 
-    test = TestHandleFreeShutdown()
-
-    print("\n" + "=" * 70)
-    print("Running AGGRESSIVE Handle Cleanup Tests")
-    print("Testing for SEGFAULT reproduction from stack trace")
-    print("=" * 70 + "\n")
-
-    try:
-        # Run aggressive segfault tests first
-        print("\n--- AGGRESSIVE SEGFAULT REPRODUCTION TESTS ---\n")
-        test.test_aggressive_dbc_segfault_reproduction(conn_str)
-        test.test_dbc_handle_outlives_env_handle(conn_str)
-        test.test_force_gc_finalization_order_issue(conn_str)
-
-        print("\n--- STANDARD HANDLE CLEANUP TESTS ---\n")
-        test.test_stmt_handle_cleanup_at_shutdown(conn_str)
-        test.test_dbc_handle_cleanup_at_shutdown(conn_str)
-        test.test_env_handle_cleanup_at_shutdown(conn_str)
-        test.test_mixed_handle_cleanup_at_shutdown(conn_str)
-        test.test_rapid_connection_churn_with_shutdown(conn_str)
-        test.test_exception_during_query_with_shutdown(conn_str)
-        test.test_weakref_cleanup_at_shutdown(conn_str)
-        test.test_gc_during_shutdown_with_circular_refs(conn_str)
-        test.test_all_handle_types_comprehensive(conn_str)
-
-        print("\n--- CLEANUP CONNECTIONS COVERAGE TESTS ---\n")
-        test.test_cleanup_connections_normal_flow(conn_str)
-        test.test_cleanup_connections_already_closed(conn_str)
-        test.test_cleanup_connections_missing_attribute(conn_str)
-        test.test_cleanup_connections_exception_handling(conn_str)
-        test.test_cleanup_connections_multiple_connections(conn_str)
-        test.test_cleanup_connections_weakset_behavior(conn_str)
-        test.test_cleanup_connections_empty_list(conn_str)
-        test.test_cleanup_connections_mixed_scenario(conn_str)
-
-        print("\n" + "=" * 70)
-        print("PASS: ALL TESTS PASSED - No segfaults detected")
-        print("=" * 70 + "\n")
-    except AssertionError as e:
-        print(f"\nFAIL: TEST FAILED: {e}")
-        sys.exit(1)
+        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
+        assert "Thread safety test: PASSED" in result.stdout
+        print(f"PASS: Active connections thread safety")
