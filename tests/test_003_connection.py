@@ -4176,12 +4176,14 @@ def test_timeout_long_running_query_with_small_timeout(conn_str):
             )
         except mssql_python.OperationalError as e:
             elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: ✓ Query timed out after {elapsed:.2f}s: {e}")
+            print(f"DEBUG: [OK] Query timed out after {elapsed:.2f}s: {e}")
             assert elapsed < 4.0, f"Timeout took too long: {elapsed:.2f}s"
             assert "timeout" in str(e).lower(), f"Not a timeout error: {e}"
         except Exception as e:
             elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: ✓ Query raised exception after {elapsed:.2f}s: {type(e).__name__}: {e}")
+            print(
+                f"DEBUG: [OK] Query raised exception after {elapsed:.2f}s: {type(e).__name__}: {e}"
+            )
             assert elapsed < 4.0, f"Exception took too long: {elapsed:.2f}s"
             # Accept any exception that happens quickly as it might be timeout-related
         finally:
@@ -4215,12 +4217,14 @@ def test_timeout_long_running_query_with_small_timeout(conn_str):
             ), f"Timeout should have occurred after ~2s, but query completed in {elapsed:.2f}s"
         except mssql_python.OperationalError as e:
             elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: ✓ Query timed out after {elapsed:.2f}s: {e}")
+            print(f"DEBUG: [OK] Query timed out after {elapsed:.2f}s: {e}")
             assert elapsed < 4.0, f"Timeout took too long: {elapsed:.2f}s"
             assert "timeout" in str(e).lower(), f"Not a timeout error: {e}"
         except Exception as e:
             elapsed = time.perf_counter() - start_time
-            print(f"DEBUG: ✓ Query raised exception after {elapsed:.2f}s: {type(e).__name__}: {e}")
+            print(
+                f"DEBUG: [OK] Query raised exception after {elapsed:.2f}s: {type(e).__name__}: {e}"
+            )
             assert elapsed < 4.0, f"Exception took too long: {elapsed:.2f}s"
         finally:
             cursor.close()
