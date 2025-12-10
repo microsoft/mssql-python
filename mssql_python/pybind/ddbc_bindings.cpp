@@ -2848,7 +2848,7 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
         LOG_ERROR("FetchLobColumnData: Failed to decode with '%s' for column %d: %s",
                   charEncoding.c_str(), colIndex, e.what());
         // Return raw bytes as fallback
-        return raw_bytes
+        return raw_bytes;
     }
 }
 
