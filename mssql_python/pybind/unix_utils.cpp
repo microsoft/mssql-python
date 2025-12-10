@@ -22,9 +22,8 @@ constexpr uint32_t kUnicodeMaxCodePoint = 0x10FFFF;
 const char* kOdbcEncoding = "utf-16-le";  // ODBC uses UTF-16LE for SQLWCHAR
 const size_t kUcsLength = 2;              // SQLWCHAR is 2 bytes on all platforms
 
-// Function to convert SQLWCHAR strings to std::wstring on macOS/Linux
-// Converts UTF-16 (SQLWCHAR) to UTF-32 (wstring on Unix)
-// Invalid surrogates (unpaired high/low) are replaced with U+FFFD
+// Function to convert SQLWCHAR strings to std::wstring on macOS
+// THREAD-SAFE: Uses thread_local converter to avoid std::wstring_convert race conditions
 std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
     if (!sqlwStr) {
         return std::wstring();
