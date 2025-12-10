@@ -823,8 +823,8 @@ def test_utf8_2byte_sequence_complete_coverage():
     for test_bytes, binary, desc in invalid_continuation:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            # Check that invalid sequences are handled (may produce replacement chars or split)
-            assert len(result) > 0, f"Should produce some output for {desc}"
+            # Invalid continuation should return the replacement character (covers ddbc_bindings.h lines 476-478)
+            assert "\ufffd" in result, f"Should contain replacement char for {desc}"
         except Exception as e:
             # Any error handling is acceptable for invalid sequences
             pass
@@ -862,8 +862,11 @@ def test_utf8_2byte_sequence_complete_coverage():
     for test_bytes, codepoint, desc in overlong_2byte:
         try:
             result = test_bytes.decode("utf-8", errors="replace")
-            # Check that overlong sequences are handled (behavior may vary by platform)
-            assert len(result) > 0, f"Should produce some output for overlong U+{codepoint:04X}"
+            # Overlong encodings must yield replacement, not the original codepoint (covers lines 486-487)
+            assert "\ufffd" in result, f"Overlong U+{codepoint:04X} should produce replacement char"
+            assert (
+                chr(codepoint) not in result
+            ), f"Overlong U+{codepoint:04X} must not decode to original char"
         except Exception as e:
             pass
 
