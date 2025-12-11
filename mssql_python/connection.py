@@ -1185,9 +1185,9 @@ class Connection:
                     # Make sure we use the correct amount of data based on length
                     actual_data = data[:length]
 
-                    # SQLGetInfoW returns UTF-16LE encoded strings
-                    # Try encodings in order: UTF-16LE (Windows), UTF-8, Latin-1
-                    for encoding in ("utf-16-le", "utf-8", "latin1"):
+                    # SQLGetInfoW returns UTF-16LE encoded strings (wide-character ODBC API)
+                    # Try UTF-16LE first (expected), then UTF-8 as fallback
+                    for encoding in ("utf-16-le", "utf-8"):
                         try:
                             return actual_data.decode(encoding).rstrip("\0")
                         except UnicodeDecodeError:
@@ -1196,8 +1196,9 @@ class Connection:
                     # All decodings failed
                     logger.debug(
                         "error",
-                        "Failed to decode string in getinfo with any supported encoding. "
+                        "Failed to decode string in getinfo (info_type=%d) with supported encodings. "
                         "Returning None to avoid silent corruption.",
+                        info_type,
                     )
                     return None
                 else:
