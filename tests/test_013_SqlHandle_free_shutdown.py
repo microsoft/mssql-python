@@ -1183,7 +1183,7 @@ class TestHandleFreeShutdown:
         Test that connections_to_close = list(_active_connections) creates a proper copy.
 
         This test validates the critical line: connections_to_close = list(_active_connections)
-        
+
         Validates that:
         1. The list() call creates a snapshot copy of _active_connections
         2. Modifications to _active_connections during iteration don't affect the iteration
@@ -1283,7 +1283,7 @@ class TestHandleFreeShutdown:
         Test that list copy prevents RuntimeError when WeakSet is modified during iteration.
 
         This is a more aggressive test of the connections_to_close = list(_active_connections) line.
-        
+
         Validates that:
         1. Without the list copy, iterating WeakSet directly would fail if modified
         2. With the list copy, iteration is safe even if WeakSet shrinks due to GC
