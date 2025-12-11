@@ -1265,7 +1265,7 @@ class TestHandleFreeShutdown:
             print(f"List copy had {{len(connections_to_close)}} items at snapshot time")
             
             print("List copy isolation: PASSED")
-            print("✓ connections_to_close = list(_active_connections) properly tested")
+            print("[OK] connections_to_close = list(_active_connections) properly tested")
         """
         )
 
@@ -1275,7 +1275,9 @@ class TestHandleFreeShutdown:
 
         assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
         assert "List copy isolation: PASSED" in result.stdout
-        assert "✓ connections_to_close = list(_active_connections) properly tested" in result.stdout
+        assert (
+            "[OK] connections_to_close = list(_active_connections) properly tested" in result.stdout
+        )
         print(f"PASS: Cleanup connections list copy isolation")
 
     def test_cleanup_connections_weakset_modification_during_iteration(self, conn_str):
@@ -1355,7 +1357,7 @@ class TestHandleFreeShutdown:
             assert processed == snapshot_size, f"Should process all snapshot items: {{processed}} == {{snapshot_size}}"
             
             print("WeakSet modification during iteration: PASSED")
-            print("✓ list() copy prevents 'set changed size during iteration' errors")
+            print("[OK] list() copy prevents 'set changed size during iteration' errors")
         """
         )
 
@@ -1365,5 +1367,7 @@ class TestHandleFreeShutdown:
 
         assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
         assert "WeakSet modification during iteration: PASSED" in result.stdout
-        assert "✓ list() copy prevents 'set changed size during iteration' errors" in result.stdout
+        assert (
+            "[OK] list() copy prevents 'set changed size during iteration' errors" in result.stdout
+        )
         print(f"PASS: Cleanup connections WeakSet modification during iteration")
