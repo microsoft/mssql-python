@@ -1637,12 +1637,14 @@ jobs:
 
   - script: |
       # Create a Docker container for testing on ARM64
+      # TODO(AB#40901): Temporary pin to 3.22 due to msodbcsql ARM64 package arch mismatch
+      # Revert to alpine:latest once ODBC team releases fixed ARM64 package
       docker run -d --name test-container-alpine-arm64 \
         --platform linux/arm64 \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
-        alpine:latest \
+        alpine:3.22 \
         tail -f /dev/null
     displayName: 'Create Alpine ARM64 container'
 
