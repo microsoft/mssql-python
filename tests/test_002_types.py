@@ -531,6 +531,7 @@ def test_invalid_surrogate_handling():
     This validates the fix for unix_utils.cpp to match ddbc_bindings.h behavior.
     """
     import mssql_python
+    import os
 
     # Test connection strings with various surrogate-related edge cases
     # These should be handled gracefully without introducing invalid Unicode
@@ -539,7 +540,10 @@ def test_invalid_surrogate_handling():
     # In UTF-16, high surrogates (0xD800-0xDBFF) must be followed by low surrogates
     try:
         # Create a connection string that would exercise the conversion path
-        conn_str = "Server=test_server;Database=TestDB;UID=user;PWD=password"
+        # Use environment variables or placeholder values to avoid SEC101/037 security warnings
+        test_server = os.getenv("TEST_SERVER", "localhost")
+        test_db = os.getenv("TEST_DATABASE", "TestDB")
+        conn_str = f"Server={test_server};Database={test_db};Trusted_Connection=yes"
         conn = mssql_python.connect(conn_str, autoconnect=False)
         conn.close()
     except Exception:
@@ -548,7 +552,7 @@ def test_invalid_surrogate_handling():
     # Low surrogate without high surrogate (invalid)
     # In UTF-16, low surrogates (0xDC00-0xDFFF) must be preceded by high surrogates
     try:
-        conn_str = "Server=test;Database=DB;ApplicationName=TestApp;UID=u;PWD=p"
+        conn_str = f"Server={os.getenv('TEST_SERVER', 'localhost')};Database=DB;ApplicationName=TestApp;Trusted_Connection=yes"
         conn = mssql_python.connect(conn_str, autoconnect=False)
         conn.close()
     except Exception:
@@ -564,7 +568,7 @@ def test_invalid_surrogate_handling():
 
     for test_str in emoji_tests:
         try:
-            conn_str = f"Server=test;{test_str};UID=user;PWD=pass"
+            conn_str = f"Server=test;{test_str};Trusted_Connection=yes"
             conn = mssql_python.connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
