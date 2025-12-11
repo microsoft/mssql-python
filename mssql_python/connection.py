@@ -1192,7 +1192,7 @@ class Connection:
                             return actual_data.decode(encoding).rstrip("\0")
                         except UnicodeDecodeError:
                             continue
-                    
+
                     # All decodings failed
                     logger.debug(
                         "error",
