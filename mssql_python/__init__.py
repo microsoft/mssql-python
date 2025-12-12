@@ -13,6 +13,16 @@ from .helpers import Settings, get_settings, _settings, _settings_lock
 # Driver version
 __version__ = "1.0.0"
 
+import sys
+import types
+from typing import Dict
+
+# Import settings from helpers to avoid circular imports
+from .helpers import Settings, get_settings, _settings, _settings_lock
+
+# Driver version
+__version__ = "1.0.0"
+
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
 
@@ -75,6 +85,7 @@ threadsafety: int = 1
 # Set the initial decimal separator in C++
 try:
     from .ddbc_bindings import DDBCSetDecimalSeparator
+
     DDBCSetDecimalSeparator(_settings.decimal_separator)
 except ImportError:
     # Handle case where ddbc_bindings is not available
@@ -183,16 +194,19 @@ def pooling(max_size: int = 100, idle_timeout: int = 600, enabled: bool = True) 
     else:
         PoolingManager.enable(max_size, idle_timeout)
 
+
 _original_module_setattr = sys.modules[__name__].__setattr__
 
+
 def _custom_setattr(name, value):
-    if name == 'lowercase':
+    if name == "lowercase":
         with _settings_lock:
             _settings.lowercase = bool(value)
             # Update the module's lowercase variable
             _original_module_setattr(name, _settings.lowercase)
     else:
         _original_module_setattr(name, value)
+
 
 # Replace the module's __setattr__ with our custom version
 sys.modules[__name__].__setattr__ = _custom_setattr
@@ -271,6 +285,7 @@ def get_info_constants() -> Dict[str, int]:
         dict: Dictionary mapping constant names to their integer values
     """
     return {name: member.value for name, member in GetInfoConstants.__members__.items()}
+
 
 # Create a custom module class that uses properties instead of __setattr__
 class _MSSQLModule(types.ModuleType):

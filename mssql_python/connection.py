@@ -54,7 +54,57 @@ SQL_WMETADATA: int = -99  # Special flag for column name decoding
 INFO_TYPE_STRING_THRESHOLD: int = 10000
 
 # UTF-16 encoding variants that should use SQL_WCHAR by default
-UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16", "utf-16le", "utf-16be"])
+# Note: "utf-16" with BOM is NOT included as it's problematic for SQL_WCHAR
+UTF16_ENCODINGS: frozenset[str] = frozenset(["utf-16le", "utf-16be"])
+
+
+def _validate_utf16_wchar_compatibility(
+    encoding: str, wchar_type: int, context: str = "SQL_WCHAR"
+) -> None:
+    """
+    Validates UTF-16 encoding compatibility with SQL_WCHAR.
+
+    Centralizes the validation logic to eliminate duplication across setencoding/setdecoding.
+
+    Args:
+        encoding: The encoding string (already normalized to lowercase)
+        wchar_type: The SQL_WCHAR constant value to check against
+        context: Context string for error messages ('SQL_WCHAR', 'SQL_WCHAR ctype', etc.)
+
+    Raises:
+        ProgrammingError: If encoding is incompatible with SQL_WCHAR
+    """
+    if encoding == "utf-16":
+        # UTF-16 with BOM is rejected due to byte order ambiguity
+        logger.warning("utf-16 with BOM rejected for %s", context)
+        raise ProgrammingError(
+            driver_error="UTF-16 with Byte Order Mark not supported for SQL_WCHAR",
+            ddbc_error=(
+                "Cannot use 'utf-16' encoding with SQL_WCHAR due to Byte Order Mark ambiguity. "
+                "Use 'utf-16le' or 'utf-16be' instead for explicit byte order."
+            ),
+        )
+    elif encoding not in UTF16_ENCODINGS:
+        # Non-UTF-16 encodings are not supported with SQL_WCHAR
+        logger.warning(
+            "Non-UTF-16 encoding %s attempted with %s", sanitize_user_input(encoding), context
+        )
+
+        # Generate context-appropriate error messages
+        if "ctype" in context:
+            driver_error = f"SQL_WCHAR ctype only supports UTF-16 encodings"
+            ddbc_context = "SQL_WCHAR ctype"
+        else:
+            driver_error = f"SQL_WCHAR only supports UTF-16 encodings"
+            ddbc_context = "SQL_WCHAR"
+
+        raise ProgrammingError(
+            driver_error=driver_error,
+            ddbc_error=(
+                f"Cannot use encoding '{encoding}' with {ddbc_context}. "
+                f"SQL_WCHAR requires UTF-16 encodings (utf-16le, utf-16be)"
+            ),
+        )
 
 
 def _validate_encoding(encoding: str) -> bool:
@@ -70,7 +120,21 @@ def _validate_encoding(encoding: str) -> bool:
     Note:
         Uses LRU cache to avoid repeated expensive codecs.lookup() calls.
         Cache size is limited to 128 entries which should cover most use cases.
+        Also validates that encoding name only contains safe characters.
     """
+    # Basic security checks - prevent obvious attacks
+    if not encoding or not isinstance(encoding, str):
+        return False
+
+    # Check length limit (prevent DOS)
+    if len(encoding) > 100:
+        return False
+
+    # Prevent null bytes and control characters that could cause issues
+    if "\x00" in encoding or any(ord(c) < 32 and c not in "\t\n\r" for c in encoding):
+        return False
+
+    # Then check if it's a valid Python codec
     try:
         codecs.lookup(encoding)
         return True
@@ -173,9 +237,7 @@ class Connection:
             >>> conn = ms.connect("Server=myserver;Database=mydb",
             ...                   attrs_before={ms.SQL_ATTR_LOGIN_TIMEOUT: 30})
         """
-        self.connection_str = self._construct_connection_string(
-            connection_str, **kwargs
-        )
+        self.connection_str = self._construct_connection_string(connection_str, **kwargs)
         self._attrs_before = attrs_before or {}
 
         # Initialize encoding settings with defaults for Python 3
@@ -229,6 +291,15 @@ class Connection:
         self._output_converters = {}
         self._converters_lock = threading.Lock()
 
+        # Initialize encoding/decoding settings lock for thread safety
+        # This lock protects both _encoding_settings and _decoding_settings dictionaries
+        # from concurrent modification. We use a simple Lock (not RLock) because:
+        # - Write operations (setencoding/setdecoding) replace the entire dict atomically
+        # - Read operations (getencoding/getdecoding) return a copy, so they're safe
+        # - No recursive locking is needed in our usage pattern
+        # This is more performant than RLock for the multiple-readers-single-writer pattern
+        self._encoding_lock = threading.Lock()
+
         # Initialize search escape character
         self._searchescape = None
 
@@ -241,12 +312,10 @@ class Connection:
         )
         self.setautocommit(autocommit)
 
-    def _construct_connection_string(
-        self, connection_str: str = "", **kwargs: Any
-    ) -> str:
+    def _construct_connection_string(self, connection_str: str = "", **kwargs: Any) -> str:
         """
         Construct the connection string by parsing, validating, and merging parameters.
-        
+
         This method performs a 6-step process:
         1. Parse and validate the base connection_str (validates against allowlist)
         2. Normalize parameter names (e.g., addr/address -> Server, uid -> UID)
@@ -254,7 +323,7 @@ class Connection:
         4. Build connection string from normalized, merged params
         5. Add Driver and APP parameters (always controlled by the driver)
         6. Return the final connection string
-        
+
         Args:
             connection_str (str): The base connection string.
             **kwargs: Additional key/value pairs for the connection string.
@@ -262,16 +331,18 @@ class Connection:
         Returns:
             str: The constructed and validated connection string.
         """
-        
+
         # Step 1: Parse base connection string with allowlist validation
         # The parser validates everything: unknown params, reserved params, duplicates, syntax
         parser = _ConnectionStringParser(validate_keywords=True)
         parsed_params = parser._parse(connection_str)
-        
+
         # Step 2: Normalize parameter names (e.g., addr/address -> Server, uid -> UID)
         # This handles synonym mapping and deduplication via normalized keys
-        normalized_params = _ConnectionStringParser._normalize_params(parsed_params, warn_rejected=False)
-        
+        normalized_params = _ConnectionStringParser._normalize_params(
+            parsed_params, warn_rejected=False
+        )
+
         # Step 3: Process kwargs and merge with normalized_params
         # kwargs override connection string values (processed after, so they take precedence)
         for key, value in kwargs.items():
@@ -287,20 +358,20 @@ class Connection:
                 normalized_params[normalized_key] = str(value)
             else:
                 logger.warning(f"Ignoring unknown connection parameter from kwargs: {key}")
-        
+
         # Step 4: Build connection string with merged params
         builder = _ConnectionStringBuilder(normalized_params)
-        
+
         # Step 5: Add Driver and APP parameters (always controlled by the driver)
         # These maintain existing behavior: Driver is always hardcoded, APP is always MSSQL-Python
-        builder.add_param('Driver', 'ODBC Driver 18 for SQL Server')
-        builder.add_param('APP', 'MSSQL-Python')
-        
+        builder.add_param("Driver", "ODBC Driver 18 for SQL Server")
+        builder.add_param("APP", "MSSQL-Python")
+
         # Step 6: Build final string
         conn_str = builder.build()
-        
+
         logger.info("Final connection string: %s", sanitize_connection_string(conn_str))
-        
+
         return conn_str
 
     @property
@@ -334,7 +405,7 @@ class Connection:
         if value < 0:
             raise ValueError("Timeout cannot be negative")
         self._timeout = value
-        logger.info( f"Query timeout set to {value} seconds")
+        logger.info(f"Query timeout set to {value} seconds")
 
     @property
     def autocommit(self) -> bool:
@@ -355,7 +426,7 @@ class Connection:
             None
         """
         self.setautocommit(value)
-        logger.info( "Autocommit mode set to %s.", value)
+        logger.info("Autocommit mode set to %s.", value)
 
     def setautocommit(self, value: bool = False) -> None:
         """
@@ -369,9 +440,7 @@ class Connection:
         """
         self._conn.set_autocommit(value)
 
-    def setencoding(
-        self, encoding: Optional[str] = None, ctype: Optional[int] = None
-    ) -> None:
+    def setencoding(self, encoding: Optional[str] = None, ctype: Optional[int] = None) -> None:
         """
         Sets the text encoding for SQL statements and text parameters.
 
@@ -400,10 +469,13 @@ class Connection:
             # For explicitly using SQL_CHAR
             cnxn.setencoding(encoding='utf-8', ctype=mssql_python.SQL_CHAR)
         """
-        logger.debug( 'setencoding: Configuring encoding=%s, ctype=%s', 
-            str(encoding) if encoding else 'default', str(ctype) if ctype else 'auto')
+        logger.debug(
+            "setencoding: Configuring encoding=%s, ctype=%s",
+            str(encoding) if encoding else "default",
+            str(ctype) if ctype else "auto",
+        )
         if self._closed:
-            logger.debug( 'setencoding: Connection is closed')
+            logger.debug("setencoding: Connection is closed")
             raise InterfaceError(
                 driver_error="Connection is closed",
                 ddbc_error="Connection is closed",
@@ -412,13 +484,12 @@ class Connection:
         # Set default encoding if not provided
         if encoding is None:
             encoding = "utf-16le"
-            logger.debug( 'setencoding: Using default encoding=utf-16le')
+            logger.debug("setencoding: Using default encoding=utf-16le")
 
         # Validate encoding using cached validation for better performance
         if not _validate_encoding(encoding):
             # Log the sanitized encoding for security
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid encoding attempted: %s",
                 sanitize_user_input(str(encoding)),
             )
@@ -429,23 +500,26 @@ class Connection:
 
         # Normalize encoding to casefold for more robust Unicode handling
         encoding = encoding.casefold()
-        logger.debug( 'setencoding: Encoding normalized to %s', encoding)
+        logger.debug("setencoding: Encoding normalized to %s", encoding)
+
+        # Early validation if ctype is already specified as SQL_WCHAR
+        if ctype == ConstantsDDBC.SQL_WCHAR.value:
+            _validate_utf16_wchar_compatibility(encoding, ctype, "SQL_WCHAR")
 
         # Set default ctype based on encoding if not provided
         if ctype is None:
             if encoding in UTF16_ENCODINGS:
                 ctype = ConstantsDDBC.SQL_WCHAR.value
-                logger.debug( 'setencoding: Auto-selected SQL_WCHAR for UTF-16')
+                logger.debug("setencoding: Auto-selected SQL_WCHAR for UTF-16")
             else:
                 ctype = ConstantsDDBC.SQL_CHAR.value
-                logger.debug( 'setencoding: Auto-selected SQL_CHAR for non-UTF-16')
+                logger.debug("setencoding: Auto-selected SQL_CHAR for non-UTF-16")
 
         # Validate ctype
         valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
         if ctype not in valid_ctypes:
             # Log the sanitized ctype for security
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid ctype attempted: %s",
                 sanitize_user_input(str(ctype)),
             )
@@ -457,12 +531,16 @@ class Connection:
                 ),
             )
 
-        # Store the encoding settings
-        self._encoding_settings = {"encoding": encoding, "ctype": ctype}
+        # Final validation: SQL_WCHAR ctype only supports UTF-16 encodings (without BOM)
+        if ctype == ConstantsDDBC.SQL_WCHAR.value:
+            _validate_utf16_wchar_compatibility(encoding, ctype, "SQL_WCHAR")
+
+        # Store the encoding settings (thread-safe with lock)
+        with self._encoding_lock:
+            self._encoding_settings = {"encoding": encoding, "ctype": ctype}
 
         # Log with sanitized values for security
-        logger.debug(
-            "info",
+        logger.info(
             "Text encoding set to %s with ctype %s",
             sanitize_user_input(encoding),
             sanitize_user_input(str(ctype)),
@@ -470,7 +548,7 @@ class Connection:
 
     def getencoding(self) -> Dict[str, Union[str, int]]:
         """
-        Gets the current text encoding settings.
+        Gets the current text encoding settings (thread-safe).
 
         Returns:
             dict: A dictionary containing 'encoding' and 'ctype' keys.
@@ -482,6 +560,10 @@ class Connection:
             settings = cnxn.getencoding()
             print(f"Current encoding: {settings['encoding']}")
             print(f"Current ctype: {settings['ctype']}")
+
+        Note:
+            This method is thread-safe and can be called from multiple threads concurrently.
+            Returns a copy of the settings to prevent external modification.
         """
         if self._closed:
             raise InterfaceError(
@@ -489,7 +571,9 @@ class Connection:
                 ddbc_error="Connection is closed",
             )
 
-        return self._encoding_settings.copy()
+        # Thread-safe read with lock to prevent race conditions
+        with self._encoding_lock:
+            return self._encoding_settings.copy()
 
     def setdecoding(
         self, sqltype: int, encoding: Optional[str] = None, ctype: Optional[int] = None
@@ -540,8 +624,7 @@ class Connection:
             SQL_WMETADATA,
         ]
         if sqltype not in valid_sqltypes:
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid sqltype attempted: %s",
                 sanitize_user_input(str(sqltype)),
             )
@@ -563,8 +646,7 @@ class Connection:
 
         # Validate encoding using cached validation for better performance
         if not _validate_encoding(encoding):
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid encoding attempted: %s",
                 sanitize_user_input(str(encoding)),
             )
@@ -576,6 +658,13 @@ class Connection:
         # Normalize encoding to lowercase for consistency
         encoding = encoding.lower()
 
+        # Validate SQL_WCHAR encoding compatibility
+        if sqltype == ConstantsDDBC.SQL_WCHAR.value:
+            _validate_utf16_wchar_compatibility(encoding, sqltype, "SQL_WCHAR sqltype")
+
+        # SQL_WMETADATA can use any valid encoding (UTF-8, UTF-16, etc.)
+        # No restriction needed here - let users configure as needed
+
         # Set default ctype based on encoding if not provided
         if ctype is None:
             if encoding in UTF16_ENCODINGS:
@@ -586,8 +675,7 @@ class Connection:
         # Validate ctype
         valid_ctypes = [ConstantsDDBC.SQL_CHAR.value, ConstantsDDBC.SQL_WCHAR.value]
         if ctype not in valid_ctypes:
-            logger.debug(
-                "warning",
+            logger.warning(
                 "Invalid ctype attempted: %s",
                 sanitize_user_input(str(ctype)),
             )
@@ -599,8 +687,13 @@ class Connection:
                 ),
             )
 
-        # Store the decoding settings for the specified sqltype
-        self._decoding_settings[sqltype] = {"encoding": encoding, "ctype": ctype}
+        # Validate SQL_WCHAR ctype encoding compatibility
+        if ctype == ConstantsDDBC.SQL_WCHAR.value:
+            _validate_utf16_wchar_compatibility(encoding, ctype, "SQL_WCHAR ctype")
+
+        # Store the decoding settings for the specified sqltype (thread-safe with lock)
+        with self._encoding_lock:
+            self._decoding_settings[sqltype] = {"encoding": encoding, "ctype": ctype}
 
         # Log with sanitized values for security
         sqltype_name = {
@@ -609,8 +702,7 @@ class Connection:
             SQL_WMETADATA: "SQL_WMETADATA",
         }.get(sqltype, str(sqltype))
 
-        logger.debug(
-            "info",
+        logger.info(
             "Text decoding set for %s to %s with ctype %s",
             sqltype_name,
             sanitize_user_input(encoding),
@@ -619,7 +711,7 @@ class Connection:
 
     def getdecoding(self, sqltype: int) -> Dict[str, Union[str, int]]:
         """
-        Gets the current text decoding settings for the specified SQL type.
+        Gets the current text decoding settings for the specified SQL type (thread-safe).
 
         Args:
             sqltype (int): The SQL type to get settings for: SQL_CHAR, SQL_WCHAR, or SQL_WMETADATA.
@@ -635,6 +727,10 @@ class Connection:
             settings = cnxn.getdecoding(mssql_python.SQL_CHAR)
             print(f"SQL_CHAR encoding: {settings['encoding']}")
             print(f"SQL_CHAR ctype: {settings['ctype']}")
+
+        Note:
+            This method is thread-safe and can be called from multiple threads concurrently.
+            Returns a copy of the settings to prevent external modification.
         """
         if self._closed:
             raise InterfaceError(
@@ -658,11 +754,11 @@ class Connection:
                 ),
             )
 
-        return self._decoding_settings[sqltype].copy()
+        # Thread-safe read with lock to prevent race conditions
+        with self._encoding_lock:
+            return self._decoding_settings[sqltype].copy()
 
-    def set_attr(
-        self, attribute: int, value: Union[int, str, bytes, bytearray]
-    ) -> None:
+    def set_attr(self, attribute: int, value: Union[int, str, bytes, bytearray]) -> None:
         """
         Set a connection attribute.
 
@@ -698,8 +794,8 @@ class Connection:
             )
 
         # Use the integrated validation helper function with connection state
-        is_valid, error_message, sanitized_attr, sanitized_val = (
-            validate_attribute_value(attribute, value, is_connected=True)
+        is_valid, error_message, sanitized_attr, sanitized_val = validate_attribute_value(
+            attribute, value, is_connected=True
         )
 
         if not is_valid:
@@ -714,23 +810,19 @@ class Connection:
             )
 
         # Log with sanitized values
-        logger.debug( f"Setting connection attribute: {sanitized_attr}={sanitized_val}")
+        logger.debug(f"Setting connection attribute: {sanitized_attr}={sanitized_val}")
 
         try:
             # Call the underlying C++ method
             self._conn.set_attr(attribute, value)
-            logger.info( f"Connection attribute {sanitized_attr} set successfully")
+            logger.info(f"Connection attribute {sanitized_attr} set successfully")
 
         except Exception as e:
             error_msg = f"Failed to set connection attribute {sanitized_attr}: {str(e)}"
-            
+
             # Determine appropriate exception type based on error content
             error_str = str(e).lower()
-            if (
-                "invalid" in error_str
-                or "unsupported" in error_str
-                or "cast" in error_str
-            ):
+            if "invalid" in error_str or "unsupported" in error_str or "cast" in error_str:
                 logger.error(error_msg)
                 raise InterfaceError(error_msg, str(e)) from e
             logger.error(error_msg)
@@ -748,9 +840,7 @@ class Connection:
         """
         if not hasattr(self, "_searchescape") or self._searchescape is None:
             try:
-                escape_char = self.getinfo(
-                    GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value
-                )
+                escape_char = self.getinfo(GetInfoConstants.SQL_SEARCH_PATTERN_ESCAPE.value)
                 # Some drivers might return this as an integer memory address
                 # or other non-string format, so ensure we have a string
                 if not isinstance(escape_char, str):
@@ -783,10 +873,13 @@ class Connection:
             DatabaseError: If there is an error while creating the cursor.
             InterfaceError: If there is an error related to the database interface.
         """
-        logger.debug('cursor: Creating new cursor - timeout=%d, total_cursors=%d', 
-                     self._timeout, len(self._cursors))
+        logger.debug(
+            "cursor: Creating new cursor - timeout=%d, total_cursors=%d",
+            self._timeout,
+            len(self._cursors),
+        )
         if self._closed:
-            logger.error('cursor: Cannot create cursor on closed connection')
+            logger.error("cursor: Cannot create cursor on closed connection")
             # raise InterfaceError
             raise InterfaceError(
                 driver_error="Cannot create cursor on closed connection",
@@ -795,7 +888,7 @@ class Connection:
 
         cursor = Cursor(self, timeout=self._timeout)
         self._cursors.add(cursor)  # Track the cursor
-        logger.debug('cursor: Cursor created successfully - total_cursors=%d', len(self._cursors))
+        logger.debug("cursor: Cursor created successfully - total_cursors=%d", len(self._cursors))
         return cursor
 
     def add_output_converter(self, sqltype: int, func: Callable[[Any], Any]) -> None:
@@ -827,11 +920,9 @@ class Connection:
             # Pass to the underlying connection if native implementation supports it
             if hasattr(self._conn, "add_output_converter"):
                 self._conn.add_output_converter(sqltype, func)
-        logger.info( f"Added output converter for SQL type {sqltype}")
+        logger.info(f"Added output converter for SQL type {sqltype}")
 
-    def get_output_converter(
-        self, sqltype: Union[int, type]
-    ) -> Optional[Callable[[Any], Any]]:
+    def get_output_converter(self, sqltype: Union[int, type]) -> Optional[Callable[[Any], Any]]:
         """
         Get the output converter function for the specified SQL type.
 
@@ -868,7 +959,7 @@ class Connection:
                 # Pass to the underlying connection if native implementation supports it
                 if hasattr(self._conn, "remove_output_converter"):
                     self._conn.remove_output_converter(sqltype)
-        logger.info( f"Removed output converter for SQL type {sqltype}")
+        logger.info(f"Removed output converter for SQL type {sqltype}")
 
     def clear_output_converters(self) -> None:
         """
@@ -884,7 +975,7 @@ class Connection:
             # Pass to the underlying connection if native implementation supports it
             if hasattr(self._conn, "clear_output_converters"):
                 self._conn.clear_output_converters()
-        logger.info( "Cleared all output converters")
+        logger.info("Cleared all output converters")
 
     def execute(self, sql: str, *args: Any) -> Cursor:
         """
@@ -1005,9 +1096,7 @@ class Connection:
             if not isinstance(params, list):
                 raise TypeError("params must be a list of parameter sets")
             if len(params) != len(statements):
-                raise ValueError(
-                    "params list must have the same length as statements list"
-                )
+                raise ValueError("params list must have the same length as statements list")
         else:
             # Create a list of None values with the same length as statements
             params = [None] * len(statements)
@@ -1036,7 +1125,7 @@ class Connection:
                         # This is an INSERT, UPDATE, DELETE or similar that doesn't return rows
                         results.append(cursor.rowcount)
 
-                    logger.debug( f"Executed batch statement {i+1}/{len(statements)}")
+                    logger.debug(f"Executed batch statement {i+1}/{len(statements)}")
 
                 except Exception as e:
                     # If a statement fails, include statement context in the error
@@ -1067,7 +1156,7 @@ class Connection:
         # Close the cursor if requested and we created a new one
         if is_new_cursor and auto_close:
             cursor.close()
-            logger.debug( "Automatically closed cursor after batch execution")
+            logger.debug("Automatically closed cursor after batch execution")
 
         return results, cursor
 
@@ -1095,9 +1184,7 @@ class Connection:
 
         # Check that info_type is an integer
         if not isinstance(info_type, int):
-            raise ValueError(
-                f"info_type must be an integer, got {type(info_type).__name__}"
-            )
+            raise ValueError(f"info_type must be an integer, got {type(info_type).__name__}")
 
         # Check for invalid info_type values
         if info_type < 0:
@@ -1112,7 +1199,7 @@ class Connection:
             raw_result = self._conn.get_info(info_type)
         except Exception as e:  # pylint: disable=broad-exception-caught
             # Log the error and return None for invalid info types
-            logger.warning( f"getinfo({info_type}) failed: {e}")
+            logger.warning(f"getinfo({info_type}) failed: {e}")
             return None
 
         if raw_result is None:
@@ -1185,8 +1272,7 @@ class Connection:
 
             # Determine the type of information we're dealing with
             is_string_type = (
-                info_type > INFO_TYPE_STRING_THRESHOLD
-                or info_type in string_type_constants
+                info_type > INFO_TYPE_STRING_THRESHOLD or info_type in string_type_constants
             )
             is_yn_type = info_type in yn_type_constants
             is_numeric_type = info_type in numeric_type_constants
@@ -1277,9 +1363,7 @@ class Connection:
 
                     # Last resort: return as integer if all else fails
                     try:
-                        return int.from_bytes(
-                            data[: min(length, 8)], "little", signed=True
-                        )
+                        return int.from_bytes(data[: min(length, 8)], "little", signed=True)
                     except Exception:
                         return 0
                 elif isinstance(data, (int, float)):
@@ -1340,7 +1424,7 @@ class Connection:
 
         # Commit the current transaction
         self._conn.commit()
-        logger.info( "Transaction committed successfully.")
+        logger.info("Transaction committed successfully.")
 
     def rollback(self) -> None:
         """
@@ -1363,7 +1447,7 @@ class Connection:
 
         # Roll back the current transaction
         self._conn.rollback()
-        logger.info( "Transaction rolled back successfully.")
+        logger.info("Transaction rolled back successfully.")
 
     def close(self) -> None:
         """
@@ -1395,7 +1479,7 @@ class Connection:
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     # Collect errors but continue closing other cursors
                     close_errors.append(f"Error closing cursor: {e}")
-                    logger.warning( f"Error closing cursor: {e}")
+                    logger.warning(f"Error closing cursor: {e}")
 
             # If there were errors closing cursors, log them but continue
             if close_errors:
@@ -1424,14 +1508,14 @@ class Connection:
                 self._conn.close()
                 self._conn = None
         except Exception as e:
-            logger.error( f"Error closing database connection: {e}")
+            logger.error(f"Error closing database connection: {e}")
             # Re-raise the connection close error as it's more critical
             raise
         finally:
             # Always mark as closed, even if there were errors
             self._closed = True
-        
-        logger.info( "Connection closed successfully.")
+
+        logger.info("Connection closed successfully.")
 
     def _remove_cursor(self, cursor: Cursor) -> None:
         """
@@ -1464,7 +1548,7 @@ class Connection:
                 cursor.execute("INSERT INTO table VALUES (?)", [value])
                 # Transaction will be committed automatically when exiting
         """
-        logger.info( "Entering connection context manager.")
+        logger.info("Entering connection context manager.")
         return self
 
     def __exit__(self, *args: Any) -> None:
@@ -1490,4 +1574,4 @@ class Connection:
                 self.close()
             except Exception as e:
                 # Dont raise exceptions from __del__ to avoid issues during garbage collection
-                logger.warning( f"Error during connection cleanup: {e}")
+                logger.warning(f"Error during connection cleanup: {e}")

@@ -84,10 +84,7 @@ class DependencyTester:
         try:
             if Path("/etc/alpine-release").exists():
                 distro_name = "alpine"
-            elif (
-                Path("/etc/redhat-release").exists()
-                or Path("/etc/centos-release").exists()
-            ):
+            elif Path("/etc/redhat-release").exists() or Path("/etc/centos-release").exists():
                 distro_name = "rhel"
             elif Path("/etc/SuSE-release").exists() or Path("/etc/SUSE-brand").exists():
                 distro_name = "suse"
@@ -149,9 +146,7 @@ class DependencyTester:
         elif runtime_arch in ["aarch64"]:
             runtime_arch = "arm64"
 
-        base_path = (
-            self.module_dir / "libs" / "linux" / distro_name / runtime_arch / "lib"
-        )
+        base_path = self.module_dir / "libs" / "linux" / distro_name / runtime_arch / "lib"
 
         dependencies = [
             base_path / "libmsodbcsql-18.5.so.1.1",
@@ -193,11 +188,7 @@ class DependencyTester:
 
         if platform_name == "windows":
             driver_path = (
-                Path(self.module_dir)
-                / "libs"
-                / "windows"
-                / normalized_arch
-                / "msodbcsql18.dll"
+                Path(self.module_dir) / "libs" / "windows" / normalized_arch / "msodbcsql18.dll"
             )
 
         elif platform_name == "darwin":
@@ -295,9 +286,7 @@ class TestDependencyFiles:
         """Test that the Python extension module exists."""
         extension_path = dependency_tester.get_expected_python_extension()
 
-        assert (
-            extension_path.exists()
-        ), f"Python extension module not found: {extension_path}"
+        assert extension_path.exists(), f"Python extension module not found: {extension_path}"
 
     def test_python_extension_loadable(self):
         """Test that the Python extension module can be loaded."""
@@ -327,9 +316,7 @@ class TestArchitectureSpecificDependencies:
             / "msvcp140.dll"
         )
 
-        assert (
-            vcredist_path.exists()
-        ), f"Windows vcredist dependency not found: {vcredist_path}"
+        assert vcredist_path.exists(), f"Windows vcredist dependency not found: {vcredist_path}"
 
     @pytest.mark.skipif(
         dependency_tester.platform_name != "windows", reason="Windows-specific test"
@@ -344,13 +331,9 @@ class TestArchitectureSpecificDependencies:
             / "mssql-auth.dll"
         )
 
-        assert (
-            auth_path.exists()
-        ), f"Windows authentication library not found: {auth_path}"
+        assert auth_path.exists(), f"Windows authentication library not found: {auth_path}"
 
-    @pytest.mark.skipif(
-        dependency_tester.platform_name != "darwin", reason="macOS-specific test"
-    )
+    @pytest.mark.skipif(dependency_tester.platform_name != "darwin", reason="macOS-specific test")
     def test_macos_universal_dependencies(self):
         """Test that macOS builds include dependencies for both architectures."""
         for arch in ["arm64", "x86_64"]:
@@ -359,16 +342,12 @@ class TestArchitectureSpecificDependencies:
             msodbcsql_path = base_path / "libmsodbcsql.18.dylib"
             libodbcinst_path = base_path / "libodbcinst.2.dylib"
 
-            assert (
-                msodbcsql_path.exists()
-            ), f"macOS {arch} ODBC driver not found: {msodbcsql_path}"
+            assert msodbcsql_path.exists(), f"macOS {arch} ODBC driver not found: {msodbcsql_path}"
             assert (
                 libodbcinst_path.exists()
             ), f"macOS {arch} ODBC installer library not found: {libodbcinst_path}"
 
-    @pytest.mark.skipif(
-        dependency_tester.platform_name != "linux", reason="Linux-specific test"
-    )
+    @pytest.mark.skipif(dependency_tester.platform_name != "linux", reason="Linux-specific test")
     def test_linux_distribution_dependencies(self):
         """Test that Linux builds include distribution-specific dependencies."""
         distro_name = dependency_tester._detect_linux_distro()
@@ -376,9 +355,7 @@ class TestArchitectureSpecificDependencies:
         # Test that the distribution directory exists
         distro_path = dependency_tester.module_dir / "libs" / "linux" / distro_name
 
-        assert (
-            distro_path.exists()
-        ), f"Linux distribution directory not found: {distro_path}"
+        assert distro_path.exists(), f"Linux distribution directory not found: {distro_path}"
 
 
 class TestDependencyContent:
@@ -468,15 +445,11 @@ def test_normalize_architecture_windows_unsupported():
     """Test normalize_architecture with unsupported Windows architecture (Lines 33-41)."""
 
     # Test unsupported architecture on Windows (should raise ImportError)
-    with pytest.raises(
-        ImportError, match="Unsupported architecture.*for platform.*windows"
-    ):
+    with pytest.raises(ImportError, match="Unsupported architecture.*for platform.*windows"):
         normalize_architecture("windows", "unsupported_arch")
 
     # Test another invalid architecture
-    with pytest.raises(
-        ImportError, match="Unsupported architecture.*for platform.*windows"
-    ):
+    with pytest.raises(ImportError, match="Unsupported architecture.*for platform.*windows"):
         normalize_architecture("windows", "invalid123")
 
 
@@ -484,15 +457,11 @@ def test_normalize_architecture_linux_unsupported():
     """Test normalize_architecture with unsupported Linux architecture (Lines 53-61)."""
 
     # Test unsupported architecture on Linux (should raise ImportError)
-    with pytest.raises(
-        ImportError, match="Unsupported architecture.*for platform.*linux"
-    ):
+    with pytest.raises(ImportError, match="Unsupported architecture.*for platform.*linux"):
         normalize_architecture("linux", "unsupported_arch")
 
     # Test another invalid architecture
-    with pytest.raises(
-        ImportError, match="Unsupported architecture.*for platform.*linux"
-    ):
+    with pytest.raises(ImportError, match="Unsupported architecture.*for platform.*linux"):
         normalize_architecture("linux", "sparc")
 
 
@@ -667,9 +636,7 @@ def test_ddbc_bindings_warning_fallback_scenario():
     # Capture stdout to verify warning format
     f = io.StringIO()
     with contextlib.redirect_stdout(f):
-        print(
-            f"Warning: Using fallback module file {fallback_module} instead of {expected_module}"
-        )
+        print(f"Warning: Using fallback module file {fallback_module} instead of {expected_module}")
 
     output = f.getvalue()
     assert "Warning: Using fallback module file" in output

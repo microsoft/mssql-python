@@ -7,26 +7,27 @@
 #pragma once
 
 // pybind11.h must be the first include
-#include <pybind11/pybind11.h>
+#include <memory>
 #include <pybind11/chrono.h>
 #include <pybind11/complex.h>
 #include <pybind11/functional.h>
+#include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>  // Add this line for datetime support
 #include <pybind11/stl.h>
-#include <memory>
 #include <string>
 #include <vector>
+
 namespace py = pybind11;
 using py::literals::operator""_a;
 
 #ifdef _WIN32
-    // Windows-specific headers
-    #include <Windows.h>  // windows.h needs to be included before sql.h
-    #include <shlwapi.h>
-    #pragma comment(lib, "shlwapi.lib")
-    #define IS_WINDOWS 1
+// Windows-specific headers
+#include <Windows.h>  // windows.h needs to be included before sql.h
+#include <shlwapi.h>
+#pragma comment(lib, "shlwapi.lib")
+#define IS_WINDOWS 1
 #else
-    #define IS_WINDOWS 0
+#define IS_WINDOWS 0
 #endif
 
 #include <sql.h>
@@ -42,13 +43,14 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
     return result;
 }
 
-inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
-                                      size_t length = SQL_NTS) {
-    if (!sqlwStr) return std::wstring();
+inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
+    if (!sqlwStr)
+        return std::wstring();
 
     if (length == SQL_NTS) {
         size_t i = 0;
-        while (sqlwStr[i] != 0) ++i;
+        while (sqlwStr[i] != 0)
+            ++i;
         length = i;
     }
     return std::wstring(reinterpret_cast<const wchar_t*>(sqlwStr), length);
@@ -61,40 +63,39 @@ inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
 
 // Unicode constants for surrogate ranges and max scalar value
 constexpr uint32_t UNICODE_SURROGATE_HIGH_START = 0xD800;
-constexpr uint32_t UNICODE_SURROGATE_HIGH_END   = 0xDBFF;
-constexpr uint32_t UNICODE_SURROGATE_LOW_START  = 0xDC00;
-constexpr uint32_t UNICODE_SURROGATE_LOW_END    = 0xDFFF;
-constexpr uint32_t UNICODE_MAX_CODEPOINT        = 0x10FFFF;
-constexpr uint32_t UNICODE_REPLACEMENT_CHAR     = 0xFFFD;
+constexpr uint32_t UNICODE_SURROGATE_HIGH_END = 0xDBFF;
+constexpr uint32_t UNICODE_SURROGATE_LOW_START = 0xDC00;
+constexpr uint32_t UNICODE_SURROGATE_LOW_END = 0xDFFF;
+constexpr uint32_t UNICODE_MAX_CODEPOINT = 0x10FFFF;
+constexpr uint32_t UNICODE_REPLACEMENT_CHAR = 0xFFFD;
 
 // Validate whether a code point is a legal Unicode scalar value
 // (excludes surrogate halves and values beyond U+10FFFF)
 inline bool IsValidUnicodeScalar(uint32_t cp) {
     return cp <= UNICODE_MAX_CODEPOINT &&
-           !(cp >= UNICODE_SURROGATE_HIGH_START &&
-             cp <= UNICODE_SURROGATE_LOW_END);
+           !(cp >= UNICODE_SURROGATE_HIGH_START && cp <= UNICODE_SURROGATE_LOW_END);
 }
 
-inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
-                                      size_t length = SQL_NTS) {
-    if (!sqlwStr) return std::wstring();
+inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr, size_t length = SQL_NTS) {
+    if (!sqlwStr)
+        return std::wstring();
     if (length == SQL_NTS) {
         size_t i = 0;
-        while (sqlwStr[i] != 0) ++i;
+        while (sqlwStr[i] != 0)
+            ++i;
         length = i;
     }
     std::wstring result;
     result.reserve(length);
     if constexpr (sizeof(SQLWCHAR) == 2) {
         // Use a manual increment to handle skipping
-        for (size_t i = 0; i < length; ) {
+        for (size_t i = 0; i < length;) {
             uint16_t wc = static_cast<uint16_t>(sqlwStr[i]);
             // Check for high surrogate and valid low surrogate
-            if (wc >= UNICODE_SURROGATE_HIGH_START &&
-                wc <= UNICODE_SURROGATE_HIGH_END && (i + 1 < length)) {
+            if (wc >= UNICODE_SURROGATE_HIGH_START && wc <= UNICODE_SURROGATE_HIGH_END &&
+                (i + 1 < length)) {
                 uint16_t low = static_cast<uint16_t>(sqlwStr[i + 1]);
-                if (low >= UNICODE_SURROGATE_LOW_START &&
-                    low <= UNICODE_SURROGATE_LOW_END) {
+                if (low >= UNICODE_SURROGATE_LOW_START && low <= UNICODE_SURROGATE_LOW_END) {
                     // Combine into a single code point
                     uint32_t cp = (((wc - UNICODE_SURROGATE_HIGH_START) << 10) |
                                    (low - UNICODE_SURROGATE_LOW_START)) +
@@ -110,8 +111,7 @@ inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
             if (IsValidUnicodeScalar(wc)) {
                 result.push_back(static_cast<wchar_t>(wc));
             } else {
-                result.push_back(
-                    static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
+                result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
             }
             ++i;  // Move to the next code unit
         }
@@ -122,8 +122,7 @@ inline std::wstring SQLWCHARToWString(const SQLWCHAR* sqlwStr,
             if (IsValidUnicodeScalar(cp)) {
                 result.push_back(static_cast<wchar_t>(cp));
             } else {
-                result.push_back(
-                    static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
+                result.push_back(static_cast<wchar_t>(UNICODE_REPLACEMENT_CHAR));
             }
         }
     }
@@ -146,10 +145,8 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
             } else {
                 // Encode as surrogate pair
                 cp -= 0x10000;
-                SQLWCHAR high = static_cast<SQLWCHAR>(
-                    (cp >> 10) + UNICODE_SURROGATE_HIGH_START);
-                SQLWCHAR low = static_cast<SQLWCHAR>(
-                    (cp & 0x3FF) + UNICODE_SURROGATE_LOW_START);
+                SQLWCHAR high = static_cast<SQLWCHAR>((cp >> 10) + UNICODE_SURROGATE_HIGH_START);
+                SQLWCHAR low = static_cast<SQLWCHAR>((cp & 0x3FF) + UNICODE_SURROGATE_LOW_START);
                 result.push_back(high);
                 result.push_back(low);
             }
@@ -161,8 +158,7 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
             if (IsValidUnicodeScalar(cp)) {
                 result.push_back(static_cast<SQLWCHAR>(cp));
             } else {
-                result.push_back(
-                    static_cast<SQLWCHAR>(UNICODE_REPLACEMENT_CHAR));
+                result.push_back(static_cast<SQLWCHAR>(UNICODE_REPLACEMENT_CHAR));
             }
         }
     }
@@ -172,7 +168,7 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
 #endif
 
 #if defined(__APPLE__) || defined(__linux__)
-#include "unix_utils.h"    // Unix-specific fixes
+#include "unix_utils.h"  // Unix-specific fixes
 #endif
 
 //-------------------------------------------------------------------------------------------------
@@ -180,133 +176,86 @@ inline std::vector<SQLWCHAR> WStringToSQLWCHAR(const std::wstring& str) {
 //-------------------------------------------------------------------------------------------------
 
 // Handle APIs
-typedef SQLRETURN (SQL_API* SQLAllocHandleFunc)(SQLSMALLINT, SQLHANDLE,
-                                                 SQLHANDLE*);
-typedef SQLRETURN (SQL_API* SQLSetEnvAttrFunc)(SQLHANDLE, SQLINTEGER,
-                                                SQLPOINTER, SQLINTEGER);
-typedef SQLRETURN (SQL_API* SQLSetConnectAttrFunc)(SQLHDBC, SQLINTEGER,
-                                                    SQLPOINTER, SQLINTEGER);
-typedef SQLRETURN (SQL_API* SQLSetStmtAttrFunc)(SQLHSTMT, SQLINTEGER,
-                                                 SQLPOINTER, SQLINTEGER);
-typedef SQLRETURN (SQL_API* SQLGetConnectAttrFunc)(SQLHDBC, SQLINTEGER,
-                                                    SQLPOINTER, SQLINTEGER,
-                                                    SQLINTEGER*);
+typedef SQLRETURN(SQL_API* SQLAllocHandleFunc)(SQLSMALLINT, SQLHANDLE, SQLHANDLE*);
+typedef SQLRETURN(SQL_API* SQLSetEnvAttrFunc)(SQLHANDLE, SQLINTEGER, SQLPOINTER, SQLINTEGER);
+typedef SQLRETURN(SQL_API* SQLSetConnectAttrFunc)(SQLHDBC, SQLINTEGER, SQLPOINTER, SQLINTEGER);
+typedef SQLRETURN(SQL_API* SQLSetStmtAttrFunc)(SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER);
+typedef SQLRETURN(SQL_API* SQLGetConnectAttrFunc)(SQLHDBC, SQLINTEGER, SQLPOINTER, SQLINTEGER,
+                                                  SQLINTEGER*);
 
 // Connection and Execution APIs
-typedef SQLRETURN (SQL_API* SQLDriverConnectFunc)(SQLHANDLE, SQLHWND,
-                                                   SQLWCHAR*, SQLSMALLINT,
-                                                   SQLWCHAR*, SQLSMALLINT,
-                                                   SQLSMALLINT*,
-                                                   SQLUSMALLINT);
-typedef SQLRETURN (SQL_API* SQLExecDirectFunc)(SQLHANDLE, SQLWCHAR*,
+typedef SQLRETURN(SQL_API* SQLDriverConnectFunc)(SQLHANDLE, SQLHWND, SQLWCHAR*, SQLSMALLINT,
+                                                 SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*,
+                                                 SQLUSMALLINT);
+typedef SQLRETURN(SQL_API* SQLExecDirectFunc)(SQLHANDLE, SQLWCHAR*, SQLINTEGER);
+typedef SQLRETURN(SQL_API* SQLPrepareFunc)(SQLHANDLE, SQLWCHAR*, SQLINTEGER);
+typedef SQLRETURN(SQL_API* SQLBindParameterFunc)(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLSMALLINT,
+                                                 SQLSMALLINT, SQLULEN, SQLSMALLINT, SQLPOINTER,
+                                                 SQLLEN, SQLLEN*);
+typedef SQLRETURN(SQL_API* SQLExecuteFunc)(SQLHANDLE);
+typedef SQLRETURN(SQL_API* SQLRowCountFunc)(SQLHSTMT, SQLLEN*);
+typedef SQLRETURN(SQL_API* SQLSetDescFieldFunc)(SQLHDESC, SQLSMALLINT, SQLSMALLINT, SQLPOINTER,
                                                 SQLINTEGER);
-typedef SQLRETURN (SQL_API* SQLPrepareFunc)(SQLHANDLE, SQLWCHAR*,
-                                             SQLINTEGER);
-typedef SQLRETURN (SQL_API* SQLBindParameterFunc)(SQLHANDLE, SQLUSMALLINT,
-                                                   SQLSMALLINT, SQLSMALLINT,
-                                                   SQLSMALLINT, SQLULEN,
-                                                   SQLSMALLINT, SQLPOINTER,
-                                                   SQLLEN, SQLLEN*);
-typedef SQLRETURN (SQL_API* SQLExecuteFunc)(SQLHANDLE);
-typedef SQLRETURN (SQL_API* SQLRowCountFunc)(SQLHSTMT, SQLLEN*);
-typedef SQLRETURN (SQL_API* SQLSetDescFieldFunc)(SQLHDESC, SQLSMALLINT,
-                                                 SQLSMALLINT, SQLPOINTER,
-                                                 SQLINTEGER);
-typedef SQLRETURN (SQL_API* SQLGetStmtAttrFunc)(SQLHSTMT, SQLINTEGER,
-                                                SQLPOINTER, SQLINTEGER,
-                                                SQLINTEGER*);
+typedef SQLRETURN(SQL_API* SQLGetStmtAttrFunc)(SQLHSTMT, SQLINTEGER, SQLPOINTER, SQLINTEGER,
+                                               SQLINTEGER*);
 
 // Data retrieval APIs
-typedef SQLRETURN (SQL_API* SQLFetchFunc)(SQLHANDLE);
-typedef SQLRETURN (SQL_API* SQLFetchScrollFunc)(SQLHANDLE, SQLSMALLINT,
-                                                SQLLEN);
-typedef SQLRETURN (SQL_API* SQLGetDataFunc)(SQLHANDLE, SQLUSMALLINT,
-                                            SQLSMALLINT, SQLPOINTER,
-                                            SQLLEN, SQLLEN*);
-typedef SQLRETURN (SQL_API* SQLNumResultColsFunc)(SQLHSTMT, SQLSMALLINT*);
-typedef SQLRETURN (SQL_API* SQLBindColFunc)(SQLHSTMT, SQLUSMALLINT,
-                                            SQLSMALLINT, SQLPOINTER,
-                                            SQLLEN, SQLLEN*);
-typedef SQLRETURN (SQL_API* SQLDescribeColFunc)(SQLHSTMT, SQLUSMALLINT,
-                                                SQLWCHAR*, SQLSMALLINT,
-                                                SQLSMALLINT*, SQLSMALLINT*,
-                                                SQLULEN*, SQLSMALLINT*,
-                                                SQLSMALLINT*);
-typedef SQLRETURN (SQL_API* SQLMoreResultsFunc)(SQLHSTMT);
-typedef SQLRETURN (SQL_API* SQLColAttributeFunc)(SQLHSTMT, SQLUSMALLINT,
-                                                 SQLUSMALLINT, SQLPOINTER,
-                                                 SQLSMALLINT, SQLSMALLINT*,
-                                                 SQLPOINTER);
-typedef SQLRETURN (*SQLTablesFunc)(
-    SQLHSTMT       StatementHandle,
-    SQLWCHAR*      CatalogName,
-    SQLSMALLINT    NameLength1,
-    SQLWCHAR*      SchemaName,
-    SQLSMALLINT    NameLength2,
-    SQLWCHAR*      TableName,
-    SQLSMALLINT    NameLength3,
-    SQLWCHAR*      TableType,
-    SQLSMALLINT    NameLength4
-);
-typedef SQLRETURN (SQL_API* SQLGetTypeInfoFunc)(SQLHSTMT, SQLSMALLINT);
-typedef SQLRETURN (SQL_API* SQLProceduresFunc)(SQLHSTMT, SQLWCHAR*,
-                                               SQLSMALLINT, SQLWCHAR*,
-                                               SQLSMALLINT, SQLWCHAR*,
+typedef SQLRETURN(SQL_API* SQLFetchFunc)(SQLHANDLE);
+typedef SQLRETURN(SQL_API* SQLFetchScrollFunc)(SQLHANDLE, SQLSMALLINT, SQLLEN);
+typedef SQLRETURN(SQL_API* SQLGetDataFunc)(SQLHANDLE, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER, SQLLEN,
+                                           SQLLEN*);
+typedef SQLRETURN(SQL_API* SQLNumResultColsFunc)(SQLHSTMT, SQLSMALLINT*);
+typedef SQLRETURN(SQL_API* SQLBindColFunc)(SQLHSTMT, SQLUSMALLINT, SQLSMALLINT, SQLPOINTER, SQLLEN,
+                                           SQLLEN*);
+typedef SQLRETURN(SQL_API* SQLDescribeColFunc)(SQLHSTMT, SQLUSMALLINT, SQLWCHAR*, SQLSMALLINT,
+                                               SQLSMALLINT*, SQLSMALLINT*, SQLULEN*, SQLSMALLINT*,
+                                               SQLSMALLINT*);
+typedef SQLRETURN(SQL_API* SQLMoreResultsFunc)(SQLHSTMT);
+typedef SQLRETURN(SQL_API* SQLColAttributeFunc)(SQLHSTMT, SQLUSMALLINT, SQLUSMALLINT, SQLPOINTER,
+                                                SQLSMALLINT, SQLSMALLINT*, SQLPOINTER);
+typedef SQLRETURN (*SQLTablesFunc)(SQLHSTMT StatementHandle, SQLWCHAR* CatalogName,
+                                   SQLSMALLINT NameLength1, SQLWCHAR* SchemaName,
+                                   SQLSMALLINT NameLength2, SQLWCHAR* TableName,
+                                   SQLSMALLINT NameLength3, SQLWCHAR* TableType,
+                                   SQLSMALLINT NameLength4);
+typedef SQLRETURN(SQL_API* SQLGetTypeInfoFunc)(SQLHSTMT, SQLSMALLINT);
+typedef SQLRETURN(SQL_API* SQLProceduresFunc)(SQLHSTMT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*,
+                                              SQLSMALLINT, SQLWCHAR*, SQLSMALLINT);
+typedef SQLRETURN(SQL_API* SQLForeignKeysFunc)(SQLHSTMT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*,
+                                               SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*,
+                                               SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*,
                                                SQLSMALLINT);
-typedef SQLRETURN (SQL_API* SQLForeignKeysFunc)(SQLHSTMT, SQLWCHAR*,
-                                                SQLSMALLINT, SQLWCHAR*,
-                                                SQLSMALLINT, SQLWCHAR*,
-                                                SQLSMALLINT, SQLWCHAR*,
-                                                SQLSMALLINT, SQLWCHAR*,
-                                                SQLSMALLINT, SQLWCHAR*,
-                                                SQLSMALLINT);
-typedef SQLRETURN (SQL_API* SQLPrimaryKeysFunc)(SQLHSTMT, SQLWCHAR*,
-                                                SQLSMALLINT, SQLWCHAR*,
-                                                SQLSMALLINT, SQLWCHAR*,
-                                                SQLSMALLINT);
-typedef SQLRETURN (SQL_API* SQLSpecialColumnsFunc)(SQLHSTMT, SQLUSMALLINT,
-                                                   SQLWCHAR*, SQLSMALLINT,
-                                                   SQLWCHAR*, SQLSMALLINT,
-                                                   SQLWCHAR*, SQLSMALLINT,
-                                                   SQLUSMALLINT,
-                                                   SQLUSMALLINT);
-typedef SQLRETURN (SQL_API* SQLStatisticsFunc)(SQLHSTMT, SQLWCHAR*,
-                                               SQLSMALLINT, SQLWCHAR*,
-                                               SQLSMALLINT, SQLWCHAR*,
-                                               SQLSMALLINT, SQLUSMALLINT,
-                                               SQLUSMALLINT);
-typedef SQLRETURN (SQL_API* SQLColumnsFunc)(SQLHSTMT, SQLWCHAR*,
-                                            SQLSMALLINT, SQLWCHAR*,
-                                            SQLSMALLINT, SQLWCHAR*,
-                                            SQLSMALLINT, SQLWCHAR*,
-                                            SQLSMALLINT);
-typedef SQLRETURN (SQL_API* SQLGetInfoFunc)(SQLHDBC, SQLUSMALLINT,
-                                            SQLPOINTER, SQLSMALLINT,
-                                            SQLSMALLINT*);
+typedef SQLRETURN(SQL_API* SQLPrimaryKeysFunc)(SQLHSTMT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*,
+                                               SQLSMALLINT, SQLWCHAR*, SQLSMALLINT);
+typedef SQLRETURN(SQL_API* SQLSpecialColumnsFunc)(SQLHSTMT, SQLUSMALLINT, SQLWCHAR*, SQLSMALLINT,
+                                                  SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT,
+                                                  SQLUSMALLINT, SQLUSMALLINT);
+typedef SQLRETURN(SQL_API* SQLStatisticsFunc)(SQLHSTMT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*,
+                                              SQLSMALLINT, SQLWCHAR*, SQLSMALLINT, SQLUSMALLINT,
+                                              SQLUSMALLINT);
+typedef SQLRETURN(SQL_API* SQLColumnsFunc)(SQLHSTMT, SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT,
+                                           SQLWCHAR*, SQLSMALLINT, SQLWCHAR*, SQLSMALLINT);
+typedef SQLRETURN(SQL_API* SQLGetInfoFunc)(SQLHDBC, SQLUSMALLINT, SQLPOINTER, SQLSMALLINT,
+                                           SQLSMALLINT*);
 
 // Transaction APIs
-typedef SQLRETURN (SQL_API* SQLEndTranFunc)(SQLSMALLINT, SQLHANDLE,
-                                            SQLSMALLINT);
+typedef SQLRETURN(SQL_API* SQLEndTranFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT);
 
 // Disconnect/free APIs
-typedef SQLRETURN (SQL_API* SQLFreeHandleFunc)(SQLSMALLINT, SQLHANDLE);
-typedef SQLRETURN (SQL_API* SQLDisconnectFunc)(SQLHDBC);
-typedef SQLRETURN (SQL_API* SQLFreeStmtFunc)(SQLHSTMT, SQLUSMALLINT);
+typedef SQLRETURN(SQL_API* SQLFreeHandleFunc)(SQLSMALLINT, SQLHANDLE);
+typedef SQLRETURN(SQL_API* SQLDisconnectFunc)(SQLHDBC);
+typedef SQLRETURN(SQL_API* SQLFreeStmtFunc)(SQLHSTMT, SQLUSMALLINT);
 
 // Diagnostic APIs
-typedef SQLRETURN (SQL_API* SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE,
-                                               SQLSMALLINT, SQLWCHAR*,
-                                               SQLINTEGER*, SQLWCHAR*,
-                                               SQLSMALLINT, SQLSMALLINT*);
+typedef SQLRETURN(SQL_API* SQLGetDiagRecFunc)(SQLSMALLINT, SQLHANDLE, SQLSMALLINT, SQLWCHAR*,
+                                              SQLINTEGER*, SQLWCHAR*, SQLSMALLINT, SQLSMALLINT*);
 
-typedef SQLRETURN (SQL_API* SQLDescribeParamFunc)(SQLHSTMT, SQLUSMALLINT,
-                                                  SQLSMALLINT*, SQLULEN*,
-                                                  SQLSMALLINT*,
-                                                  SQLSMALLINT*);
+typedef SQLRETURN(SQL_API* SQLDescribeParamFunc)(SQLHSTMT, SQLUSMALLINT, SQLSMALLINT*, SQLULEN*,
+                                                 SQLSMALLINT*, SQLSMALLINT*);
 
 // DAE APIs
-typedef SQLRETURN (SQL_API* SQLParamDataFunc)(SQLHSTMT, SQLPOINTER*);
-typedef SQLRETURN (SQL_API* SQLPutDataFunc)(SQLHSTMT, SQLPOINTER, SQLLEN);
+typedef SQLRETURN(SQL_API* SQLParamDataFunc)(SQLHSTMT, SQLPOINTER*);
+typedef SQLRETURN(SQL_API* SQLPutDataFunc)(SQLHSTMT, SQLPOINTER, SQLLEN);
 //-------------------------------------------------------------------------------------------------
 // Extern function pointer declarations (defined in ddbc_bindings.cpp)
 //-------------------------------------------------------------------------------------------------
@@ -375,7 +324,7 @@ typedef void* DriverHandle;
 #endif
 
 // Platform-agnostic function to get a function pointer from the loaded library
-template<typename T>
+template <typename T>
 T GetFunctionPointer(DriverHandle handle, const char* functionName) {
 #ifdef _WIN32
     // Windows: Use GetProcAddress
@@ -403,10 +352,11 @@ DriverHandle LoadDriverOrThrowException();
 // Not copyable or assignable.
 //-------------------------------------------------------------------------------------------------
 class DriverLoader {
- public:
+  public:
     static DriverLoader& getInstance();
     void loadDriver();
- private:
+
+  private:
     DriverLoader();
     DriverLoader(const DriverLoader&) = delete;
     DriverLoader& operator=(const DriverLoader&) = delete;
@@ -422,17 +372,18 @@ class DriverLoader {
 // Use `std::shared_ptr<SqlHandle>` (alias: SqlHandlePtr) for shared ownership.
 //-------------------------------------------------------------------------------------------------
 class SqlHandle {
- public:
+  public:
     SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle);
     ~SqlHandle();
     SQLHANDLE get() const;
     SQLSMALLINT type() const;
     void free();
- private:
+
+  private:
     SQLSMALLINT _type;
     SQLHANDLE _handle;
 };
-    using SqlHandlePtr = std::shared_ptr<SqlHandle>;
+using SqlHandlePtr = std::shared_ptr<SqlHandle>;
 
 // This struct is used to relay error info obtained from SQLDiagRec API to the
 // Python module
@@ -444,19 +395,19 @@ ErrorInfo SQLCheckError_Wrap(SQLSMALLINT handleType, SqlHandlePtr handle,
                               SQLRETURN retcode);
 
 inline std::string WideToUTF8(const std::wstring& wstr) {
-    if (wstr.empty()) return {};
+    if (wstr.empty())
+        return {};
 
 #if defined(_WIN32)
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(),
-                                          static_cast<int>(wstr.size()),
+    int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()),
                                           nullptr, 0, nullptr, nullptr);
-    if (size_needed == 0) return {};
+    if (size_needed == 0)
+        return {};
     std::string result(size_needed, 0);
-    int converted = WideCharToMultiByte(CP_UTF8, 0, wstr.data(),
-                                        static_cast<int>(wstr.size()),
-                                        result.data(), size_needed,
-                                        nullptr, nullptr);
-    if (converted == 0) return {};
+    int converted = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()),
+                                        result.data(), size_needed, nullptr, nullptr);
+    if (converted == 0)
+        return {};
     return result;
 #else
     // Manual UTF-32 to UTF-8 conversion for macOS/Linux
@@ -476,19 +427,14 @@ inline std::string WideToUTF8(const std::wstring& wstr) {
             utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
         } else if (code_point <= 0xFFFF) {
             // 3-byte UTF-8 sequence
-            utf8_string += static_cast<char>(0xE0 |
-                                            ((code_point >> 12) & 0x0F));
-            utf8_string += static_cast<char>(0x80 |
-                                            ((code_point >> 6) & 0x3F));
+            utf8_string += static_cast<char>(0xE0 | ((code_point >> 12) & 0x0F));
+            utf8_string += static_cast<char>(0x80 | ((code_point >> 6) & 0x3F));
             utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
         } else if (code_point <= 0x10FFFF) {
             // 4-byte UTF-8 sequence for characters like emojis (e.g., U+1F604)
-            utf8_string += static_cast<char>(0xF0 |
-                                            ((code_point >> 18) & 0x07));
-            utf8_string += static_cast<char>(0x80 |
-                                            ((code_point >> 12) & 0x3F));
-            utf8_string += static_cast<char>(0x80 |
-                                            ((code_point >> 6) & 0x3F));
+            utf8_string += static_cast<char>(0xF0 | ((code_point >> 18) & 0x07));
+            utf8_string += static_cast<char>(0x80 | ((code_point >> 12) & 0x3F));
+            utf8_string += static_cast<char>(0x80 | ((code_point >> 6) & 0x3F));
             utf8_string += static_cast<char>(0x80 | (code_point & 0x3F));
         }
     }
@@ -497,20 +443,20 @@ inline std::string WideToUTF8(const std::wstring& wstr) {
 }
 
 inline std::wstring Utf8ToWString(const std::string& str) {
-    if (str.empty()) return {};
+    if (str.empty())
+        return {};
 #if defined(_WIN32)
-    int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.data(),
-                                          static_cast<int>(str.size()),
-                                          nullptr, 0);
+    int size_needed =
+        MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
     if (size_needed == 0) {
         LOG_ERROR("MultiByteToWideChar failed for UTF8 to wide string conversion");
         return {};
     }
     std::wstring result(size_needed, 0);
-    int converted = MultiByteToWideChar(CP_UTF8, 0, str.data(),
-                                        static_cast<int>(str.size()),
+    int converted = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()),
                                         result.data(), size_needed);
-    if (converted == 0) return {};
+    if (converted == 0)
+        return {};
     return result;
 #else
     std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
@@ -520,11 +466,11 @@ inline std::wstring Utf8ToWString(const std::string& str) {
 
 // Thread-safe decimal separator accessor class
 class ThreadSafeDecimalSeparator {
- private:
+  private:
     std::string value;
     mutable std::mutex mutex;
 
- public:
+  public:
     // Constructor with default value
     ThreadSafeDecimalSeparator() : value(".") {}
 
@@ -568,17 +514,16 @@ void DDBCSetDecimalSeparator(const std::string& separator);
 //-------------------------------------------------------------------------------------------------
 
 // Struct to hold the DateTimeOffset structure
-struct DateTimeOffset
-{
-    SQLSMALLINT    year;
-    SQLUSMALLINT   month;
-    SQLUSMALLINT   day;
-    SQLUSMALLINT   hour;
-    SQLUSMALLINT   minute;
-    SQLUSMALLINT   second;
-    SQLUINTEGER    fraction;        // Nanoseconds
-    SQLSMALLINT    timezone_hour;   // Offset hours from UTC
-    SQLSMALLINT    timezone_minute; // Offset minutes from UTC
+struct DateTimeOffset {
+    SQLSMALLINT year;
+    SQLUSMALLINT month;
+    SQLUSMALLINT day;
+    SQLUSMALLINT hour;
+    SQLUSMALLINT minute;
+    SQLUSMALLINT second;
+    SQLUINTEGER fraction;         // Nanoseconds
+    SQLSMALLINT timezone_hour;    // Offset hours from UTC
+    SQLSMALLINT timezone_minute;  // Offset minutes from UTC
 };
 
 // Struct to hold data buffers and indicators for each column
@@ -598,25 +543,17 @@ struct ColumnBuffers {
     std::vector<std::vector<DateTimeOffset>> datetimeoffsetBuffers;
 
     ColumnBuffers(SQLSMALLINT numCols, int fetchSize)
-        : charBuffers(numCols),
-          wcharBuffers(numCols),
-          intBuffers(numCols),
-          smallIntBuffers(numCols),
-          realBuffers(numCols),
-          doubleBuffers(numCols),
-          timestampBuffers(numCols),
-          bigIntBuffers(numCols),
-          dateBuffers(numCols),
-          timeBuffers(numCols),
-          guidBuffers(numCols),
-          datetimeoffsetBuffers(numCols),
+        : charBuffers(numCols), wcharBuffers(numCols), intBuffers(numCols),
+          smallIntBuffers(numCols), realBuffers(numCols), doubleBuffers(numCols),
+          timestampBuffers(numCols), bigIntBuffers(numCols), dateBuffers(numCols),
+          timeBuffers(numCols), guidBuffers(numCols), datetimeoffsetBuffers(numCols),
           indicators(numCols, std::vector<SQLLEN>(fetchSize)) {}
 };
 
 // Performance: Column processor function type for fast type conversion
 // Using function pointers eliminates switch statement overhead in the hot loop
-typedef void (*ColumnProcessor)(PyObject* row, ColumnBuffers& buffers, const void* colInfo, 
-                                 SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt);
+typedef void (*ColumnProcessor)(PyObject* row, ColumnBuffers& buffers, const void* colInfo,
+                                SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt);
 
 // Extended column info struct for processor functions
 struct ColumnInfoExt {
@@ -627,18 +564,22 @@ struct ColumnInfoExt {
     bool isLob;
 };
 
-// Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp) - MUST be outside namespace
-py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT col, SQLSMALLINT cType, 
-                              bool isWideChar, bool isBinary);
+// Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp) - MUST be
+// outside namespace
+py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT col, SQLSMALLINT cType, bool isWideChar,
+                              bool isBinary, const std::string& charEncoding = "utf-8");
 
-// Specialized column processors for each data type (eliminates switch in hot loop)
+// Specialized column processors for each data type (eliminates switch in hot
+// loop)
 namespace ColumnProcessors {
 
 // Process SQL INTEGER (4-byte int) column into Python int
-// SAFETY: PyList_SET_ITEM is safe here because row is freshly allocated with PyList_New()
+// SAFETY: PyList_SET_ITEM is safe here because row is freshly allocated with
+// PyList_New()
 //         and each slot is filled exactly once (NULL -> value)
-// Performance: NULL check removed - handled centrally before processor is called
-inline void ProcessInteger(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
+// Performance: NULL check removed - handled centrally before processor is
+// called
+inline void ProcessInteger(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
                            SQLULEN rowIdx, SQLHSTMT) {
     // Performance: Direct Python C API call (bypasses pybind11 overhead)
     PyObject* pyInt = PyLong_FromLong(buffers.intBuffers[col - 1][rowIdx]);
@@ -651,8 +592,9 @@ inline void ProcessInteger(PyObject* row, ColumnBuffers& buffers, const void*, S
 }
 
 // Process SQL SMALLINT (2-byte int) column into Python int
-// Performance: NULL check removed - handled centrally before processor is called
-inline void ProcessSmallInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
+// Performance: NULL check removed - handled centrally before processor is
+// called
+inline void ProcessSmallInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
                             SQLULEN rowIdx, SQLHSTMT) {
     // Performance: Direct Python C API call
     PyObject* pyInt = PyLong_FromLong(buffers.smallIntBuffers[col - 1][rowIdx]);
@@ -665,8 +607,9 @@ inline void ProcessSmallInt(PyObject* row, ColumnBuffers& buffers, const void*, 
 }
 
 // Process SQL BIGINT (8-byte int) column into Python int
-// Performance: NULL check removed - handled centrally before processor is called
-inline void ProcessBigInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
+// Performance: NULL check removed - handled centrally before processor is
+// called
+inline void ProcessBigInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
                           SQLULEN rowIdx, SQLHSTMT) {
     // Performance: Direct Python C API call
     PyObject* pyInt = PyLong_FromLongLong(buffers.bigIntBuffers[col - 1][rowIdx]);
@@ -679,8 +622,9 @@ inline void ProcessBigInt(PyObject* row, ColumnBuffers& buffers, const void*, SQ
 }
 
 // Process SQL TINYINT (1-byte unsigned int) column into Python int
-// Performance: NULL check removed - handled centrally before processor is called
-inline void ProcessTinyInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
+// Performance: NULL check removed - handled centrally before processor is
+// called
+inline void ProcessTinyInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
                            SQLULEN rowIdx, SQLHSTMT) {
     // Performance: Direct Python C API call
     PyObject* pyInt = PyLong_FromLong(buffers.charBuffers[col - 1][rowIdx]);
@@ -693,8 +637,9 @@ inline void ProcessTinyInt(PyObject* row, ColumnBuffers& buffers, const void*, S
 }
 
 // Process SQL BIT column into Python bool
-// Performance: NULL check removed - handled centrally before processor is called
-inline void ProcessBit(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
+// Performance: NULL check removed - handled centrally before processor is
+// called
+inline void ProcessBit(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
                        SQLULEN rowIdx, SQLHSTMT) {
     // Performance: Direct Python C API call (converts 0/1 to True/False)
     PyObject* pyBool = PyBool_FromLong(buffers.charBuffers[col - 1][rowIdx]);
@@ -707,8 +652,9 @@ inline void ProcessBit(PyObject* row, ColumnBuffers& buffers, const void*, SQLUS
 }
 
 // Process SQL REAL (4-byte float) column into Python float
-// Performance: NULL check removed - handled centrally before processor is called
-inline void ProcessReal(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
+// Performance: NULL check removed - handled centrally before processor is
+// called
+inline void ProcessReal(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
                         SQLULEN rowIdx, SQLHSTMT) {
     // Performance: Direct Python C API call
     PyObject* pyFloat = PyFloat_FromDouble(buffers.realBuffers[col - 1][rowIdx]);
@@ -721,8 +667,9 @@ inline void ProcessReal(PyObject* row, ColumnBuffers& buffers, const void*, SQLU
 }
 
 // Process SQL DOUBLE/FLOAT (8-byte float) column into Python float
-// Performance: NULL check removed - handled centrally before processor is called
-inline void ProcessDouble(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col, 
+// Performance: NULL check removed - handled centrally before processor is
+// called
+inline void ProcessDouble(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
                           SQLULEN rowIdx, SQLHSTMT) {
     // Performance: Direct Python C API call
     PyObject* pyFloat = PyFloat_FromDouble(buffers.doubleBuffers[col - 1][rowIdx]);
@@ -735,12 +682,13 @@ inline void ProcessDouble(PyObject* row, ColumnBuffers& buffers, const void*, SQ
 }
 
 // Process SQL CHAR/VARCHAR (single-byte string) column into Python str
-// Performance: NULL/NO_TOTAL checks removed - handled centrally before processor is called
-inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr, 
+// Performance: NULL/NO_TOTAL checks removed - handled centrally before
+// processor is called
+inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr,
                         SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
-    
+
     // Handle empty strings
     if (dataLen == 0) {
         PyObject* emptyStr = PyUnicode_FromStringAndSize("", 0);
@@ -752,14 +700,16 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
         }
         return;
     }
-    
+
     uint64_t numCharsInData = dataLen / sizeof(SQLCHAR);
     // Fast path: Data fits in buffer (not LOB or truncated)
-    // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
+    // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence
+    // '<'
     if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
         // Performance: Direct Python C API call - create string from buffer
         PyObject* pyStr = PyUnicode_FromStringAndSize(
-            reinterpret_cast<char*>(&buffers.charBuffers[col - 1][rowIdx * colInfo->fetchBufferSize]),
+            reinterpret_cast<char*>(
+                &buffers.charBuffers[col - 1][rowIdx * colInfo->fetchBufferSize]),
             numCharsInData);
         if (!pyStr) {
             Py_INCREF(Py_None);
@@ -769,17 +719,19 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
         }
     } else {
         // Slow path: LOB data requires separate fetch call
-        PyList_SET_ITEM(row, col - 1, FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false).release().ptr());
+        PyList_SET_ITEM(row, col - 1,
+                        FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false).release().ptr());
     }
 }
 
 // Process SQL NCHAR/NVARCHAR (wide/Unicode string) column into Python str
-// Performance: NULL/NO_TOTAL checks removed - handled centrally before processor is called
-inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr, 
+// Performance: NULL/NO_TOTAL checks removed - handled centrally before
+// processor is called
+inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr,
                          SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
-    
+
     // Handle empty strings
     if (dataLen == 0) {
         PyObject* emptyStr = PyUnicode_FromStringAndSize("", 0);
@@ -791,19 +743,20 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
         }
         return;
     }
-    
+
     uint64_t numCharsInData = dataLen / sizeof(SQLWCHAR);
     // Fast path: Data fits in buffer (not LOB or truncated)
-    // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence '<'
+    // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence
+    // '<'
     if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
 #if defined(__APPLE__) || defined(__linux__)
-        // Performance: Direct UTF-16 decode (SQLWCHAR is 2 bytes on Linux/macOS)
+        // Performance: Direct UTF-16 decode (SQLWCHAR is 2 bytes on
+        // Linux/macOS)
         SQLWCHAR* wcharData = &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize];
-        PyObject* pyStr = PyUnicode_DecodeUTF16(
-            reinterpret_cast<const char*>(wcharData),
-            numCharsInData * sizeof(SQLWCHAR),
-            NULL,  // errors (use default strict)
-            NULL   // byteorder (auto-detect)
+        PyObject* pyStr = PyUnicode_DecodeUTF16(reinterpret_cast<const char*>(wcharData),
+                                                numCharsInData * sizeof(SQLWCHAR),
+                                                NULL,  // errors (use default strict)
+                                                NULL   // byteorder (auto-detect)
         );
         if (pyStr) {
             PyList_SET_ITEM(row, col - 1, pyStr);
@@ -818,9 +771,11 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
             }
         }
 #else
-        // Performance: Direct Python C API call (Windows where SQLWCHAR == wchar_t)
+        // Performance: Direct Python C API call (Windows where SQLWCHAR ==
+        // wchar_t)
         PyObject* pyStr = PyUnicode_FromWideChar(
-            reinterpret_cast<wchar_t*>(&buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize]),
+            reinterpret_cast<wchar_t*>(
+                &buffers.wcharBuffers[col - 1][rowIdx * colInfo->fetchBufferSize]),
             numCharsInData);
         if (!pyStr) {
             Py_INCREF(Py_None);
@@ -831,17 +786,19 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
 #endif
     } else {
         // Slow path: LOB data requires separate fetch call
-        PyList_SET_ITEM(row, col - 1, FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false).release().ptr());
+        PyList_SET_ITEM(row, col - 1,
+                        FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false).release().ptr());
     }
 }
 
 // Process SQL BINARY/VARBINARY (binary data) column into Python bytes
-// Performance: NULL/NO_TOTAL checks removed - handled centrally before processor is called
-inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr, 
+// Performance: NULL/NO_TOTAL checks removed - handled centrally before
+// processor is called
+inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr,
                           SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
-    
+
     // Handle empty binary data
     if (dataLen == 0) {
         PyObject* emptyBytes = PyBytes_FromStringAndSize("", 0);
@@ -853,12 +810,13 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
         }
         return;
     }
-    
+
     // Fast path: Data fits in buffer (not LOB or truncated)
     if (!colInfo->isLob && static_cast<size_t>(dataLen) <= colInfo->processedColumnSize) {
         // Performance: Direct Python C API call - create bytes from buffer
         PyObject* pyBytes = PyBytes_FromStringAndSize(
-            reinterpret_cast<const char*>(&buffers.charBuffers[col - 1][rowIdx * colInfo->processedColumnSize]),
+            reinterpret_cast<const char*>(
+                &buffers.charBuffers[col - 1][rowIdx * colInfo->processedColumnSize]),
             dataLen);
         if (!pyBytes) {
             Py_INCREF(Py_None);
@@ -868,8 +826,10 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
         }
     } else {
         // Slow path: LOB data requires separate fetch call
-        PyList_SET_ITEM(row, col - 1, FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true).release().ptr());
+        PyList_SET_ITEM(
+            row, col - 1,
+            FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true, "").release().ptr());
     }
 }
 
-} // namespace ColumnProcessors
+}  // namespace ColumnProcessors

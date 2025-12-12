@@ -22,7 +22,7 @@ def is_azure_sql_connection(conn_str):
     # Check if database.windows.net appears in the Server parameter
     conn_str_lower = conn_str.lower()
     # Look for Server= or server= followed by database.windows.net
-    server_match = re.search(r'server\s*=\s*[^;]*database\.windows\.net', conn_str_lower)
+    server_match = re.search(r"server\s*=\s*[^;]*database\.windows\.net", conn_str_lower)
     return server_match is not None
 
 

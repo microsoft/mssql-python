@@ -266,9 +266,7 @@ def test_cursor_after_connection_close(conn_str):
     with pytest.raises(InterfaceError) as excinfo:
         cursor = conn.cursor()
 
-    assert (
-        "closed connection" in str(excinfo.value).lower()
-    ), "Should mention closed connection"
+    assert "closed connection" in str(excinfo.value).lower(), "Should mention closed connection"
 
 
 def test_multiple_cursor_operations_cleanup(conn_str):
@@ -334,9 +332,7 @@ cursor.fetchall()
 print("Test completed successfully")
 """
 
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True
-    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
 
     # Should exit cleanly
     assert result.returncode == 0, f"Script failed: {result.stderr}"
@@ -373,9 +369,7 @@ def test_cursor_del_on_closed_cursor_no_errors(conn_str, caplog):
     # Check that no error logs were produced
     for record in caplog.records:
         assert "Exception during cursor cleanup" not in record.message
-        assert (
-            "Operation cannot be performed: The cursor is closed." not in record.message
-        )
+        assert "Operation cannot be performed: The cursor is closed." not in record.message
 
     conn.close()
 
@@ -407,12 +401,8 @@ conn.close()
 print("Cleanup successful")
 """
 
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True
-    )
-    assert (
-        result.returncode == 0
-    ), f"Expected successful cleanup, but got: {result.stderr}"
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, f"Expected successful cleanup, but got: {result.stderr}"
     assert "Cleanup successful" in result.stdout
     # Should not have any error messages
     assert "Exception" not in result.stderr
@@ -491,9 +481,7 @@ conn1.close()
 print("All tests passed")
 """
 
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True
-    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
 
     if result.returncode != 0:
         print(f"STDOUT: {result.stdout}")
@@ -527,9 +515,7 @@ print("Script completed, shutting down...") # This would NOT print anyways
 """
 
     # Run in subprocess to catch segfaults
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True
-    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
 
     # Should not segfault (exit code 139 on Unix, 134 on macOS)
     assert (
@@ -562,9 +548,7 @@ cursors.append(cursor_valid)
 print("Multiple syntax errors handled, shutting down...")
 """
 
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True
-    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
 
     assert (
         result.returncode == 1
@@ -593,9 +577,7 @@ print("Connection closed with pending cursor results")
 # Cursor destructor will run during normal cleanup, not shutdown
 """
 
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True
-    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
 
     # Should not segfault - should exit cleanly
     assert (
@@ -647,9 +629,7 @@ for exc in exceptions:
 print("Concurrent operations completed")
 """
 
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True
-    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
 
     # Should not segfault
     assert (
@@ -665,16 +645,12 @@ print("Concurrent operations completed")
         # Extract numbers from "Completed: X results, Y exceptions"
         import re
 
-        match = re.search(
-            r"Completed: (\d+) results, (\d+) exceptions", completed_line[0]
-        )
+        match = re.search(r"Completed: (\d+) results, (\d+) exceptions", completed_line[0])
         if match:
             results_count = int(match.group(1))
             exceptions_count = int(match.group(2))
             # Should have completed most operations (allow some threading issues)
-            assert (
-                results_count >= 50
-            ), f"Too few successful operations: {results_count}"
+            assert results_count >= 50, f"Too few successful operations: {results_count}"
             assert exceptions_count <= 10, f"Too many exceptions: {exceptions_count}"
 
 
@@ -715,9 +691,7 @@ print("Exiting abruptly with active threads and pending queries")
 sys.exit(0)  # Abrupt exit without joining threads
 """
 
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True
-    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
 
     # Should not segfault - should exit cleanly even with abrupt exit
     assert (

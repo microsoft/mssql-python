@@ -41,12 +41,22 @@ class DATETIME(datetime.datetime):
     This type object is used to describe date/time columns in a database.
     """
 
-    def __new__(cls, year: int = 1, month: int = 1, day: int = 1,
-                hour: int = 0, minute: int = 0, second: int = 0,
-                microsecond: int = 0, tzinfo=None, *, fold: int = 0):
-        return datetime.datetime.__new__(cls, year, month, day, hour,
-                                       minute, second, microsecond, tzinfo,
-                                       fold=fold)
+    def __new__(
+        cls,
+        year: int = 1,
+        month: int = 1,
+        day: int = 1,
+        hour: int = 0,
+        minute: int = 0,
+        second: int = 0,
+        microsecond: int = 0,
+        tzinfo=None,
+        *,
+        fold: int = 0,
+    ):
+        return datetime.datetime.__new__(
+            cls, year, month, day, hour, minute, second, microsecond, tzinfo, fold=fold
+        )
 
 
 class ROWID(int):

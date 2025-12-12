@@ -21,7 +21,7 @@ import statistics
 from typing import List, Tuple
 
 # Add parent directory to path to import local mssql_python
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import pyodbc
 from mssql_python import connect
@@ -30,11 +30,13 @@ from mssql_python import connect
 CONN_STR = os.getenv("DB_CONNECTION_STRING")
 
 if not CONN_STR:
-    print("Error: The environment variable DB_CONNECTION_STRING is not set. Please set it to a valid SQL Server connection string and try again.")
+    print(
+        "Error: The environment variable DB_CONNECTION_STRING is not set. Please set it to a valid SQL Server connection string and try again."
+    )
     sys.exit(1)
 
 # Ensure pyodbc connection string has ODBC driver specified
-if CONN_STR and 'Driver=' not in CONN_STR:
+if CONN_STR and "Driver=" not in CONN_STR:
     CONN_STR_PYODBC = f"Driver={{ODBC Driver 18 for SQL Server}};{CONN_STR}"
 else:
     CONN_STR_PYODBC = CONN_STR
@@ -142,50 +144,52 @@ SUBQUERY_WITH_CTE = """
 
 class BenchmarkResult:
     """Class to store and calculate benchmark statistics"""
-    
+
     def __init__(self, name: str):
         self.name = name
         self.times: List[float] = []
         self.row_count: int = 0
-    
+
     def add_time(self, elapsed: float, rows: int = 0):
         """Add a timing result"""
         self.times.append(elapsed)
         if rows > 0:
             self.row_count = rows
-    
+
     @property
     def avg_time(self) -> float:
         """Calculate average time"""
         return statistics.mean(self.times) if self.times else 0.0
-    
+
     @property
     def min_time(self) -> float:
         """Get minimum time"""
         return min(self.times) if self.times else 0.0
-    
+
     @property
     def max_time(self) -> float:
         """Get maximum time"""
         return max(self.times) if self.times else 0.0
-    
+
     @property
     def std_dev(self) -> float:
         """Calculate standard deviation"""
         return statistics.stdev(self.times) if len(self.times) > 1 else 0.0
-    
+
     def __str__(self) -> str:
         """Format results as string"""
-        return (f"{self.name}:\n"
-                f"  Avg: {self.avg_time:.4f}s | Min: {self.min_time:.4f}s | "
-                f"Max: {self.max_time:.4f}s | StdDev: {self.std_dev:.4f}s | "
-                f"Rows: {self.row_count}")
+        return (
+            f"{self.name}:\n"
+            f"  Avg: {self.avg_time:.4f}s | Min: {self.min_time:.4f}s | "
+            f"Max: {self.max_time:.4f}s | StdDev: {self.std_dev:.4f}s | "
+            f"Rows: {self.row_count}"
+        )
 
 
 def run_benchmark_pyodbc(query: str, name: str, iterations: int) -> BenchmarkResult:
     """Run a benchmark using pyodbc"""
     result = BenchmarkResult(f"{name} (pyodbc)")
-    
+
     for i in range(iterations):
         try:
             start_time = time.time()
@@ -194,22 +198,22 @@ def run_benchmark_pyodbc(query: str, name: str, iterations: int) -> BenchmarkRes
             cursor.execute(query)
             rows = cursor.fetchall()
             elapsed = time.time() - start_time
-            
+
             result.add_time(elapsed, len(rows))
-            
+
             cursor.close()
             conn.close()
         except Exception as e:
             print(f"  Error in iteration {i+1}: {e}")
             continue
-    
+
     return result
 
 
 def run_benchmark_mssql_python(query: str, name: str, iterations: int) -> BenchmarkResult:
     """Run a benchmark using mssql-python"""
     result = BenchmarkResult(f"{name} (mssql-python)")
-    
+
     for i in range(iterations):
         try:
             start_time = time.time()
@@ -218,19 +222,21 @@ def run_benchmark_mssql_python(query: str, name: str, iterations: int) -> Benchm
             cursor.execute(query)
             rows = cursor.fetchall()
             elapsed = time.time() - start_time
-            
+
             result.add_time(elapsed, len(rows))
-            
+
             cursor.close()
             conn.close()
         except Exception as e:
             print(f"  Error in iteration {i+1}: {e}")
             continue
-    
+
     return result
 
 
-def calculate_speedup(pyodbc_result: BenchmarkResult, mssql_python_result: BenchmarkResult) -> float:
+def calculate_speedup(
+    pyodbc_result: BenchmarkResult, mssql_python_result: BenchmarkResult
+) -> float:
     """Calculate speedup factor"""
     if mssql_python_result.avg_time == 0:
         return 0.0
@@ -240,7 +246,7 @@ def calculate_speedup(pyodbc_result: BenchmarkResult, mssql_python_result: Bench
 def print_comparison(pyodbc_result: BenchmarkResult, mssql_python_result: BenchmarkResult):
     """Print detailed comparison of results"""
     speedup = calculate_speedup(pyodbc_result, mssql_python_result)
-    
+
     print(f"\n{'='*80}")
     print(f"BENCHMARK: {pyodbc_result.name.split(' (')[0]}")
     print(f"{'='*80}")
@@ -250,14 +256,14 @@ def print_comparison(pyodbc_result: BenchmarkResult, mssql_python_result: Benchm
     print(f"  Max: {pyodbc_result.max_time:.4f}s")
     print(f"  StdDev: {pyodbc_result.std_dev:.4f}s")
     print(f"  Rows: {pyodbc_result.row_count}")
-    
+
     print(f"\nmssql-python:")
     print(f"  Avg: {mssql_python_result.avg_time:.4f}s")
     print(f"  Min: {mssql_python_result.min_time:.4f}s")
     print(f"  Max: {mssql_python_result.max_time:.4f}s")
     print(f"  StdDev: {mssql_python_result.std_dev:.4f}s")
     print(f"  Rows: {mssql_python_result.row_count}")
-    
+
     print(f"\nPerformance:")
     if speedup > 1:
         print(f"  mssql-python is {speedup:.2f}x FASTER than pyodbc")
@@ -265,20 +271,20 @@ def print_comparison(pyodbc_result: BenchmarkResult, mssql_python_result: Benchm
         print(f"  mssql-python is {1/speedup:.2f}x SLOWER than pyodbc")
     else:
         print(f"  Unable to calculate speedup")
-    
+
     print(f"  Time difference: {(pyodbc_result.avg_time - mssql_python_result.avg_time):.4f}s")
 
 
 def main():
     """Main benchmark runner"""
-    print("="*80)
+    print("=" * 80)
     print("PERFORMANCE BENCHMARKING: mssql-python vs pyodbc")
-    print("="*80)
+    print("=" * 80)
     print(f"\nConfiguration:")
     print(f"  Iterations per test: {NUM_ITERATIONS}")
     print(f"  Database: AdventureWorks2022")
     print(f"\n")
-    
+
     # Define benchmarks
     benchmarks = [
         (COMPLEX_JOIN_AGGREGATION, "Complex Join Aggregation"),
@@ -286,66 +292,74 @@ def main():
         (VERY_LARGE_DATASET, "Very Large Dataset (1.2M rows)"),
         (SUBQUERY_WITH_CTE, "Subquery with CTE"),
     ]
-    
+
     # Store all results for summary
     all_results: List[Tuple[BenchmarkResult, BenchmarkResult]] = []
-    
+
     # Run each benchmark
     for query, name in benchmarks:
         print(f"\nRunning: {name}")
         print(f"  Testing with pyodbc... ", end="", flush=True)
         pyodbc_result = run_benchmark_pyodbc(query, name, NUM_ITERATIONS)
         print(f"OK (avg: {pyodbc_result.avg_time:.4f}s)")
-        
+
         print(f"  Testing with mssql-python... ", end="", flush=True)
         mssql_python_result = run_benchmark_mssql_python(query, name, NUM_ITERATIONS)
         print(f"OK (avg: {mssql_python_result.avg_time:.4f}s)")
-        
+
         all_results.append((pyodbc_result, mssql_python_result))
-    
+
     # Print detailed comparisons
-    print("\n\n" + "="*80)
+    print("\n\n" + "=" * 80)
     print("DETAILED RESULTS")
-    print("="*80)
-    
+    print("=" * 80)
+
     for pyodbc_result, mssql_python_result in all_results:
         print_comparison(pyodbc_result, mssql_python_result)
-    
+
     # Print summary table
-    print("\n\n" + "="*80)
+    print("\n\n" + "=" * 80)
     print("SUMMARY TABLE")
-    print("="*80)
+    print("=" * 80)
     print(f"\n{'Benchmark':<35} {'pyodbc (s)':<15} {'mssql-python (s)':<20} {'Speedup'}")
     print("-" * 80)
-    
+
     total_pyodbc = 0.0
     total_mssql_python = 0.0
-    
+
     for pyodbc_result, mssql_python_result in all_results:
-        name = pyodbc_result.name.split(' (')[0]
+        name = pyodbc_result.name.split(" (")[0]
         speedup = calculate_speedup(pyodbc_result, mssql_python_result)
-        
+
         total_pyodbc += pyodbc_result.avg_time
         total_mssql_python += mssql_python_result.avg_time
-        
-        print(f"{name:<35} {pyodbc_result.avg_time:<15.4f} {mssql_python_result.avg_time:<20.4f} {speedup:.2f}x")
-    
+
+        print(
+            f"{name:<35} {pyodbc_result.avg_time:<15.4f} {mssql_python_result.avg_time:<20.4f} {speedup:.2f}x"
+        )
+
     print("-" * 80)
-    print(f"{'TOTAL':<35} {total_pyodbc:<15.4f} {total_mssql_python:<20.4f} "
-          f"{total_pyodbc/total_mssql_python if total_mssql_python > 0 else 0:.2f}x")
-    
+    print(
+        f"{'TOTAL':<35} {total_pyodbc:<15.4f} {total_mssql_python:<20.4f} "
+        f"{total_pyodbc/total_mssql_python if total_mssql_python > 0 else 0:.2f}x"
+    )
+
     # Overall conclusion
     overall_speedup = total_pyodbc / total_mssql_python if total_mssql_python > 0 else 0
     print(f"\n{'='*80}")
     print("OVERALL CONCLUSION")
-    print("="*80)
+    print("=" * 80)
     if overall_speedup > 1:
         print(f"\nmssql-python is {overall_speedup:.2f}x FASTER than pyodbc on average")
-        print(f"Total time saved: {total_pyodbc - total_mssql_python:.4f}s ({((total_pyodbc - total_mssql_python)/total_pyodbc*100):.1f}%)")
+        print(
+            f"Total time saved: {total_pyodbc - total_mssql_python:.4f}s ({((total_pyodbc - total_mssql_python)/total_pyodbc*100):.1f}%)"
+        )
     elif overall_speedup < 1 and overall_speedup > 0:
         print(f"\nmssql-python is {1/overall_speedup:.2f}x SLOWER than pyodbc on average")
-        print(f"Total time difference: {total_mssql_python - total_pyodbc:.4f}s ({((total_mssql_python - total_pyodbc)/total_mssql_python*100):.1f}%)")
-    
+        print(
+            f"Total time difference: {total_mssql_python - total_pyodbc:.4f}s ({((total_mssql_python - total_pyodbc)/total_mssql_python*100):.1f}%)"
+        )
+
     print(f"\n{'='*80}\n")
 
 
@@ -358,5 +372,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n\nFatal error: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)
