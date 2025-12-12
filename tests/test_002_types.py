@@ -1,6 +1,7 @@
 import pytest
 import datetime
 import time
+import os
 from mssql_python.type import (
     STRING,
     BINARY,
@@ -531,7 +532,6 @@ def test_invalid_surrogate_handling():
     This validates the fix for unix_utils.cpp to match ddbc_bindings.h behavior.
     """
     import mssql_python
-    import os
 
     # Test connection strings with various surrogate-related edge cases
     # These should be handled gracefully without introducing invalid Unicode
@@ -541,7 +541,7 @@ def test_invalid_surrogate_handling():
     try:
         # Create a connection string that would exercise the conversion path
         # Use environment variables or placeholder values to avoid SEC101/037 security warnings
-        test_server = os.getenv("TEST_SERVER", "localhost")
+        test_server = os.getenv("TEST_SERVER", "testserver")
         test_db = os.getenv("TEST_DATABASE", "TestDB")
         conn_str = f"Server={test_server};Database={test_db};Trusted_Connection=yes"
         conn = mssql_python.connect(conn_str, autoconnect=False)
@@ -552,7 +552,10 @@ def test_invalid_surrogate_handling():
     # Low surrogate without high surrogate (invalid)
     # In UTF-16, low surrogates (0xDC00-0xDFFF) must be preceded by high surrogates
     try:
-        conn_str = f"Server={os.getenv('TEST_SERVER', 'localhost')};Database=DB;ApplicationName=TestApp;Trusted_Connection=yes"
+        test_server = os.getenv("TEST_SERVER", "testserver")
+        conn_str = (
+            f"Server={test_server};Database=DB;ApplicationName=TestApp;Trusted_Connection=yes"
+        )
         conn = mssql_python.connect(conn_str, autoconnect=False)
         conn.close()
     except Exception:
