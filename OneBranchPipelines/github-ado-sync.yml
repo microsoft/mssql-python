@@ -1,0 +1,120 @@
+# GitHub-to-ADO Sync Pipeline
+# Syncs main branch from public GitHub to internal Azure DevOps daily at 5pm IST
+
+name: GitHub-Sync-$(Date:yyyyMMdd)$(Rev:.r)
+
+schedules:
+  - cron: "30 11 * * *"
+    displayName: "Daily sync at 5pm IST"
+    branches:
+      include:
+        - main
+    always: true
+
+trigger: none
+pr: none
+
+jobs:
+- job: SyncFromGitHub
+  displayName: 'Sync main branch from GitHub'
+  pool:
+    vmImage: 'windows-latest'
+  
+  steps:
+  - checkout: none
+
+  - task: CmdLine@2
+    displayName: 'Clone GitHub repo'
+    inputs:
+      script: git clone https://github.com/microsoft/mssql-python.git repo-dir -b main
+      workingDirectory: $(Agent.TempDirectory)
+
+  - task: CmdLine@2
+    displayName: 'Add Azure DevOps remote'
+    inputs:
+      script: git remote add azdo-mirror https://$(System.AccessToken)@sqlclientdrivers.visualstudio.com/mssql-python/_git/mssql-python
+      workingDirectory: $(Agent.TempDirectory)/repo-dir
+
+  - task: CmdLine@2
+    displayName: 'Fetch ADO repo'
+    inputs:
+      script: git fetch azdo-mirror
+      workingDirectory: $(Agent.TempDirectory)/repo-dir
+
+  - task: CmdLine@2
+    displayName: 'Create timestamped sync branch'
+    inputs:
+      script: |
+        echo Getting current timestamp...
+        powershell -Command "Get-Date -Format 'yyyyMMdd-HHmmss'" > timestamp.txt
+        set /p TIMESTAMP=<timestamp.txt
+        set SYNC_BRANCH=github-sync-%TIMESTAMP%
+        echo %SYNC_BRANCH% > branchname.txt
+        echo Creating sync branch: %SYNC_BRANCH%
+        git checkout -b %SYNC_BRANCH% -t azdo-mirror/main || git checkout -b %SYNC_BRANCH% azdo-mirror/main
+        echo ##vso[task.setvariable variable=SYNC_BRANCH;isOutput=true]%SYNC_BRANCH%
+      workingDirectory: $(Agent.TempDirectory)/repo-dir
+
+  - task: CmdLine@2
+    displayName: 'Reset branch to match GitHub main exactly'
+    inputs:
+      script: |
+        git -c user.email="sync@microsoft.com" -c user.name="ADO Sync Bot" reset --hard origin/main
+      workingDirectory: $(Agent.TempDirectory)/repo-dir
+
+  - task: CmdLine@2
+    displayName: 'Push branch to Azure DevOps'
+    inputs:
+      script: |
+        set /p SYNC_BRANCH=<branchname.txt
+        echo Pushing branch: %SYNC_BRANCH%
+        
+        git config user.email "sync@microsoft.com"
+        git config user.name "ADO Sync Bot"
+        
+        git push azdo-mirror %SYNC_BRANCH% --set-upstream
+        
+        if %ERRORLEVEL% EQU 0 (
+          echo Branch pushed successfully!
+        ) else (
+          echo ERROR: Push failed!
+          exit /b 1
+        )
+      workingDirectory: $(Agent.TempDirectory)/repo-dir
+
+  - task: CmdLine@2
+    displayName: 'Create pull request'
+    inputs:
+      script: |
+        echo Installing Azure DevOps extension...
+        call az extension add --name azure-devops --only-show-errors
+        
+        echo Setting up authentication...
+        set AZURE_DEVOPS_EXT_PAT=$(System.AccessToken)
+        
+        echo Configuring Azure DevOps defaults...
+        call az devops configure --defaults organization=https://sqlclientdrivers.visualstudio.com project=mssql-python
+        
+        set /p SYNC_BRANCH=<branchname.txt
+        echo Creating PR from branch: %SYNC_BRANCH% to main
+        
+        call az repos pr create --source-branch %SYNC_BRANCH% --target-branch main --title "ADO-GitHub Sync - %date%" --description "Automated sync from GitHub main branch" --auto-complete true --squash true --delete-source-branch true --output table
+        
+        if %ERRORLEVEL% EQU 0 (
+          echo PR created successfully!
+          echo Adding reviewers...
+          call az repos pr list --source-branch %SYNC_BRANCH% --target-branch main --status active --output tsv --query "[0].pullRequestId" > pr_id.txt
+          set /p PR_ID=<pr_id.txt
+          call az repos pr reviewer add --id %PR_ID% --reviewers gargsaumya@microsoft.com sharmag@microsoft.com sumit.sarabhai@microsoft.com jathakkar@microsoft.com spaitandi@microsoft.com --output table
+          if %ERRORLEVEL% EQU 0 (
+            echo Reviewers added successfully!
+          )
+          del pr_id.txt
+        ) else (
+          echo ERROR: Failed to create PR
+          exit /b 1
+        )
+        
+        if exist timestamp.txt del timestamp.txt
+        if exist branchname.txt del branchname.txt
+      workingDirectory: $(Agent.TempDirectory)/repo-dir

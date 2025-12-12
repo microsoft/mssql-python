@@ -3,15 +3,6 @@ Copyright (c) Microsoft Corporation.
 Licensed under the MIT license.
 This module initializes the mssql_python package.
 """
-import sys
-import types
-from typing import Dict
-
-# Import settings from helpers to avoid circular imports
-from .helpers import Settings, get_settings, _settings, _settings_lock
-
-# Driver version
-__version__ = "1.0.0"
 
 import sys
 import types
