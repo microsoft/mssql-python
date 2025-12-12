@@ -38,7 +38,7 @@ class TestIsValidUnicodeScalar:
 
         for char in valid_chars:
             try:
-                conn_str = f"Server=test;Database=DB{char};UID=u;PWD=p"
+                conn_str = f"Server=test;Database=DB{char};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
@@ -72,7 +72,7 @@ class TestIsValidUnicodeScalar:
 
         # Just before surrogate range (valid)
         try:
-            conn_str = "Server=test;Database=DB\ud7ff;UID=u;PWD=p"
+            conn_str = "Server=test;Database=DB\ud7ff;Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -80,14 +80,14 @@ class TestIsValidUnicodeScalar:
 
         # Inside surrogate range (invalid)
         try:
-            conn_str = "Server=test;Database=DB\ud800;UID=u;PWD=p"
+            conn_str = "Server=test;Database=DB\ud800;Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
             pass
 
         try:
-            conn_str = "Server=test;Database=DB\udfff;UID=u;PWD=p"
+            conn_str = "Server=test;Database=DB\udfff;Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -95,7 +95,7 @@ class TestIsValidUnicodeScalar:
 
         # Just after surrogate range (valid)
         try:
-            conn_str = "Server=test;Database=DB\ue000;UID=u;PWD=p"
+            conn_str = "Server=test;Database=DB\ue000;Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -123,7 +123,7 @@ class TestSQLWCHARUTF32Path:
 
         for test_str in valid_tests:
             try:
-                conn_str = f"Server=test;Database={test_str};UID=u;PWD=p"
+                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
@@ -143,7 +143,7 @@ class TestSQLWCHARUTF32Path:
 
         for test_str in invalid_tests:
             try:
-                conn_str = f"Server=test;Database={test_str};UID=u;PWD=p"
+                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
@@ -169,7 +169,7 @@ class TestWStringToSQLWCHARUTF32Path:
 
         for test_str in valid_tests:
             try:
-                conn_str = f"Server=test;Database={test_str};UID=u;PWD=p"
+                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
@@ -188,7 +188,7 @@ class TestWStringToSQLWCHARUTF32Path:
 
         for test_str in invalid_tests:
             try:
-                conn_str = f"Server=test;Database={test_str};UID=u;PWD=p"
+                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:

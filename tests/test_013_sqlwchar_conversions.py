@@ -40,7 +40,7 @@ class TestSQLWCHARConversions:
         # This tests the else branch at lines 112-115
         try:
             # Use a connection string to exercise the conversion path
-            conn_str = f"Server=test;Database={test_str};UID=user;PWD=pass"
+            conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -49,7 +49,7 @@ class TestSQLWCHARConversions:
         # High surrogate followed by non-surrogate
         test_str2 = "Test\ud800X"  # High surrogate followed by ASCII
         try:
-            conn_str = f"Server=test;ApplicationName={test_str2};UID=u;PWD=p"
+            conn_str = f"Server=test;ApplicationName={test_str2};Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -71,7 +71,7 @@ class TestSQLWCHARConversions:
         test_str = "\udc00Hello"  # Low surrogate at start
 
         try:
-            conn_str = f"Server=test;Database={test_str};UID=user;PWD=pass"
+            conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -80,7 +80,7 @@ class TestSQLWCHARConversions:
         # Low surrogate in middle (not preceded by high surrogate)
         test_str2 = "A\udc00B"  # Low surrogate between ASCII
         try:
-            conn_str = f"Server=test;ApplicationName={test_str2};UID=u;PWD=p"
+            conn_str = f"Server=test;ApplicationName={test_str2};Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -111,7 +111,7 @@ class TestSQLWCHARConversions:
 
         for test_str in emoji_tests:
             try:
-                conn_str = f"Server=test;Database={test_str};UID=user;PWD=pass"
+                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
@@ -144,7 +144,7 @@ class TestSQLWCHARConversions:
 
         for test_str in bmp_tests:
             try:
-                conn_str = f"Server=test;Database={test_str};UID=user;PWD=pass"
+                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
@@ -170,7 +170,7 @@ class TestSQLWCHARConversions:
         # High surrogate alone
         try:
             test_str = "Test\ud800End"
-            conn_str = f"Server=test;Database={test_str};UID=user;PWD=pass"
+            conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -179,7 +179,7 @@ class TestSQLWCHARConversions:
         # Low surrogate alone
         try:
             test_str = "Start\udc00Test"
-            conn_str = f"Server=test;Database={test_str};UID=user;PWD=pass"
+            conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -188,7 +188,7 @@ class TestSQLWCHARConversions:
         # Mixed invalid surrogates
         try:
             test_str = "\ud800\ud801\udc00"  # High, high, low (invalid pairing)
-            conn_str = f"Server=test;Database={test_str};UID=user;PWD=pass"
+            conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -220,7 +220,7 @@ class TestSQLWCHARConversions:
 
         for test_char in single_unit_tests:
             try:
-                conn_str = f"Server=test;Database=DB_{test_char};UID=u;PWD=p"
+                conn_str = f"Server=test;Database=DB_{test_char};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
@@ -253,7 +253,7 @@ class TestSQLWCHARConversions:
 
         for emoji in emoji_chars:
             try:
-                conn_str = f"Server=test;Database=DB{emoji};UID=u;PWD=p"
+                conn_str = f"Server=test;Database=DB{emoji};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
@@ -282,7 +282,7 @@ class TestSQLWCHARConversions:
 
         for test_str, desc in invalid_tests:
             try:
-                conn_str = f"Server=test;Database={test_str};UID=u;PWD=p"
+                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
@@ -301,7 +301,7 @@ class TestSQLWCHARConversions:
 
         # Empty string
         try:
-            conn_str = "Server=test;Database=;UID=user;PWD=pass"
+            conn_str = "Server=test;Database=;Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -309,7 +309,7 @@ class TestSQLWCHARConversions:
 
         # Very short strings
         try:
-            conn_str = "Server=a;Database=b;UID=c;PWD=d"
+            conn_str = "Server=a;Database=b;Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -337,7 +337,7 @@ class TestSQLWCHARConversions:
 
         for test_str in mixed_tests:
             try:
-                conn_str = f"Server=test;Database={test_str};UID=u;PWD=p"
+                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
@@ -371,7 +371,7 @@ class TestSQLWCHARConversions:
 
         for test_char, desc in boundary_tests:
             try:
-                conn_str = f"Server=test;Database=DB{test_char};UID=u;PWD=p"
+                conn_str = f"Server=test;Database=DB{test_char};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
@@ -403,7 +403,7 @@ class TestSQLWCHARConversions:
         #   low = (0 & 0x3FF) + 0xDC00 = 0xDC00
         min_supp = "\U00010000"
         try:
-            conn_str = f"Server=test;Database=DB{min_supp};UID=u;PWD=p"
+            conn_str = f"Server=test;Database=DB{min_supp};Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -415,7 +415,7 @@ class TestSQLWCHARConversions:
         #   low = (0xF600 & 0x3FF) + 0xDC00 = 0x200 + 0xDC00 = 0xDE00
         emoji = "😀"
         try:
-            conn_str = f"Server=test;Database={emoji};UID=u;PWD=p"
+            conn_str = f"Server=test;Database={emoji};Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -427,7 +427,7 @@ class TestSQLWCHARConversions:
         #   low = (0xFFFFF & 0x3FF) + 0xDC00 = 0x3FF + 0xDC00 = 0xDFFF
         max_unicode = "\U0010ffff"
         try:
-            conn_str = f"Server=test;Database=DB{max_unicode};UID=u;PWD=p"
+            conn_str = f"Server=test;Database=DB{max_unicode};Trusted_Connection=yes"
             conn = connect(conn_str, autoconnect=False)
             conn.close()
         except Exception:
@@ -455,7 +455,7 @@ class TestSQLWCHARConversions:
 
         for test_str in length_tests:
             try:
-                conn_str = f"Server=test;Database={test_str};UID=u;PWD=p"
+                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
@@ -475,7 +475,7 @@ class TestSQLWCHARConversionsCommon:
 
         for test_str in ascii_tests:
             try:
-                conn_str = f"Server=test;Database={test_str};UID=u;PWD=p"
+                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
@@ -490,7 +490,7 @@ class TestSQLWCHARConversionsCommon:
 
         for emoji in emoji_tests:
             try:
-                conn_str = f"Server=test;Database=DB{emoji};UID=u;PWD=p"
+                conn_str = f"Server=test;Database=DB{emoji};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
@@ -513,7 +513,7 @@ class TestSQLWCHARConversionsCommon:
 
         for test_str in multilingual_tests:
             try:
-                conn_str = f"Server=test;Database={test_str};UID=u;PWD=p"
+                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
                 conn = connect(conn_str, autoconnect=False)
                 conn.close()
             except Exception:
