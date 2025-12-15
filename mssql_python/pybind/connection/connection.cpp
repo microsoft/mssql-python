@@ -25,8 +25,7 @@ static SqlHandlePtr getEnvHandle() {
             DriverLoader::getInstance().loadDriver();
         }
         SQLHANDLE env = nullptr;
-        SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_ENV, SQL_NULL_HANDLE,
-                                           &env);
+        SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_ENV, SQL_NULL_HANDLE, &env);
         if (!SQL_SUCCEEDED(ret)) {
             ThrowStdException("Failed to allocate environment handle");
         }
@@ -35,8 +34,7 @@ static SqlHandlePtr getEnvHandle() {
         if (!SQL_SUCCEEDED(ret)) {
             ThrowStdException("Failed to set environment attributes");
         }
-        return std::make_shared<SqlHandle>(
-            static_cast<SQLSMALLINT>(SQL_HANDLE_ENV), env);
+        return std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_ENV), env);
     }();
 
     return envHandle;
@@ -63,8 +61,7 @@ void Connection::allocateDbcHandle() {
     LOG("Allocating SQL Connection Handle");
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(), &dbc);
     checkError(ret);
-    _dbcHandle = std::make_shared<SqlHandle>(
-        static_cast<SQLSMALLINT>(SQL_HANDLE_DBC), dbc);
+    _dbcHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_DBC), dbc);
 }
 
 void Connection::connect(const py::dict& attrs_before) {
@@ -122,8 +119,7 @@ void Connection::commit() {
     }
     updateLastUsed();
     LOG("Committing transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(),
-                                   SQL_COMMIT);
+    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_COMMIT);
     checkError(ret);
 }
 
@@ -133,8 +129,7 @@ void Connection::rollback() {
     }
     updateLastUsed();
     LOG("Rolling back transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(),
-                                   SQL_ROLLBACK);
+    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
     checkError(ret);
 }
 
@@ -176,11 +171,9 @@ SqlHandlePtr Connection::allocStatementHandle() {
     updateLastUsed();
     LOG("Allocating statement handle");
     SQLHANDLE stmt = nullptr;
-    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbcHandle->get(),
-                                       &stmt);
+    SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbcHandle->get(), &stmt);
     checkError(ret);
-    return std::make_shared<SqlHandle>(
-        static_cast<SQLSMALLINT>(SQL_HANDLE_STMT), stmt);
+    return std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT), stmt);
 }
 
 SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
@@ -345,8 +338,7 @@ ConnectionHandle::ConnectionHandle(const std::string& connStr, bool usePool,
     : _usePool(usePool) {
     _connStr = Utf8ToWString(connStr);
     if (_usePool) {
-        _conn = ConnectionPoolManager::getInstance().acquireConnection(
-            _connStr, attrsBefore);
+        _conn = ConnectionPoolManager::getInstance().acquireConnection(_connStr, attrsBefore);
     } else {
         _conn = std::make_shared<Connection>(_connStr, false);
         _conn->connect(attrsBefore);

@@ -50,8 +50,7 @@ class ConnectionPoolManager {
                                                   const py::dict& attrs_before = py::dict());
 
     // Returns a connection to its original pool
-    void returnConnection(const std::wstring& conn_str,
-                          std::shared_ptr<Connection> conn);
+    void returnConnection(const std::wstring& conn_str, std::shared_ptr<Connection> conn);
 
     // Closes all pools and their connections
     void closePools();

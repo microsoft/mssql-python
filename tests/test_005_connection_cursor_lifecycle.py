@@ -101,9 +101,7 @@ gc.collect()
     # and pytest does not handle segfaults gracefully.
     # Note: This is a simplified example; in practice, you might want to use a more robust method
     # to handle subprocesses and capture their output/errors.
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True
-    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, f"Expected no segfault, but got: {result.stderr}"
 
 
@@ -128,9 +126,7 @@ gc.collect()
 """
     )
     # Run the code in a subprocess to avoid segfaults in the main process
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True
-    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, f"Expected no segfault, but got: {result.stderr}"
 
 
@@ -152,9 +148,7 @@ gc.collect()
 """
     )
     # Run the code in a subprocess to avoid segfaults in the main process
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True
-    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, f"Expected no segfault, but got: {result.stderr}"
 
 
