@@ -1602,7 +1602,8 @@ def test_executemany_mixed_null_and_typed_values(cursor, db_connection):
     """Test executemany with randomly mixed NULL and non-NULL values across multiple columns and rows (50 rows, 10 columns)."""
     try:
         # Create table with 10 columns of various types
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_empty_params (
                 col1 INT,
                 col2 VARCHAR(50),
@@ -1615,8 +1616,9 @@ def test_executemany_mixed_null_and_typed_values(cursor, db_connection):
                 col9 DATE,
                 col10 REAL
             )
-        """)
-        
+        """
+        )
+
         # Generate 50 rows with randomly mixed NULL and non-NULL values across 10 columns
         data = []
         for i in range(50):
@@ -1633,10 +1635,9 @@ def test_executemany_mixed_null_and_typed_values(cursor, db_connection):
                 float(i / 2.0) if i % 10 != 0 else None,  # col10: NULL every 10th row
             )
             data.append(row)
-        
+
         cursor.executemany(
-            "INSERT INTO #pytest_empty_params VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            data
+            "INSERT INTO #pytest_empty_params VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", data
         )
         db_connection.commit()
 
@@ -1644,29 +1645,33 @@ def test_executemany_mixed_null_and_typed_values(cursor, db_connection):
         cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params")
         count = cursor.fetchone()[0]
         assert count == 50, f"Expected 50 rows, got {count}"
-        
+
         # Verify NULL counts for specific columns
         cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params WHERE col1 IS NULL")
         null_count_col1 = cursor.fetchone()[0]
-        assert null_count_col1 == 17, f"Expected 17 NULLs in col1 (every 3rd row), got {null_count_col1}"
-        
+        assert (
+            null_count_col1 == 17
+        ), f"Expected 17 NULLs in col1 (every 3rd row), got {null_count_col1}"
+
         cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params WHERE col2 IS NULL")
         null_count_col2 = cursor.fetchone()[0]
         assert null_count_col2 == 25, f"Expected 25 NULLs in col2 (odd rows), got {null_count_col2}"
-        
+
         cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params WHERE col3 IS NULL")
         null_count_col3 = cursor.fetchone()[0]
-        assert null_count_col3 == 13, f"Expected 13 NULLs in col3 (every 4th row), got {null_count_col3}"
-        
+        assert (
+            null_count_col3 == 13
+        ), f"Expected 13 NULLs in col3 (every 4th row), got {null_count_col3}"
+
         # Verify some non-NULL values exist
         cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params WHERE col1 IS NOT NULL")
         non_null_count = cursor.fetchone()[0]
         assert non_null_count > 0, "Expected some non-NULL values in col1"
-        
+
         cursor.execute("SELECT COUNT(*) FROM #pytest_empty_params WHERE col2 IS NOT NULL")
         non_null_count = cursor.fetchone()[0]
         assert non_null_count > 0, "Expected some non-NULL values in col2"
-        
+
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_empty_params")
         db_connection.commit()
@@ -1676,7 +1681,8 @@ def test_executemany_multi_column_null_arrays(cursor, db_connection):
     """Test executemany with multi-column NULL arrays (50 records, 8 columns)."""
     try:
         # Create table with 8 columns of various types
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_null_arrays (
                 col1 INT,
                 col2 VARCHAR(100),
@@ -1687,38 +1693,38 @@ def test_executemany_multi_column_null_arrays(cursor, db_connection):
                 col7 BIGINT,
                 col8 DATE
             )
-        """)
-        
+        """
+        )
+
         # Generate 50 rows with all NULL values across 8 columns
         data = [(None, None, None, None, None, None, None, None) for _ in range(50)]
-        
-        cursor.executemany(
-            "INSERT INTO #pytest_null_arrays VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            data
-        )
+
+        cursor.executemany("INSERT INTO #pytest_null_arrays VALUES (?, ?, ?, ?, ?, ?, ?, ?)", data)
         db_connection.commit()
 
         # Verify all 50 rows were inserted
         cursor.execute("SELECT COUNT(*) FROM #pytest_null_arrays")
         count = cursor.fetchone()[0]
         assert count == 50, f"Expected 50 rows, got {count}"
-        
+
         # Verify all values are NULL for each column
         for col_num in range(1, 9):
             cursor.execute(f"SELECT COUNT(*) FROM #pytest_null_arrays WHERE col{col_num} IS NULL")
             null_count = cursor.fetchone()[0]
             assert null_count == 50, f"Expected 50 NULLs in col{col_num}, got {null_count}"
-        
+
         # Verify no non-NULL values exist
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT COUNT(*) FROM #pytest_null_arrays 
             WHERE col1 IS NOT NULL OR col2 IS NOT NULL OR col3 IS NOT NULL 
                OR col4 IS NOT NULL OR col5 IS NOT NULL OR col6 IS NOT NULL
                OR col7 IS NOT NULL OR col8 IS NOT NULL
-        """)
+        """
+        )
         non_null_count = cursor.fetchone()[0]
         assert non_null_count == 0, f"Expected 0 non-NULL values, got {non_null_count}"
-        
+
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_null_arrays")
         db_connection.commit()
@@ -1744,10 +1750,11 @@ def test_executemany_concurrent_null_parameters(db_connection):
     """Test concurrent executemany calls with NULL parameters for thread safety."""
     import threading
     import time
-    
+
     # Create table
     with db_connection.cursor() as cursor:
-        cursor.execute("""
+        cursor.execute(
+            """
             CREATE TABLE #pytest_concurrent_nulls (
                 thread_id INT,
                 col1 INT,
@@ -1755,12 +1762,13 @@ def test_executemany_concurrent_null_parameters(db_connection):
                 col3 FLOAT,
                 col4 DATETIME
             )
-        """)
+        """
+        )
         db_connection.commit()
-    
+
     errors = []
     lock = threading.Lock()
-    
+
     def insert_nulls(thread_id):
         """Worker function to insert NULL data from a thread."""
         try:
@@ -1776,55 +1784,57 @@ def test_executemany_concurrent_null_parameters(db_connection):
                         datetime(2025, 1, 1, 12, 0, 0) if i % 5 != 0 else None,
                     )
                     data.append(row)
-                
+
                 cursor.executemany(
-                    "INSERT INTO #pytest_concurrent_nulls VALUES (?, ?, ?, ?, ?)",
-                    data
+                    "INSERT INTO #pytest_concurrent_nulls VALUES (?, ?, ?, ?, ?)", data
                 )
                 db_connection.commit()
         except Exception as e:
             with lock:
                 errors.append((thread_id, str(e)))
-    
+
     # Create and start multiple threads
     threads = []
     num_threads = 5
-    
+
     for i in range(num_threads):
         thread = threading.Thread(target=insert_nulls, args=(i,))
         threads.append(thread)
         thread.start()
-    
+
     # Wait for all threads to complete
     for thread in threads:
         thread.join()
-    
+
     # Check for errors
     assert len(errors) == 0, f"Errors occurred in threads: {errors}"
-    
+
     # Verify data was inserted correctly
     with db_connection.cursor() as cursor:
         cursor.execute("SELECT COUNT(*) FROM #pytest_concurrent_nulls")
         total_count = cursor.fetchone()[0]
-        assert total_count == num_threads * 20, f"Expected {num_threads * 20} rows, got {total_count}"
-        
+        assert (
+            total_count == num_threads * 20
+        ), f"Expected {num_threads * 20} rows, got {total_count}"
+
         # Verify each thread's data
         for thread_id in range(num_threads):
             cursor.execute(
-                "SELECT COUNT(*) FROM #pytest_concurrent_nulls WHERE thread_id = ?",
-                [thread_id]
+                "SELECT COUNT(*) FROM #pytest_concurrent_nulls WHERE thread_id = ?", [thread_id]
             )
             thread_count = cursor.fetchone()[0]
             assert thread_count == 20, f"Thread {thread_id} expected 20 rows, got {thread_count}"
-            
+
             # Verify NULL counts for this thread
             cursor.execute(
                 "SELECT COUNT(*) FROM #pytest_concurrent_nulls WHERE thread_id = ? AND col1 IS NULL",
-                [thread_id]
+                [thread_id],
             )
             null_count = cursor.fetchone()[0]
-            assert null_count == 10, f"Thread {thread_id} expected 10 NULLs in col1, got {null_count}"
-        
+            assert (
+                null_count == 10
+            ), f"Thread {thread_id} expected 10 NULLs in col1, got {null_count}"
+
         # Cleanup
         cursor.execute("DROP TABLE IF EXISTS #pytest_concurrent_nulls")
         db_connection.commit()
