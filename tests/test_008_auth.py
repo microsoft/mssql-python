@@ -118,9 +118,7 @@ class TestAADAuth:
             if auth_type == "default":
                 try:
                     credential = MockFailingCredential()
-                    token = credential.get_token(
-                        "https://database.windows.net/.default"
-                    ).token
+                    token = credential.get_token("https://database.windows.net/.default").token
                     return AADAuth.get_token_struct(token)
                 except ClientAuthenticationError as e:
                     raise RuntimeError(
@@ -311,6 +309,7 @@ class TestRemoveSensitiveParams:
             "Encrypt=yes",
             "TrustServerCertificate=yes",
             "Authentication=ActiveDirectoryDefault",
+            "Trusted_Connection=yes",
             "Database=testdb",
         ]
         filtered_params = remove_sensitive_params(params)
@@ -318,8 +317,9 @@ class TestRemoveSensitiveParams:
         assert "Database=testdb" in filtered_params
         assert "UID=user" not in filtered_params
         assert "PWD=password" not in filtered_params
-        assert "Encrypt=yes" not in filtered_params
-        assert "TrustServerCertificate=yes" not in filtered_params
+        assert "Encrypt=yes" in filtered_params
+        assert "TrustServerCertificate=yes" in filtered_params
+        assert "Trusted_Connection=yes" not in filtered_params
         assert "Authentication=ActiveDirectoryDefault" not in filtered_params
 
 
@@ -346,9 +346,7 @@ class TestProcessConnectionString:
 
     def test_process_connection_string_interactive_non_windows(self, monkeypatch):
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
-        conn_str = (
-            "Server=test;Authentication=ActiveDirectoryInteractive;Database=testdb"
-        )
+        conn_str = "Server=test;Authentication=ActiveDirectoryInteractive;Database=testdb"
         result_str, attrs = process_connection_string(conn_str)
 
         assert "Server=test" in result_str

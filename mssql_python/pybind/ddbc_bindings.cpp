@@ -1163,11 +1163,15 @@ void SqlHandle::free() {
         // Check if Python is shutting down using centralized helper function
         bool pythonShuttingDown = is_python_finalizing();
 
-        // CRITICAL FIX: During Python shutdown, don't free STMT handles as
-        // their parent DBC may already be freed This prevents segfault when
-        // handles are freed in wrong order during interpreter shutdown Type 3 =
-        // SQL_HANDLE_STMT, Type 2 = SQL_HANDLE_DBC, Type 1 = SQL_HANDLE_ENV
-        if (pythonShuttingDown && _type == 3) {
+        // RESOURCE LEAK MITIGATION:
+        // When handles are skipped during shutdown, they are not freed, which could
+        // cause resource leaks. However, this is mitigated by:
+        // 1. Python-side atexit cleanup (in __init__.py) that explicitly closes all
+        //    connections before shutdown, ensuring handles are freed in correct order
+        // 2. OS-level cleanup at process termination recovers any remaining resources
+        // 3. This tradeoff prioritizes crash prevention over resource cleanup, which
+        //    is appropriate since we're already in shutdown sequence
+        if (pythonShuttingDown && (_type == SQL_HANDLE_STMT || _type == SQL_HANDLE_DBC)) {
             _handle = nullptr;  // Mark as freed to prevent double-free attempts
             return;
         }
@@ -2619,7 +2623,6 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::wst
     }
 }
 
-
 // Wrap SQLNumResultCols
 SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle) {
     LOG("SQLNumResultCols: Getting number of columns in result set for "
@@ -2838,7 +2841,6 @@ py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT colIndex, SQLSMALLINT
     }
 
     // For SQL_C_CHAR data, decode using the specified encoding
-    // Create py::bytes once to avoid double allocation
     py::bytes raw_bytes(buffer.data(), buffer.size());
     try {
         py::object decoded = raw_bytes.attr("decode")(charEncoding, "strict");
@@ -2917,7 +2919,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                             if (numCharsInData < dataBuffer.size()) {
                                 // SQLGetData will null-terminate the data
                                 // Use Python's codec system to decode bytes with specified encoding
-                                // Create py::bytes once to avoid double allocation
                                 py::bytes raw_bytes(reinterpret_cast<char*>(dataBuffer.data()),
                                                     static_cast<size_t>(dataLen));
                                 try {
@@ -2972,12 +2973,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_SS_XML: {
                 LOG("SQLGetData: Streaming XML for column %d", i);
                 row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, "utf-16le"));
-                break;
-            }
-            case SQL_SS_XML:
-            {
-                LOG("SQLGetData: Streaming XML for column %d", i);
-                row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false));
                 break;
             }
             case SQL_WCHAR:
@@ -4195,10 +4190,6 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
             return ret;
         }
     }
-    
-    // Reset attributes before returning to avoid using stack pointers later
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
-    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
 
     // Reset attributes before returning to avoid using stack pointers later
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
@@ -4293,13 +4284,6 @@ static std::once_flag pooling_init_flag;
 void enable_pooling(int maxSize, int idleTimeout) {
     std::call_once(pooling_init_flag,
                    [&]() { ConnectionPoolManager::getInstance().configure(maxSize, idleTimeout); });
-}
-
-// Thread-safe decimal separator setting
-ThreadSafeDecimalSeparator g_decimalSeparator;
-
-void DDBCSetDecimalSeparator(const std::string& separator) {
-    SetDecimalSeparator(separator);
 }
 
 // Thread-safe decimal separator setting
@@ -4413,8 +4397,17 @@ PYBIND11_MODULE(ddbc_bindings, m) {
           "Set the decimal separator character");
     m.def(
         "DDBCSQLSetStmtAttr",
-        [](SqlHandlePtr stmt, SQLINTEGER attr, SQLPOINTER value) {
-            return SQLSetStmtAttr_ptr(stmt->get(), attr, value, 0);
+        [](SqlHandlePtr stmt, SQLINTEGER attr, py::object value) {
+            SQLPOINTER ptr_value;
+            if (py::isinstance<py::int_>(value)) {
+                // For integer attributes like SQL_ATTR_QUERY_TIMEOUT
+                ptr_value =
+                    reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value.cast<int64_t>()));
+            } else {
+                // For pointer attributes
+                ptr_value = value.cast<SQLPOINTER>();
+            }
+            return SQLSetStmtAttr_ptr(stmt->get(), attr, ptr_value, 0);
         },
         "Set statement attributes");
     m.def("DDBCSQLGetTypeInfo", &SQLGetTypeInfo_Wrapper,

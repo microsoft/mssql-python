@@ -37,8 +37,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::wstring& connStr,
                     _pool.end());
 
         size_t pruned = before - _pool.size();
-        _current_size = (_current_size >= pruned) ?
-                        (_current_size - pruned) : 0;
+        _current_size = (_current_size >= pruned) ? (_current_size - pruned) : 0;
 
         // Phase 2: Attempt to reuse healthy connections
         while (!_pool.empty()) {
@@ -64,8 +63,7 @@ std::shared_ptr<Connection> ConnectionPool::acquire(const std::wstring& connStr,
             valid_conn->connect(attrs_before);
             ++_current_size;
         } else if (!valid_conn) {
-            throw std::runtime_error(
-                "ConnectionPool::acquire: pool size limit reached");
+            throw std::runtime_error("ConnectionPool::acquire: pool size limit reached");
         }
     }
 
@@ -123,8 +121,7 @@ std::shared_ptr<Connection> ConnectionPoolManager::acquireConnection(const std::
     auto& pool = _pools[connStr];
     if (!pool) {
         LOG("Creating new connection pool");
-        pool = std::make_shared<ConnectionPool>(_default_max_size,
-                                                _default_idle_secs);
+        pool = std::make_shared<ConnectionPool>(_default_max_size, _default_idle_secs);
     }
     return pool->acquire(connStr, attrs_before);
 }

@@ -43,9 +43,7 @@ def db_connection(conn_str):
         conn = connect(conn_str)
     except Exception as e:
         if "Timeout error" in str(e):
-            print(
-                f"Database connection failed due to Timeout: {e}. Retrying in 60 seconds."
-            )
+            print(f"Database connection failed due to Timeout: {e}. Retrying in 60 seconds.")
             time.sleep(60)
             conn = connect(conn_str)
         else:
