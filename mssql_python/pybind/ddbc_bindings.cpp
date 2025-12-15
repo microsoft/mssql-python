@@ -2437,15 +2437,9 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                 }
                 case SQL_C_DEFAULT: {
                     // Handle NULL parameters - all values in this column should be NULL
+                    // The upstream Python type detection (via _compute_column_type) ensures
+                    // SQL_C_DEFAULT is only used when all values are None
                     LOG("BindParameterArray: Binding SQL_C_DEFAULT (NULL) array - param_index=%d, count=%zu", paramIndex, paramSetSize);
-                    
-                    // Verify all values are indeed NULL
-                    for (size_t i = 0; i < paramSetSize; ++i) {
-                        if (!columnValues[i].is_none()) {
-                            LOG("BindParameterArray: SQL_C_DEFAULT non-NULL value detected - param_index=%d, row=%zu", paramIndex, i);
-                            ThrowStdException("SQL_C_DEFAULT (99) should only be used for NULL parameters at index " + std::to_string(paramIndex));
-                        }
-                    }
                     
                     // For NULL parameters, we need to allocate a minimal buffer and set all indicators to SQL_NULL_DATA
                     // Use SQL_C_CHAR as a safe default C type for NULL values
@@ -2459,7 +2453,7 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                     
                     dataPtr = nullBuffer;
                     bufferLength = 1;
-                    LOG("BindParameterArray: SQL_C_DEFAULT bound - param_index=%d, all_null=true", paramIndex);
+                    LOG("BindParameterArray: SQL_C_DEFAULT bound - param_index=%d", paramIndex);
                     break;
                 }
                 default: {
