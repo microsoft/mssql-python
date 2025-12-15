@@ -118,7 +118,9 @@ class TestAADAuth:
             if auth_type == "default":
                 try:
                     credential = MockFailingCredential()
-                    token = credential.get_token("https://database.windows.net/.default").token
+                    token = credential.get_token(
+                        "https://database.windows.net/.default"
+                    ).token
                     return AADAuth.get_token_struct(token)
                 except ClientAuthenticationError as e:
                     raise RuntimeError(
@@ -346,7 +348,9 @@ class TestProcessConnectionString:
 
     def test_process_connection_string_interactive_non_windows(self, monkeypatch):
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
-        conn_str = "Server=test;Authentication=ActiveDirectoryInteractive;Database=testdb"
+        conn_str = (
+            "Server=test;Authentication=ActiveDirectoryInteractive;Database=testdb"
+        )
         result_str, attrs = process_connection_string(conn_str)
 
         assert "Server=test" in result_str

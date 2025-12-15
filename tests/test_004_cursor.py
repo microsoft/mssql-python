@@ -290,9 +290,13 @@ def test_insert_bit_column(cursor, db_connection):
 def test_insert_nvarchar_column(cursor, db_connection):
     """Test inserting data into the nvarchar_column"""
     try:
-        cursor.execute("CREATE TABLE #pytest_single_column (nvarchar_column NVARCHAR(255))")
+        cursor.execute(
+            "CREATE TABLE #pytest_single_column (nvarchar_column NVARCHAR(255))"
+        )
         db_connection.commit()
-        cursor.execute("INSERT INTO #pytest_single_column (nvarchar_column) VALUES (?)", ["test"])
+        cursor.execute(
+            "INSERT INTO #pytest_single_column (nvarchar_column) VALUES (?)", ["test"]
+        )
         db_connection.commit()
         cursor.execute("SELECT nvarchar_column FROM #pytest_single_column")
         row = cursor.fetchone()
@@ -352,7 +356,9 @@ def test_insert_datetime2_column(cursor, db_connection):
     """Test inserting data into the datetime2_column"""
     try:
         drop_table_if_exists(cursor, "#pytest_single_column")
-        cursor.execute("CREATE TABLE #pytest_single_column (datetime2_column DATETIME2)")
+        cursor.execute(
+            "CREATE TABLE #pytest_single_column (datetime2_column DATETIME2)"
+        )
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_single_column (datetime2_column) VALUES (?)",
@@ -375,7 +381,9 @@ def test_insert_smalldatetime_column(cursor, db_connection):
     """Test inserting data into the smalldatetime_column"""
     try:
         drop_table_if_exists(cursor, "#pytest_single_column")
-        cursor.execute("CREATE TABLE #pytest_single_column (smalldatetime_column SMALLDATETIME)")
+        cursor.execute(
+            "CREATE TABLE #pytest_single_column (smalldatetime_column SMALLDATETIME)"
+        )
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_single_column (smalldatetime_column) VALUES (?)",
@@ -421,7 +429,9 @@ def test_insert_real_column(cursor, db_connection):
         drop_table_if_exists(cursor, "#pytest_single_column")
         cursor.execute("CREATE TABLE #pytest_single_column (real_column REAL)")
         db_connection.commit()
-        cursor.execute("INSERT INTO #pytest_single_column (real_column) VALUES (?)", [1.23456789])
+        cursor.execute(
+            "INSERT INTO #pytest_single_column (real_column) VALUES (?)", [1.23456789]
+        )
         db_connection.commit()
         cursor.execute("SELECT real_column FROM #pytest_single_column")
         row = cursor.fetchone()
@@ -436,7 +446,9 @@ def test_insert_real_column(cursor, db_connection):
 def test_insert_decimal_column(cursor, db_connection):
     """Test inserting data into the decimal_column"""
     try:
-        cursor.execute("CREATE TABLE #pytest_single_column (decimal_column DECIMAL(10, 2))")
+        cursor.execute(
+            "CREATE TABLE #pytest_single_column (decimal_column DECIMAL(10, 2))"
+        )
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_single_column (decimal_column) VALUES (?)",
@@ -471,7 +483,9 @@ def test_insert_tinyint_column(cursor, db_connection):
     try:
         cursor.execute("CREATE TABLE #pytest_single_column (tinyint_column TINYINT)")
         db_connection.commit()
-        cursor.execute("INSERT INTO #pytest_single_column (tinyint_column) VALUES (?)", [127])
+        cursor.execute(
+            "INSERT INTO #pytest_single_column (tinyint_column) VALUES (?)", [127]
+        )
         db_connection.commit()
         cursor.execute("SELECT tinyint_column FROM #pytest_single_column")
         row = cursor.fetchone()
@@ -488,7 +502,9 @@ def test_insert_smallint_column(cursor, db_connection):
     try:
         cursor.execute("CREATE TABLE #pytest_single_column (smallint_column SMALLINT)")
         db_connection.commit()
-        cursor.execute("INSERT INTO #pytest_single_column (smallint_column) VALUES (?)", [32767])
+        cursor.execute(
+            "INSERT INTO #pytest_single_column (smallint_column) VALUES (?)", [32767]
+        )
         db_connection.commit()
         cursor.execute("SELECT smallint_column FROM #pytest_single_column")
         row = cursor.fetchone()
@@ -545,7 +561,9 @@ def test_insert_float_column(cursor, db_connection):
     try:
         cursor.execute("CREATE TABLE #pytest_single_column (float_column FLOAT)")
         db_connection.commit()
-        cursor.execute("INSERT INTO #pytest_single_column (float_column) VALUES (?)", [1.23456789])
+        cursor.execute(
+            "INSERT INTO #pytest_single_column (float_column) VALUES (?)", [1.23456789]
+        )
         db_connection.commit()
         cursor.execute("SELECT float_column FROM #pytest_single_column")
         row = cursor.fetchone()
@@ -587,7 +605,9 @@ def test_varchar_full_capacity(cursor, db_connection):
 def test_wvarchar_full_capacity(cursor, db_connection):
     """Test SQL_WVARCHAR"""
     try:
-        cursor.execute("CREATE TABLE #pytest_wvarchar_test (wvarchar_column NVARCHAR(6))")
+        cursor.execute(
+            "CREATE TABLE #pytest_wvarchar_test (wvarchar_column NVARCHAR(6))"
+        )
         db_connection.commit()
         cursor.execute("INSERT INTO #pytest_wvarchar_test (wvarchar_column) VALUES (?)", ["123456"])
         db_connection.commit()
@@ -610,7 +630,9 @@ def test_wvarchar_full_capacity(cursor, db_connection):
 def test_varbinary_full_capacity(cursor, db_connection):
     """Test SQL_VARBINARY"""
     try:
-        cursor.execute("CREATE TABLE #pytest_varbinary_test (varbinary_column VARBINARY(8))")
+        cursor.execute(
+            "CREATE TABLE #pytest_varbinary_test (varbinary_column VARBINARY(8))"
+        )
         db_connection.commit()
         # Try inserting binary using both bytes & bytearray
         cursor.execute(
@@ -656,7 +678,9 @@ def test_varbinary_full_capacity(cursor, db_connection):
 def test_varbinary_max(cursor, db_connection):
     """Test SQL_VARBINARY with MAX length"""
     try:
-        cursor.execute("CREATE TABLE #pytest_varbinary_test (varbinary_column VARBINARY(MAX))")
+        cursor.execute(
+            "CREATE TABLE #pytest_varbinary_test (varbinary_column VARBINARY(MAX))"
+        )
         db_connection.commit()
         # TODO: Uncomment this execute after adding null binary support
         # cursor.execute("INSERT INTO #pytest_varbinary_test (varbinary_column) VALUES (?)", [None])
@@ -699,7 +723,9 @@ def test_varbinary_max(cursor, db_connection):
 def test_longvarchar(cursor, db_connection):
     """Test SQL_LONGVARCHAR"""
     try:
-        cursor.execute("CREATE TABLE #pytest_longvarchar_test (longvarchar_column TEXT)")
+        cursor.execute(
+            "CREATE TABLE #pytest_longvarchar_test (longvarchar_column TEXT)"
+        )
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_longvarchar_test (longvarchar_column) VALUES (?), (?)",
@@ -720,7 +746,9 @@ def test_longvarchar(cursor, db_connection):
         # fetchall test
         cursor.execute("SELECT longvarchar_column FROM #pytest_longvarchar_test")
         rows = cursor.fetchall()
-        assert rows[0] == ["ABCDEFGHI"], "SQL_LONGVARCHAR parsing failed for fetchall - row 0"
+        assert rows[0] == [
+            "ABCDEFGHI"
+        ], "SQL_LONGVARCHAR parsing failed for fetchall - row 0"
         assert rows[1] == [None], "SQL_LONGVARCHAR parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_LONGVARCHAR parsing test failed: {e}")
@@ -732,7 +760,9 @@ def test_longvarchar(cursor, db_connection):
 def test_longwvarchar(cursor, db_connection):
     """Test SQL_LONGWVARCHAR"""
     try:
-        cursor.execute("CREATE TABLE #pytest_longwvarchar_test (longwvarchar_column NTEXT)")
+        cursor.execute(
+            "CREATE TABLE #pytest_longwvarchar_test (longwvarchar_column NTEXT)"
+        )
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_longwvarchar_test (longwvarchar_column) VALUES (?), (?)",
@@ -753,7 +783,9 @@ def test_longwvarchar(cursor, db_connection):
         # fetchall test
         cursor.execute("SELECT longwvarchar_column FROM #pytest_longwvarchar_test")
         rows = cursor.fetchall()
-        assert rows[0] == ["ABCDEFGHI"], "SQL_LONGWVARCHAR parsing failed for fetchall - row 0"
+        assert rows[0] == [
+            "ABCDEFGHI"
+        ], "SQL_LONGWVARCHAR parsing failed for fetchall - row 0"
         assert rows[1] == [None], "SQL_LONGWVARCHAR parsing failed for fetchall - row 1"
     except Exception as e:
         pytest.fail(f"SQL_LONGWVARCHAR parsing test failed: {e}")
@@ -765,7 +797,9 @@ def test_longwvarchar(cursor, db_connection):
 def test_longvarbinary(cursor, db_connection):
     """Test SQL_LONGVARBINARY"""
     try:
-        cursor.execute("CREATE TABLE #pytest_longvarbinary_test (longvarbinary_column IMAGE)")
+        cursor.execute(
+            "CREATE TABLE #pytest_longvarbinary_test (longvarbinary_column IMAGE)"
+        )
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_longvarbinary_test (longvarbinary_column) VALUES (?), (?)",
@@ -1935,7 +1969,9 @@ def test_parse_datetime(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT datetime_column FROM #pytest_datetime_test")
         row = cursor.fetchone()
-        assert row[0] == datetime(2024, 5, 20, 12, 34, 56, 123000), "Datetime parsing failed"
+        assert row[0] == datetime(
+            2024, 5, 20, 12, 34, 56, 123000
+        ), "Datetime parsing failed"
     except Exception as e:
         pytest.fail(f"Datetime parsing test failed: {e}")
     finally:
@@ -2002,7 +2038,9 @@ def test_parse_smalldatetime(cursor, db_connection):
 def test_parse_datetime2(cursor, db_connection):
     """Test _parse_datetime2"""
     try:
-        cursor.execute("CREATE TABLE #pytest_datetime2_test (datetime2_column DATETIME2)")
+        cursor.execute(
+            "CREATE TABLE #pytest_datetime2_test (datetime2_column DATETIME2)"
+        )
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_datetime2_test (datetime2_column) VALUES (?)",
@@ -2011,7 +2049,9 @@ def test_parse_datetime2(cursor, db_connection):
         db_connection.commit()
         cursor.execute("SELECT datetime2_column FROM #pytest_datetime2_test")
         row = cursor.fetchone()
-        assert row[0] == datetime(2024, 5, 20, 12, 34, 56, 123456), "Datetime2 parsing failed"
+        assert row[0] == datetime(
+            2024, 5, 20, 12, 34, 56, 123456
+        ), "Datetime2 parsing failed"
     except Exception as e:
         pytest.fail(f"Datetime2 parsing test failed: {e}")
     finally:
@@ -2041,7 +2081,9 @@ def test_boolean(cursor, db_connection):
     try:
         cursor.execute("CREATE TABLE #pytest_boolean_test (boolean_column BIT)")
         db_connection.commit()
-        cursor.execute("INSERT INTO #pytest_boolean_test (boolean_column) VALUES (?)", [True])
+        cursor.execute(
+            "INSERT INTO #pytest_boolean_test (boolean_column) VALUES (?)", [True]
+        )
         db_connection.commit()
         cursor.execute("SELECT boolean_column FROM #pytest_boolean_test")
         row = cursor.fetchone()
@@ -2056,7 +2098,9 @@ def test_boolean(cursor, db_connection):
 def test_sql_wvarchar(cursor, db_connection):
     """Test SQL_WVARCHAR"""
     try:
-        cursor.execute("CREATE TABLE #pytest_wvarchar_test (wvarchar_column NVARCHAR(255))")
+        cursor.execute(
+            "CREATE TABLE #pytest_wvarchar_test (wvarchar_column NVARCHAR(255))"
+        )
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_wvarchar_test (wvarchar_column) VALUES (?)",
@@ -2076,7 +2120,9 @@ def test_sql_wvarchar(cursor, db_connection):
 def test_sql_varchar(cursor, db_connection):
     """Test SQL_VARCHAR"""
     try:
-        cursor.execute("CREATE TABLE #pytest_varchar_test (varchar_column VARCHAR(255))")
+        cursor.execute(
+            "CREATE TABLE #pytest_varchar_test (varchar_column VARCHAR(255))"
+        )
         db_connection.commit()
         cursor.execute(
             "INSERT INTO #pytest_varchar_test (varchar_column) VALUES (?)",
@@ -2155,7 +2201,9 @@ def test_row_comparison_with_list(cursor, db_connection):
         db_connection.commit()
 
         # Insert test data
-        cursor.execute("INSERT INTO #pytest_row_comparison_test VALUES (10, 'test_string', 3.14)")
+        cursor.execute(
+            "INSERT INTO #pytest_row_comparison_test VALUES (10, 'test_string', 3.14)"
+        )
         db_connection.commit()
 
         # Test fetchone comparison with list
@@ -2176,7 +2224,9 @@ def test_row_comparison_with_list(cursor, db_connection):
         assert row1 == row2, "Identical rows should be equal"
 
         # Insert different data
-        cursor.execute("INSERT INTO #pytest_row_comparison_test VALUES (20, 'other_string', 2.71)")
+        cursor.execute(
+            "INSERT INTO #pytest_row_comparison_test VALUES (20, 'other_string', 2.71)"
+        )
         db_connection.commit()
 
         # Test different rows are not equal
@@ -2240,7 +2290,9 @@ def test_row_string_representation(cursor, db_connection):
 
         # Test repr()
         repr_representation = repr(row)
-        assert repr_representation == "(1, 'test', None)", "Row repr() representation incorrect"
+        assert (
+            repr_representation == "(1, 'test', None)"
+        ), "Row repr() representation incorrect"
 
     except Exception as e:
         pytest.fail(f"Row string representation test failed: {e}")
@@ -2283,8 +2335,12 @@ def test_row_column_mapping(cursor, db_connection):
         # Test column map completeness
         assert len(row._column_map) >= 3, "Column map size incorrect"
         assert "FirstColumn" in row._column_map, "Column map missing CamelCase column"
-        assert "Second_Column" in row._column_map, "Column map missing snake_case column"
-        assert "Complex Name!" in row._column_map, "Column map missing complex name column"
+        assert (
+            "Second_Column" in row._column_map
+        ), "Column map missing snake_case column"
+        assert (
+            "Complex Name!" in row._column_map
+        ), "Column map missing complex name column"
 
     except Exception as e:
         pytest.fail(f"Row column mapping test failed: {e}")

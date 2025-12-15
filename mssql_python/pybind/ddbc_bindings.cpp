@@ -2619,6 +2619,7 @@ SQLRETURN SQLExecuteMany_wrap(const SqlHandlePtr statementHandle, const std::wst
     }
 }
 
+
 // Wrap SQLNumResultCols
 SQLSMALLINT SQLNumResultCols_wrap(SqlHandlePtr statementHandle) {
     LOG("SQLNumResultCols: Getting number of columns in result set for "
@@ -4186,6 +4187,14 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
             return ret;
         }
     }
+    
+    // Reset attributes before returning to avoid using stack pointers later
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
+
+    // Reset attributes before returning to avoid using stack pointers later
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
+    SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, NULL, 0);
 
     // Reset attributes before returning to avoid using stack pointers later
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)1, 0);
