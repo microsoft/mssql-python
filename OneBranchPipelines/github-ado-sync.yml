@@ -51,7 +51,14 @@ jobs:
         set SYNC_BRANCH=github-sync-%TIMESTAMP%
         echo %SYNC_BRANCH% > branchname.txt
         echo Creating sync branch: %SYNC_BRANCH%
-        git checkout -b %SYNC_BRANCH% -t azdo-mirror/main || git checkout -b %SYNC_BRANCH% azdo-mirror/main
+        git fetch azdo-mirror
+        git show-ref --verify --quiet refs/remotes/azdo-mirror/main
+        if %ERRORLEVEL% EQU 0 (
+          git checkout -b %SYNC_BRANCH% -t azdo-mirror/main
+        ) else (
+          echo azdo-mirror/main does not exist. Exiting.
+          exit /b 1
+        )
         echo ##vso[task.setvariable variable=SYNC_BRANCH;isOutput=true]%SYNC_BRANCH%
       workingDirectory: $(Agent.TempDirectory)/repo-dir
 
