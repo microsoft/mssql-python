@@ -458,8 +458,99 @@ inline std::wstring Utf8ToWString(const std::string& str) {
         return {};
     return result;
 #else
-    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
-    return converter.from_bytes(str);
+    // Optimized UTF-8 to UTF-32 conversion (wstring on Unix)
+
+    // Lambda to decode UTF-8 multi-byte sequences
+    auto decodeUtf8 = [](const unsigned char* data, size_t& i, size_t len) -> wchar_t {
+        unsigned char byte = data[i];
+
+        // 1-byte sequence (ASCII): 0xxxxxxx
+        if (byte <= 0x7F) {
+            ++i;
+            return static_cast<wchar_t>(byte);
+        }
+        // 2-byte sequence: 110xxxxx 10xxxxxx
+        if ((byte & 0xE0) == 0xC0 && i + 1 < len) {
+            // Validate continuation byte has correct bit pattern (10xxxxxx)
+            if ((data[i + 1] & 0xC0) != 0x80) {
+                ++i;
+                return 0xFFFD;  // Invalid continuation byte
+            }
+            uint32_t cp = ((static_cast<uint32_t>(byte & 0x1F) << 6) | (data[i + 1] & 0x3F));
+            // Reject overlong encodings (must be >= 0x80)
+            if (cp >= 0x80) {
+                i += 2;
+                return static_cast<wchar_t>(cp);
+            }
+            // Overlong encoding - invalid
+            ++i;
+            return 0xFFFD;
+        }
+        // 3-byte sequence: 1110xxxx 10xxxxxx 10xxxxxx
+        if ((byte & 0xF0) == 0xE0 && i + 2 < len) {
+            // Validate continuation bytes have correct bit pattern (10xxxxxx)
+            if ((data[i + 1] & 0xC0) != 0x80 || (data[i + 2] & 0xC0) != 0x80) {
+                ++i;
+                return 0xFFFD;  // Invalid continuation bytes
+            }
+            uint32_t cp = ((static_cast<uint32_t>(byte & 0x0F) << 12) |
+                           ((data[i + 1] & 0x3F) << 6) | (data[i + 2] & 0x3F));
+            // Reject overlong encodings (must be >= 0x800) and surrogates (0xD800-0xDFFF)
+            if (cp >= 0x800 && (cp < 0xD800 || cp > 0xDFFF)) {
+                i += 3;
+                return static_cast<wchar_t>(cp);
+            }
+            // Overlong encoding or surrogate - invalid
+            ++i;
+            return 0xFFFD;
+        }
+        // 4-byte sequence: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+        if ((byte & 0xF8) == 0xF0 && i + 3 < len) {
+            // Validate continuation bytes have correct bit pattern (10xxxxxx)
+            if ((data[i + 1] & 0xC0) != 0x80 || (data[i + 2] & 0xC0) != 0x80 ||
+                (data[i + 3] & 0xC0) != 0x80) {
+                ++i;
+                return 0xFFFD;  // Invalid continuation bytes
+            }
+            uint32_t cp =
+                ((static_cast<uint32_t>(byte & 0x07) << 18) | ((data[i + 1] & 0x3F) << 12) |
+                 ((data[i + 2] & 0x3F) << 6) | (data[i + 3] & 0x3F));
+            // Reject overlong encodings (must be >= 0x10000) and values above max Unicode
+            if (cp >= 0x10000 && cp <= 0x10FFFF) {
+                i += 4;
+                return static_cast<wchar_t>(cp);
+            }
+            // Overlong encoding or out of range - invalid
+            ++i;
+            return 0xFFFD;
+        }
+        // Invalid sequence - skip byte
+        ++i;
+        return 0xFFFD;  // Unicode replacement character
+    };
+
+    std::wstring result;
+    result.reserve(str.size());  // Reserve assuming mostly ASCII
+
+    const unsigned char* data = reinterpret_cast<const unsigned char*>(str.data());
+    const size_t len = str.size();
+    size_t i = 0;
+
+    // Fast path for ASCII-only prefix (most common case)
+    while (i < len && data[i] <= 0x7F) {
+        result.push_back(static_cast<wchar_t>(data[i]));
+        ++i;
+    }
+
+    // Handle remaining multi-byte sequences
+    while (i < len) {
+        wchar_t wc = decodeUtf8(data, i, len);
+        // Always push the decoded character (including 0xFFFD replacement characters)
+        // This correctly handles both legitimate 0xFFFD in input and invalid sequences
+        result.push_back(wc);
+    }
+
+    return result;
 #endif
 }
 
@@ -566,7 +657,7 @@ struct ColumnInfoExt {
 // Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp) - MUST be
 // outside namespace
 py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT col, SQLSMALLINT cType, bool isWideChar,
-                              bool isBinary);
+                              bool isBinary, const std::string& charEncoding = "utf-8");
 
 // Specialized column processors for each data type (eliminates switch in hot
 // loop)
@@ -825,8 +916,9 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
         }
     } else {
         // Slow path: LOB data requires separate fetch call
-        PyList_SET_ITEM(row, col - 1,
-                        FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true).release().ptr());
+        PyList_SET_ITEM(
+            row, col - 1,
+            FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true, "").release().ptr());
     }
 }
 
