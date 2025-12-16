@@ -309,6 +309,7 @@ class TestRemoveSensitiveParams:
             "Encrypt=yes",
             "TrustServerCertificate=yes",
             "Authentication=ActiveDirectoryDefault",
+            "Trusted_Connection=yes",
             "Database=testdb",
         ]
         filtered_params = remove_sensitive_params(params)
@@ -316,8 +317,9 @@ class TestRemoveSensitiveParams:
         assert "Database=testdb" in filtered_params
         assert "UID=user" not in filtered_params
         assert "PWD=password" not in filtered_params
-        assert "Encrypt=yes" not in filtered_params
-        assert "TrustServerCertificate=yes" not in filtered_params
+        assert "Encrypt=yes" in filtered_params
+        assert "TrustServerCertificate=yes" in filtered_params
+        assert "Trusted_Connection=yes" not in filtered_params
         assert "Authentication=ActiveDirectoryDefault" not in filtered_params
 
 

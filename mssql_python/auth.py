@@ -165,8 +165,7 @@ def remove_sensitive_params(parameters: List[str]) -> List[str]:
     exclude_keys = [
         "uid=",
         "pwd=",
-        "encrypt=",
-        "trustservercertificate=",
+        "trusted_connection=",
         "authentication=",
     ]
     result = [
