@@ -1,5 +1,18 @@
 # GitHub-to-ADO Sync Pipeline
 # Syncs main branch from public GitHub to internal Azure DevOps daily at 5pm IST
+#
+# SYNC STRATEGY RATIONALE:
+# This pipeline uses a "replace-all" approach rather than traditional git merge/rebase because:
+# 1. DIVERGENT HISTORY: ADO repository contains commits from early development that don't exist
+#    in GitHub. These historical commits were made before GitHub became the source of truth.
+# 2. AVOIDING CONFLICTS: Standard git operations (merge, rebase, reset --hard) fail when
+#    repositories have divergent commit histories. Attempting to merge results in conflicts
+#    that cannot be automatically resolved.
+# 3. IMPLEMENTATION: We use 'git fetch + git rm + git checkout' to completely replace ADO's
+#    working tree with GitHub's files without attempting to reconcile git history. This creates
+#    a clean sync commit that updates all files to match GitHub exactly.
+# 4. CHANGE DETECTION: The pipeline checks if any files actually differ before creating PRs,
+#    avoiding unnecessary sync operations when repositories are already aligned.
 
 name: GitHub-Sync-$(Date:yyyyMMdd)$(Rev:.r)
 
@@ -48,19 +61,28 @@ jobs:
     displayName: 'Sync with GitHub main'
     inputs:
       script: |
-        echo Attempting to pull from GitHub...
+        echo Syncing with GitHub main...
         git config user.email "sync@microsoft.com"
         git config user.name "ADO Sync Bot"
         
-        git pull github main --no-rebase || (
-          echo Merge conflicts detected. Using GitHub version as source of truth...
-          git rm -rf .
-          git checkout github/main -- .
-          git -c user.email="sync@microsoft.com" -c user.name="ADO Sync Bot" commit -m "Sync: Resolve conflicts by accepting GitHub main as source of truth"
+        git fetch github main
+        git rm -rf .
+        git checkout github/main -- .
+        echo timestamp.txt >> .git\info\exclude
+        echo branchname.txt >> .git\info\exclude
+        git diff --cached --quiet
+        if %ERRORLEVEL% EQU 0 (
+          echo No changes detected. Skipping commit.
+          echo ##vso[task.setvariable variable=HAS_CHANGES]false
+        ) else (
+          echo Changes detected. Creating commit...
+          git add . && git commit -m "Sync from GitHub main"
+          echo ##vso[task.setvariable variable=HAS_CHANGES]true
         )
 
   - task: CmdLine@2
     displayName: 'Push branch to Azure DevOps'
+    condition: eq(variables['HAS_CHANGES'], 'true')
     inputs:
       script: |
         set /p SYNC_BRANCH=<branchname.txt
@@ -80,6 +102,7 @@ jobs:
 
   - task: CmdLine@2
     displayName: 'Create pull request'
+    condition: eq(variables['HAS_CHANGES'], 'true')
     inputs:
       script: |
         echo Installing Azure DevOps extension...
