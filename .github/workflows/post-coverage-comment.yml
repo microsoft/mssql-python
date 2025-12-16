@@ -1,0 +1,136 @@
+name: Post Coverage Comment
+
+on:
+  workflow_run:
+    workflows: ["PR Code Coverage"]
+    types:
+      - completed
+
+jobs:
+  post-comment:
+    runs-on: ubuntu-latest
+    if: >
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    permissions:
+      pull-requests: write
+      contents: read
+    
+    steps:
+      - name: Download coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-comment-data
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Read coverage data
+        id: coverage
+        run: |
+          if [[ ! -f pr-info.json ]]; then
+            echo "❌ pr-info.json not found"
+            exit 1
+          fi
+          
+          cat pr-info.json
+          
+          # Extract values from JSON
+          PR_NUMBER=$(jq -r '.pr_number' pr-info.json)
+          COVERAGE_PCT=$(jq -r '.coverage_percentage' pr-info.json)
+          COVERED_LINES=$(jq -r '.covered_lines' pr-info.json)
+          TOTAL_LINES=$(jq -r '.total_lines' pr-info.json)
+          PATCH_PCT=$(jq -r '.patch_coverage_pct' pr-info.json)
+          LOW_COV_FILES=$(jq -r '.low_coverage_files' pr-info.json)
+          PATCH_SUMMARY=$(jq -r '.patch_coverage_summary' pr-info.json)
+          ADO_URL=$(jq -r '.ado_url' pr-info.json)
+          
+          # Export to env for next step
+          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
+          echo "COVERAGE_PERCENTAGE=$COVERAGE_PCT" >> $GITHUB_ENV
+          echo "COVERED_LINES=$COVERED_LINES" >> $GITHUB_ENV
+          echo "TOTAL_LINES=$TOTAL_LINES" >> $GITHUB_ENV
+          echo "PATCH_COVERAGE_PCT=$PATCH_PCT" >> $GITHUB_ENV
+          echo "ADO_URL=$ADO_URL" >> $GITHUB_ENV
+          
+          # Handle multiline values
+          echo "LOW_COVERAGE_FILES<<EOF" >> $GITHUB_ENV
+          echo "$LOW_COV_FILES" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          
+          echo "PATCH_COVERAGE_SUMMARY<<EOF" >> $GITHUB_ENV
+          echo "$PATCH_SUMMARY" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Comment coverage summary on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          number: ${{ env.PR_NUMBER }}
+          header: Code Coverage Report
+          message: |
+            # 📊 Code Coverage Report
+            
+            <table>
+            <tr>
+            <td align="center" width="200">
+            
+            ### 🔥 Diff Coverage
+            ### **${{ env.PATCH_COVERAGE_PCT }}**
+            <br>
+            </td>
+            <td align="center" width="200">
+            
+            ### 🎯 Overall Coverage
+            ### **${{ env.COVERAGE_PERCENTAGE }}**
+            <br>
+            </td>
+            <td>
+            
+            **📈 Total Lines Covered:** `${{ env.COVERED_LINES }}` out of `${{ env.TOTAL_LINES }}`  
+            **📁 Project:** `mssql-python`  
+            
+            </td>
+            </tr>
+            </table>
+            
+            ---
+            
+            ${{ env.PATCH_COVERAGE_SUMMARY }}
+            
+            ---
+            ### 📋 Files Needing Attention
+            
+            <details>
+            <summary>📉 <strong>Files with overall lowest coverage</strong> (click to expand)</summary>
+            <br>
+            
+            ```diff
+            ${{ env.LOW_COVERAGE_FILES }}
+            ```
+            
+            </details>
+            
+            ---
+            ### 🔗 Quick Links
+
+            <table>
+            <tr>
+            <td align="left" width="200">
+            <b>⚙️ Build Summary</b>
+            </td>
+            <td align="left">
+            <b>📋 Coverage Details</b>
+            </td>
+            </tr>
+            <tr>
+            <td align="left" width="200">
+
+            [View Azure DevOps Build](${{ env.ADO_URL }})
+
+            </td>
+            <td align="left">
+
+            [Browse Full Coverage Report](${{ env.ADO_URL }}&view=codecoverage-tab) 
+
+            </td>
+            </tr>
+            </table>

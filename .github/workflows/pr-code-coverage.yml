@@ -417,7 +417,33 @@ jobs:
             echo "PATCH_COVERAGE_SUMMARY=Patch coverage report could not be generated." >> $GITHUB_ENV
           fi
 
+      - name: Save coverage data for comment
+        run: |
+          mkdir -p coverage-comment-data
+          cat > coverage-comment-data/pr-info.json << EOF
+          {
+            "pr_number": "${{ github.event.pull_request.number }}",
+            "coverage_percentage": "${{ env.COVERAGE_PERCENTAGE }}",
+            "covered_lines": "${{ env.COVERED_LINES }}",
+            "total_lines": "${{ env.TOTAL_LINES }}",
+            "patch_coverage_pct": "${{ env.PATCH_COVERAGE_PCT }}",
+            "low_coverage_files": $(jq -Rs . <<< "${{ env.LOW_COVERAGE_FILES }}"),
+            "patch_coverage_summary": $(jq -Rs . <<< "${{ env.PATCH_COVERAGE_SUMMARY }}"),
+            "ado_url": "${{ env.ADO_URL }}"
+          }
+          EOF
+          cat coverage-comment-data/pr-info.json
+
+      - name: Upload coverage comment data
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-comment-data
+          path: coverage-comment-data/
+          retention-days: 1
+
       - name: Comment coverage summary on PR
+        # Skip for forked PRs due to token permission restrictions
+        if: github.event.pull_request.head.repo.full_name == github.repository
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: Code Coverage Report
