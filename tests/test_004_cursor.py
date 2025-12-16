@@ -1796,6 +1796,7 @@ def test_executemany_concurrent_null_parameters(db_connection):
                     db_connection.commit()
         except Exception as e:
             import traceback
+
             with lock:
                 errors.append((thread_id, str(e), traceback.format_exc()))
 
@@ -1824,7 +1825,9 @@ def test_executemany_concurrent_null_parameters(db_connection):
         total_count = cursor.fetchone()[0]
         if total_count != num_threads * 20:
             # Debug: Check what data is actually in the table
-            cursor.execute("SELECT thread_id, COUNT(*) as cnt FROM #pytest_concurrent_nulls GROUP BY thread_id ORDER BY thread_id")
+            cursor.execute(
+                "SELECT thread_id, COUNT(*) as cnt FROM #pytest_concurrent_nulls GROUP BY thread_id ORDER BY thread_id"
+            )
             thread_counts = cursor.fetchall()
             print(f"Thread counts: {thread_counts}")
         assert (
