@@ -157,6 +157,22 @@ if exist "%OUTPUT_DIR%\%PYD_NAME%" (
         echo [WARNING] PDB file !PDB_NAME! not found in output directory.
     )
 
+    setlocal enabledelayedexpansion
+    for %%I in ("%SOURCE_DIR%..") do (
+        set PARENT_DIR=%%~fI
+    )
+    echo [DIAGNOSTIC] Parent is: !PARENT_DIR!
+
+    set VCREDIST_DLL_PATH=!PARENT_DIR!\libs\windows\!ARCH!\vcredist\msvcp140.dll
+    echo [DIAGNOSTIC] Looking for msvcp140.dll at "!VCREDIST_DLL_PATH!"
+
+    if exist "!VCREDIST_DLL_PATH!" (
+        copy /Y "!VCREDIST_DLL_PATH!" "%SOURCE_DIR%\.."
+        echo [SUCCESS] Copied msvcp140.dll from !VCREDIST_DLL_PATH! to "%SOURCE_DIR%\.."
+    ) else (
+        echo [ERROR] Could not find msvcp140.dll at "!VCREDIST_DLL_PATH!"
+        exit /b 1
+    )
 ) else (
     echo [ERROR] Could not find built .pyd file: %PYD_NAME%
     REM Exit with an error code here if the .pyd file is not found
