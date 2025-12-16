@@ -5218,7 +5218,7 @@ def test_getinfo_string_decoding_utf8_fallback(db_connection):
     This test verifies the fallback path in the encoding loop where
     UTF-16LE fails but UTF-8 succeeds.
     """
-    from unittest.mock import patch
+    from unittest.mock import MagicMock
 
     # UTF-8 encoded "Hello" - this is valid UTF-8 but NOT valid UTF-16LE
     # (odd number of bytes would fail UTF-16LE decode)
@@ -5229,11 +5229,20 @@ def test_getinfo_string_decoding_utf8_fallback(db_connection):
     # Use a string-type info_type (SQL_DRIVER_NAME = 6 is in string_type_constants)
     info_type = sql_const.SQL_DRIVER_NAME.value
 
-    with patch.object(db_connection._conn, "get_info", return_value=mock_result):
+    # Save the original _conn and replace with a mock
+    original_conn = db_connection._conn
+    try:
+        mock_conn = MagicMock()
+        mock_conn.get_info.return_value = mock_result
+        db_connection._conn = mock_conn
+
         result = db_connection.getinfo(info_type)
 
         assert result == "Hello", f"Expected 'Hello', got {repr(result)}"
         assert isinstance(result, str), f"Expected str, got {type(result).__name__}"
+    finally:
+        # Restore the original connection
+        db_connection._conn = original_conn
 
 
 def test_getinfo_string_decoding_all_fail_returns_none(db_connection):
@@ -5242,7 +5251,7 @@ def test_getinfo_string_decoding_all_fail_returns_none(db_connection):
     This test verifies that when both UTF-16LE and UTF-8 decoding fail,
     the method returns None to avoid silent data corruption.
     """
-    from unittest.mock import patch
+    from unittest.mock import MagicMock
 
     # Invalid byte sequence that cannot be decoded as UTF-16LE or UTF-8
     # 0xFF 0xFE is a BOM, but followed by invalid continuation bytes for UTF-8
@@ -5254,11 +5263,20 @@ def test_getinfo_string_decoding_all_fail_returns_none(db_connection):
     # Use a string-type info_type (SQL_DRIVER_NAME = 6 is in string_type_constants)
     info_type = sql_const.SQL_DRIVER_NAME.value
 
-    with patch.object(db_connection._conn, "get_info", return_value=mock_result):
+    # Save the original _conn and replace with a mock
+    original_conn = db_connection._conn
+    try:
+        mock_conn = MagicMock()
+        mock_conn.get_info.return_value = mock_result
+        db_connection._conn = mock_conn
+
         result = db_connection.getinfo(info_type)
 
         # Should return None when all decoding fails
         assert result is None, f"Expected None for invalid encoding, got {repr(result)}"
+    finally:
+        # Restore the original connection
+        db_connection._conn = original_conn
 
 
 def test_getinfo_string_encoding_utf16_primary(db_connection):
@@ -5267,7 +5285,7 @@ def test_getinfo_string_encoding_utf16_primary(db_connection):
     This test verifies the primary (expected) encoding path where
     UTF-16LE decoding succeeds on first try.
     """
-    from unittest.mock import patch
+    from unittest.mock import MagicMock
 
     # Valid UTF-16LE encoded "Test" with null terminator
     utf16_data = "Test".encode("utf-16-le") + b"\x00\x00"
@@ -5277,11 +5295,20 @@ def test_getinfo_string_encoding_utf16_primary(db_connection):
     # Use a string-type info_type
     info_type = sql_const.SQL_DRIVER_NAME.value
 
-    with patch.object(db_connection._conn, "get_info", return_value=mock_result):
+    # Save the original _conn and replace with a mock
+    original_conn = db_connection._conn
+    try:
+        mock_conn = MagicMock()
+        mock_conn.get_info.return_value = mock_result
+        db_connection._conn = mock_conn
+
         result = db_connection.getinfo(info_type)
 
         assert result == "Test", f"Expected 'Test', got {repr(result)}"
         assert "\x00" not in result, f"Result contains null bytes: {repr(result)}"
+    finally:
+        # Restore the original connection
+        db_connection._conn = original_conn
 
 
 def test_getinfo_sql_support(db_connection):
