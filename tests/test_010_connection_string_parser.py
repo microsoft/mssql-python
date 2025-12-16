@@ -61,13 +61,13 @@ class TestConnectionStringParser:
         """Test parsing braced values with escaped }}."""
         parser = _ConnectionStringParser()
         result = parser._parse("PWD={p}}w{{d}")
-        assert result == {"pwd": "p}w{d"}
+        assert result == {"pwd": "p}w{{d"}
 
     def test_parse_braced_value_with_all_escapes(self):
-        """Test parsing braced values with both {{ and }} escapes."""
+        """Test parsing braced values with }} escape ({{ not an escape sequence)."""
         parser = _ConnectionStringParser()
         result = parser._parse("Value={test}}{{escape}")
-        assert result == {"value": "test}{escape"}
+        assert result == {"value": "test}{{escape"}
 
     def test_parse_empty_value(self):
         """Test that empty value raises error."""
@@ -146,10 +146,10 @@ class TestConnectionStringParser:
         assert result == {"value": "test{value"}
 
     def test_parse_braced_value_double_left_brace(self):
-        """Test parsing braced value with escaped {{ (left brace)."""
+        """Test parsing braced value with {{ (not an escape sequence)."""
         parser = _ConnectionStringParser()
         result = parser._parse("Value={test{{value}")
-        assert result == {"value": "test{value"}
+        assert result == {"value": "test{{value"}
 
     def test_parse_unicode_characters(self):
         """Test parsing values with unicode characters."""
@@ -197,7 +197,7 @@ class TestConnectionStringParser:
 
         # Multiple special chars including braces
         result = parser._parse("Token={Bearer: abc123; Expires={{2024-01-01}}}")
-        assert result == {"token": "Bearer: abc123; Expires={2024-01-01}"}
+        assert result == {"token": "Bearer: abc123; Expires={{2024-01-01}"}
 
     def test_parse_numbers_and_symbols_in_passwords(self):
         """Test parsing passwords with various numbers and symbols."""
