@@ -4,7 +4,7 @@ import os
 
 # Clean one-liner: set level and output mode together
 setup_logging(output="both")
-print("Logging is set up..")
+print("Logging is set up...")
 conn_str = os.getenv("DB_CONNECTION_STRING")
 conn = connect(conn_str)
 cursor = conn.cursor()
