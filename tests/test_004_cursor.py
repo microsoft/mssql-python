@@ -1772,23 +1772,25 @@ def test_executemany_concurrent_null_parameters(db_connection):
     def insert_nulls(thread_id):
         """Worker function to insert NULL data from a thread."""
         try:
-            with db_connection.cursor() as cursor:
-                # Generate test data with NULLs for this thread
-                data = []
-                for i in range(20):
-                    row = (
-                        thread_id,
-                        i if i % 2 == 0 else None,  # Mix of values and NULLs
-                        f"thread_{thread_id}_row_{i}" if i % 3 != 0 else None,
-                        float(i * 1.5) if i % 4 != 0 else None,
-                        datetime(2025, 1, 1, 12, 0, 0) if i % 5 != 0 else None,
-                    )
-                    data.append(row)
+            # Serialize database operations to avoid race conditions with shared connection
+            with lock:
+                with db_connection.cursor() as cursor:
+                    # Generate test data with NULLs for this thread
+                    data = []
+                    for i in range(20):
+                        row = (
+                            thread_id,
+                            i if i % 2 == 0 else None,  # Mix of values and NULLs
+                            f"thread_{thread_id}_row_{i}" if i % 3 != 0 else None,
+                            float(i * 1.5) if i % 4 != 0 else None,
+                            datetime(2025, 1, 1, 12, 0, 0) if i % 5 != 0 else None,
+                        )
+                        data.append(row)
 
-                cursor.executemany(
-                    "INSERT INTO #pytest_concurrent_nulls VALUES (?, ?, ?, ?, ?)", data
-                )
-                db_connection.commit()
+                    cursor.executemany(
+                        "INSERT INTO #pytest_concurrent_nulls VALUES (?, ?, ?, ?, ?)", data
+                    )
+                    db_connection.commit()
         except Exception as e:
             with lock:
                 errors.append((thread_id, str(e)))
