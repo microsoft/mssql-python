@@ -1311,7 +1311,6 @@ class Connection:
 
                     # All decodings failed
                     logger.debug(
-                        "error",
                         "Failed to decode string in getinfo (info_type=%d) with supported encodings. "
                         "Returning None to avoid silent corruption.",
                         info_type,
