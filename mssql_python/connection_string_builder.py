@@ -77,10 +77,9 @@ class _ConnectionStringBuilder:
         """
         Escape a parameter value if it contains special characters.
 
-        Per MS-ODBCSTR specification:
         - Values containing ';', '{', '}', '=', or spaces should be braced for safety
         - '}' inside braced values is escaped as '}}'
-        - '{' inside braced values is escaped as '{{'
+        - '{' does not need to be escaped
 
         Args:
             value: Parameter value to escape
@@ -95,7 +94,7 @@ class _ConnectionStringBuilder:
             >>> builder._escape_value("local;host")
             '{local;host}'
             >>> builder._escape_value("p}w{d")
-            '{p}}w{{d}'
+            '{p}}w{d}'
             >>> builder._escape_value("ODBC Driver 18 for SQL Server")
             '{ODBC Driver 18 for SQL Server}'
         """
@@ -107,8 +106,9 @@ class _ConnectionStringBuilder:
         needs_braces = any(ch in value for ch in ";{}= ")
 
         if needs_braces:
-            # Escape existing braces by doubling them
-            escaped = value.replace("}", "}}").replace("{", "{{")
+            # Escape closing braces by doubling them (ODBC requirement)
+            # Opening braces do not need to be escaped
+            escaped = value.replace("}", "}}")
             return f"{{{escaped}}}"
         else:
             return value
