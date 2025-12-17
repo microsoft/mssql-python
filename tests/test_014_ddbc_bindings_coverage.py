@@ -17,22 +17,25 @@ import platform
 class TestIsValidUnicodeScalar:
     """Test the IsValidUnicodeScalar function (ddbc_bindings.h lines 74-78)."""
 
-    @pytest.mark.parametrize("char", [
-        "\u0000",  # NULL
-        "\u007f",  # Last ASCII
-        "\u0080",  # First 2-byte
-        "\u07ff",  # Last 2-byte
-        "\u0800",  # First 3-byte
-        "\ud7ff",  # Just before surrogate range
-        "\ue000",  # Just after surrogate range
-        "\uffff",  # Last BMP
-        "\U00010000",  # First supplementary
-        "\U0010ffff",  # Last valid Unicode
-    ])
+    @pytest.mark.parametrize(
+        "char",
+        [
+            "\u0000",  # NULL
+            "\u007f",  # Last ASCII
+            "\u0080",  # First 2-byte
+            "\u07ff",  # Last 2-byte
+            "\u0800",  # First 3-byte
+            "\ud7ff",  # Just before surrogate range
+            "\ue000",  # Just after surrogate range
+            "\uffff",  # Last BMP
+            "\U00010000",  # First supplementary
+            "\U0010ffff",  # Last valid Unicode
+        ],
+    )
     def test_valid_scalar_values(self, char):
         """Test valid Unicode scalar values using Binary() for faster execution."""
         from mssql_python.type import Binary
-        
+
         # Test through Binary() which exercises the conversion code
         result = Binary(char)
         assert len(result) > 0
@@ -50,7 +53,7 @@ class TestIsValidUnicodeScalar:
         before_surrogate = "\ud7ff"
         result = Binary(before_surrogate)
         assert len(result) > 0
-        
+
         after_surrogate = "\ue000"
         result = Binary(after_surrogate)
         assert len(result) > 0
@@ -65,13 +68,13 @@ class TestIsValidUnicodeScalar:
 class TestUTF32ConversionPaths:
     """Test UTF-32 conversion paths for SQLWCHARToWString and WStringToSQLWCHAR (lines 120-130, 159-167)."""
 
-    @pytest.mark.parametrize("test_str", [
-        "ASCII", "Hello", "Café", "中文", "中文测试", "😀", "😀🌍", "\U0010ffff"
-    ])
+    @pytest.mark.parametrize(
+        "test_str", ["ASCII", "Hello", "Café", "中文", "中文测试", "😀", "😀🌍", "\U0010ffff"]
+    )
     def test_utf32_valid_scalars(self, test_str):
         """Test UTF-32 path with valid scalar values using Binary() for faster execution."""
         from mssql_python.type import Binary
-        
+
         # Valid scalars should be copied directly
         result = Binary(test_str)
         assert len(result) > 0
@@ -79,16 +82,19 @@ class TestUTF32ConversionPaths:
         decoded = result.decode("utf-8")
         assert decoded == test_str
 
-    @pytest.mark.parametrize("test_str", [
-        "Test\ud800",  # High surrogate
-        "\udc00Test",  # Low surrogate
-        "A\ud800B",  # High surrogate in middle
-        "\udc00C",  # Low surrogate at start
-    ])
+    @pytest.mark.parametrize(
+        "test_str",
+        [
+            "Test\ud800",  # High surrogate
+            "\udc00Test",  # Low surrogate
+            "A\ud800B",  # High surrogate in middle
+            "\udc00C",  # Low surrogate at start
+        ],
+    )
     def test_utf32_invalid_scalars(self, test_str):
         """Test UTF-32 path with invalid scalar values (surrogates) using Binary()."""
         from mssql_python.type import Binary
-        
+
         # Invalid scalars should be handled (replaced with U+FFFD)
         result = Binary(test_str)
         assert len(result) > 0
@@ -137,14 +143,17 @@ class TestWideToUTF8UnixPath:
 class TestUtf8ToWStringUnixPath:
     """Test Utf8ToWString decodeUtf8 lambda (lines 462-530)."""
 
-    @pytest.mark.parametrize("test_str,expected", [
-        ("HelloWorld123", b"HelloWorld123"),  # Pure ASCII
-        ("Hello😀", "Hello😀".encode("utf-8")),  # Mixed ASCII + emoji
-    ])
+    @pytest.mark.parametrize(
+        "test_str,expected",
+        [
+            ("HelloWorld123", b"HelloWorld123"),  # Pure ASCII
+            ("Hello😀", "Hello😀".encode("utf-8")),  # Mixed ASCII + emoji
+        ],
+    )
     def test_fast_path_ascii(self, test_str, expected):
         """Test fast path for ASCII-only prefix (lines 539-542)."""
         from mssql_python.type import Binary
-        
+
         result = Binary(test_str)
         assert result == expected
 
@@ -229,7 +238,9 @@ class TestUtf8ToWStringUnixPath:
 
         for test_bytes in invalid_tests:
             result = test_bytes.decode("utf-8", errors="replace")
-            assert "\ufffd" in result, f"Invalid sequence {test_bytes.hex()} should produce replacement"
+            assert (
+                "\ufffd" in result
+            ), f"Invalid sequence {test_bytes.hex()} should produce replacement"
 
         # Surrogate encoding rejection (lines 500-503)
         for test_bytes in [b"\xed\xa0\x80", b"\xed\xbf\xbf"]:
@@ -290,13 +301,16 @@ class TestUtf8ToWStringAlwaysPush:
 class TestEdgeCases:
     """Test edge cases and error paths."""
 
-    @pytest.mark.parametrize("test_input,expected,description", [
-        ("", b"", "Empty string"),
-        ("\x00", b"\x00", "NULL character"),
-        ("A\x00B", b"A\x00B", "NULL in middle"),
-        ("Valid\ufffdText", "Valid\ufffdText", "Mixed valid/U+FFFD"),
-        ("A\u00a9\u4e2d\U0001f600", "A\u00a9\u4e2d\U0001f600", "All UTF-8 ranges"),
-    ])
+    @pytest.mark.parametrize(
+        "test_input,expected,description",
+        [
+            ("", b"", "Empty string"),
+            ("\x00", b"\x00", "NULL character"),
+            ("A\x00B", b"A\x00B", "NULL in middle"),
+            ("Valid\ufffdText", "Valid\ufffdText", "Mixed valid/U+FFFD"),
+            ("A\u00a9\u4e2d\U0001f600", "A\u00a9\u4e2d\U0001f600", "All UTF-8 ranges"),
+        ],
+    )
     def test_special_characters(self, test_input, expected, description):
         """Test special character handling including NULL and replacement chars."""
         from mssql_python.type import Binary
@@ -311,11 +325,14 @@ class TestEdgeCases:
         else:
             assert result == expected, f"{description} should produce expected bytes"
 
-    @pytest.mark.parametrize("char,count,expected_len", [
-        ("A", 1000, 1000),  # 1-byte chars - reduced from 10000 for speed
-        ("中", 500, 1500),  # 3-byte chars - reduced from 5000 for speed
-        ("😀", 200, 800),  # 4-byte chars - reduced from 2000 for speed
-    ])
+    @pytest.mark.parametrize(
+        "char,count,expected_len",
+        [
+            ("A", 1000, 1000),  # 1-byte chars - reduced from 10000 for speed
+            ("中", 500, 1500),  # 3-byte chars - reduced from 5000 for speed
+            ("😀", 200, 800),  # 4-byte chars - reduced from 2000 for speed
+        ],
+    )
     def test_long_strings(self, char, count, expected_len):
         """Test long strings with reduced size for faster execution."""
         from mssql_python.type import Binary
