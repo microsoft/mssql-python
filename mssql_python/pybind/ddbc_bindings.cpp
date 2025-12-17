@@ -862,6 +862,11 @@ std::string GetModuleDirectory() {
         return module_file;
     }
 
+    // Log successful path extraction for observability
+    LOG("GetModuleDirectory: Successfully extracted directory - "
+        "original_path='%s', directory='%s'",
+        module_file.c_str(), parentDir.string().c_str());
+
     // Return UTF-8 encoded string for consistent handling
     return parentDir.string();
 }
