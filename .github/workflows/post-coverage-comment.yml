@@ -18,11 +18,12 @@ jobs:
     
     steps:
       - name: Download coverage data
-        uses: actions/download-artifact@v4
-        with:
-          name: coverage-comment-data
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ github.event.workflow_run.id }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run download ${{ github.event.workflow_run.id }} \
+            --repo ${{ github.repository }} \
+            --name coverage-comment-data
 
       - name: Read coverage data
         id: coverage
@@ -34,32 +35,36 @@ jobs:
           
           cat pr-info.json
           
-          # Extract values from JSON
-          PR_NUMBER=$(jq -r '.pr_number' pr-info.json)
-          COVERAGE_PCT=$(jq -r '.coverage_percentage' pr-info.json)
-          COVERED_LINES=$(jq -r '.covered_lines' pr-info.json)
-          TOTAL_LINES=$(jq -r '.total_lines' pr-info.json)
-          PATCH_PCT=$(jq -r '.patch_coverage_pct' pr-info.json)
-          LOW_COV_FILES=$(jq -r '.low_coverage_files' pr-info.json)
-          PATCH_SUMMARY=$(jq -r '.patch_coverage_summary' pr-info.json)
-          ADO_URL=$(jq -r '.ado_url' pr-info.json)
+          # Extract values from JSON with proper quoting
+          PR_NUMBER="$(jq -r '.pr_number' pr-info.json)"
+          COVERAGE_PCT="$(jq -r '.coverage_percentage' pr-info.json)"
+          COVERED_LINES="$(jq -r '.covered_lines' pr-info.json)"
+          TOTAL_LINES="$(jq -r '.total_lines' pr-info.json)"
+          PATCH_PCT="$(jq -r '.patch_coverage_pct' pr-info.json)"
+          LOW_COV_FILES="$(jq -r '.low_coverage_files' pr-info.json)"
+          PATCH_SUMMARY="$(jq -r '.patch_coverage_summary' pr-info.json)"
+          ADO_URL="$(jq -r '.ado_url' pr-info.json)"
           
-          # Export to env for next step
-          echo "PR_NUMBER=$PR_NUMBER" >> $GITHUB_ENV
-          echo "COVERAGE_PERCENTAGE=$COVERAGE_PCT" >> $GITHUB_ENV
-          echo "COVERED_LINES=$COVERED_LINES" >> $GITHUB_ENV
-          echo "TOTAL_LINES=$TOTAL_LINES" >> $GITHUB_ENV
-          echo "PATCH_COVERAGE_PCT=$PATCH_PCT" >> $GITHUB_ENV
-          echo "ADO_URL=$ADO_URL" >> $GITHUB_ENV
+          # Export to env for next step (single-line values)
+          echo "PR_NUMBER=${PR_NUMBER}" >> $GITHUB_ENV
+          echo "COVERAGE_PERCENTAGE=${COVERAGE_PCT}" >> $GITHUB_ENV
+          echo "COVERED_LINES=${COVERED_LINES}" >> $GITHUB_ENV
+          echo "TOTAL_LINES=${TOTAL_LINES}" >> $GITHUB_ENV
+          echo "PATCH_COVERAGE_PCT=${PATCH_PCT}" >> $GITHUB_ENV
+          echo "ADO_URL=${ADO_URL}" >> $GITHUB_ENV
           
-          # Handle multiline values
-          echo "LOW_COVERAGE_FILES<<EOF" >> $GITHUB_ENV
-          echo "$LOW_COV_FILES" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          # Handle multiline values with proper quoting
+          {
+            echo "LOW_COVERAGE_FILES<<EOF"
+            echo "$LOW_COV_FILES"
+            echo "EOF"
+          } >> $GITHUB_ENV
           
-          echo "PATCH_COVERAGE_SUMMARY<<EOF" >> $GITHUB_ENV
-          echo "$PATCH_SUMMARY" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          {
+            echo "PATCH_COVERAGE_SUMMARY<<EOF"
+            echo "$PATCH_SUMMARY"
+            echo "EOF"
+          } >> $GITHUB_ENV
 
       - name: Comment coverage summary on PR
         uses: marocchino/sticky-pull-request-comment@v2
