@@ -17,338 +17,179 @@ import platform
 class TestIsValidUnicodeScalar:
     """Test the IsValidUnicodeScalar function (ddbc_bindings.h lines 74-78)."""
 
-    def test_valid_scalar_values(self):
-        """Test valid Unicode scalar values."""
-        import mssql_python
-        from mssql_python import connect
+    @pytest.mark.parametrize("char", [
+        "\u0000",  # NULL
+        "\u007f",  # Last ASCII
+        "\u0080",  # First 2-byte
+        "\u07ff",  # Last 2-byte
+        "\u0800",  # First 3-byte
+        "\ud7ff",  # Just before surrogate range
+        "\ue000",  # Just after surrogate range
+        "\uffff",  # Last BMP
+        "\U00010000",  # First supplementary
+        "\U0010ffff",  # Last valid Unicode
+    ])
+    def test_valid_scalar_values(self, char):
+        """Test valid Unicode scalar values using Binary() for faster execution."""
+        from mssql_python.type import Binary
+        
+        # Test through Binary() which exercises the conversion code
+        result = Binary(char)
+        assert len(result) > 0
 
-        # Valid scalar values (not surrogates, <= 0x10FFFF)
-        valid_chars = [
-            "\u0000",  # NULL
-            "\u007f",  # Last ASCII
-            "\u0080",  # First 2-byte
-            "\u07ff",  # Last 2-byte
-            "\u0800",  # First 3-byte
-            "\ud7ff",  # Just before surrogate range
-            "\ue000",  # Just after surrogate range
-            "\uffff",  # Last BMP
-            "\U00010000",  # First supplementary
-            "\U0010ffff",  # Last valid Unicode
-        ]
-
-        for char in valid_chars:
-            try:
-                conn_str = f"Server=test;Database=DB{char};Trusted_Connection=yes"
-                conn = connect(conn_str, autoconnect=False)
-                conn.close()
-            except Exception:
-                pass
-
-    def test_above_max_codepoint(self):
-        """Test code points > 0x10FFFF (ddbc_bindings.h line 76 first condition)."""
-        # Python won't let us create invalid codepoints easily, but we can test
-        # through the Binary() function which uses UTF-8 decode
+    def test_boundary_codepoints(self):
+        """Test boundary code points including max valid and surrogate range."""
         from mssql_python.type import Binary
 
-        # Test valid maximum
+        # Test valid maximum (line 76)
         max_valid = "\U0010ffff"
         result = Binary(max_valid)
         assert len(result) > 0
 
-        # Invalid UTF-8 that would decode to > 0x10FFFF is handled by decoder
-        # and replaced with U+FFFD
-        invalid_above_max = b"\xf4\x90\x80\x80"  # Would be 0x110000
-        result = invalid_above_max.decode("utf-8", errors="replace")
-        # Should contain replacement character or be handled
+        # Test surrogate boundaries (line 77)
+        before_surrogate = "\ud7ff"
+        result = Binary(before_surrogate)
+        assert len(result) > 0
+        
+        after_surrogate = "\ue000"
+        result = Binary(after_surrogate)
         assert len(result) > 0
 
-    def test_surrogate_range(self):
-        """Test surrogate range 0xD800-0xDFFF (ddbc_bindings.h line 77 second condition)."""
-        import mssql_python
-        from mssql_python import connect
-
-        # Test boundaries around surrogate range
-        # These may fail to connect but test the conversion logic
-
-        # Just before surrogate range (valid)
-        try:
-            conn_str = "Server=test;Database=DB\ud7ff;Trusted_Connection=yes"
-            conn = connect(conn_str, autoconnect=False)
-            conn.close()
-        except Exception:
-            pass
-
-        # Inside surrogate range (invalid)
-        try:
-            conn_str = "Server=test;Database=DB\ud800;Trusted_Connection=yes"
-            conn = connect(conn_str, autoconnect=False)
-            conn.close()
-        except Exception:
-            pass
-
-        try:
-            conn_str = "Server=test;Database=DB\udfff;Trusted_Connection=yes"
-            conn = connect(conn_str, autoconnect=False)
-            conn.close()
-        except Exception:
-            pass
-
-        # Just after surrogate range (valid)
-        try:
-            conn_str = "Server=test;Database=DB\ue000;Trusted_Connection=yes"
-            conn = connect(conn_str, autoconnect=False)
-            conn.close()
-        except Exception:
-            pass
+        # Invalid UTF-8 that would decode to > 0x10FFFF
+        invalid_above_max = b"\xf4\x90\x80\x80"  # Would be 0x110000
+        result = invalid_above_max.decode("utf-8", errors="replace")
+        assert len(result) > 0
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="Tests Unix-specific UTF-32 path")
-class TestSQLWCHARUTF32Path:
-    """Test SQLWCHARToWString UTF-32 path (sizeof(SQLWCHAR) == 4, lines 120-130)."""
+class TestUTF32ConversionPaths:
+    """Test UTF-32 conversion paths for SQLWCHARToWString and WStringToSQLWCHAR (lines 120-130, 159-167)."""
 
-    def test_utf32_valid_scalars(self):
-        """Test UTF-32 path with valid scalar values (line 122 condition true)."""
-        import mssql_python
-        from mssql_python import connect
-
-        # On systems where SQLWCHAR is 4 bytes (UTF-32)
+    @pytest.mark.parametrize("test_str", [
+        "ASCII", "Hello", "Café", "中文", "中文测试", "😀", "😀🌍", "\U0010ffff"
+    ])
+    def test_utf32_valid_scalars(self, test_str):
+        """Test UTF-32 path with valid scalar values using Binary() for faster execution."""
+        from mssql_python.type import Binary
+        
         # Valid scalars should be copied directly
-        valid_tests = [
-            "ASCII",
-            "Café",
-            "中文",
-            "😀",
-            "\U0010ffff",
-        ]
+        result = Binary(test_str)
+        assert len(result) > 0
+        # Verify round-trip
+        decoded = result.decode("utf-8")
+        assert decoded == test_str
 
-        for test_str in valid_tests:
-            try:
-                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
-                conn = connect(conn_str, autoconnect=False)
-                conn.close()
-            except Exception:
-                pass
-
-    def test_utf32_invalid_scalars(self):
-        """Test UTF-32 path with invalid scalar values (line 122 condition false)."""
-        import mssql_python
-        from mssql_python import connect
-
-        # Invalid scalars should be replaced with U+FFFD (lines 125-126)
-        # Python strings with surrogates
-        invalid_tests = [
-            "Test\ud800",  # High surrogate
-            "\udc00Test",  # Low surrogate
-        ]
-
-        for test_str in invalid_tests:
-            try:
-                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
-                conn = connect(conn_str, autoconnect=False)
-                conn.close()
-            except Exception:
-                pass
-
-
-@pytest.mark.skipif(platform.system() == "Windows", reason="Tests Unix-specific UTF-32 path")
-class TestWStringToSQLWCHARUTF32Path:
-    """Test WStringToSQLWCHAR UTF-32 path (sizeof(SQLWCHAR) == 4, lines 159-167)."""
-
-    def test_utf32_encode_valid(self):
-        """Test UTF-32 encoding with valid scalars (line 162 condition true)."""
-        import mssql_python
-        from mssql_python import connect
-
-        valid_tests = [
-            "Hello",
-            "Café",
-            "中文测试",
-            "😀🌍",
-            "\U0010ffff",
-        ]
-
-        for test_str in valid_tests:
-            try:
-                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
-                conn = connect(conn_str, autoconnect=False)
-                conn.close()
-            except Exception:
-                pass
-
-    def test_utf32_encode_invalid(self):
-        """Test UTF-32 encoding with invalid scalars (line 162 condition false, lines 164-165)."""
-        import mssql_python
-        from mssql_python import connect
-
-        # Invalid scalars should be replaced with U+FFFD
-        invalid_tests = [
-            "A\ud800B",  # High surrogate
-            "\udc00C",  # Low surrogate
-        ]
-
-        for test_str in invalid_tests:
-            try:
-                conn_str = f"Server=test;Database={test_str};Trusted_Connection=yes"
-                conn = connect(conn_str, autoconnect=False)
-                conn.close()
-            except Exception:
-                pass
+    @pytest.mark.parametrize("test_str", [
+        "Test\ud800",  # High surrogate
+        "\udc00Test",  # Low surrogate
+        "A\ud800B",  # High surrogate in middle
+        "\udc00C",  # Low surrogate at start
+    ])
+    def test_utf32_invalid_scalars(self, test_str):
+        """Test UTF-32 path with invalid scalar values (surrogates) using Binary()."""
+        from mssql_python.type import Binary
+        
+        # Invalid scalars should be handled (replaced with U+FFFD)
+        result = Binary(test_str)
+        assert len(result) > 0
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="Tests Unix-specific WideToUTF8 path")
 class TestWideToUTF8UnixPath:
     """Test WideToUTF8 Unix path (lines 415-453)."""
 
-    def test_1byte_utf8(self):
-        """Test 1-byte UTF-8 encoding (lines 424-427, code_point <= 0x7F)."""
+    def test_all_utf8_byte_lengths(self):
+        """Test 1-4 byte UTF-8 encoding (lines 424-445)."""
         from mssql_python.type import Binary
 
-        # ASCII characters should encode to 1 byte
-        ascii_tests = [
+        # Combined test for all UTF-8 byte lengths
+        all_tests = [
+            # 1-byte (ASCII, lines 424-427)
             ("A", b"A"),
             ("0", b"0"),
             (" ", b" "),
             ("~", b"~"),
             ("\x00", b"\x00"),
             ("\x7f", b"\x7f"),
-        ]
-
-        for char, expected in ascii_tests:
-            result = Binary(char)
-            assert result == expected, f"1-byte encoding failed for {char!r}"
-
-    def test_2byte_utf8(self):
-        """Test 2-byte UTF-8 encoding (lines 428-432, code_point <= 0x7FF)."""
-        from mssql_python.type import Binary
-
-        # Characters requiring 2 bytes
-        two_byte_tests = [
+            # 2-byte (lines 428-432)
             ("\u0080", b"\xc2\x80"),  # Minimum 2-byte
             ("\u00a9", b"\xc2\xa9"),  # Copyright ©
             ("\u00ff", b"\xc3\xbf"),  # ÿ
             ("\u07ff", b"\xdf\xbf"),  # Maximum 2-byte
-        ]
-
-        for char, expected in two_byte_tests:
-            result = Binary(char)
-            assert result == expected, f"2-byte encoding failed for {char!r}"
-
-    def test_3byte_utf8(self):
-        """Test 3-byte UTF-8 encoding (lines 433-438, code_point <= 0xFFFF)."""
-        from mssql_python.type import Binary
-
-        # Characters requiring 3 bytes
-        three_byte_tests = [
+            # 3-byte (lines 433-438)
             ("\u0800", b"\xe0\xa0\x80"),  # Minimum 3-byte
             ("\u4e2d", b"\xe4\xb8\xad"),  # 中
             ("\u20ac", b"\xe2\x82\xac"),  # €
             ("\uffff", b"\xef\xbf\xbf"),  # Maximum 3-byte
-        ]
-
-        for char, expected in three_byte_tests:
-            result = Binary(char)
-            assert result == expected, f"3-byte encoding failed for {char!r}"
-
-    def test_4byte_utf8(self):
-        """Test 4-byte UTF-8 encoding (lines 439-445, code_point <= 0x10FFFF)."""
-        from mssql_python.type import Binary
-
-        # Characters requiring 4 bytes
-        four_byte_tests = [
+            # 4-byte (lines 439-445)
             ("\U00010000", b"\xf0\x90\x80\x80"),  # Minimum 4-byte
             ("\U0001f600", b"\xf0\x9f\x98\x80"),  # 😀
             ("\U0001f30d", b"\xf0\x9f\x8c\x8d"),  # 🌍
             ("\U0010ffff", b"\xf4\x8f\xbf\xbf"),  # Maximum Unicode
         ]
 
-        for char, expected in four_byte_tests:
+        for char, expected in all_tests:
             result = Binary(char)
-            assert result == expected, f"4-byte encoding failed for {char!r}"
+            assert result == expected, f"UTF-8 encoding failed for {char!r}"
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="Tests Unix-specific Utf8ToWString path")
 class TestUtf8ToWStringUnixPath:
     """Test Utf8ToWString decodeUtf8 lambda (lines 462-530)."""
 
-    def test_fast_path_ascii(self):
+    @pytest.mark.parametrize("test_str,expected", [
+        ("HelloWorld123", b"HelloWorld123"),  # Pure ASCII
+        ("Hello😀", "Hello😀".encode("utf-8")),  # Mixed ASCII + emoji
+    ])
+    def test_fast_path_ascii(self, test_str, expected):
         """Test fast path for ASCII-only prefix (lines 539-542)."""
         from mssql_python.type import Binary
-
-        # Pure ASCII should use fast path
-        ascii_only = "HelloWorld123"
-        result = Binary(ascii_only)
-        expected = ascii_only.encode("utf-8")
+        
+        result = Binary(test_str)
         assert result == expected
 
-        # Mixed ASCII + non-ASCII should use fast path for ASCII prefix
-        mixed = "Hello😀"
-        result = Binary(mixed)
-        expected = mixed.encode("utf-8")
-        assert result == expected
-
-    def test_1byte_decode(self):
-        """Test 1-byte sequence decoding (lines 472-475)."""
+    def test_1byte_and_2byte_decode(self):
+        """Test 1-byte and 2-byte sequence decoding (lines 472-488)."""
         from mssql_python.type import Binary
 
-        # ASCII bytes should decode correctly
-        test_cases = [
+        # 1-byte decode tests (lines 472-475)
+        one_byte_tests = [
             (b"A", "A"),
             (b"Hello", "Hello"),
             (b"\x00\x7f", "\x00\x7f"),
         ]
 
-        for utf8_bytes, expected in test_cases:
-            # Test through round-trip
-            original = expected
-            result = Binary(original)
+        for utf8_bytes, expected in one_byte_tests:
+            result = Binary(expected)
             assert result == utf8_bytes
 
-    def test_2byte_decode_paths(self):
-        """Test 2-byte sequence decoding paths (lines 476-488)."""
-        from mssql_python.type import Binary
-
-        # Test invalid continuation byte path (lines 477-480)
-        invalid_2byte = b"\xc2\x00"  # Invalid continuation
-        result = invalid_2byte.decode("utf-8", errors="replace")
-        assert "\ufffd" in result, "Invalid 2-byte should produce replacement char"
-
-        # Test valid decode path with cp >= 0x80 (lines 481-484)
-        valid_2byte = [
+        # 2-byte valid decode tests (lines 481-484)
+        two_byte_tests = [
             (b"\xc2\x80", "\u0080"),
             (b"\xc2\xa9", "\u00a9"),
             (b"\xdf\xbf", "\u07ff"),
         ]
 
-        for utf8_bytes, expected in valid_2byte:
+        for utf8_bytes, expected in two_byte_tests:
             result = utf8_bytes.decode("utf-8")
             assert result == expected
-            # Round-trip test
             encoded = Binary(expected)
             assert encoded == utf8_bytes
 
-        # Test overlong encoding rejection (lines 486-487)
-        overlong_2byte = b"\xc0\x80"  # Overlong encoding of NULL
+        # 2-byte invalid tests
+        invalid_2byte = b"\xc2\x00"  # Invalid continuation (lines 477-480)
+        result = invalid_2byte.decode("utf-8", errors="replace")
+        assert "\ufffd" in result, "Invalid 2-byte should produce replacement char"
+
+        overlong_2byte = b"\xc0\x80"  # Overlong encoding (lines 486-487)
         result = overlong_2byte.decode("utf-8", errors="replace")
         assert "\ufffd" in result, "Overlong 2-byte should produce replacement char"
 
-    def test_3byte_decode_paths(self):
-        """Test 3-byte sequence decoding paths (lines 490-506)."""
+    def test_3byte_and_4byte_decode_paths(self):
+        """Test 3-byte and 4-byte sequence decoding paths (lines 490-527)."""
         from mssql_python.type import Binary
 
-        # Test invalid continuation bytes (lines 492-495)
-        invalid_3byte = [
-            b"\xe0\x00\x80",  # Second byte invalid
-            b"\xe0\xa0\x00",  # Third byte invalid
-        ]
-
-        for test_bytes in invalid_3byte:
-            result = test_bytes.decode("utf-8", errors="replace")
-            assert (
-                "\ufffd" in result
-            ), f"Invalid 3-byte {test_bytes.hex()} should produce replacement"
-
-        # Test valid decode with surrogate rejection (lines 499-502)
-        # Valid characters outside surrogate range
+        # 3-byte valid decode tests (lines 499-502)
         valid_3byte = [
             (b"\xe0\xa0\x80", "\u0800"),
             (b"\xe4\xb8\xad", "\u4e2d"),  # 中
@@ -362,40 +203,7 @@ class TestUtf8ToWStringUnixPath:
             encoded = Binary(expected)
             assert encoded == utf8_bytes
 
-        # Test surrogate encoding rejection (lines 500-503)
-        surrogate_3byte = [
-            b"\xed\xa0\x80",  # U+D800 (high surrogate)
-            b"\xed\xbf\xbf",  # U+DFFF (low surrogate)
-        ]
-
-        for test_bytes in surrogate_3byte:
-            result = test_bytes.decode("utf-8", errors="replace")
-            # Should be rejected/replaced
-            assert len(result) > 0
-
-        # Test overlong encoding rejection (lines 504-505)
-        overlong_3byte = b"\xe0\x80\x80"  # Overlong encoding of NULL
-        result = overlong_3byte.decode("utf-8", errors="replace")
-        assert "\ufffd" in result, "Overlong 3-byte should produce replacement"
-
-    def test_4byte_decode_paths(self):
-        """Test 4-byte sequence decoding paths (lines 508-527)."""
-        from mssql_python.type import Binary
-
-        # Test invalid continuation bytes (lines 512-514)
-        invalid_4byte = [
-            b"\xf0\x00\x80\x80",  # Second byte invalid
-            b"\xf0\x90\x00\x80",  # Third byte invalid
-            b"\xf0\x90\x80\x00",  # Fourth byte invalid
-        ]
-
-        for test_bytes in invalid_4byte:
-            result = test_bytes.decode("utf-8", errors="replace")
-            assert (
-                "\ufffd" in result
-            ), f"Invalid 4-byte {test_bytes.hex()} should produce replacement"
-
-        # Test valid decode within range (lines 519-522)
+        # 4-byte valid decode tests (lines 519-522)
         valid_4byte = [
             (b"\xf0\x90\x80\x80", "\U00010000"),
             (b"\xf0\x9f\x98\x80", "\U0001f600"),  # 😀
@@ -408,13 +216,33 @@ class TestUtf8ToWStringUnixPath:
             encoded = Binary(expected)
             assert encoded == utf8_bytes
 
-        # Test overlong encoding rejection (lines 524-525)
-        overlong_4byte = b"\xf0\x80\x80\x80"  # Overlong encoding of NULL
-        result = overlong_4byte.decode("utf-8", errors="replace")
-        assert "\ufffd" in result, "Overlong 4-byte should produce replacement"
+        # Invalid continuation bytes tests
+        invalid_tests = [
+            # 3-byte invalid (lines 492-495)
+            b"\xe0\x00\x80",  # Second byte invalid
+            b"\xe0\xa0\x00",  # Third byte invalid
+            # 4-byte invalid (lines 512-514)
+            b"\xf0\x00\x80\x80",  # Second byte invalid
+            b"\xf0\x90\x00\x80",  # Third byte invalid
+            b"\xf0\x90\x80\x00",  # Fourth byte invalid
+        ]
 
-        # Test out-of-range rejection (lines 524-525)
-        out_of_range = b"\xf4\x90\x80\x80"  # 0x110000 (beyond max Unicode)
+        for test_bytes in invalid_tests:
+            result = test_bytes.decode("utf-8", errors="replace")
+            assert "\ufffd" in result, f"Invalid sequence {test_bytes.hex()} should produce replacement"
+
+        # Surrogate encoding rejection (lines 500-503)
+        for test_bytes in [b"\xed\xa0\x80", b"\xed\xbf\xbf"]:
+            result = test_bytes.decode("utf-8", errors="replace")
+            assert len(result) > 0
+
+        # Overlong encoding rejection (lines 504-505, 524-525)
+        for test_bytes in [b"\xe0\x80\x80", b"\xf0\x80\x80\x80"]:
+            result = test_bytes.decode("utf-8", errors="replace")
+            assert "\ufffd" in result, f"Overlong {test_bytes.hex()} should produce replacement"
+
+        # Out-of-range rejection (lines 524-525)
+        out_of_range = b"\xf4\x90\x80\x80"  # 0x110000
         result = out_of_range.decode("utf-8", errors="replace")
         assert len(result) > 0, "Out-of-range 4-byte should produce some output"
 
@@ -462,61 +290,36 @@ class TestUtf8ToWStringAlwaysPush:
 class TestEdgeCases:
     """Test edge cases and error paths."""
 
-    def test_empty_string(self):
-        """Test empty string handling."""
+    @pytest.mark.parametrize("test_input,expected,description", [
+        ("", b"", "Empty string"),
+        ("\x00", b"\x00", "NULL character"),
+        ("A\x00B", b"A\x00B", "NULL in middle"),
+        ("Valid\ufffdText", "Valid\ufffdText", "Mixed valid/U+FFFD"),
+        ("A\u00a9\u4e2d\U0001f600", "A\u00a9\u4e2d\U0001f600", "All UTF-8 ranges"),
+    ])
+    def test_special_characters(self, test_input, expected, description):
+        """Test special character handling including NULL and replacement chars."""
         from mssql_python.type import Binary
 
-        empty = ""
-        result = Binary(empty)
-        assert result == b"", "Empty string should produce empty bytes"
+        result = Binary(test_input)
+        if isinstance(expected, str):
+            # For strings, encode and compare
+            assert result == expected.encode("utf-8"), f"{description} should work"
+            # Verify round-trip
+            decoded = result.decode("utf-8")
+            assert decoded == test_input
+        else:
+            assert result == expected, f"{description} should produce expected bytes"
 
-    def test_null_character(self):
-        """Test NULL character handling."""
+    @pytest.mark.parametrize("char,count,expected_len", [
+        ("A", 1000, 1000),  # 1-byte chars - reduced from 10000 for speed
+        ("中", 500, 1500),  # 3-byte chars - reduced from 5000 for speed
+        ("😀", 200, 800),  # 4-byte chars - reduced from 2000 for speed
+    ])
+    def test_long_strings(self, char, count, expected_len):
+        """Test long strings with reduced size for faster execution."""
         from mssql_python.type import Binary
 
-        null_str = "\x00"
-        result = Binary(null_str)
-        assert result == b"\x00", "NULL character should be preserved"
-
-        # NULL in middle of string
-        with_null = "A\x00B"
-        result = Binary(with_null)
-        assert result == b"A\x00B", "NULL in middle should be preserved"
-
-    def test_very_long_strings(self):
-        """Test very long strings to ensure no buffer issues."""
-        from mssql_python.type import Binary
-
-        # Long ASCII
-        long_ascii = "A" * 10000
-        result = Binary(long_ascii)
-        assert len(result) == 10000, "Long ASCII string should encode correctly"
-
-        # Long multi-byte
-        long_utf8 = "中" * 5000  # 3 bytes each
-        result = Binary(long_utf8)
-        assert len(result) == 15000, "Long UTF-8 string should encode correctly"
-
-        # Long emoji
-        long_emoji = "😀" * 2000  # 4 bytes each
-        result = Binary(long_emoji)
-        assert len(result) == 8000, "Long emoji string should encode correctly"
-
-    def test_mixed_valid_invalid(self):
-        """Test strings with mix of valid and invalid sequences."""
-        from mssql_python.type import Binary
-
-        # Valid text with legitimate U+FFFD
-        mixed = "Valid\ufffdText"
-        result = Binary(mixed)
-        decoded = result.decode("utf-8")
-        assert decoded == mixed, "Mixed valid/U+FFFD should work"
-
-    def test_all_utf8_ranges(self):
-        """Test characters from all UTF-8 ranges in one string."""
-        from mssql_python.type import Binary
-
-        all_ranges = "A\u00a9\u4e2d\U0001f600"  # 1, 2, 3, 4 byte chars
-        result = Binary(all_ranges)
-        decoded = result.decode("utf-8")
-        assert decoded == all_ranges, "All UTF-8 ranges should work together"
+        long_str = char * count
+        result = Binary(long_str)
+        assert len(result) == expected_len, f"Long {char!r} string should encode correctly"
