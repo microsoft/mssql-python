@@ -855,19 +855,14 @@ std::string GetModuleDirectory() {
     fs::path modulePath(module_file);
     fs::path parentDir = modulePath.parent_path();
 
-    if (parentDir.empty()) {
-        LOG("GetModuleDirectory: Could not extract directory from module path - "
-            "path='%s'",
-            module_file.c_str());
-        return module_file;
-    }
-
-    // Log successful path extraction for observability
-    LOG("GetModuleDirectory: Successfully extracted directory - "
+    // Log path extraction for observability
+    LOG("GetModuleDirectory: Extracted directory - "
         "original_path='%s', directory='%s'",
         module_file.c_str(), parentDir.string().c_str());
 
     // Return UTF-8 encoded string for consistent handling
+    // If parentDir is empty or invalid, subsequent operations (like LoadDriverLibrary)
+    // will fail naturally with clear error messages
     return parentDir.string();
 }
 
