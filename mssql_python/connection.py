@@ -1301,21 +1301,21 @@ class Connection:
                     # Make sure we use the correct amount of data based on length
                     actual_data = data[:length]
 
-                    # Now decode the string data
-                    try:
-                        return actual_data.decode("utf-8").rstrip("\0")
-                    except UnicodeDecodeError:
+                    # SQLGetInfoW returns UTF-16LE encoded strings (wide-character ODBC API)
+                    # Try UTF-16LE first (expected), then UTF-8 as fallback
+                    for encoding in ("utf-16-le", "utf-8"):
                         try:
-                            return actual_data.decode("latin1").rstrip("\0")
-                        except Exception as e:
-                            logger.debug(
-                                "error",
-                                "Failed to decode string in getinfo: %s. "
-                                "Returning None to avoid silent corruption.",
-                                e,
-                            )
-                            # Explicitly return None to signal decoding failure
-                            return None
+                            return actual_data.decode(encoding).rstrip("\0")
+                        except UnicodeDecodeError:
+                            continue
+
+                    # All decodings failed
+                    logger.debug(
+                        "Failed to decode string in getinfo (info_type=%d) with supported encodings. "
+                        "Returning None to avoid silent corruption.",
+                        info_type,
+                    )
+                    return None
                 else:
                     # If it's not bytes, return as is
                     return data
