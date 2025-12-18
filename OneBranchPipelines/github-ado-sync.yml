@@ -66,7 +66,7 @@ jobs:
         git config user.name "ADO Sync Bot"
         
         git fetch github main
-        git rm -rf . -- :!.gdn
+        git rm -rf -- . :!.gdn
         git checkout github/main -- . :!.gdn
         echo timestamp.txt >> .git\info\exclude
         echo branchname.txt >> .git\info\exclude
