@@ -36,7 +36,7 @@ def test_threadsafety():
 
 def test_paramstyle():
     # Check if paramstyle has the expected value
-    assert paramstyle == "qmark", "paramstyle should be 'qmark'"
+    assert paramstyle == "pyformat", "paramstyle should be 'pyformat'"
 
 
 def test_lowercase():

@@ -1233,6 +1233,29 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Clear any previous messages
         self.messages = []
 
+        # Auto-detect and convert parameter style if needed
+        # Supports both qmark (?) and pyformat (%(name)s)
+        if parameters:
+            from mssql_python.parameter_helper import detect_and_convert_parameters
+            
+            # Handle the case where parameters is a tuple of (tuple/list/dict,)
+            if len(parameters) == 1:
+                actual_params = parameters[0]
+                operation, converted_params = detect_and_convert_parameters(operation, actual_params)
+                # Convert back to expected format
+                if converted_params is None:
+                    parameters = []
+                elif isinstance(converted_params, (tuple, list)):
+                    parameters = list(converted_params)
+                else:
+                    parameters = list(converted_params) if converted_params else []
+            else:
+                # Multiple individual parameters - treat as qmark tuple
+                operation, converted_params = detect_and_convert_parameters(operation, parameters)
+                parameters = list(converted_params) if converted_params else []
+        else:
+            parameters = []
+
         # Getting encoding setting
         encoding_settings = self._get_encoding_settings()
 
@@ -1240,12 +1263,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         logger.debug("execute: Creating parameter type list")
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
-
-        # Flatten parameters if a single tuple or list is passed
-        if len(parameters) == 1 and isinstance(parameters[0], (tuple, list)):
-            parameters = parameters[0]
-
-        parameters = list(parameters)
 
         # Validate that inputsizes matches parameter count if both are present
         if parameters and self._inputsizes:
@@ -1932,6 +1949,43 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if not seq_of_parameters:
             self.rowcount = 0
             return
+
+        # Auto-detect and convert parameter style for executemany
+        # Check first row to determine if we need to convert from pyformat to qmark
+        first_row = (
+            seq_of_parameters[0]
+            if hasattr(seq_of_parameters, "__getitem__")
+            else next(iter(seq_of_parameters))
+        )
+        
+        if isinstance(first_row, dict):
+            # pyformat style - convert all rows
+            from mssql_python.parameter_helper import parse_pyformat_params, convert_pyformat_to_qmark
+            
+            # Parse parameter names from SQL (determines order for all rows)
+            param_names = parse_pyformat_params(operation)
+            
+            if param_names:
+                # Convert SQL to qmark style
+                operation, _ = convert_pyformat_to_qmark(operation, first_row)
+                
+                # Convert all parameter dicts to tuples in the same order
+                converted_params = []
+                for param_dict in seq_of_parameters:
+                    if not isinstance(param_dict, dict):
+                        raise TypeError(
+                            f"Mixed parameter types in executemany: first row is dict, "
+                            f"but row has {type(param_dict).__name__}"
+                        )
+                    # Build tuple in the order determined by param_names
+                    row_tuple = tuple(param_dict[name] for name in param_names)
+                    converted_params.append(row_tuple)
+                
+                seq_of_parameters = converted_params
+                logger.debug(
+                    "executemany: Converted %d rows from pyformat to qmark",
+                    len(seq_of_parameters)
+                )
 
         # Apply timeout if set (non-zero)
         if self._timeout > 0:
