@@ -35,12 +35,29 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.0.0
+## What's new in v1.1.0
  
-### New Features
+### Enhancements
  
-- *Python 3.14 support* - ensuring compatibility with the latest Python ecosystem.
-- *GA stability* - hardened release engineering, expanded test coverage, and compliance checks for enterprise readiness.
+- **Thread-Safe Encoding/Decoding** - Mutex-based lock protection prevents race conditions in multi-threaded applications with concurrent connections. Strict validation for SQL_WCHAR types and security measures against encoding-based attacks ensure data integrity and application security.
+
+### Critical Bug Fixes
+
+- **Linux Stability** - Fixed critical double-free issue causing segmentation faults during Python garbage collection, significantly improving stability on Linux platforms.
+
+- **Connection Pooling Isolation Level** - Transaction isolation level now explicitly resets to READ COMMITTED when pooled connections are reused, preventing unexpected transaction behavior and isolation level conflicts.
+
+- **Connection String Escaping** - Fixed parser and builder to correctly handle ODBC curly brace escaping rules, enabling proper handling of special characters in passwords and connection values.
+
+- **UTF-16 String Decoding** - Enhanced `connection.getinfo()` to properly decode UTF-16LE strings from SQL Server, eliminating data corruption when retrieving metadata with non-ASCII characters.
+
+- **NULL Parameter Arrays** - Added support for arrays containing only NULL values in `executemany()`, improving batch operation reliability.
+
+- **Query Timeout Consistency** - Refactored timeout handling to set query timeout during cursor initialization, reducing overhead and ensuring consistent timeout application.
+
+- **IntegrityError Detection** - Fixed error handling in `fetchall()` for INSERT statements with OUTPUT clause and multiple VALUES entries.
+
+- **Sensitive Parameter Filtering** - Corrected authentication parameter filtering to properly exclude Trusted_Connection while preserving encryption settings.
  
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
