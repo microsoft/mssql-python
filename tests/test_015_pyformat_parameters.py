@@ -70,14 +70,14 @@ class TestParsePyformatParams:
         assert params == ["param1", "param2", "param3"]
 
     def test_parse_parameter_in_string_literal(self):
-        """Test that parameters in string literals are still detected (psycopg2 behavior)."""
+        """Test that parameters in string literals are still detected"""
         sql = "SELECT '%(example)s' AS literal, id FROM users WHERE id = %(id)s"
         params = parse_pyformat_params(sql)
         # Simple scanner detects both - this is by design
         assert params == ["example", "id"]
 
     def test_parse_parameter_in_comment(self):
-        """Test that parameters in comments are still detected (psycopg2 behavior)."""
+        """Test that parameters in comments are still detected"""
         sql = """
         SELECT * FROM users
         -- This comment has %(commented)s parameter
@@ -1456,13 +1456,12 @@ class TestErrorHandling:
     def test_executemany_mixed_param_types_first_dict_later_tuple(self, db_connection):
         """Test executemany with mixed parameter types - dict first, then tuple"""
         cursor = db_connection.cursor()
-        
+
         with pytest.raises(TypeError) as exc_info:
             cursor.executemany(
-                "SELECT %(id)s",
-                [{"id": 1}, (2,)]  # First row is dict, second is tuple
+                "SELECT %(id)s", [{"id": 1}, (2,)]  # First row is dict, second is tuple
             )
-        
+
         assert "Mixed parameter types" in str(exc_info.value)
         assert "dict" in str(exc_info.value)
         assert "tuple" in str(exc_info.value)
@@ -1471,16 +1470,13 @@ class TestErrorHandling:
     def test_executemany_missing_parameter_in_dict(self, db_connection):
         """Test executemany with missing parameter in one of the dicts"""
         cursor = db_connection.cursor()
-        
+
         with pytest.raises(KeyError) as exc_info:
             cursor.executemany(
                 "SELECT %(id)s, %(name)s",
-                [
-                    {"id": 1, "name": "Alice"},
-                    {"id": 2}  # Missing 'name' parameter
-                ]
+                [{"id": 1, "name": "Alice"}, {"id": 2}],  # Missing 'name' parameter
             )
-        
+
         # The error should mention the missing key
         assert "name" in str(exc_info.value).lower()
         cursor.close()
@@ -1488,11 +1484,11 @@ class TestErrorHandling:
     def test_cursor_execute_invalid_parameter_type_set(self, db_connection):
         """Test execute with set (unsupported type) - wrapped as single param but set itself is invalid SQL type"""
         cursor = db_connection.cursor()
-        
+
         # Sets are not supported as SQL parameter values (can't be bound)
         with pytest.raises(TypeError) as exc_info:
             cursor.execute("SELECT ?", {1, 2, 3})
-        
+
         # The error comes from the SQL type mapping, not parameter detection
         assert "Unsupported parameter type" in str(exc_info.value)
         cursor.close()
@@ -1500,10 +1496,10 @@ class TestErrorHandling:
     def test_cursor_execute_parameter_mismatch_dict_with_qmark(self, db_connection):
         """Test execute with dict parameters but qmark SQL"""
         cursor = db_connection.cursor()
-        
+
         with pytest.raises(TypeError) as exc_info:
             cursor.execute("SELECT ? FROM table", {"id": 42})
-        
+
         assert "Parameter style mismatch" in str(exc_info.value)
         assert "positional placeholders (?)" in str(exc_info.value)
         cursor.close()
@@ -1511,10 +1507,10 @@ class TestErrorHandling:
     def test_cursor_execute_parameter_mismatch_tuple_with_pyformat(self, db_connection):
         """Test execute with tuple parameters but pyformat SQL"""
         cursor = db_connection.cursor()
-        
+
         with pytest.raises(TypeError) as exc_info:
             cursor.execute("SELECT * FROM users WHERE id = %(id)s", (42,))
-        
+
         assert "Parameter style mismatch" in str(exc_info.value)
         assert "named placeholders" in str(exc_info.value)
         cursor.close()
@@ -1522,23 +1518,25 @@ class TestErrorHandling:
     def test_cursor_execute_parameter_mismatch_list_with_pyformat(self, db_connection):
         """Test execute with list parameters but pyformat SQL"""
         cursor = db_connection.cursor()
-        
+
         with pytest.raises(TypeError) as exc_info:
-            cursor.execute("SELECT * FROM users WHERE id = %(id)s AND name = %(name)s", [42, "test"])
-        
+            cursor.execute(
+                "SELECT * FROM users WHERE id = %(id)s AND name = %(name)s", [42, "test"]
+            )
+
         assert "Parameter style mismatch" in str(exc_info.value)
         cursor.close()
 
     def test_cursor_execute_missing_pyformat_parameter(self, db_connection):
         """Test execute with missing pyformat parameter"""
         cursor = db_connection.cursor()
-        
+
         with pytest.raises(KeyError) as exc_info:
             cursor.execute(
                 "SELECT * FROM users WHERE id = %(id)s AND name = %(name)s",
-                {"id": 42}  # Missing 'name'
+                {"id": 42},  # Missing 'name'
             )
-        
+
         assert "Missing required parameter" in str(exc_info.value)
         assert "name" in str(exc_info.value)
         cursor.close()
@@ -1547,39 +1545,34 @@ class TestErrorHandling:
         """Test connection.execute() with invalid parameter type"""
         with pytest.raises(TypeError) as exc_info:
             db_connection.execute("SELECT ?", {"invalid": "dict for qmark"})
-        
+
         assert "Parameter style mismatch" in str(exc_info.value)
 
     def test_batch_execute_parameter_style_mismatch(self, db_connection):
         """Test batch_execute with mismatched parameter styles"""
         with pytest.raises(TypeError) as exc_info:
             results, cursor = db_connection.batch_execute(
-                ["SELECT * FROM users WHERE id = %(id)s"],
-                [(42,)]  # Tuple for pyformat SQL
+                ["SELECT * FROM users WHERE id = %(id)s"], [(42,)]  # Tuple for pyformat SQL
             )
-        
+
         assert "Parameter style mismatch" in str(exc_info.value)
 
     def test_executemany_pyformat_with_extra_params_ignored(self, db_connection):
         """Test that extra parameters in dict are allowed (not used but not error)"""
         cursor = db_connection.cursor()
-        
+
         # Extra parameters should be allowed (just not used)
         cursor.executemany(
-            "SELECT %(id)s",
-            [
-                {"id": 1, "extra": "ignored"},
-                {"id": 2, "another_extra": 999}
-            ]
+            "SELECT %(id)s", [{"id": 1, "extra": "ignored"}, {"id": 2, "another_extra": 999}]
         )
-        
+
         # Should succeed - extra params are simply not used
         cursor.close()
 
     def test_empty_parameter_name_in_pyformat(self, db_connection):
         """Test pyformat with empty parameter name %()s"""
         cursor = db_connection.cursor()
-        
+
         # Empty parameter names should be parsed
         cursor.execute("SELECT %()s", {"": 42})
         result = cursor.fetchone()
@@ -1589,7 +1582,7 @@ class TestErrorHandling:
     def test_parameter_wrapping_with_none_value(self, db_connection):
         """Test that None values are properly wrapped"""
         cursor = db_connection.cursor()
-        
+
         # None as single parameter should be wrapped to (None,)
         cursor.execute("SELECT ?", None)
         result = cursor.fetchone()
@@ -1600,11 +1593,11 @@ class TestErrorHandling:
         """Test executemany where all parameter values are None"""
         cursor = db_connection.cursor()
         drop_table_if_exists(cursor, "#test_none_params")
-        
+
         try:
             cursor.execute("CREATE TABLE #test_none_params (val INT)")
             cursor.executemany("INSERT INTO #test_none_params VALUES (?)", [None, None, None])
-            
+
             cursor.execute("SELECT COUNT(*) FROM #test_none_params WHERE val IS NULL")
             count = cursor.fetchone()[0]
             assert count == 3
@@ -1615,7 +1608,7 @@ class TestErrorHandling:
     def test_very_long_parameter_value(self, db_connection):
         """Test parameter with very long string value"""
         cursor = db_connection.cursor()
-        
+
         # Test with 100KB string
         long_value = "x" * 100000
         cursor.execute("SELECT ?", long_value)
@@ -1626,7 +1619,7 @@ class TestErrorHandling:
     def test_binary_parameter_wrapping(self, db_connection):
         """Test that binary data is properly wrapped"""
         cursor = db_connection.cursor()
-        
+
         binary_data = b"\x00\x01\x02\x03\xff\xfe\xfd"
         cursor.execute("SELECT ?", binary_data)
         result = cursor.fetchone()
@@ -1636,7 +1629,7 @@ class TestErrorHandling:
     def test_negative_number_wrapping(self, db_connection):
         """Test that negative numbers are properly wrapped"""
         cursor = db_connection.cursor()
-        
+
         cursor.execute("SELECT ?", -42)
         result = cursor.fetchone()
         assert result[0] == -42
@@ -1645,7 +1638,7 @@ class TestErrorHandling:
     def test_zero_value_wrapping(self, db_connection):
         """Test that zero is properly wrapped (not confused with falsy)"""
         cursor = db_connection.cursor()
-        
+
         cursor.execute("SELECT ?", 0)
         result = cursor.fetchone()
         assert result[0] == 0
@@ -1654,7 +1647,7 @@ class TestErrorHandling:
     def test_false_value_wrapping(self, db_connection):
         """Test that False is properly wrapped (not confused with None)"""
         cursor = db_connection.cursor()
-        
+
         cursor.execute("SELECT ?", False)
         result = cursor.fetchone()
         assert result[0] == False
@@ -1663,7 +1656,7 @@ class TestErrorHandling:
     def test_empty_string_wrapping(self, db_connection):
         """Test that empty string is properly wrapped"""
         cursor = db_connection.cursor()
-        
+
         cursor.execute("SELECT ?", "")
         result = cursor.fetchone()
         assert result[0] == ""
@@ -1673,4 +1666,3 @@ class TestErrorHandling:
 def drop_table_if_exists(cursor, table_name):
     """Helper to drop a table if it exists"""
     cursor.execute(f"IF OBJECT_ID('tempdb..{table_name}') IS NOT NULL DROP TABLE {table_name}")
-
