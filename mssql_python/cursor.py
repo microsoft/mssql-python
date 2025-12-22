@@ -1240,13 +1240,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Auto-detect and convert parameter style if needed
         # Supports both qmark (?) and pyformat (%(name)s)
+        # Note: parameters is always a tuple due to *parameters in method signature
         if parameters:
-            # Handle the case where parameters is not a tuple/list/dict
-            # (e.g., a single value like execute("SELECT ?", 42))
-            if not isinstance(parameters, (tuple, list, dict)):
-                # Single non-sequence parameter - wrap it in a tuple for qmark style
-                actual_params = (parameters,)
-            elif isinstance(parameters, tuple) and len(parameters) == 1:
+            # Check if single parameter is a nested container that should be unwrapped
+            # e.g., execute("SELECT ?", (value,)) vs execute("SELECT ?, ?", ((1, 2),))
+            if isinstance(parameters, tuple) and len(parameters) == 1:
                 # Could be either (value,) for single param or ((tuple),) for nested
                 # Check if it's a nested container
                 if isinstance(parameters[0], (tuple, list, dict)):
@@ -1260,12 +1258,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             operation, converted_params = detect_and_convert_parameters(operation, actual_params)
 
             # Convert back to list format expected by the binding code
+            # detect_and_convert_parameters always returns None, tuple, or list
             if converted_params is None:
                 parameters = []
-            elif isinstance(converted_params, (tuple, list)):
-                parameters = list(converted_params)
             else:
-                parameters = list(converted_params) if converted_params else []
+                parameters = list(converted_params)
         else:
             parameters = []
 

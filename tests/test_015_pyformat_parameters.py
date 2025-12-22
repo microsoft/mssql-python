@@ -1737,6 +1737,150 @@ class TestMockedExceptionPaths:
         assert new_params == ("John", "John", "John", "%123%", "%123%")
 
 
+class TestCursorParameterConversion:
+    """Test cursor.py parameter conversion edge cases for complete coverage."""
+
+    def test_execute_with_none_parameters_returned(self, db_connection):
+        """Test when detect_and_convert_parameters returns None for parameters (line 1261)."""
+        cursor = db_connection.cursor()
+        # Execute with no placeholders - should handle None return gracefully
+        cursor.execute("SELECT 1 AS col")
+        result = cursor.fetchone()
+        assert result[0] == 1
+        cursor.close()
+
+    def test_execute_with_empty_dict_no_placeholders(self, db_connection):
+        """Test execute with empty dict when SQL has no placeholders (line 1261)."""
+        cursor = db_connection.cursor()
+        # Empty dict with no placeholders should work
+        cursor.execute("SELECT 42 AS answer", {})
+        result = cursor.fetchone()
+        assert result[0] == 42
+        cursor.close()
+
+    def test_execute_with_single_value_wrapping(self, db_connection):
+        """Test single value parameter wrapping (line 1245)."""
+        cursor = db_connection.cursor()
+        # Test with various single value types that need wrapping
+        test_cases = [
+            (42, 42),  # int
+            (3.14, 3.14),  # float
+            ("hello", "hello"),  # str
+            (True, True),  # bool
+            (b"data", bytearray(b"data")),  # bytes
+        ]
+        
+        for input_val, expected in test_cases:
+            cursor.execute("SELECT ?", input_val)
+            result = cursor.fetchone()
+            if isinstance(expected, float):
+                assert abs(result[0] - expected) < 0.001
+            else:
+                assert result[0] == expected
+        
+        cursor.close()
+
+    def test_execute_normal_tuple_not_unwrapped(self, db_connection):
+        """Test that normal single-item tuple stays as-is (lines 1253-1254)."""
+        cursor = db_connection.cursor()
+        # (42,) should stay as (42,) not unwrap to 42
+        cursor.execute("SELECT ?", (42,))
+        result = cursor.fetchone()
+        assert result[0] == 42
+        cursor.close()
+
+    def test_execute_with_list_conversion(self, db_connection):
+        """Test list parameter conversion (line 1263)."""
+        cursor = db_connection.cursor()
+        # Lists should be converted properly
+        cursor.execute("SELECT ?, ?, ?", [1, 2, 3])
+        result = cursor.fetchone()
+        assert result[0] == 1
+        assert result[1] == 2
+        assert result[2] == 3
+        cursor.close()
+
+    def test_execute_with_empty_sql_no_params(self, db_connection):
+        """Test SQL with no parameters at all (line 1267)."""
+        cursor = db_connection.cursor()
+        # No parameters provided - should default to empty list
+        cursor.execute("SELECT GETDATE()")
+        result = cursor.fetchone()
+        assert result[0] is not None  # Should return a datetime
+        cursor.close()
+
+    def test_execute_pyformat_with_dict_params(self, db_connection):
+        """Test pyformat with dict goes through conversion (lines 1257-1265)."""
+        cursor = db_connection.cursor()
+        # Dict with pyformat should be converted
+        cursor.execute("SELECT %(a)s, %(b)s", {"a": 10, "b": 20})
+        result = cursor.fetchone()
+        assert result[0] == 10
+        assert result[1] == 20
+        cursor.close()
+
+    def test_execute_with_decimal_single_param(self, db_connection):
+        """Test Decimal single parameter wrapping (line 1245)."""
+        cursor = db_connection.cursor()
+        from decimal import Decimal
+        cursor.execute("SELECT ?", Decimal("123.45"))
+        result = cursor.fetchone()
+        assert float(result[0]) == 123.45
+        cursor.close()
+
+    def test_execute_with_date_single_param(self, db_connection):
+        """Test date single parameter wrapping (line 1245)."""
+        cursor = db_connection.cursor()
+        from datetime import date
+        test_date = date(2024, 1, 15)
+        cursor.execute("SELECT ?", test_date)
+        result = cursor.fetchone()
+        assert result[0].year == 2024
+        assert result[0].month == 1
+        assert result[0].day == 15
+        cursor.close()
+
+    def test_execute_with_multiple_params_as_tuple(self, db_connection):
+        """Test multiple parameters as tuple (line 1257)."""
+        cursor = db_connection.cursor()
+        # Multiple params as tuple - should use actual_params = parameters (line 1257)
+        cursor.execute("SELECT ?, ?", 10, 20)
+        result = cursor.fetchone()
+        assert result[0] == 10
+        assert result[1] == 20
+        cursor.close()
+
+    def test_execute_with_three_params(self, db_connection):
+        """Test three parameters (line 1257 else branch)."""
+        cursor = db_connection.cursor()
+        # Three params - goes through else: actual_params = parameters
+        cursor.execute("SELECT ?, ?, ?", 1, 2, 3)
+        result = cursor.fetchone()
+        assert result[0] == 1
+        assert result[1] == 2
+        assert result[2] == 3
+        cursor.close()
+
+    def test_execute_with_empty_tuple(self, db_connection):
+        """Test empty parameters (line 1270 else branch)."""
+        cursor = db_connection.cursor()
+        # No parameters - should hit else: parameters = []
+        cursor.execute("SELECT 100")
+        result = cursor.fetchone()
+        assert result[0] == 100
+        cursor.close()
+
+    def test_execute_pyformat_returns_tuple(self, db_connection):
+        """Test pyformat returns tuple which converts to list (line 1264)."""
+        cursor = db_connection.cursor()
+        # Pyformat with dict returns tuple, should convert to list (line 1264)
+        cursor.execute("SELECT %(x)s, %(y)s", {"x": 100, "y": 200})
+        result = cursor.fetchone()
+        assert result[0] == 100
+        assert result[1] == 200
+        cursor.close()
+
+
 def drop_table_if_exists(cursor, table_name):
     """Helper to drop a table if it exists"""
     cursor.execute(f"IF OBJECT_ID('tempdb..{table_name}') IS NOT NULL DROP TABLE {table_name}")
