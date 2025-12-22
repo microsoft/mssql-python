@@ -29,6 +29,11 @@ from mssql_python.exceptions import (
 )
 from mssql_python.row import Row
 from mssql_python import get_settings
+from mssql_python.parameter_helper import (
+    detect_and_convert_parameters,
+    parse_pyformat_params,
+    convert_pyformat_to_qmark,
+)
 
 if TYPE_CHECKING:
     from mssql_python.connection import Connection
@@ -1236,8 +1241,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Auto-detect and convert parameter style if needed
         # Supports both qmark (?) and pyformat (%(name)s)
         if parameters:
-            from mssql_python.parameter_helper import detect_and_convert_parameters
-
             # Handle the case where parameters is not a tuple/list/dict
             # (e.g., a single value like execute("SELECT ?", 42))
             if not isinstance(parameters, (tuple, list, dict)):
@@ -1980,11 +1983,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         if isinstance(first_row, dict):
             # pyformat style - convert all rows
-            from mssql_python.parameter_helper import (
-                parse_pyformat_params,
-                convert_pyformat_to_qmark,
-            )
-
             # Parse parameter names from SQL (determines order for all rows)
             param_names = parse_pyformat_params(operation)
 

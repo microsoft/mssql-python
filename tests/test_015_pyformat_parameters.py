@@ -1663,6 +1663,80 @@ class TestErrorHandling:
         cursor.close()
 
 
+class TestMockedExceptionPaths:
+    """Test exception paths using mocks to simulate hard-to-trigger conditions."""
+
+    def test_parameter_helper_exception_propagation(self):
+        """Test that exceptions from parameter conversion propagate correctly."""
+        # Test missing parameter key error
+        sql = "SELECT * FROM users WHERE id = %(id)s AND name = %(name)s"
+        params = {"id": 42}  # Missing 'name'
+
+        with pytest.raises(KeyError) as exc_info:
+            convert_pyformat_to_qmark(sql, params)
+
+        assert "name" in str(exc_info.value)
+        assert "missing" in str(exc_info.value).lower()
+
+    def test_parameter_conversion_type_checking(self):
+        """Test type checking in parameter conversion."""
+        # Test with invalid parameter types
+        sql = "SELECT * FROM users WHERE id = %(id)s"
+
+        # Test with non-dict when pyformat detected
+        with pytest.raises(TypeError) as exc_info:
+            detect_and_convert_parameters(sql, (42,))
+
+        assert "dict" in str(exc_info.value).lower()
+
+    def test_parameter_mismatch_detection(self):
+        """Test detection of parameter count mismatches."""
+        # qmark style with wrong parameter count should be handled by SQL Server
+        sql = "SELECT * FROM users WHERE id = ? AND name = ?"
+        params = [42]  # Missing second parameter
+
+        # detect_and_convert doesn't validate qmark count, SQL Server will catch it
+        new_sql, new_params = detect_and_convert_parameters(sql, params)
+        assert new_sql == sql
+        assert new_params == params
+
+    def test_complex_sql_with_escaped_percent(self):
+        """Test SQL with escaped percent signs (%%)."""
+        sql = "SELECT * FROM users WHERE name LIKE '%%test%%' AND id = %(id)s"
+        params = {"id": 42}
+
+        new_sql, new_params = convert_pyformat_to_qmark(sql, params)
+
+        assert new_sql == "SELECT * FROM users WHERE name LIKE '%test%' AND id = ?"
+        assert new_params == (42,)
+
+    def test_empty_parameters_with_pyformat_style(self):
+        """Test SQL with no parameter substitutions but pyformat detection."""
+        sql = "SELECT * FROM users"
+        params = {}
+
+        new_sql, new_params = detect_and_convert_parameters(sql, params)
+
+        assert new_sql == sql
+        assert new_params == ()
+
+    def test_reused_parameters_in_complex_query(self):
+        """Test query with same parameter reused multiple times."""
+        sql = """
+        SELECT * FROM users 
+        WHERE (first_name = %(name)s OR last_name = %(name)s OR middle_name = %(name)s)
+        AND (email LIKE %(pattern)s OR phone LIKE %(pattern)s)
+        """
+        params = {"name": "John", "pattern": "%123%"}
+
+        new_sql, new_params = convert_pyformat_to_qmark(sql, params)
+
+        # Should have 5 ? placeholders
+        assert new_sql.count("?") == 5
+        # Parameters should be in correct order: name, name, name, pattern, pattern
+        assert new_params == ("John", "John", "John", "%123%", "%123%")
+
+
 def drop_table_if_exists(cursor, table_name):
     """Helper to drop a table if it exists"""
     cursor.execute(f"IF OBJECT_ID('tempdb..{table_name}') IS NOT NULL DROP TABLE {table_name}")
