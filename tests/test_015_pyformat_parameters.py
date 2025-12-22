@@ -324,7 +324,6 @@ class TestConvertPyformatToQmark:
 
     def test_convert_many_parameters(self):
         """Test converting with many parameters (performance test)."""
-        param_names = [f"param{i}" for i in range(50)]
         sql = "SELECT * FROM table WHERE " + " AND ".join(
             [f"col{i} = %(param{i})s" for i in range(50)]
         )
@@ -1551,7 +1550,7 @@ class TestErrorHandling:
     def test_batch_execute_parameter_style_mismatch(self, db_connection):
         """Test batch_execute with mismatched parameter styles"""
         with pytest.raises(TypeError) as exc_info:
-            results, cursor = db_connection.batch_execute(
+            db_connection.batch_execute(
                 ["SELECT * FROM users WHERE id = %(id)s"], [(42,)]  # Tuple for pyformat SQL
             )
 
@@ -1769,7 +1768,7 @@ class TestCursorParameterConversion:
             (True, True),  # bool
             (b"data", bytearray(b"data")),  # bytes
         ]
-        
+
         for input_val, expected in test_cases:
             cursor.execute("SELECT ?", input_val)
             result = cursor.fetchone()
@@ -1777,7 +1776,7 @@ class TestCursorParameterConversion:
                 assert abs(result[0] - expected) < 0.001
             else:
                 assert result[0] == expected
-        
+
         cursor.close()
 
     def test_execute_normal_tuple_not_unwrapped(self, db_connection):
@@ -1823,6 +1822,7 @@ class TestCursorParameterConversion:
         """Test Decimal single parameter wrapping (line 1245)."""
         cursor = db_connection.cursor()
         from decimal import Decimal
+
         cursor.execute("SELECT ?", Decimal("123.45"))
         result = cursor.fetchone()
         assert float(result[0]) == 123.45
@@ -1832,6 +1832,7 @@ class TestCursorParameterConversion:
         """Test date single parameter wrapping (line 1245)."""
         cursor = db_connection.cursor()
         from datetime import date
+
         test_date = date(2024, 1, 15)
         cursor.execute("SELECT ?", test_date)
         result = cursor.fetchone()
@@ -1879,8 +1880,3 @@ class TestCursorParameterConversion:
         assert result[0] == 100
         assert result[1] == 200
         cursor.close()
-
-
-def drop_table_if_exists(cursor, table_name):
-    """Helper to drop a table if it exists"""
-    cursor.execute(f"IF OBJECT_ID('tempdb..{table_name}') IS NOT NULL DROP TABLE {table_name}")
