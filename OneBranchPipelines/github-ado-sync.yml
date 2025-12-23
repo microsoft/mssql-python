@@ -1,5 +1,18 @@
 # GitHub-to-ADO Sync Pipeline
 # Syncs main branch from public GitHub to internal Azure DevOps daily at 5pm IST
+#
+# SYNC STRATEGY RATIONALE:
+# This pipeline uses a "replace-all" approach rather than traditional git merge/rebase because:
+# 1. DIVERGENT HISTORY: ADO repository contains commits from early development that don't exist
+#    in GitHub. These historical commits were made before GitHub became the source of truth.
+# 2. AVOIDING CONFLICTS: Standard git operations (merge, rebase, reset --hard) fail when
+#    repositories have divergent commit histories. Attempting to merge results in conflicts
+#    that cannot be automatically resolved.
+# 3. IMPLEMENTATION: We use 'git fetch + git rm + git checkout' to completely replace ADO's
+#    working tree with GitHub's files without attempting to reconcile git history. This creates
+#    a clean sync commit that updates all files to match GitHub exactly.
+# 4. CHANGE DETECTION: The pipeline checks if any files actually differ before creating PRs,
+#    avoiding unnecessary sync operations when repositories are already aligned.
 
 name: GitHub-Sync-$(Date:yyyyMMdd)$(Rev:.r)
 
@@ -21,25 +34,15 @@ jobs:
     vmImage: 'windows-latest'
   
   steps:
-  - checkout: none
+  - checkout: self
+    persistCredentials: true
 
   - task: CmdLine@2
-    displayName: 'Clone GitHub repo'
+    displayName: 'Add GitHub remote'
     inputs:
-      script: git clone https://github.com/microsoft/mssql-python.git repo-dir -b main
-      workingDirectory: $(Agent.TempDirectory)
-
-  - task: CmdLine@2
-    displayName: 'Add Azure DevOps remote'
-    inputs:
-      script: git remote add azdo-mirror https://$(System.AccessToken)@sqlclientdrivers.visualstudio.com/mssql-python/_git/mssql-python
-      workingDirectory: $(Agent.TempDirectory)/repo-dir
-
-  - task: CmdLine@2
-    displayName: 'Fetch ADO repo'
-    inputs:
-      script: git fetch azdo-mirror
-      workingDirectory: $(Agent.TempDirectory)/repo-dir
+      script: |
+        git remote add github https://github.com/microsoft/mssql-python.git
+        git fetch github main
 
   - task: CmdLine@2
     displayName: 'Create timestamped sync branch'
@@ -51,26 +54,35 @@ jobs:
         set SYNC_BRANCH=github-sync-%TIMESTAMP%
         echo %SYNC_BRANCH% > branchname.txt
         echo Creating sync branch: %SYNC_BRANCH%
-        git fetch azdo-mirror
-        git show-ref --verify --quiet refs/remotes/azdo-mirror/main
-        if %ERRORLEVEL% EQU 0 (
-          git checkout -b %SYNC_BRANCH% -t azdo-mirror/main
-        ) else (
-          echo azdo-mirror/main does not exist. Exiting.
-          exit /b 1
-        )
+        git checkout -b %SYNC_BRANCH%
         echo ##vso[task.setvariable variable=SYNC_BRANCH;isOutput=true]%SYNC_BRANCH%
-      workingDirectory: $(Agent.TempDirectory)/repo-dir
 
   - task: CmdLine@2
-    displayName: 'Reset branch to match GitHub main exactly'
+    displayName: 'Sync with GitHub main'
     inputs:
       script: |
-        git -c user.email="sync@microsoft.com" -c user.name="ADO Sync Bot" reset --hard origin/main
-      workingDirectory: $(Agent.TempDirectory)/repo-dir
+        echo Syncing with GitHub main...
+        git config user.email "sync@microsoft.com"
+        git config user.name "ADO Sync Bot"
+        
+        git fetch github main
+        git rm -rf .
+        git checkout github/main -- .
+        echo timestamp.txt >> .git\info\exclude
+        echo branchname.txt >> .git\info\exclude
+        git diff --cached --quiet
+        if %ERRORLEVEL% EQU 0 (
+          echo No changes detected. Skipping commit.
+          echo ##vso[task.setvariable variable=HAS_CHANGES]false
+        ) else (
+          echo Changes detected. Creating commit...
+          git add . && git commit -m "Sync from GitHub main"
+          echo ##vso[task.setvariable variable=HAS_CHANGES]true
+        )
 
   - task: CmdLine@2
     displayName: 'Push branch to Azure DevOps'
+    condition: eq(variables['HAS_CHANGES'], 'true')
     inputs:
       script: |
         set /p SYNC_BRANCH=<branchname.txt
@@ -79,7 +91,7 @@ jobs:
         git config user.email "sync@microsoft.com"
         git config user.name "ADO Sync Bot"
         
-        git push azdo-mirror %SYNC_BRANCH% --set-upstream
+        git push origin %SYNC_BRANCH% --set-upstream
         
         if %ERRORLEVEL% EQU 0 (
           echo Branch pushed successfully!
@@ -87,10 +99,10 @@ jobs:
           echo ERROR: Push failed!
           exit /b 1
         )
-      workingDirectory: $(Agent.TempDirectory)/repo-dir
 
   - task: CmdLine@2
     displayName: 'Create pull request'
+    condition: eq(variables['HAS_CHANGES'], 'true')
     inputs:
       script: |
         echo Installing Azure DevOps extension...
@@ -124,4 +136,3 @@ jobs:
         
         if exist timestamp.txt del timestamp.txt
         if exist branchname.txt del branchname.txt
-      workingDirectory: $(Agent.TempDirectory)/repo-dir
