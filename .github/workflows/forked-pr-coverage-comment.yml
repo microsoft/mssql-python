@@ -1,5 +1,21 @@
 name: Post Coverage Comment
 
+# This workflow handles posting coverage comments for FORKED PRs.
+#
+# Why a separate workflow?
+# - Forked PRs have restricted GITHUB_TOKEN permissions for security
+# - They cannot write comments directly to the base repository's PRs
+# - workflow_run triggers run in the BASE repository context with full permissions
+# - This allows us to safely post comments on forked PRs
+#
+# How it works:
+# 1. PR Code Coverage workflow uploads coverage data as an artifact (forked PRs only)
+# 2. This workflow triggers when PR Code Coverage completes successfully
+# 3. Downloads the artifact and posts the comment with full write permissions
+#
+# Same-repo PRs post comments directly in pr-code-coverage.yml (faster)
+# Forked PRs use this workflow (required for permissions)
+
 on:
   workflow_run:
     workflows: ["PR Code Coverage"]
@@ -21,9 +37,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh run download ${{ github.event.workflow_run.id }} \
+          # Download artifact with error handling for non-existent artifacts
+          if ! gh run download ${{ github.event.workflow_run.id }} \
             --repo ${{ github.repository }} \
-            --name coverage-comment-data
+            --name coverage-comment-data 2>&1; then
+            echo "⚠️ No coverage-comment-data artifact found"
+            echo "This is expected for same-repo PRs (they post comments directly)"
+            echo "Exiting gracefully..."
+            exit 0
+          fi
+          
+          # Verify artifact was downloaded
+          if [[ ! -f pr-info.json ]]; then
+            echo "⚠️ Artifact downloaded but pr-info.json not found"
+            echo "This may indicate an issue with artifact upload"
+            exit 1
+          fi
 
       - name: Read coverage data
         id: coverage

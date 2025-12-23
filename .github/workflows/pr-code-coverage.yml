@@ -451,11 +451,14 @@ jobs:
           cat coverage-comment-data/pr-info.json
 
       - name: Upload coverage comment data
+        # Only upload artifact for forked PRs since same-repo PRs post comment directly
+        # This prevents unnecessary workflow_run triggers for same-repo PRs
+        if: github.event.pull_request.head.repo.full_name != github.repository
         uses: actions/upload-artifact@v4
         with:
           name: coverage-comment-data
           path: coverage-comment-data/
-          retention-days: 1
+          retention-days: 7
 
       - name: Comment coverage summary on PR
         # Skip for forked PRs due to token permission restrictions
