@@ -1,0 +1,111 @@
+name: Post Coverage Comment
+
+# This workflow handles posting coverage comments for FORKED PRs.
+#
+# Why a separate workflow?
+# - Forked PRs have restricted GITHUB_TOKEN permissions for security
+# - They cannot write comments directly to the base repository's PRs
+# - workflow_run triggers run in the BASE repository context with full permissions
+# - This allows us to safely post comments on forked PRs
+#
+# How it works:
+# 1. PR Code Coverage workflow uploads coverage data as an artifact (forked PRs only)
+# 2. This workflow triggers when PR Code Coverage completes successfully
+# 3. Downloads the artifact and posts the comment with full write permissions
+#
+# Same-repo PRs post comments directly in pr-code-coverage.yml (faster)
+# Forked PRs use this workflow (required for permissions)
+
+on:
+  workflow_run:
+    workflows: ["PR Code Coverage"]
+    types:
+      - completed
+
+jobs:
+  post-comment:
+    runs-on: ubuntu-latest
+    if: >
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    permissions:
+      pull-requests: write
+      contents: read
+    
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Download coverage data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Download artifact with error handling for non-existent artifacts
+          if ! gh run download ${{ github.event.workflow_run.id }} \
+            --repo ${{ github.repository }} \
+            --name coverage-comment-data 2>&1; then
+            echo "⚠️ No coverage-comment-data artifact found"
+            echo "This is expected for same-repo PRs (they post comments directly)"
+            echo "Exiting gracefully..."
+            exit 0
+          fi
+          
+          # Verify artifact was downloaded
+          if [[ ! -f pr-info.json ]]; then
+            echo "⚠️ Artifact downloaded but pr-info.json not found"
+            echo "This may indicate an issue with artifact upload"
+            exit 1
+          fi
+
+      - name: Read coverage data
+        id: coverage
+        run: |
+          if [[ ! -f pr-info.json ]]; then
+            echo "❌ pr-info.json not found"
+            exit 1
+          fi
+          
+          cat pr-info.json
+          
+          # Extract values from JSON with proper quoting
+          PR_NUMBER="$(jq -r '.pr_number' pr-info.json)"
+          COVERAGE_PCT="$(jq -r '.coverage_percentage' pr-info.json)"
+          COVERED_LINES="$(jq -r '.covered_lines' pr-info.json)"
+          TOTAL_LINES="$(jq -r '.total_lines' pr-info.json)"
+          PATCH_PCT="$(jq -r '.patch_coverage_pct' pr-info.json)"
+          LOW_COV_FILES="$(jq -r '.low_coverage_files' pr-info.json)"
+          PATCH_SUMMARY="$(jq -r '.patch_coverage_summary' pr-info.json)"
+          ADO_URL="$(jq -r '.ado_url' pr-info.json)"
+          
+          # Export to env for next step (single-line values)
+          echo "PR_NUMBER=${PR_NUMBER}" >> $GITHUB_ENV
+          echo "COVERAGE_PERCENTAGE=${COVERAGE_PCT}" >> $GITHUB_ENV
+          echo "COVERED_LINES=${COVERED_LINES}" >> $GITHUB_ENV
+          echo "TOTAL_LINES=${TOTAL_LINES}" >> $GITHUB_ENV
+          echo "PATCH_COVERAGE_PCT=${PATCH_PCT}" >> $GITHUB_ENV
+          echo "ADO_URL=${ADO_URL}" >> $GITHUB_ENV
+          
+          # Handle multiline values with proper quoting
+          {
+            echo "LOW_COVERAGE_FILES<<EOF"
+            echo "$LOW_COV_FILES"
+            echo "EOF"
+          } >> $GITHUB_ENV
+          
+          {
+            echo "PATCH_COVERAGE_SUMMARY<<EOF"
+            echo "$PATCH_SUMMARY"
+            echo "EOF"
+          } >> $GITHUB_ENV
+
+      - name: Comment coverage summary on PR
+        uses: ./.github/actions/post-coverage-comment
+        with:
+          pr_number: ${{ env.PR_NUMBER }}
+          coverage_percentage: ${{ env.COVERAGE_PERCENTAGE }}
+          covered_lines: ${{ env.COVERED_LINES }}
+          total_lines: ${{ env.TOTAL_LINES }}
+          patch_coverage_pct: ${{ env.PATCH_COVERAGE_PCT }}
+          low_coverage_files: ${{ env.LOW_COVERAGE_FILES }}
+          patch_coverage_summary: ${{ env.PATCH_COVERAGE_SUMMARY }}
+          ado_url: ${{ env.ADO_URL }}
