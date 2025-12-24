@@ -24,6 +24,9 @@ import platform
 import sys
 import subprocess
 
+import mssql_python
+from mssql_python import ddbc_bindings
+
 
 class TestPathHandlingCodePaths:
     """
@@ -44,16 +47,12 @@ class TestPathHandlingCodePaths:
 
         If any of these fail due to path encoding issues, import fails.
         """
-        import mssql_python
-
         assert mssql_python is not None
         assert hasattr(mssql_python, "__file__")
         assert isinstance(mssql_python.__file__, str)
 
     def test_module_path_is_valid_utf8(self):
         """Verify module path is valid UTF-8 string."""
-        import mssql_python
-
         module_path = mssql_python.__file__
 
         # Should be encodable/decodable as UTF-8 without errors
@@ -63,22 +62,16 @@ class TestPathHandlingCodePaths:
 
     def test_connect_function_available(self):
         """Verify connect function is available (proves ddbc_bindings loaded)."""
-        import mssql_python
-
         assert hasattr(mssql_python, "connect")
         assert callable(mssql_python.connect)
 
     def test_ddbc_bindings_loaded(self):
         """Verify ddbc_bindings C++ module loaded successfully."""
-        from mssql_python import ddbc_bindings
-
         assert ddbc_bindings is not None
 
     def test_connection_class_available(self):
         """Verify Connection class from C++ bindings is accessible."""
-        from mssql_python.ddbc_bindings import Connection
-
-        assert Connection is not None
+        assert ddbc_bindings.Connection is not None
 
 
 class TestPathWithNonAsciiCharacters:
@@ -173,7 +166,6 @@ class TestWindowsSpecificPathHandling:
 
     def test_libs_directory_exists(self):
         """Verify the libs/windows directory structure exists."""
-        import mssql_python
         from pathlib import Path
 
         module_dir = Path(mssql_python.__file__).parent
@@ -186,7 +178,6 @@ class TestWindowsSpecificPathHandling:
 
     def test_auth_dll_exists_if_libs_present(self):
         """Verify mssql-auth.dll exists in the libs directory."""
-        import mssql_python
         from pathlib import Path
         import struct
 
@@ -320,15 +311,11 @@ class TestPathEncodingEdgeCases:
 
     def test_ascii_only_path_still_works(self):
         """Verify ASCII-only paths continue to work (regression test)."""
-        import mssql_python
-
         # If we got here, module loaded successfully
         assert mssql_python is not None
 
     def test_path_with_spaces(self):
         """Verify paths with spaces work (common Windows scenario)."""
-        import mssql_python
-
         # Common Windows paths like "Program Files" have spaces
         # Module should load regardless
         assert mssql_python.__file__ is not None
