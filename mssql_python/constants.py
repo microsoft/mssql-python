@@ -502,3 +502,111 @@ _ALLOWED_CONNECTION_STRING_PARAMS = {
     # internally.
     "packetsize": "PacketSize",
 }
+
+
+def get_info_constants() -> Dict[str, int]:
+    """
+    Returns a dictionary of all available GetInfo constants.
+
+    This provides all SQLGetInfo constants that can be used with the Connection.getinfo() method
+    to retrieve metadata about the database server and driver.
+
+    Returns:
+        dict: Dictionary mapping constant names to their integer values
+    """
+    return {name: member.value for name, member in GetInfoConstants.__members__.items()}
+
+
+# Automatically export selected enum constants as module-level attributes
+# This allows: from mssql_python import SQL_VARCHAR
+# Instead of: from mssql_python.constants import ConstantsDDBC; ConstantsDDBC.SQL_VARCHAR.value
+
+# Define which ConstantsDDBC members should be exported as public API
+# Internal/driver-manager-dependent constants are excluded
+_DDBC_PUBLIC_API = {
+    # SQL Type constants
+    "SQL_CHAR",
+    "SQL_VARCHAR",
+    "SQL_LONGVARCHAR",
+    "SQL_WCHAR",
+    "SQL_WVARCHAR",
+    "SQL_WLONGVARCHAR",
+    "SQL_DECIMAL",
+    "SQL_NUMERIC",
+    "SQL_BIT",
+    "SQL_TINYINT",
+    "SQL_SMALLINT",
+    "SQL_INTEGER",
+    "SQL_BIGINT",
+    "SQL_REAL",
+    "SQL_FLOAT",
+    "SQL_DOUBLE",
+    "SQL_BINARY",
+    "SQL_VARBINARY",
+    "SQL_LONGVARBINARY",
+    "SQL_DATE",
+    "SQL_TIME",
+    "SQL_TIMESTAMP",
+    "SQL_TYPE_DATE",
+    "SQL_TYPE_TIME",
+    "SQL_TYPE_TIMESTAMP",
+    "SQL_GUID",
+    "SQL_XML",
+    # Connection attribute constants (ODBC-standard, driver-independent only)
+    "SQL_ATTR_ACCESS_MODE",
+    "SQL_ATTR_CONNECTION_TIMEOUT",
+    "SQL_ATTR_CURRENT_CATALOG",
+    "SQL_ATTR_LOGIN_TIMEOUT",
+    "SQL_ATTR_PACKET_SIZE",
+    "SQL_ATTR_TXN_ISOLATION",
+    # Transaction isolation levels
+    "SQL_TXN_READ_UNCOMMITTED",
+    "SQL_TXN_READ_COMMITTED",
+    "SQL_TXN_REPEATABLE_READ",
+    "SQL_TXN_SERIALIZABLE",
+    # Access modes
+    "SQL_MODE_READ_WRITE",
+    "SQL_MODE_READ_ONLY",
+}
+
+# Get current module's globals for dynamic export
+_module_globals = globals()
+_exported_names = []
+
+# Export selected ConstantsDDBC enum members as module-level constants
+for _name, _member in ConstantsDDBC.__members__.items():
+    if _name in _DDBC_PUBLIC_API:
+        _module_globals[_name] = _member.value
+        _exported_names.append(_name)
+
+# Export all GetInfoConstants enum members as module-level constants
+for _name, _member in GetInfoConstants.__members__.items():
+    _module_globals[_name] = _member.value
+    _exported_names.append(_name)
+
+# Export all AuthType enum members as module-level constants
+for _name, _member in AuthType.__members__.items():
+    _module_globals[_name] = _member.value
+    _exported_names.append(_name)
+
+# SQLTypes is not an Enum, it's a regular class - don't iterate it
+
+# Add special constant not in enum
+SQL_WMETADATA: int = -99
+_exported_names.append("SQL_WMETADATA")
+
+# Define __all__ for controlled exports
+__all__ = [
+    # Enum classes themselves
+    "ConstantsDDBC",
+    "GetInfoConstants",
+    "AuthType",
+    "SQLTypes",
+    # Helper function
+    "get_info_constants",
+    # All dynamically exported constants
+    *_exported_names,
+]
+
+# Clean up temporary variables
+del _module_globals, _exported_names, _name, _member, _DDBC_PUBLIC_API

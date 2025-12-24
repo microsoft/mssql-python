@@ -29,6 +29,11 @@ from mssql_python.exceptions import (
 )
 from mssql_python.row import Row
 from mssql_python import get_settings
+from mssql_python.parameter_helper import (
+    detect_and_convert_parameters,
+    parse_pyformat_params,
+    convert_pyformat_to_qmark,
+)
 
 if TYPE_CHECKING:
     from mssql_python.connection import Connection
@@ -1233,6 +1238,34 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Clear any previous messages
         self.messages = []
 
+        # Auto-detect and convert parameter style if needed
+        # Supports both qmark (?) and pyformat (%(name)s)
+        # Note: parameters is always a tuple due to *parameters in method signature
+        if parameters:
+            # Check if single parameter is a nested container that should be unwrapped
+            # e.g., execute("SELECT ?", (value,)) vs execute("SELECT ?, ?", ((1, 2),))
+            if isinstance(parameters, tuple) and len(parameters) == 1:
+                # Could be either (value,) for single param or ((tuple),) for nested
+                # Check if it's a nested container
+                if isinstance(parameters[0], (tuple, list, dict)):
+                    actual_params = parameters[0]
+                else:
+                    actual_params = parameters
+            else:
+                actual_params = parameters
+
+            # Convert parameters based on detected style
+            operation, converted_params = detect_and_convert_parameters(operation, actual_params)
+
+            # Convert back to list format expected by the binding code
+            # detect_and_convert_parameters always returns None, tuple, or list
+            if converted_params is None:
+                parameters = []
+            else:
+                parameters = list(converted_params)
+        else:
+            parameters = []
+
         # Getting encoding setting
         encoding_settings = self._get_encoding_settings()
 
@@ -1240,12 +1273,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         logger.debug("execute: Creating parameter type list")
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
-
-        # Flatten parameters if a single tuple or list is passed
-        if len(parameters) == 1 and isinstance(parameters[0], (tuple, list)):
-            parameters = parameters[0]
-
-        parameters = list(parameters)
 
         # Validate that inputsizes matches parameter count if both are present
         if parameters and self._inputsizes:
@@ -1932,6 +1959,50 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if not seq_of_parameters:
             self.rowcount = 0
             return
+
+        # Auto-detect and convert parameter style for executemany
+        # Check first row to determine if we need to convert from pyformat to qmark
+        first_row = (
+            seq_of_parameters[0]
+            if hasattr(seq_of_parameters, "__getitem__")
+            else next(iter(seq_of_parameters))
+        )
+
+        # Wrap single non-sequence parameters in each row (for backward compatibility)
+        # This allows executemany("INSERT VALUES (?)", [1, 2, 3]) instead of requiring [(1,), (2,), (3,)]
+        if not isinstance(first_row, (tuple, list, dict)):
+            # First row is a single non-sequence parameter - wrap all rows
+            seq_of_parameters = [(param,) for param in seq_of_parameters]
+            first_row = seq_of_parameters[0]
+            logger.debug(
+                "executemany: Wrapped %d single parameters into tuples", len(seq_of_parameters)
+            )
+
+        if isinstance(first_row, dict):
+            # pyformat style - convert all rows
+            # Parse parameter names from SQL (determines order for all rows)
+            param_names = parse_pyformat_params(operation)
+
+            if param_names:
+                # Convert SQL to qmark style
+                operation, _ = convert_pyformat_to_qmark(operation, first_row)
+
+                # Convert all parameter dicts to tuples in the same order
+                converted_params = []
+                for param_dict in seq_of_parameters:
+                    if not isinstance(param_dict, dict):
+                        raise TypeError(
+                            f"Mixed parameter types in executemany: first row is dict, "
+                            f"but row has {type(param_dict).__name__}"
+                        )
+                    # Build tuple in the order determined by param_names
+                    row_tuple = tuple(param_dict[name] for name in param_names)
+                    converted_params.append(row_tuple)
+
+                seq_of_parameters = converted_params
+                logger.debug(
+                    "executemany: Converted %d rows from pyformat to qmark", len(seq_of_parameters)
+                )
 
         # Apply timeout if set (non-zero)
         if self._timeout > 0:
