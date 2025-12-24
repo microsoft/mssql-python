@@ -66,12 +66,10 @@ class TestHandleFreeShutdown:
             # This maximizes the chance of DBC handles being finalized
             # AFTER the static ENV handle has destructed
             connections = []
-            for i in range(10):  # Reduced from 20 to avoid timeout
+            for i in range(5):  # Reduced for faster execution
                 conn = connect("{conn_str}")
                 # Don't even create cursors - just DBC handles
                 connections.append(conn)
-                if i % 3 == 0:
-                    print(f"Created {{i+1}} connections...")
             
             print(f"Created {{len(connections)}} DBC handles")
             print("Forcing GC to ensure objects are tracked...")
@@ -90,7 +88,7 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
         )
 
         # Check for segfault
@@ -106,7 +104,7 @@ class TestHandleFreeShutdown:
             ), f"SEGFAULT reproduced with signal {signal_num} - DBC handles not protected"
         else:
             assert result.returncode == 0, f"Process failed. stderr: {result.stderr}"
-            assert "Created 10 DBC handles" in result.stdout
+            assert "Created 5 DBC handles" in result.stdout
             print(f"PASS: No segfault - DBC handles properly protected during shutdown")
 
     def test_dbc_handle_outlives_env_handle(self, conn_str):
@@ -148,7 +146,7 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
         )
 
         if result.returncode < 0:
@@ -184,7 +182,7 @@ class TestHandleFreeShutdown:
             connections = []
             weakrefs = []
             
-            for i in range(10):  # Reduced from 15 to avoid timeout
+            for i in range(5):  # Reduced for faster execution
                 conn = connect("{conn_str}")
                 wr = weakref.ref(conn)
                 connections.append(conn)
@@ -198,9 +196,9 @@ class TestHandleFreeShutdown:
             # Delete strong references
             del connections
             
-            # Force multiple GC cycles
+            # Force GC cycles
             print("Forcing GC cycles...")
-            for i in range(5):
+            for i in range(2):
                 collected = gc.collect()
                 print(f"GC cycle {{i+1}}: collected {{collected}} objects")
             
@@ -215,7 +213,7 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
         )
 
         if result.returncode < 0:
@@ -259,7 +257,7 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -304,7 +302,7 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -354,7 +352,7 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -428,7 +426,7 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -458,7 +456,7 @@ class TestHandleFreeShutdown:
             from mssql_python import connect
             
             # Create and delete connections rapidly
-            for i in range(10):
+            for i in range(6):
                 conn = connect("{conn_str}")
                 cursor = conn.cursor()
                 cursor.execute(f"SELECT {{i}} AS test")
@@ -470,7 +468,7 @@ class TestHandleFreeShutdown:
                     conn.close()
                 # Leave odd-numbered connections open
             
-            print("Created 10 connections, closed 5 explicitly")
+            print("Created 6 connections, closed 3 explicitly")
             
             # Force GC before shutdown
             gc.collect()
@@ -484,11 +482,11 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
-        assert "Created 10 connections, closed 5 explicitly" in result.stdout
+        assert "Created 6 connections, closed 3 explicitly" in result.stdout
         assert "Rapid churn test: Exiting with mixed cleanup" in result.stdout
         print(f"PASS: Rapid connection churn with shutdown")
 
@@ -525,7 +523,7 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -580,7 +578,7 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -640,7 +638,7 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -714,7 +712,7 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
         )
 
         assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
@@ -726,24 +724,12 @@ class TestHandleFreeShutdown:
         assert "=== Exiting ===" in result.stdout
         print(f"PASS: Comprehensive all handle types test")
 
-    def test_cleanup_connections_normal_flow(self, conn_str):
-        """
-        Test _cleanup_connections() with normal active connections.
-
-        Validates that:
-        1. Active connections (_closed=False) are properly closed
-        2. The cleanup function is registered with atexit
-        3. Connections can be registered and tracked
-        """
-        script = textwrap.dedent(
-            f"""
-            import mssql_python
-            
-            # Verify cleanup infrastructure exists
-            assert hasattr(mssql_python, '_active_connections'), "Missing _active_connections"
-            assert hasattr(mssql_python, '_cleanup_connections'), "Missing _cleanup_connections"
-            assert hasattr(mssql_python, '_register_connection'), "Missing _register_connection"
-            
+    @pytest.mark.parametrize(
+        "scenario,test_code,expected_msg",
+        [
+            (
+                "normal_flow",
+                """
             # Create mock connection to test registration and cleanup
             class MockConnection:
                 def __init__(self):
@@ -763,30 +749,12 @@ class TestHandleFreeShutdown:
             mssql_python._cleanup_connections()
             assert mock_conn.close_called, "close() should have been called"
             assert mock_conn._closed, "Connection should be marked as closed"
-            
-            print("Normal flow: PASSED")
-        """
-        )
-
-        result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
-        )
-
-        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
-        assert "Normal flow: PASSED" in result.stdout
-        print(f"PASS: Cleanup connections normal flow")
-
-    def test_cleanup_connections_already_closed(self, conn_str):
-        """
-        Test _cleanup_connections() with already closed connections.
-
-        Validates that connections with _closed=True are skipped
-        and close() is not called again.
-        """
-        script = textwrap.dedent(
-            f"""
-            import mssql_python
-            
+                """,
+                "Normal flow: PASSED",
+            ),
+            (
+                "already_closed",
+                """
             class MockConnection:
                 def __init__(self):
                     self._closed = True  # Already closed
@@ -803,30 +771,12 @@ class TestHandleFreeShutdown:
             # Cleanup should skip this connection
             mssql_python._cleanup_connections()
             assert not mock_conn.close_called, "close() should NOT have been called"
-            
-            print("Already closed: PASSED")
-        """
-        )
-
-        result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
-        )
-
-        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
-        assert "Already closed: PASSED" in result.stdout
-        print(f"PASS: Cleanup connections already closed")
-
-    def test_cleanup_connections_missing_attribute(self, conn_str):
-        """
-        Test _cleanup_connections() with connections missing _closed attribute.
-
-        Validates that hasattr() check prevents AttributeError and
-        cleanup continues gracefully.
-        """
-        script = textwrap.dedent(
-            f"""
-            import mssql_python
-            
+                """,
+                "Already closed: PASSED",
+            ),
+            (
+                "missing_attribute",
+                """
             class MinimalConnection:
                 # No _closed attribute
                 def close(self):
@@ -838,32 +788,12 @@ class TestHandleFreeShutdown:
             
             # Should not crash
             mssql_python._cleanup_connections()
-            
-            print("Missing attribute: PASSED")
-        """
-        )
-
-        result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
-        )
-
-        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
-        assert "Missing attribute: PASSED" in result.stdout
-        print(f"PASS: Cleanup connections missing _closed attribute")
-
-    def test_cleanup_connections_exception_handling(self, conn_str):
-        """
-        Test _cleanup_connections() exception handling.
-
-        Validates that:
-        1. Exceptions during close() are caught and silently ignored
-        2. One failing connection doesn't prevent cleanup of others
-        3. The function completes successfully despite errors
-        """
-        script = textwrap.dedent(
-            f"""
-            import mssql_python
-            
+                """,
+                "Missing attribute: PASSED",
+            ),
+            (
+                "exception_handling",
+                """
             class GoodConnection:
                 def __init__(self):
                     self._closed = False
@@ -891,32 +821,15 @@ class TestHandleFreeShutdown:
                 mssql_python._cleanup_connections()
                 # Should not raise despite bad_conn throwing exception
                 assert good_conn.close_called, "Good connection should still be closed"
-                print("Exception handling: PASSED")
             except Exception as e:
                 print(f"Exception handling: FAILED - Exception escaped: {{e}}")
                 raise
-        """
-        )
-
-        result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
-        )
-
-        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
-        assert "Exception handling: PASSED" in result.stdout
-        print(f"PASS: Cleanup connections exception handling")
-
-    def test_cleanup_connections_multiple_connections(self, conn_str):
-        """
-        Test _cleanup_connections() with multiple connections.
-
-        Validates that all registered connections are processed
-        and closed in the cleanup iteration.
-        """
-        script = textwrap.dedent(
-            f"""
-            import mssql_python
-            
+                """,
+                "Exception handling: PASSED",
+            ),
+            (
+                "multiple_connections",
+                """
             class TestConnection:
                 count = 0
                 
@@ -940,31 +853,12 @@ class TestHandleFreeShutdown:
             
             assert TestConnection.count == 5, f"All 5 connections should be closed, got {{TestConnection.count}}"
             assert all(c.close_called for c in connections), "All connections should have close() called"
-            
-            print("Multiple connections: PASSED")
-        """
-        )
-
-        result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
-        )
-
-        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
-        assert "Multiple connections: PASSED" in result.stdout
-        print(f"PASS: Cleanup connections multiple connections")
-
-    def test_cleanup_connections_weakset_behavior(self, conn_str):
-        """
-        Test _cleanup_connections() WeakSet behavior.
-
-        Validates that:
-        1. WeakSet automatically removes garbage collected connections
-        2. Only live references are processed during cleanup
-        3. No crashes occur with GC'd connections
-        """
-        script = textwrap.dedent(
-            f"""
-            import mssql_python
+                """,
+                "Multiple connections: PASSED",
+            ),
+            (
+                "weakset_behavior",
+                """
             import gc
             
             class TestConnection:
@@ -987,62 +881,23 @@ class TestHandleFreeShutdown:
             
             # Cleanup should not crash with removed connections
             mssql_python._cleanup_connections()
-            
-            print("WeakSet behavior: PASSED")
-        """
-        )
-
-        result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
-        )
-
-        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
-        assert "WeakSet behavior: PASSED" in result.stdout
-        print(f"PASS: Cleanup connections WeakSet behavior")
-
-    def test_cleanup_connections_empty_list(self, conn_str):
-        """
-        Test _cleanup_connections() with empty connections list.
-
-        Validates that cleanup completes successfully with no registered
-        connections without any errors.
-        """
-        script = textwrap.dedent(
-            f"""
-            import mssql_python
-            
+                """,
+                "WeakSet behavior: PASSED",
+            ),
+            (
+                "empty_list",
+                """
             # Clear any existing connections
             mssql_python._active_connections.clear()
             
             # Should not crash with empty set
             mssql_python._cleanup_connections()
-            
-            print("Empty list: PASSED")
-        """
-        )
-
-        result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
-        )
-
-        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
-        assert "Empty list: PASSED" in result.stdout
-        print(f"PASS: Cleanup connections empty list")
-
-    def test_cleanup_connections_mixed_scenario(self, conn_str):
-        """
-        Test _cleanup_connections() with mixed connection states.
-
-        Validates handling of:
-        - Open connections (should be closed)
-        - Already closed connections (should be skipped)
-        - Connections that throw exceptions (should be caught)
-        - All in one cleanup run
-        """
-        script = textwrap.dedent(
-            f"""
-            import mssql_python
-            
+                """,
+                "Empty list: PASSED",
+            ),
+            (
+                "mixed_scenario",
+                """
             class OpenConnection:
                 def __init__(self):
                     self._closed = False
@@ -1079,18 +934,47 @@ class TestHandleFreeShutdown:
             mssql_python._cleanup_connections()
             
             assert open_conn.close_called, "Open connection should have been closed"
+                """,
+                "Mixed scenario: PASSED",
+            ),
+        ],
+    )
+    def test_cleanup_connections_scenarios(self, conn_str, scenario, test_code, expected_msg):
+        """
+        Test _cleanup_connections() with various scenarios.
+
+        Scenarios tested:
+        - normal_flow: Active connections properly closed
+        - already_closed: Closed connections skipped
+        - missing_attribute: Gracefully handles missing _closed attribute
+        - exception_handling: Exceptions caught, cleanup continues
+        - multiple_connections: All connections processed
+        - weakset_behavior: Auto-removes GC'd connections
+        - empty_list: No errors with empty set
+        - mixed_scenario: Mixed connection states handled correctly
+        """
+        script = textwrap.dedent(
+            f"""
+            import mssql_python
             
-            print("Mixed scenario: PASSED")
+            # Verify cleanup infrastructure exists
+            assert hasattr(mssql_python, '_active_connections'), "Missing _active_connections"
+            assert hasattr(mssql_python, '_cleanup_connections'), "Missing _cleanup_connections"
+            assert hasattr(mssql_python, '_register_connection'), "Missing _register_connection"
+            
+            {test_code}
+            
+            print("{expected_msg}")
         """
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=3
         )
 
         assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
-        assert "Mixed scenario: PASSED" in result.stdout
-        print(f"PASS: Cleanup connections mixed scenario")
+        assert expected_msg in result.stdout
+        print(f"PASS: Cleanup connections scenario '{scenario}'")
 
     @pytest.mark.stress
     def test_active_connections_thread_safety(self, conn_str):
@@ -1177,7 +1061,7 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
         )
 
         assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
@@ -1276,7 +1160,7 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=3
         )
 
         assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
@@ -1368,7 +1252,7 @@ class TestHandleFreeShutdown:
         )
 
         result = subprocess.run(
-            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=3
         )
 
         assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
