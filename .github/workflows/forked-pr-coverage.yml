@@ -33,6 +33,9 @@ jobs:
       contents: read
     
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
       - name: Download coverage data
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -96,58 +99,16 @@ jobs:
           } >> $GITHUB_ENV
 
       - name: Comment coverage summary on PR
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: ./.github/actions/post-coverage-comment
         with:
-          number: ${{ env.PR_NUMBER }}
-          header: Code Coverage Report
-          message: |
-            # 📊 Code Coverage Report
-            
-            <table>
-            <tr>
-            <td align="center" width="200">
-            
-            ### 🔥 Diff Coverage
-            ### **${{ env.PATCH_COVERAGE_PCT }}**
-            <br>
-            </td>
-            <td align="center" width="200">
-            
-            ### 🎯 Overall Coverage
-            ### **${{ env.COVERAGE_PERCENTAGE }}**
-            <br>
-            </td>
-            <td>
-            
-            **📈 Total Lines Covered:** `${{ env.COVERED_LINES }}` out of `${{ env.TOTAL_LINES }}`  
-            **📁 Project:** `mssql-python`  
-            
-            </td>
-            </tr>
-            </table>
-            
-            ---
-            
-            ${{ env.PATCH_COVERAGE_SUMMARY }}
-            
-            ---
-            ### 📋 Files Needing Attention
-            
-            <details>
-            <summary>📉 <strong>Files with overall lowest coverage</strong> (click to expand)</summary>
-            <br>
-            
-            ```diff
-            ${{ env.LOW_COVERAGE_FILES }}
-            ```
-            
-            </details>
-            
-            ---
-            ### 🔗 Quick Links
-
-            <table>
-            <tr>
+          pr_number: ${{ env.PR_NUMBER }}
+          coverage_percentage: ${{ env.COVERAGE_PERCENTAGE }}
+          covered_lines: ${{ env.COVERED_LINES }}
+          total_lines: ${{ env.TOTAL_LINES }}
+          patch_coverage_pct: ${{ env.PATCH_COVERAGE_PCT }}
+          low_coverage_files: ${{ env.LOW_COVERAGE_FILES }}
+          patch_coverage_summary: ${{ env.PATCH_COVERAGE_SUMMARY }}
+          ado_url: ${{ env.ADO_URL }}
             <td align="left" width="200">
             <b>⚙️ Build Summary</b>
             </td>
