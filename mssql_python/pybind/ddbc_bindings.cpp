@@ -2432,6 +2432,30 @@ SQLRETURN BindParameterArray(SQLHANDLE hStmt, const py::list& columnwise_params,
                     bufferLength = sizeof(SQLGUID);
                     break;
                 }
+                case SQL_C_DEFAULT: {
+                    // Handle NULL parameters - all values in this column should be NULL
+                    // The upstream Python type detection (via _compute_column_type) ensures
+                    // SQL_C_DEFAULT is only used when all values are None
+                    LOG("BindParameterArray: Binding SQL_C_DEFAULT (NULL) array - param_index=%d, "
+                        "count=%zu",
+                        paramIndex, paramSetSize);
+
+                    // For NULL parameters, we need to allocate a minimal buffer and set all
+                    // indicators to SQL_NULL_DATA Use SQL_C_CHAR as a safe default C type for NULL
+                    // values
+                    char* nullBuffer = AllocateParamBufferArray<char>(tempBuffers, paramSetSize);
+                    strLenOrIndArray = AllocateParamBufferArray<SQLLEN>(tempBuffers, paramSetSize);
+
+                    for (size_t i = 0; i < paramSetSize; ++i) {
+                        nullBuffer[i] = 0;
+                        strLenOrIndArray[i] = SQL_NULL_DATA;
+                    }
+
+                    dataPtr = nullBuffer;
+                    bufferLength = 1;
+                    LOG("BindParameterArray: SQL_C_DEFAULT bound - param_index=%d", paramIndex);
+                    break;
+                }
                 default: {
                     LOG("BindParameterArray: Unsupported C type - "
                         "param_index=%d, C_type=%d",
