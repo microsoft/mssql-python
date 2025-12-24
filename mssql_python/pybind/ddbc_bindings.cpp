@@ -845,34 +845,25 @@ std::string GetLastErrorMessage();
 
 // TODO: Move this to Python
 std::string GetModuleDirectory() {
+    namespace fs = std::filesystem;
     py::object module = py::module::import("mssql_python");
     py::object module_path = module.attr("__file__");
     std::string module_file = module_path.cast<std::string>();
 
-#ifdef _WIN32
-    // Windows-specific path handling
-    char path[MAX_PATH];
-    errno_t err = strncpy_s(path, MAX_PATH, module_file.c_str(), module_file.length());
-    if (err != 0) {
-        LOG("GetModuleDirectory: strncpy_s failed copying path - "
-            "error_code=%d, path_length=%zu",
-            err, module_file.length());
-        return {};
-    }
-    PathRemoveFileSpecA(path);
-    return std::string(path);
-#else
-    // macOS/Unix path handling without using std::filesystem
-    std::string::size_type pos = module_file.find_last_of('/');
-    if (pos != std::string::npos) {
-        std::string dir = module_file.substr(0, pos);
-        return dir;
-    }
-    LOG("GetModuleDirectory: Could not extract directory from module path - "
-        "path='%s'",
-        module_file.c_str());
-    return module_file;
-#endif
+    // Use std::filesystem::path for cross-platform path handling
+    // This properly handles UTF-8 encoded paths on all platforms
+    fs::path modulePath(module_file);
+    fs::path parentDir = modulePath.parent_path();
+
+    // Log path extraction for observability
+    LOG("GetModuleDirectory: Extracted directory - "
+        "original_path='%s', directory='%s'",
+        module_file.c_str(), parentDir.string().c_str());
+
+    // Return UTF-8 encoded string for consistent handling
+    // If parentDir is empty or invalid, subsequent operations (like LoadDriverLibrary)
+    // will fail naturally with clear error messages
+    return parentDir.string();
 }
 
 // Platform-agnostic function to load the driver dynamic library
@@ -880,9 +871,11 @@ DriverHandle LoadDriverLibrary(const std::string& driverPath) {
     LOG("LoadDriverLibrary: Attempting to load ODBC driver from path='%s'", driverPath.c_str());
 
 #ifdef _WIN32
-    // Windows: Convert string to wide string for LoadLibraryW
-    std::wstring widePath(driverPath.begin(), driverPath.end());
-    HMODULE handle = LoadLibraryW(widePath.c_str());
+    // Windows: Use std::filesystem::path for proper UTF-8 to UTF-16 conversion
+    // fs::path::c_str() returns wchar_t* on Windows with correct encoding
+    namespace fs = std::filesystem;
+    fs::path pathObj(driverPath);
+    HMODULE handle = LoadLibraryW(pathObj.c_str());
     if (!handle) {
         LOG("LoadDriverLibrary: LoadLibraryW failed for path='%s' - %s", driverPath.c_str(),
             GetLastErrorMessage().c_str());
@@ -1013,8 +1006,8 @@ DriverHandle LoadDriverOrThrowException() {
     fs::path dllDir = fs::path(moduleDir) / "libs" / "windows" / archDir;
     fs::path authDllPath = dllDir / "mssql-auth.dll";
     if (fs::exists(authDllPath)) {
-        HMODULE hAuth = LoadLibraryW(
-            std::wstring(authDllPath.native().begin(), authDllPath.native().end()).c_str());
+        // Use fs::path::c_str() which returns wchar_t* on Windows with proper encoding
+        HMODULE hAuth = LoadLibraryW(authDllPath.c_str());
         if (hAuth) {
             LOG("LoadDriverOrThrowException: mssql-auth.dll loaded "
                 "successfully from '%s'",
