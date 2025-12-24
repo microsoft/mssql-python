@@ -32,13 +32,10 @@ import textwrap
 import threading
 import time
 
-import pytest
-
 
 class TestHandleFreeShutdown:
     """Test SqlHandle::free() behavior for all handle types during Python shutdown."""
 
-    @pytest.mark.stress
     def test_aggressive_dbc_segfault_reproduction(self, conn_str):
         """
         AGGRESSIVE TEST: Try to reproduce DBC handle segfault during shutdown.
@@ -160,7 +157,6 @@ class TestHandleFreeShutdown:
             assert result.returncode == 0, f"Process failed. stderr: {result.stderr}"
             print(f"PASS: DBC handle cleanup properly skipped during shutdown")
 
-    @pytest.mark.stress
     def test_force_gc_finalization_order_issue(self, conn_str):
         """
         TEST: Force specific GC finalization order to trigger segfault.
@@ -438,7 +434,6 @@ class TestHandleFreeShutdown:
         assert "Connection 3: everything properly closed" in result.stdout
         print(f"PASS: Mixed handle cleanup during shutdown")
 
-    @pytest.mark.stress
     def test_rapid_connection_churn_with_shutdown(self, conn_str):
         """
         Test rapid connection creation/deletion followed by shutdown.
@@ -1092,7 +1087,6 @@ class TestHandleFreeShutdown:
         assert "Mixed scenario: PASSED" in result.stdout
         print(f"PASS: Cleanup connections mixed scenario")
 
-    @pytest.mark.stress
     def test_active_connections_thread_safety(self, conn_str):
         """
         Test _active_connections thread-safety with concurrent registration.
