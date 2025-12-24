@@ -52,12 +52,12 @@ jobs:
   
   strategy:
     matrix:
-      LocalDB:
-        sqlVersion: 'LocalDB'
-        pythonVersion: '3.13'
       SQLServer2022:
         sqlVersion: 'SQL2022'
         pythonVersion: '3.13'
+      SQLServer2025:
+        sqlVersion: 'SQL2025'
+        pythonVersion: '3.14'
       LocalDB_Python314:
         sqlVersion: 'LocalDB'
         pythonVersion: '3.14'
@@ -159,6 +159,72 @@ jobs:
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
+  # Install SQL Server 2025 (for SQL2025 matrix)
+  - powershell: |
+      Write-Host "Downloading SQL Server 2025 Express..."
+      # Download SQL Server 2025 Express installer
+      $ProgressPreference = 'SilentlyContinue'
+      Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?linkid=2301116" -OutFile "SQL2025-SSEI-Expr.exe"
+      
+      Write-Host "Installing SQL Server 2025 Express..."
+      # Install SQL Server 2025 Express with basic features
+      Start-Process -FilePath "SQL2025-SSEI-Expr.exe" -ArgumentList "/Action=Download","/MediaPath=$env:TEMP","/MediaType=Core","/Quiet" -Wait
+      
+      # Find the downloaded setup file
+      $setupFile = Get-ChildItem -Path $env:TEMP -Filter "SQLEXPR_x64_ENU.exe" -Recurse | Select-Object -First 1
+      
+      if ($setupFile) {
+        Write-Host "Extracting SQL Server setup files..."
+        Start-Process -FilePath $setupFile.FullName -ArgumentList "/x:$env:TEMP\SQLSetup","/u" -Wait
+        
+        Write-Host "Running SQL Server setup..."
+        Start-Process -FilePath "$env:TEMP\SQLSetup\setup.exe" -ArgumentList "/Q","/ACTION=Install","/FEATURES=SQLEngine","/INSTANCENAME=MSSQLSERVER","/SQLSVCACCOUNT=`"NT AUTHORITY\SYSTEM`"","/SQLSYSADMINACCOUNTS=`"BUILTIN\Administrators`"","/TCPENABLED=1","/SECURITYMODE=SQL","/SAPWD=$(DB_PASSWORD)","/IACCEPTSQLSERVERLICENSETERMS" -Wait
+      } else {
+        Write-Error "Failed to download SQL Server setup file"
+        exit 1
+      }
+      
+      Write-Host "SQL Server 2025 installation completed"
+    displayName: 'Install SQL Server 2025 Express'
+    condition: eq(variables['sqlVersion'], 'SQL2025')
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  # Create database for SQL Server 2025
+  - powershell: |
+      # Wait for SQL Server to start
+      $maxAttempts = 30
+      $attempt = 0
+      $connected = $false
+      
+      Write-Host "Waiting for SQL Server 2025 to start..."
+      while (-not $connected -and $attempt -lt $maxAttempts) {
+        try {
+          sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "SELECT 1" -C
+          $connected = $true
+          Write-Host "SQL Server is ready!"
+        } catch {
+          $attempt++
+          Write-Host "Waiting... ($attempt/$maxAttempts)"
+          Start-Sleep -Seconds 2
+        }
+      }
+      
+      if (-not $connected) {
+        Write-Error "Failed to connect to SQL Server after $maxAttempts attempts"
+        exit 1
+      }
+      
+      # Create database and user
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE DATABASE TestDB" -C
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+    displayName: 'Setup database and user for SQL Server 2025'
+    condition: eq(variables['sqlVersion'], 'SQL2025')
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
   - script: |
       cd mssql_python\pybind
       build.bat x64
@@ -177,6 +243,14 @@ jobs:
       python -m pytest -v --junitxml=test-results-sql2022.xml --cov=. --cov-report=xml:coverage-sql2022.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2022'
     condition: eq(variables['sqlVersion'], 'SQL2022')
+    env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+  # Run tests for SQL Server 2025
+  - script: |
+      python -m pytest -v --junitxml=test-results-sql2025.xml --cov=. --cov-report=xml:coverage-sql2025.xml --capture=tee-sys --cache-clear
+    displayName: 'Run tests with coverage on SQL Server 2025'
+    condition: eq(variables['sqlVersion'], 'SQL2025')
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
@@ -214,7 +288,7 @@ jobs:
         exit 1
       }
     displayName: 'Download and restore AdventureWorks2022 database'
-    condition: eq(variables['sqlVersion'], 'SQL2022')
+    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -306,8 +380,8 @@ jobs:
       
       Write-Host "`nRunning performance benchmarks..."
       python benchmarks/perf-benchmarking.py
-    displayName: 'Run performance benchmarks on SQL Server 2022'
-    condition: eq(variables['sqlVersion'], 'SQL2022')
+    displayName: 'Run performance benchmarks on SQL Server 2022/2025'
+    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
     continueOnError: true
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -350,6 +424,15 @@ jobs:
   pool:
     vmImage: 'macos-latest'
 
+  strategy:
+    matrix:
+      SQL2022:
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
+        sqlVersion: 'SQL2022'
+      SQL2025:
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
+        sqlVersion: 'SQL2025'
+
   steps:
   - task: UsePythonVersion@0
     inputs:
@@ -382,13 +465,13 @@ jobs:
 
   - script: |
       # Pull and run SQL Server container
-      docker pull mcr.microsoft.com/mssql/server:2022-latest
+      docker pull $(sqlServerImage)
       docker run \
         --name sqlserver \
         -e ACCEPT_EULA=Y \
         -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
         -p 1433:1433 \
-        -d mcr.microsoft.com/mssql/server:2022-latest
+        -d $(sqlServerImage)
 
       # Starting SQL Server container…
       for i in {1..30}; do
@@ -426,7 +509,7 @@ jobs:
     condition: succeededOrFailed()
     inputs:
       testResultsFiles: '**/test-results.xml'
-      testRunTitle: 'Publish pytest results on macOS'
+      testRunTitle: 'Publish pytest results on macOS $(sqlVersion)'
 
 - job: PytestOnLinux
   displayName: 'Linux x86_64'
@@ -455,6 +538,11 @@ jobs:
         dockerImage: 'debian:12'
         distroName: 'Debian'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
+        useAzureSQL: 'false'
+      Debian_SQL2025:
+        dockerImage: 'debian:12'
+        distroName: 'Debian-SQL2025'
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         useAzureSQL: 'false'
 
   steps:
