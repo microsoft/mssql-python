@@ -98,7 +98,7 @@ jobs:
       Write-Host "Downloading SQL Server 2022 Express..."
       # Download SQL Server 2022 Express installer
       $ProgressPreference = 'SilentlyContinue'
-      Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?linkid=2216019" -OutFile "SQL2022-SSEI-Expr.exe"
+      Invoke-WebRequest -Uri "https://download.microsoft.com/download/5/1/4/5145fe04-4d30-4b85-b0d1-39533663a2f1/SQL2022-SSEI-Expr.exe" -OutFile "SQL2022-SSEI-Expr.exe"
       
       Write-Host "Installing SQL Server 2022 Express..."
       # Install SQL Server 2022 Express with basic features
@@ -164,7 +164,7 @@ jobs:
       Write-Host "Downloading SQL Server 2025 Express..."
       # Download SQL Server 2025 Express installer
       $ProgressPreference = 'SilentlyContinue'
-      Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?linkid=2301116" -OutFile "SQL2025-SSEI-Expr.exe"
+      Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?linkid=2216019&clcid=0x409&culture=en-us&country=us" -OutFile "SQL2025-SSEI-Expr.exe"
       
       Write-Host "Installing SQL Server 2025 Express..."
       # Install SQL Server 2025 Express with basic features
