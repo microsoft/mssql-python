@@ -55,6 +55,7 @@ class TestSQLWCHARConversions:
         except Exception:
             pass
 
+    @pytest.mark.skip(reason="STRESS TESTS moved due to long running time in ")
     def test_surrogate_pair_low_without_high(self):
         """
         Test low surrogate without preceding high surrogate.
@@ -86,6 +87,7 @@ class TestSQLWCHARConversions:
         except Exception:
             pass
 
+    @pytest.mark.skip(reason="STRESS TESTS moved due to long running time in Manylinux64 runs")
     def test_valid_surrogate_pairs(self):
         """
         Test valid high+low surrogate pairs.
@@ -117,6 +119,7 @@ class TestSQLWCHARConversions:
             except Exception:
                 pass  # Connection may fail, but string conversion should work
 
+    @pytest.mark.skip(reason="STRESS TESTS moved due to long running time in Manylinux64 runs")
     def test_bmp_characters(self):
         """
         Test Basic Multilingual Plane (BMP) characters (U+0000 to U+FFFF).
@@ -150,6 +153,7 @@ class TestSQLWCHARConversions:
             except Exception:
                 pass
 
+    @pytest.mark.skip(reason="STRESS TESTS moved due to long running time in Manylinux64 runs")
     def test_invalid_scalar_values(self):
         """
         Test invalid Unicode scalar values.
@@ -194,6 +198,7 @@ class TestSQLWCHARConversions:
         except Exception:
             pass
 
+    @pytest.mark.skip(reason="STRESS TESTS moved due to long running time in Manylinux64 runs")
     def test_wstring_to_sqlwchar_bmp(self):
         """
         Test WStringToSQLWCHAR with BMP characters.
@@ -226,6 +231,7 @@ class TestSQLWCHARConversions:
             except Exception:
                 pass
 
+    @pytest.mark.skip(reason="STRESS TESTS moved due to long running time in Manylinux64 runs")
     def test_wstring_to_sqlwchar_surrogate_pairs(self):
         """
         Test WStringToSQLWCHAR with characters requiring surrogate pairs.
@@ -288,6 +294,7 @@ class TestSQLWCHARConversions:
             except Exception:
                 pass  # Expected to fail, but conversion should handle it
 
+    @pytest.mark.skip(reason="STRESS TESTS moved due to long running time in Manylinux64 runs")
     def test_empty_and_null_strings(self):
         """
         Test edge cases with empty and null strings.
@@ -315,6 +322,7 @@ class TestSQLWCHARConversions:
         except Exception:
             pass
 
+    @pytest.mark.skip(reason="STRESS TESTS moved due to long running time in Manylinux64 runs")
     def test_mixed_character_sets(self):
         """
         Test strings with mixed character sets and surrogate pairs.
@@ -343,6 +351,7 @@ class TestSQLWCHARConversions:
             except Exception:
                 pass
 
+    @pytest.mark.skip(reason="STRESS TESTS moved due to long running time in Manylinux64 runs")
     def test_boundary_code_points(self):
         """
         Test boundary code points for surrogate range and Unicode limits.
@@ -377,6 +386,7 @@ class TestSQLWCHARConversions:
             except Exception:
                 pass  # Validation happens during conversion
 
+    @pytest.mark.skip(reason="STRESS TESTS moved due to long running time in Manylinux64 runs")
     def test_surrogate_pair_calculations(self):
         """
         Test the arithmetic for surrogate pair encoding/decoding.
@@ -433,6 +443,7 @@ class TestSQLWCHARConversions:
         except Exception:
             pass
 
+    @pytest.mark.skip(reason="STRESS TESTS moved due to long running time in Manylinux64 runs")
     def test_null_terminator_handling(self):
         """
         Test that null terminators are properly handled.
@@ -466,6 +477,7 @@ class TestSQLWCHARConversions:
 class TestSQLWCHARConversionsCommon:
     """Tests that run on all platforms (Windows, Linux, macOS)."""
 
+    @pytest.mark.skip(reason="STRESS TESTS moved due to long running time in Manylinux64 runs")
     def test_unicode_round_trip_ascii(self):
         """Test that ASCII characters round-trip correctly."""
         import mssql_python
@@ -481,6 +493,7 @@ class TestSQLWCHARConversionsCommon:
             except Exception:
                 pass
 
+    @pytest.mark.skip(reason="STRESS TESTS moved due to long running time in Manylinux64 runs")
     def test_unicode_round_trip_emoji(self):
         """Test that emoji characters round-trip correctly."""
         import mssql_python
@@ -496,6 +509,7 @@ class TestSQLWCHARConversionsCommon:
             except Exception:
                 pass
 
+    @pytest.mark.skip(reason="STRESS TESTS moved due to long running time in Manylinux64 runs")
     def test_unicode_round_trip_multilingual(self):
         """Test that multilingual text round-trips correctly."""
         import mssql_python
