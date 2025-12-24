@@ -22,9 +22,6 @@ Test Categories:
 import pytest
 import platform
 import sys
-import os
-import tempfile
-import shutil
 import subprocess
 
 
@@ -168,12 +165,11 @@ class TestWindowsSpecificPathHandling:
     def test_module_loads_on_windows(self):
         """Verify module loads correctly on Windows."""
         import mssql_python
-        from mssql_python import ddbc_bindings
 
         # If we get here, LoadLibraryW succeeded for:
         # - msodbcsql18.dll
         # - mssql-auth.dll (if exists)
-        assert ddbc_bindings is not None
+        assert mssql_python.ddbc_bindings is not None
 
     def test_libs_directory_exists(self):
         """Verify the libs/windows directory structure exists."""
@@ -199,7 +195,6 @@ class TestWindowsSpecificPathHandling:
         # Determine architecture
         arch = "x64" if struct.calcsize("P") * 8 == 64 else "x86"
         # Check for ARM64
-        import platform
 
         if platform.machine().lower() in ("arm64", "aarch64"):
             arch = "arm64"
