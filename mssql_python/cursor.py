@@ -1241,6 +1241,29 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Auto-detect and convert parameter style if needed
         # Supports both qmark (?) and pyformat (%(name)s)
         # Note: parameters is always a tuple due to *parameters in method signature
+        #
+        # Parameter Passing Rules (handling ambiguity):
+        #
+        # 1. Single value:
+        #    cursor.execute("SELECT ?", 42)
+        #    → parameters = (42,)
+        #    → Wrapped as single parameter
+        #
+        # 2. Multiple values (two equivalent ways):
+        #    cursor.execute("SELECT ?, ?", 1, 2)        # Varargs
+        #    cursor.execute("SELECT ?, ?", (1, 2))      # Tuple
+        #    → Both result in parameters = (1, 2) or ((1, 2),)
+        #    → If single tuple/list/dict arg, it's unwrapped
+        #
+        # 3. Dict for named parameters:
+        #    cursor.execute("SELECT %(id)s", {"id": 42})
+        #    → parameters = ({"id": 42},)
+        #    → Unwrapped to {"id": 42}, then converted to qmark style
+        #
+        # Important: If you pass a tuple/list/dict as the ONLY argument,
+        # it will be unwrapped for parameter binding. This means you cannot
+        # pass a tuple as a single parameter value (but SQL Server doesn't
+        # support tuple types as parameter values anyway).
         if parameters:
             # Check if single parameter is a nested container that should be unwrapped
             # e.g., execute("SELECT ?", (value,)) vs execute("SELECT ?, ?", ((1, 2),))
@@ -1258,11 +1281,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             operation, converted_params = detect_and_convert_parameters(operation, actual_params)
 
             # Convert back to list format expected by the binding code
-            # detect_and_convert_parameters always returns None, tuple, or list
-            if converted_params is None:
-                parameters = []
-            else:
-                parameters = list(converted_params)
+            parameters = list(converted_params)
         else:
             parameters = []
 
@@ -1967,16 +1986,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             if hasattr(seq_of_parameters, "__getitem__")
             else next(iter(seq_of_parameters))
         )
-
-        # Wrap single non-sequence parameters in each row (for backward compatibility)
-        # This allows executemany("INSERT VALUES (?)", [1, 2, 3]) instead of requiring [(1,), (2,), (3,)]
-        if not isinstance(first_row, (tuple, list, dict)):
-            # First row is a single non-sequence parameter - wrap all rows
-            seq_of_parameters = [(param,) for param in seq_of_parameters]
-            first_row = seq_of_parameters[0]
-            logger.debug(
-                "executemany: Wrapped %d single parameters into tuples", len(seq_of_parameters)
-            )
 
         if isinstance(first_row, dict):
             # pyformat style - convert all rows

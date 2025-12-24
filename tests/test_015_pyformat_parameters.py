@@ -1279,29 +1279,6 @@ class TestSingleParameterHandling:
         assert results[1][0][0] == 42
         cursor.close()
 
-    def test_executemany_single_params(self, db_connection):
-        """Test executemany() with single parameters (not wrapped in tuples)"""
-        cursor = db_connection.cursor()
-        drop_table_if_exists(cursor, "#test_executemany_single")
-
-        try:
-            cursor.execute("CREATE TABLE #test_executemany_single (id INT, value VARCHAR(50))")
-
-            # This should work: executemany with list of single values that get auto-wrapped
-            # Note: This is a special case - normally executemany expects tuples
-            # But for single-column inserts, legacy code might pass [1, 2, 3] instead of [(1,), (2,), (3,)]
-            cursor.executemany("INSERT INTO #test_executemany_single VALUES (?, 'test')", [1, 2, 3])
-
-            cursor.execute("SELECT * FROM #test_executemany_single ORDER BY id")
-            rows = cursor.fetchall()
-            assert len(rows) == 3
-            assert rows[0][0] == 1
-            assert rows[1][0] == 2
-            assert rows[2][0] == 3
-        finally:
-            drop_table_if_exists(cursor, "#test_executemany_single")
-            cursor.close()
-
     def test_executemany_tuple_params(self, db_connection):
         """Test that executemany() still works with proper tuple parameters"""
         cursor = db_connection.cursor()
@@ -1587,22 +1564,6 @@ class TestErrorHandling:
         result = cursor.fetchone()
         assert result[0] is None
         cursor.close()
-
-    def test_executemany_all_params_none(self, db_connection):
-        """Test executemany where all parameter values are None"""
-        cursor = db_connection.cursor()
-        drop_table_if_exists(cursor, "#test_none_params")
-
-        try:
-            cursor.execute("CREATE TABLE #test_none_params (val INT)")
-            cursor.executemany("INSERT INTO #test_none_params VALUES (?)", [None, None, None])
-
-            cursor.execute("SELECT COUNT(*) FROM #test_none_params WHERE val IS NULL")
-            count = cursor.fetchone()[0]
-            assert count == 3
-        finally:
-            drop_table_if_exists(cursor, "#test_none_params")
-            cursor.close()
 
     def test_very_long_parameter_value(self, db_connection):
         """Test parameter with very long string value"""
