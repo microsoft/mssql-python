@@ -417,75 +417,59 @@ jobs:
             echo "PATCH_COVERAGE_SUMMARY=Patch coverage report could not be generated." >> $GITHUB_ENV
           fi
 
-      - name: Comment coverage summary on PR
-        uses: marocchino/sticky-pull-request-comment@v2
+      - name: Save coverage data for comment
+        run: |
+          mkdir -p coverage-comment-data
+          jq -n \
+            --arg pr_number "${{ github.event.pull_request.number }}" \
+            --arg coverage_percentage "${{ env.COVERAGE_PERCENTAGE }}" \
+            --arg covered_lines "${{ env.COVERED_LINES }}" \
+            --arg total_lines "${{ env.TOTAL_LINES }}" \
+            --arg patch_coverage_pct "${{ env.PATCH_COVERAGE_PCT }}" \
+            --arg low_coverage_files "${{ env.LOW_COVERAGE_FILES }}" \
+            --arg patch_coverage_summary "${{ env.PATCH_COVERAGE_SUMMARY }}" \
+            --arg ado_url "${{ env.ADO_URL }}" \
+            '{
+              pr_number: $pr_number,
+              coverage_percentage: $coverage_percentage,
+              covered_lines: $covered_lines,
+              total_lines: $total_lines,
+              patch_coverage_pct: $patch_coverage_pct,
+              low_coverage_files: $low_coverage_files,
+              patch_coverage_summary: $patch_coverage_summary,
+              ado_url: $ado_url
+            }' > coverage-comment-data/pr-info.json
+          
+          # Validate JSON before uploading
+          echo "Validating generated JSON..."
+          jq . coverage-comment-data/pr-info.json > /dev/null || {
+            echo "❌ Invalid JSON generated"
+            cat coverage-comment-data/pr-info.json
+            exit 1
+          }
+          echo "✅ JSON validation successful"
+          cat coverage-comment-data/pr-info.json
+
+      - name: Upload coverage comment data
+        # Only upload artifact for forked PRs since same-repo PRs post comment directly
+        # This prevents unnecessary workflow_run triggers for same-repo PRs
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        uses: actions/upload-artifact@v4
         with:
-          header: Code Coverage Report
-          message: |
-            # 📊 Code Coverage Report
-            
-            <table>
-            <tr>
-            <td align="center" width="200">
-            
-            ### 🔥 Diff Coverage
-            ### **${{ env.PATCH_COVERAGE_PCT }}**
-            <br>
-            </td>
-            <td align="center" width="200">
-            
-            ### 🎯 Overall Coverage
-            ### **${{ env.COVERAGE_PERCENTAGE }}**
-            <br>
-            </td>
-            <td>
-            
-            **📈 Total Lines Covered:** `${{ env.COVERED_LINES }}` out of `${{ env.TOTAL_LINES }}`  
-            **📁 Project:** `mssql-python`  
-            
-            </td>
-            </tr>
-            </table>
-            
-            ---
-            
-            ${{ env.PATCH_COVERAGE_SUMMARY }}
-            
-            ---
-            ### 📋 Files Needing Attention
-            
-            <details>
-            <summary>📉 <strong>Files with overall lowest coverage</strong> (click to expand)</summary>
-            <br>
-            
-            ```diff
-            ${{ env.LOW_COVERAGE_FILES }}
-            ```
-            
-            </details>
-            
-            ---
-            ### 🔗 Quick Links
+          name: coverage-comment-data
+          path: coverage-comment-data/
+          retention-days: 7
 
-            <table>
-            <tr>
-            <td align="left" width="200">
-            <b>⚙️ Build Summary</b>
-            </td>
-            <td align="left">
-            <b>📋 Coverage Details</b>
-            </td>
-            </tr>
-            <tr>
-            <td align="left" width="200">
-
-            [View Azure DevOps Build](${{ env.ADO_URL }})
-
-            </td>
-            <td align="left">
-
-            [Browse Full Coverage Report](${{ env.ADO_URL }}&view=codecoverage-tab) 
-
-            </td>
-            </tr>
-            </table>
+      - name: Comment coverage summary on PR
+        # Skip for forked PRs due to token permission restrictions
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: ./.github/actions/post-coverage-comment
+        with:
+          pr_number: ${{ github.event.pull_request.number }}
+          coverage_percentage: ${{ env.COVERAGE_PERCENTAGE }}
+          covered_lines: ${{ env.COVERED_LINES }}
+          total_lines: ${{ env.TOTAL_LINES }}
+          patch_coverage_pct: ${{ env.PATCH_COVERAGE_PCT }}
+          low_coverage_files: ${{ env.LOW_COVERAGE_FILES }}
+          patch_coverage_summary: ${{ env.PATCH_COVERAGE_SUMMARY }}
+          ado_url: ${{ env.ADO_URL }}
