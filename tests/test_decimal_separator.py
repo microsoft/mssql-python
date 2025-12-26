@@ -1,29 +1,21 @@
-import pytest
-import mssql_python
 import os
 from decimal import Decimal
 
-# Helper to get connection
-def get_connection():
-    server = os.getenv("TEST_SERVER", "localhost")
-    database = os.getenv("TEST_DATABASE", "master")
-    username = os.getenv("TEST_USERNAME", "sa")
-    password = os.getenv("TEST_PASSWORD", "yourStrong(!)Password")
-    driver = os.getenv("TEST_DRIVER", "ODBC Driver 17 for SQL Server")
-    
-    conn_str = f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};UID={username};PWD={password};TrustServerCertificate=yes"
-    return mssql_python.connect(conn_str)
+import pytest
+import mssql_python
 
-@pytest.mark.skipif(not os.getenv("TEST_SERVER"), reason="TEST_SERVER not set")
-def test_decimal_separator_bug():
+
+@pytest.mark.skipif(not os.getenv("DB_CONNECTION_STRING"), reason="Requires DB_CONNECTION_STRING")
+def test_decimal_separator_bug(db_connection):
     """
-    Test that fetchall() dealing with DECIMALS works correctly even when 
+    Test that fetchall() dealing with DECIMALS works correctly even when
     setDecimalSeparator is set to something other than '.'
     """
-    conn = get_connection()
-    cursor = conn.cursor()
-    
+    conn = db_connection
+    cursor = None
+
     try:
+        cursor = conn.cursor()
         # Create a temp table
         cursor.execute("CREATE TABLE #TestDecimal (Val DECIMAL(10, 2))")
         cursor.execute("INSERT INTO #TestDecimal VALUES (1234.56)")
@@ -32,17 +24,17 @@ def test_decimal_separator_bug():
 
         # Set custom separator
         mssql_python.setDecimalSeparator(",")
-        
+
         # Test fetchall
         cursor.execute("SELECT Val FROM #TestDecimal ORDER BY Val")
         rows = cursor.fetchall()
-        
+
         # Verify fetchall results
         assert len(rows) == 2, f"Expected 2 rows, got {len(rows)}"
         assert isinstance(rows[0][0], Decimal), f"Expected Decimal, got {type(rows[0][0])}"
         assert rows[0][0] == Decimal("78.90"), f"Expected 78.90, got {rows[0][0]}"
         assert rows[1][0] == Decimal("1234.56"), f"Expected 1234.56, got {rows[1][0]}"
-        
+
         # Verify fetchmany
         cursor.execute("SELECT Val FROM #TestDecimal ORDER BY Val")
         batch = cursor.fetchmany(2)
@@ -58,13 +50,10 @@ def test_decimal_separator_bug():
     finally:
         # Reset separator to default just in case
         mssql_python.setDecimalSeparator(".")
-        cursor.execute("DROP TABLE #TestDecimal")
-        conn.close()
-
-if __name__ == "__main__":
-    # Allow running as a script too
-    try:
-        test_decimal_separator_bug()
-        print("Test PASSED")
-    except Exception as e:
-        print(f"Test FAILED: {e}")
+        if cursor:
+            try:
+                cursor.execute("DROP TABLE #TestDecimal")
+                conn.commit()
+            except Exception:
+                pass
+            cursor.close()
