@@ -15018,3 +15018,24 @@ def test_close(db_connection):
         pytest.fail(f"Cursor close test failed: {e}")
     finally:
         cursor = db_connection.cursor()
+
+
+def test_encoding_buffersize(cursor):
+    from mssql_python.helpers import check_error
+    from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
+    cursor.execute(
+        "drop table if exists #t1;\n"
+        + "create table #t1 (a varchar(2) collate SQL_Latin1_General_CP1_CI_AS)\n"
+        + "insert into #t1 values (N'ßl')\n"
+    )
+    with pytest.raises(Exception, match=".*GetData.*"):
+        cursor.execute("select * from #t1").fetchall()
+    with pytest.raises(Exception, match=".*Invalid cursor position.*"):
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, cursor.hstmt, -1)
+    with pytest.raises(Exception, match=".*GetData.*"):
+        cursor.execute("select * from #t1").fetchmany(1)
+    with pytest.raises(Exception, match=".*Invalid Descriptor Index.*"):
+        check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, cursor.hstmt, -1)
+    assert cursor.execute("select * from #t1").fetchone()[0] == "l"
+    assert cursor.execute("select LEFT(a, 1) from #t1").fetchone()[0] == "ß".encode("utf-8")[1:] == b'\x9f'
+    assert cursor.execute("select cast(a as varchar(3)) from #t1").fetchone()[0] == "ßl"
