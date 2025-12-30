@@ -651,7 +651,6 @@ struct ColumnInfoExt {
     SQLULEN columnSize;
     SQLULEN processedColumnSize;
     uint64_t fetchBufferSize;
-    bool isLob;
 };
 
 // Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp) - MUST be
@@ -795,7 +794,7 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
     // Fast path: Data fits in buffer (not LOB or truncated)
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence
     // '<'
-    if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
+    if (numCharsInData < colInfo->fetchBufferSize) {
         // Performance: Direct Python C API call - create string from buffer
         PyObject* pyStr = PyUnicode_FromStringAndSize(
             reinterpret_cast<char*>(
@@ -838,7 +837,7 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
     // Fast path: Data fits in buffer (not LOB or truncated)
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence
     // '<'
-    if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
+    if (numCharsInData < colInfo->fetchBufferSize) {
 #if defined(__APPLE__) || defined(__linux__)
         // Performance: Direct UTF-16 decode (SQLWCHAR is 2 bytes on
         // Linux/macOS)
@@ -902,7 +901,7 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
     }
 
     // Fast path: Data fits in buffer (not LOB or truncated)
-    if (!colInfo->isLob && static_cast<size_t>(dataLen) <= colInfo->processedColumnSize) {
+    if (static_cast<size_t>(dataLen) <= colInfo->processedColumnSize) {
         // Performance: Direct Python C API call - create bytes from buffer
         PyObject* pyBytes = PyBytes_FromStringAndSize(
             reinterpret_cast<const char*>(
