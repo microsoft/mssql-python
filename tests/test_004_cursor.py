@@ -15026,12 +15026,8 @@ def test_encoding_buffersize(cursor):
         + "create table #t1 (a varchar(2) collate SQL_Latin1_General_CP1_CI_AS)\n"
         + "insert into #t1 values (N'ßl')\n"
     )
-    with pytest.raises(Exception, match=".*Internal error: CHAR/VARCHAR column data exceeds buffer size.*"):
-        cursor.execute("select * from #t1").fetchall()
-    with pytest.raises(Exception, match=".*Internal error: CHAR/VARCHAR column data exceeds buffer size.*"):
-        cursor.execute("select * from #t1").fetchmany(1)
-    with pytest.raises(Exception, match=".*SQLGetData returned data larger than expected for CHAR column.*"):
-        cursor.execute("select * from #t1").fetchone()
-    with pytest.raises(Exception, match=".*SQLGetData returned data larger than expected for CHAR column.*"):
-        cursor.execute("select LEFT(a, 1) from #t1").fetchone()
+    assert cursor.execute("select * from #t1").fetchall()[0][0] == "ßl"
+    assert cursor.execute("select * from #t1").fetchmany(1)[0][0] == "ßl"
+    assert cursor.execute("select * from #t1").fetchone()[0] == "ßl"
+    assert cursor.execute("select LEFT(a, 1) from #t1").fetchone()[0] == "ß"
     assert cursor.execute("select cast(a as varchar(3)) from #t1").fetchone()[0] == "ßl"

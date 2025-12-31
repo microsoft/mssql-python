@@ -2931,7 +2931,9 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     row.append(
                         FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false, charEncoding));
                 } else {
-                    uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
+                    // Multiply by 2 because utf8 conversion by the driver might
+                    // turn varchar(x) into up to 2*x bytes.
+                    uint64_t fetchBufferSize = 2 * columnSize + 1 /* null-termination */;
                     std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
                     SQLLEN dataLen;
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(),
@@ -3448,7 +3450,9 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 // TODO: handle variable length data correctly. This logic wont
                 // suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
-                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
+                // Multiply by 2 because utf8 conversion by the driver might
+                // turn varchar(x) into up to 2*x bytes.
+                uint64_t fetchBufferSize = 2 * columnSize + 1 /*null-terminator*/;
                 // TODO: For LONGVARCHAR/BINARY types, columnSize is returned as
                 // 2GB-1 by SQLDescribeCol. So fetchBufferSize = 2GB.
                 // fetchSize=1 if columnSize>1GB. So we'll allocate a vector of
@@ -3621,8 +3625,20 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         columnInfos[col].columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
         columnInfos[col].processedColumnSize = columnInfos[col].columnSize;
         HandleZeroColumnSizeAtFetch(columnInfos[col].processedColumnSize);
-        columnInfos[col].fetchBufferSize =
-            columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
+        switch (columnInfos[col].dataType) {
+            case SQL_CHAR:
+            case SQL_VARCHAR:
+            case SQL_LONGVARCHAR:
+                // Multiply by 2 because utf8 conversion by the driver might
+                // turn varchar(x) into up to 2*x bytes.
+                columnInfos[col].fetchBufferSize =
+                    2 * columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
+                break;
+            default:
+                columnInfos[col].fetchBufferSize =
+                    columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
+                break;
+        }
     }
 
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
@@ -3925,7 +3941,9 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR:
-                rowSize += columnSize;
+                // Multiply by 2 because utf8 conversion by the driver might
+                // turn varchar(x) into up to 2*x bytes.
+                rowSize += 2 * columnSize;
                 break;
             case SQL_SS_XML:
             case SQL_WCHAR:
