@@ -15030,6 +15030,8 @@ def test_encoding_buffersize(cursor):
         cursor.execute("select * from #t1").fetchall()
     with pytest.raises(Exception, match=".*Internal error: CHAR/VARCHAR column data exceeds buffer size.*"):
         cursor.execute("select * from #t1").fetchmany(1)
-    assert cursor.execute("select * from #t1").fetchone()[0] == "l"
-    assert cursor.execute("select LEFT(a, 1) from #t1").fetchone()[0] == "ß".encode("utf-8")[1:] == b'\x9f'
+    with pytest.raises(Exception, match=".*SQLGetData returned data larger than expected for CHAR column.*"):
+        cursor.execute("select * from #t1").fetchone()
+    with pytest.raises(Exception, match=".*SQLGetData returned data larger than expected for CHAR column.*"):
+        cursor.execute("select LEFT(a, 1) from #t1").fetchone()
     assert cursor.execute("select cast(a as varchar(3)) from #t1").fetchone()[0] == "ßl"

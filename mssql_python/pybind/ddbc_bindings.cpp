@@ -2960,12 +2960,13 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                     row.append(raw_bytes);
                                 }
                             } else {
-                                // Buffer too small, fallback to streaming
-                                LOG("SQLGetData: CHAR column %d data truncated "
-                                    "(buffer_size=%zu), using streaming LOB",
-                                    i, dataBuffer.size());
-                                row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false,
-                                                              charEncoding));
+                                // Reaching this case indicates an error in the code.
+                                // Theoretically, we could still compensate by calling SQLGetData or
+                                // FetchLobColumnData more often, but then we would still have to process
+                                // the data we already got from the above call to SQLGetData.
+                                // Better to throw an exception and fix the code than to risk returning corrupted data.
+                                ThrowStdException("SQLGetData returned data larger than "
+                                                  "expected for CHAR column");
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             LOG("SQLGetData: Column %d is NULL (CHAR)", i);
@@ -3002,7 +3003,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_WCHAR:
             case SQL_WVARCHAR:
             case SQL_WLONGVARCHAR: {
-                if (columnSize == SQL_NO_TOTAL || columnSize > 4000) {
+                if (columnSize == SQL_NO_TOTAL || columnSize == 0 || columnSize > 4000) {
                     LOG("SQLGetData: Streaming LOB for column %d (SQL_C_WCHAR) "
                         "- columnSize=%lu",
                         i, (unsigned long)columnSize);
@@ -3031,12 +3032,13 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                     "length=%lu for column %d",
                                     (unsigned long)numCharsInData, i);
                             } else {
-                                // Buffer too small, fallback to streaming
-                                LOG("SQLGetData: NVARCHAR column %d data "
-                                    "truncated, using streaming LOB",
-                                    i);
-                                row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false,
-                                                              "utf-16le"));
+                                // Reaching this case indicates an error in the code.
+                                // Theoretically, we could still compensate by calling SQLGetData or
+                                // FetchLobColumnData more often, but then we would still have to process
+                                // the data we already got from the above call to SQLGetData.
+                                // Better to throw an exception and fix the code than to risk returning corrupted data.
+                                ThrowStdException("SQLGetData returned data larger than "
+                                                  "expected for WCHAR column");
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             LOG("SQLGetData: Column %d is NULL (NVARCHAR)", i);
@@ -3298,8 +3300,13 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 row.append(py::bytes(
                                     reinterpret_cast<const char*>(dataBuffer.data()), dataLen));
                             } else {
-                                row.append(
-                                    FetchLobColumnData(hStmt, i, SQL_C_BINARY, false, true, ""));
+                                // Reaching this case indicates an error in the code.
+                                // Theoretically, we could still compensate by calling SQLGetData or
+                                // FetchLobColumnData more often, but then we would still have to process
+                                // the data we already got from the above call to SQLGetData.
+                                // Better to throw an exception and fix the code than to risk returning corrupted data.
+                                ThrowStdException("SQLGetData returned data larger than "
+                                                  "expected for BINARY column");
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             row.append(py::none());
