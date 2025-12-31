@@ -15020,7 +15020,7 @@ def test_close(db_connection):
         cursor = db_connection.cursor()
 
 
-def test_encoding_buffersize(cursor):
+def test_varchar_buffersize_special_character(cursor):
     cursor.execute(
         "drop table if exists #t1;\n"
         + "create table #t1 (a varchar(2) collate SQL_Latin1_General_CP1_CI_AS)\n"
