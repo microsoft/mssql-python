@@ -651,13 +651,7 @@ struct ColumnInfoExt {
     SQLULEN columnSize;
     SQLULEN processedColumnSize;
     uint64_t fetchBufferSize;
-    bool isLob;
 };
-
-// Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp) - MUST be
-// outside namespace
-py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT col, SQLSMALLINT cType, bool isWideChar,
-                              bool isBinary, const std::string& charEncoding = "utf-8");
 
 // Specialized column processors for each data type (eliminates switch in hot
 // loop)
@@ -795,7 +789,7 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
     // Fast path: Data fits in buffer (not LOB or truncated)
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence
     // '<'
-    if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
+    if (numCharsInData < colInfo->fetchBufferSize) {
         // Performance: Direct Python C API call - create string from buffer
         PyObject* pyStr = PyUnicode_FromStringAndSize(
             reinterpret_cast<char*>(
@@ -808,9 +802,12 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
             PyList_SET_ITEM(row, col - 1, pyStr);
         }
     } else {
-        // Slow path: LOB data requires separate fetch call
-        PyList_SET_ITEM(row, col - 1,
-                        FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false).release().ptr());
+        // Reaching this case indicates an error in mssql_python.
+        // This function is only called on columns bound by SQLBindCol.
+        // For such columns, the ODBC Driver does not allow us to compensate by
+        // fetching the remaining data using SQLGetData / FetchLobColumnData.
+        ThrowStdException(
+            "Internal error: CHAR/VARCHAR column data exceeds buffer size.");
     }
 }
 
@@ -838,7 +835,7 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
     // Fast path: Data fits in buffer (not LOB or truncated)
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence
     // '<'
-    if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
+    if (numCharsInData < colInfo->fetchBufferSize) {
 #if defined(__APPLE__) || defined(__linux__)
         // Performance: Direct UTF-16 decode (SQLWCHAR is 2 bytes on
         // Linux/macOS)
@@ -875,9 +872,12 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
         }
 #endif
     } else {
-        // Slow path: LOB data requires separate fetch call
-        PyList_SET_ITEM(row, col - 1,
-                        FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false).release().ptr());
+        // Reaching this case indicates an error in mssql_python.
+        // This function is only called on columns bound by SQLBindCol.
+        // For such columns, the ODBC Driver does not allow us to compensate by
+        // fetching the remaining data using SQLGetData / FetchLobColumnData.
+        ThrowStdException(
+            "Internal error: NCHAR/NVARCHAR column data exceeds buffer size.");
     }
 }
 
@@ -902,7 +902,7 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
     }
 
     // Fast path: Data fits in buffer (not LOB or truncated)
-    if (!colInfo->isLob && static_cast<size_t>(dataLen) <= colInfo->processedColumnSize) {
+    if (static_cast<size_t>(dataLen) <= colInfo->processedColumnSize) {
         // Performance: Direct Python C API call - create bytes from buffer
         PyObject* pyBytes = PyBytes_FromStringAndSize(
             reinterpret_cast<const char*>(
@@ -915,10 +915,12 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
             PyList_SET_ITEM(row, col - 1, pyBytes);
         }
     } else {
-        // Slow path: LOB data requires separate fetch call
-        PyList_SET_ITEM(
-            row, col - 1,
-            FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true, "").release().ptr());
+        // Reaching this case indicates an error in mssql_python.
+        // This function is only called on columns bound by SQLBindCol.
+        // For such columns, the ODBC Driver does not allow us to compensate by
+        // fetching the remaining data using SQLGetData / FetchLobColumnData.
+        ThrowStdException(
+            "Internal error: BINARY/VARBINARY column data exceeds buffer size.");
     }
 }
 
