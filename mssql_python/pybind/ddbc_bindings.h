@@ -802,7 +802,7 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
             PyList_SET_ITEM(row, col - 1, pyStr);
         }
     } else {
-        // Reaching this case indicates an error in the code.
+        // Reaching this case indicates an error in mssql_python.
         // This function is only called on columns bound by SQLBindCol.
         // For such columns, the ODBC Driver does not allow us to compensate by
         // fetching the remaining data using SQLGetData / FetchLobColumnData.
@@ -872,7 +872,7 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
         }
 #endif
     } else {
-        // Reaching this case indicates an error in the code.
+        // Reaching this case indicates an error in mssql_python.
         // This function is only called on columns bound by SQLBindCol.
         // For such columns, the ODBC Driver does not allow us to compensate by
         // fetching the remaining data using SQLGetData / FetchLobColumnData.
@@ -915,7 +915,7 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
             PyList_SET_ITEM(row, col - 1, pyBytes);
         }
     } else {
-        // Reaching this case indicates an error in the code.
+        // Reaching this case indicates an error in mssql_python.
         // This function is only called on columns bound by SQLBindCol.
         // For such columns, the ODBC Driver does not allow us to compensate by
         // fetching the remaining data using SQLGetData / FetchLobColumnData.

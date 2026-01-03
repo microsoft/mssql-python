@@ -15031,3 +15031,43 @@ def test_varchar_buffersize_special_character(cursor):
     assert cursor.execute("select * from #t1").fetchone()[0] == "ßl"
     assert cursor.execute("select LEFT(a, 1) from #t1").fetchone()[0] == "ß"
     assert cursor.execute("select cast(a as varchar(3)) from #t1").fetchone()[0] == "ßl"
+
+
+def test_varchar_latin1_fetch(cursor):
+    def query():
+        cursor.execute("""
+            declare @t1 as table(
+                row_nr int,
+                latin1 varchar(1) collate SQL_Latin1_General_CP1_CI_AS,
+                utf8 varchar(3) collate Latin1_General_100_CI_AI_SC_UTF8
+            )
+
+            insert into @t1 (row_nr, latin1)
+            select top 256
+                row_number() over(order by (select 1)) - 1,
+                cast(row_number() over(order by (select 1)) - 1 as binary(1))
+            from sys.objects
+
+            update @t1 set utf8 = latin1
+
+            select * from @t1
+        """)
+        cursor.nextset()
+        cursor.nextset()
+    
+    def validate(result):
+        assert len(result) == 256
+        for (row_nr, latin1, utf8) in result:
+            assert utf8 == latin1 or (
+                # small difference in how sql server and msodbcsql18 handle unmapped characters
+                row_nr in [129, 141, 143, 144, 157]
+                and utf8 == chr(row_nr)
+                and latin1 == '?'
+            ), (row_nr, utf8, latin1, chr(row_nr))
+
+    query()
+    validate(cursor.fetchall())
+    query()
+    validate(cursor.fetchmany(500))
+    query()
+    validate([cursor.fetchone() for _ in range(256)])
