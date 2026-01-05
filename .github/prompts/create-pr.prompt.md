@@ -61,6 +61,9 @@ git pull origin main
 **Branch Naming Convention:** `<your-name>/<type>/<description>` or `<your-name>/<description>`
 
 **Team Member Prefixes:**
+
+> 📝 **Note:** Keep this list up-to-date as team composition changes.
+
 | Name | Branch Prefix |
 |------|---------------|
 | Gaurav | `bewithgaurav/` |
