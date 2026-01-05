@@ -116,7 +116,7 @@ atexit.register(_cleanup_connections)
 # GLOBALS
 # Read-Only
 apilevel: str = "2.0"
-paramstyle: str = "qmark"
+paramstyle: str = "pyformat"
 threadsafety: int = 1
 
 # Set the initial decimal separator in C++
