@@ -121,12 +121,12 @@ ls -la ../ddbc_bindings.*.so
 dir ..\ddbc_bindings.*.pyd
 ```
 
-### 2.2 Verify Import Works
+### 2.2 Verify Build Works
 
 ```bash
 # From repository root (important!)
 cd ../..
-python -c "from mssql_python import connect; print('✅ Import successful')"
+python main.py
 ```
 
 ---
