@@ -2,6 +2,7 @@
 description: "Create a well-structured PR for mssql-python"
 name: "pr"
 agent: 'agent'
+model: Claude Sonnet 4.5 (copilot)
 tools:
   - web/githubRepo
   - github/*

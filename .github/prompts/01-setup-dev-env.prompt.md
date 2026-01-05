@@ -2,6 +2,7 @@
 description: "Set up development environment for mssql-python"
 name: "setup"
 agent: 'agent'
+model: Claude Sonnet 4.5 (copilot)
 ---
 # Setup Development Environment Prompt for microsoft/mssql-python
 

@@ -2,6 +2,7 @@
 description: "Run pytest for mssql-python driver"
 name: "test"
 agent: 'agent'
+model: Claude Sonnet 4.5 (copilot)
 ---
 # Run Tests Prompt for microsoft/mssql-python
 
