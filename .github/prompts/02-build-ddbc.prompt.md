@@ -1,6 +1,6 @@
 ---
 description: "Build C++ pybind11 extension (ddbc_bindings)"
-name: "build"
+name: "mssql-python-build"
 agent: 'agent'
 model: Claude Sonnet 4.5 (copilot)
 ---

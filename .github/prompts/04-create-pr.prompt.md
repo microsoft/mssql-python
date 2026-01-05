@@ -1,6 +1,6 @@
 ---
 description: "Create a well-structured PR for mssql-python"
-name: "pr"
+name: "mssql-python-pr"
 agent: 'agent'
 model: Claude Sonnet 4.5 (copilot)
 tools:

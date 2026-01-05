@@ -1,6 +1,6 @@
 ---
 description: "Run pytest for mssql-python driver"
-name: "test"
+name: "mssql-python-test"
 agent: 'agent'
 model: Claude Sonnet 4.5 (copilot)
 ---
