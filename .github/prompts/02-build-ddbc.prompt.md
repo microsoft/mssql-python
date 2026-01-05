@@ -2,6 +2,7 @@
 description: "Build C++ pybind11 extension (ddbc_bindings)"
 name: "build"
 agent: 'agent'
+model: Claude Sonnet 4.5 (copilot)
 ---
 # Build DDBC Extensions Prompt for microsoft/mssql-python
 
@@ -126,14 +127,6 @@ dir ..\ddbc_bindings.*.pyd
 # From repository root (important!)
 cd ../..
 python -c "from mssql_python import connect; print('✅ Import successful')"
-```
-
-### 2.3 Verify Architecture (macOS Only)
-
-```bash
-# Check if universal binary
-lipo -info mssql_python/ddbc_bindings.*.so
-# Expected: Architectures in the fat file: ... are: x86_64 arm64
 ```
 
 ---
