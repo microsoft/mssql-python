@@ -11,17 +11,41 @@ Before running tests, you MUST complete these checks **in order**:
 
 ### Step 1: Activate Virtual Environment
 
-```bash
-source myvenv/bin/activate
-```
+First, check if a venv is already active:
 
-Verify it's active:
 ```bash
 echo $VIRTUAL_ENV
-# Expected: /path/to/mssql-python/myvenv
 ```
 
-**If empty or wrong path:** Activate the venv before proceeding.
+**If a path is shown:** ✅ venv is active, skip to Step 2.
+
+**If empty:** Look for existing venv directories:
+
+```bash
+ls -d myvenv venv .venv testenv 2>/dev/null | head -1
+```
+
+- **If found:** Activate it:
+  ```bash
+  source <venv-name>/bin/activate
+  ```
+
+- **If not found:** Ask the developer:
+  > "No virtual environment found. Would you like me to:
+  > 1. Create a new venv called `myvenv`
+  > 2. Use a different venv (tell me the path)
+  > 3. You'll activate it yourself"
+
+  To create a new venv:
+  ```bash
+  python3 -m venv myvenv && source myvenv/bin/activate && pip install -r requirements.txt pytest pytest-cov && pip install -e .
+  ```
+
+Verify venv is active:
+```bash
+echo $VIRTUAL_ENV
+# Expected: /path/to/mssql-python/<venv-name>
+```
 
 ### Step 2: Verify pytest is Installed
 
