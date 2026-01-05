@@ -1,5 +1,5 @@
 ---
-mode: 'agent'
+agent: 'agent'
 ---
 # Setup Development Environment Prompt for microsoft/mssql-python
 

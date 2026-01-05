@@ -1,5 +1,5 @@
 ---
-mode: 'agent'
+agent: 'agent'
 ---
 # Create Pull Request Prompt for microsoft/mssql-python
 

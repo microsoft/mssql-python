@@ -1,5 +1,5 @@
 ---
-mode: 'agent'
+agent: 'agent'
 ---
 # Run Tests Prompt for microsoft/mssql-python
 

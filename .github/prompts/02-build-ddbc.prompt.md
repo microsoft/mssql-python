@@ -1,5 +1,5 @@
 ---
-mode: 'agent'
+agent: 'agent'
 ---
 # Build DDBC Extensions Prompt for microsoft/mssql-python
 
