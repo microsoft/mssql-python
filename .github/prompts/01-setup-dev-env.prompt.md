@@ -1,12 +1,10 @@
 ---
 description: "Set up development environment for mssql-python"
 name: "setup"
-argument-hint: "Platform? (macOS/Linux/Windows)"
 agent: 'agent'
-model: 'claude-sonnet-4'
 tools:
-  - terminalLastCommand
-  - codebase
+  - read/terminalLastCommand
+  - search/codebase
 ---
 # Setup Development Environment Prompt for microsoft/mssql-python
 

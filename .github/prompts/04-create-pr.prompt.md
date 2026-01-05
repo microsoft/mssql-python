@@ -1,13 +1,12 @@
 ---
 description: "Create a well-structured PR for mssql-python"
 name: "pr"
-argument-hint: "Work item ID? (e.g., AB#12345)"
 agent: 'agent'
-model: 'claude-sonnet-4'
 tools:
-  - terminalLastCommand
-  - codebase
-  - githubRepo
+  - read/terminalLastCommand
+  - search/codebase
+  - web/githubRepo
+  - github/*
 ---
 # Create Pull Request Prompt for microsoft/mssql-python
 
