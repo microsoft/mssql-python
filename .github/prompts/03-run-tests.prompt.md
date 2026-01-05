@@ -251,7 +251,7 @@ pip install -e .
 # Check venv is active
 echo $VIRTUAL_ENV
 
-# If empty, activate it (run `#setup-dev-env`)
+# If empty, activate it (run `#01-setup-dev-env`)
 # If active, install pytest
 pip install pytest pytest-cov
 ```
@@ -302,7 +302,7 @@ python -m pytest tests/test_000_dependencies.py tests/test_001_globals.py tests/
 **Cause:** C++ extension not built or Python version mismatch
 
 **Fix:**
-Use `#build-ddbc` to rebuild the extension:
+Use `#02-build-ddbc` to rebuild the extension:
 ```bash
 cd mssql_python/pybind && ./build.sh && cd ../..
 python -c "from mssql_python import connect; print('OK')"
@@ -397,9 +397,9 @@ addopts = -m "not stress"
 
 Based on test results:
 
-1. **All passed** → Ready to create/update PR → Use `#create-pr`
+1. **All passed** → Ready to create/update PR → Use `#04-create-pr`
 2. **Some failed** → Review failures, fix issues, re-run
 3. **Coverage decreased** → Add tests for new code paths
 4. **Need to debug** → Use `-s` flag to see print output, or `--pdb` to drop into debugger
 
-> 💡 **Tip:** If you made C++ changes, ensure you've rebuilt using `#build-ddbc` first!
+> 💡 **Tip:** If you made C++ changes, ensure you've rebuilt using `#02-build-ddbc` first!
