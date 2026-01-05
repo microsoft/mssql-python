@@ -3,8 +3,6 @@ description: "Create a well-structured PR for mssql-python"
 name: "pr"
 agent: 'agent'
 tools:
-  - read/terminalLastCommand
-  - search/codebase
   - web/githubRepo
   - github/*
 ---

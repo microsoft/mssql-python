@@ -2,9 +2,6 @@
 description: "Set up development environment for mssql-python"
 name: "setup"
 agent: 'agent'
-tools:
-  - read/terminalLastCommand
-  - search/codebase
 ---
 # Setup Development Environment Prompt for microsoft/mssql-python
 

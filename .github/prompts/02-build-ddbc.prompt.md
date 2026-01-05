@@ -2,9 +2,6 @@
 description: "Build C++ pybind11 extension (ddbc_bindings)"
 name: "build"
 agent: 'agent'
-tools:
-  - read/terminalLastCommand
-  - search/codebase
 ---
 # Build DDBC Extensions Prompt for microsoft/mssql-python
 

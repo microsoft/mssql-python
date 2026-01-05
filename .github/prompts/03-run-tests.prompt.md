@@ -2,9 +2,6 @@
 description: "Run pytest for mssql-python driver"
 name: "test"
 agent: 'agent'
-tools:
-  - read/terminalLastCommand
-  - search/codebase
 ---
 # Run Tests Prompt for microsoft/mssql-python
 
