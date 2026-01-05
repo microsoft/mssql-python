@@ -1,5 +1,12 @@
 ---
+description: "Build C++ pybind11 extension (ddbc_bindings)"
+name: "build"
+argument-hint: "Clean build? (yes/no)"
 agent: 'agent'
+model: 'claude-sonnet-4'
+tools:
+  - terminalLastCommand
+  - codebase
 ---
 # Build DDBC Extensions Prompt for microsoft/mssql-python
 

@@ -1,5 +1,12 @@
 ---
+description: "Run pytest for mssql-python driver"
+name: "test"
+argument-hint: "What to test? (all/specific file/with coverage)"
 agent: 'agent'
+model: 'claude-sonnet-4'
+tools:
+  - terminalLastCommand
+  - codebase
 ---
 # Run Tests Prompt for microsoft/mssql-python
 
