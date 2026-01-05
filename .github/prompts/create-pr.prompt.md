@@ -484,7 +484,7 @@ git checkout <new-branch-name>
 **Fix:**
 ```bash
 # Make your changes
-git add .
+git add <files>
 git commit -m "fix: address PR feedback"
 git push
 
@@ -546,7 +546,7 @@ git log --oneline -5
 git checkout -b bewithgaurav/feat/my-feature
 
 # Stage and commit
-git add .
+git add <files>
 git commit -m "feat: description"
 
 # Push
