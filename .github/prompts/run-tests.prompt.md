@@ -7,15 +7,56 @@ You are a development assistant helping run pytest for the mssql-python driver.
 
 ## PREREQUISITES
 
-> ⚠️ **This prompt assumes your development environment is already set up.**
-> If you haven't set up your environment yet, use `#setup-dev-env` first.
+Before running tests, you MUST complete these checks **in order**:
 
-**Quick sanity check:**
+### Step 1: Activate Virtual Environment
+
 ```bash
-echo $VIRTUAL_ENV && python -c "import pytest; print('✅ Ready to test')"
+source myvenv/bin/activate
 ```
 
-If this fails, run the setup prompt first.
+Verify it's active:
+```bash
+echo $VIRTUAL_ENV
+# Expected: /path/to/mssql-python/myvenv
+```
+
+**If empty or wrong path:** Activate the venv before proceeding.
+
+### Step 2: Verify pytest is Installed
+
+```bash
+python -c "import pytest; print('✅ pytest ready:', pytest.__version__)"
+```
+
+**If this fails:**
+```bash
+pip install pytest pytest-cov
+```
+
+### Step 3: Verify Database Connection String
+
+```bash
+if [ -n "$DB_CONNECTION_STRING" ]; then echo "✅ Connection string is set"; else echo "❌ Not set"; fi
+```
+
+**If not set:** Ask the developer for their connection string:
+
+> "I need your database connection string to run tests. Please provide the connection details:
+> - Server (e.g., localhost, your-server.database.windows.net)
+> - Database name
+> - Username
+> - Password
+> 
+> Or provide the full connection string if you have one."
+
+Once the developer provides the details, set it:
+
+```bash
+export DB_CONNECTION_STRING="Driver={ODBC Driver 18 for SQL Server};Server=<SERVER>;Database=<DATABASE>;UID=<USERNAME>;PWD=<PASSWORD>;TrustServerCertificate=yes"
+```
+
+> ⚠️ **SECURITY:** `TrustServerCertificate=yes` is for local development only. Never use in production.
 
 ---
 
@@ -42,34 +83,11 @@ Help the developer run tests to validate their changes. Follow this process base
 > "What would you like to test?"
 > 1. **All tests** - Run full suite (recommended before PR)
 > 2. **Specific tests** - Tell me which file(s) or test name(s)
-> 3. **Just unit tests** - Skip integration tests requiring DB
-> 4. **With coverage** - Generate coverage report
+> 3. **With coverage** - Generate coverage report
 
 ---
 
-## STEP 2: Verify Connection String (For Integration Tests)
-
-Integration tests require a database connection. Check if it's set:
-
-```bash
-# Check if DB_CONNECTION_STRING is set
-if [ -n "$DB_CONNECTION_STRING" ]; then echo "✅ Connection string is set"; else echo "⚠️ Not set - integration tests will fail"; fi
-```
-
-**If not set and you need integration tests:**
-
-> ⚠️ **SECURITY WARNING:** Replace placeholders with your own values. NEVER commit real credentials to version control. `TrustServerCertificate=yes` should only be used for isolated local development.
-
-```bash
-# LOCAL DEVELOPMENT ONLY - replace placeholders, never commit real credentials!
-export DB_CONNECTION_STRING="Driver={ODBC Driver 18 for SQL Server};Server=localhost;Database=testdb;UID=your_user;PWD=your_password;TrustServerCertificate=yes"
-```
-
-> 💡 Unit tests (test_000, test_001, test_002, test_007) don't require a database.
-
----
-
-## STEP 3: Run Tests
+## STEP 2: Run Tests
 
 ### Option A: Run All Tests (Default - Excludes Stress Tests)
 
@@ -136,16 +154,9 @@ python -m pytest --lf -v
 python -m pytest --ff -v
 ```
 
-### Option H: Run Unit Tests Only (No Database Required)
-
-```bash
-# Tests that don't need a database connection
-python -m pytest tests/test_000_dependencies.py tests/test_001_globals.py tests/test_002_types.py tests/test_007_logging.py -v
-```
-
 ---
 
-## STEP 4: Understanding Test Output
+## STEP 3: Understanding Test Output
 
 ### Test Result Indicators
 
@@ -178,7 +189,7 @@ tests/test_004_cursor.py:25: DatabaseError
 
 ---
 
-## STEP 5: Test File Reference
+## STEP 4: Test File Reference
 
 ### Test Files and What They Cover
 
