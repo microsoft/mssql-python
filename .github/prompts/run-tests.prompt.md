@@ -57,8 +57,12 @@ if [ -n "$DB_CONNECTION_STRING" ]; then echo "✅ Connection string is set"; els
 ```
 
 **If not set and you need integration tests:**
+
+> ⚠️ **SECURITY WARNING:** Replace placeholders with your own values. NEVER commit real credentials to version control. `TrustServerCertificate=yes` should only be used for isolated local development.
+
 ```bash
-export DB_CONNECTION_STRING="Driver={ODBC Driver 18 for SQL Server};Server=your_server;Database=your_db;UID=your_user;PWD=your_password;TrustServerCertificate=yes"
+# LOCAL DEVELOPMENT ONLY - replace placeholders, never commit real credentials!
+export DB_CONNECTION_STRING="Driver={ODBC Driver 18 for SQL Server};Server=localhost;Database=testdb;UID=your_user;PWD=your_password;TrustServerCertificate=yes"
 ```
 
 > 💡 Unit tests (test_000, test_001, test_002, test_007) don't require a database.
@@ -226,7 +230,8 @@ pip install pytest pytest-cov
 # Check the environment variable is set
 echo $DB_CONNECTION_STRING
 
-# Set it with correct values
+# Set it with correct values (LOCAL DEVELOPMENT ONLY)
+# WARNING: Never commit real credentials. TrustServerCertificate=yes is for local dev only.
 export DB_CONNECTION_STRING="Driver={ODBC Driver 18 for SQL Server};Server=localhost;Database=testdb;UID=sa;PWD=YourPassword;TrustServerCertificate=yes"
 ```
 

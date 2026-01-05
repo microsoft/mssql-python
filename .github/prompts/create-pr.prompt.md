@@ -124,7 +124,7 @@ Ask the developer:
 
 > ⚠️ **Important:** Always exclude binary files (`.dylib`, `.so`, `.pyd`, `.dll`) unless explicitly instructed to include them. These are build artifacts.
 
-> ⚠️ **Avoid `git stash`** - If you stash changes, you MUST remember to `git stash pop` later. It's safer to stage only the specific files you need.
+> ⚠️ **Prefer staging over stashing** - It's safer to stage specific files than to use `git stash`, which can lead to forgotten changes.
 
 ```bash
 # PREFERRED: Stage specific files only
@@ -132,9 +132,9 @@ git add <file1> <file2> <folder/>
 
 # Check what's staged
 git status
-
-# AVOID: git add . (stages everything including binaries)
 ```
+
+> ⚠️ **AVOID:** `git add .` stages everything including binary files. Always stage specific files.
 
 **Files to typically EXCLUDE from commits:**
 - `mssql_python/libs/**/*.dylib` - macOS libraries
@@ -149,12 +149,12 @@ git restore --staged mssql_python/libs/
 git restore --staged "*.dylib" "*.so" "*.pyd"
 ```
 
-**If you must use git stash (not recommended):**
+**If you use `git stash`, do so carefully and restore your changes:**
 ```bash
-git stash           # Temporarily saves changes
+git stash           # Temporarily saves changes (use only if you understand stashing)
 # ... do other work ...
-git stash pop       # MUST run this to restore your changes!
-git stash list      # Check if you have stashed changes
+git stash pop       # MUST run this to restore your changes (otherwise they stay hidden)!
+git stash list      # Check if you still have stashed changes to restore
 ```
 
 ### 4.2 Create Commit Message
@@ -511,15 +511,7 @@ git push --force-with-lease
 
 `<your-name>/<type>/<description>` or `<your-name>/<description>`
 
-**Team Member Prefixes:**
-| Name | Branch Prefix |
-|------|---------------|
-| Gaurav | `bewithgaurav/` |
-| Saumya | `saumya/` |
-| Jahnvi | `jahnvi/` |
-| Saurabh | `saurabh/` |
-| Subrata | `subrata/` |
-| Other contributors | `<github-username>/` |
+> See "Team Member Prefixes" table in Step 2.2 above for the current list of prefixes.
 
 | Type | Example |
 |------|---------|

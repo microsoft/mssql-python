@@ -25,11 +25,11 @@ python --version
 python3 --version
 ```
 
-**Supported versions:** Python 3.10, 3.11, 3.12, 3.13
+**Supported versions:** Refer to `pyproject.toml` or `setup.py` (`python_requires`/classifiers) for the authoritative list. Generally, Python 3.10 or later is required.
 
 | Version | Status |
 |---------|--------|
-| 3.10+ | ✅ Supported |
+| 3.10+ (per project metadata) | ✅ Supported |
 | 3.9 and below | ❌ Not supported |
 
 ### 1.2 Check Python Location
@@ -262,17 +262,23 @@ python -c "import pybind11; print('pybind11:', pybind11.get_include())"
 
 ### 5.1 Database Connection String (For Integration Tests)
 
+> ⚠️ **SECURITY WARNING:**
+> - **NEVER commit actual credentials** to version control or share them in documentation.
+> - `TrustServerCertificate=yes` disables TLS certificate validation and should **ONLY be used for isolated local development**, never for remote or production connections.
+
 ```bash
-# Set connection string for tests
-export DB_CONNECTION_STRING="Driver={ODBC Driver 18 for SQL Server};Server=your_server;Database=your_db;UID=your_user;PWD=your_password;TrustServerCertificate=yes"
+# Set connection string for tests (LOCAL DEVELOPMENT ONLY)
+# Replace placeholders with your own values - NEVER commit real credentials!
+export DB_CONNECTION_STRING="Driver={ODBC Driver 18 for SQL Server};Server=localhost;Database=testdb;UID=your_user;PWD=your_password;TrustServerCertificate=yes"
 
 # Verify it's set
 echo $DB_CONNECTION_STRING
 ```
 
-**Windows:**
+**Windows (LOCAL DEVELOPMENT ONLY):**
 ```cmd
-set DB_CONNECTION_STRING=Driver={ODBC Driver 18 for SQL Server};Server=your_server;Database=your_db;UID=your_user;PWD=your_password;TrustServerCertificate=yes
+REM Replace placeholders with your own values - NEVER commit real credentials!
+set DB_CONNECTION_STRING=Driver={ODBC Driver 18 for SQL Server};Server=localhost;Database=testdb;UID=your_user;PWD=your_password;TrustServerCertificate=yes
 ```
 
 > 💡 **Tip:** Add this to your shell profile (`.bashrc`, `.zshrc`) or venv's `activate` script to persist it.
