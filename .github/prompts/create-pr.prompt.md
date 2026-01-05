@@ -190,6 +190,13 @@ git push
 
 ## STEP 6: Create Pull Request
 
+> ⚠️ **MANDATORY:** Before creating a PR, you MUST confirm **3 things** with the developer:
+> 1. **PR Title** - Suggest options, get approval
+> 2. **Work Item/Issue Link** - Search and suggest, get explicit confirmation (NEVER auto-add)
+> 3. **PR Description** - Show full description, get approval
+
+---
+
 ### 6.1 PR Title Format (REQUIRED)
 
 The PR title **MUST** start with one of these prefixes (enforced by CI):
@@ -204,23 +211,104 @@ The PR title **MUST** start with one of these prefixes (enforced by CI):
 | `REFACTOR:` | Code refactoring |
 | `RELEASE:` | Release-related changes |
 
-**Examples:**
-- `FEAT: Add connection timeout parameter`
-- `FIX: Resolve cursor memory leak in fetchall()`
-- `DOC: Update README with new examples`
+> ⚠️ **CONFIRM #1 - PR Title:** Suggest 3-5 title options to the developer and ask them to pick or modify one.
 
-### 6.2 PR Description Format (REQUIRED)
+**Example:**
+```
+Here are some title options for your PR:
 
-The PR description **MUST** include:
-1. **A `### Summary` section** with at least 10 characters of content
-2. **Either a GitHub issue link OR an ADO work item link**
+1. FEAT: Add connection timeout parameter
+2. FEAT: Introduce configurable connection timeout
+3. FEAT: Add timeout support for database connections
 
-**GitHub issue formats:**
-- `#123` (short form)
-- `https://github.com/microsoft/mssql-python/issues/123` (full URL)
+Which one do you prefer, or would you like to modify one?
+```
 
-**ADO Work Item format:**
-- `https://sqlclientdrivers.visualstudio.com/.../_workitems/edit/<ID>`
+---
+
+### 6.2 Work Item / Issue Link (REQUIRED)
+
+> ⚠️ **CONFIRM #2 - Work Item/Issue:** You MUST explicitly ask the developer which issue or work item this PR is linked to. 
+> 
+> **NEVER auto-add an issue number.** Even if you find a similar issue, ask the user to confirm.
+
+**Process:**
+1. Search GitHub issues for potentially related issues
+2. If found similar ones, list them as **suggestions only**
+3. Ask: "Which issue or ADO work item should this PR be linked to?"
+4. User can provide: GitHub issue, ADO work item, both, or none (if creating new issue)
+5. **Ask if they want "Closes" prefix** (only for GitHub issues) - default is NO
+
+**Example prompt to user:**
+```
+Which work item or issue should this PR be linked to?
+
+I found these potentially related GitHub issues:
+- #123: Add developer documentation
+- #145: Improve onboarding experience
+
+Options:
+- Enter a GitHub issue number (e.g., 123)
+- Enter an ADO work item ID (e.g., 41340)
+- Enter both
+- Say "none" if you'll create an issue separately
+
+For GitHub issues: Should this PR close the issue? (default: no)
+```
+
+**Format in PR description (simple hashtag format):**
+- ADO Work Item: `#41340` (ADO plugin auto-links)
+- GitHub Issue: `#123` (GitHub auto-links)
+- GitHub Issue with close: `Closes #123` (only if user confirms)
+
+> 💡 **Note:** No need for full URLs. Just use `#<ID>` - plugins handle the linking automatically.
+
+---
+
+### 6.3 PR Description (REQUIRED)
+
+> ⚠️ **CONFIRM #3 - PR Description:** Show the full PR description to the developer and get approval before creating the PR.
+
+**Use EXACTLY this format (from `.github/PULL_REQUEST_TEMPLATE.MD`):**
+
+```markdown
+### Work Item / Issue Reference  
+
+<!-- mssql-python maintainers: ADO Work Item -->
+> AB#<WORK_ITEM_ID>
+
+<!-- External contributors: GitHub Issue -->
+> GitHub Issue: #<ISSUE_NUMBER>
+
+-------------------------------------------------------------------
+### Summary   
+
+<Your summary here - minimum 10 characters>
+```
+
+> 💡 **Notes:**
+> - For team members: Use `AB#<ID>` format for ADO work items
+> - For external contributors: Use `GitHub Issue: #<ID>` format
+> - Only one reference is required (either ADO or GitHub)
+> - Keep the exact format including the dashed line separator
+
+**Example prompt to user:**
+```
+Here's the PR description I'll use:
+
+---
+### Work Item / Issue Reference  
+
+> AB#41340
+
+-------------------------------------------------------------------
+### Summary   
+
+Added VS Code Copilot prompts for developer workflow...
+---
+
+Does this look good? Should I modify anything before creating the PR?
+```
 
 ### 6.3 Create PR via GitHub MCP (Preferred)
 
@@ -236,29 +324,23 @@ Body: <PR description with Summary and issue link>
 ```
 
 **Example PR Body Template:**
+
 ```markdown
-### Summary
+### Work Item / Issue Reference  
+
+<!-- mssql-python maintainers: ADO Work Item -->
+> AB#<WORK_ITEM_ID>
+
+<!-- External contributors: GitHub Issue -->
+> GitHub Issue: #<ISSUE_NUMBER>
+
+-------------------------------------------------------------------
+### Summary   
 
 <Describe what this PR does and why - minimum 10 characters>
-
-### Changes
-
-- Change 1
-- Change 2
-- Change 3
-
-### Testing
-
-- [ ] Unit tests pass
-- [ ] Integration tests pass
-- [ ] Manual testing completed
-
-### Related Issues
-
-Closes #<issue-number>
-<!-- OR -->
-Related: https://sqlclientdrivers.visualstudio.com/.../_workitems/edit/<ID>
 ```
+
+> 💡 Use EXACTLY this format from `.github/PULL_REQUEST_TEMPLATE.MD`. Use `AB#ID` for ADO, `GitHub Issue: #ID` for GitHub issues.
 
 ### 6.4 Alternative: Create PR via GitHub CLI
 
