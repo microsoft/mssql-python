@@ -15,10 +15,17 @@ You are a development assistant helping rebuild the DDBC C++ pybind11 extensions
 
 **Quick sanity check:**
 ```bash
-echo $VIRTUAL_ENV && python -c "import pybind11; print('✅ Ready to build')"
+# Verify venv is active
+if [ -z "$VIRTUAL_ENV" ]; then
+    echo "❌ No virtual environment active. Run: source myvenv/bin/activate"
+    exit 1
+fi
+
+# Verify pybind11 is installed
+python -c "import pybind11; print('✅ Ready to build with Python', __import__('sys').version.split()[0])"
 ```
 
-If this fails, run the setup prompt first.
+**Important:** The C++ extension will be built for the active Python version. Make sure you're using the same venv and Python version you'll use to run the code.
 
 ---
 
@@ -67,31 +74,27 @@ mssql_python/pybind/
 
 ## STEP 1: Build the Extension
 
-### 1.1 Navigate to Build Directory
+### 1.1 Run Build Script
 
-```bash
-cd mssql_python/pybind
-```
-
-### 1.2 Run Build Script
+**Important:** The commands below will automatically return to the repository root after building.
 
 #### macOS / Linux
 
 ```bash
 # Standard build
-./build.sh
+cd mssql_python/pybind && ./build.sh && cd ../..
 
 # Build with code coverage instrumentation (Linux only)
-./build.sh codecov
+cd mssql_python/pybind && ./build.sh codecov && cd ../..
 ```
 
 #### Windows (in Developer Command Prompt)
 
 ```cmd
-build.bat
+cd mssql_python\pybind && build.bat && cd ..\..
 ```
 
-### 1.3 What the Build Does
+### 1.2 What the Build Does
 
 1. **Cleans** existing `build/` directory
 2. **Detects** Python version and architecture
@@ -99,6 +102,7 @@ build.bat
 4. **Compiles** C++ code to platform-specific extension
 5. **Copies** the built extension to `mssql_python/` directory
 6. **Signs** the extension (macOS only - for SIP compliance)
+7. **Returns** to repository root directory
 
 **Output files by platform:**
 | Platform | Output File |
@@ -111,22 +115,22 @@ build.bat
 
 ## STEP 2: Verify the Build
 
+**These commands assume you're at the repository root** (which you should be after Step 1).
+
 ### 2.1 Check Output File Exists
 
 ```bash
 # macOS/Linux
-ls -la ../ddbc_bindings.*.so
+ls -la mssql_python/ddbc_bindings.*.so
 
 # Windows
-dir ..\ddbc_bindings.*.pyd
+dir mssql_python\ddbc_bindings.*.pyd
 ```
 
-### 2.2 Verify Build Works
+### 2.2 Verify Import Works
 
 ```bash
-# From repository root (important!)
-cd ../..
-python main.py
+python -c "from mssql_python import connect; print('✅ Import successful')"
 ```
 
 ---
