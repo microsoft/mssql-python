@@ -1,0 +1,365 @@
+---
+mode: 'agent'
+---
+# Run Tests Prompt for microsoft/mssql-python
+
+You are a development assistant helping run pytest for the mssql-python driver.
+
+## PREREQUISITES
+
+> ⚠️ **This prompt assumes your development environment is already set up.**
+> If you haven't set up your environment yet, use `#setup-dev-env` first.
+
+**Quick sanity check:**
+```bash
+echo $VIRTUAL_ENV && python -c "import pytest; print('✅ Ready to test')"
+```
+
+If this fails, run the setup prompt first.
+
+---
+
+## TASK
+
+Help the developer run tests to validate their changes. Follow this process based on what they need.
+
+---
+
+## STEP 1: Choose What to Test
+
+### Test Categories
+
+| Category | Description | When to Use |
+|----------|-------------|-------------|
+| **All tests** | Full test suite (excluding stress) | Before creating PR |
+| **Specific file** | Single test file | Testing one area |
+| **Specific test** | Single test function | Debugging a failure |
+| **Stress tests** | Long-running, resource-intensive | Performance validation |
+| **With coverage** | Tests + coverage report | Checking coverage |
+
+### Ask the Developer
+
+> "What would you like to test?"
+> 1. **All tests** - Run full suite (recommended before PR)
+> 2. **Specific tests** - Tell me which file(s) or test name(s)
+> 3. **Just unit tests** - Skip integration tests requiring DB
+> 4. **With coverage** - Generate coverage report
+
+---
+
+## STEP 2: Verify Connection String (For Integration Tests)
+
+Integration tests require a database connection. Check if it's set:
+
+```bash
+# Check if DB_CONNECTION_STRING is set
+if [ -n "$DB_CONNECTION_STRING" ]; then echo "✅ Connection string is set"; else echo "⚠️ Not set - integration tests will fail"; fi
+```
+
+**If not set and you need integration tests:**
+```bash
+export DB_CONNECTION_STRING="Driver={ODBC Driver 18 for SQL Server};Server=your_server;Database=your_db;UID=your_user;PWD=your_password;TrustServerCertificate=yes"
+```
+
+> 💡 Unit tests (test_000, test_001, test_002, test_007) don't require a database.
+
+---
+
+## STEP 3: Run Tests
+
+### Option A: Run All Tests (Default - Excludes Stress Tests)
+
+```bash
+# From repository root
+python -m pytest -v
+
+# This automatically applies: -m "not stress" (from pytest.ini)
+```
+
+### Option B: Run All Tests Including Stress Tests
+
+```bash
+python -m pytest -v -m ""
+```
+
+### Option C: Run Only Stress Tests
+
+```bash
+python -m pytest -v -m stress
+```
+
+### Option D: Run Specific Test File
+
+```bash
+# Single file
+python -m pytest tests/test_003_connection.py -v
+
+# Multiple files
+python -m pytest tests/test_003_connection.py tests/test_004_cursor.py -v
+```
+
+### Option E: Run Specific Test Function
+
+```bash
+# Specific test
+python -m pytest tests/test_003_connection.py::test_connection_basic -v
+
+# Pattern matching
+python -m pytest -k "connection" -v
+python -m pytest -k "connection and not close" -v
+```
+
+### Option F: Run with Coverage
+
+```bash
+# Basic coverage
+python -m pytest --cov=mssql_python -v
+
+# Coverage with HTML report
+python -m pytest --cov=mssql_python --cov-report=html -v
+
+# Coverage with specific report location
+python -m pytest --cov=mssql_python --cov-report=html:coverage_report -v
+```
+
+### Option G: Run Failed Tests Only (Re-run)
+
+```bash
+# Re-run only tests that failed in the last run
+python -m pytest --lf -v
+
+# Re-run failed tests first, then the rest
+python -m pytest --ff -v
+```
+
+### Option H: Run Unit Tests Only (No Database Required)
+
+```bash
+# Tests that don't need a database connection
+python -m pytest tests/test_000_dependencies.py tests/test_001_globals.py tests/test_002_types.py tests/test_007_logging.py -v
+```
+
+---
+
+## STEP 4: Understanding Test Output
+
+### Test Result Indicators
+
+| Symbol | Meaning | Action |
+|--------|---------|--------|
+| `.` or `PASSED` | Test passed | ✅ Good |
+| `F` or `FAILED` | Test failed | ❌ Fix needed |
+| `E` or `ERROR` | Test error (setup/teardown) | ❌ Check fixtures |
+| `s` or `SKIPPED` | Test skipped | ℹ️ Usually OK |
+| `x` or `XFAIL` | Expected failure | ℹ️ Known issue |
+| `X` or `XPASS` | Unexpected pass | ⚠️ Review |
+
+### Example Output
+
+```
+tests/test_003_connection.py::test_connection_basic PASSED    [ 10%]
+tests/test_003_connection.py::test_connection_close PASSED    [ 20%]
+tests/test_004_cursor.py::test_cursor_execute FAILED          [ 30%]
+
+====================== FAILURES ======================
+________________ test_cursor_execute _________________
+
+    def test_cursor_execute(cursor):
+>       cursor.execute("SELECT 1")
+E       mssql_python.exceptions.DatabaseError: Connection failed
+
+tests/test_004_cursor.py:25: DatabaseError
+======================================================
+```
+
+---
+
+## STEP 5: Test File Reference
+
+### Test Files and What They Cover
+
+| File | Purpose | Requires DB? |
+|------|---------|--------------|
+| `test_000_dependencies.py` | Dependency checks | No |
+| `test_001_globals.py` | Global state | No |
+| `test_002_types.py` | Type conversions | No |
+| `test_003_connection.py` | Connection lifecycle | **Yes** |
+| `test_004_cursor.py` | Cursor operations | **Yes** |
+| `test_005_connection_cursor_lifecycle.py` | Lifecycle management | **Yes** |
+| `test_006_exceptions.py` | Error handling | Mixed |
+| `test_007_logging.py` | Logging functionality | No |
+| `test_008_auth.py` | Authentication | **Yes** |
+
+---
+
+## Troubleshooting
+
+### ❌ "ModuleNotFoundError: No module named 'mssql_python'"
+
+**Cause:** Package not installed in development mode
+
+**Fix:**
+```bash
+pip install -e .
+```
+
+### ❌ "ModuleNotFoundError: No module named 'pytest'"
+
+**Cause:** pytest not installed or venv not active
+
+**Fix:**
+```bash
+# Check venv is active
+echo $VIRTUAL_ENV
+
+# If empty, activate it (run `#setup-dev-env`)
+# If active, install pytest
+pip install pytest pytest-cov
+```
+
+### ❌ "Connection failed" or "Login failed"
+
+**Cause:** Invalid or missing `DB_CONNECTION_STRING`
+
+**Fix:**
+```bash
+# Check the environment variable is set
+echo $DB_CONNECTION_STRING
+
+# Set it with correct values
+export DB_CONNECTION_STRING="Driver={ODBC Driver 18 for SQL Server};Server=localhost;Database=testdb;UID=sa;PWD=YourPassword;TrustServerCertificate=yes"
+```
+
+### ❌ "Timeout error"
+
+**Cause:** Database server not reachable
+
+**Fix:**
+- Check server is running
+- Verify network connectivity
+- Check firewall rules
+- Increase timeout: add `Connection Timeout=60` to connection string
+
+### ❌ Tests hang indefinitely
+
+**Cause:** Connection pool issues, deadlocks, or waiting for unavailable DB
+
+**Fix:**
+```bash
+# Run with timeout
+pip install pytest-timeout
+python -m pytest --timeout=60 -v
+
+# Run single test in isolation
+python -m pytest tests/test_specific.py::test_name -v -s
+
+# Skip integration tests if no DB available
+python -m pytest tests/test_000_dependencies.py tests/test_001_globals.py tests/test_002_types.py tests/test_007_logging.py -v
+```
+
+### ❌ "ddbc_bindings" import error
+
+**Cause:** C++ extension not built or Python version mismatch
+
+**Fix:**
+Use `#build-ddbc` to rebuild the extension:
+```bash
+cd mssql_python/pybind && ./build.sh && cd ../..
+python -c "from mssql_python import connect; print('OK')"
+```
+
+### ❌ Tests pass locally but fail in CI
+
+**Cause:** Environment differences (connection string, Python version, OS)
+
+**Fix:**
+- Check CI logs for specific error
+- Ensure `DB_CONNECTION_STRING` is set in CI secrets
+- Verify Python version matches CI
+
+### ❌ Coverage report shows 0%
+
+**Cause:** Package not installed or wrong source path
+
+**Fix:**
+```bash
+# Reinstall in dev mode
+pip install -e .
+
+# Run with correct package path
+python -m pytest --cov=mssql_python --cov-report=term-missing -v
+```
+
+### ❌ "collected 0 items"
+
+**Cause:** pytest can't find tests (wrong directory or pattern)
+
+**Fix:**
+```bash
+# Ensure you're in repository root
+pwd  # Should be /path/to/mssql-python
+
+# Check tests directory exists
+ls tests/
+
+# Run with explicit path
+python -m pytest tests/ -v
+```
+
+---
+
+## Quick Reference
+
+### Common Commands
+
+```bash
+# Run all tests (default, excludes stress)
+python -m pytest -v
+
+# Run specific file
+python -m pytest tests/test_003_connection.py -v
+
+# Run with keyword filter
+python -m pytest -k "connection" -v
+
+# Run with coverage
+python -m pytest --cov=mssql_python -v
+
+# Run failed tests only
+python -m pytest --lf -v
+
+# Run with output capture disabled (see print statements)
+python -m pytest -v -s
+
+# Run with max 3 failures then stop
+python -m pytest -v --maxfail=3
+
+# Run with debugging on failure
+python -m pytest -v --pdb
+```
+
+### pytest.ini Configuration
+
+The project uses these default settings in `pytest.ini`:
+
+```ini
+[pytest]
+markers =
+    stress: marks tests as stress tests (long-running, resource-intensive)
+
+# Default: Skips stress tests
+addopts = -m "not stress"
+```
+
+---
+
+## After Running Tests
+
+Based on test results:
+
+1. **All passed** → Ready to create/update PR → Use `#create-pr`
+2. **Some failed** → Review failures, fix issues, re-run
+3. **Coverage decreased** → Add tests for new code paths
+4. **Need to debug** → Use `-s` flag to see print output, or `--pdb` to drop into debugger
+
+> 💡 **Tip:** If you made C++ changes, ensure you've rebuilt using `#build-ddbc` first!
