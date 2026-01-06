@@ -295,7 +295,275 @@ echo 'export DB_CONNECTION_STRING="your_connection_string"' >> myvenv/bin/activa
 
 ---
 
-## STEP 6: Final Verification
+## STEP 6: Start/Verify SQL Server
+
+### 6.1 Check if SQL Server is Running
+
+#### Option A: Using Docker (Recommended for Development)
+
+**Check if SQL Server container exists:**
+
+```bash
+docker ps -a | grep mssql
+```
+
+**If container exists but is stopped:**
+
+```bash
+docker start mssql-dev
+```
+
+**If no container exists, create and start one:**
+
+```bash
+docker run -e "ACCEPT_EULA=Y" -e "MSSQL_SA_PASSWORD=YourStrongPassword123!" \
+  -p 1433:1433 --name mssql-dev \
+  -d mcr.microsoft.com/mssql/server:2022-latest
+```
+
+**Verify container is healthy:**
+
+```bash
+# Check container status
+docker ps | grep mssql
+
+# Check SQL Server logs for "ready" message
+docker logs mssql-dev 2>&1 | grep "SQL Server is now ready"
+```
+
+**Useful Docker commands:**
+
+```bash
+# Stop SQL Server container
+docker stop mssql-dev
+
+# Start SQL Server container
+docker start mssql-dev
+
+# Restart SQL Server container
+docker restart mssql-dev
+
+# View SQL Server logs
+docker logs -f mssql-dev
+
+# Remove container (will delete data!)
+docker rm -f mssql-dev
+```
+
+#### Option B: Native SQL Server Installation
+
+**macOS:**
+
+SQL Server doesn't run natively on macOS. Use Docker (Option A) or connect to a remote server.
+
+**Linux (Ubuntu/Debian):**
+
+```bash
+# Check if SQL Server service is running
+sudo systemctl status mssql-server
+
+# Start SQL Server service
+sudo systemctl start mssql-server
+
+# Enable auto-start on boot
+sudo systemctl enable mssql-server
+
+# Restart SQL Server
+sudo systemctl restart mssql-server
+
+# Stop SQL Server
+sudo systemctl stop mssql-server
+```
+
+**Linux (RHEL/CentOS):**
+
+```bash
+# Check status
+sudo systemctl status mssql-server
+
+# Start/Stop/Restart commands are the same as Ubuntu/Debian above
+```
+
+**Windows:**
+
+```powershell
+# Check SQL Server service status (PowerShell as Admin)
+Get-Service -Name 'MSSQL$*' | Select-Object Name, Status
+
+# Start SQL Server service
+Start-Service -Name 'MSSQL$MSSQLSERVER'
+
+# Stop SQL Server service
+Stop-Service -Name 'MSSQL$MSSQLSERVER'
+
+# Restart SQL Server service
+Restart-Service -Name 'MSSQL$MSSQLSERVER'
+
+# Or use SQL Server Configuration Manager (GUI)
+```
+
+#### Option C: Azure SQL Database
+
+No local SQL Server needed. Just ensure:
+- Your Azure SQL Database is running
+- Firewall rules allow your IP address
+- Connection string is correct with proper credentials
+
+### 6.2 Test SQL Server Connectivity
+
+#### Using sqlcmd (SQL Server Command Line Tool)
+
+**Test local SQL Server connection:**
+
+```bash
+sqlcmd -S localhost -U sa -P 'YourPassword' -Q "SELECT @@VERSION"
+```
+
+**If sqlcmd is not installed:**
+
+```bash
+# macOS (via Homebrew)
+brew install sqlcmd
+
+# Linux (Ubuntu/Debian)
+curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+sudo add-apt-repository "$(wget -qO- https://packages.microsoft.com/config/ubuntu/20.04/prod.list)"
+sudo apt-get update
+sudo apt-get install sqlcmd
+
+# Windows
+# Download from: https://learn.microsoft.com/en-us/sql/tools/sqlcmd/sqlcmd-utility
+```
+
+#### Using Python (Test with main.py)
+
+```bash
+# This should connect and list databases
+python main.py
+```
+
+**Expected output:**
+```
+...Connection logs...
+Database ID: 1, Name: master
+Database ID: 2, Name: tempdb
+...
+Connection closed successfully.
+```
+
+**If this fails:** See troubleshooting section below.
+
+### 6.3 Troubleshoot SQL Server Connectivity
+
+#### Common Issues and Solutions
+
+| Issue | Symptoms | Solution |
+|-------|----------|----------|
+| **SQL Server not running** | "Cannot open server", "No connection could be made" | Start SQL Server (see 6.1) |
+| **Wrong credentials** | "Login failed for user" | Check username/password in connection string |
+| **Port not accessible** | "TCP Provider: No connection could be made" | Check firewall, verify port 1433 is open |
+| **SSL/TLS errors** | "SSL Provider: The certificate chain was issued by an authority" | Add `TrustServerCertificate=yes` to connection string (dev only) |
+| **ODBC driver missing** | "Driver not found" | Install ODBC Driver 18 (see Step 4) |
+| **Network timeout** | Connection times out | Check server address, network connectivity |
+
+#### Verify SQL Server Port
+
+```bash
+# Check if port 1433 is listening (macOS/Linux)
+lsof -i :1433
+
+# Or use netstat
+netstat -an | grep 1433
+
+# Test port connectivity with telnet
+telnet localhost 1433
+
+# Or use nc (netcat)
+nc -zv localhost 1433
+```
+
+**If port 1433 is not listening:**
+- SQL Server is not running → Start it
+- SQL Server is using a different port → Check configuration
+- Firewall is blocking the port → Configure firewall
+
+#### Check SQL Server Logs
+
+**Docker:**
+
+```bash
+docker logs mssql-dev --tail 100
+```
+
+**Linux:**
+
+```bash
+# View error log
+sudo cat /var/opt/mssql/log/errorlog
+
+# View last 50 lines
+sudo tail -50 /var/opt/mssql/log/errorlog
+
+# Follow logs in real-time
+sudo tail -f /var/opt/mssql/log/errorlog
+```
+
+**Windows:**
+
+```
+C:\Program Files\Microsoft SQL Server\MSSQL15.MSSQLSERVER\MSSQL\Log\ERRORLOG
+```
+
+Or use SQL Server Management Studio (SSMS) → Management → SQL Server Logs
+
+#### Enable SQL Server Network Access (Linux)
+
+```bash
+# Allow SQL Server through firewall
+sudo ufw allow 1433/tcp
+
+# Configure SQL Server to listen on TCP port 1433
+sudo /opt/mssql/bin/mssql-conf set network.tcpport 1433
+
+# Enable remote connections
+sudo /opt/mssql/bin/mssql-conf set network.tcpenabled true
+
+# Restart SQL Server
+sudo systemctl restart mssql-server
+```
+
+#### Docker Networking Issues
+
+```bash
+# Check Docker network
+docker network inspect bridge
+
+# Check if container is using the correct port mapping
+docker port mssql-dev
+
+# Recreate container with explicit port mapping
+docker rm -f mssql-dev
+docker run -e "ACCEPT_EULA=Y" -e "MSSQL_SA_PASSWORD=YourStrongPassword123!" \
+  -p 1433:1433 --name mssql-dev \
+  -d mcr.microsoft.com/mssql/server:2022-latest
+```
+
+#### Azure SQL Database Firewall
+
+```bash
+# Get your current IP address
+curl -s https://api.ipify.org
+
+# Add this IP to Azure SQL Database firewall rules:
+# 1. Go to Azure Portal
+# 2. Navigate to your SQL Server
+# 3. Settings → Networking
+# 4. Add your IP address to firewall rules
+```
+
+---
+
+## STEP 7: Final Verification
 
 Run this comprehensive check:
 

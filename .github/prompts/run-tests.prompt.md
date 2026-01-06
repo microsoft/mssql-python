@@ -85,6 +85,31 @@ export DB_CONNECTION_STRING="Driver={ODBC Driver 18 for SQL Server};Server=<SERV
 
 > ⚠️ **SECURITY:** `TrustServerCertificate=yes` is for local development only. Never use in production.
 
+### Step 4: Verify SQL Server is Running
+
+**CRITICAL:** Before running tests, verify SQL Server is accessible:
+
+```bash
+python main.py
+```
+
+**If this succeeds:** You'll see database listings and "Connection closed successfully" → ✅ Ready to run tests!
+
+**If this fails with connection errors:**
+
+> "❌ SQL Server is not accessible. Please complete the environment setup first:"
+> 
+> **Run the setup prompt** (`#setup-dev-env`) which includes:
+> 1. Installing/starting SQL Server
+> 2. Configuring connection strings
+> 3. Verifying ODBC drivers
+> 
+> Common issues:
+> - SQL Server not running → See setup prompt for how to start it
+> - Wrong connection string → Check server address, port, credentials
+> - Firewall blocking connection → Ensure port 1433 is accessible
+> - ODBC driver missing → Install "ODBC Driver 18 for SQL Server"
+
 ---
 
 ## TASK
