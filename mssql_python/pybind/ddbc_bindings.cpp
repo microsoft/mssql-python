@@ -4319,9 +4319,9 @@ int32_t days_from_civil(int y, int m, int d) {
 SQLRETURN FetchArrowBatch_wrap(
     SqlHandlePtr StatementHandle,
     py::list& capsules,
-    ssize_t arrowBatchSize
+    int arrowBatchSize
 ) {
-    ssize_t fetchSize = arrowBatchSize;
+    int fetchSize = arrowBatchSize;
     SQLRETURN ret;
     SQLHSTMT hStmt = StatementHandle->get();
     // Retrieve column count
@@ -4477,7 +4477,6 @@ SQLRETURN FetchArrowBatch_wrap(
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->bitVal.get();
                 break;
             default:
-                std::wstring columnName = colMeta["ColumnName"].cast<std::wstring>();
                 std::ostringstream errorString;
                 errorString << "Unsupported data type for Arrow batch fetch for column - " << columnName.c_str()
                             << ", Type - " << dataType << ", column ID - " << (i + 1);
@@ -4806,9 +4805,9 @@ SQLRETURN FetchArrowBatch_wrap(
                     }
                 }
 
-                SQLLEN dataLen = buffers.indicators[idxCol][idxRowSql];
+                SQLLEN indicator = buffers.indicators[idxCol][idxRowSql];
 
-                if (dataLen == SQL_NULL_DATA) {
+                if (indicator == SQL_NULL_DATA) {
                     // Mark as null in validity bitmap
                     size_t bytePos = idxRowArrow / 8;
                     size_t bitPos = idxRowArrow % 8;
@@ -4837,11 +4836,12 @@ SQLRETURN FetchArrowBatch_wrap(
 
                     nullCounts[idxCol] += 1;
                     continue;
-                } else if (dataLen < 0) {
+                } else if (indicator < 0) {
                     // Negative value is unexpected, log column index, SQL type & raise exception
-                    LOG("Unexpected negative data length. Column ID - {}, SQL Type - {}, Data Length - {}", idxCol + 1, dataType, dataLen);
+                    LOG("Unexpected negative data length. Column ID - {}, SQL Type - {}, Data Length - {}", idxCol + 1, dataType, indicator);
                     ThrowStdException("Unexpected negative data length.");
                 }
+                auto dataLen = static_cast<uint32_t>(indicator);
 
                 switch (dataType) {
                     case SQL_BINARY:
@@ -4883,11 +4883,11 @@ SQLRETURN FetchArrowBatch_wrap(
                         auto target_vec = &arrowColumnProducer->varData;
 #if defined(_WIN32)
                         // Convert wide string
-                        int dataLenConverted = WideCharToMultiByte(CP_UTF8, 0, wcharSource, dataLenW, NULL, 0, NULL, NULL);
+                        int dataLenConverted = WideCharToMultiByte(CP_UTF8, 0, wcharSource, static_cast<int>(dataLenW), NULL, 0, NULL, NULL);
                         while (target_vec->size() < start + dataLenConverted) {
                             target_vec->resize(target_vec->size() * 2);
                         }
-                        WideCharToMultiByte(CP_UTF8, 0, wcharSource, dataLenW, &(*target_vec)[start], dataLenConverted, NULL, NULL);
+                        WideCharToMultiByte(CP_UTF8, 0, wcharSource, static_cast<int>(dataLenW), reinterpret_cast<char*>(&(*target_vec)[start]), dataLenConverted, NULL, NULL);
                         arrowColumnProducer->varVal[idxRowArrow + 1] = start + dataLenConverted;
 #else
                         // On Unix, use the SQLWCHARToWString utility and then convert to UTF-8
@@ -5066,14 +5066,14 @@ SQLRETURN FetchArrowBatch_wrap(
     
     for (SQLSMALLINT i = 0; i < numCols; i++) {
         *arrowSchemaBatchChildPointers[i] = {
-            .format = arrowSchemaPrivateData[i]->format.get(),
-            .name = arrowSchemaPrivateData[i]->name.get(),
-            .metadata = nullptr,
-            .flags = static_cast<int64_t>(columnNullable[i] ? ARROW_FLAG_NULLABLE : 0),
-            .n_children = 0,
-            .children = nullptr,
-            .dictionary = nullptr,
-            .release = [](ArrowSchema* schema) {
+            arrowSchemaPrivateData[i]->format.get(),
+            arrowSchemaPrivateData[i]->name.get(),
+            nullptr,
+            static_cast<int64_t>(columnNullable[i] ? ARROW_FLAG_NULLABLE : 0),
+            0,
+            nullptr,
+            nullptr,
+            [](ArrowSchema* schema) {
                 assert(schema != nullptr);
                 assert(schema->release != nullptr);
                 assert(schema->private_data != nullptr);
@@ -5081,7 +5081,7 @@ SQLRETURN FetchArrowBatch_wrap(
                 delete schema->private_data; // Frees format and name
                 schema->release = nullptr;
             },
-            .private_data = arrowSchemaPrivateData[i].release(),
+            arrowSchemaPrivateData[i].release(),
         };
     }
 
@@ -5089,15 +5089,15 @@ SQLRETURN FetchArrowBatch_wrap(
         arrowSchemaBatchChildren[i] = arrowSchemaBatchChildPointers[i].release();
     }
 
-    *arrowSchemaBatch = ArrowSchema{
-        .format = "+s",
-        .name = "",
-        .metadata = nullptr,
-        .flags = 0,
-        .n_children = numCols,
-        .children = arrowSchemaBatchChildren.release(),
-        .dictionary = nullptr,
-        .release = [](ArrowSchema* schema) {
+    *arrowSchemaBatch = {
+        "+s",
+        "",
+        nullptr,
+        0,
+        numCols,
+        arrowSchemaBatchChildren.release(),
+        nullptr,
+        [](ArrowSchema* schema) {
             // format and name are string literals, no need to free
             assert(schema != nullptr);
             assert(schema->release != nullptr);
@@ -5115,7 +5115,7 @@ SQLRETURN FetchArrowBatch_wrap(
             delete[] schema->children;
             schema->release = nullptr;
         },
-        .private_data = nullptr,
+        nullptr,
     };
 
     // Finally, transfer ownership of arrowSchemaBatch and its pointer to pycapsule
@@ -5152,20 +5152,20 @@ SQLRETURN FetchArrowBatch_wrap(
     // No unhandled exceptions until the pycapsule owns the arrowArrayBatch to avoid memory leaks
 
     for (SQLUSMALLINT col = 0; col < numCols; col++) {
-        auto dataType = dataTypes[col];
         arrowArrayPrivateData[col]->buffers[0] = arrowArrayPrivateData[col]->valid.get();
         arrowArrayPrivateData[col]->buffers[1] = arrowArrayPrivateData[col]->ptrValueBuffer;
         arrowArrayPrivateData[col]->buffers[2] = arrowArrayPrivateData[col]->varData.data();
 
         *arrowArrayBatchChildPointers[col] = {
-            .length = static_cast<int64_t>(idxRowArrow),
-            .null_count = nullCounts[col],
-            .offset = 0,
-            .n_buffers = columnVarLen[col] ? 3 : 2,
-            .n_children = 0,
-            .buffers = (const void**)arrowArrayPrivateData[col]->buffers.data(),
-            .children = nullptr,
-            .release = [](ArrowArray* array) {
+            static_cast<int64_t>(idxRowArrow),
+            nullCounts[col],
+            0,
+            columnVarLen[col] ? 3 : 2,
+            0,
+            (const void**)arrowArrayPrivateData[col]->buffers.data(),
+            nullptr,
+            nullptr,
+            [](ArrowArray* array) {
                 assert(array != nullptr);
                 assert(array->private_data != nullptr);
                 assert(array->release != nullptr);
@@ -5175,7 +5175,7 @@ SQLRETURN FetchArrowBatch_wrap(
                 assert(array->buffers != nullptr);
                 array->release = nullptr;
             },
-            .private_data = arrowArrayPrivateData[col].release(),
+            arrowArrayPrivateData[col].release(),
         };
     }
 
@@ -5183,13 +5183,16 @@ SQLRETURN FetchArrowBatch_wrap(
         arrowArrayBatchChildren[i] = arrowArrayBatchChildPointers[i].release();
     }
 
-    *arrowArrayBatch = ArrowArray{
-        .length = static_cast<int64_t>(idxRowArrow),
-        .n_buffers = 1,
-        .n_children = numCols,
-        .buffers = arrowArrayBatchBuffers.release(),
-        .children = arrowArrayBatchChildren.release(),
-        .release = [](ArrowArray* array) {
+    *arrowArrayBatch = {
+        static_cast<int64_t>(idxRowArrow),
+        0,
+        0,
+        1,
+        numCols,
+        arrowArrayBatchBuffers.release(),
+        arrowArrayBatchChildren.release(),
+        nullptr,
+        [](ArrowArray* array) {
             assert(array != nullptr);
             assert(array->private_data == nullptr);
             assert(array->release != nullptr);
@@ -5210,6 +5213,7 @@ SQLRETURN FetchArrowBatch_wrap(
             delete[] array->buffers;
             array->release = nullptr;
         },
+        nullptr,
     };
 
     // Finally, transfer ownership of arrowArrayBatch and its pointer to pycapsule
