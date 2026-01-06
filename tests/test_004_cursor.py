@@ -15042,11 +15042,15 @@ def test_varchar_latin1_fetch(cursor):
                 utf8 varchar(3) collate Latin1_General_100_CI_AI_SC_UTF8
             )
 
+            ;with nums as (
+                select 0 as n
+                union all
+                select n + 1 from nums where n < 255
+            )
             insert into @t1 (row_nr, latin1)
-            select top 256
-                row_number() over(order by (select 1)) - 1,
-                cast(row_number() over(order by (select 1)) - 1 as binary(1))
-            from sys.objects
+            select n, cast(n as binary(1))
+            from nums
+            option (maxrecursion 256)
 
             update @t1 set utf8 = latin1
 
