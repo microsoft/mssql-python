@@ -643,7 +643,7 @@ struct ColumnBuffers {
 // Performance: Column processor function type for fast type conversion
 // Using function pointers eliminates switch statement overhead in the hot loop
 typedef void (*ColumnProcessor)(PyObject* row, ColumnBuffers& buffers, const void* colInfo,
-                                SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt);
+                                SQLUSMALLINT col, SQLULEN rowIdx);
 
 // Extended column info struct for processor functions
 struct ColumnInfoExt {
@@ -664,7 +664,7 @@ namespace ColumnProcessors {
 // Performance: NULL check removed - handled centrally before processor is
 // called
 inline void ProcessInteger(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
-                           SQLULEN rowIdx, SQLHSTMT) {
+                           SQLULEN rowIdx) {
     // Performance: Direct Python C API call (bypasses pybind11 overhead)
     PyObject* pyInt = PyLong_FromLong(buffers.intBuffers[col - 1][rowIdx]);
     if (!pyInt) {  // Handle memory allocation failure
@@ -679,7 +679,7 @@ inline void ProcessInteger(PyObject* row, ColumnBuffers& buffers, const void*, S
 // Performance: NULL check removed - handled centrally before processor is
 // called
 inline void ProcessSmallInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
-                            SQLULEN rowIdx, SQLHSTMT) {
+                            SQLULEN rowIdx) {
     // Performance: Direct Python C API call
     PyObject* pyInt = PyLong_FromLong(buffers.smallIntBuffers[col - 1][rowIdx]);
     if (!pyInt) {  // Handle memory allocation failure
@@ -694,7 +694,7 @@ inline void ProcessSmallInt(PyObject* row, ColumnBuffers& buffers, const void*, 
 // Performance: NULL check removed - handled centrally before processor is
 // called
 inline void ProcessBigInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
-                          SQLULEN rowIdx, SQLHSTMT) {
+                          SQLULEN rowIdx) {
     // Performance: Direct Python C API call
     PyObject* pyInt = PyLong_FromLongLong(buffers.bigIntBuffers[col - 1][rowIdx]);
     if (!pyInt) {  // Handle memory allocation failure
@@ -709,7 +709,7 @@ inline void ProcessBigInt(PyObject* row, ColumnBuffers& buffers, const void*, SQ
 // Performance: NULL check removed - handled centrally before processor is
 // called
 inline void ProcessTinyInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
-                           SQLULEN rowIdx, SQLHSTMT) {
+                           SQLULEN rowIdx) {
     // Performance: Direct Python C API call
     PyObject* pyInt = PyLong_FromLong(buffers.charBuffers[col - 1][rowIdx]);
     if (!pyInt) {  // Handle memory allocation failure
@@ -724,7 +724,7 @@ inline void ProcessTinyInt(PyObject* row, ColumnBuffers& buffers, const void*, S
 // Performance: NULL check removed - handled centrally before processor is
 // called
 inline void ProcessBit(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
-                       SQLULEN rowIdx, SQLHSTMT) {
+                       SQLULEN rowIdx) {
     // Performance: Direct Python C API call (converts 0/1 to True/False)
     PyObject* pyBool = PyBool_FromLong(buffers.charBuffers[col - 1][rowIdx]);
     if (!pyBool) {  // Handle memory allocation failure
@@ -739,7 +739,7 @@ inline void ProcessBit(PyObject* row, ColumnBuffers& buffers, const void*, SQLUS
 // Performance: NULL check removed - handled centrally before processor is
 // called
 inline void ProcessReal(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
-                        SQLULEN rowIdx, SQLHSTMT) {
+                        SQLULEN rowIdx) {
     // Performance: Direct Python C API call
     PyObject* pyFloat = PyFloat_FromDouble(buffers.realBuffers[col - 1][rowIdx]);
     if (!pyFloat) {  // Handle memory allocation failure
@@ -754,7 +754,7 @@ inline void ProcessReal(PyObject* row, ColumnBuffers& buffers, const void*, SQLU
 // Performance: NULL check removed - handled centrally before processor is
 // called
 inline void ProcessDouble(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
-                          SQLULEN rowIdx, SQLHSTMT) {
+                          SQLULEN rowIdx) {
     // Performance: Direct Python C API call
     PyObject* pyFloat = PyFloat_FromDouble(buffers.doubleBuffers[col - 1][rowIdx]);
     if (!pyFloat) {  // Handle memory allocation failure
@@ -769,7 +769,7 @@ inline void ProcessDouble(PyObject* row, ColumnBuffers& buffers, const void*, SQ
 // Performance: NULL/NO_TOTAL checks removed - handled centrally before
 // processor is called
 inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr,
-                        SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
+                        SQLUSMALLINT col, SQLULEN rowIdx) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
 
@@ -815,7 +815,7 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
 // Performance: NULL/NO_TOTAL checks removed - handled centrally before
 // processor is called
 inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr,
-                         SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
+                         SQLUSMALLINT col, SQLULEN rowIdx) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
 
@@ -885,7 +885,7 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
 // Performance: NULL/NO_TOTAL checks removed - handled centrally before
 // processor is called
 inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr,
-                          SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
+                          SQLUSMALLINT col, SQLULEN rowIdx) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
 

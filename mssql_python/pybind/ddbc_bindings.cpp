@@ -3763,7 +3763,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             // types) to just 10 (setup only) Note: Processor functions no
             // longer need to check for NULL since we do it above
             if (columnProcessors[col - 1] != nullptr) {
-                columnProcessors[col - 1](row, buffers, &columnInfosExt[col - 1], col, i, hStmt);
+                columnProcessors[col - 1](row, buffers, &columnInfosExt[col - 1], col, i);
                 continue;
             }
 
