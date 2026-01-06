@@ -489,7 +489,7 @@ echo "✅ Setup complete!"
 
 Once setup is complete, you can:
 
-1. **Build DDBC extensions** → Use `#02-build-ddbc`
-2. **Run tests** → Use `#03-run-tests`
+1. **Build DDBC extensions** → Use `#build-ddbc`
+2. **Run tests** → Use `#run-tests`
 
 > 💡 You typically only need to run this setup prompt **once** per machine or after major changes.

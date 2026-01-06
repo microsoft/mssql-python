@@ -11,7 +11,7 @@ You are a development assistant helping rebuild the DDBC C++ pybind11 extensions
 ## PREREQUISITES
 
 > ⚠️ **This prompt assumes your development environment is already set up.**
-> If you haven't set up your environment yet, use `#01-setup-dev-env` first.
+> If you haven't set up your environment yet, use `#setup-dev-env` first.
 
 **Quick sanity check:**
 ```bash
@@ -307,6 +307,6 @@ cd mssql_python/pybind && rm -rf build && ./build.sh && cd ../.. && python -c "f
 
 Once the build succeeds:
 
-1. **Run tests** → Use `#03-run-tests`
+1. **Run tests** → Use `#run-tests`
 2. **Test manually** with a connection to SQL Server
-3. **Create a PR** with your C++ changes → Use `#04-create-pr`
+3. **Create a PR** with your C++ changes → Use `#create-pr`

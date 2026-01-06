@@ -14,9 +14,9 @@ You are a development assistant helping create a pull request for the mssql-pyth
 ## PREREQUISITES
 
 Before creating a PR, ensure:
-1. ✅ All tests pass (use `#03-run-tests`)
+1. ✅ All tests pass (use `#run-tests`)
 2. ✅ Code changes are complete and working
-3. ✅ If C++ changes, extension is rebuilt (use `#02-build-ddbc`)
+3. ✅ If C++ changes, extension is rebuilt (use `#build-ddbc`)
 
 ---
 
