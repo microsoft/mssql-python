@@ -68,3 +68,6 @@ learnings/
 mssql_python/rust_bindings/target/
 **/target/
 Cargo.lock
+
+# External binaries and build artifacts (mssql-tds)
+mssql_python/BCPRustLib/
