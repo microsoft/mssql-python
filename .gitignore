@@ -63,3 +63,8 @@ build/
 
 # learning files
 learnings/
+
+# Rust build artifacts
+mssql_python/rust_bindings/target/
+**/target/
+Cargo.lock
