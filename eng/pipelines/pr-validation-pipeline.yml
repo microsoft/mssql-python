@@ -1101,9 +1101,9 @@ jobs:
         dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
         subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms || dnf config-manager --set-enabled ubi-9-codeready-builder
         
-        # Install Python 3.9 (available in RHEL 9 UBI) and development tools
-        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 glibc-devel kernel-headers
-        dnf install -y python3-libs python3-debug
+        # Install Python 3.12 (available in RHEL 9.4+) and development tools
+        dnf install -y python3.12 python3.12-pip python3.12-devel cmake curl wget gnupg2 glibc-devel kernel-headers
+        dnf install -y python3.12-libs
         dnf install -y gcc gcc-c++ make binutils
         dnf install -y cmake
         # If that doesn't work, try installing from different repositories
@@ -1112,7 +1112,7 @@ jobs:
           dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
         fi
         # Verify installation
-        python3 --version
+        python3.12 --version
         which gcc && which g++
         gcc --version
         g++ --version
@@ -1164,8 +1164,8 @@ jobs:
   - script: |
       # Install Python dependencies in the container using virtual environment
       docker exec test-container-rhel9 bash -c "
-        # Create a virtual environment with Python 3.9
-        python3 -m venv myvenv
+        # Create a virtual environment with Python 3.12
+        python3.12 -m venv myvenv
         source myvenv/bin/activate
 
         # Install dependencies in the virtual environment
@@ -1181,7 +1181,7 @@ jobs:
       # Build pybind bindings in the container
       docker exec test-container-rhel9 bash -c "
         source myvenv/bin/activate
-        ls /usr/include/python3.9
+        ls /usr/include/python3.12
         # Set compiler environment variables
         export CC=/usr/bin/gcc
         export CXX=/usr/bin/g++
@@ -1317,9 +1317,9 @@ jobs:
         dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
         subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms || dnf config-manager --set-enabled ubi-9-codeready-builder
         
-        # Install Python 3.9 (available in RHEL 9 UBI) and development tools
-        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 glibc-devel kernel-headers
-        dnf install -y python3-libs python3-debug
+        # Install Python 3.12 (available in RHEL 9.4+) and development tools
+        dnf install -y python3.12 python3.12-pip python3.12-devel cmake curl wget gnupg2 glibc-devel kernel-headers
+        dnf install -y python3.12-libs
         dnf install -y gcc gcc-c++ make binutils
         dnf install -y cmake
         # If that doesn't work, try installing from different repositories
@@ -1328,7 +1328,7 @@ jobs:
           dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
         fi
         # Verify installation and architecture
-        python3 --version
+        python3.12 --version
         which gcc && which g++
         gcc --version
         g++ --version
@@ -1383,8 +1383,8 @@ jobs:
   - script: |
       # Install Python dependencies in the container using virtual environment
       docker exec test-container-rhel9-arm64 bash -c "
-        # Create a virtual environment with Python 3.9
-        python3 -m venv myvenv
+        # Create a virtual environment with Python 3.12
+        python3.12 -m venv myvenv
         source myvenv/bin/activate
 
         # Install dependencies in the virtual environment
@@ -1400,7 +1400,7 @@ jobs:
       # Build pybind bindings in the ARM64 container
       docker exec test-container-rhel9-arm64 bash -c "
         source myvenv/bin/activate
-        ls /usr/include/python3.9
+        ls /usr/include/python3.12
         # Set compiler environment variables
         export CC=/usr/bin/gcc
         export CXX=/usr/bin/g++
