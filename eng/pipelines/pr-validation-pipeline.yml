@@ -982,6 +982,7 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in $(distroName) ARM64 container'
+    retryCountOnTaskFailure: 2
 
   - script: |
       # Uninstall ODBC Driver before running tests
@@ -1408,6 +1409,7 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 ARM64 container'
+    retryCountOnTaskFailure: 2
 
   - script: |
       # Uninstall ODBC Driver before running tests
@@ -1879,6 +1881,7 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in Alpine ARM64 container'
+    retryCountOnTaskFailure: 2
 
   - script: |
       # Uninstall ODBC Driver before running tests to use bundled libraries
