@@ -1,6 +1,10 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
+// Import the bulk_copy module
+mod bulk_copy;
+use bulk_copy::BulkCopyWrapper;
+
 /// A sample Rust-based connection class
 #[pyclass]
 struct RustConnection {
@@ -79,11 +83,15 @@ fn rust_version() -> PyResult<String> {
 /// Python module definition
 #[pymodule]
 fn mssql_rust_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Original classes and functions
     m.add_class::<RustConnection>()?;
     m.add_function(wrap_pyfunction!(add_numbers, m)?)?;
     m.add_function(wrap_pyfunction!(format_connection_string, m)?)?;
     m.add_function(wrap_pyfunction!(parse_connection_params, m)?)?;
     m.add_function(wrap_pyfunction!(rust_version, m)?)?;
+    
+    // Bulk copy wrapper class
+    m.add_class::<BulkCopyWrapper>()?;
     
     // Add module-level constants
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
