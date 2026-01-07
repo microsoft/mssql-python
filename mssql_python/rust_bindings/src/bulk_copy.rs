@@ -32,6 +32,10 @@ impl BulkCopyWrapper {
     /// 
     /// Returns:
     ///     Result from bulk_copy operation
+    /// 
+    /// Raises:
+    ///     AttributeError: If bulk_copy method is not available on the connection
+    ///     Exception: Any exception raised by the underlying bulk_copy implementation
     fn bulk_copy(
         &self,
         py: Python,
@@ -39,11 +43,23 @@ impl BulkCopyWrapper {
         data: PyObject,
     ) -> PyResult<PyObject> {
         let conn = self.connection.bind(py);
-        let result = conn.call_method1("bulk_copy", (table_name, data))?;
-        Ok(result.into())
-    }
-
-    fn __repr__(&self) -> String {
-        "BulkCopyWrapper(mssql_core_tds)".to_string()
+        
+        // Check if bulk_copy method exists
+        if !conn.hasattr("bulk_copy")? {
+            return Err(pyo3::exceptions::PyAttributeError::new_err(
+                "bulk_copy method not implemented in mssql_core_tds.DdbcConnection"
+            ));
+        }
+        
+        // Call bulk_copy and handle any exceptions
+        match conn.call_method1("bulk_copy", (table_name.clone(), data)) {
+            Ok(result) => Ok(result.into()),
+            Err(e) => {
+                // Re-raise the Python exception with additional context
+                Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    format!("Bulk copy failed for table '{}': {}", table_name, e)
+                ))
+            }
+        }
     }
 }
