@@ -14,11 +14,10 @@ def test_bulk_copy_100_rows(db_connection, cursor):
     """Test bulk copy with 100 rows of data"""
     try:
         import mssql_rust_bindings as rust
-        import mssql_core_tds
     except ImportError as e:
-        pytest.skip(f"Rust bindings or mssql_core_tds not available: {e}")
+        pytest.skip(f"Rust bindings not available: {e}")
     
-    # Check if bulk_copy is implemented in mssql_core_tds
+    # Connection parameters for bulk copy
     conn_dict = {
         'server': 'localhost',
         'database': 'master',
@@ -26,11 +25,6 @@ def test_bulk_copy_100_rows(db_connection, cursor):
         'password': 'uvFvisUxK4En7AAV',
         'trust_server_certificate': 'yes'
     }
-    test_conn = mssql_core_tds.DdbcConnection(conn_dict)
-    if not hasattr(test_conn, 'bulk_copy'):
-        test_conn.close()
-        pytest.skip("bulk_copy method not yet implemented in mssql_core_tds")
-    test_conn.close()
     
     # Create a temporary test table
     table_name = "#bulk_copy_test_100"
@@ -54,13 +48,16 @@ def test_bulk_copy_100_rows(db_connection, cursor):
             datetime.now()
         ])
     
-    # Create mssql_core_tds connection and BulkCopyWrapper
+    # Create mssql_core_tds connection via BulkCopyWrapper
     try:
-        core_conn = mssql_core_tds.DdbcConnection(conn_dict)
-        bulk_wrapper = rust.BulkCopyWrapper(core_conn)
+        # BulkCopyWrapper now handles connection internally
+        bulk_wrapper = rust.BulkCopyWrapper(conn_dict)
         
         # Perform bulk copy
         result = bulk_wrapper.bulk_copy(table_name, test_data)
+        
+        # Close the wrapper's connection
+        bulk_wrapper.close()
         
         # Verify the copy count
         cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
@@ -79,7 +76,8 @@ def test_bulk_copy_100_rows(db_connection, cursor):
         
         print(f"✓ Successfully copied and validated 100 rows using bulk_copy")
         
-        core_conn.close()
+    except AttributeError as e:
+        pytest.skip(f"bulk_copy method not yet implemented in mssql_core_tds: {e}")
         
     except Exception as e:
         pytest.skip(f"Bulk copy operation not supported or failed: {e}")

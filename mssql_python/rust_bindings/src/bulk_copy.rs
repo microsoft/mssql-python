@@ -1,10 +1,10 @@
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 
 /// BulkCopyWrapper - Wrapper around mssql_core_tds bulk copy API
 /// 
-/// This wrapper provides access to bulk copy operations using an existing
-/// mssql_core_tds connection. Create it using from_connection() with a
-/// DdbcConnection instance.
+/// This wrapper manages mssql_core_tds connections internally and provides
+/// access to bulk copy operations.
 #[pyclass]
 pub struct BulkCopyWrapper {
     connection: Py<PyAny>,
@@ -12,16 +12,40 @@ pub struct BulkCopyWrapper {
 
 #[pymethods]
 impl BulkCopyWrapper {
-    /// Create BulkCopyWrapper from an existing mssql_core_tds.DdbcConnection
+    /// Create BulkCopyWrapper with connection parameters
     /// 
     /// Args:
-    ///     connection: An existing mssql_core_tds.DdbcConnection instance
+    ///     params: Dictionary with connection parameters (server, database, user_name, password, etc.)
     /// 
     /// Returns:
     ///     BulkCopyWrapper instance ready for bulk operations
+    /// 
+    /// Raises:
+    ///     ImportError: If mssql_core_tds module is not available
+    ///     Exception: If connection creation fails
     #[new]
-    fn new(connection: PyObject) -> PyResult<Self> {
-        Ok(BulkCopyWrapper { connection })
+    fn new(py: Python, params: &Bound<'_, PyDict>) -> PyResult<Self> {
+        // Import mssql_core_tds module
+        let mssql_module = py.import_bound("mssql_core_tds")
+            .map_err(|e| pyo3::exceptions::PyImportError::new_err(
+                format!("Failed to import mssql_core_tds: {}", e)
+            ))?;
+        
+        // Get DdbcConnection class
+        let ddbc_conn_class = mssql_module.getattr("DdbcConnection")
+            .map_err(|e| pyo3::exceptions::PyAttributeError::new_err(
+                format!("Failed to get DdbcConnection class: {}", e)
+            ))?;
+        
+        // Create connection instance
+        let connection = ddbc_conn_class.call1((params,))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(
+                format!("Failed to create DdbcConnection: {}", e)
+            ))?;
+        
+        Ok(BulkCopyWrapper { 
+            connection: connection.unbind()
+        })
     }
 
     /// Perform bulk copy operation
@@ -61,5 +85,15 @@ impl BulkCopyWrapper {
                 ))
             }
         }
+    }
+    
+    /// Close the underlying connection
+    /// 
+    /// Raises:
+    ///     Exception: If connection close fails
+    fn close(&self, py: Python) -> PyResult<()> {
+        let conn = self.connection.bind(py);
+        conn.call_method0("close")?;
+        Ok(())
     }
 }

@@ -34,9 +34,6 @@ print("Bulk Copy with Rust Bindings")
 print("=" * 70)
 
 try:
-    import mssql_rust_bindings as rust
-    import mssql_core_tds
-    
     print("\n[3] Creating temporary table for bulk copy...")
     cursor.execute("""
         CREATE TABLE #bulk_copy_demo (
@@ -61,47 +58,25 @@ try:
         ])
     print(f"  ✓ Generated {len(test_data)} rows")
     
-    # Create mssql_core_tds connection
-    print("\n[5] Creating mssql_core_tds connection...")
-    conn_dict = {
-        'server': 'localhost',
-        'database': 'master',
-        'user_name': 'sa',
-        'password': 'uvFvisUxK4En7AAV',
-        'trust_server_certificate': 'yes'
-    }
-    core_conn = mssql_core_tds.DdbcConnection(conn_dict)
-    print("  ✓ Connection created")
+    # Perform bulk copy using cursor method
+    print("\n[5] Performing bulk copy via cursor...")
+    result = cursor.bulk_copy('#bulk_copy_demo', test_data)
+    print(f"  ✓ Bulk copy completed: {result}")
     
-    # Check if bulk_copy is available
-    if not hasattr(core_conn, 'bulk_copy'):
-        print("\n  ⚠ bulk_copy method not yet implemented in mssql_core_tds")
-        print("  Skipping bulk copy demo")
-    else:
-        # Create BulkCopyWrapper and perform bulk copy
-        print("\n[6] Creating BulkCopyWrapper...")
-        bulk_wrapper = rust.BulkCopyWrapper(core_conn)
-        print("  ✓ Wrapper created")
-        
-        print("\n[7] Performing bulk copy...")
-        result = bulk_wrapper.bulk_copy('#bulk_copy_demo', test_data)
-        print(f"  ✓ Bulk copy completed: {result}")
-        
-        # Verify the data
-        print("\n[8] Verifying bulk copy results...")
-        cursor.execute("SELECT COUNT(*) FROM #bulk_copy_demo")
-        count = cursor.fetchone()[0]
-        print(f"  ✓ Total rows copied: {count}")
-        
-        # Show sample data
-        cursor.execute("SELECT TOP 5 id, name, value FROM #bulk_copy_demo ORDER BY id")
-        sample_rows = cursor.fetchall()
-        print("\n  Sample data:")
-        for row in sample_rows:
-            print(f"    ID: {row[0]}, Name: {row[1]}, Value: {row[2]}")
-        
-        core_conn.close()
-        print("\n✓ Bulk copy demo completed successfully!")
+    # Verify the data
+    print("\n[6] Verifying bulk copy results...")
+    cursor.execute("SELECT COUNT(*) FROM #bulk_copy_demo")
+    count = cursor.fetchone()[0]
+    print(f"  ✓ Total rows copied: {count}")
+    
+    # Show sample data
+    cursor.execute("SELECT TOP 5 id, name, value FROM #bulk_copy_demo ORDER BY id")
+    sample_rows = cursor.fetchall()
+    print("\n  Sample data:")
+    for row in sample_rows:
+        print(f"    ID: {row[0]}, Name: {row[1]}, Value: {row[2]}")
+    
+    print("\n✓ Bulk copy demo completed successfully!")
     
     # Cleanup
     cursor.execute("DROP TABLE IF EXISTS #bulk_copy_demo")
@@ -109,8 +84,17 @@ try:
     
 except ImportError as e:
     print(f"\n✗ Rust bindings or mssql_core_tds not available: {e}")
+except AttributeError as e:
+    print(f"\n⚠ {e}")
+    print("  Skipping bulk copy demo")
+    # Cleanup
+    cursor.execute("DROP TABLE IF EXISTS #bulk_copy_demo")
+    conn.commit()
 except Exception as e:
     print(f"\n✗ Bulk copy failed: {e}")
+    # Cleanup
+    cursor.execute("DROP TABLE IF EXISTS #bulk_copy_demo")
+    conn.commit()
 
 print("\n" + "=" * 70)
 cursor.close()
