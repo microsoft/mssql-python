@@ -27,6 +27,9 @@
 #define MAX_DIGITS_IN_NUMERIC 64
 #define SQL_MAX_NUMERIC_LEN 16
 #define SQL_SS_XML (-152)
+#define SQL_SS_UDT (-151)  // SQL Server User-Defined Types (geometry, geography, hierarchyid)
+#define SQL_DATETIME2 (42)
+#define SQL_SMALLDATETIME (58)
 
 #define STRINGIFY_FOR_CASE(x)                                                                      \
     case x:                                                                                        \
@@ -2987,6 +2990,11 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                 }
                 break;
             }
+            case SQL_SS_UDT: {
+                LOG("SQLGetData: Streaming UDT (geometry/geography) for column %d", i);
+                row.append(FetchLobColumnData(hStmt, i, SQL_C_BINARY, false, true));
+                break;
+            }
             case SQL_SS_XML: {
                 LOG("SQLGetData: Streaming XML for column %d", i);
                 row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false, "utf-16le"));
@@ -3211,6 +3219,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             }
             case SQL_TIMESTAMP:
             case SQL_TYPE_TIMESTAMP:
+            case SQL_DATETIME2:
+            case SQL_SMALLDATETIME:
             case SQL_DATETIME: {
                 SQL_TIMESTAMP_STRUCT timestampValue;
                 ret = SQLGetData_ptr(hStmt, i, SQL_C_TYPE_TIMESTAMP, &timestampValue,
@@ -3795,6 +3805,8 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
                 }
                 case SQL_TIMESTAMP:
                 case SQL_TYPE_TIMESTAMP:
+                case SQL_DATETIME2:
+                case SQL_SMALLDATETIME:
                 case SQL_DATETIME: {
                     const SQL_TIMESTAMP_STRUCT& ts = buffers.timestampBuffers[col - 1][i];
                     PyObject* datetimeObj = PythonObjectCache::get_datetime_class()(
@@ -3974,6 +3986,9 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
             case SQL_SS_TIMESTAMPOFFSET:
                 rowSize += sizeof(DateTimeOffset);
                 break;
+            case SQL_SS_UDT:
+                rowSize += columnSize;  // UDT types use column size as-is
+                break;
             default:
                 std::wstring columnName = columnMeta["ColumnName"].cast<std::wstring>();
                 std::ostringstream errorString;
@@ -4028,7 +4043,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
-             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
+             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML || dataType == SQL_SS_UDT) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
@@ -4162,7 +4177,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 
         if ((dataType == SQL_WVARCHAR || dataType == SQL_WLONGVARCHAR || dataType == SQL_VARCHAR ||
              dataType == SQL_LONGVARCHAR || dataType == SQL_VARBINARY ||
-             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML) &&
+             dataType == SQL_LONGVARBINARY || dataType == SQL_SS_XML || dataType == SQL_SS_UDT) &&
             (columnSize == 0 || columnSize == SQL_NO_TOTAL || columnSize > SQL_MAX_LOB_SIZE)) {
             lobColumns.push_back(i + 1);  // 1-based
         }
