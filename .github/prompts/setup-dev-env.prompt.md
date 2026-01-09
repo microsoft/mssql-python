@@ -272,7 +272,8 @@ python -c "import pybind11; print('pybind11:', pybind11.get_include())"
 ```bash
 # Set connection string for tests (LOCAL DEVELOPMENT ONLY)
 # Replace placeholders with your own values - NEVER commit real credentials!
-export DB_CONNECTION_STRING="Driver={ODBC Driver 18 for SQL Server};Server=localhost;Database=testdb;UID=your_user;PWD=your_password;TrustServerCertificate=yes"
+# Note: Do NOT include Driver= - the driver automatically adds the correct ODBC driver.
+export DB_CONNECTION_STRING="SERVER=localhost;DATABASE=testdb;UID=your_user;PWD=your_password;Encrypt=yes;TrustServerCertificate=yes"
 
 # Verify it's set
 echo $DB_CONNECTION_STRING
@@ -281,7 +282,8 @@ echo $DB_CONNECTION_STRING
 **Windows (LOCAL DEVELOPMENT ONLY):**
 ```cmd
 REM Replace placeholders with your own values - NEVER commit real credentials!
-set DB_CONNECTION_STRING=Driver={ODBC Driver 18 for SQL Server};Server=localhost;Database=testdb;UID=your_user;PWD=your_password;TrustServerCertificate=yes
+REM Note: Do NOT include Driver= - the driver automatically adds the correct ODBC driver.
+set DB_CONNECTION_STRING=SERVER=localhost;DATABASE=testdb;UID=your_user;PWD=your_password;Encrypt=yes;TrustServerCertificate=yes
 ```
 
 > 💡 **Tip:** Add this to your shell profile (`.bashrc`, `.zshrc`) or venv's `activate` script to persist it.

@@ -80,10 +80,12 @@ if [ -n "$DB_CONNECTION_STRING" ]; then echo "✅ Connection string is set"; els
 Once the developer provides the details, set it:
 
 ```bash
-export DB_CONNECTION_STRING="Driver={ODBC Driver 18 for SQL Server};Server=<SERVER>;Database=<DATABASE>;UID=<USERNAME>;PWD=<PASSWORD>;TrustServerCertificate=yes"
+export DB_CONNECTION_STRING="SERVER=<SERVER>;DATABASE=<DATABASE>;UID=<USERNAME>;PWD=<PASSWORD>;Encrypt=yes;TrustServerCertificate=yes"
 ```
 
 > ⚠️ **SECURITY:** `TrustServerCertificate=yes` is for local development only. Never use in production.
+> 
+> 💡 **Note:** Do NOT include `Driver=` in your connection string. The driver automatically adds the correct ODBC driver.
 
 ### Step 4: Verify SQL Server is Running
 
@@ -295,7 +297,8 @@ echo $DB_CONNECTION_STRING
 
 # Set it with correct values (LOCAL DEVELOPMENT ONLY)
 # WARNING: Never commit real credentials. TrustServerCertificate=yes is for local dev only.
-export DB_CONNECTION_STRING="Driver={ODBC Driver 18 for SQL Server};Server=localhost;Database=testdb;UID=sa;PWD=YourPassword;TrustServerCertificate=yes"
+# Note: Do NOT include Driver= - the driver automatically adds the correct ODBC driver.
+export DB_CONNECTION_STRING="SERVER=localhost;DATABASE=testdb;UID=sa;PWD=YourPassword;Encrypt=yes;TrustServerCertificate=yes"
 ```
 
 ### ❌ "Timeout error"
