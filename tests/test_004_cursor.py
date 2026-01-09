@@ -15277,3 +15277,122 @@ def test_close(db_connection):
         pytest.fail(f"Cursor close test failed: {e}")
     finally:
         cursor = db_connection.cursor()
+
+
+def test_varchar_buffersize_special_character(cursor):
+    cursor.execute(
+        "drop table if exists #t1;\n"
+        + "create table #t1 (a varchar(2) collate SQL_Latin1_General_CP1_CI_AS)\n"
+        + "insert into #t1 values (N'ßl')\n"
+    )
+    import platform
+
+    if platform.system() != "Windows":
+        # works fine with default settings
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR)
+        assert cursor.execute("select * from #t1").fetchone()[0] == "ßl"
+        assert cursor.execute("select LEFT(a, 1) from #t1").fetchone()[0] == "ß"
+        assert cursor.execute("select cast(a as varchar(3)) from #t1").fetchone()[0] == "ßl"
+        assert cursor.execute("select * from #t1").fetchmany(1)[0][0] == "ßl"
+        assert cursor.execute("select * from #t1").fetchall()[0][0] == "ßl"
+    else:
+        # fetchone respects setdecoding
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR)
+        assert cursor.execute("select * from #t1").fetchone()[0] == b"\xdfl"
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR, "cp1252")
+        assert cursor.execute("select * from #t1").fetchone()[0] == "ßl"
+        assert cursor.execute("select LEFT(a, 1) from #t1").fetchone()[0] == "ß"
+        assert cursor.execute("select cast(a as varchar(3)) from #t1").fetchone()[0] == "ßl"
+
+        # fetchmany/fetchall do not respect setdecoding
+        with pytest.raises(SystemError, match=".*returned a result with an exception set"):
+            cursor.execute("select * from #t1").fetchmany(1)
+        with pytest.raises(SystemError, match=".*returned a result with an exception set"):
+            cursor.execute("select * from #t1").fetchall()
+
+
+def test_varchar_latin1_fetch(cursor):
+    def query():
+        cursor.execute(
+            """
+            set nocount on
+            declare @t1 as table(
+                row_nr int,
+                latin1 varchar(1) collate SQL_Latin1_General_CP1_CI_AS,
+                utf8 varchar(3) collate Latin1_General_100_CI_AI_SC_UTF8
+            )
+
+            ;with nums as (
+                select 0 as n
+                union all
+                select n + 1 from nums where n < 255
+            )
+            insert into @t1 (row_nr, latin1)
+            select n, cast(n as binary(1))
+            from nums
+            option (maxrecursion 256)
+
+            update @t1 set utf8 = latin1
+
+            select * from @t1
+        """
+        )
+
+    def validate(result):
+        assert len(result) == 256
+        for row_nr, latin1, utf8 in result:
+            assert utf8 == latin1 or (
+                # small difference in how sql server and msodbcsql18 handle unmapped characters
+                row_nr in [129, 141, 143, 144, 157]
+                and utf8 == chr(row_nr)
+                and latin1 == "?"
+            ), (row_nr, utf8, latin1, chr(row_nr))
+
+    import platform
+
+    if platform.system() != "Windows":
+        # works fine with defaults
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR)
+        query()
+        validate([cursor.fetchone() for _ in range(256)])
+        query()
+        validate(cursor.fetchall())
+        query()
+        validate(cursor.fetchmany(500))
+    else:
+        # works fine if correctly configured by user for fetchone (SQLGetData)
+        cursor.connection.setdecoding(mssql_python.SQL_CHAR, "cp1252")
+        query()
+        validate([cursor.fetchone() for _ in range(256)])
+        # broken for SQLBindCol
+        query()
+        with pytest.raises(SystemError, match=".*returned a result with an exception set"):
+            cursor.fetchall()
+        query()
+        with pytest.raises(SystemError, match=".*returned a result with an exception set"):
+            cursor.fetchmany(500)
+
+
+def test_varchar_emoji(cursor):
+    cursor.connection.setdecoding(mssql_python.SQL_CHAR)  # default
+    cursor.execute(
+        """
+        set nocount on
+        declare @t1 as table(
+            a nvarchar(20),
+            b varchar(20) collate Latin1_General_100_CI_AI_SC_UTF8
+        )
+        insert into @t1 values (N'😄', N'😄')
+        select a, b from @t1
+    """
+    )
+    ret = cursor.fetchone()
+
+    import platform
+
+    if platform.system() == "Windows":
+        # impossible to fetch varchar emojis on windows currently
+        assert tuple(ret) == ("😄", "??")
+    else:
+        # works fine on other platforms
+        assert tuple(ret) == ("😄", "😄")
