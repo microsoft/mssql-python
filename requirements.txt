@@ -8,6 +8,8 @@ psutil
 # Build dependencies
 pybind11
 setuptools
+setuptools-rust
+maturin
 
 # Code formatting and linting
 black

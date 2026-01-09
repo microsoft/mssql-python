@@ -4,6 +4,14 @@ from setuptools import setup, find_packages
 from setuptools.dist import Distribution
 from wheel.bdist_wheel import bdist_wheel
 
+# Try to import setuptools-rust for Rust extension support
+try:
+    from setuptools_rust import Binding, RustExtension
+    RUST_AVAILABLE = True
+except ImportError:
+    RUST_AVAILABLE = False
+    print("Warning: setuptools-rust not found. Rust extensions will not be built.")
+
 
 # Custom distribution to force platform-specific wheel
 class BinaryDistribution(Distribution):
@@ -94,6 +102,18 @@ elif sys.platform.startswith("linux"):
         ]
     )
 
+# Configure Rust extensions if available
+rust_extensions = []
+if RUST_AVAILABLE:
+    rust_extensions.append(
+        RustExtension(
+            "mssql_python.mssql_rust_bindings",
+            path="mssql_python/rust_bindings/Cargo.toml",
+            binding=Binding.PyO3,
+            debug=False,  # Set to True for debug builds
+        )
+    )
+
 setup(
     name="mssql-python",
     version="1.1.0",
@@ -109,6 +129,8 @@ setup(
         "mssql_python": [
             "ddbc_bindings.cp*.pyd",  # Include all PYD files
             "ddbc_bindings.cp*.so",  # Include all SO files
+            "mssql_rust_bindings*.so",  # Include Rust SO files
+            "mssql_rust_bindings*.pyd",  # Include Rust PYD files
             "libs/*",
             "libs/**/*",
             "*.dll",
@@ -140,4 +162,6 @@ setup(
     cmdclass={
         "bdist_wheel": CustomBdistWheel,
     },
+    # Add Rust extensions if available
+    rust_extensions=rust_extensions if RUST_AVAILABLE else [],
 )
