@@ -362,6 +362,71 @@ def test_connection_close(conn_str):
     temp_conn.close()
 
 
+def test_connection_closed_property_reflects_state(conn_str):
+    """
+    Test that the closed property correctly reflects the connection state.
+
+    This test verifies that:
+    1. A new connection has closed=False
+    2. After calling close(), closed=True
+    """
+    temp_conn = connect(conn_str)
+    # New connection should not be closed
+    assert temp_conn.closed is False, "New connection should have closed=False"
+
+    # Close the connection
+    temp_conn.close()
+
+    # After close(), closed should be True
+    assert temp_conn.closed is True, "After close(), connection should have closed=True"
+
+
+def test_connection_closed_property_after_multiple_close_calls(conn_str):
+    """
+    Test that calling close() multiple times is safe and closed remains True.
+
+    This test verifies idempotent behavior of close() and the closed property.
+    """
+    temp_conn = connect(conn_str)
+    assert temp_conn.closed is False
+
+    # First close
+    temp_conn.close()
+    assert temp_conn.closed is True
+
+    # Second close should not raise and closed should still be True
+    temp_conn.close()  # Should not raise
+    assert temp_conn.closed is True
+
+
+def test_connection_closed_property_with_context_manager(conn_str):
+    """
+    Test that closed property is True after exiting context manager.
+    """
+    with connect(conn_str) as temp_conn:
+        assert temp_conn.closed is False, "Connection should be open inside context manager"
+
+    # After exiting context manager, connection should be closed
+    assert temp_conn.closed is True, "Connection should be closed after exiting context manager"
+
+
+def test_connection_closed_property_operations_after_close(conn_str):
+    """
+    Test that operations on a closed connection raise appropriate exceptions.
+
+    This test verifies that attempting to use a closed connection raises
+    an InterfaceError, and the closed property correctly reflects the state.
+    """
+    temp_conn = connect(conn_str)
+    temp_conn.close()
+
+    assert temp_conn.closed is True
+
+    # Attempting to create a cursor on a closed connection should raise InterfaceError
+    with pytest.raises(InterfaceError):
+        temp_conn.cursor()
+
+
 def test_connection_timeout_invalid_password(conn_str):
     """Test that connecting with an invalid password raises an exception quickly (timeout)."""
     # Modify the connection string to use an invalid password
