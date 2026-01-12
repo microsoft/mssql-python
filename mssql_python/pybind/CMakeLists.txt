@@ -5,10 +5,41 @@ project(ddbc_bindings)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Enable verbose output to see actual compiler/linker commands
+set(CMAKE_VERBOSE_MAKEFILE ON CACHE BOOL "Verbose output" FORCE)
+
+# Treat CMake warnings as errors
+set(CMAKE_ERROR_DEPRECATED TRUE)
+set(CMAKE_WARN_DEPRECATED TRUE)
+
 if (MSVC)
+    # Security compiler options for OneBranch compliance
+    message(STATUS "Applying MSVC security compiler options for OneBranch compliance")
+    
+    add_compile_options(
+        /GS          # Buffer security check - detects buffer overruns
+        /guard:cf    # Control Flow Guard - protects against control flow hijacking
+    )
+    
+    add_link_options(
+        /DYNAMICBASE # ASLR - Address Space Layout Randomization
+        /NXCOMPAT    # DEP - Data Execution Prevention
+        /GUARD:CF    # Control Flow Guard (linker)
+    )
+    
+    # SAFESEH only for x86 (32-bit) builds
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)  # 32-bit
+        message(STATUS "Applying /SAFESEH for 32-bit build")
+        add_link_options(/SAFESEH)  # Safe Structured Exception Handling
+    else()
+        message(STATUS "Skipping /SAFESEH (not applicable for 64-bit builds)")
+    endif()
+    
     # Enable PDB generation for all target types
     add_compile_options("$<$<CONFIG:Release>:/Zi>")
     add_link_options("$<$<CONFIG:Release>:/DEBUG /OPT:REF /OPT:ICF>")
+    
+    message(STATUS "Security flags applied: /GS /guard:cf /DYNAMICBASE /NXCOMPAT /GUARD:CF")
 endif()
 
 # Detect platform
@@ -186,8 +217,8 @@ message(STATUS "Final Python library directory: ${PYTHON_LIB_DIR}")
 
 set(DDBC_SOURCE "ddbc_bindings.cpp")
 message(STATUS "Using standard source file: ${DDBC_SOURCE}")
-# Include connection module for Windows
-add_library(ddbc_bindings MODULE ${DDBC_SOURCE} connection/connection.cpp connection/connection_pool.cpp)
+# Include connection module and logger bridge
+add_library(ddbc_bindings MODULE ${DDBC_SOURCE} connection/connection.cpp connection/connection_pool.cpp logger_bridge.cpp)
 
 # Set the output name to include Python version and architecture
 # Use appropriate file extension based on platform
@@ -273,6 +304,21 @@ target_compile_definitions(ddbc_bindings PRIVATE
 # Add warning level flags for MSVC
 if(MSVC)
     target_compile_options(ddbc_bindings PRIVATE /W4 /WX)
+endif()
+
+# Add warning flags for GCC/Clang on Linux and macOS
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    target_compile_options(ddbc_bindings PRIVATE 
+        -Werror        # Treat warnings as errors
+        -Wattributes   # Enable attribute warnings (cross-compiler)
+    )
+    
+    # GCC-specific warning flags
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(ddbc_bindings PRIVATE 
+            -Wint-to-pointer-cast  # GCC-specific warning for integer-to-pointer casts
+        )
+    endif()
 endif()
 
 # Add macOS-specific string conversion fix
