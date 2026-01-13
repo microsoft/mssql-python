@@ -434,6 +434,12 @@ jobs:
         sqlVersion: 'SQL2025'
 
   steps:
+  # Download mssql-py-core artifacts from mssql-tds if Depends-On is specified in PR
+  - template: templates/download-mssql-tds-artifacts.yml
+    parameters:
+      osType: 'MacOS'
+      architecture: 'x64'
+
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '3.13'
@@ -546,6 +552,12 @@ jobs:
         useAzureSQL: 'false'
 
   steps:
+  # Download mssql-py-core artifacts from mssql-tds if Depends-On is specified in PR
+  - template: templates/download-mssql-tds-artifacts.yml
+    parameters:
+      osType: 'Linux'
+      architecture: 'x64'
+
   - script: |
       # Create a Docker container for testing
       docker run -d --name test-container-$(distroName) \
@@ -846,6 +858,12 @@ jobs:
         archName: 'arm64'
 
   steps:
+  # Download mssql-py-core artifacts from mssql-tds if Depends-On is specified in PR
+  - template: templates/download-mssql-tds-artifacts.yml
+    parameters:
+      osType: 'Linux'
+      architecture: 'ARM64'
+
   - script: |
       # Set up Docker buildx for multi-architecture support
       docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
@@ -1474,6 +1492,12 @@ jobs:
     vmImage: 'ubuntu-latest'
 
   steps:
+  # Download mssql-py-core artifacts from mssql-tds if Depends-On is specified in PR
+  - template: templates/download-mssql-tds-artifacts.yml
+    parameters:
+      osType: 'Alpine'
+      architecture: 'x64'
+
   - script: |
       # Set up Docker buildx for multi-architecture support
       docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
@@ -1716,6 +1740,12 @@ jobs:
     vmImage: 'ubuntu-latest'
 
   steps:
+  # Download mssql-py-core artifacts from mssql-tds if Depends-On is specified in PR
+  - template: templates/download-mssql-tds-artifacts.yml
+    parameters:
+      osType: 'Alpine'
+      architecture: 'ARM64'
+
   - script: |
       # Set up Docker buildx for multi-architecture support
       docker run --rm --privileged multiarch/qemu-user-static --reset -p yes

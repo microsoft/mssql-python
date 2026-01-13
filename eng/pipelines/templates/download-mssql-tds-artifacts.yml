@@ -1,0 +1,107 @@
+# Template to download mssql-py-core artifacts from mssql-tds pipeline
+# Used for cross-repo BCP development - downloads .so/.whl files built by mssql-tds
+#
+# Usage in PR description:
+#   Depends-On: mssql-tds#<PR_NUMBER>
+#
+# Parameters:
+#   osType: Linux, Alpine, MacOS
+#   architecture: x64, ARM64
+
+parameters:
+- name: osType
+  type: string
+  default: 'Linux'
+  values:
+  - Linux
+  - Alpine
+  - MacOS
+- name: architecture
+  type: string
+  default: 'x64'
+  values:
+  - x64
+  - ARM64
+
+steps:
+# Parse PR description for Depends-On: mssql-tds#<PR_NUMBER>
+- bash: |
+    echo "Checking for cross-repo dependency in PR description..."
+    
+    # For PR builds, fetch PR description from GitHub API
+    if [ "$(Build.Reason)" = "PullRequest" ]; then
+      PR_NUMBER=$(System.PullRequest.PullRequestNumber)
+      echo "PR Number: $PR_NUMBER"
+      
+      # Fetch PR description from GitHub API
+      PR_RESPONSE=$(curl -s -H "Authorization: token $(GITHUB_TOKEN)" \
+        "https://api.github.com/repos/microsoft/mssql-python/pulls/$PR_NUMBER")
+      
+      PR_BODY=$(echo "$PR_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('body', ''))")
+      echo "PR Body:"
+      echo "$PR_BODY"
+      
+      # Extract mssql-tds PR number from "Depends-On: mssql-tds#<number>"
+      MSSQL_TDS_PR=$(echo "$PR_BODY" | grep -oP 'Depends-On:\s*mssql-tds#\K\d+' | head -1)
+      
+      if [ -n "$MSSQL_TDS_PR" ]; then
+        echo "Found cross-repo dependency: mssql-tds#$MSSQL_TDS_PR"
+        echo "##vso[task.setvariable variable=MSSQL_TDS_PR_NUMBER]$MSSQL_TDS_PR"
+        echo "##vso[task.setvariable variable=HAS_CROSS_REPO_DEPENDENCY]true"
+      else
+        echo "No cross-repo dependency found in PR description"
+        echo "##vso[task.setvariable variable=HAS_CROSS_REPO_DEPENDENCY]false"
+      fi
+    else
+      echo "Not a PR build, skipping cross-repo dependency check"
+      echo "##vso[task.setvariable variable=HAS_CROSS_REPO_DEPENDENCY]false"
+    fi
+  displayName: 'Parse PR for mssql-tds dependency'
+  env:
+    GITHUB_TOKEN: $(GITHUB_TOKEN)
+
+# Download artifacts from mssql-tds pipeline if dependency found
+- task: DownloadPipelineArtifact@2
+  condition: eq(variables['HAS_CROSS_REPO_DEPENDENCY'], 'true')
+  displayName: 'Download mssql-py-core artifacts from mssql-tds'
+  inputs:
+    buildType: 'specific'
+    project: 'mssql-rs'
+    definition: '2204'  # mssql-tds build and test pipeline
+    buildVersionToDownload: 'latestFromBranch'
+    branchName: 'refs/pull/$(MSSQL_TDS_PR_NUMBER)/merge'
+    artifactName: 'python-wheels-${{ parameters.osType }}-${{ parameters.architecture }}'
+    targetPath: '$(Pipeline.Workspace)/mssql-py-core-artifacts'
+
+# Extract and place .so files in mssql_python directory
+- bash: |
+    echo "Processing mssql-py-core artifacts..."
+    
+    ARTIFACT_DIR="$(Pipeline.Workspace)/mssql-py-core-artifacts"
+    TARGET_DIR="$(Build.SourcesDirectory)/mssql_python"
+    
+    if [ -d "$ARTIFACT_DIR" ]; then
+      echo "Artifacts found in $ARTIFACT_DIR"
+      ls -la "$ARTIFACT_DIR"
+      
+      # Extract .so files from wheels or copy directly
+      for whl in "$ARTIFACT_DIR"/*.whl; do
+        if [ -f "$whl" ]; then
+          echo "Extracting wheel: $whl"
+          unzip -o "$whl" "*.so" -d "$TARGET_DIR" || true
+          unzip -o "$whl" "*.pyd" -d "$TARGET_DIR" || true
+        fi
+      done
+      
+      # Also copy any loose .so files
+      cp -f "$ARTIFACT_DIR"/*.so "$TARGET_DIR"/ 2>/dev/null || true
+      cp -f "$ARTIFACT_DIR"/*.pyd "$TARGET_DIR"/ 2>/dev/null || true
+      
+      echo "mssql_python directory contents:"
+      ls -la "$TARGET_DIR"/*.so 2>/dev/null || echo "No .so files found"
+      ls -la "$TARGET_DIR"/*.pyd 2>/dev/null || echo "No .pyd files found"
+    else
+      echo "No artifacts directory found - cross-repo dependency not configured"
+    fi
+  condition: eq(variables['HAS_CROSS_REPO_DEPENDENCY'], 'true')
+  displayName: 'Extract mssql-py-core .so files'
