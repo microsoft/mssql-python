@@ -34,15 +34,33 @@ steps:
       echo "PR Number: $PR_NUMBER"
       
       # Fetch PR description from GitHub API
-      PR_RESPONSE=$(curl -s -H "Authorization: token $(GITHUB_TOKEN)" \
+      PR_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
         "https://api.github.com/repos/microsoft/mssql-python/pulls/$PR_NUMBER")
       
-      PR_BODY=$(echo "$PR_RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin).get('body', ''))")
-      echo "PR Body:"
-      echo "$PR_BODY"
+      # Debug: show response status
+      echo "API Response (first 500 chars):"
+      echo "$PR_RESPONSE" | head -c 500
+      echo ""
       
-      # Extract mssql-tds PR number from "Depends-On: mssql-tds#<number>"
-      MSSQL_TDS_PR=$(echo "$PR_BODY" | grep -oP 'Depends-On:\s*mssql-tds#\K\d+' | head -1)
+      # Extract body using Python (works cross-platform)
+      PR_BODY=$(echo "$PR_RESPONSE" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('body', '') or '')
+except Exception as e:
+    print(f'Error parsing JSON: {e}', file=sys.stderr)
+    print('')
+")
+      
+      echo "PR Body length: ${#PR_BODY}"
+      echo "PR Body preview (first 200 chars):"
+      echo "$PR_BODY" | head -c 200
+      echo ""
+      
+      # Extract mssql-tds PR number using sed (works on both Linux and macOS)
+      # Pattern: Depends-On: mssql-tds#<number>
+      MSSQL_TDS_PR=$(echo "$PR_BODY" | sed -n 's/.*Depends-On:[[:space:]]*mssql-tds#\([0-9][0-9]*\).*/\1/p' | head -1)
       
       if [ -n "$MSSQL_TDS_PR" ]; then
         echo "Found cross-repo dependency: mssql-tds#$MSSQL_TDS_PR"
