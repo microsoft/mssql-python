@@ -1,4 +1,5 @@
 """Bulk copy tests for DATETIME data type."""
+
 import pytest
 import datetime
 
@@ -8,9 +9,7 @@ def test_cursor_bulkcopy_datetime_basic(cursor):
     """Test cursor bulkcopy method with two datetime columns and explicit mappings."""
     # Create a test table with two datetime columns
     table_name = "BulkCopyTestTableDateTime"
-    cursor.execute(
-        f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-    )
+    cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
     cursor.execute(f"CREATE TABLE {table_name} (start_datetime DATETIME, end_datetime DATETIME)")
     cursor.connection.commit()
 
@@ -49,15 +48,15 @@ def test_cursor_bulkcopy_datetime_basic(cursor):
     cursor.execute(f"SELECT start_datetime, end_datetime FROM {table_name} ORDER BY start_datetime")
     rows = cursor.fetchall()
     assert len(rows) == 3
-    
+
     # Verify first row
     assert rows[0][0] == datetime.datetime(2024, 1, 15, 9, 30, 0)
     assert rows[0][1] == datetime.datetime(2024, 1, 15, 17, 45, 30)
-    
+
     # Verify second row
     assert rows[1][0] == datetime.datetime(2024, 2, 20, 8, 15, 45)
     assert rows[1][1] == datetime.datetime(2024, 2, 20, 16, 30, 15)
-    
+
     # Verify third row
     assert rows[2][0] == datetime.datetime(2024, 3, 10, 10, 0, 0)
     assert rows[2][1] == datetime.datetime(2024, 3, 10, 18, 0, 0)
@@ -75,9 +74,7 @@ def test_cursor_bulkcopy_datetime_auto_mapping(cursor):
     """
     # Create a test table with two nullable datetime columns
     table_name = "BulkCopyAutoMapTableDateTime"
-    cursor.execute(
-        f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-    )
+    cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
     cursor.execute(f"CREATE TABLE {table_name} (start_datetime DATETIME, end_datetime DATETIME)")
     cursor.connection.commit()
 
@@ -90,12 +87,7 @@ def test_cursor_bulkcopy_datetime_auto_mapping(cursor):
     ]
 
     # Execute bulk copy WITHOUT column mappings - should auto-generate
-    result = cursor.bulkcopy(
-        table_name,
-        data,
-        batch_size=1000,
-        timeout=30
-    )
+    result = cursor.bulkcopy(table_name, data, batch_size=1000, timeout=30)
 
     # Verify results
     assert result is not None
@@ -110,14 +102,16 @@ def test_cursor_bulkcopy_datetime_auto_mapping(cursor):
     assert count == 4
 
     # Verify NULL handling
-    cursor.execute(f"SELECT start_datetime, end_datetime FROM {table_name} ORDER BY ISNULL(start_datetime, '1900-01-01')")
+    cursor.execute(
+        f"SELECT start_datetime, end_datetime FROM {table_name} ORDER BY ISNULL(start_datetime, '1900-01-01')"
+    )
     rows = cursor.fetchall()
     assert len(rows) == 4
-    
+
     # Verify NULL value in first column (third row after sorting)
     assert rows[0][0] is None
     assert rows[0][1] == datetime.datetime(2024, 2, 20, 16, 30, 15)
-    
+
     # Verify NULL value in second column
     assert rows[2][0] == datetime.datetime(2024, 2, 20, 8, 15, 45)
     assert rows[2][1] is None
@@ -136,9 +130,7 @@ def test_cursor_bulkcopy_datetime_string_to_datetime_conversion(cursor):
     """
     # Create a test table with two datetime columns
     table_name = "BulkCopyStringToDateTimeTable"
-    cursor.execute(
-        f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-    )
+    cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
     cursor.execute(f"CREATE TABLE {table_name} (start_datetime DATETIME, end_datetime DATETIME)")
     cursor.connection.commit()
 
@@ -150,12 +142,7 @@ def test_cursor_bulkcopy_datetime_string_to_datetime_conversion(cursor):
     ]
 
     # Execute bulk copy without explicit mappings
-    result = cursor.bulkcopy(
-        table_name,
-        data,
-        batch_size=1000,
-        timeout=30
-    )
+    result = cursor.bulkcopy(table_name, data, batch_size=1000, timeout=30)
 
     # Verify results
     assert result is not None
@@ -173,15 +160,15 @@ def test_cursor_bulkcopy_datetime_string_to_datetime_conversion(cursor):
     cursor.execute(f"SELECT start_datetime, end_datetime FROM {table_name} ORDER BY start_datetime")
     rows = cursor.fetchall()
     assert len(rows) == 3
-    
+
     # Verify first row
     assert rows[0][0] == datetime.datetime(2024, 1, 15, 9, 30, 0)
     assert rows[0][1] == datetime.datetime(2024, 1, 15, 17, 45, 30)
-    
+
     # Verify second row
     assert rows[1][0] == datetime.datetime(2024, 2, 20, 8, 15, 45)
     assert rows[1][1] == datetime.datetime(2024, 2, 20, 16, 30, 15)
-    
+
     # Verify third row
     assert rows[2][0] == datetime.datetime(2024, 3, 10, 10, 0, 0)
     assert rows[2][1] == datetime.datetime(2024, 3, 10, 18, 0, 0)
@@ -194,14 +181,12 @@ def test_cursor_bulkcopy_datetime_string_to_datetime_conversion(cursor):
 @pytest.mark.integration
 def test_cursor_bulkcopy_datetime_boundary_values(cursor):
     """Test cursor bulkcopy with DATETIME boundary values.
-    
+
     DATETIME range: 1753-01-01 00:00:00 to 9999-12-31 23:59:59.997
     Precision: Rounded to increments of .000, .003, or .007 seconds
     """
     table_name = "BulkCopyDateTimeBoundaryTable"
-    cursor.execute(
-        f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-    )
+    cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
     cursor.execute(f"CREATE TABLE {table_name} (dt_value DATETIME)")
     cursor.connection.commit()
 
@@ -216,12 +201,7 @@ def test_cursor_bulkcopy_datetime_boundary_values(cursor):
     ]
 
     # Execute bulk copy
-    result = cursor.bulkcopy(
-        table_name,
-        data,
-        batch_size=1000,
-        timeout=30
-    )
+    result = cursor.bulkcopy(table_name, data, batch_size=1000, timeout=30)
 
     # Verify results
     assert result is not None
@@ -232,22 +212,22 @@ def test_cursor_bulkcopy_datetime_boundary_values(cursor):
     cursor.execute(f"SELECT dt_value FROM {table_name} ORDER BY dt_value")
     rows = cursor.fetchall()
     assert len(rows) == 6
-    
+
     # Verify minimum datetime
     assert rows[0][0] == datetime.datetime(1753, 1, 1, 0, 0, 0)
-    
+
     # Verify pre-Y2K
     assert rows[1][0] == datetime.datetime(1999, 12, 31, 23, 59, 59)
-    
+
     # Verify Y2K
     assert rows[2][0] == datetime.datetime(2000, 1, 1, 0, 0, 0)
-    
+
     # Verify leap year
     assert rows[3][0] == datetime.datetime(2024, 2, 29, 12, 0, 0)
-    
+
     # Verify end of year
     assert rows[4][0] == datetime.datetime(2024, 12, 31, 23, 59, 59)
-    
+
     # Verify maximum datetime
     assert rows[5][0] == datetime.datetime(9999, 12, 31, 23, 59, 59)
 
@@ -259,37 +239,42 @@ def test_cursor_bulkcopy_datetime_boundary_values(cursor):
 @pytest.mark.integration
 def test_cursor_bulkcopy_datetime_mixed_types(cursor):
     """Test cursor bulkcopy with DATETIME in a table with mixed column types.
-    
+
     Verifies that DATETIME columns work correctly alongside other data types.
     """
     table_name = "BulkCopyDateTimeMixedTable"
+    cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
     cursor.execute(
-        f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-    )
-    cursor.execute(f"""
+        f"""
         CREATE TABLE {table_name} (
             id INT,
             created_at DATETIME,
             is_active BIT,
             modified_at DATETIME
         )
-    """)
+    """
+    )
     cursor.connection.commit()
 
     # Test data with mixed types (INT, DATETIME, BIT, DATETIME)
     data = [
-        (1, datetime.datetime(2024, 1, 15, 9, 30, 0), True, datetime.datetime(2024, 1, 15, 10, 0, 0)),
-        (2, datetime.datetime(2024, 2, 20, 8, 15, 45), False, datetime.datetime(2024, 2, 20, 14, 30, 0)),
+        (
+            1,
+            datetime.datetime(2024, 1, 15, 9, 30, 0),
+            True,
+            datetime.datetime(2024, 1, 15, 10, 0, 0),
+        ),
+        (
+            2,
+            datetime.datetime(2024, 2, 20, 8, 15, 45),
+            False,
+            datetime.datetime(2024, 2, 20, 14, 30, 0),
+        ),
         (3, datetime.datetime(2024, 3, 10, 10, 0, 0), True, None),  # NULL datetime
     ]
 
     # Execute bulk copy
-    result = cursor.bulkcopy(
-        table_name,
-        data,
-        batch_size=1000,
-        timeout=30
-    )
+    result = cursor.bulkcopy(table_name, data, batch_size=1000, timeout=30)
 
     # Verify bulk copy succeeded
     assert result is not None
@@ -298,21 +283,21 @@ def test_cursor_bulkcopy_datetime_mixed_types(cursor):
     # Verify the data was inserted correctly
     cursor.execute(f"SELECT id, created_at, is_active, modified_at FROM {table_name} ORDER BY id")
     rows = cursor.fetchall()
-    
+
     assert len(rows) == 3
-    
+
     # Verify first row
     assert rows[0][0] == 1
     assert rows[0][1] == datetime.datetime(2024, 1, 15, 9, 30, 0)
     assert rows[0][2] == True
     assert rows[0][3] == datetime.datetime(2024, 1, 15, 10, 0, 0)
-    
+
     # Verify second row
     assert rows[1][0] == 2
     assert rows[1][1] == datetime.datetime(2024, 2, 20, 8, 15, 45)
     assert rows[1][2] == False
     assert rows[1][3] == datetime.datetime(2024, 2, 20, 14, 30, 0)
-    
+
     # Verify third row (with NULL datetime)
     assert rows[2][0] == 3
     assert rows[2][1] == datetime.datetime(2024, 3, 10, 10, 0, 0)

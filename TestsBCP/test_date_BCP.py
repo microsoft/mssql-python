@@ -1,4 +1,5 @@
 """Bulk copy tests for DATE data type."""
+
 import pytest
 import datetime
 
@@ -6,12 +7,10 @@ import datetime
 @pytest.mark.integration
 def test_cursor_bulkcopy_date_basic(cursor):
     """Test cursor bulkcopy method with two date columns and explicit mappings."""
-    
+
     # Create a test table with two date columns
     table_name = "BulkCopyTestTableDate"
-    cursor.execute(
-        f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-    )
+    cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
     cursor.execute(f"CREATE TABLE {table_name} (event_date DATE, birth_date DATE)")
     cursor.connection.commit()
 
@@ -31,7 +30,7 @@ def test_cursor_bulkcopy_date_basic(cursor):
         column_mappings=[
             (0, "event_date"),
             (1, "birth_date"),
-        ]
+        ],
     )
 
     # Verify results
@@ -59,12 +58,10 @@ def test_cursor_bulkcopy_date_auto_mapping(cursor):
 
     Tests bulkcopy when no mappings are specified, including NULL value handling.
     """
-    
+
     # Create a test table with two nullable date columns
     table_name = "BulkCopyAutoMapTableDate"
-    cursor.execute(
-        f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-    )
+    cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
     cursor.execute(f"CREATE TABLE {table_name} (event_date DATE, birth_date DATE)")
     cursor.connection.commit()
 
@@ -77,12 +74,7 @@ def test_cursor_bulkcopy_date_auto_mapping(cursor):
     ]
 
     # Execute bulk copy WITHOUT column mappings - should auto-generate
-    result = cursor.bulkcopy(
-        table_name=table_name,
-        data=data,
-        batch_size=1000,
-        timeout=30
-    )
+    result = cursor.bulkcopy(table_name=table_name, data=data, batch_size=1000, timeout=30)
 
     # Verify results
     assert result is not None
@@ -91,7 +83,9 @@ def test_cursor_bulkcopy_date_auto_mapping(cursor):
     assert "elapsed_time" in result
 
     # Verify data including NULLs
-    cursor.execute(f"SELECT event_date, birth_date FROM {table_name} ORDER BY COALESCE(event_date, '9999-12-31')")
+    cursor.execute(
+        f"SELECT event_date, birth_date FROM {table_name} ORDER BY COALESCE(event_date, '9999-12-31')"
+    )
     rows = cursor.fetchall()
     assert len(rows) == 4
     assert rows[0][0] == datetime.date(2020, 1, 15) and rows[0][1] == datetime.date(1990, 5, 20)
@@ -111,12 +105,10 @@ def test_cursor_bulkcopy_date_string_to_date_conversion(cursor):
     Tests type coercion when source data contains date strings but
     destination columns are DATE type.
     """
-    
+
     # Create a test table with two date columns
     table_name = "BulkCopyStringToDateTable"
-    cursor.execute(
-        f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-    )
+    cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
     cursor.execute(f"CREATE TABLE {table_name} (event_date DATE, birth_date DATE)")
     cursor.connection.commit()
 
@@ -128,12 +120,7 @@ def test_cursor_bulkcopy_date_string_to_date_conversion(cursor):
     ]
 
     # Execute bulk copy without explicit mappings
-    result = cursor.bulkcopy(
-        table_name=table_name,
-        data=data,
-        batch_size=1000,
-        timeout=30
-    )
+    result = cursor.bulkcopy(table_name=table_name, data=data, batch_size=1000, timeout=30)
 
     # Verify results
     assert result is not None
@@ -157,23 +144,21 @@ def test_cursor_bulkcopy_date_string_to_date_conversion(cursor):
 @pytest.mark.integration
 def test_cursor_bulkcopy_date_boundary_values(cursor):
     """Test cursor bulkcopy with DATE boundary values."""
-    
+
     # Create a test table
     table_name = "BulkCopyDateBoundaryTest"
-    cursor.execute(
-        f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-    )
+    cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
     cursor.execute(f"CREATE TABLE {table_name} (id INT, test_date DATE)")
     cursor.connection.commit()
 
     # Test data with boundary values
     # DATE range: 0001-01-01 to 9999-12-31
     data = [
-        (1, datetime.date(1, 1, 1)),        # Min DATE
-        (2, datetime.date(9999, 12, 31)),   # Max DATE
-        (3, datetime.date(2000, 1, 1)),     # Y2K
-        (4, datetime.date(1900, 1, 1)),     # Century boundary
-        (5, datetime.date(2024, 2, 29)),    # Leap year
+        (1, datetime.date(1, 1, 1)),  # Min DATE
+        (2, datetime.date(9999, 12, 31)),  # Max DATE
+        (3, datetime.date(2000, 1, 1)),  # Y2K
+        (4, datetime.date(1900, 1, 1)),  # Century boundary
+        (5, datetime.date(2024, 2, 29)),  # Leap year
     ]
 
     # Execute bulk copy
@@ -185,7 +170,7 @@ def test_cursor_bulkcopy_date_boundary_values(cursor):
         column_mappings=[
             (0, "id"),
             (1, "test_date"),
-        ]
+        ],
     )
 
     # Verify results
@@ -196,11 +181,11 @@ def test_cursor_bulkcopy_date_boundary_values(cursor):
     cursor.execute(f"SELECT id, test_date FROM {table_name} ORDER BY id")
     rows = cursor.fetchall()
     assert len(rows) == 5
-    assert rows[0][1] == datetime.date(1, 1, 1)        # Min DATE
-    assert rows[1][1] == datetime.date(9999, 12, 31)   # Max DATE
-    assert rows[2][1] == datetime.date(2000, 1, 1)     # Y2K
-    assert rows[3][1] == datetime.date(1900, 1, 1)     # Century boundary
-    assert rows[4][1] == datetime.date(2024, 2, 29)    # Leap year
+    assert rows[0][1] == datetime.date(1, 1, 1)  # Min DATE
+    assert rows[1][1] == datetime.date(9999, 12, 31)  # Max DATE
+    assert rows[2][1] == datetime.date(2000, 1, 1)  # Y2K
+    assert rows[3][1] == datetime.date(1900, 1, 1)  # Century boundary
+    assert rows[4][1] == datetime.date(2024, 2, 29)  # Leap year
 
     # Cleanup
     cursor.execute(f"DROP TABLE {table_name}")
@@ -210,12 +195,10 @@ def test_cursor_bulkcopy_date_boundary_values(cursor):
 @pytest.mark.integration
 def test_cursor_bulkcopy_date_large_batch(cursor):
     """Test cursor bulkcopy with a large number of DATE rows."""
-    
+
     # Create a test table
     table_name = "BulkCopyDateLargeBatchTest"
-    cursor.execute(
-        f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}"
-    )
+    cursor.execute(f"IF OBJECT_ID('{table_name}', 'U') IS NOT NULL DROP TABLE {table_name}")
     cursor.execute(f"CREATE TABLE {table_name} (id INT, test_date DATE)")
     cursor.connection.commit()
 
@@ -232,7 +215,7 @@ def test_cursor_bulkcopy_date_large_batch(cursor):
         column_mappings=[
             (0, "id"),
             (1, "test_date"),
-        ]
+        ],
     )
 
     # Verify results
