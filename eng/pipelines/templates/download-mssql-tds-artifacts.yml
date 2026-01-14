@@ -32,19 +32,12 @@ steps:
       PR_NUMBER=$(System.PullRequest.PullRequestNumber)
       echo "PR Number: $PR_NUMBER"
       
-      # Check if GITHUB_TOKEN is set
-      if [ -z "$GITHUB_TOKEN" ]; then
-        echo "WARNING: GITHUB_TOKEN is not set - trying unauthenticated request"
-        API_RESPONSE=$(curl -s "https://api.github.com/repos/microsoft/mssql-python/pulls/$PR_NUMBER")
-      else
-        echo "Using authenticated GitHub API request"
-        API_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-          "https://api.github.com/repos/microsoft/mssql-python/pulls/$PR_NUMBER")
-      fi
+      # Fetch PR description from GitHub API (no auth needed for public repo)
+      API_RESPONSE=$(curl -s "https://api.github.com/repos/microsoft/mssql-python/pulls/$PR_NUMBER")
       
       # Debug: show API response status
-      echo "API Response (first 200 chars):"
-      echo "$API_RESPONSE" | head -c 200
+      echo "API Response (first 300 chars):"
+      echo "$API_RESPONSE" | head -c 300
       echo ""
       
       # Extract body using jq
@@ -71,8 +64,6 @@ steps:
       echo "##vso[task.setvariable variable=HAS_CROSS_REPO_DEPENDENCY]false"
     fi
   displayName: 'Parse PR for mssql-tds dependency'
-  env:
-    GITHUB_TOKEN: $(GITHUB_TOKEN)
 
 # Download artifacts from mssql-tds pipeline if dependency found
 - task: DownloadPipelineArtifact@2
