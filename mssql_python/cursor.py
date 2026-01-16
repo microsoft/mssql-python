@@ -2451,23 +2451,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         )
         return True
 
-    def _bulkcopy(
-        self,
-        table_name: str,
-        data,
-        batch_size: int = 1000,
-        timeout: int = 30,
-        column_mappings: list = None,
-    ):
+    def _bulkcopy(self, table_name: str, data, **kwargs):
         """
         Perform bulk copy operation using Rust-based implementation.
 
         Args:
             table_name: Target table name
             data: Iterable of tuples/lists containing row data
-            batch_size: Number of rows per batch (default: 1000)
-            timeout: Timeout in seconds (default: 30)
-            column_mappings: List of tuples mapping source column index to target column name
+            **kwargs: Additional options passed to the Rust bulkcopy method
+                - batch_size: Number of rows per batch (default: 1000)
+                - timeout: Timeout in seconds (default: 30)
+                - column_mappings: List of tuples mapping source column index to target column name
 
         Returns:
             Dictionary with rows_copied, batch_count, and elapsed_time
@@ -2488,6 +2482,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Validate inputs
         if not table_name or not isinstance(table_name, str):
             raise ValueError("table_name must be a non-empty string")
+
+        # Extract and validate kwargs with defaults
+        batch_size = kwargs.get("batch_size", 1000)
+        timeout = kwargs.get("timeout", 30)
+
         if batch_size <= 0:
             raise ValueError(f"batch_size must be positive, got {batch_size}")
         if timeout <= 0:
@@ -2525,10 +2524,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         try:
             rust_connection = mssql_py_core.PyCoreConnection(context)
             rust_cursor = rust_connection.cursor()
-
-            kwargs = {"batch_size": batch_size, "timeout": timeout}
-            if column_mappings:
-                kwargs["column_mappings"] = column_mappings
 
             logger.debug("Bulk copy to '%s' - batch_size=%d", table_name, batch_size)
             result = rust_cursor.bulkcopy(table_name, iter(data), kwargs=kwargs)
