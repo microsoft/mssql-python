@@ -1,0 +1,24 @@
+[package]
+name = "mssql_rust_bindings"
+version = "1.1.0"
+edition = "2021"
+authors = ["Microsoft SQL Server Python Team"]
+description = "Rust bindings for mssql-python using PyO3"
+license = "MIT"
+
+[lib]
+name = "mssql_rust_bindings"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = true
