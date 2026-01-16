@@ -50,6 +50,12 @@ PyBind11 provides:
 - **FetchMany with LOB Columns** - Fixed `fetchmany(n)` ignoring batch size when working with LOB (Large Object) columns.
 
 - **Non-ASCII Path Resolution** - Fixed path resolution for files with non-ASCII characters on Windows.
+
+### CI/Infrastructure
+
+- **SQL Server 2025 Test Support** - Added support for testing against SQL Server 2025 across Windows, macOS, and Linux CI pipelines, ensuring driver compatibility with the upcoming SQL Server release.
+
+- **Forked PR Coverage Workflow** - Implemented coverage comment workflow for pull requests from forked repositories, improving the contribution experience for external contributors.
  
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
