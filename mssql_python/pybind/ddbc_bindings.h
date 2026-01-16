@@ -643,7 +643,7 @@ struct ColumnBuffers {
 // Performance: Column processor function type for fast type conversion
 // Using function pointers eliminates switch statement overhead in the hot loop
 typedef void (*ColumnProcessor)(PyObject* row, ColumnBuffers& buffers, const void* colInfo,
-                                SQLUSMALLINT col, SQLULEN rowIdx);
+                                SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt);
 
 // Extended column info struct for processor functions
 struct ColumnInfoExt {
@@ -651,7 +651,13 @@ struct ColumnInfoExt {
     SQLULEN columnSize;
     SQLULEN processedColumnSize;
     uint64_t fetchBufferSize;
+    bool isLob;
 };
+
+// Forward declare FetchLobColumnData (defined in ddbc_bindings.cpp) - MUST be
+// outside namespace
+py::object FetchLobColumnData(SQLHSTMT hStmt, SQLUSMALLINT col, SQLSMALLINT cType, bool isWideChar,
+                              bool isBinary, const std::string& charEncoding = "utf-8");
 
 // Specialized column processors for each data type (eliminates switch in hot
 // loop)
@@ -664,7 +670,7 @@ namespace ColumnProcessors {
 // Performance: NULL check removed - handled centrally before processor is
 // called
 inline void ProcessInteger(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
-                           SQLULEN rowIdx) {
+                           SQLULEN rowIdx, SQLHSTMT) {
     // Performance: Direct Python C API call (bypasses pybind11 overhead)
     PyObject* pyInt = PyLong_FromLong(buffers.intBuffers[col - 1][rowIdx]);
     if (!pyInt) {  // Handle memory allocation failure
@@ -679,7 +685,7 @@ inline void ProcessInteger(PyObject* row, ColumnBuffers& buffers, const void*, S
 // Performance: NULL check removed - handled centrally before processor is
 // called
 inline void ProcessSmallInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
-                            SQLULEN rowIdx) {
+                            SQLULEN rowIdx, SQLHSTMT) {
     // Performance: Direct Python C API call
     PyObject* pyInt = PyLong_FromLong(buffers.smallIntBuffers[col - 1][rowIdx]);
     if (!pyInt) {  // Handle memory allocation failure
@@ -694,7 +700,7 @@ inline void ProcessSmallInt(PyObject* row, ColumnBuffers& buffers, const void*, 
 // Performance: NULL check removed - handled centrally before processor is
 // called
 inline void ProcessBigInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
-                          SQLULEN rowIdx) {
+                          SQLULEN rowIdx, SQLHSTMT) {
     // Performance: Direct Python C API call
     PyObject* pyInt = PyLong_FromLongLong(buffers.bigIntBuffers[col - 1][rowIdx]);
     if (!pyInt) {  // Handle memory allocation failure
@@ -709,7 +715,7 @@ inline void ProcessBigInt(PyObject* row, ColumnBuffers& buffers, const void*, SQ
 // Performance: NULL check removed - handled centrally before processor is
 // called
 inline void ProcessTinyInt(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
-                           SQLULEN rowIdx) {
+                           SQLULEN rowIdx, SQLHSTMT) {
     // Performance: Direct Python C API call
     PyObject* pyInt = PyLong_FromLong(buffers.charBuffers[col - 1][rowIdx]);
     if (!pyInt) {  // Handle memory allocation failure
@@ -724,7 +730,7 @@ inline void ProcessTinyInt(PyObject* row, ColumnBuffers& buffers, const void*, S
 // Performance: NULL check removed - handled centrally before processor is
 // called
 inline void ProcessBit(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
-                       SQLULEN rowIdx) {
+                       SQLULEN rowIdx, SQLHSTMT) {
     // Performance: Direct Python C API call (converts 0/1 to True/False)
     PyObject* pyBool = PyBool_FromLong(buffers.charBuffers[col - 1][rowIdx]);
     if (!pyBool) {  // Handle memory allocation failure
@@ -739,7 +745,7 @@ inline void ProcessBit(PyObject* row, ColumnBuffers& buffers, const void*, SQLUS
 // Performance: NULL check removed - handled centrally before processor is
 // called
 inline void ProcessReal(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
-                        SQLULEN rowIdx) {
+                        SQLULEN rowIdx, SQLHSTMT) {
     // Performance: Direct Python C API call
     PyObject* pyFloat = PyFloat_FromDouble(buffers.realBuffers[col - 1][rowIdx]);
     if (!pyFloat) {  // Handle memory allocation failure
@@ -754,7 +760,7 @@ inline void ProcessReal(PyObject* row, ColumnBuffers& buffers, const void*, SQLU
 // Performance: NULL check removed - handled centrally before processor is
 // called
 inline void ProcessDouble(PyObject* row, ColumnBuffers& buffers, const void*, SQLUSMALLINT col,
-                          SQLULEN rowIdx) {
+                          SQLULEN rowIdx, SQLHSTMT) {
     // Performance: Direct Python C API call
     PyObject* pyFloat = PyFloat_FromDouble(buffers.doubleBuffers[col - 1][rowIdx]);
     if (!pyFloat) {  // Handle memory allocation failure
@@ -769,7 +775,7 @@ inline void ProcessDouble(PyObject* row, ColumnBuffers& buffers, const void*, SQ
 // Performance: NULL/NO_TOTAL checks removed - handled centrally before
 // processor is called
 inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr,
-                        SQLUSMALLINT col, SQLULEN rowIdx) {
+                        SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
 
@@ -789,7 +795,7 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
     // Fast path: Data fits in buffer (not LOB or truncated)
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence
     // '<'
-    if (numCharsInData < colInfo->fetchBufferSize) {
+    if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
         // Performance: Direct Python C API call - create string from buffer
         PyObject* pyStr = PyUnicode_FromStringAndSize(
             reinterpret_cast<char*>(
@@ -802,12 +808,9 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
             PyList_SET_ITEM(row, col - 1, pyStr);
         }
     } else {
-        // Reaching this case indicates an error in mssql_python.
-        // This function is only called on columns bound by SQLBindCol.
-        // For such columns, the ODBC Driver does not allow us to compensate by
-        // fetching the remaining data using SQLGetData / FetchLobColumnData.
-        ThrowStdException(
-            "Internal error: CHAR/VARCHAR column data exceeds buffer size.");
+        // Slow path: LOB data requires separate fetch call
+        PyList_SET_ITEM(row, col - 1,
+                        FetchLobColumnData(hStmt, col, SQL_C_CHAR, false, false).release().ptr());
     }
 }
 
@@ -815,7 +818,7 @@ inline void ProcessChar(PyObject* row, ColumnBuffers& buffers, const void* colIn
 // Performance: NULL/NO_TOTAL checks removed - handled centrally before
 // processor is called
 inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr,
-                         SQLUSMALLINT col, SQLULEN rowIdx) {
+                         SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
 
@@ -835,7 +838,7 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
     // Fast path: Data fits in buffer (not LOB or truncated)
     // fetchBufferSize includes null-terminator, numCharsInData doesn't. Hence
     // '<'
-    if (numCharsInData < colInfo->fetchBufferSize) {
+    if (!colInfo->isLob && numCharsInData < colInfo->fetchBufferSize) {
 #if defined(__APPLE__) || defined(__linux__)
         // Performance: Direct UTF-16 decode (SQLWCHAR is 2 bytes on
         // Linux/macOS)
@@ -872,12 +875,9 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
         }
 #endif
     } else {
-        // Reaching this case indicates an error in mssql_python.
-        // This function is only called on columns bound by SQLBindCol.
-        // For such columns, the ODBC Driver does not allow us to compensate by
-        // fetching the remaining data using SQLGetData / FetchLobColumnData.
-        ThrowStdException(
-            "Internal error: NCHAR/NVARCHAR column data exceeds buffer size.");
+        // Slow path: LOB data requires separate fetch call
+        PyList_SET_ITEM(row, col - 1,
+                        FetchLobColumnData(hStmt, col, SQL_C_WCHAR, true, false).release().ptr());
     }
 }
 
@@ -885,7 +885,7 @@ inline void ProcessWChar(PyObject* row, ColumnBuffers& buffers, const void* colI
 // Performance: NULL/NO_TOTAL checks removed - handled centrally before
 // processor is called
 inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* colInfoPtr,
-                          SQLUSMALLINT col, SQLULEN rowIdx) {
+                          SQLUSMALLINT col, SQLULEN rowIdx, SQLHSTMT hStmt) {
     const ColumnInfoExt* colInfo = static_cast<const ColumnInfoExt*>(colInfoPtr);
     SQLLEN dataLen = buffers.indicators[col - 1][rowIdx];
 
@@ -902,7 +902,7 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
     }
 
     // Fast path: Data fits in buffer (not LOB or truncated)
-    if (static_cast<size_t>(dataLen) <= colInfo->processedColumnSize) {
+    if (!colInfo->isLob && static_cast<size_t>(dataLen) <= colInfo->processedColumnSize) {
         // Performance: Direct Python C API call - create bytes from buffer
         PyObject* pyBytes = PyBytes_FromStringAndSize(
             reinterpret_cast<const char*>(
@@ -915,12 +915,10 @@ inline void ProcessBinary(PyObject* row, ColumnBuffers& buffers, const void* col
             PyList_SET_ITEM(row, col - 1, pyBytes);
         }
     } else {
-        // Reaching this case indicates an error in mssql_python.
-        // This function is only called on columns bound by SQLBindCol.
-        // For such columns, the ODBC Driver does not allow us to compensate by
-        // fetching the remaining data using SQLGetData / FetchLobColumnData.
-        ThrowStdException(
-            "Internal error: BINARY/VARBINARY column data exceeds buffer size.");
+        // Slow path: LOB data requires separate fetch call
+        PyList_SET_ITEM(
+            row, col - 1,
+            FetchLobColumnData(hStmt, col, SQL_C_BINARY, false, true, "").release().ptr());
     }
 }
 
