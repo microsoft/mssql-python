@@ -2451,7 +2451,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         )
         return True
 
-    def bulkcopy(
+    def _bulkcopy(
         self,
         table_name: str,
         data,
@@ -2462,66 +2462,92 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         Perform bulk copy operation using Rust-based implementation.
 
-        This method leverages the mssql_py_core Rust library for high-performance
-        bulk insert operations.
-
         Args:
             table_name: Target table name
             data: Iterable of tuples/lists containing row data
             batch_size: Number of rows per batch (default: 1000)
             timeout: Timeout in seconds (default: 30)
             column_mappings: List of tuples mapping source column index to target column name
-                           e.g., [(0, "id"), (1, "name")]
 
         Returns:
-            Dictionary with bulk copy results containing:
-                - rows_copied: Number of rows successfully copied
-                - batch_count: Number of batches processed
-                - elapsed_time: Time taken for the operation
+            Dictionary with rows_copied, batch_count, and elapsed_time
 
         Raises:
             ImportError: If mssql_py_core is not installed
-            RuntimeError: If no active connection exists
-
-        Example:
-            >>> cursor = conn.cursor()
-            >>> data = [(1, "Alice"), (2, "Bob")]
-            >>> result = cursor.bulkcopy("users", data,
-            ...                          column_mappings=[(0, "id"), (1, "name")])
-            >>> print(f"Copied {result['rows_copied']} rows")
+            ValueError: If parameters are invalid
+            RuntimeError: If connection string is not available
         """
-        from mssql_python.BCPRustWrapper import BCPRustWrapper, is_rust_core_available
-
-        if not is_rust_core_available():
+        try:
+            import mssql_py_core
+        except ImportError as exc:
             raise ImportError(
                 "Bulk copy requires mssql_py_core Rust library. "
-                "Please install it from the BCPRustWheel directory."
-            )
+                "Install from BCPRustWheel directory."
+            ) from exc
 
-        # Get connection string from the connection
+        # Validate inputs
+        if not table_name or not isinstance(table_name, str):
+            raise ValueError("table_name must be a non-empty string")
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+        if timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {timeout}")
+
+        # Get and parse connection string
         if not hasattr(self.connection, "connection_str"):
-            raise RuntimeError(
-                "Connection string not available. " "Bulk copy requires connection string access."
-            )
+            raise RuntimeError("Connection string not available for bulk copy")
 
-        # Create wrapper and use the existing connection's connection string
-        wrapper = BCPRustWrapper(self.connection.connection_str)
-        wrapper.connect()
+        params = {
+            k.strip().lower(): v.strip()
+            for pair in self.connection.connection_str.split(";")
+            if "=" in pair
+            for k, v in [pair.split("=", 1)]
+        }
 
+        if not params.get("server"):
+            raise ValueError("SERVER parameter is required in connection string")
+
+        # Build connection context for Rust library
+        trust_cert = params.get("trustservercertificate", "yes").lower() in ("yes", "true")
+        context = {
+            "server": params.get("server", "localhost"),
+            "database": params.get("database", "master"),
+            "user_name": params.get("uid", ""),
+            "password": params.get("pwd", ""),
+            "trust_server_certificate": trust_cert,
+            "encryption": "Optional",
+        }
+
+        logger.debug("Bulk copy connecting to %s/%s", context["server"], context["database"])
+
+        rust_connection = None
+        rust_cursor = None
         try:
-            # Perform bulk copy
-            result = wrapper.bulkcopy(
-                table_name=table_name,
-                data=data,
-                batch_size=batch_size,
-                timeout=timeout,
-                column_mappings=column_mappings,
-            )
+            rust_connection = mssql_py_core.PyCoreConnection(context)
+            rust_cursor = rust_connection.cursor()
+
+            kwargs = {"batch_size": batch_size, "timeout": timeout}
+            if column_mappings:
+                kwargs["column_mappings"] = column_mappings
+
+            logger.debug("Bulk copy to '%s' - batch_size=%d", table_name, batch_size)
+            result = rust_cursor.bulkcopy(table_name, iter(data), kwargs=kwargs)
+
+            logger.debug("Bulk copy completed - rows=%d", result.get("rows_copied", 0))
             return result
+
+        except Exception as e:
+            logger.error("Bulk copy failed: %s - %s", type(e).__name__, str(e))
+            raise
+
         finally:
-            # Close the wrapper's connection
-            if wrapper._rust_connection and hasattr(wrapper._rust_connection, "close"):
-                wrapper._rust_connection.close()
+            # Clean up Rust resources
+            for resource in (rust_cursor, rust_connection):
+                if resource and hasattr(resource, "close"):
+                    try:
+                        resource.close()
+                    except Exception:
+                        pass
 
     def __enter__(self):
         """
