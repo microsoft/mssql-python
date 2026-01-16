@@ -2924,9 +2924,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                     row.append(
                         FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false, charEncoding));
                 } else {
-                    // Multiply by 4 because utf8 conversion by the driver might
-                    // turn varchar(x) into up to 3*x (maybe 4*x?) bytes.
-                    uint64_t fetchBufferSize = 4 * columnSize + 1 /* null-termination */;
+                    uint64_t fetchBufferSize = columnSize + 1 /* null-termination */;
                     std::vector<SQLCHAR> dataBuffer(fetchBufferSize);
                     SQLLEN dataLen;
                     ret = SQLGetData_ptr(hStmt, i, SQL_C_CHAR, dataBuffer.data(), dataBuffer.size(),
@@ -2955,15 +2953,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                     row.append(raw_bytes);
                                 }
                             } else {
-                                // Reaching this case indicates an error in mssql_python.
-                                // Theoretically, we could still compensate by calling SQLGetData or
-                                // FetchLobColumnData more often, but then we would still have to process
-                                // the data we already got from the above call to SQLGetData.
-                                // Better to throw an exception and fix the code than to risk returning corrupted data.
-                                ThrowStdException(
-                                    "Internal error: SQLGetData returned data "
-                                    "larger than expected for CHAR column"
-                                );
+                                // Buffer too small, fallback to streaming
+                                LOG("SQLGetData: CHAR column %d data truncated "
+                                    "(buffer_size=%zu), using streaming LOB",
+                                    i, dataBuffer.size());
+                                row.append(FetchLobColumnData(hStmt, i, SQL_C_CHAR, false, false,
+                                                              charEncoding));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             LOG("SQLGetData: Column %d is NULL (CHAR)", i);
@@ -3000,7 +2995,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
             case SQL_WCHAR:
             case SQL_WVARCHAR:
             case SQL_WLONGVARCHAR: {
-                if (columnSize == SQL_NO_TOTAL || columnSize == 0 || columnSize > 4000) {
+                if (columnSize == SQL_NO_TOTAL || columnSize > 4000) {
                     LOG("SQLGetData: Streaming LOB for column %d (SQL_C_WCHAR) "
                         "- columnSize=%lu",
                         i, (unsigned long)columnSize);
@@ -3029,15 +3024,12 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                     "length=%lu for column %d",
                                     (unsigned long)numCharsInData, i);
                             } else {
-                                // Reaching this case indicates an error in mssql_python.
-                                // Theoretically, we could still compensate by calling SQLGetData or
-                                // FetchLobColumnData more often, but then we would still have to process
-                                // the data we already got from the above call to SQLGetData.
-                                // Better to throw an exception and fix the code than to risk returning corrupted data.
-                                ThrowStdException(
-                                    "Internal error: SQLGetData returned data "
-                                    "larger than expected for WCHAR column"
-                                );
+                                // Buffer too small, fallback to streaming
+                                LOG("SQLGetData: NVARCHAR column %d data "
+                                    "truncated, using streaming LOB",
+                                    i);
+                                row.append(FetchLobColumnData(hStmt, i, SQL_C_WCHAR, true, false,
+                                                              "utf-16le"));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             LOG("SQLGetData: Column %d is NULL (NVARCHAR)", i);
@@ -3299,15 +3291,8 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
                                 row.append(py::bytes(
                                     reinterpret_cast<const char*>(dataBuffer.data()), dataLen));
                             } else {
-                                // Reaching this case indicates an error in mssql_python.
-                                // Theoretically, we could still compensate by calling SQLGetData or
-                                // FetchLobColumnData more often, but then we would still have to process
-                                // the data we already got from the above call to SQLGetData.
-                                // Better to throw an exception and fix the code than to risk returning corrupted data.
-                                ThrowStdException(
-                                    "Internal error: SQLGetData returned data "
-                                    "larger than expected for BINARY column"
-                                );
+                                row.append(
+                                    FetchLobColumnData(hStmt, i, SQL_C_BINARY, false, true, ""));
                             }
                         } else if (dataLen == SQL_NULL_DATA) {
                             row.append(py::none());
@@ -3449,9 +3434,7 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
                 // TODO: handle variable length data correctly. This logic wont
                 // suffice
                 HandleZeroColumnSizeAtFetch(columnSize);
-                // Multiply by 4 because utf8 conversion by the driver might
-                // turn varchar(x) into up to 3*x (maybe 4*x?) bytes.
-                uint64_t fetchBufferSize = 4 * columnSize + 1 /*null-terminator*/;
+                uint64_t fetchBufferSize = columnSize + 1 /*null-terminator*/;
                 // TODO: For LONGVARCHAR/BINARY types, columnSize is returned as
                 // 2GB-1 by SQLDescribeCol. So fetchBufferSize = 2GB.
                 // fetchSize=1 if columnSize>1GB. So we'll allocate a vector of
@@ -3597,7 +3580,8 @@ SQLRETURN SQLBindColums(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& column
 // Fetch rows in batches
 // TODO: Move to anonymous namespace, since it is not used outside this file
 SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& columnNames,
-                         py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched) {
+                         py::list& rows, SQLUSMALLINT numCols, SQLULEN& numRowsFetched,
+                         const std::vector<SQLUSMALLINT>& lobColumns) {
     LOG("FetchBatchData: Fetching data in batches");
     SQLRETURN ret = SQLFetchScroll_ptr(hStmt, SQL_FETCH_NEXT, 0);
     if (ret == SQL_NO_DATA) {
@@ -3616,28 +3600,19 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         SQLULEN columnSize;
         SQLULEN processedColumnSize;
         uint64_t fetchBufferSize;
+        bool isLob;
     };
     std::vector<ColumnInfo> columnInfos(numCols);
     for (SQLUSMALLINT col = 0; col < numCols; col++) {
         const auto& columnMeta = columnNames[col].cast<py::dict>();
         columnInfos[col].dataType = columnMeta["DataType"].cast<SQLSMALLINT>();
         columnInfos[col].columnSize = columnMeta["ColumnSize"].cast<SQLULEN>();
+        columnInfos[col].isLob =
+            std::find(lobColumns.begin(), lobColumns.end(), col + 1) != lobColumns.end();
         columnInfos[col].processedColumnSize = columnInfos[col].columnSize;
         HandleZeroColumnSizeAtFetch(columnInfos[col].processedColumnSize);
-        switch (columnInfos[col].dataType) {
-            case SQL_CHAR:
-            case SQL_VARCHAR:
-            case SQL_LONGVARCHAR:
-                // Multiply by 4 because utf8 conversion by the driver might
-                // turn varchar(x) into up to 3*x (maybe 4*x?) bytes.
-                columnInfos[col].fetchBufferSize =
-                    4 * columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
-                break;
-            default:
-                columnInfos[col].fetchBufferSize =
-                    columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
-                break;
-        }
+        columnInfos[col].fetchBufferSize =
+            columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
     }
 
     std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
@@ -3655,6 +3630,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
         columnInfosExt[col].columnSize = columnInfos[col].columnSize;
         columnInfosExt[col].processedColumnSize = columnInfos[col].processedColumnSize;
         columnInfosExt[col].fetchBufferSize = columnInfos[col].fetchBufferSize;
+        columnInfosExt[col].isLob = columnInfos[col].isLob;
 
         // Map data type to processor function (switch executed once per column,
         // not per cell)
@@ -3763,7 +3739,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             // types) to just 10 (setup only) Note: Processor functions no
             // longer need to check for NULL since we do it above
             if (columnProcessors[col - 1] != nullptr) {
-                columnProcessors[col - 1](row, buffers, &columnInfosExt[col - 1], col, i);
+                columnProcessors[col - 1](row, buffers, &columnInfosExt[col - 1], col, i, hStmt);
                 continue;
             }
 
@@ -3940,9 +3916,7 @@ size_t calculateRowSize(py::list& columnNames, SQLUSMALLINT numCols) {
             case SQL_CHAR:
             case SQL_VARCHAR:
             case SQL_LONGVARCHAR:
-                // Multiply by 4 because utf8 conversion by the driver might
-                // turn varchar(x) into up to 3*x (maybe 4*x?) bytes.
-                rowSize += 4 * columnSize;
+                rowSize += columnSize;
                 break;
             case SQL_SS_XML:
             case SQL_WCHAR:
@@ -4096,7 +4070,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
-    ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched);
+    ret = FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns);
     if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
         LOG("FetchMany_wrap: Error when fetching data - SQLRETURN=%d", ret);
         return ret;
@@ -4229,7 +4203,7 @@ SQLRETURN FetchAll_wrap(SqlHandlePtr StatementHandle, py::list& rows,
 
     while (ret != SQL_NO_DATA) {
         ret =
-            FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched);
+            FetchBatchData(hStmt, buffers, columnNames, rows, numCols, numRowsFetched, lobColumns);
         if (!SQL_SUCCEEDED(ret) && ret != SQL_NO_DATA) {
             LOG("FetchAll_wrap: Error when fetching data - SQLRETURN=%d", ret);
             return ret;
