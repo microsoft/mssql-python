@@ -12,6 +12,14 @@ Only one reference is required - either GitHub issue OR ADO Work Item.
 <!-- External contributors: GitHub Issue -->
 > GitHub Issue: #<ISSUE_NUMBER>
 
+<!-- 
+### Cross-Repo Dependency (BCP Development Only)
+Uncomment and fill in if this PR depends on changes in mssql-tds repo.
+The CI pipeline will automatically download mssql-py-core artifacts from the linked PR.
+
+Depends-On: mssql-tds#<PR_NUMBER>
+-->
+
 -------------------------------------------------------------------
 ### Summary   
 <!-- Insert your summary of changes below. Minimum 10 characters required. -->  
