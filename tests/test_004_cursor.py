@@ -9,6 +9,7 @@ Note: The cursor function is not yet implemented, so related tests are commented
 """
 
 import pytest
+import os
 from datetime import datetime, date, time, timedelta, timezone
 import time as time_module
 import decimal
@@ -9095,6 +9096,54 @@ def test_decimal_separator_calculations(cursor, db_connection):
         # Cleanup
         cursor.execute("DROP TABLE IF EXISTS #pytest_decimal_calc_test")
         db_connection.commit()
+
+
+@pytest.mark.skipif(not os.getenv("DB_CONNECTION_STRING"), reason="Requires DB_CONNECTION_STRING")
+def test_decimal_separator_fetch_regression(cursor, db_connection):
+    """
+    Test that fetchall() dealing with DECIMALS works correctly even when
+    setDecimalSeparator is set to something other than '.'
+    """
+    try:
+        # Create a temp table
+        cursor.execute("CREATE TABLE #TestDecimal (Val DECIMAL(10, 2))")
+        cursor.execute("INSERT INTO #TestDecimal VALUES (1234.56)")
+        cursor.execute("INSERT INTO #TestDecimal VALUES (78.90)")
+        db_connection.commit()
+
+        # Set custom separator
+        mssql_python.setDecimalSeparator(",")
+
+        # Test fetchall
+        cursor.execute("SELECT Val FROM #TestDecimal ORDER BY Val")
+        rows = cursor.fetchall()
+
+        # Verify fetchall results
+        assert len(rows) == 2, f"Expected 2 rows, got {len(rows)}"
+        assert isinstance(rows[0][0], decimal.Decimal), f"Expected Decimal, got {type(rows[0][0])}"
+        assert rows[0][0] == decimal.Decimal("78.90"), f"Expected 78.90, got {rows[0][0]}"
+        assert rows[1][0] == decimal.Decimal("1234.56"), f"Expected 1234.56, got {rows[1][0]}"
+
+        # Verify fetchmany
+        cursor.execute("SELECT Val FROM #TestDecimal ORDER BY Val")
+        batch = cursor.fetchmany(2)
+        assert len(batch) == 2
+        assert batch[1][0] == decimal.Decimal("1234.56")
+
+        # Verify fetchone behavior is consistent
+        cursor.execute("SELECT CAST(99.99 AS DECIMAL(10,2))")
+        val = cursor.fetchone()[0]
+        assert isinstance(val, decimal.Decimal)
+        assert val == decimal.Decimal("99.99")
+
+    finally:
+        # Reset separator to default just in case
+        mssql_python.setDecimalSeparator(".")
+        try:
+            cursor.execute("DROP TABLE IF EXISTS #TestDecimal")
+            db_connection.commit()
+        except Exception:
+            pass
 
 
 def test_datetimeoffset_read_write(cursor, db_connection):
