@@ -2573,6 +2573,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if not params.get("server"):
             raise ValueError("SERVER parameter is required in connection string")
 
+        if not params.get("database"):
+            raise ValueError(
+                "DATABASE parameter is required in connection string for bulk copy. "
+                "Specify the target database explicitly to avoid accidentally writing to system databases."
+            )
+
         # Build connection context for Rust library
         # Note: Password is extracted separately to avoid storing it in the main context
         # dict that could be accidentally logged or exposed in error messages.
@@ -2593,8 +2599,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             encryption = "Optional"
 
         context = {
-            "server": params.get("server", "localhost"),
-            "database": params.get("database", "master"),
+            "server": params.get("server"),
+            "database": params.get("database"),
             "user_name": params.get("uid", ""),
             "trust_server_certificate": trust_cert,
             "encryption": encryption,
