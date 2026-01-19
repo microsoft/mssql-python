@@ -229,7 +229,7 @@ The CI system tests:
 
 ## Architecture Detection and Loading
 
-The `__init__.py` module implements sophisticated architecture detection:
+The `ddbc_bindings.py` module implements sophisticated architecture detection:
 - **Windows**: Normalizes `win64/amd64/x64` → `x64`, `win32/x86` → `x86`, `arm64` → `arm64`
 - **macOS**: Runtime architecture detection, always loads from universal2 binary
 - **Linux**: Maps `x64/amd64` → `x86_64`, `arm64/aarch64` → `arm64`

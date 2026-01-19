@@ -178,7 +178,7 @@ for column in cursor.description:
 
 ```python
 # Call a stored procedure
-cursor.execute("EXEC GetUserById @UserId = ?", (user_id,))
+cursor.execute("EXEC GetUserById ?", (user_id,))
 result = cursor.fetchone()
 
 # Stored procedure with output
