@@ -1,0 +1,358 @@
+# Windows Single Configuration Stage Template
+# Builds Python wheel for a specific Python version and architecture
+# Supports both x64 (AMD64) and ARM64 cross-compilation
+# Tests x64 builds with pytest (ARM64 binaries can't run on x64 host)
+parameters:
+  # Stage identifier (e.g., 'Win_py312_x64')
+  - name: stageName
+    type: string
+  # Job identifier within the stage
+  - name: jobName
+    type: string
+    default: 'BuildWheel'
+  # Python version in X.Y format (e.g., '3.12')
+  - name: pythonVersion
+    type: string
+  # Python version as 3-digit string for file naming (e.g., '312')
+  - name: shortPyVer
+    type: string
+  # Target architecture: 'x64' (AMD64) or 'arm64' (ARM64)
+  - name: architecture
+    type: string
+  # OneBranch build type: 'Official' (production) or 'NonOfficial' (dev/test)
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+  # Publish PDB symbols to symbol server (disabled by default, handled in release pipeline)
+  - name: publishSymbols
+    type: boolean
+    default: true
+
+stages:
+  - stage: ${{ parameters.stageName }}
+    displayName: 'Windows Py${{ parameters.pythonVersion }} ${{ parameters.architecture }}'
+    jobs:
+      - job: ${{ parameters.jobName }}
+        displayName: 'Build Wheel - Py${{ parameters.pythonVersion }} ${{ parameters.architecture }}'
+        # Use custom 1ES pool with Windows Server 2022 + SQL Server 2022 pre-installed
+        pool:
+          type: windows
+          isCustom: true
+          name: Django-1ES-pool
+          vmImage: WIN22-SQL22
+        # Extended timeout for downloads, builds, and testing
+        timeoutInMinutes: 120
+        
+        variables:
+          # OneBranch output directory for artifacts (wheels, bindings, symbols)
+          ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+          # OneBranch-required variable (unused in this template)
+          LinuxContainerImage: 'onebranch.azurecr.io/linux/ubuntu-2204:latest'
+          # Python version passed to build scripts
+          pythonVersion: ${{ parameters.pythonVersion }}
+          # Short Python version for file naming (e.g., '312')
+          shortPyVer: ${{ parameters.shortPyVer }}
+          # Target architecture (can differ from host for cross-compilation)
+          targetArch: ${{ parameters.architecture }}
+          # System access token for authenticated downloads (e.g., GitHub artifacts)
+          SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+        
+        steps:
+          - checkout: self
+            fetchDepth: 0
+          
+          # Python 3.14 Installation: Download from NuGet (not yet in UsePythonVersion@0 task)
+          # Microsoft hasn't added Python 3.14 to the standard Python registry yet
+          - powershell: |
+              $pythonVer = "${{ parameters.pythonVersion }}"
+              
+              if ($pythonVer -eq "3.14") {
+                Write-Host "Python 3.14 detected - downloading from NuGet..."
+                
+                # Download Python 3.14 x64 from NuGet (stable release)
+                $nugetUrl = "https://www.nuget.org/api/v2/package/python/3.14.0"
+                $nugetFile = "$(Build.SourcesDirectory)\python-x64.nupkg"
+                $zipFile = "$(Build.SourcesDirectory)\python-x64.zip"
+                $extractPath = "C:\Python314-NuGet"
+                
+                Write-Host "Downloading Python 3.14 x64 from: $nugetUrl"
+                Invoke-WebRequest -Uri $nugetUrl -OutFile $nugetFile -UseBasicParsing
+                
+                Write-Host "Extracting NuGet package..."
+                Move-Item -Path $nugetFile -Destination $zipFile -Force
+                Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
+                
+                # Python executable is in tools directory
+                $pythonDir = "$extractPath\tools"
+                
+                Write-Host "Setting up Python at: $pythonDir"
+                
+                # Create C:\Python314 for consistent paths
+                New-Item -ItemType Directory -Force -Path "C:\Python314" | Out-Null
+                Copy-Item -Path "$pythonDir\*" -Destination "C:\Python314" -Recurse -Force
+                
+                Write-Host "`nVerifying Python installation:"
+                & "C:\Python314\python.exe" --version
+                & "C:\Python314\python.exe" -c "import sys; print('Python:', sys.executable)"
+                
+                # Add to PATH
+                Write-Host "##vso[task.prependpath]C:\Python314"
+                Write-Host "##vso[task.prependpath]C:\Python314\Scripts"
+                
+                # Cleanup
+                Remove-Item -Path $zipFile -Force -ErrorAction SilentlyContinue
+                Remove-Item -Path $nugetFile -Force -ErrorAction SilentlyContinue
+              }
+            condition: eq('${{ parameters.pythonVersion }}', '3.14')
+            displayName: 'Download and install Python 3.14 from NuGet'
+          
+          # Python 3.10-3.13: Use standard Azure Pipelines task
+          # UsePythonVersion@0 supports these versions natively
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '${{ parameters.pythonVersion }}'
+              architecture: 'x64'
+              addToPath: true
+            condition: ne('${{ parameters.pythonVersion }}', '3.14')
+            displayName: 'Use Python ${{ parameters.pythonVersion }} (${{ parameters.architecture }})'
+            continueOnError: false
+          
+          - powershell: |
+              Write-Host "Python version:"
+              python --version
+              Write-Host "Python location:"
+              python -c "import sys; print(sys.executable)"
+              Write-Host "Architecture:"
+              python -c "import platform; print(platform.machine())"
+            displayName: 'Verify Python installation'
+          
+          - powershell: |
+              $ErrorActionPreference = "Stop"
+              Write-Host "Installing Python dependencies..."
+              python -m pip install --upgrade pip
+              python -m pip install setuptools wheel pybind11 pytest pyodbc
+              Write-Host "Dependencies installed successfully"
+            displayName: 'Install Python dependencies'
+          
+          # Start SQL Server LocalDB for pytest execution
+          # LocalDB is a lightweight SQL Server instance pre-installed on WIN22-SQL22 agents
+          - powershell: |
+              sqllocaldb create MSSQLLocalDB
+              sqllocaldb start MSSQLLocalDB
+            displayName: 'Start LocalDB instance'
+          
+          - powershell: |
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE DATABASE TestDB"
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'"
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser"
+              sqlcmd -S "(localdb)\MSSQLLocalDB" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser"
+            displayName: 'Setup database and user'
+            env:
+              DB_PASSWORD: $(DB_PASSWORD)
+          
+          # Download ARM64 Python libraries for cross-compilation (ARM64 builds only)
+          # ARM64 wheels must be built on x64 host using ARM64 python.lib
+          - powershell: |
+              # Download Python ARM64 from NuGet (contains libs directory with python.lib)
+              $pythonVer = "${{ parameters.pythonVersion }}"
+              
+              # Map version to NuGet package version
+              $nugetVersion = switch ($pythonVer) {
+                "3.10" { "3.10.11" }
+                "3.11" { "3.11.9" }
+                "3.12" { "3.12.7" }
+                "3.13" { "3.13.0" }
+                "3.14" { "3.14.0" }
+              }
+              
+              $nugetUrl = "https://www.nuget.org/api/v2/package/pythonarm64/$nugetVersion"
+              $nugetFile = "$(Build.SourcesDirectory)\pythonarm64.nupkg"
+              $zipFile = "$(Build.SourcesDirectory)\pythonarm64.zip"
+              $extractPath = "$(Build.SourcesDirectory)\pythonarm64-nuget"
+              $destPath = "$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64"
+              
+              Write-Host "Downloading Python $pythonVer ARM64 NuGet package from: $nugetUrl"
+              Invoke-WebRequest -Uri $nugetUrl -OutFile $nugetFile -UseBasicParsing
+              
+              Write-Host "Renaming .nupkg to .zip for extraction..."
+              Move-Item -Path $nugetFile -Destination $zipFile -Force
+              
+              Write-Host "Extracting NuGet package..."
+              Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
+              
+              Write-Host "`nSearching for libs directory..."
+              $libsDir = Get-ChildItem -Path $extractPath -Recurse -Directory -Filter "libs" | Select-Object -First 1
+              
+              if ($libsDir) {
+                Write-Host "Found libs at: $($libsDir.FullName)"
+                New-Item -ItemType Directory -Force -Path $destPath | Out-Null
+                Copy-Item -Path "$($libsDir.FullName)\*" -Destination $destPath -Recurse -Force
+                Write-Host "✓ Copied .lib files from NuGet package"
+              } else {
+                Write-Host "libs directory not found, searching for .lib files..."
+                $libFiles = Get-ChildItem -Path $extractPath -Recurse -Filter "*.lib"
+                New-Item -ItemType Directory -Force -Path $destPath | Out-Null
+                foreach ($lib in $libFiles) {
+                  Write-Host "  Copying $($lib.Name)"
+                  Copy-Item -Path $lib.FullName -Destination $destPath -Force
+                }
+              }
+              
+              Write-Host "`nContents of $destPath :"
+              Get-ChildItem $destPath | ForEach-Object { Write-Host "  - $($_.Name)" }
+              
+              $expectedLib = "python$($pythonVer.Replace('.', '')).lib"
+              if (Test-Path "$destPath\$expectedLib") {
+                Write-Host "`n✓ $expectedLib found"
+              } else {
+                Write-Error "$expectedLib not found in NuGet package!"
+                exit 1
+              }
+              
+              # Cleanup
+              Remove-Item -Path $zipFile -Force -ErrorAction SilentlyContinue
+              Remove-Item -Path $extractPath -Recurse -Force -ErrorAction SilentlyContinue
+            condition: eq(variables['targetArch'], 'arm64')
+            displayName: 'Download Python ARM64 libs from NuGet'
+          
+          # Build native Python extension (.pyd) using MSVC and CMake
+          # For ARM64: Uses CUSTOM_PYTHON_LIB_DIR to link against ARM64 python.lib
+          - script: |
+              echo "Python Version: $(pythonVersion)"
+              echo "Short Tag: $(shortPyVer)"
+              echo "Architecture: Host=$(architecture), Target=$(targetArch)"
+              
+              cd "$(Build.SourcesDirectory)\mssql_python\pybind"
+              
+              REM Override lib path for ARM64
+              if "$(targetArch)"=="arm64" (
+                echo Using arm64-specific Python library...
+                set CUSTOM_PYTHON_LIB_DIR=$(Build.SourcesDirectory)\mssql_python\pybind\python_libs\arm64
+              )
+              
+              call build.bat $(targetArch)
+              call keep_single_arch.bat $(targetArch)
+              
+              cd ..\..
+            displayName: 'Build PYD for $(targetArch)'
+            continueOnError: false
+          
+          # =========================
+          # TESTING
+          # =========================
+          # Run pytest to validate bindings (x64 only)
+          # ARM64 binaries cannot execute on x64 host, so tests are skipped
+          - powershell: |
+              Write-Host "Running pytests to validate bindings"
+              if ("$(targetArch)" -eq "arm64") {
+                Write-Host "Skipping pytests on Windows ARM64"
+              } else {
+                python -m pytest -v
+              }
+            displayName: 'Run pytests'
+            env:
+              DB_CONNECTION_STRING: 'Server=(localdb)\MSSQLLocalDB;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+          
+          # Copy artifacts to OneBranch output directory for publishing
+          # PYD files: Native Python extensions (ddbc_bindings.cpXXX-win_xxx.pyd)
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+              Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
+              TargetFolder: '$(ob_outputDirectory)\bindings\windows'
+            displayName: 'Copy PYD files'
+          
+          # PDB files: Debugging symbols for native code
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+              Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pdb'
+              TargetFolder: '$(ob_outputDirectory)\symbols'
+            displayName: 'Copy PDB files'
+          
+          # Copy PYD to ApiScan directory for SDL security scanning
+          # BinSkim and other tools scan binaries from this location
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+              Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pyd'
+              TargetFolder: '$(Build.SourcesDirectory)\apiScan\dlls\windows\py$(shortPyVer)\$(targetArch)'
+            displayName: 'Copy PYD to ApiScan directory'
+          
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)\mssql_python\pybind\build\$(targetArch)\py$(shortPyVer)\Release'
+              Contents: 'ddbc_bindings.cp$(shortPyVer)-*.pdb'
+              TargetFolder: '$(Build.SourcesDirectory)\apiScan\pdbs\windows\py$(shortPyVer)\$(targetArch)'
+            displayName: 'Copy PDB to ApiScan directory'
+
+          # Build Python wheel package from source distribution
+          # ARCHITECTURE environment variable controls target platform tagging
+          - script: |
+              python -m pip install --upgrade pip wheel setuptools
+              set ARCHITECTURE=$(targetArch)
+              python setup.py bdist_wheel
+            displayName: 'Build wheel package'
+          
+          # =========================
+          # ARTIFACT PUBLISHING
+          # =========================
+          # Copy wheel to OneBranch output directory
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: '$(Build.SourcesDirectory)\dist'
+              Contents: '*.whl'
+              TargetFolder: '$(ob_outputDirectory)\wheels'
+            displayName: 'Copy wheel files'
+          
+          # Publish artifacts to Azure Pipelines for downstream consumption
+          # OneBranch requires specific artifact naming: drop_<stageName>_<jobName>
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Windows Artifacts'
+            inputs:
+              targetPath: '$(ob_outputDirectory)'
+              artifact: 'drop_${{ parameters.stageName }}_${{ parameters.jobName }}'
+              publishLocation: 'pipeline'
+          
+          # Security Scanning: Component Governance + OneBranch AntiMalware
+          # Scans PYD files and wheels for known vulnerabilities and malware signatures
+          - template: /OneBranchPipelines/steps/malware-scanning-step.yml@self
+            parameters:
+              scanPath: '$(ob_outputDirectory)'
+              artifactType: 'dll'
+          
+          # ESRP Malware Scanning (Official Builds Only)
+          # ESRP = Microsoft's Enterprise Signing and Release Platform
+          # Scans wheel files for malware using Microsoft Defender and custom signatures
+          # Only runs for Official builds (production compliance requirement)
+          - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+              - task: EsrpMalwareScanning@5
+                displayName: 'ESRP MalwareScanning - Python Wheels (Official)'
+                inputs:
+                  ConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+                  AppRegistrationClientId: '$(SigningAppRegistrationClientId)'
+                  AppRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+                  EsrpClientId: '$(SigningEsrpClientId)'
+                  UseMSIAuthentication: true
+                  FolderPath: '$(ob_outputDirectory)/wheels'
+                  Pattern: '*.whl'
+                  SessionTimeout: 60
+                  CleanupTempStorage: 1
+                  VerboseLogin: 1
+          
+          # ESRP Code Signing (DISABLED - wheel files cannot be signed with SignTool)
+          # See compound-esrp-code-signing-step.yml for detailed explanation of why this doesn't work
+          # - ${{ if eq(parameters.oneBranchType, 'Official') }}:
+          #     - template: /OneBranchPipelines/steps/compound-esrp-code-signing-step.yml@self
+          #       parameters:
+          #         appRegistrationClientId: '$(SigningAppRegistrationClientId)'
+          #         appRegistrationTenantId: '$(SigningAppRegistrationTenantId)'
+          #         artifactType: 'whl'
+          #         authAkvName: '$(SigningAuthAkvName)'
+          #         authSignCertName: '$(SigningAuthSignCertName)'
+          #         esrpClientId: '$(SigningEsrpClientId)'
+          #         esrpConnectedServiceName: '$(SigningEsrpConnectedServiceName)'
+          #         signPath: '$(ob_outputDirectory)\wheels'
+          
+          # Note: Symbol publishing moved to release pipeline
+          # Symbols are published as artifacts here and consumed in release pipeline

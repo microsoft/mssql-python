@@ -1,0 +1,8 @@
+schemaVersion: 0.0.1
+isProduction: true
+accountableOwners:
+  service: ae66a2ba-2c8a-4e77-8323-305cfad11f0e
+routing:
+  defaultAreaPath:
+    org: sqlclientdrivers
+    path: mssql-python

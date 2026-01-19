@@ -1,0 +1,21 @@
+{
+  "tool": "Credential Scanner",
+  "suppressions": [
+    {
+      "file": "tests/*",
+      "justification": "Test projects contain sample credentials and should be skipped"
+    },
+    {
+      "file": "benchmarks/*",
+      "justification": "Benchmark code may include test connection strings"
+    },
+    {
+      "file": "eng/*",
+      "justification": "Engineering and pipeline configuration files"
+    },
+    {
+      "file": "OneBranchPipelines/*",
+      "justification": "OneBranch pipeline configuration files"
+    }
+  ]
+}

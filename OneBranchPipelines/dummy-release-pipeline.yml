@@ -1,0 +1,311 @@
+# OneBranch DUMMY/TEST Release Pipeline for mssql-python
+# ⚠️ THIS IS A TEST PIPELINE - NOT FOR PRODUCTION RELEASES ⚠️
+# Downloads wheel and symbol artifacts from build pipeline, publishes symbols, and performs dummy ESRP release for testing
+# Uses Maven ContentType instead of PyPI to avoid accidental production releases
+# This pipeline is ALWAYS NonOfficial - for testing only, not production
+
+name: $(Year:YY)$(DayOfYear)$(Rev:.r)-Dummy-Release
+
+# Manual trigger only - releases should be deliberate
+trigger: none
+pr: none
+
+# Parameters for DUMMY release pipeline
+parameters:
+  - name: publishSymbols
+    displayName: '[TEST] Publish Symbols to Symbol Servers'
+    type: boolean
+    default: false
+
+  - name: performDummyRelease
+    displayName: '[TEST] Perform Dummy ESRP Release (Maven - NOT PyPI)'
+    type: boolean
+    default: true  # Safe to enable - uses Maven ContentType for testing
+
+# Variables
+variables:
+  # Common variables
+  - template: /OneBranchPipelines/variables/common-variables.yml@self
+  - template: /OneBranchPipelines/variables/onebranch-variables.yml@self
+  
+  # Variable groups
+  - group: 'ESRP Federated Creds (AME)'  # Contains ESRP signing credentials
+  - group: 'Symbols Publishing'  # Contains SymbolServer, SymbolTokenUri variables
+
+# OneBranch resources
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: 'OneBranch.Pipelines/GovernedTemplates'
+      ref: 'refs/heads/main'
+  
+  # Reference to the build pipeline
+  pipelines:
+    - pipeline: buildPipeline
+      source: 'Build-Release-Package-Pipeline'  # Name of the build pipeline
+      trigger: none  # Manual trigger only
+
+# Extend OneBranch Nonofficial template
+# Always uses NonOfficial template for dummy pipeline
+extends:
+  template: 'v2/OneBranch.NonOfficial.CrossPlat.yml@templates'
+
+  parameters:
+    # Feature flags
+    featureFlags:
+      WindowsHostVersion:
+        Version: '2022'
+
+    # Global SDL Configuration
+    globalSdl:
+      # Global Guardian baseline and suppression files
+      baseline:
+        baselineFile: $(Build.SourcesDirectory)\.gdn\.gdnbaselines
+        suppressionSet: default
+      suppression:
+        suppressionFile: $(Build.SourcesDirectory)\.gdn\.gdnsuppress
+        suppressionSet: default
+      
+      # Minimal SDL for release pipeline - artifacts already scanned during build
+      binskim:
+        enabled: true
+        break: true
+      
+      credscan:
+        enabled: true
+      
+      policheck:
+        enabled: true
+        break: true
+        exclusionFile: '$(REPO_ROOT)/.config/PolicheckExclusions.xml'
+      
+      # Publish SDL logs
+      publishLogs:
+        enabled: true
+
+    # Pipeline stages
+    stages:
+      - stage: TestReleasePackages
+        displayName: '[TEST] Dummy Release - Testing ESRP Workflow'
+        
+        jobs:
+          - job: DownloadAndTestRelease
+            displayName: '[TEST] Download Artifacts and Perform Dummy Release'
+            
+            pool:
+              type: windows
+              isCustom: true
+              name: Django-1ES-pool
+              vmImage: WIN22-SQL22
+            
+            variables:
+              ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
+            
+            steps:
+              # Step 1: Download consolidated artifacts from build pipeline
+              - task: DownloadPipelineArtifact@2
+                displayName: '[TEST] Download Consolidated Artifacts from Build Pipeline'
+                inputs:
+                  buildType: 'specific'
+                  project: '$(System.TeamProject)'
+                  definition: 2199  # Build-Release-Package-Pipeline definition ID
+                  buildVersionToDownload: 'specific'
+                  buildId: $(resources.pipeline.buildPipeline.runID)  # Use the build run selected in UI
+                  artifactName: 'drop_Consolidate_ConsolidateArtifacts'  # Consolidated artifact with dist/ and symbols/
+                  targetPath: '$(Build.SourcesDirectory)/artifacts'
+              
+              # Step 3: List downloaded artifacts for verification
+              - task: PowerShell@2
+                displayName: '[TEST] List Downloaded Wheel and Symbol Files'
+                inputs:
+                  targetType: 'inline'
+                  script: |
+                    Write-Host "====================================="
+                    Write-Host "[TEST PIPELINE] Downloaded Artifacts:"
+                    Write-Host "====================================="
+                    
+                    # List wheel files
+                    $wheelsPath = "$(Build.SourcesDirectory)/artifacts/dist"
+                    if (Test-Path $wheelsPath) {
+                      $wheels = Get-ChildItem -Path $wheelsPath -Filter "*.whl" -Recurse
+                      
+                      Write-Host "`n[WHEELS] Total wheel files found: $($wheels.Count)"
+                      foreach ($wheel in $wheels) {
+                        $size = [math]::Round($wheel.Length / 1MB, 2)
+                        Write-Host "  - $($wheel.Name) (${size} MB)"
+                      }
+                      
+                      # Copy wheels to dist folder for ESRP
+                      Write-Host "`nCopying wheels to $(Build.SourcesDirectory)/dist..."
+                      New-Item -ItemType Directory -Force -Path "$(Build.SourcesDirectory)/dist" | Out-Null
+                      Copy-Item -Path "$wheelsPath/*.whl" -Destination "$(Build.SourcesDirectory)/dist/" -Force
+                      
+                    } else {
+                      Write-Error "Wheel directory not found at: $wheelsPath"
+                      exit 1
+                    }
+                    
+                    # List symbol files
+                    $symbolsPath = "$(Build.SourcesDirectory)/artifacts/symbols"
+                    if (Test-Path $symbolsPath) {
+                      $symbols = Get-ChildItem -Path $symbolsPath -Filter "*.pdb" -Recurse
+                      
+                      Write-Host "`n[SYMBOLS] Total PDB files found: $($symbols.Count)"
+                      foreach ($symbol in $symbols) {
+                        $size = [math]::Round($symbol.Length / 1KB, 2)
+                        Write-Host "  - $($symbol.Name) (${size} KB)"
+                      }
+                      
+                      # Copy symbols to symbols folder for publishing
+                      Write-Host "`nCopying symbols to $(Build.SourcesDirectory)/symbols..."
+                      New-Item -ItemType Directory -Force -Path "$(Build.SourcesDirectory)/symbols" | Out-Null
+                      Copy-Item -Path "$symbolsPath/*.pdb" -Destination "$(Build.SourcesDirectory)/symbols/" -Force
+                      
+                    } else {
+                      Write-Warning "Symbol directory not found at: $symbolsPath"
+                      Write-Warning "Symbol publishing will be skipped if no PDB files found"
+                    }
+                    
+                    Write-Host "`n====================================="
+                    Write-Host "Summary:"
+                    Write-Host "Wheels: $($wheels.Count) files"
+                    Write-Host "Symbols: $(if ($symbols) { $symbols.Count } else { 0 }) files"
+                    Write-Host "====================================="
+              
+              # Step 4: Verify wheel integrity
+              - task: PowerShell@2
+                displayName: '[TEST] Verify Wheel Integrity'
+                inputs:
+                  targetType: 'inline'
+                  script: |
+                    Write-Host "[TEST] Verifying wheel file integrity..."
+                    
+                    $wheels = Get-ChildItem -Path "$(Build.SourcesDirectory)/dist" -Filter "*.whl"
+                    $allValid = $true
+                    
+                    foreach ($wheel in $wheels) {
+                      # Check if wheel is a valid ZIP file
+                      try {
+                        Add-Type -AssemblyName System.IO.Compression.FileSystem
+                        $zip = [System.IO.Compression.ZipFile]::OpenRead($wheel.FullName)
+                        $entryCount = $zip.Entries.Count
+                        $zip.Dispose()
+                        
+                        Write-Host "✓ $($wheel.Name) - Valid ($entryCount entries)"
+                      }
+                      catch {
+                        Write-Error "✗ $($wheel.Name) - INVALID: $_"
+                        $allValid = $false
+                      }
+                    }
+                    
+                    if (-not $allValid) {
+                      Write-Error "One or more wheel files are corrupted"
+                      exit 1
+                    }
+                    
+                    Write-Host "`nAll wheels verified successfully!"
+              
+              # Step 5: Publish Symbols (if enabled and symbols exist)
+              - ${{ if eq(parameters.publishSymbols, true) }}:
+                  - template: /OneBranchPipelines/steps/symbol-publishing-step.yml@self
+                    parameters:
+                      SymbolsFolder: '$(Build.SourcesDirectory)/symbols'
+              
+              # Step 6: Copy wheels to ob_outputDirectory for OneBranch artifact publishing
+              - task: CopyFiles@2
+                displayName: '[TEST] Stage Wheels for Dummy Release'
+                inputs:
+                  SourceFolder: '$(Build.SourcesDirectory)/dist'
+                  Contents: '*.whl'
+                  TargetFolder: '$(ob_outputDirectory)/release'
+                  flattenFolders: true
+              
+              # Step 7: ESRP Dummy Release Task (only if performDummyRelease is true)
+              # ⚠️ IMPORTANT: Uses Maven ContentType for testing - NOT PyPI!
+              - ${{ if eq(parameters.performDummyRelease, true) }}:
+                  - task: EsrpRelease@9
+                    displayName: '[TEST] ESRP Dummy Release (Maven - NOT PyPI)'
+                    inputs:
+                      connectedservicename: '$(ESRPConnectedServiceName)'
+                      usemanagedidentity: true
+                      keyvaultname: '$(AuthAKVName)'
+                      signcertname: '$(AuthSignCertName)'
+                      clientid: '$(EsrpClientId)'
+                      Intent: 'PackageDistribution'
+                      # ⚠️ CRITICAL: ContentType is Maven (NOT PyPI) for safe testing
+                      # This ensures no accidental production releases to PyPI
+                      ContentType: 'Maven'
+                      ContentSource: 'Folder'
+                      FolderLocation: '$(Build.SourcesDirectory)/dist'
+                      WaitForReleaseCompletion: true
+                      Owners: '$(owner)'
+                      Approvers: '$(approver)'
+                      ServiceEndpointUrl: 'https://api.esrp.microsoft.com'
+                      MainPublisher: 'ESRPRELPACMAN'
+                      DomainTenantId: '$(DomainTenantId)'
+              
+              # Step 8: Show test release status
+              - ${{ if eq(parameters.performDummyRelease, true) }}:
+                  - task: PowerShell@2
+                    displayName: '[TEST] Dummy Release Summary'
+                    inputs:
+                      targetType: 'inline'
+                      script: |
+                        Write-Host "===================================="
+                        Write-Host "⚠️  TEST PIPELINE - DUMMY RELEASE COMPLETED  ⚠️"
+                        Write-Host "===================================="
+                        Write-Host "Package: mssql-python (TEST)"
+                        Write-Host "ContentType: Maven (NOT PyPI - Safe for Testing)"
+                        Write-Host "Owners: $(owner)"
+                        Write-Host "Approvers: $(approver)"
+                        Write-Host "Symbols Published: ${{ parameters.publishSymbols }}"
+                        Write-Host "====================================="
+                        Write-Host ""
+                        Write-Host "⚠️ IMPORTANT: This was a DUMMY release using Maven ContentType"
+                        Write-Host "   NO packages were released to PyPI"
+                        Write-Host ""
+                        Write-Host "What was tested:"
+                        Write-Host "✓ Artifact download from build pipeline"
+                        Write-Host "✓ Wheel integrity verification"
+                        if ("${{ parameters.publishSymbols }}" -eq "True") {
+                          Write-Host "✓ Symbol publishing to SqlClientDrivers org"
+                        }
+                        Write-Host "✓ ESRP release workflow (Maven ContentType)"
+                        Write-Host ""
+                        Write-Host "Next steps:"
+                        Write-Host "1. Verify dummy release in ESRP portal"
+                        Write-Host "2. Check ESRP approval workflow completion"
+                        Write-Host "3. Verify symbols in SqlClientDrivers org (if published)"
+                        Write-Host "4. For PRODUCTION release, use official-release-pipeline.yml"
+                        Write-Host "====================================="
+              
+              - ${{ if eq(parameters.performDummyRelease, false) }}:
+                  - task: PowerShell@2
+                    displayName: '[TEST] Dry Run - Dummy Release Skipped'
+                    inputs:
+                      targetType: 'inline'
+                      script: |
+                        Write-Host "===================================="
+                        Write-Host "⚠️  TEST PIPELINE - DRY RUN MODE  ⚠️"
+                        Write-Host "===================================="
+                        Write-Host "Package: mssql-python (TEST)"
+                        Write-Host ""
+                        Write-Host "Actions performed:"
+                        Write-Host "✓ Downloaded wheels from build pipeline"
+                        Write-Host "✓ Verified wheel integrity"
+                        Write-Host "✓ Downloaded symbols from build pipeline"
+                        if ("${{ parameters.publishSymbols }}" -eq "True") {
+                          Write-Host "✓ Published symbols to SqlClientDrivers org"
+                        }
+                        Write-Host "✗ ESRP dummy release NOT performed (parameter disabled)"
+                        Write-Host ""
+                        Write-Host "To test ESRP workflow:"
+                        Write-Host "1. Set 'performDummyRelease' parameter to true"
+                        Write-Host "2. Re-run this TEST pipeline"
+                        Write-Host ""
+                        Write-Host "For PRODUCTION release:"
+                        Write-Host "1. Use official-release-pipeline.yml instead"
+                        Write-Host "2. Official pipeline uses PyPI ContentType"
+                        Write-Host "====================================="

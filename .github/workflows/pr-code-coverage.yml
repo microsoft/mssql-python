@@ -1,0 +1,475 @@
+name: PR Code Coverage
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  coverage-report:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup git for diff-cover
+        run: |
+          # Fetch the main branch for comparison
+          git fetch origin main:main
+          # Show available branches for debugging
+          echo "Available branches:"
+          git branch -a
+          # Verify main branch exists
+          git show-ref --verify refs/heads/main || echo "Warning: main branch not found"
+          git show-ref --verify refs/remotes/origin/main || echo "Warning: origin/main not found"
+
+      - name: Wait for ADO build to start
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          API_URL="https://dev.azure.com/sqlclientdrivers/public/_apis/build/builds?definitions=2128&queryOrder=queueTimeDescending&%24top=10&api-version=7.1-preview.7"
+
+          echo "Waiting for Azure DevOps build to start for PR #$PR_NUMBER ..."
+
+          for i in {1..30}; do
+            echo "Attempt $i/30: Checking if build has started..."
+            
+            # Fetch API response with error handling
+            API_RESPONSE=$(curl -s "$API_URL")
+            
+            # Check if response is valid JSON
+            if ! echo "$API_RESPONSE" | jq . >/dev/null 2>&1; then
+              echo "❌ Invalid JSON response from Azure DevOps API"
+              echo "Response received: $API_RESPONSE"
+              echo "This usually indicates the Azure DevOps pipeline has failed or API is unavailable"
+              exit 1
+            fi
+            
+            # Parse build info safely
+            BUILD_INFO=$(echo "$API_RESPONSE" | jq -c --arg PR "$PR_NUMBER" '[.value[]? | select(.triggerInfo["pr.number"]?==$PR)] | .[0] // empty' 2>/dev/null)
+            
+            if [[ -n "$BUILD_INFO" && "$BUILD_INFO" != "null" && "$BUILD_INFO" != "empty" ]]; then
+              STATUS=$(echo "$BUILD_INFO" | jq -r '.status // "unknown"')
+              RESULT=$(echo "$BUILD_INFO" | jq -r '.result // "unknown"')
+              BUILD_ID=$(echo "$BUILD_INFO" | jq -r '.id // "unknown"')
+              WEB_URL=$(echo "$BUILD_INFO" | jq -r '._links.web.href // "unknown"')
+              
+              echo "✅ Found build: ID=$BUILD_ID, Status=$STATUS, Result=$RESULT"
+              echo "🔗 Build URL: $WEB_URL"
+              echo "ADO_URL=$WEB_URL" >> $GITHUB_ENV
+              echo "BUILD_ID=$BUILD_ID" >> $GITHUB_ENV
+              
+              # Check if build has failed early
+              if [[ "$STATUS" == "completed" && "$RESULT" == "failed" ]]; then
+                echo "❌ Azure DevOps build $BUILD_ID failed early"
+                echo "This coverage workflow cannot proceed when the main build fails."
+                exit 1
+              fi
+              
+              echo "🚀 Build has started, proceeding to poll for coverage artifacts..."
+              break
+            else
+              echo "⏳ No build found for PR #$PR_NUMBER yet... (attempt $i/30)"
+            fi
+
+            if [[ $i -eq 30 ]]; then
+              echo "❌ Timeout: No build found for PR #$PR_NUMBER after 30 attempts"
+              echo "This may indicate the Azure DevOps pipeline was not triggered"
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+      - name: Download and parse coverage report
+        run: |
+          BUILD_ID=${{ env.BUILD_ID }}
+          ARTIFACTS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID/artifacts?api-version=7.1-preview.5"
+          
+          echo "📥 Polling for coverage artifacts for build $BUILD_ID..."
+          
+          # Poll for coverage artifacts with retry logic
+          COVERAGE_ARTIFACT=""
+          for i in {1..60}; do
+            echo "Attempt $i/60: Checking for coverage artifacts..."
+            
+            # Fetch artifacts with error handling
+            ARTIFACTS_RESPONSE=$(curl -s "$ARTIFACTS_URL")
+            
+            # Check if response is valid JSON
+            if ! echo "$ARTIFACTS_RESPONSE" | jq . >/dev/null 2>&1; then
+              echo "⚠️ Invalid JSON response from artifacts API (attempt $i/60)"
+              if [[ $i -eq 60 ]]; then
+                echo "❌ Persistent API issues after 60 attempts"
+                echo "Response received: $ARTIFACTS_RESPONSE"
+                exit 1
+              fi
+              sleep 30
+              continue
+            fi
+            
+            # Show available artifacts for debugging
+            echo "🔍 Available artifacts:"
+            echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]?.name // "No artifacts found"'
+            
+            # Find the coverage report artifact
+            COVERAGE_ARTIFACT=$(echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]? | select(.name | test("Code Coverage Report")) | .resource.downloadUrl // empty' 2>/dev/null)
+            
+            if [[ -n "$COVERAGE_ARTIFACT" && "$COVERAGE_ARTIFACT" != "null" && "$COVERAGE_ARTIFACT" != "empty" ]]; then
+              echo "✅ Found coverage artifact on attempt $i!"
+              break
+            else
+              echo "⏳ Coverage report not ready yet (attempt $i/60)..."
+              if [[ $i -eq 60 ]]; then
+                echo "❌ Timeout: Coverage report artifact not found after 60 attempts"
+                echo "Available artifacts:"
+                echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]?.name // "No artifacts found"'
+                exit 1
+              fi
+              sleep 30
+            fi
+          done
+          
+          if [[ -n "$COVERAGE_ARTIFACT" && "$COVERAGE_ARTIFACT" != "null" && "$COVERAGE_ARTIFACT" != "empty" ]]; then
+            echo "📊 Downloading coverage report..."
+            if ! curl -L "$COVERAGE_ARTIFACT" -o coverage-report.zip --fail --silent; then
+              echo "❌ Failed to download coverage report from Azure DevOps"
+              echo "This indicates the coverage artifacts may not be available or accessible"
+              exit 1
+            fi
+
+            if ! unzip -o -q coverage-report.zip; then
+              echo "❌ Failed to extract coverage artifacts"
+              echo "Trying to extract with verbose output for debugging..."
+              unzip -l coverage-report.zip || echo "Failed to list archive contents"
+              exit 1
+            fi
+            
+            # Find the main index.html file
+            INDEX_FILE=$(find . -name "index.html" -path "*/Code Coverage Report*" | head -1)
+            
+            if [[ -f "$INDEX_FILE" ]]; then
+              echo "🔍 Parsing coverage data from $INDEX_FILE..."
+              
+              # Debug: Show relevant parts of the HTML
+              echo "Debug: Looking for coverage data..."
+              grep -n "cardpercentagebar\|Covered lines\|Coverable lines" "$INDEX_FILE" | head -10
+              
+              # Extract coverage metrics using simpler, more reliable patterns
+              OVERALL_PERCENTAGE=$(grep -o 'cardpercentagebar[0-9]*">[0-9]*%' "$INDEX_FILE" | head -1 | grep -o '[0-9]*%')
+              COVERED_LINES=$(grep -A1 "Covered lines:" "$INDEX_FILE" | grep -o 'title="[0-9]*"' | head -1 | grep -o '[0-9]*')
+              TOTAL_LINES=$(grep -A1 "Coverable lines:" "$INDEX_FILE" | grep -o 'title="[0-9]*"' | head -1 | grep -o '[0-9]*')
+              
+              # Fallback method if the above doesn't work
+              if [[ -z "$OVERALL_PERCENTAGE" ]]; then
+                echo "Trying alternative parsing method..."
+                OVERALL_PERCENTAGE=$(grep -o 'large.*">[0-9]*%' "$INDEX_FILE" | head -1 | grep -o '[0-9]*%')
+              fi
+              
+              echo "Extracted values:"
+              echo "OVERALL_PERCENTAGE=$OVERALL_PERCENTAGE"
+              echo "COVERED_LINES=$COVERED_LINES"
+              echo "TOTAL_LINES=$TOTAL_LINES"
+              
+              # Validate that we got the essential data
+              if [[ -z "$OVERALL_PERCENTAGE" ]]; then
+                echo "❌ Could not extract coverage percentage from the report"
+                echo "The coverage report format may have changed or be incomplete"
+                exit 1
+              fi
+              
+              echo "COVERAGE_PERCENTAGE=$OVERALL_PERCENTAGE" >> $GITHUB_ENV
+              echo "COVERED_LINES=${COVERED_LINES:-N/A}" >> $GITHUB_ENV
+              echo "TOTAL_LINES=${TOTAL_LINES:-N/A}" >> $GITHUB_ENV
+              
+              # Extract top files with low coverage - improved approach
+              echo "📋 Extracting file-level coverage..."
+              
+              # Extract file coverage data more reliably
+              LOW_COVERAGE_FILES=$(grep -o '<td><a href="[^"]*">[^<]*</a></td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td class="right">[0-9]*</td><td title="[^"]*" class="right">[0-9]*\.[0-9]*%' "$INDEX_FILE" | \
+                sed 's/<td><a href="[^"]*">\([^<]*\)<\/a><\/td>.*class="right">\([0-9]*\.[0-9]*\)%/\1: \2%/' | \
+                sort -t: -k2 -n | head -10)
+              
+              # Alternative method if above fails
+              if [[ -z "$LOW_COVERAGE_FILES" ]]; then
+                echo "Trying alternative file parsing..."
+                LOW_COVERAGE_FILES=$(grep -E "\.py.*[0-9]+\.[0-9]+%" "$INDEX_FILE" | \
+                  grep -o "[^>]*\.py[^<]*</a>.*[0-9]*\.[0-9]*%" | \
+                  sed 's/\([^<]*\)<\/a>.*\([0-9]*\.[0-9]*\)%/\1: \2%/' | \
+                  sort -t: -k2 -n | head -10)
+              fi
+              
+              echo "LOW_COVERAGE_FILES<<EOF" >> $GITHUB_ENV
+              echo "${LOW_COVERAGE_FILES:-No detailed file data available}" >> $GITHUB_ENV
+              echo "EOF" >> $GITHUB_ENV
+              
+              echo "✅ Coverage data extracted successfully"
+            else
+              echo "❌ Could not find index.html in coverage report"
+              echo "Available files in the coverage report:"
+              find . -name "*.html" | head -10 || echo "No HTML files found"
+              exit 1
+            fi
+          else
+            echo "❌ Could not find coverage report artifact"
+            echo "Available artifacts from the build:"
+            echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]?.name // "No artifacts found"' 2>/dev/null || echo "Could not parse artifacts list"
+            echo "This indicates the Azure DevOps build may not have generated coverage reports"
+            exit 1
+          fi
+
+      - name: Download coverage XML from ADO
+        run: |
+          # Download the Cobertura XML directly from the CodeCoverageReport job
+          BUILD_ID=${{ env.BUILD_ID }}
+          ARTIFACTS_URL="https://dev.azure.com/SqlClientDrivers/public/_apis/build/builds/$BUILD_ID/artifacts?api-version=7.1-preview.5"
+          
+          echo "📥 Fetching artifacts for build $BUILD_ID to find coverage files..."
+          
+          # Fetch artifacts with error handling
+          ARTIFACTS_RESPONSE=$(curl -s "$ARTIFACTS_URL")
+          
+          # Check if response is valid JSON
+          if ! echo "$ARTIFACTS_RESPONSE" | jq . >/dev/null 2>&1; then
+            echo "❌ Invalid JSON response from artifacts API"
+            echo "Response received: $ARTIFACTS_RESPONSE"
+            exit 1
+          fi
+          
+          echo "🔍 Available artifacts:"
+          echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]?.name // "No artifacts found"'
+          
+          # Look for the unified coverage artifact from CodeCoverageReport job
+          COVERAGE_XML_ARTIFACT=$(echo "$ARTIFACTS_RESPONSE" | jq -r '.value[]? | select(.name | test("unified-coverage|Code Coverage Report|coverage")) | .resource.downloadUrl // empty' 2>/dev/null | head -1)
+          
+          if [[ -n "$COVERAGE_XML_ARTIFACT" && "$COVERAGE_XML_ARTIFACT" != "null" && "$COVERAGE_XML_ARTIFACT" != "empty" ]]; then
+            echo "📊 Downloading coverage artifact from: $COVERAGE_XML_ARTIFACT"
+            if ! curl -L "$COVERAGE_XML_ARTIFACT" -o coverage-artifacts.zip --fail --silent; then
+              echo "❌ Failed to download coverage artifacts"
+              exit 1
+            fi
+            
+            if ! unzip -o -q coverage-artifacts.zip; then
+              echo "❌ Failed to extract coverage artifacts"
+              echo "Trying to extract with verbose output for debugging..."
+              unzip -l coverage-artifacts.zip || echo "Failed to list archive contents"
+              exit 1
+            fi
+            
+            echo "🔍 Looking for coverage XML files in extracted artifacts..."
+            find . -name "*.xml" -type f | head -10
+            
+            # Look for the main coverage.xml file in unified-coverage directory or any coverage XML
+            if [[ -f "unified-coverage/coverage.xml" ]]; then
+              echo "✅ Found unified coverage file at unified-coverage/coverage.xml"
+              cp "unified-coverage/coverage.xml" ./coverage.xml
+            elif [[ -f "coverage.xml" ]]; then
+              echo "✅ Found coverage.xml in root directory"
+              # Already in the right place
+            else
+              # Try to find any coverage XML file
+              COVERAGE_FILE=$(find . -name "*coverage*.xml" -type f | head -1)
+              if [[ -n "$COVERAGE_FILE" ]]; then
+                echo "✅ Found coverage file: $COVERAGE_FILE"
+                cp "$COVERAGE_FILE" ./coverage.xml
+              else
+                echo "❌ No coverage XML file found in artifacts"
+                echo "Available files:"
+                find . -name "*.xml" -type f
+                exit 1
+              fi
+            fi
+            
+            echo "✅ Coverage XML file is ready at ./coverage.xml"
+            ls -la ./coverage.xml
+          else
+            echo "❌ Could not find coverage artifacts"
+            echo "This indicates the Azure DevOps CodeCoverageReport job may not have run successfully"
+            exit 1
+          fi
+
+      - name: Generate patch coverage report
+        run: |
+          # Install dependencies
+          pip install diff-cover jq
+          sudo apt-get update && sudo apt-get install -y libxml2-utils
+          
+          # Verify coverage.xml exists before proceeding
+          if [[ ! -f coverage.xml ]]; then
+            echo "❌ coverage.xml not found in current directory"
+            echo "Available files:"
+            ls -la | head -20
+            exit 1
+          fi
+          
+          echo "✅ coverage.xml found, size: $(wc -c < coverage.xml) bytes"
+          echo "🔍 Coverage file preview (first 10 lines):"
+          head -10 coverage.xml
+          
+          # Generate diff coverage report using the new command format
+          echo "🚀 Generating patch coverage report..."
+          
+          # Debug: Show git status and branches before running diff-cover
+          echo "🔍 Git status before diff-cover:"
+          git status --porcelain || echo "Git status failed"
+          echo "Current branch: $(git branch --show-current)"
+          echo "Available branches:"
+          git branch -a
+          echo "Checking if main branch is accessible:"
+          git log --oneline -n 5 main || echo "Could not access main branch"
+          
+          # Debug: Show what diff-cover will analyze
+          echo "🔍 Git diff analysis:"
+          echo "Files changed between main and current branch:"
+          git diff --name-only main || echo "Could not get diff"
+          echo "Detailed diff for Python files:"
+          git diff main -- "*.py" | head -50 || echo "Could not get Python diff"
+          
+          # Debug: Check coverage.xml content for specific files
+          echo "🔍 Coverage.xml analysis:"
+          echo "Python files mentioned in coverage.xml:"
+          grep -o 'filename="[^"]*\.py"' coverage.xml | head -10 || echo "Could not extract filenames"
+          echo "Sample coverage data:"
+          head -20 coverage.xml
+          
+          # Use the new format for diff-cover commands
+          echo "🚀 Running diff-cover..."
+          diff-cover coverage.xml \
+            --compare-branch=main \
+            --html-report patch-coverage.html \
+            --json-report patch-coverage.json \
+            --markdown-report patch-coverage.md || {
+              echo "❌ diff-cover failed with exit code $?"
+              echo "Checking if coverage.xml is valid XML..."
+              if ! xmllint --noout coverage.xml 2>/dev/null; then
+                echo "❌ coverage.xml is not valid XML"
+                echo "First 50 lines of coverage.xml:"
+                head -50 coverage.xml
+              else
+                echo "✅ coverage.xml is valid XML"
+                echo "🔍 diff-cover verbose output:"
+                diff-cover coverage.xml --compare-branch=main --markdown-report debug-patch-coverage.md -v || echo "Verbose diff-cover also failed"
+              fi
+              # Don't exit here, let's see what files were created
+            }
+          
+          # Check what files were generated
+          echo "🔍 Files generated after diff-cover:"
+          ls -la patch-coverage.* || echo "No patch-coverage files found"
+          ls -la *.md *.html *.json | grep -E "(patch|coverage)" || echo "No coverage-related files found"
+          
+          # Extract patch coverage percentage
+          if [[ -f patch-coverage.json ]]; then
+            echo "🔍 Patch coverage analysis from JSON:"
+            echo "Raw JSON content:"
+            cat patch-coverage.json | jq . || echo "Could not parse JSON"
+            
+            PATCH_COVERAGE=$(jq -r '.total_percent_covered // "N/A"' patch-coverage.json)
+            TOTAL_STATEMENTS=$(jq -r '.total_num_lines // "N/A"' patch-coverage.json)
+            MISSING_STATEMENTS=$(jq -r '.total_num_missing // "N/A"' patch-coverage.json)
+            
+            echo "✅ Patch coverage: ${PATCH_COVERAGE}%"
+            echo "📊 Total lines: $TOTAL_STATEMENTS, Missing: $MISSING_STATEMENTS"
+            
+            # Debug: Show per-file breakdown
+            echo "📁 Per-file coverage breakdown:"
+            jq -r '.src_stats // {} | to_entries[] | "\(.key): \(.value.percent_covered)% (\(.value.num_lines) lines, \(.value.num_missing) missing)"' patch-coverage.json || echo "Could not extract per-file stats"
+            
+            echo "PATCH_COVERAGE_PCT=${PATCH_COVERAGE}%" >> $GITHUB_ENV
+          elif [[ -f patch-coverage.md ]]; then
+            echo "🔍 Extracting patch coverage from markdown file:"
+            echo "Markdown content:"
+            cat patch-coverage.md
+            
+            # Extract coverage percentage from markdown
+            PATCH_COVERAGE=$(grep -o "Coverage.*[0-9]*%" patch-coverage.md | grep -o "[0-9]*%" | head -1 | sed 's/%//')
+            TOTAL_LINES=$(grep -o "Total.*[0-9]* lines" patch-coverage.md | grep -o "[0-9]*" | head -1)
+            MISSING_LINES=$(grep -o "Missing.*[0-9]* lines" patch-coverage.md | grep -o "[0-9]*" | tail -1)
+            
+            if [[ -n "$PATCH_COVERAGE" ]]; then
+              echo "✅ Extracted patch coverage: ${PATCH_COVERAGE}%"
+              echo "📊 Total lines: $TOTAL_LINES, Missing: $MISSING_LINES"
+              echo "PATCH_COVERAGE_PCT=${PATCH_COVERAGE}%" >> $GITHUB_ENV
+            else
+              echo "⚠️ Could not extract coverage percentage from markdown"
+              echo "PATCH_COVERAGE_PCT=Could not parse" >> $GITHUB_ENV
+            fi
+          else
+            echo "⚠️ No patch coverage files generated"
+            echo "🔍 Checking for other output files:"
+            ls -la *coverage* || echo "No coverage files found"
+            echo "PATCH_COVERAGE_PCT=Report not generated" >> $GITHUB_ENV
+          fi
+          
+          # Extract summary for comment
+          if [[ -f patch-coverage.md ]]; then
+            echo "PATCH_COVERAGE_SUMMARY<<EOF" >> $GITHUB_ENV
+            cat patch-coverage.md >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+            echo "✅ Patch coverage markdown summary ready"
+          else
+            echo "⚠️ patch-coverage.md not generated"
+            echo "PATCH_COVERAGE_SUMMARY=Patch coverage report could not be generated." >> $GITHUB_ENV
+          fi
+
+      - name: Save coverage data for comment
+        run: |
+          mkdir -p coverage-comment-data
+          jq -n \
+            --arg pr_number "${{ github.event.pull_request.number }}" \
+            --arg coverage_percentage "${{ env.COVERAGE_PERCENTAGE }}" \
+            --arg covered_lines "${{ env.COVERED_LINES }}" \
+            --arg total_lines "${{ env.TOTAL_LINES }}" \
+            --arg patch_coverage_pct "${{ env.PATCH_COVERAGE_PCT }}" \
+            --arg low_coverage_files "${{ env.LOW_COVERAGE_FILES }}" \
+            --arg patch_coverage_summary "${{ env.PATCH_COVERAGE_SUMMARY }}" \
+            --arg ado_url "${{ env.ADO_URL }}" \
+            '{
+              pr_number: $pr_number,
+              coverage_percentage: $coverage_percentage,
+              covered_lines: $covered_lines,
+              total_lines: $total_lines,
+              patch_coverage_pct: $patch_coverage_pct,
+              low_coverage_files: $low_coverage_files,
+              patch_coverage_summary: $patch_coverage_summary,
+              ado_url: $ado_url
+            }' > coverage-comment-data/pr-info.json
+          
+          # Validate JSON before uploading
+          echo "Validating generated JSON..."
+          jq . coverage-comment-data/pr-info.json > /dev/null || {
+            echo "❌ Invalid JSON generated"
+            cat coverage-comment-data/pr-info.json
+            exit 1
+          }
+          echo "✅ JSON validation successful"
+          cat coverage-comment-data/pr-info.json
+
+      - name: Upload coverage comment data
+        # Only upload artifact for forked PRs since same-repo PRs post comment directly
+        # This prevents unnecessary workflow_run triggers for same-repo PRs
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-comment-data
+          path: coverage-comment-data/
+          retention-days: 7
+
+      - name: Comment coverage summary on PR
+        # Skip for forked PRs due to token permission restrictions
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: ./.github/actions/post-coverage-comment
+        with:
+          pr_number: ${{ github.event.pull_request.number }}
+          coverage_percentage: ${{ env.COVERAGE_PERCENTAGE }}
+          covered_lines: ${{ env.COVERED_LINES }}
+          total_lines: ${{ env.TOTAL_LINES }}
+          patch_coverage_pct: ${{ env.PATCH_COVERAGE_PCT }}
+          low_coverage_files: ${{ env.LOW_COVERAGE_FILES }}
+          patch_coverage_summary: ${{ env.PATCH_COVERAGE_SUMMARY }}
+          ado_url: ${{ env.ADO_URL }}

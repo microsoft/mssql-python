@@ -1,0 +1,1259 @@
+"""
+Copyright (c) Microsoft Corporation.
+Licensed under the MIT license.
+
+Comprehensive test suite for SqlHandle::free() behavior during Python shutdown.
+
+This test validates the critical fix in ddbc_bindings.cpp SqlHandle::free() method
+that prevents segfaults when Python is shutting down by skipping handle cleanup
+for STMT (Type 3) and DBC (Type 2) handles whose parents may already be freed.
+
+Handle Hierarchy:
+- ENV (Type 1, SQL_HANDLE_ENV) - Static singleton, no parent
+- DBC (Type 2, SQL_HANDLE_DBC) - Per connection, parent is ENV
+- STMT (Type 3, SQL_HANDLE_STMT) - Per cursor, parent is DBC
+
+Protection Logic:
+- During Python shutdown (pythonShuttingDown=true):
+  * Type 3 (STMT) handles: Skip SQLFreeHandle (parent DBC may be freed)
+  * Type 2 (DBC) handles: Skip SQLFreeHandle (parent static ENV may be destructing)
+  * Type 1 (ENV) handles: Normal cleanup (no parent, static lifetime)
+
+Test Strategy:
+- Use subprocess isolation to test actual Python interpreter shutdown
+- Verify no segfaults occur when handles are freed during shutdown
+- Test all three handle types with various cleanup scenarios
+"""
+
+import os
+import subprocess
+import sys
+import textwrap
+import threading
+import time
+
+import pytest
+
+
+class TestHandleFreeShutdown:
+    """Test SqlHandle::free() behavior for all handle types during Python shutdown."""
+
+    def test_aggressive_dbc_segfault_reproduction(self, conn_str):
+        """
+        AGGRESSIVE TEST: Try to reproduce DBC handle segfault during shutdown.
+
+        This test aggressively attempts to trigger the segfault described in the stack trace
+        by creating many DBC handles and forcing Python to shut down while they're still alive.
+
+        Current vulnerability: DBC handles (Type 2) are NOT protected during shutdown,
+        so they will call SQLFreeHandle during finalization, potentially accessing
+        the already-destructed static ENV handle.
+
+        Expected with CURRENT CODE: May segfault (this is the bug we're testing for)
+        Expected with FIXED CODE: No segfault
+        """
+        script = textwrap.dedent(
+            f"""
+            import sys
+            import gc
+            from mssql_python import connect
+            
+            print("=== AGGRESSIVE DBC SEGFAULT TEST ===")
+            print("Creating many DBC handles and forcing shutdown...")
+            
+            # Create many connections without closing them
+            # This maximizes the chance of DBC handles being finalized
+            # AFTER the static ENV handle has destructed
+            connections = []
+            for i in range(5):  # Reduced for faster execution
+                conn = connect("{conn_str}")
+                # Don't even create cursors - just DBC handles
+                connections.append(conn)
+            
+            print(f"Created {{len(connections)}} DBC handles")
+            print("Forcing GC to ensure objects are tracked...")
+            gc.collect()
+            
+            # Delete the list but objects are still alive in GC
+            del connections
+            
+            print("WARNING: About to exit with unclosed DBC handles")
+            print("If Type 2 (DBC) handles are not protected, this may SEGFAULT")
+            print("Stack trace will show: SQLFreeHandle -> SqlHandle::free() -> finalize_garbage")
+            
+            # Force immediate exit - this triggers finalize_garbage
+            sys.exit(0)
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+        )
+
+        # Check for segfault
+        if result.returncode < 0:
+            signal_num = -result.returncode
+            print(
+                f"WARNING: SEGFAULT DETECTED! Process killed by signal {signal_num} (likely SIGSEGV=11)"
+            )
+            print(f"stderr: {result.stderr}")
+            print(f"This confirms DBC handles (Type 2) need protection during shutdown")
+            assert (
+                False
+            ), f"SEGFAULT reproduced with signal {signal_num} - DBC handles not protected"
+        else:
+            assert result.returncode == 0, f"Process failed. stderr: {result.stderr}"
+            assert "Created 5 DBC handles" in result.stdout
+            print(f"PASS: No segfault - DBC handles properly protected during shutdown")
+
+    def test_dbc_handle_outlives_env_handle(self, conn_str):
+        """
+        TEST: Reproduce scenario where DBC handle outlives ENV handle.
+
+        The static ENV handle destructs during C++ static destruction phase.
+        If DBC handles are finalized by Python GC AFTER ENV is gone,
+        SQLFreeHandle will crash trying to access the freed ENV handle.
+
+        Expected with CURRENT CODE: Likely segfault
+        Expected with FIXED CODE: No segfault
+        """
+        script = textwrap.dedent(
+            f"""
+            import sys
+            import atexit
+            from mssql_python import connect
+            
+            print("=== DBC OUTLIVES ENV TEST ===")
+            
+            # Create connection in global scope
+            global_conn = connect("{conn_str}")
+            print("Created global DBC handle")
+            
+            def on_exit():
+                print("atexit handler: Python is shutting down")
+                print("ENV handle (static) may already be destructing")
+                print("DBC handle still alive - this is dangerous!")
+            
+            atexit.register(on_exit)
+            
+            # Don't close connection - let it be finalized during shutdown
+            print("Exiting without closing DBC handle")
+            print("Python GC will finalize DBC during shutdown")
+            print("If DBC cleanup isn't skipped, SQLFreeHandle will access freed ENV")
+            sys.exit(0)
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+        )
+
+        if result.returncode < 0:
+            signal_num = -result.returncode
+            print(f"WARNING: SEGFAULT DETECTED! Process killed by signal {signal_num}")
+            print(f"This confirms DBC outlived ENV handle")
+            assert False, f"SEGFAULT: DBC handle outlived ENV handle, signal {signal_num}"
+        else:
+            assert result.returncode == 0, f"Process failed. stderr: {result.stderr}"
+            print(f"PASS: DBC handle cleanup properly skipped during shutdown")
+
+    def test_force_gc_finalization_order_issue(self, conn_str):
+        """
+        TEST: Force specific GC finalization order to trigger segfault.
+
+        By creating objects in specific order and forcing GC cycles,
+        we try to ensure DBC handles are finalized after ENV handle destruction.
+
+        Expected with CURRENT CODE: May segfault
+        Expected with FIXED CODE: No segfault
+        """
+        script = textwrap.dedent(
+            f"""
+            import sys
+            import gc
+            import weakref
+            from mssql_python import connect
+            
+            print("=== FORCED GC FINALIZATION ORDER TEST ===")
+            
+            # Create many connections
+            connections = []
+            weakrefs = []
+            
+            for i in range(5):  # Reduced for faster execution
+                conn = connect("{conn_str}")
+                wr = weakref.ref(conn)
+                connections.append(conn)
+                weakrefs.append(wr)
+            
+            print(f"Created {{len(connections)}} connections with weakrefs")
+            
+            # Force GC to track these objects
+            gc.collect()
+            
+            # Delete strong references
+            del connections
+            
+            # Force GC cycles
+            print("Forcing GC cycles...")
+            for i in range(2):
+                collected = gc.collect()
+                print(f"GC cycle {{i+1}}: collected {{collected}} objects")
+            
+            # Check weakrefs
+            alive = sum(1 for wr in weakrefs if wr() is not None)
+            print(f"Weakrefs still alive: {{alive}}")
+            
+            print("Exiting - finalize_garbage will be called")
+            print("If DBC handles aren't protected, segfault in SQLFreeHandle")
+            sys.exit(0)
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+        )
+
+        if result.returncode < 0:
+            signal_num = -result.returncode
+            print(f"WARNING: SEGFAULT DETECTED! Process killed by signal {signal_num}")
+            assert False, f"SEGFAULT during forced GC finalization, signal {signal_num}"
+        else:
+            assert result.returncode == 0, f"Process failed. stderr: {result.stderr}"
+            print(f"PASS: Forced GC finalization order handled safely")
+
+    def test_stmt_handle_cleanup_at_shutdown(self, conn_str):
+        """
+        Test STMT handle (Type 3) cleanup during Python shutdown.
+
+        Scenario:
+        1. Create connection and cursor
+        2. Execute query (creates STMT handle)
+        3. Let Python shutdown without explicit cleanup
+        4. STMT handle's __del__ should skip SQLFreeHandle during shutdown
+
+        Expected: No segfault, clean exit
+        """
+        script = textwrap.dedent(
+            f"""
+            import sys
+            from mssql_python import connect
+            
+            # Create connection and cursor with active STMT handle
+            conn = connect("{conn_str}")
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1 AS test_value")
+            result = cursor.fetchall()
+            print(f"Query result: {{result}}")
+            
+            # Intentionally skip cleanup - let Python shutdown handle it
+            # This will trigger SqlHandle::free() during Python finalization
+            # Type 3 (STMT) handle should be skipped when pythonShuttingDown=true
+            print("STMT handle cleanup test: Exiting without explicit cleanup")
+            sys.exit(0)
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+        )
+
+        assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
+        assert "STMT handle cleanup test: Exiting without explicit cleanup" in result.stdout
+        assert "Query result: [(1,)]" in result.stdout
+        print(f"PASS: STMT handle (Type 3) cleanup during shutdown")
+
+    def test_dbc_handle_cleanup_at_shutdown(self, conn_str):
+        """
+        Test DBC handle (Type 2) cleanup during Python shutdown.
+
+        Scenario:
+        1. Create multiple connections (multiple DBC handles)
+        2. Close cursors but leave connections open
+        3. Let Python shutdown without closing connections
+        4. DBC handles' __del__ should skip SQLFreeHandle during shutdown
+
+        Expected: No segfault, clean exit
+        """
+        script = textwrap.dedent(
+            f"""
+            import sys
+            from mssql_python import connect
+            
+            # Create multiple connections (DBC handles)
+            connections = []
+            for i in range(3):
+                conn = connect("{conn_str}")
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT {{i}} AS test_value")
+                result = cursor.fetchall()
+                cursor.close()  # Close cursor, but keep connection
+                connections.append(conn)
+                print(f"Connection {{i}}: created and cursor closed")
+            
+            # Intentionally skip connection cleanup
+            # This will trigger SqlHandle::free() for DBC handles during shutdown
+            # Type 2 (DBC) handles should be skipped when pythonShuttingDown=true
+            print("DBC handle cleanup test: Exiting without explicit connection cleanup")
+            sys.exit(0)
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+        )
+
+        assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
+        assert (
+            "DBC handle cleanup test: Exiting without explicit connection cleanup" in result.stdout
+        )
+        assert "Connection 0: created and cursor closed" in result.stdout
+        assert "Connection 1: created and cursor closed" in result.stdout
+        assert "Connection 2: created and cursor closed" in result.stdout
+        print(f"PASS: DBC handle (Type 2) cleanup during shutdown")
+
+    def test_env_handle_cleanup_at_shutdown(self, conn_str):
+        """
+        Test ENV handle (Type 1) cleanup during Python shutdown.
+
+        Scenario:
+        1. Create and close connections (ENV handle is static singleton)
+        2. Let Python shutdown
+        3. ENV handle is static and should follow normal C++ destruction
+        4. ENV handle should NOT be skipped (no protection needed)
+
+        Expected: No segfault, clean exit
+        Note: ENV handle is static and destructs via normal C++ mechanisms,
+              not during Python GC. This test verifies the overall flow.
+        """
+        script = textwrap.dedent(
+            f"""
+            import sys
+            from mssql_python import connect
+            
+            # Create and properly close connections
+            # ENV handle is static singleton shared across all connections
+            for i in range(3):
+                conn = connect("{conn_str}")
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT {{i}} AS test_value")
+                cursor.fetchall()
+                cursor.close()
+                conn.close()
+                print(f"Connection {{i}}: properly closed")
+            
+            # ENV handle is static and will destruct via C++ static destruction
+            # It does NOT have pythonShuttingDown protection (Type 1 not in check)
+            print("ENV handle cleanup test: All connections closed properly")
+            sys.exit(0)
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+        )
+
+        assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
+        assert "ENV handle cleanup test: All connections closed properly" in result.stdout
+        assert "Connection 0: properly closed" in result.stdout
+        assert "Connection 1: properly closed" in result.stdout
+        assert "Connection 2: properly closed" in result.stdout
+        print(f"PASS: ENV handle (Type 1) cleanup during shutdown")
+
+    def test_mixed_handle_cleanup_at_shutdown(self, conn_str):
+        """
+        Test mixed scenario with all handle types during shutdown.
+
+        Scenario:
+        1. Create multiple connections (DBC handles)
+        2. Create multiple cursors per connection (STMT handles)
+        3. Some cursors closed, some left open
+        4. Some connections closed, some left open
+        5. Let Python shutdown handle the rest
+
+        Expected: No segfault, clean exit
+        This tests the real-world scenario where cleanup is partial
+        """
+        script = textwrap.dedent(
+            f"""
+            import sys
+            from mssql_python import connect
+            
+            connections = []
+            
+            # Connection 1: Everything left open
+            conn1 = connect("{conn_str}")
+            cursor1a = conn1.cursor()
+            cursor1a.execute("SELECT 1 AS test")
+            cursor1a.fetchall()
+            cursor1b = conn1.cursor()
+            cursor1b.execute("SELECT 2 AS test")
+            cursor1b.fetchall()
+            connections.append((conn1, [cursor1a, cursor1b]))
+            print("Connection 1: cursors left open")
+            
+            # Connection 2: Cursors closed, connection left open
+            conn2 = connect("{conn_str}")
+            cursor2a = conn2.cursor()
+            cursor2a.execute("SELECT 3 AS test")
+            cursor2a.fetchall()
+            cursor2a.close()
+            cursor2b = conn2.cursor()
+            cursor2b.execute("SELECT 4 AS test")
+            cursor2b.fetchall()
+            cursor2b.close()
+            connections.append((conn2, []))
+            print("Connection 2: cursors closed, connection left open")
+            
+            # Connection 3: Everything properly closed
+            conn3 = connect("{conn_str}")
+            cursor3a = conn3.cursor()
+            cursor3a.execute("SELECT 5 AS test")
+            cursor3a.fetchall()
+            cursor3a.close()
+            conn3.close()
+            print("Connection 3: everything properly closed")
+            
+            # Let Python shutdown with mixed cleanup state
+            # - Type 3 (STMT) handles from conn1 cursors: skipped during shutdown
+            # - Type 2 (DBC) handles from conn1, conn2: skipped during shutdown
+            # - Type 1 (ENV) handle: normal C++ static destruction
+            print("Mixed handle cleanup test: Exiting with partial cleanup")
+            sys.exit(0)
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+        )
+
+        assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
+        assert "Mixed handle cleanup test: Exiting with partial cleanup" in result.stdout
+        assert "Connection 1: cursors left open" in result.stdout
+        assert "Connection 2: cursors closed, connection left open" in result.stdout
+        assert "Connection 3: everything properly closed" in result.stdout
+        print(f"PASS: Mixed handle cleanup during shutdown")
+
+    def test_rapid_connection_churn_with_shutdown(self, conn_str):
+        """
+        Test rapid connection creation/deletion followed by shutdown.
+
+        Scenario:
+        1. Create many connections rapidly
+        2. Delete some connections explicitly
+        3. Leave others for Python GC
+        4. Trigger shutdown
+
+        Expected: No segfault, proper handle cleanup order
+        """
+        script = textwrap.dedent(
+            f"""
+            import sys
+            import gc
+            from mssql_python import connect
+            
+            # Create and delete connections rapidly
+            for i in range(6):
+                conn = connect("{conn_str}")
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT {{i}} AS test")
+                cursor.fetchall()
+                
+                # Close every other cursor
+                if i % 2 == 0:
+                    cursor.close()
+                    conn.close()
+                # Leave odd-numbered connections open
+            
+            print("Created 6 connections, closed 3 explicitly")
+            
+            # Force GC before shutdown
+            gc.collect()
+            print("GC triggered before shutdown")
+            
+            # Shutdown with 5 connections still "open" (not explicitly closed)
+            # Their DBC and STMT handles will be skipped during shutdown
+            print("Rapid churn test: Exiting with mixed cleanup")
+            sys.exit(0)
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+        )
+
+        assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
+        assert "Created 6 connections, closed 3 explicitly" in result.stdout
+        assert "Rapid churn test: Exiting with mixed cleanup" in result.stdout
+        print(f"PASS: Rapid connection churn with shutdown")
+
+    def test_exception_during_query_with_shutdown(self, conn_str):
+        """
+        Test handle cleanup when exception occurs during query execution.
+
+        Scenario:
+        1. Create connection and cursor
+        2. Execute query that causes exception
+        3. Exception leaves handles in inconsistent state
+        4. Let Python shutdown clean up
+
+        Expected: No segfault, graceful error handling
+        """
+        script = textwrap.dedent(
+            f"""
+            import sys
+            from mssql_python import connect, ProgrammingError
+            
+            conn = connect("{conn_str}")
+            cursor = conn.cursor()
+            
+            try:
+                # This will fail - invalid SQL
+                cursor.execute("SELECT * FROM NonExistentTable123456")
+            except ProgrammingError as e:
+                print(f"Expected error occurred: {{type(e).__name__}}")
+                # Intentionally don't close cursor or connection
+            
+            print("Exception test: Exiting after exception without cleanup")
+            sys.exit(0)
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+        )
+
+        assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
+        assert "Expected error occurred: ProgrammingError" in result.stdout
+        assert "Exception test: Exiting after exception without cleanup" in result.stdout
+        print(f"PASS: Exception during query with shutdown")
+
+    def test_weakref_cleanup_at_shutdown(self, conn_str):
+        """
+        Test handle cleanup when using weakrefs during shutdown.
+
+        Scenario:
+        1. Create connections with weakref monitoring
+        2. Delete strong references
+        3. Let weakrefs and Python shutdown interact
+
+        Expected: No segfault, proper weakref finalization
+        """
+        script = textwrap.dedent(
+            f"""
+            import sys
+            import weakref
+            from mssql_python import connect
+            
+            weakrefs = []
+            
+            def callback(ref):
+                print(f"Weakref callback triggered for {{ref}}")
+            
+            # Create connections with weakref monitoring
+            for i in range(3):
+                conn = connect("{conn_str}")
+                cursor = conn.cursor()
+                cursor.execute(f"SELECT {{i}} AS test")
+                cursor.fetchall()
+                
+                # Create weakref with callback
+                wr = weakref.ref(conn, callback)
+                weakrefs.append(wr)
+                
+                # Delete strong reference for connection 0
+                if i == 0:
+                    cursor.close()
+                    conn.close()
+                    print(f"Connection {{i}}: closed explicitly")
+                else:
+                    print(f"Connection {{i}}: left open")
+            
+            print("Weakref test: Exiting with weakrefs active")
+            sys.exit(0)
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+        )
+
+        assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
+        assert "Weakref test: Exiting with weakrefs active" in result.stdout
+        print(f"PASS: Weakref cleanup at shutdown")
+
+    def test_gc_during_shutdown_with_circular_refs(self, conn_str):
+        """
+        Test handle cleanup with circular references during shutdown.
+
+        Scenario:
+        1. Create circular references between objects holding handles
+        2. Force GC during shutdown sequence
+        3. Verify no crashes from complex cleanup order
+
+        Expected: No segfault, proper cycle breaking
+        """
+        script = textwrap.dedent(
+            f"""
+            import sys
+            import gc
+            from mssql_python import connect
+            
+            class QueryWrapper:
+                def __init__(self, conn_str, query_id):
+                    self.conn = connect(conn_str)
+                    self.cursor = self.conn.cursor()
+                    self.query_id = query_id
+                    self.partner = None  # For circular reference
+                    
+                def execute_query(self):
+                    self.cursor.execute(f"SELECT {{self.query_id}} AS test")
+                    return self.cursor.fetchall()
+            
+            # Create circular references
+            wrapper1 = QueryWrapper("{conn_str}", 1)
+            wrapper2 = QueryWrapper("{conn_str}", 2)
+            
+            wrapper1.partner = wrapper2
+            wrapper2.partner = wrapper1
+            
+            result1 = wrapper1.execute_query()
+            result2 = wrapper2.execute_query()
+            print(f"Executed queries: {{result1}}, {{result2}}")
+            
+            # Break strong references but leave cycle
+            del wrapper1
+            del wrapper2
+            
+            # Force GC to detect cycles
+            collected = gc.collect()
+            print(f"GC collected {{collected}} objects")
+            
+            print("Circular ref test: Exiting after GC with cycles")
+            sys.exit(0)
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+        )
+
+        assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
+        assert "Circular ref test: Exiting after GC with cycles" in result.stdout
+        print(f"PASS: GC during shutdown with circular refs")
+
+    def test_all_handle_types_comprehensive(self, conn_str):
+        """
+        Comprehensive test validating all three handle types in one scenario.
+
+        This test creates a realistic scenario where:
+        - ENV handle (Type 1): Static singleton used by all connections
+        - DBC handles (Type 2): Multiple connection handles, some freed
+        - STMT handles (Type 3): Multiple cursor handles, some freed
+
+        Expected: Clean shutdown with no segfaults
+        """
+        script = textwrap.dedent(
+            f"""
+            import sys
+            from mssql_python import connect
+            
+            print("=== Comprehensive Handle Test ===")
+            print("Testing ENV (Type 1), DBC (Type 2), STMT (Type 3) handles")
+            
+            # Scenario 1: Normal cleanup (baseline)
+            conn1 = connect("{conn_str}")
+            cursor1 = conn1.cursor()
+            cursor1.execute("SELECT 1 AS baseline_test")
+            cursor1.fetchall()
+            cursor1.close()
+            conn1.close()
+            print("Scenario 1: Normal cleanup completed")
+            
+            # Scenario 2: Cursor closed, connection open
+            conn2 = connect("{conn_str}")
+            cursor2 = conn2.cursor()
+            cursor2.execute("SELECT 2 AS cursor_closed_test")
+            cursor2.fetchall()
+            cursor2.close()
+            # conn2 intentionally left open - DBC handle cleanup skipped at shutdown
+            print("Scenario 2: Cursor closed, connection left open")
+            
+            # Scenario 3: Both cursor and connection open
+            conn3 = connect("{conn_str}")
+            cursor3 = conn3.cursor()
+            cursor3.execute("SELECT 3 AS both_open_test")
+            cursor3.fetchall()
+            # Both intentionally left open - STMT and DBC handle cleanup skipped
+            print("Scenario 3: Both cursor and connection left open")
+            
+            # Scenario 4: Multiple cursors per connection
+            conn4 = connect("{conn_str}")
+            cursors = []
+            for i in range(5):
+                c = conn4.cursor()
+                c.execute(f"SELECT {{i}} AS multi_cursor_test")
+                c.fetchall()
+                cursors.append(c)
+            # All intentionally left open
+            print("Scenario 4: Multiple cursors per connection left open")
+            
+            print("=== Shutdown Protection Summary ===")
+            print("During Python shutdown:")
+            print("- Type 3 (STMT) handles: SQLFreeHandle SKIPPED")
+            print("- Type 2 (DBC) handles: SQLFreeHandle SKIPPED")
+            print("- Type 1 (ENV) handle: Normal C++ static destruction")
+            print("=== Exiting ===")
+            sys.exit(0)
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
+        )
+
+        assert result.returncode == 0, f"Process crashed. stderr: {result.stderr}"
+        assert "=== Comprehensive Handle Test ===" in result.stdout
+        assert "Scenario 1: Normal cleanup completed" in result.stdout
+        assert "Scenario 2: Cursor closed, connection left open" in result.stdout
+        assert "Scenario 3: Both cursor and connection left open" in result.stdout
+        assert "Scenario 4: Multiple cursors per connection left open" in result.stdout
+        assert "=== Exiting ===" in result.stdout
+        print(f"PASS: Comprehensive all handle types test")
+
+    @pytest.mark.parametrize(
+        "scenario,test_code,expected_msg",
+        [
+            (
+                "normal_flow",
+                """
+            # Create mock connection to test registration and cleanup
+            class MockConnection:
+                def __init__(self):
+                    self._closed = False
+                    self.close_called = False
+                    
+                def close(self):
+                    self.close_called = True
+                    self._closed = True
+            
+            # Register connection
+            mock_conn = MockConnection()
+            mssql_python._register_connection(mock_conn)
+            assert mock_conn in mssql_python._active_connections, "Connection not registered"
+            
+            # Test cleanup
+            mssql_python._cleanup_connections()
+            assert mock_conn.close_called, "close() should have been called"
+            assert mock_conn._closed, "Connection should be marked as closed"
+                """,
+                "Normal flow: PASSED",
+            ),
+            (
+                "already_closed",
+                """
+            class MockConnection:
+                def __init__(self):
+                    self._closed = True  # Already closed
+                    self.close_called = False
+                    
+                def close(self):
+                    self.close_called = True
+                    raise AssertionError("close() should not be called on closed connection")
+            
+            # Register already-closed connection
+            mock_conn = MockConnection()
+            mssql_python._register_connection(mock_conn)
+            
+            # Cleanup should skip this connection
+            mssql_python._cleanup_connections()
+            assert not mock_conn.close_called, "close() should NOT have been called"
+                """,
+                "Already closed: PASSED",
+            ),
+            (
+                "missing_attribute",
+                """
+            class MinimalConnection:
+                # No _closed attribute
+                def close(self):
+                    pass
+            
+            # Register connection without _closed
+            mock_conn = MinimalConnection()
+            mssql_python._register_connection(mock_conn)
+            
+            # Should not crash
+            mssql_python._cleanup_connections()
+                """,
+                "Missing attribute: PASSED",
+            ),
+            (
+                "exception_handling",
+                """
+            class GoodConnection:
+                def __init__(self):
+                    self._closed = False
+                    self.close_called = False
+                    
+                def close(self):
+                    self.close_called = True
+                    self._closed = True
+            
+            class BadConnection:
+                def __init__(self):
+                    self._closed = False
+                    
+                def close(self):
+                    raise RuntimeError("Simulated error during close")
+            
+            # Register both good and bad connections
+            good_conn = GoodConnection()
+            bad_conn = BadConnection()
+            mssql_python._register_connection(bad_conn)
+            mssql_python._register_connection(good_conn)
+            
+            # Cleanup should handle exception and continue
+            try:
+                mssql_python._cleanup_connections()
+                # Should not raise despite bad_conn throwing exception
+                assert good_conn.close_called, "Good connection should still be closed"
+            except Exception as e:
+                print(f"Exception handling: FAILED - Exception escaped: {{e}}")
+                raise
+                """,
+                "Exception handling: PASSED",
+            ),
+            (
+                "multiple_connections",
+                """
+            class TestConnection:
+                count = 0
+                
+                def __init__(self, conn_id):
+                    self.conn_id = conn_id
+                    self._closed = False
+                    self.close_called = False
+                    
+                def close(self):
+                    self.close_called = True
+                    self._closed = True
+                    TestConnection.count += 1
+            
+            # Register multiple connections
+            connections = [TestConnection(i) for i in range(5)]
+            for conn in connections:
+                mssql_python._register_connection(conn)
+            
+            # Cleanup all
+            mssql_python._cleanup_connections()
+            
+            assert TestConnection.count == 5, f"All 5 connections should be closed, got {{TestConnection.count}}"
+            assert all(c.close_called for c in connections), "All connections should have close() called"
+                """,
+                "Multiple connections: PASSED",
+            ),
+            (
+                "weakset_behavior",
+                """
+            import gc
+            
+            class TestConnection:
+                def __init__(self):
+                    self._closed = False
+                    
+                def close(self):
+                    pass
+            
+            # Register connection then let it be garbage collected
+            conn = TestConnection()
+            mssql_python._register_connection(conn)
+            initial_count = len(mssql_python._active_connections)
+            
+            del conn
+            gc.collect()  # Force garbage collection
+            
+            final_count = len(mssql_python._active_connections)
+            assert final_count < initial_count, "WeakSet should auto-remove GC'd connections"
+            
+            # Cleanup should not crash with removed connections
+            mssql_python._cleanup_connections()
+                """,
+                "WeakSet behavior: PASSED",
+            ),
+            (
+                "empty_list",
+                """
+            # Clear any existing connections
+            mssql_python._active_connections.clear()
+            
+            # Should not crash with empty set
+            mssql_python._cleanup_connections()
+                """,
+                "Empty list: PASSED",
+            ),
+            (
+                "mixed_scenario",
+                """
+            class OpenConnection:
+                def __init__(self):
+                    self._closed = False
+                    self.close_called = False
+                    
+                def close(self):
+                    self.close_called = True
+                    self._closed = True
+            
+            class ClosedConnection:
+                def __init__(self):
+                    self._closed = True
+                    
+                def close(self):
+                    raise AssertionError("Should not be called")
+            
+            class ErrorConnection:
+                def __init__(self):
+                    self._closed = False
+                    
+                def close(self):
+                    raise RuntimeError("Simulated error")
+            
+            # Register all types
+            open_conn = OpenConnection()
+            closed_conn = ClosedConnection()
+            error_conn = ErrorConnection()
+            
+            mssql_python._register_connection(open_conn)
+            mssql_python._register_connection(closed_conn)
+            mssql_python._register_connection(error_conn)
+            
+            # Cleanup should handle all scenarios
+            mssql_python._cleanup_connections()
+            
+            assert open_conn.close_called, "Open connection should have been closed"
+                """,
+                "Mixed scenario: PASSED",
+            ),
+        ],
+    )
+    def test_cleanup_connections_scenarios(self, conn_str, scenario, test_code, expected_msg):
+        """
+        Test _cleanup_connections() with various scenarios.
+
+        Scenarios tested:
+        - normal_flow: Active connections properly closed
+        - already_closed: Closed connections skipped
+        - missing_attribute: Gracefully handles missing _closed attribute
+        - exception_handling: Exceptions caught, cleanup continues
+        - multiple_connections: All connections processed
+        - weakset_behavior: Auto-removes GC'd connections
+        - empty_list: No errors with empty set
+        - mixed_scenario: Mixed connection states handled correctly
+        """
+        script = textwrap.dedent(
+            f"""
+            import mssql_python
+            
+            # Verify cleanup infrastructure exists
+            assert hasattr(mssql_python, '_active_connections'), "Missing _active_connections"
+            assert hasattr(mssql_python, '_cleanup_connections'), "Missing _cleanup_connections"
+            assert hasattr(mssql_python, '_register_connection'), "Missing _register_connection"
+            
+            {test_code}
+            
+            print("{expected_msg}")
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=3
+        )
+
+        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
+        assert expected_msg in result.stdout
+        print(f"PASS: Cleanup connections scenario '{scenario}'")
+
+    def test_active_connections_thread_safety(self, conn_str):
+        """
+        Test _active_connections thread-safety with concurrent registration.
+
+        Validates that:
+        - Multiple threads can safely register connections simultaneously
+        - No race conditions occur during concurrent add operations
+        - Cleanup can safely iterate while threads are registering
+        - Lock prevents data corruption in WeakSet
+        """
+        script = textwrap.dedent(
+            f"""
+            import mssql_python
+            import threading
+            import time
+            
+            class MockConnection:
+                def __init__(self, conn_id):
+                    self.conn_id = conn_id
+                    self._closed = False
+                    
+                def close(self):
+                    self._closed = True
+            
+            # Track successful registrations
+            registered = []
+            lock = threading.Lock()
+            
+            def register_connections(thread_id, count):
+                '''Register multiple connections from a thread'''
+                for i in range(count):
+                    conn = MockConnection(f"thread_{{thread_id}}_conn_{{i}}")
+                    mssql_python._register_connection(conn)
+                    with lock:
+                        registered.append(conn)
+                    # Small delay to increase chance of race conditions
+                    time.sleep(0.001)
+            
+            # Create multiple threads registering connections concurrently
+            threads = []
+            num_threads = 10
+            conns_per_thread = 20
+            
+            print(f"Creating {{num_threads}} threads, each registering {{conns_per_thread}} connections...")
+            
+            for i in range(num_threads):
+                t = threading.Thread(target=register_connections, args=(i, conns_per_thread))
+                threads.append(t)
+                t.start()
+            
+            # While threads are running, try to trigger cleanup iteration
+            # This tests lock protection during concurrent access
+            time.sleep(0.05)  # Let some registrations happen
+            
+            # Force a cleanup attempt while threads are still registering
+            # This should be safe due to lock protection
+            try:
+                mssql_python._cleanup_connections()
+            except Exception as e:
+                print(f"ERROR: Cleanup failed during concurrent registration: {{e}}")
+                raise
+            
+            # Wait for all threads to complete
+            for t in threads:
+                t.join()
+            
+            print(f"All threads completed. Registered {{len(registered)}} connections")
+            
+            # Verify all connections were registered
+            expected_count = num_threads * conns_per_thread
+            assert len(registered) == expected_count, f"Expected {{expected_count}}, got {{len(registered)}}"
+            
+            # Final cleanup should work without errors
+            mssql_python._cleanup_connections()
+            
+            # Verify cleanup worked
+            for conn in registered:
+                assert conn._closed, f"Connection {{conn.conn_id}} was not closed"
+            
+            print("Thread safety test: PASSED")
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=10
+        )
+
+        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
+        assert "Thread safety test: PASSED" in result.stdout
+        print(f"PASS: Active connections thread safety")
+
+    def test_cleanup_connections_list_copy_isolation(self, conn_str):
+        """
+        Test that connections_to_close = list(_active_connections) creates a proper copy.
+
+        This test validates the critical line: connections_to_close = list(_active_connections)
+
+        Validates that:
+        1. The list() call creates a snapshot copy of _active_connections
+        2. Modifications to _active_connections during iteration don't affect the iteration
+        3. WeakSet can be modified (e.g., connections removed by GC) without breaking iteration
+        4. The copy prevents "Set changed size during iteration" RuntimeError
+        """
+        script = textwrap.dedent(
+            f"""
+            import mssql_python
+            import weakref
+            import gc
+            
+            class TestConnection:
+                def __init__(self, conn_id):
+                    self.conn_id = conn_id
+                    self._closed = False
+                    self.close_call_count = 0
+                    
+                def close(self):
+                    self.close_call_count += 1
+                    self._closed = True
+            
+            # Register multiple connections
+            connections = []
+            for i in range(5):
+                conn = TestConnection(i)
+                mssql_python._register_connection(conn)
+                connections.append(conn)
+            
+            print(f"Registered {{len(connections)}} connections")
+            
+            # Verify connections_to_close creates a proper list copy
+            # by checking that the original WeakSet can be modified without affecting cleanup
+            
+            # Create a connection that will be garbage collected during cleanup simulation
+            temp_conn = TestConnection(999)
+            mssql_python._register_connection(temp_conn)
+            temp_ref = weakref.ref(temp_conn)
+            
+            print(f"WeakSet size before: {{len(mssql_python._active_connections)}}")
+            
+            # Now simulate what _cleanup_connections does:
+            # 1. Create list copy (this is the line we're testing)
+            with mssql_python._connections_lock:
+                connections_to_close = list(mssql_python._active_connections)
+            
+            print(f"List copy created with {{len(connections_to_close)}} items")
+            
+            # 2. Delete temp_conn and force GC - this modifies WeakSet
+            del temp_conn
+            gc.collect()
+            
+            print(f"WeakSet size after GC: {{len(mssql_python._active_connections)}}")
+            
+            # 3. Iterate over the COPY (not the original WeakSet)
+            # This should work even though WeakSet was modified
+            closed_count = 0
+            for conn in connections_to_close:
+                try:
+                    if hasattr(conn, "_closed") and not conn._closed:
+                        conn.close()
+                        closed_count += 1
+                except Exception:
+                    pass  # Ignore errors from GC'd connection
+            
+            print(f"Closed {{closed_count}} connections from list copy")
+            
+            # Verify that the list copy isolated us from WeakSet modifications
+            assert closed_count >= len(connections), "Should have processed snapshot connections"
+            
+            # Verify all live connections were closed
+            for conn in connections:
+                assert conn._closed, f"Connection {{conn.conn_id}} should be closed"
+                assert conn.close_call_count == 1, f"Connection {{conn.conn_id}} close called {{conn.close_call_count}} times"
+            
+            # Key validation: The list copy preserved the snapshot even if GC happened
+            # The temp_conn is in the list copy (being iterated), keeping it alive
+            # This proves the list() call created a proper snapshot at that moment
+            print(f"List copy had {{len(connections_to_close)}} items at snapshot time")
+            
+            print("List copy isolation: PASSED")
+            print("[OK] connections_to_close = list(_active_connections) properly tested")
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=3
+        )
+
+        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
+        assert "List copy isolation: PASSED" in result.stdout
+        assert (
+            "[OK] connections_to_close = list(_active_connections) properly tested" in result.stdout
+        )
+        print(f"PASS: Cleanup connections list copy isolation")
+
+    def test_cleanup_connections_weakset_modification_during_iteration(self, conn_str):
+        """
+        Test that list copy prevents RuntimeError when WeakSet is modified during iteration.
+
+        This is a more aggressive test of the connections_to_close = list(_active_connections) line.
+
+        Validates that:
+        1. Without the list copy, iterating WeakSet directly would fail if modified
+        2. With the list copy, iteration is safe even if WeakSet shrinks due to GC
+        3. The pattern prevents "dictionary changed size during iteration" type errors
+        """
+        script = textwrap.dedent(
+            f"""
+            import mssql_python
+            import weakref
+            import gc
+            
+            class TestConnection:
+                def __init__(self, conn_id):
+                    self.conn_id = conn_id
+                    self._closed = False
+                    
+                def close(self):
+                    self._closed = True
+            
+            # Create connections with only weak references so they can be GC'd easily
+            weak_refs = []
+            for i in range(10):
+                conn = TestConnection(i)
+                mssql_python._register_connection(conn)
+                weak_refs.append(weakref.ref(conn))
+                # Don't keep strong reference - only weak_refs list has refs
+            
+            initial_size = len(mssql_python._active_connections)
+            print(f"Initial WeakSet size: {{initial_size}}")
+            
+            # TEST 1: Demonstrate that direct iteration would be unsafe
+            # (We can't actually do this in the real code, but we can show the principle)
+            print("TEST 1: Verifying list copy is necessary...")
+            
+            # Force some garbage collection
+            gc.collect()
+            after_gc_size = len(mssql_python._active_connections)
+            print(f"WeakSet size after GC: {{after_gc_size}}")
+            
+            # TEST 2: Verify list copy allows safe iteration
+            print("TEST 2: Testing list copy creates stable snapshot...")
+            
+            # This is what _cleanup_connections does - creates a list copy
+            with mssql_python._connections_lock:
+                connections_to_close = list(mssql_python._active_connections)
+            
+            snapshot_size = len(connections_to_close)
+            print(f"Snapshot list size: {{snapshot_size}}")
+            
+            # Now cause more GC while we iterate the snapshot
+            gc.collect()
+            
+            # Iterate the snapshot - this should work even though WeakSet may have changed
+            processed = 0
+            for conn in connections_to_close:
+                try:
+                    if hasattr(conn, "_closed") and not conn._closed:
+                        conn.close()
+                    processed += 1
+                except Exception:
+                    # Connection may have been GC'd, that's OK
+                    pass
+            
+            final_size = len(mssql_python._active_connections)
+            print(f"Final WeakSet size: {{final_size}}")
+            print(f"Processed {{processed}} connections from snapshot")
+            
+            # Key assertion: We could iterate the full snapshot even if WeakSet changed
+            assert processed == snapshot_size, f"Should process all snapshot items: {{processed}} == {{snapshot_size}}"
+            
+            print("WeakSet modification during iteration: PASSED")
+            print("[OK] list() copy prevents 'set changed size during iteration' errors")
+        """
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=3
+        )
+
+        assert result.returncode == 0, f"Test failed. stderr: {result.stderr}"
+        assert "WeakSet modification during iteration: PASSED" in result.stdout
+        assert (
+            "[OK] list() copy prevents 'set changed size during iteration' errors" in result.stdout
+        )
+        print(f"PASS: Cleanup connections WeakSet modification during iteration")

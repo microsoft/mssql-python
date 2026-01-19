@@ -1,16 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-// INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
-//             taken up in future
-
-#include "connection.h"
-#include "connection_pool.h"
-#include <vector>
+#include "connection/connection.h"
+#include "connection/connection_pool.h"
+#include <algorithm>
+#include <memory>
 #include <pybind11/pybind11.h>
+#include <regex>
+#include <string>
+#include <utility>
+#include <vector>
 
-#define SQL_COPT_SS_ACCESS_TOKEN   1256  // Custom attribute ID for access token
-#define SQL_MAX_SMALL_INT 32767  // Maximum value for SQLSMALLINT
+#define SQL_COPT_SS_ACCESS_TOKEN 1256  // Custom attribute ID for access token
+#define SQL_MAX_SMALL_INT 32767        // Maximum value for SQLSMALLINT
+
+// Logging uses LOG() macro for all diagnostic output
+#include "logger_bridge.hpp"
 
 static SqlHandlePtr getEnvHandle() {
     static SqlHandlePtr envHandle = []() -> SqlHandlePtr {
@@ -24,7 +29,8 @@ static SqlHandlePtr getEnvHandle() {
         if (!SQL_SUCCEEDED(ret)) {
             ThrowStdException("Failed to allocate environment handle");
         }
-        ret = SQLSetEnvAttr_ptr(env, SQL_ATTR_ODBC_VERSION, (void*)SQL_OV_ODBC3_80, 0);
+        ret = SQLSetEnvAttr_ptr(env, SQL_ATTR_ODBC_VERSION,
+                                reinterpret_cast<void*>(SQL_OV_ODBC3_80), 0);
         if (!SQL_SUCCEEDED(ret)) {
             ThrowStdException("Failed to set environment attributes");
         }
@@ -45,14 +51,14 @@ Connection::Connection(const std::wstring& conn_str, bool use_pool)
 }
 
 Connection::~Connection() {
-    disconnect();   // fallback if user forgets to disconnect
+    disconnect();  // fallback if user forgets to disconnect
 }
 
 // Allocates connection handle
 void Connection::allocateDbcHandle() {
     auto _envHandle = getEnvHandle();
     SQLHANDLE dbc = nullptr;
-    LOG("Allocate SQL Connection Handle");
+    LOG("Allocating SQL Connection Handle");
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_DBC, _envHandle->get(), &dbc);
     checkError(ret);
     _dbcHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_DBC), dbc);
@@ -69,20 +75,18 @@ void Connection::connect(const py::dict& attrs_before) {
         }
     }
     SQLWCHAR* connStrPtr;
-#if defined(__APPLE__) || defined(__linux__) // macOS/Linux specific handling
+#if defined(__APPLE__) || defined(__linux__)  // macOS/Linux handling
     LOG("Creating connection string buffer for macOS/Linux");
     std::vector<SQLWCHAR> connStrBuffer = WStringToSQLWCHAR(_connStr);
     // Ensure the buffer is null-terminated
-    LOG("Connection string buffer size - {}", connStrBuffer.size());
+    LOG("Connection string buffer size=%zu", connStrBuffer.size());
     connStrPtr = connStrBuffer.data();
     LOG("Connection string buffer created");
 #else
     connStrPtr = const_cast<SQLWCHAR*>(_connStr.c_str());
 #endif
-    SQLRETURN ret = SQLDriverConnect_ptr(
-        _dbcHandle->get(), nullptr,
-        connStrPtr, SQL_NTS,
-        nullptr, 0, nullptr, SQL_DRIVER_NOPROMPT);
+    SQLRETURN ret = SQLDriverConnect_ptr(_dbcHandle->get(), nullptr, connStrPtr, SQL_NTS, nullptr,
+                                         0, nullptr, SQL_DRIVER_NOPROMPT);
     checkError(ret);
     updateLastUsed();
 }
@@ -92,15 +96,16 @@ void Connection::disconnect() {
         LOG("Disconnecting from database");
         SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
         checkError(ret);
-        _dbcHandle.reset(); // triggers SQLFreeHandle via destructor, if last owner
-    }
-    else {
+        // triggers SQLFreeHandle via destructor, if last owner
+        _dbcHandle.reset();
+    } else {
         LOG("No connection handle to disconnect");
     }
 }
 
-// TODO: Add an exception class in C++ for error handling, DB spec compliant
-void Connection::checkError(SQLRETURN ret) const{
+// TODO(microsoft): Add an exception class in C++ for error handling,
+// DB spec compliant
+void Connection::checkError(SQLRETURN ret) const {
     if (!SQL_SUCCEEDED(ret)) {
         ErrorInfo err = SQLCheckError_Wrap(SQL_HANDLE_DBC, _dbcHandle, ret);
         std::string errorMsg = WideToUTF8(err.ddbcErrorMsg);
@@ -133,13 +138,15 @@ void Connection::setAutocommit(bool enable) {
         ThrowStdException("Connection handle not allocated");
     }
     SQLINTEGER value = enable ? SQL_AUTOCOMMIT_ON : SQL_AUTOCOMMIT_OFF;
-    LOG("Setting SQL Connection Attribute");
-    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
+    LOG("Setting autocommit=%d", enable);
+    SQLRETURN ret =
+        SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT,
+                              reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(value)), 0);
     checkError(ret);
-    if(value == SQL_AUTOCOMMIT_ON) {
-        LOG("SQL Autocommit set to True");
+    if (value == SQL_AUTOCOMMIT_ON) {
+        LOG("Autocommit enabled");
     } else {
-        LOG("SQL Autocommit set to False");
+        LOG("Autocommit disabled");
     }
     _autocommit = enable;
 }
@@ -148,10 +155,11 @@ bool Connection::getAutocommit() const {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
-    LOG("Get SQL Connection Attribute");
+    LOG("Getting autocommit attribute");
     SQLINTEGER value;
     SQLINTEGER string_length;
-    SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, &value, sizeof(value), &string_length);
+    SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_AUTOCOMMIT, &value,
+                                          sizeof(value), &string_length);
     checkError(ret);
     return value == SQL_AUTOCOMMIT_ON;
 }
@@ -168,34 +176,95 @@ SqlHandlePtr Connection::allocStatementHandle() {
     return std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT), stmt);
 }
 
-
 SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
-    LOG("Setting SQL attribute");
-    SQLPOINTER ptr = nullptr;
-    SQLINTEGER length = 0;
+    LOG("Setting SQL attribute=%d", attribute);
+    // SQLPOINTER ptr = nullptr;
+    // SQLINTEGER length = 0;
 
     if (py::isinstance<py::int_>(value)) {
-        int intValue = value.cast<int>();
-        ptr = reinterpret_cast<SQLPOINTER>(static_cast<uintptr_t>(intValue));
-        length = SQL_IS_INTEGER;
+        // Get the integer value
+        int64_t longValue = value.cast<int64_t>();
+
+        SQLRETURN ret = SQLSetConnectAttr_ptr(
+            _dbcHandle->get(), attribute,
+            reinterpret_cast<SQLPOINTER>(static_cast<SQLULEN>(longValue)), SQL_IS_INTEGER);
+
+        if (!SQL_SUCCEEDED(ret)) {
+            LOG("Failed to set integer attribute=%d, ret=%d", attribute, ret);
+        } else {
+            LOG("Set integer attribute=%d successfully", attribute);
+        }
+        return ret;
+    } else if (py::isinstance<py::str>(value)) {
+        try {
+            std::string utf8_str = value.cast<std::string>();
+
+            // Convert to wide string
+            std::wstring wstr = Utf8ToWString(utf8_str);
+            if (wstr.empty() && !utf8_str.empty()) {
+                LOG("Failed to convert string value to wide string for "
+                    "attribute=%d",
+                    attribute);
+                return SQL_ERROR;
+            }
+            this->wstrStringBuffer.clear();
+            this->wstrStringBuffer = std::move(wstr);
+
+            SQLPOINTER ptr;
+            SQLINTEGER length;
+
+#if defined(__APPLE__) || defined(__linux__)
+            // For macOS/Linux, convert wstring to SQLWCHAR buffer
+            std::vector<SQLWCHAR> sqlwcharBuffer = WStringToSQLWCHAR(this->wstrStringBuffer);
+            if (sqlwcharBuffer.empty() && !this->wstrStringBuffer.empty()) {
+                LOG("Failed to convert wide string to SQLWCHAR buffer for "
+                    "attribute=%d",
+                    attribute);
+                return SQL_ERROR;
+            }
+
+            ptr = sqlwcharBuffer.data();
+            length = static_cast<SQLINTEGER>(sqlwcharBuffer.size() * sizeof(SQLWCHAR));
+#else
+            // On Windows, wchar_t and SQLWCHAR are the same size
+            ptr = const_cast<SQLWCHAR*>(this->wstrStringBuffer.c_str());
+            length = static_cast<SQLINTEGER>(this->wstrStringBuffer.length() * sizeof(SQLWCHAR));
+#endif
+
+            SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
+            if (!SQL_SUCCEEDED(ret)) {
+                LOG("Failed to set string attribute=%d, ret=%d", attribute, ret);
+            } else {
+                LOG("Set string attribute=%d successfully", attribute);
+            }
+            return ret;
+        } catch (const std::exception& e) {
+            LOG("Exception during string attribute=%d setting: %s", attribute, e.what());
+            return SQL_ERROR;
+        }
     } else if (py::isinstance<py::bytes>(value) || py::isinstance<py::bytearray>(value)) {
-        static std::vector<std::string> buffers;
-        buffers.emplace_back(value.cast<std::string>());
-        ptr = const_cast<char*>(buffers.back().c_str());
-        length = static_cast<SQLINTEGER>(buffers.back().size());
+        try {
+            std::string binary_data = value.cast<std::string>();
+            this->strBytesBuffer.clear();
+            this->strBytesBuffer = std::move(binary_data);
+            SQLPOINTER ptr = const_cast<char*>(this->strBytesBuffer.c_str());
+            SQLINTEGER length = static_cast<SQLINTEGER>(this->strBytesBuffer.size());
+
+            SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
+            if (!SQL_SUCCEEDED(ret)) {
+                LOG("Failed to set binary attribute=%d, ret=%d", attribute, ret);
+            } else {
+                LOG("Set binary attribute=%d successfully (length=%d)", attribute, length);
+            }
+            return ret;
+        } catch (const std::exception& e) {
+            LOG("Exception during binary attribute=%d setting: %s", attribute, e.what());
+            return SQL_ERROR;
+        }
     } else {
-        LOG("Unsupported attribute value type");
+        LOG("Unsupported attribute value type for attribute=%d", attribute);
         return SQL_ERROR;
     }
-
-    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), attribute, ptr, length);
-    if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to set attribute");
-    }
-    else {
-        LOG("Set attribute successfully");
-    }
-    return ret;
 }
 
 void Connection::applyAttrsBefore(const py::dict& attrs) {
@@ -207,11 +276,12 @@ void Connection::applyAttrsBefore(const py::dict& attrs) {
             continue;
         }
 
-        if (key == SQL_COPT_SS_ACCESS_TOKEN) {   
-            SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
-            if (!SQL_SUCCEEDED(ret)) {
-                ThrowStdException("Failed to set access token before connect");
-            }
+        // Apply all supported attributes
+        SQLRETURN ret = setAttribute(key, py::reinterpret_borrow<py::object>(item.second));
+        if (!SQL_SUCCEEDED(ret)) {
+            std::string attrName = std::to_string(key);
+            std::string errorMsg = "Failed to set attribute " + attrName + " before connect";
+            ThrowStdException(errorMsg);
         }
     }
 }
@@ -221,8 +291,8 @@ bool Connection::isAlive() const {
         ThrowStdException("Connection handle not allocated");
     }
     SQLUINTEGER status;
-    SQLRETURN ret = SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_CONNECTION_DEAD,
-        &status, 0, nullptr);
+    SQLRETURN ret =
+        SQLGetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_CONNECTION_DEAD, &status, 0, nullptr);
     return SQL_SUCCEEDED(ret) && status == SQL_CD_FALSE;
 }
 
@@ -231,16 +301,26 @@ bool Connection::reset() {
         ThrowStdException("Connection handle not allocated");
     }
     LOG("Resetting connection via SQL_ATTR_RESET_CONNECTION");
-    SQLRETURN ret = SQLSetConnectAttr_ptr(
-        _dbcHandle->get(),
-        SQL_ATTR_RESET_CONNECTION,
-        (SQLPOINTER)SQL_RESET_CONNECTION_YES,
-        SQL_IS_INTEGER);
+    SQLRETURN ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_RESET_CONNECTION,
+                                          (SQLPOINTER)SQL_RESET_CONNECTION_YES, SQL_IS_INTEGER);
     if (!SQL_SUCCEEDED(ret)) {
-        LOG("Failed to reset connection. Marking as dead.");
+        LOG("Failed to reset connection (ret=%d). Marking as dead.", ret);
         disconnect();
         return false;
     }
+    
+    // SQL_ATTR_RESET_CONNECTION does NOT reset the transaction isolation level.
+    // Explicitly reset it to the default (SQL_TXN_READ_COMMITTED) to prevent
+    // isolation level settings from leaking between pooled connection usages.
+    LOG("Resetting transaction isolation level to READ COMMITTED");
+    ret = SQLSetConnectAttr_ptr(_dbcHandle->get(), SQL_ATTR_TXN_ISOLATION,
+                                (SQLPOINTER)SQL_TXN_READ_COMMITTED, SQL_IS_INTEGER);
+    if (!SQL_SUCCEEDED(ret)) {
+        LOG("Failed to reset transaction isolation level (ret=%d). Marking as dead.", ret);
+        disconnect();
+        return false;
+    }
+    
     updateLastUsed();
     return true;
 }
@@ -253,7 +333,8 @@ std::chrono::steady_clock::time_point Connection::lastUsed() const {
     return _lastUsed;
 }
 
-ConnectionHandle::ConnectionHandle(const std::string& connStr, bool usePool, const py::dict& attrsBefore)
+ConnectionHandle::ConnectionHandle(const std::string& connStr, bool usePool,
+                                   const py::dict& attrsBefore)
     : _usePool(usePool) {
     _connStr = Utf8ToWString(connStr);
     if (_usePool) {
@@ -321,184 +402,57 @@ py::object Connection::getInfo(SQLUSMALLINT infoType) const {
     if (!_dbcHandle) {
         ThrowStdException("Connection handle not allocated");
     }
-    
-    LOG("Getting connection info for type {}", infoType);
-    
-    // Use a vector for dynamic sizing
-    std::vector<char> buffer(1024, 0);
-    SQLSMALLINT actualLength = 0;
-    SQLRETURN ret;
-    
-    // First try to get the info - handle SQLSMALLINT size limit
-    SQLSMALLINT bufferSize = (buffer.size() <= SQL_MAX_SMALL_INT) 
-        ? static_cast<SQLSMALLINT>(buffer.size()) 
-        : SQL_MAX_SMALL_INT;
-        
-    ret = SQLGetInfo_ptr(_dbcHandle->get(), infoType, buffer.data(), bufferSize, &actualLength);
-    
-    // If truncation occurred (actualLength >= bufferSize means truncation)
-    if (SQL_SUCCEEDED(ret) && actualLength >= bufferSize) {
-        // Resize buffer to the needed size (add 1 for null terminator)
-        buffer.resize(actualLength + 1, 0);
-        
-        // Call again with the larger buffer - handle SQLSMALLINT size limit again
-        bufferSize = (buffer.size() <= SQL_MAX_SMALL_INT) 
-            ? static_cast<SQLSMALLINT>(buffer.size()) 
-            : SQL_MAX_SMALL_INT;
-            
-        ret = SQLGetInfo_ptr(_dbcHandle->get(), infoType, buffer.data(), bufferSize, &actualLength);
-    }
-    
-    // Check for errors
+
+    // First call with NULL buffer to get required length
+    SQLSMALLINT requiredLen = 0;
+    SQLRETURN ret = SQLGetInfo_ptr(_dbcHandle->get(), infoType, NULL, 0, &requiredLen);
+
     if (!SQL_SUCCEEDED(ret)) {
         checkError(ret);
+        return py::none();
     }
-    
-    // Note: This implementation assumes the ODBC driver handles any necessary
-    // endianness conversions between the database server and the client.
-    
-    // Determine return type based on the InfoType
-    // String types usually have InfoType > 10000 or are specifically known string values
-    if (infoType > 10000 || 
-        infoType == SQL_DATA_SOURCE_NAME || 
-        infoType == SQL_DBMS_NAME || 
-        infoType == SQL_DBMS_VER || 
-        infoType == SQL_DRIVER_NAME || 
-        infoType == SQL_DRIVER_VER ||
-        // Add missing string types
-        infoType == SQL_IDENTIFIER_QUOTE_CHAR ||
-        infoType == SQL_CATALOG_NAME_SEPARATOR ||
-        infoType == SQL_CATALOG_TERM ||
-        infoType == SQL_SCHEMA_TERM ||
-        infoType == SQL_TABLE_TERM ||
-        infoType == SQL_KEYWORDS ||
-        infoType == SQL_PROCEDURE_TERM) {
-        // Return as string
-        return py::str(buffer.data());
-    } 
-    else if (infoType == SQL_DRIVER_ODBC_VER || 
-             infoType == SQL_SERVER_NAME) {
-        // Return as string
-        return py::str(buffer.data());
+
+    // For zero-length results
+    if (requiredLen == 0) {
+        py::dict result;
+        result["data"] = py::bytes("", 0);
+        result["length"] = 0;
+        result["info_type"] = infoType;
+        return result;
     }
-    else {
-        // For numeric types, safely extract values
-        
-        // Ensure buffer has enough data for the expected type
-        switch (infoType) {
-            // 16-bit unsigned integers
-            case SQL_MAX_CONCURRENT_ACTIVITIES:
-            case SQL_MAX_DRIVER_CONNECTIONS:
-            case SQL_ODBC_API_CONFORMANCE:
-            case SQL_ODBC_SQL_CONFORMANCE:
-            case SQL_TXN_CAPABLE:
-            case SQL_MULTIPLE_ACTIVE_TXN:
-            case SQL_MAX_COLUMN_NAME_LEN:
-            case SQL_MAX_TABLE_NAME_LEN:
-            case SQL_PROCEDURES:
-            {
-                if (actualLength >= sizeof(SQLUSMALLINT) && buffer.size() >= sizeof(SQLUSMALLINT)) {
-                    SQLUSMALLINT value = 0;
-                    // Safely copy data by using std::copy instead of memcpy
-                    std::copy(buffer.begin(), buffer.begin() + sizeof(SQLUSMALLINT), 
-                              reinterpret_cast<char*>(&value));
-                    return py::int_(value);
-                }
-                break;
-            }
-            
-            // 32-bit unsigned integers 
-            case SQL_ASYNC_MODE:
-            case SQL_GETDATA_EXTENSIONS:
-            case SQL_MAX_ASYNC_CONCURRENT_STATEMENTS:
-            case SQL_MAX_COLUMNS_IN_GROUP_BY:
-            case SQL_MAX_COLUMNS_IN_ORDER_BY:
-            case SQL_MAX_COLUMNS_IN_SELECT:
-            case SQL_MAX_COLUMNS_IN_TABLE:
-            case SQL_MAX_ROW_SIZE:
-            case SQL_MAX_TABLES_IN_SELECT:
-            case SQL_MAX_USER_NAME_LEN:
-            case SQL_NUMERIC_FUNCTIONS:
-            case SQL_STRING_FUNCTIONS:
-            case SQL_SYSTEM_FUNCTIONS:
-            case SQL_TIMEDATE_FUNCTIONS:
-            case SQL_DEFAULT_TXN_ISOLATION:
-            case SQL_MAX_STATEMENT_LEN:
-            {
-                if (actualLength >= sizeof(SQLUINTEGER) && buffer.size() >= sizeof(SQLUINTEGER)) {
-                    SQLUINTEGER value = 0;
-                    // Safely copy data by using std::copy instead of memcpy
-                    std::copy(buffer.begin(), buffer.begin() + sizeof(SQLUINTEGER), 
-                              reinterpret_cast<char*>(&value));
-                    return py::int_(value);
-                }
-                break;
-            }
-            
-            // Boolean flags (32-bit mask)
-            case SQL_AGGREGATE_FUNCTIONS:
-            case SQL_ALTER_TABLE:
-            case SQL_CATALOG_USAGE:
-            case SQL_DATETIME_LITERALS:
-            case SQL_INDEX_KEYWORDS:
-            case SQL_INSERT_STATEMENT:
-            case SQL_SCHEMA_USAGE:
-            case SQL_SQL_CONFORMANCE:
-            case SQL_SQL92_DATETIME_FUNCTIONS:
-            case SQL_SQL92_NUMERIC_VALUE_FUNCTIONS:
-            case SQL_SQL92_PREDICATES:
-            case SQL_SQL92_RELATIONAL_JOIN_OPERATORS:
-            case SQL_SQL92_STRING_FUNCTIONS:
-            case SQL_STATIC_CURSOR_ATTRIBUTES1:
-            case SQL_STATIC_CURSOR_ATTRIBUTES2:
-            {
-                if (actualLength >= sizeof(SQLUINTEGER) && buffer.size() >= sizeof(SQLUINTEGER)) {
-                    SQLUINTEGER value = 0;
-                    // Safely copy data by using std::copy instead of memcpy
-                    std::copy(buffer.begin(), buffer.begin() + sizeof(SQLUINTEGER), 
-                              reinterpret_cast<char*>(&value));
-                    return py::int_(value);
-                }
-                break;
-            }
-            
-            // Handle any other types as integers, if enough data
-            default:
-                if (actualLength >= sizeof(SQLUINTEGER) && buffer.size() >= sizeof(SQLUINTEGER)) {
-                    SQLUINTEGER value = 0;
-                    // Safely copy data by using std::copy instead of memcpy
-                    std::copy(buffer.begin(), buffer.begin() + sizeof(SQLUINTEGER), 
-                              reinterpret_cast<char*>(&value));
-                    return py::int_(value);
-                }
-                else if (actualLength >= sizeof(SQLUSMALLINT) && buffer.size() >= sizeof(SQLUSMALLINT)) {
-                    SQLUSMALLINT value = 0;
-                    // Safely copy data by using std::copy instead of memcpy
-                    std::copy(buffer.begin(), buffer.begin() + sizeof(SQLUSMALLINT), 
-                              reinterpret_cast<char*>(&value));
-                    return py::int_(value);
-                }
-                // For very small integers (like bytes/chars)
-                else if (actualLength > 0 && buffer.size() >= sizeof(unsigned char)) {
-                    // Try to interpret as a small integer
-                    unsigned char value = 0;
-                    // Safely copy data by using std::copy instead of memcpy
-                    std::copy(buffer.begin(), buffer.begin() + sizeof(unsigned char), 
-                              reinterpret_cast<char*>(&value));
-                    return py::int_(value);
-                }
-                break;
-        }
+
+    // Cap buffer allocation to SQL_MAX_SMALL_INT to prevent excessive
+    // memory usage
+    SQLSMALLINT allocSize = requiredLen + 10;
+    if (allocSize > SQL_MAX_SMALL_INT) {
+        allocSize = SQL_MAX_SMALL_INT;
     }
-    
-    // If we get here and actualLength > 0, try to return as string as a last resort
-    if (actualLength > 0) {
-        return py::str(buffer.data());
+    std::vector<char> buffer(allocSize, 0);  // Extra padding for safety
+
+    // Get the actual data - avoid using std::min
+    SQLSMALLINT bufferSize = requiredLen + 10;
+    if (bufferSize > SQL_MAX_SMALL_INT) {
+        bufferSize = SQL_MAX_SMALL_INT;
     }
-    
-    // Default return in case nothing matched or buffer is too small
-    LOG("Unable to convert result for info type {}", infoType);
-    return py::none();
+
+    SQLSMALLINT returnedLen = 0;
+    ret = SQLGetInfo_ptr(_dbcHandle->get(), infoType, buffer.data(), bufferSize, &returnedLen);
+
+    if (!SQL_SUCCEEDED(ret)) {
+        checkError(ret);
+        return py::none();
+    }
+
+    // Create a dictionary with the raw data
+    py::dict result;
+
+    // IMPORTANT: Pass exactly what SQLGetInfo returned
+    // No null-terminator manipulation, just pass the raw data
+    result["data"] = py::bytes(buffer.data(), returnedLen);
+    result["length"] = returnedLen;
+    result["info_type"] = infoType;
+
+    return result;
 }
 
 py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {
@@ -506,4 +460,36 @@ py::object ConnectionHandle::getInfo(SQLUSMALLINT infoType) const {
         ThrowStdException("Connection object is not initialized");
     }
     return _conn->getInfo(infoType);
+}
+
+void ConnectionHandle::setAttr(int attribute, py::object value) {
+    if (!_conn) {
+        ThrowStdException("Connection not established");
+    }
+
+    // Use existing setAttribute with better error handling
+    SQLRETURN ret = _conn->setAttribute(static_cast<SQLINTEGER>(attribute), value);
+    if (!SQL_SUCCEEDED(ret)) {
+        // Get detailed error information from ODBC
+        try {
+            ErrorInfo errorInfo = SQLCheckError_Wrap(SQL_HANDLE_DBC, _conn->getDbcHandle(), ret);
+
+            std::string errorMsg =
+                "Failed to set connection attribute " + std::to_string(attribute);
+            if (!errorInfo.ddbcErrorMsg.empty()) {
+                // Convert wstring to string for concatenation
+                std::string ddbcErrorStr = WideToUTF8(errorInfo.ddbcErrorMsg);
+                errorMsg += ": " + ddbcErrorStr;
+            }
+
+            LOG("Connection setAttribute failed: %s", errorMsg.c_str());
+            ThrowStdException(errorMsg);
+        } catch (...) {
+            // Fallback to generic error if detailed error retrieval fails
+            std::string errorMsg =
+                "Failed to set connection attribute " + std::to_string(attribute);
+            LOG("Connection setAttribute failed: %s", errorMsg.c_str());
+            ThrowStdException(errorMsg);
+        }
+    }
 }
