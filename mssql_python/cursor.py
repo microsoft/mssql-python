@@ -2451,13 +2451,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         )
         return True
 
-    def _bulkcopy(self, table_name: str, data, **kwargs):
+    def _bulkcopy(self, table_name: str, data, **kwargs):  # pragma: no cover
         """
-        Perform bulk copy operation using Rust-based implementation.
-
-        This method uses a separate connection to the database via the Rust library
-        (mssql_py_core) for optimized bulk data transfer. The connection parameters
-        are extracted from the current Python connection's connection string.
+        Perform bulk copy operation for high-performance data loading.
 
         Important: Transaction Isolation
             The bulk copy operation creates its own connection and does NOT participate
@@ -2509,9 +2505,27 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         for i in range(1000000):
                             yield (i, f'Name_{i}', datetime.date.today())
 
-            **kwargs: Additional options passed to the Rust bulkcopy method
-                - column_mappings: List of tuples mapping source column index to
-                  target column name, e.g., [(0, 'id'), (1, 'name')]
+            **kwargs: Additional bulk copy options.
+
+                column_mappings (List[Tuple[int, str]], optional):
+                    Maps source data column indices to target table column names.
+                    Each tuple is (source_index, target_column_name) where:
+                    - source_index: 0-based index of the column in the source data
+                    - target_column_name: Name of the target column in the database table
+
+                    When omitted: Columns are mapped by ordinal position (first data
+                    column → first table column, second → second, etc.)
+
+                    When specified: Only the mapped columns are inserted; unmapped
+                    source columns are ignored, and unmapped target columns must
+                    have default values or allow NULL.
+
+                    Example:
+                        # Source data has columns: [id, first_name, last_name, age]
+                        # Target table has columns: [user_id, name, age]
+                        # Map source index 0 to 'user_id', index 1 to 'name', index 3 to 'age'
+                        column_mappings = [(0, 'user_id'), (1, 'name'), (3, 'age')]
+                        result = cursor._bulkcopy('users', data, column_mappings=column_mappings)
 
         Returns:
             Dictionary with bulk copy results including:
@@ -2520,7 +2534,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 - elapsed_time: Time taken for the operation
 
         Raises:
-            ImportError: If mssql_py_core Rust library is not installed
+            ImportError: If mssql_py_core library is not installed
             ValueError: If table_name is empty or parameters are invalid
             RuntimeError: If connection string is not available
 
