@@ -15,7 +15,7 @@ import decimal
 import uuid
 import datetime
 import warnings
-from typing import List, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING
+from typing import List, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error
 from mssql_python.logging import logger
@@ -2451,19 +2451,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         )
         return True
 
-    def _bulkcopy(self, table_name: str, data, **kwargs):  # pragma: no cover
+    def _bulkcopy(
+        self, table_name: str, data: Iterable[Union[Tuple, List]], **kwargs
+    ):  # pragma: no cover
         """
         Perform bulk copy operation for high-performance data loading.
-
-        Important: Transaction Isolation
-            The bulk copy operation creates its own connection and does NOT participate
-            in the current Python connection's transaction context. This means:
-            - Bulk copied data is committed independently of any open transaction
-            - Rolling back the Python connection will NOT rollback bulk copied data
-            - The bulk copy operation is essentially auto-committed
-
-            If you need transactional bulk operations, consider using executemany()
-            or batched INSERT statements within your transaction instead.
 
         Args:
             table_name: Target table name (can include schema, e.g., 'dbo.MyTable').
@@ -2478,32 +2470,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                   position), unless column_mappings is specified
                 - The number of values in each row must match the number of columns
                   in the target table
-
-                Supported Python Types and SQL Server Mappings:
-                - None → NULL (for any nullable column)
-                - int → INT, BIGINT, SMALLINT, TINYINT
-                - float → FLOAT, REAL
-                - str → VARCHAR, NVARCHAR, CHAR, NCHAR, TEXT, NTEXT
-                - bool → BIT
-                - datetime.date → DATE
-                - datetime.datetime → DATETIME, DATETIME2, SMALLDATETIME
-                - datetime.time → TIME
-                - decimal.Decimal → DECIMAL, NUMERIC, MONEY, SMALLMONEY
-                - bytes → BINARY, VARBINARY, IMAGE
-                - uuid.UUID → UNIQUEIDENTIFIER
-
-                NULL Values:
-                - Use Python's None to represent SQL NULL values
-                - Empty strings ('') are NOT treated as NULL
-
-                Example data formats:
-                    # Simple list of tuples
-                    data = [(1, 'Alice', None), (2, 'Bob', 25)]
-
-                    # Generator for memory-efficient large datasets
-                    def generate_data():
-                        for i in range(1000000):
-                            yield (i, f'Name_{i}', datetime.date.today())
 
             **kwargs: Additional bulk copy options.
 
@@ -2520,13 +2486,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                     source columns are ignored, and unmapped target columns must
                     have default values or allow NULL.
 
-                    Example:
-                        # Source data has columns: [id, first_name, last_name, age]
-                        # Target table has columns: [user_id, name, age]
-                        # Map source index 0 to 'user_id', index 1 to 'name', index 3 to 'age'
-                        column_mappings = [(0, 'user_id'), (1, 'name'), (3, 'age')]
-                        result = cursor._bulkcopy('users', data, column_mappings=column_mappings)
-
         Returns:
             Dictionary with bulk copy results including:
                 - rows_copied: Number of rows successfully copied
@@ -2535,28 +2494,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         Raises:
             ImportError: If mssql_py_core library is not installed
+            TypeError: If data is None, not iterable, or is a string/bytes
             ValueError: If table_name is empty or parameters are invalid
             RuntimeError: If connection string is not available
-
-        Example:
-            >>> # Basic usage with list of tuples
-            >>> data = [(1, 'Alice', None), (2, 'Bob', 25), (3, 'Charlie', 30)]
-            >>> result = cursor._bulkcopy('users', data)
-            >>> print(f"Copied {result['rows_copied']} rows")
-
-            >>> # Using a generator for large datasets
-            >>> from decimal import Decimal
-            >>> from datetime import date
-            >>> def generate_orders():
-            ...     for i in range(10000):
-            ...         yield (i, Decimal('99.99'), date.today(), None)
-            >>> result = cursor._bulkcopy('orders', generate_orders())
         """
         try:
             import mssql_py_core
         except ImportError as exc:
             raise ImportError(
-                "Bulk copy requires the mssql_py_core Rust library which is not installed. "
+                "Bulk copy requires the mssql_py_core library which is not installed. "
                 "To install, run: pip install mssql_py_core "
                 "or install from the wheel file in the BCPRustWheel directory of the mssql-python repository: "
                 "pip install BCPRustWheel/mssql_py_core-<version>-<platform>.whl"
@@ -2566,12 +2512,34 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if not table_name or not isinstance(table_name, str):
             raise ValueError("table_name must be a non-empty string")
 
+        # Validate that data is iterable (but not a string or bytes, which are technically iterable)
+        if data is None:
+            raise TypeError("data must be an iterable of tuples or lists, got None")
+        if isinstance(data, (str, bytes)):
+            raise TypeError(
+                f"data must be an iterable of tuples or lists, got {type(data).__name__}. "
+                "Strings and bytes are not valid row collections."
+            )
+        if not hasattr(data, "__iter__"):
+            raise TypeError(
+                f"data must be an iterable of tuples or lists, got non-iterable {type(data).__name__}"
+            )
+
         # Extract and validate kwargs with defaults
-        batch_size = kwargs.get("batch_size", 1000)
+        batch_size = kwargs.get("batch_size", 0)
         timeout = kwargs.get("timeout", 30)
 
+        # Validate batch_size type and value
+        if not isinstance(batch_size, (int, float)):
+            raise TypeError(
+                f"batch_size must be a positive integer, got {type(batch_size).__name__}"
+            )
         if batch_size <= 0:
             raise ValueError(f"batch_size must be positive, got {batch_size}")
+
+        # Validate timeout type and value
+        if not isinstance(timeout, (int, float)):
+            raise TypeError(f"timeout must be a positive number, got {type(timeout).__name__}")
         if timeout <= 0:
             raise ValueError(f"timeout must be positive, got {timeout}")
 
@@ -2594,7 +2562,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 "Specify the target database explicitly to avoid accidentally writing to system databases."
             )
 
-        # Build connection context for Rust library
+        # Build connection context for bulk copy library
         # Note: Password is extracted separately to avoid storing it in the main context
         # dict that could be accidentally logged or exposed in error messages.
         trust_cert = params.get("trustservercertificate", "yes").lower() in ("yes", "true")
@@ -2623,20 +2591,27 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Extract password separately to avoid storing it in generic context that may be logged
         password = params.get("pwd", "")
-        rust_context = dict(context)
-        rust_context["password"] = password
+        pycore_context = dict(context)
+        pycore_context["password"] = password
 
-        rust_connection = None
-        rust_cursor = None
+        pycore_connection = None
+        pycore_cursor = None
         try:
-            rust_connection = mssql_py_core.PyCoreConnection(rust_context)
-            rust_cursor = rust_connection.cursor()
+            pycore_connection = mssql_py_core.PyCoreConnection(pycore_context)
+            pycore_cursor = pycore_connection.cursor()
 
-            result = rust_cursor.bulkcopy(table_name, iter(data), **kwargs)
+            result = pycore_cursor.bulkcopy(table_name, iter(data), **kwargs)
 
             return result
 
         except Exception as e:
+            # Log the error for debugging (without exposing credentials)
+            logger.debug(
+                "Bulk copy operation failed for table '%s': %s: %s",
+                table_name,
+                type(e).__name__,
+                str(e),
+            )
             # Re-raise without exposing connection context in the error chain
             # to prevent credential leakage in stack traces
             raise type(e)(str(e)) from None
@@ -2644,11 +2619,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         finally:
             # Clear sensitive data to minimize memory exposure
             password = ""
-            if rust_context:
-                rust_context["password"] = ""
-                rust_context["user_name"] = ""
-            # Clean up Rust resources
-            for resource in (rust_cursor, rust_connection):
+            if pycore_context:
+                pycore_context["password"] = ""
+                pycore_context["user_name"] = ""
+            # Clean up bulk copy resources
+            for resource in (pycore_cursor, pycore_connection):
                 if resource and hasattr(resource, "close"):
                     try:
                         resource.close()
