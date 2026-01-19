@@ -2567,6 +2567,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         # Use the proper connection string parser that handles braced values
         from mssql_python.connection_string_parser import _ConnectionStringParser
+
         parser = _ConnectionStringParser(validate_keywords=False)
         params = parser._parse(self.connection.connection_str)
 
@@ -2643,7 +2644,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                         logger.debug(
                             "Failed to close bulk copy resource %s: %s",
                             type(resource).__name__,
-                            cleanup_error
+                            cleanup_error,
                         )
 
     def __enter__(self):
