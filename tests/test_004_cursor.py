@@ -14948,8 +14948,6 @@ def test_lob_binary_column_types(cursor, db_connection):
         db_connection.commit()
 
 
-
-
 def test_fetchall_with_integrity_constraint(cursor, db_connection):
     """
     Test that UNIQUE constraint errors are appropriately triggered for multi-row INSERT
