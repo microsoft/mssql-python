@@ -132,9 +132,9 @@ python -m pytest tests/test_001_globals.py -v      # Basic functionality
 ### Linting and Code Quality
 
 ```bash
-# Python formatting (use black 26.1.0 to match CI)
-pip install black==26.1.0
-black --check .
+# Python formatting
+pip install black
+black --check --line-length=100 mssql_python/ tests/
 
 # C++ formatting
 clang-format -style=file -i mssql_python/pybind/*.cpp mssql_python/pybind/*.h
