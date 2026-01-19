@@ -1,18 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-// INFO|TODO - Note that is file is Windows specific right now. Making it arch agnostic will be
-//             taken up in future.
-
 #pragma once
-#include "ddbc_bindings.h"
+#include "../ddbc_bindings.h"
+#include <memory>
+#include <string>
 
 // Represents a single ODBC database connection.
 // Manages connection handles.
 // Note: This class does NOT implement pooling logic directly.
 
 class Connection {
-public:
+  public:
     Connection(const std::wstring& connStr, bool fromPool);
 
     ~Connection();
@@ -42,10 +41,17 @@ public:
     // Allocate a new statement handle on this connection.
     SqlHandlePtr allocStatementHandle();
 
-private:
+    // Get information about the driver and data source
+    py::object getInfo(SQLUSMALLINT infoType) const;
+
+    SQLRETURN setAttribute(SQLINTEGER attribute, py::object value);
+
+    // Add getter for DBC handle for error reporting
+    const SqlHandlePtr& getDbcHandle() const { return _dbcHandle; }
+
+  private:
     void allocateDbcHandle();
     void checkError(SQLRETURN ret) const;
-    SQLRETURN setAttribute(SQLINTEGER attribute, py::object value);
     void applyAttrsBefore(const py::dict& attrs_before);
 
     std::wstring _connStr;
@@ -53,11 +59,14 @@ private:
     bool _autocommit = true;
     SqlHandlePtr _dbcHandle;
     std::chrono::steady_clock::time_point _lastUsed;
+    std::wstring wstrStringBuffer;  // wstr buffer for string attribute setting
+    std::string strBytesBuffer;     // string buffer for byte attributes setting
 };
 
 class ConnectionHandle {
-public:
-    ConnectionHandle(const std::string& connStr, bool usePool, const py::dict& attrsBefore = py::dict());
+  public:
+    ConnectionHandle(const std::string& connStr, bool usePool,
+                     const py::dict& attrsBefore = py::dict());
     ~ConnectionHandle();
 
     void close();
@@ -66,8 +75,12 @@ public:
     void setAutocommit(bool enabled);
     bool getAutocommit() const;
     SqlHandlePtr allocStatementHandle();
+    void setAttr(int attribute, py::object value);
 
-private:
+    // Get information about the driver and data source
+    py::object getInfo(SQLUSMALLINT infoType) const;
+
+  private:
     std::shared_ptr<Connection> _conn;
     bool _usePool;
     std::wstring _connStr;

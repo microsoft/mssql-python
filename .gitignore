@@ -1,6 +1,3 @@
-# Ignore all files in the pybind/build directory
-mssql_python/pybind/build/
-
 # Ignore pycache files and folders
 __pycache__/
 **/__pycache__/
@@ -23,6 +20,7 @@ test-*.xml
 
 # Ignore the build & mssql_python.egg-info directories
 build/
+**/build/
 mssql_python.egg-info/
 
 # Python bytecode
@@ -47,3 +45,21 @@ build/
 
 # .DS_Store files
 .DS_Store
+
+# wheel files
+*.whl
+*.tar.gz
+*.zip
+
+# Dockerfiles and images (root only)
+/Dockerfile*
+/docker-compose.yml
+/docker-compose.override.yml
+/docker-compose.*.yml
+
+# Virtual environments
+*venv*/
+**/*venv*/
+
+# learning files
+learnings/

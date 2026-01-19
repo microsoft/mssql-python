@@ -1,0 +1,32 @@
+# ESRP Code Signing Variables
+# These variables map from the 'ESRP Federated Creds (AME)' variable group
+# to the naming convention expected by OneBranch ESRP signing tasks
+# Required variable group: 'ESRP Federated Creds (AME)'
+variables:
+  # Map ESRP variable group names to OneBranch signing variable names
+  # Note: The source variable group uses different naming (without 'Signing' prefix)
+  
+  # ESRP App Registration for authentication
+  - name: SigningAppRegistrationClientId
+    value: $(EsrpClientId)  # Maps from EsrpClientId in variable group
+  
+  - name: SigningAppRegistrationTenantId
+    value: $(DomainTenantId)  # Maps from DomainTenantId in variable group
+  
+  # Azure Key Vault for signing certificates
+  - name: SigningAuthAkvName
+    value: $(AuthAKVName)  # Maps from AuthAKVName in variable group
+  
+  - name: SigningAuthSignCertName
+    value: $(AuthSignCertName)  # Maps from AuthSignCertName in variable group
+  
+  # ESRP client configuration
+  - name: SigningEsrpClientId
+    value: $(EsrpClientId)  # Maps from EsrpClientId in variable group
+  
+  - name: SigningEsrpConnectedServiceName
+    value: $(ESRPConnectedServiceName)  # Maps from ESRPConnectedServiceName in variable group
+  
+  # Signing operation codes (for reference - actual operations defined in step template)
+  # Native binary files (.pyd, .so, .dylib) use: SigntoolSign with CP-230012
+  # Python wheel files (.whl) use: NuGetSign with CP-401405

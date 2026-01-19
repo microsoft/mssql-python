@@ -7,7 +7,7 @@ The driver is compatible with all the Python versions >= 3.10
 [Documentation](https://github.com/microsoft/mssql-python/wiki) | [Release Notes](https://github.com/microsoft/mssql-python/releases) | [Roadmap](https://github.com/microsoft/mssql-python/blob/main/ROADMAP.md)
  
 > **Note:**
-> This project is currently in Public Preview, meaning it is still under active development. We are working on core functionalities and gathering more feedback before GA. Please use with caution and avoid production environments.
+> This project is now Generally Available (GA) and ready for production use. We’ve completed core functionality and incorporated feedback from the preview phase.
 > 
 ## Installation
  
@@ -17,35 +17,38 @@ pip install mssql-python
 ```
 **MacOS:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
 ```bash
+# For Mac, OpenSSL is a pre-requisite - skip if already present
 brew install openssl
 pip install mssql-python
 ```
 **Linux:** mssql-python can be installed with [pip](http://pypi.python.org/pypi/pip)
 ```bash
+# For Alpine
+apk add libtool krb5-libs krb5-dev
+
+# For Debian/Ubuntu  
+apt-get install -y libltdl7 libkrb5-3 libgssapi-krb5-2
+
+# For RHEL
+dnf install -y libtool-ltdl krb5-libs
+
+# For SUSE
+zypper install -y libltdl7 libkrb5-3 libgssapi-krb5-2
+
+# For SUSE/openSUSE
+zypper install -y libltdl7
+
 pip install mssql-python
 ```
 
 ## Key Features
 ### Supported Platforms
  
-Windows, MacOS and Linux (manylinux2014 - Debian, Ubuntu & RHEL)
+Windows, MacOS and Linux (manylinux - Debian, Ubuntu, RHEL, SUSE (x64 only) & musllinux - Alpine)
 
 > **Note:**
-> Support for additional Linux OSs (Alpine, SUSE Linux) will come soon
->
- 
-### DBAPI v2.0 Compliance
- 
-The Microsoft **mssql-python** module is designed to be fully compliant with the DB API 2.0 specification. This ensures that the driver adheres to a standardized interface for database access in Python, providing consistency and reliability across different database systems. Key aspects of DBAPI v2.0 compliance include:
- 
-- **Connection Objects**: Establishing and managing connections to the database.
-- **Cursor Objects**: Executing SQL commands and retrieving results.
-- **Transaction Management**: Supporting commit and rollback operations to ensure data integrity.
-- **Error Handling**: Providing a consistent set of exceptions for handling database errors.
-- **Parameter Substitution**: Allowing the use of placeholders in SQL queries to prevent SQL injection attacks.
- 
-By adhering to the DB API 2.0 specification, the mssql-python module ensures compatibility with a wide range of Python applications and frameworks, making it a versatile choice for developers working with Microsoft SQL Server, Azure SQL Database, and Azure SQL Managed Instance.
- 
+> SUSE Linux ARM64 is not supported. Please use x64 architecture for SUSE deployments.
+
 ### Support for Microsoft Entra ID Authentication
  
 The Microsoft mssql-python driver enables Python applications to connect to Microsoft SQL Server, Azure SQL Database, or Azure SQL Managed Instance using Microsoft Entra ID identities. It supports a variety of authentication methods, including username and password, Microsoft Entra managed identity (system-assigned and user-assigned), Integrated Windows Authentication in a federated, domain-joined environment, interactive authentication via browser, device code flow for environments without browser access, and the default authentication method based on environment and configuration. This flexibility allows developers to choose the most suitable authentication approach for their deployment scenario.
@@ -58,42 +61,65 @@ EntraID authentication is now fully supported on MacOS and Linux but with certai
 | ActiveDirectoryInteractive | ✅ Yes | ✅ Yes | Interactive login via browser; requires user interaction |
 | ActiveDirectoryMSI (Managed Identity) | ✅ Yes | ✅ Yes | For Azure VMs/containers with managed identity |
 | ActiveDirectoryServicePrincipal | ✅ Yes | ✅ Yes | Use client ID and secret or certificate |
-| ActiveDirectoryIntegrated | ✅ Yes | ❌ No | Only works on Windows (requires Kerberos/SSPI) |
+| ActiveDirectoryIntegrated | ✅ Yes | ✅ Yes | Now supported on Windows, macOS, and Linux (requires Kerberos/SSPI or equivalent configuration) |
 | ActiveDirectoryDeviceCode | ✅ Yes | ✅ Yes | Device code flow for authentication; suitable for environments without browser access |
 | ActiveDirectoryDefault | ✅ Yes | ✅ Yes | Uses default authentication method based on environment and configuration |
 
-**NOTE**: 
- - **Access Token**: the connection string **must not** contain `UID`, `PWD`, `Authentication`, or `Trusted_Connection` keywords.
- - **Device Code**: make sure to specify a `Connect Timeout` that provides enough time to go through the device code flow authentication process.
- - **Default**: Ensure you're authenticated via az login, or running within a managed identity-enabled environment.
+> For more information on Entra ID please refer this [document](https://github.com/microsoft/mssql-python/wiki/Microsoft-Entra-ID-support)
 
-### Enhanced Pythonic Features
- 
-The driver offers a suite of Pythonic enhancements that streamline database interactions, making it easier for developers to execute queries, manage connections, and handle data more efficiently.
- 
 ### Connection Pooling
  
 The Microsoft mssql_python driver provides built-in support for connection pooling, which helps improve performance and scalability by reusing active database connections instead of creating a new connection for every request. This feature is enabled by default. For more information, refer [Connection Pooling Wiki](https://github.com/microsoft/mssql-python/wiki/Connection#connection-pooling).
+
+### DBAPI v2.0 Compliance
+ 
+The Microsoft **mssql-python** module is designed to be fully compliant with the DB API 2.0 specification. This ensures that the driver adheres to a standardized interface for database access in Python, providing consistency and reliability across different database systems. Key aspects of DBAPI v2.0 compliance include:
+ 
+- **Connection Objects**: Establishing and managing connections to the database.
+- **Cursor Objects**: Executing SQL commands and retrieving results.
+- **Transaction Management**: Supporting commit and rollback operations to ensure data integrity.
+- **Error Handling**: Providing a consistent set of exceptions for handling database errors.
+- **Parameter Substitution**: Allowing the use of placeholders in SQL queries to prevent SQL injection attacks.
+ 
+By adhering to the DB API 2.0 specification, the mssql-python module ensures compatibility with a wide range of Python applications and frameworks, making it a versatile choice for developers working with Microsoft SQL Server, Azure SQL Database, and Azure SQL Managed Instance.
+ 
+### Enhanced Pythonic Features
+ 
+The driver offers a suite of Pythonic enhancements that streamline database interactions, making it easier for developers to execute queries, manage connections, and handle data more efficiently.
  
 ## Getting Started Examples
 Connect to SQL Server and execute a simple query:
  
 ```python
 import mssql_python
- 
+
 # Establish a connection
-# Specify connection string
-connection_string = "SERVER=<your_server_name>;DATABASE=<your_database_name>;UID=<your_user_name>;PWD=<your_password>;Encrypt=yes;"
+# Specify connection string (semicolon-delimited key=value format preserved)
+# Uses Azure Entra ID Interactive authentication — no password in the string.
+connection_string = "SERVER=tcp:mssql-python-driver-eastus01.database.windows.net,1433;DATABASE=AdventureWorksLT;Authentication=ActiveDirectoryInteractive;Encrypt=yes;"
 connection = mssql_python.connect(connection_string)
- 
-# Execute a query
+
+# Execute a realistic query against AdventureWorksLT:
+# Top 10 customers by number of orders, with their total spend
 cursor = connection.cursor()
-cursor.execute("SELECT * from customer")
+cursor.execute("""
+    SELECT TOP 10
+        c.CustomerID,
+        c.FirstName,
+        c.LastName,
+        COUNT(h.SalesOrderID) AS OrderCount,
+        SUM(h.TotalDue) AS TotalSpend
+    FROM SalesLT.Customer AS c
+    INNER JOIN SalesLT.SalesOrderHeader AS h
+        ON c.CustomerID = h.CustomerID
+    GROUP BY c.CustomerID, c.FirstName, c.LastName
+    ORDER BY OrderCount DESC, TotalSpend DESC
+""")
 rows = cursor.fetchall()
- 
+
 for row in rows:
     print(row)
- 
+
 # Close the connection
 connection.close()
  

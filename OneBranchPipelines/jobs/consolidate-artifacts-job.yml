@@ -1,0 +1,140 @@
+# Consolidate Artifacts Job Template
+# Downloads artifacts from all platform build stages and consolidates into single dist/ folder
+# Works with individual stage artifacts (15 stages total: 7 Windows + 4 macOS + 4 Linux)
+# Each Linux stage builds 4 Python versions, resulting in 27 total wheels
+parameters:
+  - name: oneBranchType
+    type: string
+    default: 'Official'
+
+jobs:
+  - job: ConsolidateArtifacts
+    displayName: 'Consolidate All Platform Artifacts'
+    condition: succeeded()
+    
+    pool:
+      type: linux
+      isCustom: true
+      name: Azure Pipelines
+      vmImage: 'ubuntu-latest'
+    
+    variables:
+      # Disable BinSkim - consolidation job only downloads artifacts, no binary builds
+      - name: ob_sdl_binskim_enabled
+        value: false
+      - name: ob_outputDirectory
+        value: '$(Build.ArtifactStagingDirectory)'
+    
+    steps:
+      - checkout: none  # No source code needed for consolidation
+      
+      # Download ALL artifacts from current build
+      # Matrix jobs publish as: Windows_<JobId>, macOS_<JobId>, Linux_<JobId>
+      # This downloads all of them automatically (27 total artifacts)
+      - task: DownloadPipelineArtifact@2
+        displayName: 'Download All Platform Artifacts'
+        inputs:
+          buildType: 'current'
+          targetPath: '$(Pipeline.Workspace)/all-artifacts'
+      
+      # Consolidate all wheels into single dist/ directory
+      - bash: |
+          set -e
+          echo "Creating consolidated dist directory..."
+          mkdir -p $(ob_outputDirectory)/dist
+          
+          echo "=========================================="
+          echo "Searching for all wheel files across all artifacts..."
+          echo "=========================================="
+          
+          # List all downloaded artifacts
+          echo "Downloaded artifacts:"
+          ls -la $(Pipeline.Workspace)/all-artifacts/
+          
+          echo ""
+          echo "Finding all .whl files..."
+          find $(Pipeline.Workspace)/all-artifacts -name "*.whl" -exec ls -lh {} \;
+          
+          echo ""
+          echo "Copying all wheels to consolidated dist/..."
+          find $(Pipeline.Workspace)/all-artifacts -name "*.whl" -exec cp -v {} $(ob_outputDirectory)/dist/ \;
+          
+          echo ""
+          echo "=========================================="
+          echo "Consolidation complete! Total wheels:"
+          echo "=========================================="
+          ls -lh $(ob_outputDirectory)/dist/
+          echo ""
+          WHEEL_COUNT=$(ls -1 $(ob_outputDirectory)/dist/*.whl 2>/dev/null | wc -l)
+          echo "Total wheel count: $WHEEL_COUNT"
+          echo "Expected: 27 wheels (7 Windows + 4 macOS + 16 Linux)"
+          
+          if [ "$WHEEL_COUNT" -ne 27 ]; then
+            echo "WARNING: Expected 27 wheels but found $WHEEL_COUNT"
+          else
+            echo "SUCCESS: All 27 wheels consolidated!"
+          fi
+        displayName: 'Consolidate wheels from all platforms'
+      
+      # Optional: Consolidate native bindings for reference
+      - bash: |
+          set -e
+          echo "Creating bindings directory structure..."
+          mkdir -p $(ob_outputDirectory)/bindings
+          
+          echo "Searching for bindings directories..."
+          find $(Pipeline.Workspace)/all-artifacts -type d -name "bindings" | while read dir; do
+            echo "Found bindings in: $dir"
+            cp -rv "$dir"/* $(ob_outputDirectory)/bindings/ 2>/dev/null || true
+          done
+          
+          echo "Bindings consolidation complete!"
+          echo "Bindings structure:"
+          find $(ob_outputDirectory)/bindings -type f | head -20
+        displayName: 'Consolidate native bindings (optional)'
+        continueOnError: true
+      
+      # Optional: Consolidate Windows symbols
+      - bash: |
+          set -e
+          echo "Searching for symbols directories..."
+          if find $(Pipeline.Workspace)/all-artifacts -type d -name "symbols" | grep -q .; then
+            echo "Copying Windows symbols..."
+            mkdir -p $(ob_outputDirectory)/symbols
+            find $(Pipeline.Workspace)/all-artifacts -type d -name "symbols" | while read dir; do
+              echo "Found symbols in: $dir"
+              cp -rv "$dir"/* $(ob_outputDirectory)/symbols/ 2>/dev/null || true
+            done
+            echo "Symbols consolidation complete!"
+          else
+            echo "No Windows symbols found (expected for NonOfficial builds)"
+          fi
+        displayName: 'Consolidate Windows symbols (optional)'
+        continueOnError: true
+      
+      # Verify consolidation
+      - bash: |
+          echo "=========================================="
+          echo "Consolidation Summary"
+          echo "=========================================="
+          echo ""
+          echo "Wheels in dist/:"
+          ls -lh $(ob_outputDirectory)/dist/*.whl || echo "No wheels found!"
+          echo ""
+          echo "Total wheels: $(ls -1 $(ob_outputDirectory)/dist/*.whl 2>/dev/null | wc -l)"
+          echo ""
+          if [ -d "$(ob_outputDirectory)/bindings" ]; then
+            echo "Bindings directory:"
+            find $(ob_outputDirectory)/bindings -type f | head -20
+          fi
+          echo ""
+          echo "=========================================="
+        displayName: 'Verify consolidation'
+      
+      # Publish consolidated artifacts
+      - task: PublishPipelineArtifact@1
+        displayName: 'Publish Consolidated Artifacts'
+        inputs:
+          targetPath: '$(ob_outputDirectory)'
+          artifact: 'drop_Consolidate_ConsolidateArtifacts'
+          publishLocation: 'pipeline'
