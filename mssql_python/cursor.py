@@ -2455,28 +2455,97 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         Perform bulk copy operation using Rust-based implementation.
 
+        This method uses a separate connection to the database via the Rust library
+        (mssql_py_core) for optimized bulk data transfer. The connection parameters
+        are extracted from the current Python connection's connection string.
+
+        Important: Transaction Isolation
+            The bulk copy operation creates its own connection and does NOT participate
+            in the current Python connection's transaction context. This means:
+            - Bulk copied data is committed independently of any open transaction
+            - Rolling back the Python connection will NOT rollback bulk copied data
+            - The bulk copy operation is essentially auto-committed
+
+            If you need transactional bulk operations, consider using executemany()
+            or batched INSERT statements within your transaction instead.
+
         Args:
-            table_name: Target table name
-            data: Iterable of tuples/lists containing row data
+            table_name: Target table name (can include schema, e.g., 'dbo.MyTable').
+                The table must exist and the user must have INSERT permissions.
+
+            data: Iterable of tuples or lists containing row data to be inserted.
+
+                Data Format Requirements:
+                - Each element in the iterable represents one row
+                - Each row should be a tuple or list of column values
+                - Column order must match the target table's column order (by ordinal
+                  position), unless column_mappings is specified
+                - The number of values in each row must match the number of columns
+                  in the target table
+
+                Supported Python Types and SQL Server Mappings:
+                - None → NULL (for any nullable column)
+                - int → INT, BIGINT, SMALLINT, TINYINT
+                - float → FLOAT, REAL
+                - str → VARCHAR, NVARCHAR, CHAR, NCHAR, TEXT, NTEXT
+                - bool → BIT
+                - datetime.date → DATE
+                - datetime.datetime → DATETIME, DATETIME2, SMALLDATETIME
+                - datetime.time → TIME
+                - decimal.Decimal → DECIMAL, NUMERIC, MONEY, SMALLMONEY
+                - bytes → BINARY, VARBINARY, IMAGE
+                - uuid.UUID → UNIQUEIDENTIFIER
+
+                NULL Values:
+                - Use Python's None to represent SQL NULL values
+                - Empty strings ('') are NOT treated as NULL
+
+                Example data formats:
+                    # Simple list of tuples
+                    data = [(1, 'Alice', None), (2, 'Bob', 25)]
+
+                    # Generator for memory-efficient large datasets
+                    def generate_data():
+                        for i in range(1000000):
+                            yield (i, f'Name_{i}', datetime.date.today())
+
             **kwargs: Additional options passed to the Rust bulkcopy method
-                - batch_size: Number of rows per batch (default: 1000)
-                - timeout: Timeout in seconds (default: 30)
-                - column_mappings: List of tuples mapping source column index to target column name
+                - column_mappings: List of tuples mapping source column index to
+                  target column name, e.g., [(0, 'id'), (1, 'name')]
 
         Returns:
-            Dictionary with rows_copied, batch_count, and elapsed_time
+            Dictionary with bulk copy results including:
+                - rows_copied: Number of rows successfully copied
+                - batch_count: Number of batches processed
+                - elapsed_time: Time taken for the operation
 
         Raises:
-            ImportError: If mssql_py_core is not installed
-            ValueError: If parameters are invalid
+            ImportError: If mssql_py_core Rust library is not installed
+            ValueError: If table_name is empty or parameters are invalid
             RuntimeError: If connection string is not available
+
+        Example:
+            >>> # Basic usage with list of tuples
+            >>> data = [(1, 'Alice', None), (2, 'Bob', 25), (3, 'Charlie', 30)]
+            >>> result = cursor._bulkcopy('users', data)
+            >>> print(f"Copied {result['rows_copied']} rows")
+
+            >>> # Using a generator for large datasets
+            >>> from decimal import Decimal
+            >>> from datetime import date
+            >>> def generate_orders():
+            ...     for i in range(10000):
+            ...         yield (i, Decimal('99.99'), date.today(), None)
+            >>> result = cursor._bulkcopy('orders', generate_orders())
         """
         try:
             import mssql_py_core
         except ImportError as exc:
             raise ImportError(
-                "Bulk copy requires mssql_py_core Rust library. "
-                "Install from BCPRustWheel directory."
+                "Bulk copy requires the mssql_py_core Rust library which is not installed. "
+                "To install, run: pip install mssql_py_core "
+                "or install from the wheel file in the BCPRustWheel directory of the mssql-python repository: "
+                "pip install BCPRustWheel/mssql_py_core-<version>-<platform>.whl"
             ) from exc
 
         # Validate inputs
@@ -2496,53 +2565,80 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if not hasattr(self.connection, "connection_str"):
             raise RuntimeError("Connection string not available for bulk copy")
 
-        params = {
-            k.strip().lower(): v.strip()
-            for pair in self.connection.connection_str.split(";")
-            if "=" in pair
-            for k, v in [pair.split("=", 1)]
-        }
+        # Use the proper connection string parser that handles braced values
+        from mssql_python.connection_string_parser import _ConnectionStringParser
+        parser = _ConnectionStringParser(validate_keywords=False)
+        params = parser._parse(self.connection.connection_str)
 
         if not params.get("server"):
             raise ValueError("SERVER parameter is required in connection string")
 
         # Build connection context for Rust library
+        # Note: Password is extracted separately to avoid storing it in the main context
+        # dict that could be accidentally logged or exposed in error messages.
         trust_cert = params.get("trustservercertificate", "yes").lower() in ("yes", "true")
+
+        # Parse encryption setting from connection string
+        encrypt_param = params.get("encrypt")
+        if encrypt_param is not None:
+            encrypt_value = encrypt_param.strip().lower()
+            if encrypt_value in ("yes", "true", "mandatory", "required"):
+                encryption = "Required"
+            elif encrypt_value in ("no", "false", "optional"):
+                encryption = "Optional"
+            else:
+                # Pass through unrecognized values (e.g., "Strict") to the underlying driver
+                encryption = encrypt_param
+        else:
+            encryption = "Optional"
+
         context = {
             "server": params.get("server", "localhost"),
             "database": params.get("database", "master"),
             "user_name": params.get("uid", ""),
-            "password": params.get("pwd", ""),
             "trust_server_certificate": trust_cert,
-            "encryption": "Optional",
+            "encryption": encryption,
         }
 
-        logger.debug("Bulk copy connecting to %s/%s", context["server"], context["database"])
+        # Extract password separately to avoid storing it in generic context that may be logged
+        password = params.get("pwd", "")
+        rust_context = dict(context)
+        rust_context["password"] = password
 
         rust_connection = None
         rust_cursor = None
         try:
-            rust_connection = mssql_py_core.PyCoreConnection(context)
+            rust_connection = mssql_py_core.PyCoreConnection(rust_context)
             rust_cursor = rust_connection.cursor()
 
-            logger.debug("Bulk copy to '%s' - batch_size=%d", table_name, batch_size)
-            result = rust_cursor.bulkcopy(table_name, iter(data), kwargs=kwargs)
+            result = rust_cursor.bulkcopy(table_name, iter(data), **kwargs)
 
-            logger.debug("Bulk copy completed - rows=%d", result.get("rows_copied", 0))
             return result
 
         except Exception as e:
-            logger.error("Bulk copy failed: %s - %s", type(e).__name__, str(e))
-            raise
+            # Re-raise without exposing connection context in the error chain
+            # to prevent credential leakage in stack traces
+            raise type(e)(str(e)) from None
 
         finally:
+            # Clear sensitive data to minimize memory exposure
+            password = ""
+            if rust_context:
+                rust_context["password"] = ""
+                rust_context["user_name"] = ""
             # Clean up Rust resources
             for resource in (rust_cursor, rust_connection):
                 if resource and hasattr(resource, "close"):
                     try:
                         resource.close()
-                    except Exception:
-                        pass
+                    except Exception as cleanup_error:
+                        # Log cleanup errors at debug level to aid troubleshooting
+                        # without masking the original exception
+                        logger.debug(
+                            "Failed to close bulk copy resource %s: %s",
+                            type(resource).__name__,
+                            cleanup_error
+                        )
 
     def __enter__(self):
         """
