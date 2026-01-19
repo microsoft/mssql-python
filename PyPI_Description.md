@@ -35,29 +35,27 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.1.0
- 
+## What's new in v1.2.0
+
 ### Enhancements
- 
-- **Thread-Safe Encoding/Decoding** - Mutex-based lock protection prevents race conditions in multi-threaded applications with concurrent connections. Strict validation for SQL_WCHAR types and security measures against encoding-based attacks ensure data integrity and application security.
 
-### Critical Bug Fixes
+- **Connection.closed Property** - Added `Connection.closed` property to check if a connection is closed, improving connection state management.
 
-- **Linux Stability** - Fixed critical double-free issue causing segmentation faults during Python garbage collection, significantly improving stability on Linux platforms.
+- **Parameter as Dictionary** - Added support for passing parameters as dictionaries, providing more flexible query parameterization.
 
-- **Connection Pooling Isolation Level** - Transaction isolation level now explicitly resets to READ COMMITTED when pooled connections are reused, preventing unexpected transaction behavior and isolation level conflicts.
+- **Copilot Prompts** - Introduced Copilot prompts for AI-assisted development, enhancing developer productivity.
 
-- **Connection String Escaping** - Fixed parser and builder to correctly handle ODBC curly brace escaping rules, enabling proper handling of special characters in passwords and connection values.
+### Bug Fixes
 
-- **UTF-16 String Decoding** - Enhanced `connection.getinfo()` to properly decode UTF-16LE strings from SQL Server, eliminating data corruption when retrieving metadata with non-ASCII characters.
+- **FetchMany with LOB Columns** - Fixed `fetchmany(n)` ignoring batch size when working with LOB (Large Object) columns.
 
-- **NULL Parameter Arrays** - Added support for arrays containing only NULL values in `executemany()`, improving batch operation reliability.
+- **Non-ASCII Path Resolution** - Fixed path resolution for files with non-ASCII characters on Windows.
 
-- **Query Timeout Consistency** - Refactored timeout handling to set query timeout during cursor initialization, reducing overhead and ensuring consistent timeout application.
+### CI/Infrastructure
 
-- **IntegrityError Detection** - Fixed error handling in `fetchall()` for INSERT statements with OUTPUT clause and multiple VALUES entries.
+- **SQL Server 2025 Test Support** - Added support for testing against SQL Server 2025 across Windows, macOS, and Linux CI pipelines, ensuring driver compatibility with the upcoming SQL Server release.
 
-- **Sensitive Parameter Filtering** - Corrected authentication parameter filtering to properly exclude Trusted_Connection while preserving encryption settings.
+- **Forked PR Coverage Workflow** - Implemented coverage comment workflow for pull requests from forked repositories, improving the contribution experience for external contributors.
  
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
