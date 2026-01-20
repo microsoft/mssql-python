@@ -2825,3 +2825,81 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             are managed automatically by the underlying driver.
         """
         # This is a no-op - buffer sizes are managed automatically
+
+    def bulk_copy(self, table_name: str, data: List[List[Any]]) -> Any:
+        """
+        Perform bulk copy operation using Rust bindings.
+
+        This method provides high-performance bulk insert operations by leveraging
+        the mssql_core_tds library through Rust PyO3 bindings.
+
+        Args:
+            table_name: Target table name for bulk copy
+            data: List of rows to insert, where each row is a list of column values
+
+        Returns:
+            Result from the underlying bulk_copy operation
+
+        Raises:
+            ImportError: If mssql_rust_bindings or mssql_core_tds are not available
+            AttributeError: If bulk_copy method is not implemented in mssql_core_tds
+            ProgrammingError: If cursor or connection is closed
+            DatabaseError: If bulk copy operation fails
+
+        Example:
+            >>> cursor = conn.cursor()
+            >>> data = [[1, 'Alice', 100.50], [2, 'Bob', 200.75]]
+            >>> cursor.bulk_copy('employees', data)
+        """
+        self._check_closed()
+
+        try:
+            import mssql_rust_bindings
+        except ImportError as e:
+            raise ImportError(
+                f"Bulk copy requires mssql_rust_bindings module: {e}"
+            ) from e
+
+        # Parse connection string to extract parameters
+        conn_str = self._connection.connection_str
+        params = {}
+        
+        for part in conn_str.split(';'):
+            if '=' in part:
+                key, value = part.split('=', 1)
+                key = key.strip().lower()
+                value = value.strip()
+                
+                if key in ['server', 'data source']:
+                    params['server'] = value.split(',')[0]  # Remove port if present
+                elif key in ['database', 'initial catalog']:
+                    params['database'] = value
+                elif key in ['uid', 'user id', 'user']:
+                    params['user_name'] = value
+                elif key in ['pwd', 'password']:
+                    params['password'] = value
+                elif key == 'trustservercertificate':
+                    params['trust_server_certificate'] = value
+
+        # Set defaults if not found
+        params.setdefault('server', 'localhost')
+        params.setdefault('database', 'master')
+        params.setdefault('user_name', 'sa')
+        params.setdefault('password', '')
+        params.setdefault('trust_server_certificate', 'yes')
+
+        try:
+            # BulkCopyWrapper handles mssql_core_tds connection internally
+            bulk_wrapper = mssql_rust_bindings.BulkCopyWrapper(params)
+            result = bulk_wrapper.bulk_copy(table_name, data)
+            bulk_wrapper.close()
+            return result
+        except AttributeError as e:
+            raise AttributeError(
+                "bulk_copy method not implemented in mssql_core_tds.DdbcConnection"
+            ) from e
+        except Exception as e:
+            raise DatabaseError(
+                driver_error=f"Bulk copy operation failed: {e}",
+                ddbc_error=str(e)
+            ) from e
