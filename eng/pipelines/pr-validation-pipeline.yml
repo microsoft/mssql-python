@@ -11,7 +11,7 @@ jobs:
   displayName: 'CodeQL Security Analysis'
   pool:
     vmImage: 'ubuntu-latest'
-  
+
   steps:
   - script: |
       sudo apt-get update
@@ -45,7 +45,7 @@ jobs:
     condition: always()
     displayName: 'Finalize CodeQL'
 
-- job: PytestOnWindows
+- job: pytestonwindows
   displayName: 'Windows x64'
   pool:
     vmImage: 'windows-latest'
