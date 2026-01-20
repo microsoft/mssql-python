@@ -2504,8 +2504,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             raise ImportError(
                 "Bulk copy requires the mssql_py_core library which is not installed. "
                 "To install, run: pip install mssql_py_core "
-                "or install from the wheel file in the BCPRustWheel directory of the mssql-python repository: "
-                "pip install BCPRustWheel/mssql_py_core-<version>-<platform>.whl"
             ) from exc
 
         # Validate inputs
