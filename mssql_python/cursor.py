@@ -2524,16 +2524,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             )
 
         # Extract and validate kwargs with defaults
-        batch_size = kwargs.get("batch_size", 0)
+        batch_size = kwargs.get("batch_size", None)
         timeout = kwargs.get("timeout", 30)
 
-        # Validate batch_size type and value
-        if not isinstance(batch_size, (int, float)):
-            raise TypeError(
-                f"batch_size must be a positive integer, got {type(batch_size).__name__}"
-            )
-        if batch_size <= 0:
-            raise ValueError(f"batch_size must be positive, got {batch_size}")
+        # Validate batch_size type and value (only if explicitly provided)
+        if batch_size is not None:
+            if not isinstance(batch_size, (int, float)):
+                raise TypeError(
+                    f"batch_size must be a positive integer, got {type(batch_size).__name__}"
+                )
+            if batch_size <= 0:
+                raise ValueError(f"batch_size must be positive, got {batch_size}")
 
         # Validate timeout type and value
         if not isinstance(timeout, (int, float)):
