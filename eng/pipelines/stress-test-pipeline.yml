@@ -1,0 +1,285 @@
+name: stress-test-pipeline
+
+# This pipeline runs stress tests for the mssql-python driver
+# Triggered manually or on a schedule (not on every PR)
+trigger: none
+
+# Schedule the pipeline to run daily at 03:00 AM IST (after build-whl-pipeline completes at 01:30 AM IST)
+schedules:
+- cron: "30 21 * * *"  # Run daily at 9:30 PM UTC (03:00 AM IST next day)
+  displayName: Daily Stress Test
+  branches:
+    include:
+    - main
+  always: true
+
+# Allow manual triggering
+pr: none
+
+parameters:
+- name: threadConfigs
+  type: object
+  default:
+    - threads: 2
+      iterations: 100
+    - threads: 5
+      iterations: 50
+    - threads: 10
+      iterations: 30
+    - threads: 50
+      iterations: 10
+    - threads: 100
+      iterations: 5
+    - threads: 1000
+      iterations: 2
+
+# Resource reference to build-whl-pipeline for downloading artifacts
+resources:
+  pipelines:
+    - pipeline: buildPipeline
+      source: 'build-whl-pipeline'  # Name of the build pipeline
+      trigger: none  # Don't auto-trigger, we run on schedule or manually
+
+variables:
+  - group: mssql-python-variables
+  - name: pythonVersion
+    value: '3.13'
+  - name: shortPyVer
+    value: '313'
+
+jobs:
+# ============================================================================
+# Windows Stress Tests with SQL Server 2022 (pre-installed on 1ES pool)
+# ============================================================================
+- job: StressTestWindows
+  displayName: 'Windows Stress Tests - SQL Server 2022'
+  # Use custom 1ES pool with Windows Server 2022 + SQL Server 2022 pre-installed
+  pool:
+    name: Python-1ES-Pool
+    vmImage: WIN22-SQL22
+  timeoutInMinutes: 180  # 3 hours for stress tests
+
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '$(pythonVersion)'
+      addToPath: true
+      githubToken: $(GITHUB_TOKEN)
+    displayName: 'Use Python $(pythonVersion)'
+
+  - script: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+      pip install psutil
+    displayName: 'Install dependencies'
+
+  # Download pre-built wheel from build-whl-pipeline instead of building from source
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      definition: 2162  # build-whl-pipeline definition ID
+      buildVersionToDownload: 'latest'
+      branchName: 'refs/heads/main'
+      artifactName: 'mssql-python-wheels-dist'
+      targetPath: '$(Build.SourcesDirectory)\wheels'
+    displayName: 'Download pre-built wheel from build-whl-pipeline'
+
+  # Install the pre-built wheel
+  - script: |
+      echo "Installing pre-built wheel..."
+      dir "$(Build.SourcesDirectory)\wheels"
+      pip install --find-links=$(Build.SourcesDirectory)\wheels mssql-python --force-reinstall
+    displayName: 'Install pre-built mssql-python wheel'
+
+  # SQL Server 2022 is pre-installed on WIN22-SQL22 image
+  # Just create database and user for stress tests
+  - powershell: |
+      Write-Host "SQL Server 2022 is pre-installed on this image"
+      Write-Host "Creating database and user for stress tests..."
+      
+      # Create database and user
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE DATABASE StressTestDB" -C
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d StressTestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d StressTestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+      
+      # Configure SQL Server for higher connection limits
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "EXEC sp_configure 'user connections', 2000; RECONFIGURE;" -C
+      
+      Write-Host "Database setup completed"
+    displayName: 'Setup database for stress tests'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  # Run multi-threaded stress tests
+  - script: |
+      python -m pytest tests/test_020_multithreaded_stress.py -v -m "stress_threading" --junitxml=stress-test-results.xml --timeout=3600 --capture=tee-sys -x
+    displayName: 'Run Multi-Threaded Stress Tests'
+    env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=StressTestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+    continueOnError: true
+
+  # Run original stress tests
+  - script: |
+      python -m pytest tests/test_011_performance_stress.py -v -m "stress" --junitxml=perf-stress-test-results.xml --timeout=1800 --capture=tee-sys
+    displayName: 'Run Performance Stress Tests'
+    env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=StressTestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+    continueOnError: true
+
+  # Publish test results
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: 'JUnit'
+      testResultsFiles: '**/stress-test-results.xml'
+      mergeTestResults: true
+      testRunTitle: 'Windows Stress Test Results'
+    condition: always()
+    displayName: 'Publish Stress Test Results'
+
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: 'JUnit'
+      testResultsFiles: '**/perf-stress-test-results.xml'
+      mergeTestResults: true
+      testRunTitle: 'Windows Performance Stress Test Results'
+    condition: always()
+    displayName: 'Publish Performance Stress Test Results'
+
+# ============================================================================
+# Linux Stress Tests with SQL Server 2022 (pre-installed on 1ES pool)
+# ============================================================================
+- job: StressTestLinux
+  displayName: 'Linux Stress Tests - SQL Server 2022'
+  # Use custom 1ES pool with Ubuntu 22.04 + SQL Server 2022 pre-installed
+  pool:
+    name: Python-1ES-Pool
+    demands:
+    - imageOverride -equals ADO-UB22-SQL22
+  timeoutInMinutes: 180
+
+  steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: '$(pythonVersion)'
+      addToPath: true
+    displayName: 'Use Python $(pythonVersion)'
+
+  - script: |
+      sudo apt-get update
+      sudo apt-get install -y build-essential cmake curl git python3-dev unixodbc-dev
+    displayName: 'Install system dependencies'
+
+  - script: |
+      python -m pip install --upgrade pip
+      pip install -r requirements.txt
+      pip install psutil
+    displayName: 'Install Python dependencies'
+
+  # Download pre-built wheel from build-whl-pipeline instead of building from source
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      buildType: 'specific'
+      project: '$(System.TeamProject)'
+      definition: 2162  # build-whl-pipeline definition ID
+      buildVersionToDownload: 'latest'
+      branchName: 'refs/heads/main'
+      artifactName: 'mssql-python-wheels-dist'
+      targetPath: '$(Build.SourcesDirectory)/wheels'
+    displayName: 'Download pre-built wheel from build-whl-pipeline'
+
+  # Install the pre-built wheel
+  - script: |
+      echo "Installing pre-built wheel..."
+      ls -la "$(Build.SourcesDirectory)/wheels"
+      pip install --find-links=$(Build.SourcesDirectory)/wheels mssql-python --force-reinstall
+    displayName: 'Install pre-built mssql-python wheel'
+
+  # SQL Server 2022 is pre-installed on ADO-UB22-SQL22 image
+  # Just create database and user for stress tests
+  - script: |
+      echo "SQL Server 2022 is pre-installed on this image"
+      echo "Creating database and user for stress tests..."
+      
+      # Create database and user
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE DATABASE StressTestDB" -C -N
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C -N
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d StressTestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C -N
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d StressTestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C -N
+      
+      # Configure SQL Server for higher connection limits
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "EXEC sp_configure 'user connections', 2000; RECONFIGURE;" -C -N
+      
+      echo "Database setup completed"
+    displayName: 'Setup database for stress tests'
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  # Run multi-threaded stress tests
+  - script: |
+      python -m pytest tests/test_020_multithreaded_stress.py -v -m "stress_threading" --junitxml=stress-test-results-linux.xml --timeout=3600 --capture=tee-sys -x
+    displayName: 'Run Multi-Threaded Stress Tests'
+    env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=StressTestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+    continueOnError: true
+
+  # Run original stress tests
+  - script: |
+      python -m pytest tests/test_011_performance_stress.py -v -m "stress" --junitxml=perf-stress-test-results-linux.xml --timeout=1800 --capture=tee-sys
+    displayName: 'Run Performance Stress Tests'
+    env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=StressTestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+    continueOnError: true
+
+  # Publish test results
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: 'JUnit'
+      testResultsFiles: '**/stress-test-results-linux.xml'
+      mergeTestResults: true
+      testRunTitle: 'Linux Stress Test Results'
+    condition: always()
+    displayName: 'Publish Linux Stress Test Results'
+
+  - task: PublishTestResults@2
+    inputs:
+      testResultsFormat: 'JUnit'
+      testResultsFiles: '**/perf-stress-test-results-linux.xml'
+      mergeTestResults: true
+      testRunTitle: 'Linux Performance Stress Test Results'
+    condition: always()
+    displayName: 'Publish Linux Performance Stress Test Results'
+
+# ============================================================================
+# Summary Job
+# ============================================================================
+- job: StressTestSummary
+  displayName: 'Stress Test Summary'
+  dependsOn:
+    - StressTestWindows
+    - StressTestLinux
+  condition: always()
+  pool:
+    name: Python-1ES-Pool
+    demands:
+    - imageOverride -equals ADO-UB22-SQL22
+
+  steps:
+  - script: |
+      echo "======================================"
+      echo "Stress Test Summary"
+      echo "======================================"
+      echo ""
+      echo "Platform: Python-1ES-Pool (WIN22-SQL22, ADO-UB22-SQL22)"
+      echo ""
+      echo "Thread configurations tested:"
+      echo "  - 2 threads x 100 iterations"
+      echo "  - 5 threads x 50 iterations"
+      echo "  - 10 threads x 30 iterations"
+      echo "  - 50 threads x 10 iterations"
+      echo "  - 100 threads x 5 iterations"
+      echo "  - 1000 threads x 2 iterations"
+      echo ""
+      echo "See individual job results for details."
+    displayName: 'Print Summary'
