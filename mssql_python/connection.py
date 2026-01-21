@@ -287,6 +287,10 @@ class Connection:
         # TODO: Think and implement scenarios for multi-threaded access
         # to cursors
         self._cursors = weakref.WeakSet()
+        
+        # Track if connection has been closed to prevent cursors from
+        # trying to free handles after connection is closed (prevents segfault)
+        self._connection_closed = False
 
         # Initialize output converters dictionary and its lock for thread safety
         self._output_converters = {}
@@ -1499,12 +1503,33 @@ class Connection:
         if self._closed:
             return
 
+        # CRITICAL: Set connection closed flag BEFORE closing anything
+        # This prevents cursors from trying to free handles during/after connection close
+        self._connection_closed = True
+
         # Close all cursors first, but don't let one failure stop the others
         if hasattr(self, "_cursors"):
             # Convert to list to avoid modification during iteration
             cursors_to_close = list(self._cursors)
             close_errors = []
 
+            # First pass: Invalidate cursor handles to prevent use-after-free
+            for cursor in cursors_to_close:
+                try:
+                    # CRITICAL: Mark cursor as invalidated BEFORE clearing handle
+                    # This tells cursor.close() to skip SQLFreeHandle entirely
+                    if hasattr(cursor, '_invalidated'):
+                        cursor._invalidated = True
+                    # Mark handles as freed before closing connection
+                    # This prevents cursors from trying to free already-freed handles
+                    if hasattr(cursor, '_handle_freed'):
+                        cursor._handle_freed = True
+                    if hasattr(cursor, 'hstmt'):
+                        cursor.hstmt = None
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.warning("Error invalidating cursor handle: %s", e)
+
+            # Second pass: Close cursors
             for cursor in cursors_to_close:
                 try:
                     if not cursor.closed:

@@ -382,6 +382,7 @@ class SqlHandle {
   private:
     SQLSMALLINT _type;
     SQLHANDLE _handle;
+    bool _freed;  // Track if handle has been explicitly freed
 };
 using SqlHandlePtr = std::shared_ptr<SqlHandle>;
 

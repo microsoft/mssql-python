@@ -15,6 +15,8 @@ import decimal
 import uuid
 import datetime
 import warnings
+import weakref
+import sys
 from typing import List, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error
@@ -98,6 +100,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._inputsizes: Optional[List[Union[int, Tuple[Any, ...]]]] = None
         # self.connection.autocommit = False
         self.hstmt: Optional[Any] = None
+        self._handle_freed: bool = False  # Track if statement handle has been freed
+        self._invalidated: bool = False  # Track if cursor was invalidated by connection close
+        
+        # Store weak reference to connection to check if it's closed
+        # This prevents segfault when trying to free handles after connection close
+        self._connection_ref: Any = weakref.ref(connection)
+        
         self._initialize_cursor()
         self.description: Optional[
             List[
@@ -728,7 +737,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Reinitialize the statement handle
         self._initialize_cursor()
 
-    def close(self) -> None:
+    def close(self, from_del: bool = False) -> None:
         """
         Close the connection now (rather than whenever .__del__() is called).
         Idempotent: subsequent calls have no effect and will be no-ops.
@@ -736,6 +745,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         The cursor will be unusable from this point forward; an InterfaceError
         will be raised if any operation (other than close) is attempted with the cursor.
         This is a deviation from pyodbc, which raises an exception if the cursor is already closed.
+        
+        Args:
+            from_del: Internal flag - when True, handle freeing is skipped to prevent segfaults during GC.
         """
         if self.closed:
             # Do nothing - not calling _check_closed() here since we want this to be idempotent
@@ -751,10 +763,81 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.warning("Error removing cursor from connection tracking: %s", e)
 
-        if self.hstmt:
-            self.hstmt.free()
-            self.hstmt = None
-            logger.debug("SQLFreeHandle succeeded")
+        # Free statement handle with protection against double-free
+        # CRITICAL SAFETY #0: If called from __del__, do NOTHING - just return
+        # During GC, ANY object access can trigger segfaults due to partially destroyed state
+        # Better to leak resources than crash - OS cleans up at process exit
+        if from_del:
+            return
+        
+        if self.hstmt and not self._handle_freed:
+            
+            # CRITICAL SAFETY #1: Check if cursor was explicitly invalidated by connection
+            # This happens when connection.close() invalidates all cursors BEFORE freeing connection handle
+            if hasattr(self, '_invalidated') and self._invalidated:
+                self.hstmt = None
+                self._handle_freed = True
+                return
+            
+            # CRITICAL SAFETY #2: Check if parent connection is closed via _connection attribute
+            # This is an additional safety check in case weak reference approach fails
+            try:
+                if hasattr(self, '_connection') and self._connection:
+                    if hasattr(self._connection, '_closed') and self._connection._closed:
+                        # Connection is closed, skip freeing handle
+                        self.hstmt = None
+                        self._handle_freed = True
+                        return
+                    if hasattr(self._connection, '_connection_closed') and self._connection._connection_closed:
+                        # Connection closed flag set, skip freeing handle
+                        self.hstmt = None
+                        self._handle_freed = True
+                        return
+            except (AttributeError, ReferenceError):
+                # Connection might be in invalid state, skip freeing to be safe
+                self.hstmt = None
+                self._handle_freed = True
+                return
+            
+            # CRITICAL SAFETY #3: Skip handle freeing during interpreter shutdown
+            # During shutdown, ODBC resources may already be freed, causing segfault
+            if sys.is_finalizing():
+                self.hstmt = None
+                self._handle_freed = True
+                return
+            
+            # Check if parent connection was closed or garbage collected
+            # First check if we even have a connection reference attribute
+            if not hasattr(self, '_connection_ref'):
+                # Old cursor without weak ref - conservatively skip free
+                self.hstmt = None
+                self._handle_freed = True
+                return
+            
+            # Try to get connection from weak reference
+            try:
+                conn = self._connection_ref()
+            except Exception:
+                # Weak ref might be invalid during cleanup - skip free to be safe
+                self.hstmt = None
+                self._handle_freed = True
+                return
+            
+            # Skip free if connection is closed or garbage collected
+            if conn is None or (hasattr(conn, '_connection_closed') and conn._connection_closed):
+                # Connection closed/GC'd - ODBC driver already freed handles
+                self.hstmt = None
+                self._handle_freed = True
+            else:
+                # Connection is still open - safe to free statement handle
+                try:
+                    self.hstmt.free()
+                    self._handle_freed = True
+                except Exception:
+                    # Silently handle errors during cleanup
+                    pass
+                finally:
+                    self.hstmt = None
         self._clear_rownumber()
         self.closed = True
 
@@ -2760,7 +2843,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         if "closed" not in self.__dict__ or not self.closed:
             try:
-                self.close()
+                # Pass from_del=True to skip handle freeing (prevents segfaults during GC)
+                self.close(from_del=True)
             except Exception as e:  # pylint: disable=broad-exception-caught
                 # Don't raise an exception in __del__, just log it
                 # If interpreter is shutting down, we might not have logging set up

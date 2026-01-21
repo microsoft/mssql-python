@@ -1128,7 +1128,7 @@ void DriverLoader::loadDriver() {
 }
 
 // SqlHandle definition
-SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle) : _type(type), _handle(rawHandle) {}
+SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle) : _type(type), _handle(rawHandle), _freed(false) {}
 
 SqlHandle::~SqlHandle() {
     if (_handle) {
@@ -1152,32 +1152,65 @@ SQLSMALLINT SqlHandle::type() const {
  * If you need destruction logs, use explicit close() methods instead.
  */
 void SqlHandle::free() {
-    if (_handle && SQLFreeHandle_ptr) {
-        // Check if Python is shutting down using centralized helper function
-        bool pythonShuttingDown = is_python_finalizing();
+    // Early return if handle was already explicitly freed
+    if (_freed) {
+        return;  // Already freed via explicit free() call
+    }
+    
+    // Early return if handle is nullptr
+    if (!_handle) {
+        _freed = true;
+        return;  // Already freed, nothing to do
+    }
+    
+    // Early return if SQLFreeHandle function is not loaded
+    if (!SQLFreeHandle_ptr) {
+        _handle = nullptr;  // Mark as freed to prevent future attempts
+        _freed = true;
+        return;
+    }
 
-        // RESOURCE LEAK MITIGATION:
-        // When handles are skipped during shutdown, they are not freed, which could
-        // cause resource leaks. However, this is mitigated by:
-        // 1. Python-side atexit cleanup (in __init__.py) that explicitly closes all
-        //    connections before shutdown, ensuring handles are freed in correct order
-        // 2. OS-level cleanup at process termination recovers any remaining resources
-        // 3. This tradeoff prioritizes crash prevention over resource cleanup, which
-        //    is appropriate since we're already in shutdown sequence
-        if (pythonShuttingDown && (_type == SQL_HANDLE_STMT || _type == SQL_HANDLE_DBC)) {
-            _handle = nullptr;  // Mark as freed to prevent double-free attempts
-            return;
-        }
+    // Check if Python is shutting down using centralized helper function
+    bool pythonShuttingDown = is_python_finalizing();
 
-        // Always clean up ODBC resources, regardless of Python state
-        SQLFreeHandle_ptr(_type, _handle);
-        _handle = nullptr;
+    // RESOURCE LEAK MITIGATION:
+    // When handles are skipped during shutdown, they are not freed, which could
+    // cause resource leaks. However, this is mitigated by:
+    // 1. Python-side atexit cleanup (in __init__.py) that explicitly closes all
+    //    connections before shutdown, ensuring handles are freed in correct order
+    // 2. OS-level cleanup at process termination recovers any remaining resources
+    // 3. This tradeoff prioritizes crash prevention over resource cleanup, which
+    //    is appropriate since we're already in shutdown sequence
+    if (pythonShuttingDown && (_type == SQL_HANDLE_STMT || _type == SQL_HANDLE_DBC)) {
+        _handle = nullptr;  // Mark as freed to prevent double-free attempts
+        _freed = true;
+        return;
+    }
 
-        // Only log if Python is not shutting down (to avoid segfault)
+    // Additional safety: Check if handle is SQL_NULL_HANDLE before freeing
+    // This can happen if connection was closed and ODBC driver already freed statement handles
+    if (_handle == SQL_NULL_HANDLE) {
+        _freed = true;
+        return;  // Handle already null, nothing to free
+    }
+    
+    // USE-AFTER-FREE FIX: Always clean up ODBC resources with error handling
+    // to prevent segfaults when handle is already freed or invalid
+    SQLRETURN ret = SQLFreeHandle_ptr(_type, _handle);
+    
+    // Always clear the handle reference and mark as freed regardless of return code
+    // This prevents double-free attempts even if SQLFreeHandle fails
+    _handle = nullptr;
+    _freed = true;
+
+    // Handle errors gracefully - don't throw on invalid handle
+    // SQL_INVALID_HANDLE (-2) indicates handle was already freed or invalid
+    // This is expected during connection invalidation scenarios
+    if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_INVALID_HANDLE) {
+        // Only log non-critical errors if Python is not shutting down
         if (!pythonShuttingDown) {
-            // Don't log during destruction - even in normal cases it can be
-            // problematic If logging is needed, use explicit close() methods
-            // instead
+            // Log error but don't throw exception - prevents crashes during cleanup
+            // If logging is needed, use explicit close() methods instead of destructor
         }
     }
 }
