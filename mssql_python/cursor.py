@@ -843,16 +843,101 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
     def _check_closed(self) -> None:
         """
-        Check if the cursor is closed and raise an exception if it is.
+        Comprehensive three-tier cursor validity check.
+        
+        Validates:
+        1. Cursor closed flag
+        2. Statement handle validity  
+        3. Connection validity and handle
+        
+        This follows pyodbc's proven pattern of checking all three tiers
+        to catch issues early with clear error messages.
 
         Raises:
-            ProgrammingError: If the cursor is closed.
+            ProgrammingError: If cursor, statement, or connection is invalid
         """
+        # Tier 1: Cursor closed flag
         if self.closed:
             raise ProgrammingError(
                 driver_error="Operation cannot be performed: The cursor is closed.",
                 ddbc_error="",
             )
+        
+        # Tier 2: Statement handle validity
+        # Check if statement handle has been freed or is None
+        if self.hstmt is None:
+            raise ProgrammingError(
+                driver_error="Statement handle has been freed",
+                ddbc_error="The cursor's statement handle is None - it was freed or never allocated"
+            )
+        
+        # Check if the handle wrapper itself is valid (has get() method that returns non-None)
+        if hasattr(self.hstmt, 'get'):
+            try:
+                handle_value = self.hstmt.get()
+                if handle_value is None:
+                    raise ProgrammingError(
+                        driver_error="Statement ODBC handle is invalid",
+                        ddbc_error="The statement handle's underlying ODBC handle is None"
+                    )
+            except Exception as e:
+                raise ProgrammingError(
+                    driver_error="Statement handle is corrupted",
+                    ddbc_error=f"Failed to access statement handle: {e}"
+                ) from None
+        
+        # Tier 3: Connection validity
+        # Check if we have a connection reference
+        if not hasattr(self, '_connection_ref'):
+            raise ProgrammingError(
+                driver_error="Connection reference is missing",
+                ddbc_error="Cursor has no _connection_ref attribute - internal state corrupted"
+            )
+        
+        # Get connection from weak reference
+        try:
+            conn = self._connection_ref()
+        except Exception as e:
+            raise ProgrammingError(
+                driver_error="Connection reference is invalid",
+                ddbc_error=f"Failed to access connection reference: {e}"
+            ) from None
+        
+        # Check if connection was garbage collected
+        if conn is None:
+            raise ProgrammingError(
+                driver_error="Connection has been garbage collected",
+                ddbc_error="The cursor's connection was garbage collected - cannot perform operations"
+            )
+        
+        # Check if connection was explicitly closed
+        if hasattr(conn, '_connection_closed') and conn._connection_closed:
+            raise ProgrammingError(
+                driver_error="Connection has been closed",
+                ddbc_error="The cursor's connection was closed - cannot perform operations"
+            )
+        
+        # Validate connection ODBC handle (if accessible)
+        if hasattr(conn, 'hdbc'):
+            if conn.hdbc is None:
+                raise ProgrammingError(
+                    driver_error="Connection ODBC handle has been freed",
+                    ddbc_error="Connection handle (hdbc) is None - connection was closed"
+                )
+            # If hdbc has a get() method (SqlHandle wrapper), check underlying handle
+            if hasattr(conn.hdbc, 'get'):
+                try:
+                    hdbc_value = conn.hdbc.get()
+                    if hdbc_value is None:
+                        raise ProgrammingError(
+                            driver_error="Connection ODBC handle is invalid",
+                            ddbc_error="Connection handle points to NULL - connection was closed"
+                        )
+                except Exception as e:
+                    raise ProgrammingError(
+                        driver_error="Connection handle is corrupted",
+                        ddbc_error=f"Failed to access connection handle: {e}"
+                    ) from None
 
     def setinputsizes(self, sizes: List[Union[int, tuple]]) -> None:
         """
@@ -920,7 +1005,75 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                             f"Invalid SQL type: {sql_type}. Must be a valid SQL type constant."
                         )
 
-                    self._inputsizes.append((sql_type, 0, 0))
+    def _validate_connection_after_operation(self) -> None:
+        """
+        Validate connection is still valid after an operation that released the GIL.
+        
+        CRITICAL: This must be called immediately after any operation that calls into
+        C++/ODBC code (which releases the GIL), as another thread may have closed the
+        connection during the operation. This follows pyodbc's proven safety pattern.
+        
+        This prevents use-after-free crashes by detecting when a connection was closed
+        by another thread while an ODBC operation was in progress.
+        
+        Raises:
+            ProgrammingError: If connection was closed during operation or is invalid
+        """
+        # Check if we even have a connection reference attribute
+        if not hasattr(self, '_connection_ref'):
+            raise ProgrammingError(
+                driver_error="Connection reference is missing",
+                ddbc_error="Cursor has no connection reference - cannot validate connection state"
+            )
+        
+        # Try to get the connection from weak reference
+        try:
+            conn = self._connection_ref()
+        except Exception as e:
+            raise ProgrammingError(
+                driver_error="Connection reference is invalid",
+                ddbc_error=f"Failed to access connection reference: {e}"
+            ) from None
+        
+        # Check if connection was garbage collected
+        if conn is None:
+            raise ProgrammingError(
+                driver_error="The cursor's connection was closed or garbage collected",
+                ddbc_error=(
+                    "The cursor's connection was closed by another thread or garbage collected "
+                    "during the operation. This indicates a race condition where the connection "
+                    "was freed while the cursor was still in use."
+                )
+            )
+        
+        # Check if connection was explicitly closed
+        if hasattr(conn, '_connection_closed') and conn._connection_closed:
+            raise ProgrammingError(
+                driver_error="The cursor's connection was closed",
+                ddbc_error=(
+                    "The cursor's connection was closed by another thread during the operation. "
+                    "This is a race condition where Connection.close() was called while a cursor "
+                    "operation was in progress."
+                )
+            )
+        
+        # Additional validation: Check ODBC handle if accessible
+        # This catches cases where the connection object exists but ODBC handle is freed
+        if hasattr(conn, 'hdbc'):
+            if conn.hdbc is None:
+                raise ProgrammingError(
+                    driver_error="Connection ODBC handle was freed",
+                    ddbc_error=(
+                        "Connection ODBC handle (hdbc) is None - connection was closed at the "
+                        "ODBC level but Python object still exists"
+                    )
+                )
+            # If hdbc has a get() method (SqlHandle wrapper), check the underlying handle
+            if hasattr(conn.hdbc, 'get') and conn.hdbc.get() is None:
+                raise ProgrammingError(
+                    driver_error="Connection ODBC handle is invalid",
+                    ddbc_error="Connection ODBC handle points to NULL - handle was freed"
+                )
 
     def _reset_inputsizes(self) -> None:
         """Reset input sizes after execution"""
@@ -1423,6 +1576,12 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             use_prepare,
             encoding_settings,
         )
+        
+        # CRITICAL: Validate connection immediately after C++ call that released GIL
+        # Another thread could have closed the connection during DDBCSQLExecute
+        # This prevents use-after-free crashes from race conditions
+        self._validate_connection_after_operation()
+        
         # Check return code
         try:
 
@@ -2339,6 +2498,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 char_decoding.get("encoding", "utf-8"),
                 wchar_decoding.get("encoding", "utf-16le"),
             )
+            
+            # CRITICAL: Validate connection immediately after fetch that released GIL
+            # Connection could have been closed during SQLFetch by another thread
+            self._validate_connection_after_operation()
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
@@ -2399,6 +2562,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 char_decoding.get("encoding", "utf-8"),
                 wchar_decoding.get("encoding", "utf-16le"),
             )
+            
+            # CRITICAL: Validate connection immediately after fetch that released GIL
+            # Connection could have been closed during SQLFetchMany by another thread
+            self._validate_connection_after_operation()
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
@@ -2450,6 +2617,10 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 char_decoding.get("encoding", "utf-8"),
                 wchar_decoding.get("encoding", "utf-16le"),
             )
+            
+            # CRITICAL: Validate connection immediately after fetchall that released GIL
+            # Connection could have been closed during SQLFetchAll by another thread
+            self._validate_connection_after_operation()
 
             # Check for errors
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)

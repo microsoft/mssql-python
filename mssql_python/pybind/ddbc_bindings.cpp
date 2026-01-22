@@ -1194,14 +1194,16 @@ void SqlHandle::free() {
         return;  // Handle already null, nothing to free
     }
     
-    // USE-AFTER-FREE FIX: Always clean up ODBC resources with error handling
-    // to prevent segfaults when handle is already freed or invalid
-    SQLRETURN ret = SQLFreeHandle_ptr(_type, _handle);
+    // CRITICAL FIX: Save handle and mark as freed BEFORE calling SQLFreeHandle
+    // This prevents race conditions where another thread checks the handle
+    // while SQLFreeHandle is in progress. Following pyodbc's proven pattern.
+    SQLHANDLE handle_to_free = _handle;
+    _handle = nullptr;  // Mark invalid FIRST (prevents race condition window)
+    _freed = true;      // Mark freed FIRST
     
-    // Always clear the handle reference and mark as freed regardless of return code
-    // This prevents double-free attempts even if SQLFreeHandle fails
-    _handle = nullptr;
-    _freed = true;
+    // USE-AFTER-FREE FIX: Now free the saved handle with error handling
+    // to prevent segfaults when handle is already freed or invalid
+    SQLRETURN ret = SQLFreeHandle_ptr(_type, handle_to_free);
 
     // Handle errors gracefully - don't throw on invalid handle
     // SQL_INVALID_HANDLE (-2) indicates handle was already freed or invalid

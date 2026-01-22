@@ -1486,7 +1486,7 @@ class Connection:
         self._conn.rollback()
         logger.info("Transaction rolled back successfully.")
 
-    def close(self) -> None:
+    def close(self, from_del: bool = False) -> None:
         """
         Close the connection now (rather than whenever .__del__() is called).
 
@@ -1496,12 +1496,32 @@ class Connection:
         trying to use the connection. Note that closing a connection without committing
         the changes first will cause an implicit rollback to be performed.
 
+        Args:
+            from_del: If True, called from __del__ during GC - skip ODBC handle freeing
+                     to prevent segfaults. GC can run at unpredictable times (e.g., during
+                     SQLAlchemy event listener setup) and freeing handles then causes crashes.
+
         Raises:
             DatabaseError: If there is an error while closing the connection.
         """
         # Close the connection
         if self._closed:
             return
+
+        # CRITICAL GC SAFETY: If called from __del__ during garbage collection,
+        # do ABSOLUTELY NOTHING. Not even set flags or nullify handles.
+        # Even the simplest operations (self._closed = True, return statement) trigger
+        # C++ ODBC operations that throw std::runtime_error: "Invalid transaction state"
+        # which calls std::terminate() and crashes the process.
+        #
+        # Better to leak all resources (handles, memory) than to crash. The OS will
+        # clean up handles when the process exits.
+        #
+        # This is fundamentally incompatible with Python's GC model. pyodbc uses C-level
+        # tp_dealloc for predictable cleanup timing. We can't easily convert to that
+        # without a major architectural refactor, so we accept resource leaks during GC.
+        if from_del:
+            return  # DO NOTHING - not even flag setting
 
         # CRITICAL: Set connection closed flag BEFORE closing anything
         # This prevents cursors from trying to free handles during/after connection close
@@ -1626,10 +1646,29 @@ class Connection:
         is no longer needed.
         This is a safety net to ensure resources are cleaned up
         even if close() was not called explicitly.
+        
+        CRITICAL GC SAFETY: Do NOTHING during interpreter shutdown or active GC.
+        The Python GC can run at unpredictable times (e.g., during SQLAlchemy event
+        listener setup). ANY cleanup attempts (even setting self._closed=True) trigger
+        C++ ODBC operations that throw std::runtime_error: "Invalid transaction state".
+        This exception calls std::terminate() and crashes the process.
+        
+        pyodbc avoids this by using C-level tp_dealloc instead of Python __del__,
+        which gives full control over cleanup timing. We work around it by completely
+        disabling cleanup during GC and relying on the OS to clean up handles at
+        process exit. Better to leak resources than crash.
         """
+        # CRITICAL: Skip ALL cleanup during interpreter shutdown
+        if sys.is_finalizing():
+            return
+        
+        # CRITICAL: Skip ALL cleanup if connection already closed
+        # Even checking _closed can trigger operations, so check __dict__ directly
         if "_closed" not in self.__dict__ or not self._closed:
             try:
-                self.close()
+                # Pass from_del=True to minimize operations during GC cleanup
+                self.close(from_del=True)
             except Exception as e:
-                # Dont raise exceptions from __del__ to avoid issues during garbage collection
-                logger.warning(f"Error during connection cleanup: {e}")
+                # Suppress ALL exceptions during GC - don't log, don't raise
+                # Even logger.warning() can trigger operations during GC
+                pass
