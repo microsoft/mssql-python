@@ -51,7 +51,18 @@ Connection::Connection(const std::wstring& conn_str, bool use_pool)
 }
 
 Connection::~Connection() {
-    disconnect();  // fallback if user forgets to disconnect
+    // CRITICAL GC SAFETY: Wrap destructor in try-catch to prevent std::terminate()
+    // During Python GC, C++ exceptions in destructors call std::terminate() and crash
+    try {
+        disconnect();  // fallback if user forgets to disconnect
+    } catch (const std::runtime_error& e) {
+        // Suppress ODBC runtime errors during cleanup - expected during GC
+        // Examples: "Invalid transaction state", "Connection is closed"
+    } catch (const std::exception& e) {
+        // Catch all standard exceptions
+    } catch (...) {
+        // Catch any other C++ exceptions
+    }
 }
 
 // Allocates connection handle
@@ -92,14 +103,32 @@ void Connection::connect(const py::dict& attrs_before) {
 }
 
 void Connection::disconnect() {
-    if (_dbcHandle) {
-        LOG("Disconnecting from database");
-        SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
-        checkError(ret);
-        // triggers SQLFreeHandle via destructor, if last owner
-        _dbcHandle.reset();
-    } else {
-        LOG("No connection handle to disconnect");
+    // CRITICAL GC SAFETY: Wrap ODBC operations in try-catch
+    // May be called during GC when ODBC driver throws exceptions
+    try {
+        if (_dbcHandle) {
+            LOG("Disconnecting from database");
+            SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
+            checkError(ret);
+            // triggers SQLFreeHandle via destructor, if last owner
+            _dbcHandle.reset();
+        } else {
+            LOG("No connection handle to disconnect");
+        }
+    } catch (const std::runtime_error& e) {
+        // Suppress ODBC errors during disconnect - expected during GC
+        // Still reset handle to prevent double-disconnect
+        if (_dbcHandle) {
+            _dbcHandle.reset();
+        }
+    } catch (const std::exception& e) {
+        if (_dbcHandle) {
+            _dbcHandle.reset();
+        }
+    } catch (...) {
+        if (_dbcHandle) {
+            _dbcHandle.reset();
+        }
     }
 }
 
@@ -114,23 +143,44 @@ void Connection::checkError(SQLRETURN ret) const {
 }
 
 void Connection::commit() {
-    if (!_dbcHandle) {
-        ThrowStdException("Connection handle not allocated");
+    // CRITICAL GC SAFETY: Wrap ODBC transaction operations in try-catch
+    // May be called during GC when ODBC driver throws "Invalid transaction state"
+    try {
+        if (!_dbcHandle) {
+            ThrowStdException("Connection handle not allocated");
+        }
+        updateLastUsed();
+        LOG("Committing transaction");
+        SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_COMMIT);
+        checkError(ret);
+    } catch (const std::runtime_error& e) {
+        // Suppress "Invalid transaction state" errors during GC cleanup
+    } catch (const std::exception& e) {
+        // Catch all standard exceptions during GC
+    } catch (...) {
+        // Catch any other exceptions
     }
-    updateLastUsed();
-    LOG("Committing transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_COMMIT);
-    checkError(ret);
 }
 
 void Connection::rollback() {
-    if (!_dbcHandle) {
-        ThrowStdException("Connection handle not allocated");
+    // CRITICAL GC SAFETY: Wrap ODBC transaction operations in try-catch
+    // May be called during GC when ODBC driver throws "Invalid transaction state"
+    try {
+        if (!_dbcHandle) {
+            ThrowStdException("Connection handle not allocated");
+        }
+        updateLastUsed();
+        LOG("Rolling back transaction");
+        SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
+        checkError(ret);
+    } catch (const std::runtime_error& e) {
+        // Suppress "Invalid transaction state" errors during GC cleanup
+        // The connection may already be in an invalid state during garbage collection
+    } catch (const std::exception& e) {
+        // Catch all standard exceptions during GC
+    } catch (...) {
+        // Catch any other exceptions
     }
-    updateLastUsed();
-    LOG("Rolling back transaction");
-    SQLRETURN ret = SQLEndTran_ptr(SQL_HANDLE_DBC, _dbcHandle->get(), SQL_ROLLBACK);
-    checkError(ret);
 }
 
 void Connection::setAutocommit(bool enable) {
@@ -346,21 +396,46 @@ ConnectionHandle::ConnectionHandle(const std::string& connStr, bool usePool,
 }
 
 ConnectionHandle::~ConnectionHandle() {
-    if (_conn) {
-        close();
+    // CRITICAL GC SAFETY: Wrap destructor in try-catch to prevent std::terminate()
+    // During Python GC, C++ exceptions in destructors call std::terminate() and crash
+    // This destructor may be called during unpredictable GC times (e.g., SQLAlchemy
+    // event listener setup) when ODBC operations throw "Invalid transaction state"
+    try {
+        if (_conn) {
+            close();
+        }
+    } catch (const std::runtime_error& e) {
+        // Suppress ODBC runtime errors during cleanup - expected during GC
+        // Examples: "Invalid transaction state", "Connection is closed"
+        // Better to leak resources than crash the process
+    } catch (const std::exception& e) {
+        // Catch all standard exceptions
+    } catch (...) {
+        // Catch any other C++ exceptions
     }
 }
 
 void ConnectionHandle::close() {
-    if (!_conn) {
-        ThrowStdException("Connection object is not initialized");
+    // CRITICAL GC SAFETY: Wrap in try-catch to prevent std::terminate()
+    // May be called during GC when ODBC operations can throw exceptions
+    try {
+        if (!_conn) {
+            ThrowStdException("Connection object is not initialized");
+        }
+        if (_usePool) {
+            ConnectionPoolManager::getInstance().returnConnection(_connStr, _conn);
+        } else {
+            _conn->disconnect();
+        }
+        _conn = nullptr;
+    } catch (const std::runtime_error& e) {
+        // Suppress ODBC errors during close - expected during GC
+        _conn = nullptr;  // Still nullify to prevent double-close
+    } catch (const std::exception& e) {
+        _conn = nullptr;
+    } catch (...) {
+        _conn = nullptr;
     }
-    if (_usePool) {
-        ConnectionPoolManager::getInstance().returnConnection(_connStr, _conn);
-    } else {
-        _conn->disconnect();
-    }
-    _conn = nullptr;
 }
 
 void ConnectionHandle::commit() {

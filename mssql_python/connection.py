@@ -1514,6 +1514,10 @@ class Connection:
         # C++ ODBC operations that throw std::runtime_error: "Invalid transaction state"
         # which calls std::terminate() and crashes the process.
         #
+        # CRITICAL: Do NOT set self._conn = None! The C++ ConnectionHandle destructor
+        # calls rollback/disconnect which throws exceptions during GC. Keep the reference
+        # alive to prevent C++ destructor from running during GC.
+        #
         # Better to leak all resources (handles, memory) than to crash. The OS will
         # clean up handles when the process exits.
         #
@@ -1521,7 +1525,7 @@ class Connection:
         # tp_dealloc for predictable cleanup timing. We can't easily convert to that
         # without a major architectural refactor, so we accept resource leaks during GC.
         if from_del:
-            return  # DO NOTHING - not even flag setting
+            return  # DO NOTHING - not even flag setting, not even _conn nullification
 
         # CRITICAL: Set connection closed flag BEFORE closing anything
         # This prevents cursors from trying to free handles during/after connection close
@@ -1647,28 +1651,19 @@ class Connection:
         This is a safety net to ensure resources are cleaned up
         even if close() was not called explicitly.
         
-        CRITICAL GC SAFETY: Do NOTHING during interpreter shutdown or active GC.
-        The Python GC can run at unpredictable times (e.g., during SQLAlchemy event
-        listener setup). ANY cleanup attempts (even setting self._closed=True) trigger
-        C++ ODBC operations that throw std::runtime_error: "Invalid transaction state".
-        This exception calls std::terminate() and crashes the process.
+        CRITICAL GC SAFETY: Do ABSOLUTELY NOTHING during GC cleanup.
+        ANY operation (even calling close(from_del=True)) can trigger C++ ODBC
+        operations that throw uncatchable exceptions during garbage collection.
         
-        pyodbc avoids this by using C-level tp_dealloc instead of Python __del__,
-        which gives full control over cleanup timing. We work around it by completely
-        disabling cleanup during GC and relying on the OS to clean up handles at
-        process exit. Better to leak resources than crash.
+        The C++ ODBC driver throws std::runtime_error: "Invalid transaction state" 
+        when connections are cleaned up during GC, especially during SQLAlchemy 
+        event listener setup. These exceptions bypass Python exception handling and
+        call std::terminate(), crashing the process.
+        
+        pyodbc avoids this by using C-level tp_dealloc. We work around it by doing
+        NOTHING and letting the OS clean up ODBC handles at process exit. Better
+        to leak resources than crash.
         """
-        # CRITICAL: Skip ALL cleanup during interpreter shutdown
-        if sys.is_finalizing():
-            return
-        
-        # CRITICAL: Skip ALL cleanup if connection already closed
-        # Even checking _closed can trigger operations, so check __dict__ directly
-        if "_closed" not in self.__dict__ or not self._closed:
-            try:
-                # Pass from_del=True to minimize operations during GC cleanup
-                self.close(from_del=True)
-            except Exception as e:
-                # Suppress ALL exceptions during GC - don't log, don't raise
-                # Even logger.warning() can trigger operations during GC
-                pass
+        # DO ABSOLUTELY NOTHING - not even sys.is_finalizing() check
+        # Even the simplest operations can trigger C++ ODBC calls during GC
+        pass

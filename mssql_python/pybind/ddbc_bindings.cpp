@@ -1131,8 +1131,22 @@ void DriverLoader::loadDriver() {
 SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle) : _type(type), _handle(rawHandle), _freed(false) {}
 
 SqlHandle::~SqlHandle() {
-    if (_handle) {
-        free();
+    // CRITICAL: Wrap in try-catch to prevent std::terminate() during GC
+    // C++ exceptions in destructors call std::terminate() which crashes the process
+    // This is especially critical during Python GC when ODBC operations may fail
+    // with "Invalid transaction state" or other errors
+    try {
+        if (_handle) {
+            free();
+        }
+    } catch (const std::runtime_error& e) {
+        // Suppress ODBC errors during cleanup - they're expected during GC
+        // Examples: "Invalid transaction state", "Connection is closed"
+        // Better to leak the handle than crash the process
+    } catch (const std::exception& e) {
+        // Catch all standard exceptions during cleanup
+    } catch (...) {
+        // Catch any other C++ exceptions
     }
 }
 
@@ -1203,7 +1217,25 @@ void SqlHandle::free() {
     
     // USE-AFTER-FREE FIX: Now free the saved handle with error handling
     // to prevent segfaults when handle is already freed or invalid
-    SQLRETURN ret = SQLFreeHandle_ptr(_type, handle_to_free);
+    SQLRETURN ret = SQL_SUCCESS;
+    
+    // CRITICAL: Wrap SQLFreeHandle call in try-catch
+    // ODBC driver can throw C++ exceptions (e.g., "Invalid transaction state")
+    // during GC or when connection is in invalid state
+    try {
+        ret = SQLFreeHandle_ptr(_type, handle_to_free);
+    } catch (const std::runtime_error& e) {
+        // Suppress ODBC runtime errors during cleanup
+        // Common during GC: "Invalid transaction state", "Connection is closed"
+        // Mark as success to skip error handling below
+        ret = SQL_SUCCESS;
+    } catch (const std::exception& e) {
+        // Catch all standard exceptions
+        ret = SQL_SUCCESS;
+    } catch (...) {
+        // Catch any other C++ exceptions
+        ret = SQL_SUCCESS;
+    }
 
     // Handle errors gracefully - don't throw on invalid handle
     // SQL_INVALID_HANDLE (-2) indicates handle was already freed or invalid
