@@ -49,6 +49,10 @@ jobs:
   displayName: 'Windows x64'
   pool:
     vmImage: 'windows-latest'
+  variables:
+    # Enable CodeQL for this job to update the old stale snapshot (build_jobname=pytestonwindows)
+    # This can be removed once the old CodeQL issue SM02986 is cleared
+    Codeql.Enabled: true
   
   strategy:
     matrix:
@@ -63,6 +67,24 @@ jobs:
         pythonVersion: '3.14'
 
   steps:
+  # ============== CodeQL Analysis (temporary - remove after SM02986 is cleared) ==============
+  - task: CodeQL3000Init@0
+    inputs:
+      Enabled: true
+    displayName: 'Initialize CodeQL (temporary)'
+
+  # Build C++ extension for CodeQL analysis
+  - script: |
+      cd mssql_python\pybind
+      call build.bat x64
+    displayName: 'Build C++ extension for CodeQL'
+    condition: eq(variables['pythonVersion'], '3.13')  # Only build once, not for each matrix
+
+  - task: CodeQL3000Finalize@0
+    condition: eq(variables['pythonVersion'], '3.13')  # Only finalize once
+    displayName: 'Finalize CodeQL (temporary)'
+  # ============== End CodeQL Analysis ==============
+
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '$(pythonVersion)'
