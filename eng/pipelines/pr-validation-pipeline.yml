@@ -67,24 +67,6 @@ jobs:
         pythonVersion: '3.14'
 
   steps:
-  # ============== CodeQL Analysis (temporary - remove after SM02986 is cleared) ==============
-  - task: CodeQL3000Init@0
-    inputs:
-      Enabled: true
-    displayName: 'Initialize CodeQL (temporary)'
-
-  # Build C++ extension for CodeQL analysis
-  - script: |
-      cd mssql_python\pybind
-      call build.bat x64
-    displayName: 'Build C++ extension for CodeQL'
-    condition: eq(variables['pythonVersion'], '3.13')  # Only build once, not for each matrix
-
-  - task: CodeQL3000Finalize@0
-    condition: eq(variables['pythonVersion'], '3.13')  # Only finalize once
-    displayName: 'Finalize CodeQL (temporary)'
-  # ============== End CodeQL Analysis ==============
-
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '$(pythonVersion)'
@@ -247,10 +229,21 @@ jobs:
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
+  # ============== CodeQL Init (temporary - remove after SM02986 is cleared) ==============
+  - task: CodeQL3000Init@0
+    inputs:
+      Enabled: true
+    displayName: 'Initialize CodeQL (temporary)'
+
   - script: |
       cd mssql_python\pybind
       build.bat x64
     displayName: 'Build .pyd file'
+
+  # ============== CodeQL Finalize (temporary - remove after SM02986 is cleared) ==============
+  - task: CodeQL3000Finalize@0
+    condition: always()
+    displayName: 'Finalize CodeQL (temporary)'
 
   # Run tests for LocalDB
   - script: |
