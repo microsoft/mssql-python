@@ -17,7 +17,6 @@ import platform
 import atexit
 from typing import Optional
 
-
 # Single DEBUG level - all or nothing philosophy
 # If you need logging, you need to see everything
 DEBUG = logging.DEBUG  # 10

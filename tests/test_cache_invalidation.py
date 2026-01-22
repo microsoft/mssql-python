@@ -7,7 +7,6 @@ invalidated when transitioning between different result sets to prevent
 silent data corruption.
 """
 
-
 import pytest
 import mssql_python
 
@@ -23,38 +22,29 @@ def test_cursor_cache_invalidation_different_column_orders(db_connection):
 
     try:
         # Setup test tables with different column orders and types
-        cursor.execute(
-            """
+        cursor.execute("""
             IF OBJECT_ID('tempdb..#test_cache_table1') IS NOT NULL
                 DROP TABLE #test_cache_table1
-        """
-        )
-        cursor.execute(
-            """
+        """)
+        cursor.execute("""
             CREATE TABLE #test_cache_table1 (
                 id INT,
                 name VARCHAR(50),
                 age INT,
                 salary DECIMAL(10,2)
             )
-        """
-        )
-        cursor.execute(
-            """
+        """)
+        cursor.execute("""
             INSERT INTO #test_cache_table1 VALUES 
             (1, 'Alice', 30, 50000.00),
             (2, 'Bob', 25, 45000.00)
-        """
-        )
+        """)
 
-        cursor.execute(
-            """
+        cursor.execute("""
             IF OBJECT_ID('tempdb..#test_cache_table2') IS NOT NULL
                 DROP TABLE #test_cache_table2
-        """
-        )
-        cursor.execute(
-            """
+        """)
+        cursor.execute("""
             CREATE TABLE #test_cache_table2 (
                 salary DECIMAL(10,2),
                 age INT,
@@ -62,15 +52,12 @@ def test_cursor_cache_invalidation_different_column_orders(db_connection):
                 name VARCHAR(50),
                 bonus FLOAT
             )
-        """
-        )
-        cursor.execute(
-            """
+        """)
+        cursor.execute("""
             INSERT INTO #test_cache_table2 VALUES 
             (60000.00, 35, 3, 'Charlie', 5000.5),
             (55000.00, 28, 4, 'Diana', 3000.75)
-        """
-        )
+        """)
 
         # Execute first query - columns: id, name, age, salary
         cursor.execute("SELECT id, name, age, salary FROM #test_cache_table1 ORDER BY id")
@@ -141,13 +128,11 @@ def test_cursor_cache_invalidation_stored_procedure_multiple_resultsets(db_conne
         # the scenario where cached maps need to be invalidated between different queries
 
         # First result set: user info (3 columns)
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT 1 as user_id, 'John' as username, 'john@example.com' as email
             UNION ALL
             SELECT 2, 'Jane', 'jane@example.com'
-        """
-        )
+        """)
 
         # Validate first result set - user info
         assert len(cursor.description) == 3
@@ -162,13 +147,11 @@ def test_cursor_cache_invalidation_stored_procedure_multiple_resultsets(db_conne
         assert user_rows[0].email == "john@example.com"
 
         # Execute second query with completely different structure
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT 101 as product_id, 'Widget A' as product_name, 29.99 as price, 100 as stock_qty
             UNION ALL  
             SELECT 102, 'Widget B', 39.99, 50
-        """
-        )
+        """)
 
         # Validate second result set - product info (different structure)
         assert len(cursor.description) == 4
@@ -212,14 +195,11 @@ def test_cursor_cache_invalidation_metadata_then_select(db_connection):
 
     try:
         # Create test table
-        cursor.execute(
-            """
+        cursor.execute("""
             IF OBJECT_ID('tempdb..#test_metadata_table') IS NOT NULL
                 DROP TABLE #test_metadata_table
-        """
-        )
-        cursor.execute(
-            """
+        """)
+        cursor.execute("""
             CREATE TABLE #test_metadata_table (
                 meta_id INT PRIMARY KEY,
                 meta_name VARCHAR(100),
@@ -227,19 +207,15 @@ def test_cursor_cache_invalidation_metadata_then_select(db_connection):
                 meta_date DATETIME,
                 meta_flag BIT
             )
-        """
-        )
-        cursor.execute(
-            """
+        """)
+        cursor.execute("""
             INSERT INTO #test_metadata_table VALUES 
             (1, 'Config1', 123.4567, '2023-01-15 10:30:00', 1),
             (2, 'Config2', 987.6543, '2023-02-20 14:45:00', 0)
-        """
-        )
+        """)
 
         # First: Execute a metadata-only query (no actual data rows)
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT 
                 COLUMN_NAME, 
                 DATA_TYPE, 
@@ -249,8 +225,7 @@ def test_cursor_cache_invalidation_metadata_then_select(db_connection):
             WHERE TABLE_NAME = 'test_metadata_table' 
             AND TABLE_SCHEMA = 'tempdb'
             ORDER BY ORDINAL_POSITION
-        """
-        )
+        """)
 
         # Verify metadata result structure
         meta_description = cursor.description
@@ -324,30 +299,24 @@ def test_cursor_cache_invalidation_fetch_methods_consistency(db_connection):
 
     try:
         # Create test data
-        cursor.execute(
-            """
+        cursor.execute("""
             IF OBJECT_ID('tempdb..#test_fetch_cache') IS NOT NULL
                 DROP TABLE #test_fetch_cache
-        """
-        )
-        cursor.execute(
-            """
+        """)
+        cursor.execute("""
             CREATE TABLE #test_fetch_cache (
                 first_col VARCHAR(20),
                 second_col INT,
                 third_col DECIMAL(8,2)
             )
-        """
-        )
-        cursor.execute(
-            """
+        """)
+        cursor.execute("""
             INSERT INTO #test_fetch_cache VALUES 
             ('Row1', 10, 100.50),
             ('Row2', 20, 200.75),
             ('Row3', 30, 300.25),
             ('Row4', 40, 400.00)
-        """
-        )
+        """)
 
         # Execute first query with specific column order
         cursor.execute(
@@ -411,11 +380,9 @@ def test_cache_specific_close_cleanup_validation(db_connection):
 
     try:
         # Setup test data
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT 1 as cache_col1, 'test' as cache_col2, 99.99 as cache_col3
-        """
-        )
+        """)
 
         # Verify cache is populated
         assert cursor.description is not None
@@ -560,15 +527,12 @@ def test_real_stored_procedure_cache_validation(db_connection):
 
     try:
         # Create a temporary stored procedure with multiple result sets
-        cursor.execute(
-            """
+        cursor.execute("""
             IF OBJECT_ID('tempdb..#sp_test_cache') IS NOT NULL
                 DROP PROCEDURE #sp_test_cache
-        """
-        )
+        """)
 
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE PROCEDURE #sp_test_cache
             AS
             BEGIN
@@ -581,8 +545,7 @@ def test_real_stored_procedure_cache_validation(db_connection):
                 -- Third result set: Summary (yet another structure)
                 SELECT GETDATE() as report_date, 'Cache Test' as report_type, 1 as version_num;
             END
-        """
-        )
+        """)
 
         # Execute the stored procedure
         cursor.execute("EXEC #sp_test_cache")

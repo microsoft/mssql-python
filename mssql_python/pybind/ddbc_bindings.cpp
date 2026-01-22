@@ -2892,7 +2892,7 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
     SQLHSTMT hStmt = StatementHandle->get();
 
     // Cache decimal separator to avoid repeated system calls
-    std::string decimalSeparator = GetDecimalSeparator();
+
 
     for (SQLSMALLINT i = 1; i <= colCount; ++i) {
         SQLWCHAR columnName[256];
@@ -3615,7 +3615,7 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
     }
 
-    std::string decimalSeparator = GetDecimalSeparator();  // Cache decimal separator
+
 
     // Performance: Build function pointer dispatch table (once per batch)
     // This eliminates the switch statement from the hot loop - 10,000 rows × 10

@@ -1078,15 +1078,13 @@ def test_setdecoding_with_unicode_data(db_connection):
 
     try:
         # Create test table with NVARCHAR columns for Unicode support
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_decoding_unicode (
                 id INT IDENTITY(1,1),
                 ascii_col VARCHAR(100),
                 unicode_col NVARCHAR(100)
             )
-        """
-        )
+        """)
 
         # Test ASCII strings in VARCHAR (safe)
         ascii_strings = [
@@ -1161,8 +1159,7 @@ def test_encoding_decoding_comprehensive_unicode_characters(db_connection):
 
     try:
         # Create test table with different column types - use NVARCHAR for better Unicode support
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_encoding_comprehensive (
                 id INT PRIMARY KEY,
                 varchar_col VARCHAR(1000),
@@ -1170,8 +1167,7 @@ def test_encoding_decoding_comprehensive_unicode_characters(db_connection):
                 text_col TEXT,
                 ntext_col NTEXT
             )
-        """
-        )
+        """)
 
         # Test cases with different Unicode character categories
         test_cases = [
@@ -1333,8 +1329,7 @@ def test_encoding_decoding_edge_case_data_types(db_connection):
 
     try:
         # Create table with various data types
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_encoding_datatypes (
                 id INT PRIMARY KEY,
                 varchar_small VARCHAR(50),
@@ -1346,8 +1341,7 @@ def test_encoding_decoding_edge_case_data_types(db_connection):
                 text_type TEXT,
                 ntext_type NTEXT
             )
-        """
-        )
+        """)
 
         # Test different encoding configurations
         test_configs = [
@@ -1639,16 +1633,14 @@ def test_encoding_decoding_large_dataset_performance(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_large_encoding (
                 id INT PRIMARY KEY,
                 ascii_data VARCHAR(1000),
                 unicode_data NVARCHAR(1000),
                 mixed_data NVARCHAR(MAX)
             )
-        """
-        )
+        """)
 
         # Generate test data - ensure it fits in column sizes
         ascii_text = "This is ASCII text with numbers 12345." * 10  # ~400 chars
@@ -1817,15 +1809,13 @@ def test_encoding_decoding_metadata_columns(db_connection):
 
     try:
         # Create table with Unicode column names if supported
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_metadata (
                 [normal_col] NVARCHAR(100),
                 [column_with_unicode_测试] NVARCHAR(100),
                 [special_chars_ñáéíóú] INT
             )
-        """
-        )
+        """)
 
         # Test metadata decoding configuration
         db_connection.setdecoding(mssql_python.SQL_WMETADATA, encoding="utf-16le", ctype=SQL_WCHAR)
@@ -1899,8 +1889,7 @@ def test_encoding_decoding_stress_test_comprehensive(db_connection):
     cursor = db_connection.cursor()
 
     try:
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #stress_test_encoding (
                 id INT IDENTITY(1,1) PRIMARY KEY,
                 ascii_text VARCHAR(500),
@@ -1908,8 +1897,7 @@ def test_encoding_decoding_stress_test_comprehensive(db_connection):
                 binary_data VARBINARY(500),
                 mixed_content NVARCHAR(MAX)
             )
-        """
-        )
+        """)
 
         # Generate diverse test data
         test_datasets = []
@@ -2030,15 +2018,13 @@ def test_encoding_decoding_sql_char_various_encodings(db_connection):
 
     try:
         # Create test table with VARCHAR columns (SQL_CHAR type)
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_sql_char_encodings (
                 id INT PRIMARY KEY,
                 data_col VARCHAR(100),
                 description VARCHAR(200)
             )
-        """
-        )
+        """)
 
         # Define various encoding types to test with SQL_CHAR
         encoding_tests = [
@@ -2315,15 +2301,13 @@ def test_encoding_decoding_sql_char_with_unicode_fallback(db_connection):
 
     try:
         # Create test table with both VARCHAR and NVARCHAR
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_unicode_fallback (
                 id INT PRIMARY KEY,
                 varchar_data VARCHAR(100),
                 nvarchar_data NVARCHAR(100)
             )
-        """
-        )
+        """)
 
         # Test Unicode data
         unicode_test_cases = [
@@ -2394,15 +2378,13 @@ def test_encoding_decoding_sql_char_native_character_sets(db_connection):
 
     try:
         # Create test table
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_native_chars (
                 id INT PRIMARY KEY,
                 data VARCHAR(200),
                 encoding_used VARCHAR(50)
             )
-        """
-        )
+        """)
 
         # Test encoding-specific character sets that should work
         encoding_native_tests = [
@@ -2537,15 +2519,13 @@ def test_encoding_decoding_sql_char_boundary_encoding_cases(db_connection):
 
     try:
         # Create test table
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_encoding_boundaries (
                 id INT PRIMARY KEY,
                 test_data VARCHAR(500),
                 test_type VARCHAR(100)
             )
-        """
-        )
+        """)
 
         # Test boundary cases for different encodings
         boundary_tests = [
@@ -2646,16 +2626,14 @@ def test_encoding_decoding_sql_char_unicode_issue_diagnosis(db_connection):
 
     try:
         # Create test table with both VARCHAR and NVARCHAR for comparison
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_unicode_issue (
                 id INT PRIMARY KEY,
                 varchar_col VARCHAR(100),
                 nvarchar_col NVARCHAR(100),
                 encoding_used VARCHAR(50)
             )
-        """
-        )
+        """)
 
         # Test Unicode strings that commonly cause issues
         test_strings = [
@@ -2701,11 +2679,9 @@ def test_encoding_decoding_sql_char_unicode_issue_diagnosis(db_connection):
                         )
 
                         # Retrieve results
-                        cursor.execute(
-                            """
+                        cursor.execute("""
                             SELECT varchar_col, nvarchar_col FROM #test_unicode_issue WHERE id = 1
-                        """
-                        )
+                        """)
                         result = cursor.fetchone()
 
                         if result:
@@ -2760,8 +2736,7 @@ def test_encoding_decoding_sql_char_best_practices_guide(db_connection):
 
     try:
         # Create test table demonstrating different column types
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_best_practices (
                 id INT PRIMARY KEY,
                 -- ASCII-safe columns (VARCHAR with SQL_CHAR)
@@ -2775,8 +2750,7 @@ def test_encoding_decoding_sql_char_best_practices_guide(db_connection):
                 -- Mixed approach column
                 safe_text VARCHAR(200)
             )
-        """
-        )
+        """)
 
         # Configure optimal settings
         db_connection.setencoding(encoding="utf-8", ctype=SQL_CHAR)  # For ASCII data
@@ -4992,15 +4966,13 @@ def test_execute_executemany_encoding_consistency(db_connection):
 
     try:
         # Create test table that can handle both VARCHAR and NVARCHAR data
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #test_encoding_consistency (
                 id INT IDENTITY(1,1) PRIMARY KEY,
                 varchar_col VARCHAR(1000) COLLATE SQL_Latin1_General_CP1_CI_AS,
                 nvarchar_col NVARCHAR(1000)
             )
-        """
-        )
+        """)
 
         # Test data with various encoding challenges
         # Using ASCII-safe characters that work across different encodings
@@ -5053,13 +5025,11 @@ def test_execute_executemany_encoding_consistency(db_connection):
                 )
 
                 # Retrieve immediately to verify encoding worked
-                cursor.execute(
-                    """
+                cursor.execute("""
                     SELECT varchar_col, nvarchar_col 
                     FROM #test_encoding_consistency 
                     WHERE id = (SELECT MAX(id) FROM #test_encoding_consistency)
-                """
-                )
+                """)
                 result = cursor.fetchone()
                 execute_results.append((result[0], result[1]))
 
@@ -5084,13 +5054,11 @@ def test_execute_executemany_encoding_consistency(db_connection):
             )
 
             # Retrieve all results from executemany
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT varchar_col, nvarchar_col 
                 FROM #test_encoding_consistency 
                 ORDER BY id
-            """
-            )
+            """)
             executemany_results = cursor.fetchall()
 
             # Verify executemany results match execute results
@@ -5127,13 +5095,11 @@ def test_execute_executemany_encoding_consistency(db_connection):
                             test_string,
                         )
 
-                        cursor.execute(
-                            """
+                        cursor.execute("""
                             SELECT nvarchar_col 
                             FROM #test_encoding_consistency 
                             WHERE id = (SELECT MAX(id) FROM #test_encoding_consistency)
-                        """
-                        )
+                        """)
                         result = cursor.fetchone()
                         unicode_execute_results.append(result[0])
 
@@ -5160,13 +5126,11 @@ def test_execute_executemany_encoding_consistency(db_connection):
                             unicode_params,
                         )
 
-                        cursor.execute(
-                            """
+                        cursor.execute("""
                             SELECT nvarchar_col 
                             FROM #test_encoding_consistency 
                             ORDER BY id
-                        """
-                        )
+                        """)
                         unicode_executemany_results = cursor.fetchall()
 
                         # Compare Unicode results
