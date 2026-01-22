@@ -16,69 +16,6 @@ from mssql_python.constants import ConstantsDDBC
 # normalize_architecture import removed as it's unused
 
 
-def add_driver_to_connection_str(connection_str: str) -> str:
-    """
-    Add the DDBC driver to the connection string if not present.
-
-    Args:
-        connection_str (str): The original connection string.
-
-
-    Returns:
-        str: The connection string with the DDBC driver added.
-
-    Raises:
-        Exception: If the connection string is invalid.
-    """
-    logger.debug(
-        "add_driver_to_connection_str: Processing connection string (length=%d)",
-        len(connection_str),
-    )
-    driver_name = "Driver={ODBC Driver 18 for SQL Server}"
-    try:
-        # Strip any leading or trailing whitespace from the connection string
-        connection_str = connection_str.strip()
-        connection_str = add_driver_name_to_app_parameter(connection_str)
-
-        # Split the connection string into individual attributes
-        connection_attributes = connection_str.split(";")
-        final_connection_attributes = []
-
-        # Iterate through the attributes and exclude any existing driver attribute
-        driver_found = False
-        for attribute in connection_attributes:
-            if attribute.lower().split("=")[0] == "driver":
-                driver_found = True
-                logger.debug(
-                    "add_driver_to_connection_str: Existing driver attribute found, removing"
-                )
-                continue
-            final_connection_attributes.append(attribute)
-
-        # Join the remaining attributes back into a connection string
-        connection_str = ";".join(final_connection_attributes)
-
-        # Insert the driver attribute at the beginning of the connection string
-        final_connection_attributes.insert(0, driver_name)
-        connection_str = ";".join(final_connection_attributes)
-        logger.debug(
-            "add_driver_to_connection_str: Driver added (had_existing=%s, attr_count=%d)",
-            str(driver_found),
-            len(final_connection_attributes),
-        )
-
-    except Exception as e:
-        logger.debug(
-            "add_driver_to_connection_str: Failed to process connection string - %s", str(e)
-        )
-        raise ValueError(
-            "Invalid connection string, Please follow the format: "
-            "Server=server_name;Database=database_name;UID=user_name;PWD=password"
-        ) from e
-
-    return connection_str
-
-
 def check_error(handle_type: int, handle: Any, ret: int) -> None:
     """
     Check for errors and raise an exception if an error is found.
@@ -99,45 +36,6 @@ def check_error(handle_type: int, handle: Any, ret: int) -> None:
         logger.error("Error: %s", error_info.ddbcErrorMsg)
         logger.debug("check_error: SQL state=%s", error_info.sqlState)
         raise_exception(error_info.sqlState, error_info.ddbcErrorMsg)
-
-
-def add_driver_name_to_app_parameter(connection_string: str) -> str:
-    """
-    Modifies the input connection string by appending the APP name.
-
-    Args:
-        connection_string (str): The input connection string.
-
-    Returns:
-        str: The modified connection string.
-    """
-    logger.debug("add_driver_name_to_app_parameter: Processing connection string")
-    # Split the input string into key-value pairs
-    parameters = connection_string.split(";")
-
-    # Initialize variables
-    app_found = False
-    modified_parameters = []
-
-    # Iterate through the key-value pairs
-    for param in parameters:
-        if param.lower().startswith("app="):
-            # Overwrite the value with 'MSSQL-Python'
-            app_found = True
-            key, _ = param.split("=", 1)
-            modified_parameters.append(f"{key}=MSSQL-Python")
-            logger.debug("add_driver_name_to_app_parameter: Existing APP parameter overwritten")
-        else:
-            # Keep other parameters as is
-            modified_parameters.append(param)
-
-    # If APP key is not found, append it
-    if not app_found:
-        modified_parameters.append("APP=MSSQL-Python")
-        logger.debug("add_driver_name_to_app_parameter: APP parameter added")
-
-    # Join the parameters back into a connection string
-    return ";".join(modified_parameters) + ";"
 
 
 def sanitize_connection_string(conn_str: str) -> str:

@@ -20,7 +20,6 @@ import threading
 import mssql_python
 from mssql_python.cursor import Cursor
 from mssql_python.helpers import (
-    add_driver_to_connection_str,
     sanitize_connection_string,
     sanitize_user_input,
     validate_attribute_value,
