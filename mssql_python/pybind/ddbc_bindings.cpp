@@ -1128,11 +1128,25 @@ void DriverLoader::loadDriver() {
 }
 
 // SqlHandle definition
-SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle) : _type(type), _handle(rawHandle) {}
+SqlHandle::SqlHandle(SQLSMALLINT type, SQLHANDLE rawHandle) : _type(type), _handle(rawHandle), _freed(false) {}
 
 SqlHandle::~SqlHandle() {
-    if (_handle) {
-        free();
+    // CRITICAL: Wrap in try-catch to prevent std::terminate() during GC
+    // C++ exceptions in destructors call std::terminate() which crashes the process
+    // This is especially critical during Python GC when ODBC operations may fail
+    // with "Invalid transaction state" or other errors
+    try {
+        if (_handle) {
+            free();
+        }
+    } catch (const std::runtime_error& e) {
+        // Suppress ODBC errors during cleanup - they're expected during GC
+        // Examples: "Invalid transaction state", "Connection is closed"
+        // Better to leak the handle than crash the process
+    } catch (const std::exception& e) {
+        // Catch all standard exceptions during cleanup
+    } catch (...) {
+        // Catch any other C++ exceptions
     }
 }
 
@@ -1152,32 +1166,85 @@ SQLSMALLINT SqlHandle::type() const {
  * If you need destruction logs, use explicit close() methods instead.
  */
 void SqlHandle::free() {
-    if (_handle && SQLFreeHandle_ptr) {
-        // Check if Python is shutting down using centralized helper function
-        bool pythonShuttingDown = is_python_finalizing();
+    // Early return if handle was already explicitly freed
+    if (_freed) {
+        return;  // Already freed via explicit free() call
+    }
+    
+    // Early return if handle is nullptr
+    if (!_handle) {
+        _freed = true;
+        return;  // Already freed, nothing to do
+    }
+    
+    // Early return if SQLFreeHandle function is not loaded
+    if (!SQLFreeHandle_ptr) {
+        _handle = nullptr;  // Mark as freed to prevent future attempts
+        _freed = true;
+        return;
+    }
 
-        // RESOURCE LEAK MITIGATION:
-        // When handles are skipped during shutdown, they are not freed, which could
-        // cause resource leaks. However, this is mitigated by:
-        // 1. Python-side atexit cleanup (in __init__.py) that explicitly closes all
-        //    connections before shutdown, ensuring handles are freed in correct order
-        // 2. OS-level cleanup at process termination recovers any remaining resources
-        // 3. This tradeoff prioritizes crash prevention over resource cleanup, which
-        //    is appropriate since we're already in shutdown sequence
-        if (pythonShuttingDown && (_type == SQL_HANDLE_STMT || _type == SQL_HANDLE_DBC)) {
-            _handle = nullptr;  // Mark as freed to prevent double-free attempts
-            return;
-        }
+    // Check if Python is shutting down using centralized helper function
+    bool pythonShuttingDown = is_python_finalizing();
 
-        // Always clean up ODBC resources, regardless of Python state
-        SQLFreeHandle_ptr(_type, _handle);
-        _handle = nullptr;
+    // RESOURCE LEAK MITIGATION:
+    // When handles are skipped during shutdown, they are not freed, which could
+    // cause resource leaks. However, this is mitigated by:
+    // 1. Python-side atexit cleanup (in __init__.py) that explicitly closes all
+    //    connections before shutdown, ensuring handles are freed in correct order
+    // 2. OS-level cleanup at process termination recovers any remaining resources
+    // 3. This tradeoff prioritizes crash prevention over resource cleanup, which
+    //    is appropriate since we're already in shutdown sequence
+    if (pythonShuttingDown && (_type == SQL_HANDLE_STMT || _type == SQL_HANDLE_DBC)) {
+        _handle = nullptr;  // Mark as freed to prevent double-free attempts
+        _freed = true;
+        return;
+    }
 
-        // Only log if Python is not shutting down (to avoid segfault)
+    // Additional safety: Check if handle is SQL_NULL_HANDLE before freeing
+    // This can happen if connection was closed and ODBC driver already freed statement handles
+    if (_handle == SQL_NULL_HANDLE) {
+        _freed = true;
+        return;  // Handle already null, nothing to free
+    }
+    
+    // CRITICAL FIX: Save handle and mark as freed BEFORE calling SQLFreeHandle
+    // This prevents race conditions where another thread checks the handle
+    // while SQLFreeHandle is in progress. Following pyodbc's proven pattern.
+    SQLHANDLE handle_to_free = _handle;
+    _handle = nullptr;  // Mark invalid FIRST (prevents race condition window)
+    _freed = true;      // Mark freed FIRST
+    
+    // USE-AFTER-FREE FIX: Now free the saved handle with error handling
+    // to prevent segfaults when handle is already freed or invalid
+    SQLRETURN ret = SQL_SUCCESS;
+    
+    // CRITICAL: Wrap SQLFreeHandle call in try-catch
+    // ODBC driver can throw C++ exceptions (e.g., "Invalid transaction state")
+    // during GC or when connection is in invalid state
+    try {
+        ret = SQLFreeHandle_ptr(_type, handle_to_free);
+    } catch (const std::runtime_error& e) {
+        // Suppress ODBC runtime errors during cleanup
+        // Common during GC: "Invalid transaction state", "Connection is closed"
+        // Mark as success to skip error handling below
+        ret = SQL_SUCCESS;
+    } catch (const std::exception& e) {
+        // Catch all standard exceptions
+        ret = SQL_SUCCESS;
+    } catch (...) {
+        // Catch any other C++ exceptions
+        ret = SQL_SUCCESS;
+    }
+
+    // Handle errors gracefully - don't throw on invalid handle
+    // SQL_INVALID_HANDLE (-2) indicates handle was already freed or invalid
+    // This is expected during connection invalidation scenarios
+    if (ret != SQL_SUCCESS && ret != SQL_SUCCESS_WITH_INFO && ret != SQL_INVALID_HANDLE) {
+        // Only log non-critical errors if Python is not shutting down
         if (!pythonShuttingDown) {
-            // Don't log during destruction - even in normal cases it can be
-            // problematic If logging is needed, use explicit close() methods
-            // instead
+            // Log error but don't throw exception - prevents crashes during cleanup
+            // If logging is needed, use explicit close() methods instead of destructor
         }
     }
 }

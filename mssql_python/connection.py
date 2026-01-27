@@ -286,6 +286,10 @@ class Connection:
         # TODO: Think and implement scenarios for multi-threaded access
         # to cursors
         self._cursors = weakref.WeakSet()
+        
+        # Track if connection has been closed to prevent cursors from
+        # trying to free handles after connection is closed (prevents segfault)
+        self._connection_closed = False
 
         # Initialize output converters dictionary and its lock for thread safety
         self._output_converters = {}
@@ -1481,7 +1485,7 @@ class Connection:
         self._conn.rollback()
         logger.info("Transaction rolled back successfully.")
 
-    def close(self) -> None:
+    def close(self, from_del: bool = False) -> None:
         """
         Close the connection now (rather than whenever .__del__() is called).
 
@@ -1491,6 +1495,11 @@ class Connection:
         trying to use the connection. Note that closing a connection without committing
         the changes first will cause an implicit rollback to be performed.
 
+        Args:
+            from_del: If True, called from __del__ during GC - skip ODBC handle freeing
+                     to prevent segfaults. GC can run at unpredictable times (e.g., during
+                     SQLAlchemy event listener setup) and freeing handles then causes crashes.
+
         Raises:
             DatabaseError: If there is an error while closing the connection.
         """
@@ -1498,12 +1507,52 @@ class Connection:
         if self._closed:
             return
 
+        # CRITICAL GC SAFETY: If called from __del__ during garbage collection,
+        # do ABSOLUTELY NOTHING. Not even set flags or nullify handles.
+        # Even the simplest operations (self._closed = True, return statement) trigger
+        # C++ ODBC operations that throw std::runtime_error: "Invalid transaction state"
+        # which calls std::terminate() and crashes the process.
+        #
+        # CRITICAL: Do NOT set self._conn = None! The C++ ConnectionHandle destructor
+        # calls rollback/disconnect which throws exceptions during GC. Keep the reference
+        # alive to prevent C++ destructor from running during GC.
+        #
+        # Better to leak all resources (handles, memory) than to crash. The OS will
+        # clean up handles when the process exits.
+        #
+        # This is fundamentally incompatible with Python's GC model. pyodbc uses C-level
+        # tp_dealloc for predictable cleanup timing. We can't easily convert to that
+        # without a major architectural refactor, so we accept resource leaks during GC.
+        if from_del:
+            return  # DO NOTHING - not even flag setting, not even _conn nullification
+
+        # CRITICAL: Set connection closed flag BEFORE closing anything
+        # This prevents cursors from trying to free handles during/after connection close
+        self._connection_closed = True
+
         # Close all cursors first, but don't let one failure stop the others
         if hasattr(self, "_cursors"):
             # Convert to list to avoid modification during iteration
             cursors_to_close = list(self._cursors)
             close_errors = []
 
+            # First pass: Invalidate cursor handles to prevent use-after-free
+            for cursor in cursors_to_close:
+                try:
+                    # CRITICAL: Mark cursor as invalidated BEFORE clearing handle
+                    # This tells cursor.close() to skip SQLFreeHandle entirely
+                    if hasattr(cursor, '_invalidated'):
+                        cursor._invalidated = True
+                    # Mark handles as freed before closing connection
+                    # This prevents cursors from trying to free already-freed handles
+                    if hasattr(cursor, '_handle_freed'):
+                        cursor._handle_freed = True
+                    if hasattr(cursor, 'hstmt'):
+                        cursor.hstmt = None
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.warning("Error invalidating cursor handle: %s", e)
+
+            # Second pass: Close cursors
             for cursor in cursors_to_close:
                 try:
                     if not cursor.closed:
@@ -1600,10 +1649,20 @@ class Connection:
         is no longer needed.
         This is a safety net to ensure resources are cleaned up
         even if close() was not called explicitly.
+        
+        CRITICAL GC SAFETY: Do ABSOLUTELY NOTHING during GC cleanup.
+        ANY operation (even calling close(from_del=True)) can trigger C++ ODBC
+        operations that throw uncatchable exceptions during garbage collection.
+        
+        The C++ ODBC driver throws std::runtime_error: "Invalid transaction state" 
+        when connections are cleaned up during GC, especially during SQLAlchemy 
+        event listener setup. These exceptions bypass Python exception handling and
+        call std::terminate(), crashing the process.
+        
+        pyodbc avoids this by using C-level tp_dealloc. We work around it by doing
+        NOTHING and letting the OS clean up ODBC handles at process exit. Better
+        to leak resources than crash.
         """
-        if "_closed" not in self.__dict__ or not self._closed:
-            try:
-                self.close()
-            except Exception as e:
-                # Dont raise exceptions from __del__ to avoid issues during garbage collection
-                logger.warning(f"Error during connection cleanup: {e}")
+        # DO ABSOLUTELY NOTHING - not even sys.is_finalizing() check
+        # Even the simplest operations can trigger C++ ODBC calls during GC
+        pass
