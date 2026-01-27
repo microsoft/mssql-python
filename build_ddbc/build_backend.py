@@ -11,9 +11,6 @@ Usage in pyproject.toml:
     backend-path = ["."]
 """
 
-import sys
-from pathlib import Path
-
 # Import setuptools build backend - we'll wrap its functions
 from setuptools.build_meta import (
     build_wheel as _setuptools_build_wheel,

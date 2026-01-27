@@ -14,7 +14,6 @@ For building:
     pip install -e .           # Editable install with auto-compile
 """
 
-import os
 import sys
 
 from setuptools import setup, find_packages

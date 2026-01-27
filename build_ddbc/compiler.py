@@ -63,12 +63,15 @@ def find_pybind_dir() -> Path:
         Path.cwd() / "mssql_python" / "pybind",
     ]
 
+    # Check for platform-appropriate build script
+    build_script = "build.bat" if sys.platform.startswith("win") else "build.sh"
+
     for path in possible_paths:
-        if path.exists() and (path / "build.sh").exists():
+        if path.exists() and (path / build_script).exists():
             return path
 
     raise FileNotFoundError(
-        "Could not find mssql_python/pybind directory. "
+        f"Could not find mssql_python/pybind directory with {build_script}. "
         "Make sure you're running from the project root."
     )
 
