@@ -1144,6 +1144,10 @@ SQLSMALLINT SqlHandle::type() const {
     return _type;
 }
 
+void SqlHandle::markImplicitlyFreed() {
+    _implicitly_freed = true;
+}
+
 /*
  * IMPORTANT: Never log in destructors - it causes segfaults.
  * During program exit, C++ destructors may run AFTER Python shuts down.
@@ -1169,16 +1173,19 @@ void SqlHandle::free() {
             return;
         }
 
-        // Always clean up ODBC resources, regardless of Python state
+        // CRITICAL FIX: Check if handle was already implicitly freed by parent handle
+        // When Connection::disconnect() frees the DBC handle, the ODBC driver automatically
+        // frees all child STMT handles. We track this state to avoid double-free attempts.
+        // This approach avoids calling ODBC functions on potentially-freed handles, which
+        // would cause use-after-free errors.
+        if (_implicitly_freed) {
+            _handle = nullptr;  // Just clear the pointer, don't call ODBC functions
+            return;
+        }
+
+        // Handle is valid and not implicitly freed, proceed with normal freeing
         SQLFreeHandle_ptr(_type, _handle);
         _handle = nullptr;
-
-        // Only log if Python is not shutting down (to avoid segfault)
-        if (!pythonShuttingDown) {
-            // Don't log during destruction - even in normal cases it can be
-            // problematic If logging is needed, use explicit close() methods
-            // instead
-        }
     }
 }
 
@@ -2893,7 +2900,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 
     // Cache decimal separator to avoid repeated system calls
 
-
     for (SQLSMALLINT i = 1; i <= colCount; ++i) {
         SQLWCHAR columnName[256];
         SQLSMALLINT columnNameLen;
@@ -3615,8 +3621,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
     }
 
-
-
     // Performance: Build function pointer dispatch table (once per batch)
     // This eliminates the switch statement from the hot loop - 10,000 rows × 10
     // cols reduces from 100,000 switch evaluations to just 10 switch
@@ -4033,8 +4037,8 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
             lobColumns.push_back(i + 1);  // 1-based
         }
     }
-    
-    // Initialized to 0 for LOB path counter; overwritten by ODBC in non-LOB path; 
+
+    // Initialized to 0 for LOB path counter; overwritten by ODBC in non-LOB path;
     SQLULEN numRowsFetched = 0;
     // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
     if (!lobColumns.empty()) {
@@ -4066,7 +4070,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         LOG("FetchMany_wrap: Error when binding columns - SQLRETURN=%d", ret);
         return ret;
     }
-    
+
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
@@ -4360,7 +4364,9 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);
 
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
-        .def("free", &SqlHandle::free, "Free the handle");
+        .def("free", &SqlHandle::free, "Free the handle")
+        .def("markImplicitlyFreed", &SqlHandle::markImplicitlyFreed,
+             "Mark handle as implicitly freed by parent handle");
 
     py::class_<ConnectionHandle>(m, "Connection")
         .def(py::init<const std::string&, bool, const py::dict&>(), py::arg("conn_str"),
