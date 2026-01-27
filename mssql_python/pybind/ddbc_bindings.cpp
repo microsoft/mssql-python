@@ -2900,7 +2900,6 @@ SQLRETURN SQLGetData_wrap(SqlHandlePtr StatementHandle, SQLUSMALLINT colCount, p
 
     // Cache decimal separator to avoid repeated system calls
 
-
     for (SQLSMALLINT i = 1; i <= colCount; ++i) {
         SQLWCHAR columnName[256];
         SQLSMALLINT columnNameLen;
@@ -3622,8 +3621,6 @@ SQLRETURN FetchBatchData(SQLHSTMT hStmt, ColumnBuffers& buffers, py::list& colum
             columnInfos[col].processedColumnSize + 1;  // +1 for null terminator
     }
 
-
-
     // Performance: Build function pointer dispatch table (once per batch)
     // This eliminates the switch statement from the hot loop - 10,000 rows × 10
     // cols reduces from 100,000 switch evaluations to just 10 switch
@@ -4040,8 +4037,8 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
             lobColumns.push_back(i + 1);  // 1-based
         }
     }
-    
-    // Initialized to 0 for LOB path counter; overwritten by ODBC in non-LOB path; 
+
+    // Initialized to 0 for LOB path counter; overwritten by ODBC in non-LOB path;
     SQLULEN numRowsFetched = 0;
     // If we have LOBs → fall back to row-by-row fetch + SQLGetData_wrap
     if (!lobColumns.empty()) {
@@ -4073,7 +4070,7 @@ SQLRETURN FetchMany_wrap(SqlHandlePtr StatementHandle, py::list& rows, int fetch
         LOG("FetchMany_wrap: Error when binding columns - SQLRETURN=%d", ret);
         return ret;
     }
-    
+
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROW_ARRAY_SIZE, (SQLPOINTER)(intptr_t)fetchSize, 0);
     SQLSetStmtAttr_ptr(hStmt, SQL_ATTR_ROWS_FETCHED_PTR, &numRowsFetched, 0);
 
@@ -4368,7 +4365,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle")
-        .def("markImplicitlyFreed", &SqlHandle::markImplicitlyFreed, 
+        .def("markImplicitlyFreed", &SqlHandle::markImplicitlyFreed,
              "Mark handle as implicitly freed by parent handle");
 
     py::class_<ConnectionHandle>(m, "Connection")

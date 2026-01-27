@@ -61,7 +61,7 @@ class Connection {
     std::chrono::steady_clock::time_point _lastUsed;
     std::wstring wstrStringBuffer;  // wstr buffer for string attribute setting
     std::string strBytesBuffer;     // string buffer for byte attributes setting
-    
+
     // Track child statement handles to mark them as implicitly freed when connection closes
     // Uses weak_ptr to avoid circular references and allow normal cleanup
     std::vector<std::weak_ptr<SqlHandle>> _childStatementHandles;

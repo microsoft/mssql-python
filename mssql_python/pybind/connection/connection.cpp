@@ -94,19 +94,20 @@ void Connection::connect(const py::dict& attrs_before) {
 void Connection::disconnect() {
     if (_dbcHandle) {
         LOG("Disconnecting from database");
-        
+
         // CRITICAL FIX: Mark all child statement handles as implicitly freed
         // When we free the DBC handle below, the ODBC driver will automatically free
         // all child STMT handles. We need to tell the SqlHandle objects about this
         // so they don't try to free the handles again during their destruction.
-        LOG("Marking %zu child statement handles as implicitly freed", _childStatementHandles.size());
+        LOG("Marking %zu child statement handles as implicitly freed",
+            _childStatementHandles.size());
         for (auto& weakHandle : _childStatementHandles) {
             if (auto handle = weakHandle.lock()) {
                 handle->markImplicitlyFreed();
             }
         }
         _childStatementHandles.clear();
-        
+
         SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
         checkError(ret);
         // triggers SQLFreeHandle via destructor, if last owner
@@ -187,18 +188,18 @@ SqlHandlePtr Connection::allocStatementHandle() {
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbcHandle->get(), &stmt);
     checkError(ret);
     auto stmtHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT), stmt);
-    
+
     // Track this child handle so we can mark it as implicitly freed when connection closes
     // Use weak_ptr to avoid circular references and allow normal cleanup
     _childStatementHandles.push_back(stmtHandle);
-    
+
     // Clean up expired weak_ptrs periodically to avoid unbounded growth
     // Remove entries where the weak_ptr is expired (object was already destroyed)
     _childStatementHandles.erase(
         std::remove_if(_childStatementHandles.begin(), _childStatementHandles.end(),
                        [](const std::weak_ptr<SqlHandle>& wp) { return wp.expired(); }),
         _childStatementHandles.end());
-    
+
     return stmtHandle;
 }
 
@@ -334,7 +335,7 @@ bool Connection::reset() {
         disconnect();
         return false;
     }
-    
+
     // SQL_ATTR_RESET_CONNECTION does NOT reset the transaction isolation level.
     // Explicitly reset it to the default (SQL_TXN_READ_COMMITTED) to prevent
     // isolation level settings from leaking between pooled connection usages.
@@ -346,7 +347,7 @@ bool Connection::reset() {
         disconnect();
         return false;
     }
-    
+
     updateLastUsed();
     return true;
 }
