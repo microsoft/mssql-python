@@ -11,7 +11,7 @@ jobs:
   displayName: 'CodeQL Security Analysis'
   pool:
     vmImage: 'ubuntu-latest'
-  
+
   steps:
   - script: |
       sudo apt-get update
@@ -45,10 +45,14 @@ jobs:
     condition: always()
     displayName: 'Finalize CodeQL'
 
-- job: PytestOnWindows
+- job: pytestonwindows
   displayName: 'Windows x64'
   pool:
     vmImage: 'windows-latest'
+  variables:
+    # Enable CodeQL for this job to update the old stale snapshot (build_jobname=pytestonwindows)
+    # This can be removed once the old CodeQL issue SM02986 is cleared
+    Codeql.Enabled: true
   
   strategy:
     matrix:
@@ -225,10 +229,21 @@ jobs:
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
+  # ============== CodeQL Init (temporary - remove after SM02986 is cleared) ==============
+  - task: CodeQL3000Init@0
+    inputs:
+      Enabled: true
+    displayName: 'Initialize CodeQL (temporary)'
+
   - script: |
       cd mssql_python\pybind
       build.bat x64
     displayName: 'Build .pyd file'
+
+  # ============== CodeQL Finalize (temporary - remove after SM02986 is cleared) ==============
+  - task: CodeQL3000Finalize@0
+    condition: always()
+    displayName: 'Finalize CodeQL (temporary)'
 
   # Run tests for LocalDB
   - script: |
