@@ -2599,11 +2599,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             pycore_connection = mssql_py_core.PyCoreConnection(pycore_context)
             pycore_cursor = pycore_connection.cursor()
 
-            # Pass kwargs as a dict parameter, not as Python keyword arguments
-            # The Rust API expects: bulkcopy(table_name, data_source, kwargs=dict)
-            result = pycore_cursor.bulkcopy(
-                table_name, iter(data), kwargs=kwargs if kwargs else None
-            )
+            result = pycore_cursor.bulkcopy(table_name, iter(data), **kwargs)
 
             return result
 
