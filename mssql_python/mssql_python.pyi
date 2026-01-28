@@ -81,6 +81,33 @@ def TimeFromTicks(ticks: int) -> datetime.time: ...
 def TimestampFromTicks(ticks: int) -> datetime.datetime: ...
 def Binary(value: Union[str, bytes, bytearray]) -> bytes: ...
 
+# SQLTypeCode - Dual-compatible type code for cursor.description
+class SQLTypeCode:
+    """
+    A type code that supports dual comparison with both SQL type integers and Python types.
+
+    This class is used in cursor.description[i][1] to provide backwards compatibility
+    with libraries like pandas (which compare with Python types like str, int, float)
+    while also supporting DB-API 2.0 style integer type code comparisons.
+
+    Examples:
+        >>> desc = cursor.description
+        >>> desc[0][1] == str  # True if column is string type
+        >>> desc[0][1] == 12   # True if SQL_VARCHAR
+        >>> int(desc[0][1])    # Returns the SQL type code as integer
+    """
+
+    type_code: int
+    python_type: type
+
+    def __init__(self, type_code: int, python_type: Optional[type] = None) -> None: ...
+    def __eq__(self, other: Any) -> bool: ...
+    def __ne__(self, other: Any) -> bool: ...
+    def __int__(self) -> int: ...
+    def __hash__(self) -> int: ...
+    def __repr__(self) -> str: ...
+    def __str__(self) -> str: ...
+
 # DB-API 2.0 Exception Hierarchy
 # https://www.python.org/dev/peps/pep-0249/#exceptions
 class Warning(Exception):
@@ -133,7 +160,7 @@ class Row:
         description: List[
             Tuple[
                 str,
-                Any,
+                SQLTypeCode,
                 Optional[int],
                 Optional[int],
                 Optional[int],
@@ -163,11 +190,14 @@ class Cursor:
     """
 
     # DB-API 2.0 Required Attributes
+    # description is a sequence of 7-item tuples:
+    # (name, type_code, display_size, internal_size, precision, scale, null_ok)
+    # type_code is SQLTypeCode which compares equal to both SQL integers and Python types
     description: Optional[
         List[
             Tuple[
                 str,
-                Any,
+                SQLTypeCode,
                 Optional[int],
                 Optional[int],
                 Optional[int],

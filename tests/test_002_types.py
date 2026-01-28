@@ -1267,3 +1267,211 @@ def test_utf8_4byte_sequence_complete_coverage():
             assert len(result) > 0, f"Invalid pattern should produce some output"
 
     assert True, "Complete 4-byte sequence coverage validated"
+
+
+# =============================================================================
+# SQLTypeCode Unit Tests (DB-API 2.0 + pandas compatibility)
+# =============================================================================
+
+
+class TestSQLTypeCode:
+    """
+    Unit tests for SQLTypeCode class.
+
+    SQLTypeCode provides dual compatibility:
+    - Compares equal to Python type objects (str, int, float, etc.) for pandas compatibility
+    - Compares equal to SQL integer codes for DB-API 2.0 compliance
+    """
+
+    def test_sqltypecode_import(self):
+        """Test that SQLTypeCode is importable from public API."""
+        from mssql_python import SQLTypeCode
+
+        assert SQLTypeCode is not None
+
+    def test_sqltypecode_equals_python_type_str(self):
+        """Test SQLTypeCode for SQL_WVARCHAR (-9) equals str."""
+        from mssql_python import SQLTypeCode
+
+        tc = SQLTypeCode(-9)  # SQL_WVARCHAR
+        assert tc == str, "SQLTypeCode(-9) should equal str"
+        assert not (tc != str), "SQLTypeCode(-9) should not be != str"
+
+    def test_sqltypecode_equals_python_type_int(self):
+        """Test SQLTypeCode for SQL_INTEGER (4) equals int."""
+        from mssql_python import SQLTypeCode
+
+        tc = SQLTypeCode(4)  # SQL_INTEGER
+        assert tc == int, "SQLTypeCode(4) should equal int"
+
+    def test_sqltypecode_equals_python_type_float(self):
+        """Test SQLTypeCode for SQL_REAL (7) equals float."""
+        from mssql_python import SQLTypeCode
+
+        tc = SQLTypeCode(7)  # SQL_REAL
+        assert tc == float, "SQLTypeCode(7) should equal float"
+
+    def test_sqltypecode_equals_python_type_bytes(self):
+        """Test SQLTypeCode for SQL_BINARY (-2) equals bytes."""
+        from mssql_python import SQLTypeCode
+
+        tc = SQLTypeCode(-2)  # SQL_BINARY
+        assert tc == bytes, "SQLTypeCode(-2) should equal bytes"
+
+    def test_sqltypecode_equals_sql_integer_code(self):
+        """Test SQLTypeCode equals its raw SQL integer code."""
+        from mssql_python import SQLTypeCode
+
+        tc = SQLTypeCode(4)  # SQL_INTEGER
+        assert tc == 4, "SQLTypeCode(4) should equal 4"
+        assert tc == SQLTypeCode(4).type_code, "SQLTypeCode(4) should equal its type_code"
+
+    def test_sqltypecode_equals_negative_sql_code(self):
+        """Test SQLTypeCode with negative SQL codes (e.g., SQL_WVARCHAR = -9)."""
+        from mssql_python import SQLTypeCode
+
+        tc = SQLTypeCode(-9)  # SQL_WVARCHAR
+        assert tc == -9, "SQLTypeCode(-9) should equal -9"
+
+    def test_sqltypecode_dual_compatibility(self):
+        """Test that SQLTypeCode equals both Python type AND SQL code simultaneously."""
+        from mssql_python import SQLTypeCode
+
+        tc = SQLTypeCode(4)  # SQL_INTEGER
+        # Must satisfy BOTH comparisons - this is the key feature
+        assert tc == int and tc == 4, "SQLTypeCode should equal both int and 4"
+
+    def test_sqltypecode_int_conversion(self):
+        """Test int(SQLTypeCode) returns raw SQL code."""
+        from mssql_python import SQLTypeCode
+
+        tc = SQLTypeCode(-9)
+        assert int(tc) == -9, "int(SQLTypeCode(-9)) should return -9"
+        tc2 = SQLTypeCode(4)
+        assert int(tc2) == 4, "int(SQLTypeCode(4)) should return 4"
+
+    def test_sqltypecode_hash(self):
+        """Test SQLTypeCode is hashable (for use in dicts/sets)."""
+        from mssql_python import SQLTypeCode
+
+        tc1 = SQLTypeCode(4)
+        tc2 = SQLTypeCode(4)
+        tc3 = SQLTypeCode(-9)
+        # Same code should have same hash
+        assert hash(tc1) == hash(tc2)
+        # Different codes may have different hashes (not guaranteed but typical)
+        s = {tc1, tc3}
+        assert len(s) == 2
+
+    def test_sqltypecode_repr(self):
+        """Test SQLTypeCode has informative repr."""
+        from mssql_python import SQLTypeCode
+
+        tc = SQLTypeCode(4)
+        r = repr(tc)
+        assert "4" in r, "repr should contain the SQL code"
+        assert "SQLTypeCode" in r, "repr should contain class name"
+
+    def test_sqltypecode_type_code_property(self):
+        """Test SQLTypeCode.type_code returns raw SQL code."""
+        from mssql_python import SQLTypeCode
+
+        tc = SQLTypeCode(-9)
+        assert tc.type_code == -9
+        tc2 = SQLTypeCode(93)  # SQL_TYPE_TIMESTAMP
+        assert tc2.type_code == 93
+
+    def test_sqltypecode_python_type_property(self):
+        """Test SQLTypeCode.python_type returns mapped type."""
+        from mssql_python import SQLTypeCode
+
+        tc = SQLTypeCode(4)  # SQL_INTEGER
+        assert tc.python_type == int
+        tc2 = SQLTypeCode(-9)  # SQL_WVARCHAR
+        assert tc2.python_type == str
+
+    def test_sqltypecode_unknown_type_maps_to_str(self):
+        """Test unknown SQL codes map to str by default."""
+        from mssql_python import SQLTypeCode
+
+        tc = SQLTypeCode(99999)  # Unknown code
+        assert tc.python_type == str
+        assert tc == str  # Should still work for comparison
+
+    def test_sqltypecode_pandas_simulation(self):
+        """
+        Simulate pandas read_sql type checking behavior.
+
+        Pandas checks `cursor.description[i][1] == str` to determine
+        if a column should be treated as string data.
+        """
+        from mssql_python import SQLTypeCode
+
+        # Simulate a description tuple like pandas receives
+        description = [
+            ("name", SQLTypeCode(-9), None, None, None, None, None),  # nvarchar
+            ("age", SQLTypeCode(4), None, None, None, None, None),  # int
+            ("salary", SQLTypeCode(6), None, None, None, None, None),  # float
+        ]
+
+        # Pandas-style type checking
+        string_columns = []
+        for name, type_code, *rest in description:
+            if type_code == str:
+                string_columns.append(name)
+
+        assert string_columns == ["name"], "Only 'name' column should be detected as string"
+
+        # Verify other types work too
+        for name, type_code, *rest in description:
+            if type_code == int:
+                assert name == "age"
+            if type_code == float:
+                assert name == "salary"
+
+    def test_sqltypecode_dbapi_simulation(self):
+        """
+        Simulate DB-API 2.0 style type checking with integer codes.
+        """
+        from mssql_python import SQLTypeCode
+
+        # Simulate description
+        description = [
+            ("id", SQLTypeCode(4), None, None, None, None, None),  # SQL_INTEGER
+            ("data", SQLTypeCode(-9), None, None, None, None, None),  # SQL_WVARCHAR
+        ]
+
+        # DB-API style: check raw SQL code
+        for name, type_code, *rest in description:
+            if type_code == 4:  # SQL_INTEGER
+                assert name == "id"
+            if type_code == -9:  # SQL_WVARCHAR
+                assert name == "data"
+
+    def test_sqltypecode_equality_with_other_sqltypecode(self):
+        """Test SQLTypeCode equality with another SQLTypeCode."""
+        from mssql_python import SQLTypeCode
+
+        tc1 = SQLTypeCode(4)
+        tc2 = SQLTypeCode(4)
+        tc3 = SQLTypeCode(-9)
+
+        # Explicitly test __eq__ with SQLTypeCode argument (covers cursor.py line 128)
+        result1 = tc1.__eq__(tc2)  # Same type codes
+        result2 = tc1.__eq__(tc3)  # Different type codes
+        assert result1 is True, "Same code SQLTypeCodes should be equal"
+        assert result2 is False, "Different code SQLTypeCodes should not be equal"
+
+        # Also test via == operator
+        assert tc1 == tc2, "Same code SQLTypeCodes should be equal via =="
+        assert tc1 != tc3, "Different code SQLTypeCodes should not be equal via !="
+
+    def test_sqltypecode_inequality(self):
+        """Test SQLTypeCode inequality comparisons."""
+        from mssql_python import SQLTypeCode
+
+        tc = SQLTypeCode(4)
+        assert tc != str, "SQL_INTEGER should not equal str"
+        assert tc != float, "SQL_INTEGER should not equal float"
+        assert tc != 5, "SQLTypeCode(4) should not equal 5"
+        assert tc != -9, "SQLTypeCode(4) should not equal -9"

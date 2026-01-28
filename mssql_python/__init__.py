@@ -59,7 +59,7 @@ from .connection_string_parser import _ConnectionStringParser
 from .connection_string_builder import _ConnectionStringBuilder
 
 # Cursor Objects
-from .cursor import Cursor
+from .cursor import Cursor, SQLTypeCode
 
 # Logging Configuration (Simplified single-level DEBUG system)
 from .logging import logger, setup_logging, driver_logger

@@ -48,6 +48,103 @@ MONEY_MIN: decimal.Decimal = decimal.Decimal("-922337203685477.5808")
 MONEY_MAX: decimal.Decimal = decimal.Decimal("922337203685477.5807")
 
 
+class SQLTypeCode:
+    """
+    A dual-compatible type code that compares equal to both SQL type integers and Python types.
+
+    This class maintains backwards compatibility with code that checks
+    `cursor.description[i][1] == str` while also supporting DB-API 2.0
+    compliant code that checks `cursor.description[i][1] == -9`.
+
+    Examples:
+        >>> type_code = SQLTypeCode(-9, str)
+        >>> type_code == str  # Backwards compatible with pandas, etc.
+        True
+        >>> type_code == -9   # DB-API 2.0 compliant
+        True
+        >>> int(type_code)    # Get the raw SQL type code
+        -9
+    """
+
+    # SQL type code to Python type mapping (class-level cache)
+    _type_map = None
+
+    def __init__(self, type_code: int, python_type: type = None):
+        self.type_code = type_code
+        # If python_type not provided, look it up from the mapping
+        if python_type is None:
+            python_type = self._get_python_type(type_code)
+        self.python_type = python_type
+
+    @classmethod
+    def _get_type_map(cls):
+        """Lazily build the SQL to Python type mapping."""
+        if cls._type_map is None:
+            cls._type_map = {
+                ddbc_sql_const.SQL_CHAR.value: str,
+                ddbc_sql_const.SQL_VARCHAR.value: str,
+                ddbc_sql_const.SQL_LONGVARCHAR.value: str,
+                ddbc_sql_const.SQL_WCHAR.value: str,
+                ddbc_sql_const.SQL_WVARCHAR.value: str,
+                ddbc_sql_const.SQL_WLONGVARCHAR.value: str,
+                ddbc_sql_const.SQL_INTEGER.value: int,
+                ddbc_sql_const.SQL_REAL.value: float,
+                ddbc_sql_const.SQL_FLOAT.value: float,
+                ddbc_sql_const.SQL_DOUBLE.value: float,
+                ddbc_sql_const.SQL_DECIMAL.value: decimal.Decimal,
+                ddbc_sql_const.SQL_NUMERIC.value: decimal.Decimal,
+                ddbc_sql_const.SQL_DATE.value: datetime.date,
+                ddbc_sql_const.SQL_TIMESTAMP.value: datetime.datetime,
+                ddbc_sql_const.SQL_TIME.value: datetime.time,
+                ddbc_sql_const.SQL_SS_TIME2.value: datetime.time,  # SQL Server TIME(n)
+                ddbc_sql_const.SQL_BIT.value: bool,
+                ddbc_sql_const.SQL_TINYINT.value: int,
+                ddbc_sql_const.SQL_SMALLINT.value: int,
+                ddbc_sql_const.SQL_BIGINT.value: int,
+                ddbc_sql_const.SQL_BINARY.value: bytes,
+                ddbc_sql_const.SQL_VARBINARY.value: bytes,
+                ddbc_sql_const.SQL_LONGVARBINARY.value: bytes,
+                ddbc_sql_const.SQL_GUID.value: uuid.UUID,
+                ddbc_sql_const.SQL_SS_UDT.value: bytes,
+                ddbc_sql_const.SQL_SS_XML.value: str,  # SQL Server XML type (-152)
+                ddbc_sql_const.SQL_DATETIME2.value: datetime.datetime,
+                ddbc_sql_const.SQL_SMALLDATETIME.value: datetime.datetime,
+                ddbc_sql_const.SQL_DATETIMEOFFSET.value: datetime.datetime,
+            }
+        return cls._type_map
+
+    @classmethod
+    def _get_python_type(cls, sql_code: int) -> type:
+        """Get the Python type for a SQL type code."""
+        return cls._get_type_map().get(sql_code, str)
+
+    def __eq__(self, other):
+        """Compare equal to both Python types and SQL integer codes."""
+        if isinstance(other, type):
+            return self.python_type == other
+        if isinstance(other, int):
+            return self.type_code == other
+        if isinstance(other, SQLTypeCode):
+            return self.type_code == other.type_code
+        return False
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __hash__(self):
+        return hash(self.type_code)
+
+    def __int__(self):
+        return self.type_code
+
+    def __repr__(self):
+        type_name = self.python_type.__name__ if self.python_type else "Unknown"
+        return f"SQLTypeCode({self.type_code}, {type_name})"
+
+    def __str__(self):
+        return str(self.type_code)
+
+
 class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-methods
     """
     Represents a database cursor, which is used to manage the context of a fetch operation.
@@ -141,6 +238,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             False  # Track if we need to skip incrementing the row index
         )
         self.messages = []  # Store diagnostic messages
+
+        # Store raw column metadata for converter lookups
+        self._column_metadata = None
 
     def _is_unicode_string(self, param: str) -> bool:
         """
@@ -756,6 +856,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.hstmt = None
             logger.debug("SQLFreeHandle succeeded")
         self._clear_rownumber()
+        self._column_metadata = None  # Clear metadata to prevent memory leaks
         self.closed = True
 
     def _check_closed(self) -> None:
@@ -942,7 +1043,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """Initialize the description attribute from column metadata."""
         if not column_metadata:
             self.description = None
+            self._column_metadata = None  # Clear metadata too
             return
+
+        # Store raw metadata for converter map building
+        self._column_metadata = column_metadata
 
         description = []
         for _, col in enumerate(column_metadata):
@@ -954,10 +1059,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 column_name = column_name.lower()
 
             # Add to description tuple (7 elements as per PEP-249)
+            # Use SQLTypeCode for backwards-compatible type_code that works with both
+            # `desc[1] == str` (pandas) and `desc[1] == -9` (DB-API 2.0)
+            sql_type = col["DataType"]
             description.append(
                 (
                     column_name,  # name
-                    self._map_data_type(col["DataType"]),  # type_code
+                    SQLTypeCode(sql_type),  # type_code - dual compatible
                     None,  # display_size
                     col["ColumnSize"],  # internal_size
                     col["ColumnSize"],  # precision - should match ColumnSize
@@ -975,6 +1083,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         if (
             not self.description
+            or not self._column_metadata
             or not hasattr(self.connection, "_output_converters")
             or not self.connection._output_converters
         ):
@@ -982,11 +1091,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         converter_map = []
 
-        for desc in self.description:
-            if desc is None:
-                converter_map.append(None)
-                continue
-            sql_type = desc[1]
+        for col_meta in self._column_metadata:
+            # Use the raw SQL type code from metadata, not the mapped Python type
+            sql_type = col_meta["DataType"]
             converter = self.connection.get_output_converter(sql_type)
             # If no converter found for the SQL type, try the WVARCHAR converter as a fallback
             if converter is None:
@@ -1021,41 +1128,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         converter_map = getattr(self, "_cached_converter_map", None)
 
         return column_map, converter_map
-
-    def _map_data_type(self, sql_type):
-        """
-        Map SQL data type to Python data type.
-
-        Args:
-            sql_type: SQL data type.
-
-        Returns:
-            Corresponding Python data type.
-        """
-        sql_to_python_type = {
-            ddbc_sql_const.SQL_INTEGER.value: int,
-            ddbc_sql_const.SQL_VARCHAR.value: str,
-            ddbc_sql_const.SQL_WVARCHAR.value: str,
-            ddbc_sql_const.SQL_CHAR.value: str,
-            ddbc_sql_const.SQL_WCHAR.value: str,
-            ddbc_sql_const.SQL_FLOAT.value: float,
-            ddbc_sql_const.SQL_DOUBLE.value: float,
-            ddbc_sql_const.SQL_DECIMAL.value: decimal.Decimal,
-            ddbc_sql_const.SQL_NUMERIC.value: decimal.Decimal,
-            ddbc_sql_const.SQL_DATE.value: datetime.date,
-            ddbc_sql_const.SQL_TIMESTAMP.value: datetime.datetime,
-            ddbc_sql_const.SQL_TIME.value: datetime.time,
-            ddbc_sql_const.SQL_BIT.value: bool,
-            ddbc_sql_const.SQL_TINYINT.value: int,
-            ddbc_sql_const.SQL_SMALLINT.value: int,
-            ddbc_sql_const.SQL_BIGINT.value: int,
-            ddbc_sql_const.SQL_BINARY.value: bytes,
-            ddbc_sql_const.SQL_VARBINARY.value: bytes,
-            ddbc_sql_const.SQL_LONGVARBINARY.value: bytes,
-            ddbc_sql_const.SQL_GUID.value: uuid.UUID,
-            # Add more mappings as needed
-        }
-        return sql_to_python_type.get(sql_type, str)
 
     @property
     def rownumber(self) -> int:
@@ -2756,7 +2828,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Destructor to ensure the cursor is closed when it is no longer needed.
         This is a safety net to ensure resources are cleaned up
         even if close() was not called explicitly.
-        If the cursor is already closed, it will not raise an exception during cleanup.
+
+        Error handling:
+        This destructor performs best-effort cleanup only. Any exceptions raised
+        while closing the cursor are caught and, when possible, logged instead of
+        being propagated, because raising from __del__ can cause hard-to-debug
+        failures during garbage collection. During interpreter shutdown, logging
+        may be suppressed if the logging subsystem is no longer available.
         """
         if "closed" not in self.__dict__ or not self.closed:
             try:
