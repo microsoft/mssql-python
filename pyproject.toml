@@ -21,7 +21,7 @@ authors = [
 ]
 keywords = ["mssql", "sql-server", "database", "odbc", "microsoft"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: MacOS",
@@ -31,6 +31,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Database",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
@@ -136,7 +137,7 @@ exclude_lines = [
 # =============================================================================
 [tool.black]
 line-length = 100
-target-version = ['py310', 'py311', 'py312', 'py313']
+target-version = ['py310', 'py311', 'py312', 'py313', 'py314']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -175,22 +176,6 @@ disable = [
 
 [tool.pylint.format]
 max-line-length = 100
-
-# =============================================================================
-# Linting - Flake8 (Note: flake8 doesn't support pyproject.toml natively,
-# but some plugins like Flake8-pyproject do)
-# =============================================================================
-[tool.flake8]
-max-line-length = 100
-extend-ignore = ["E203", "W503"]
-exclude = [
-    ".git",
-    "__pycache__",
-    "build",
-    "dist",
-    ".venv",
-    "htmlcov"
-]
 
 # =============================================================================
 # Type Checking - MyPy
