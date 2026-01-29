@@ -42,7 +42,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/microsoft/mssql-python"
-Documentation = "https://github.com/microsoft/mssql-python#readme"
+Documentation = "https://github.com/microsoft/mssql-python/wiki"
 Repository = "https://github.com/microsoft/mssql-python"
 Issues = "https://github.com/microsoft/mssql-python/issues"
 Changelog = "https://github.com/microsoft/mssql-python/blob/main/CHANGELOG.md"
