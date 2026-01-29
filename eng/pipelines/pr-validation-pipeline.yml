@@ -56,6 +56,11 @@ jobs:
   
   strategy:
     matrix:
+      pytestonwindows:
+        # Temporary entry to clear stale CodeQL snapshot SM02986
+        # Remove this once the issue is resolved
+        sqlVersion: 'SQL2022'
+        pythonVersion: '3.13'
       SQLServer2022:
         sqlVersion: 'SQL2022'
         pythonVersion: '3.13'
