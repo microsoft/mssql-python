@@ -27,6 +27,7 @@ from .compiler import compile_ddbc
 # PEP 517 Required Hooks
 # =============================================================================
 
+
 def get_requires_for_build_wheel(config_settings=None):
     """Return build requirements for wheel."""
     return _get_requires_for_build_wheel(config_settings)
@@ -97,6 +98,7 @@ def build_sdist(sdist_directory, config_settings=None):
 # Optional PEP 660 Hooks (Editable Installs)
 # =============================================================================
 
+
 def get_requires_for_build_editable(config_settings=None):
     """Return build requirements for editable install."""
     return get_requires_for_build_wheel(config_settings)
@@ -121,6 +123,12 @@ def build_editable(wheel_directory, config_settings=None, metadata_directory=Non
         print(f"[build_backend] Compilation failed: {e}")
         raise
 
-    # Import here to avoid issues if not available
-    from setuptools.build_meta import build_editable as _setuptools_build_editable
+    # Import here and handle absence gracefully for older setuptools versions
+    try:
+        from setuptools.build_meta import build_editable as _setuptools_build_editable
+    except ImportError as exc:
+        raise RuntimeError(
+            "Editable installs are not supported with this setuptools version. "
+            "Please install setuptools>=64.0.0 to use PEP 660 editable installs."
+        ) from exc
     return _setuptools_build_editable(wheel_directory, config_settings, metadata_directory)

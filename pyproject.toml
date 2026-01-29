@@ -15,6 +15,7 @@ version = "1.2.0"
 description = "A Python library for interacting with Microsoft SQL Server"
 readme = "PyPI_Description.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [
     { name = "Microsoft Corporation", email = "mssql-python@microsoft.com" }
@@ -68,7 +69,23 @@ lint = [
     "types-setuptools",
 ]
 all = [
-    "mssql-python[dev,lint]",
+    # Dev dependencies
+    "pytest",
+    "pytest-cov",
+    "coverage",
+    "unittest-xml-reporting",
+    "psutil",
+    "pybind11",
+    "setuptools",
+    "wheel",
+    "build",
+    # Lint dependencies
+    "black",
+    "autopep8",
+    "pylint",
+    "cpplint",
+    "mypy",
+    "types-setuptools",
 ]
 
 # =============================================================================
@@ -81,6 +98,7 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["mssql_python*"]
+exclude = ["build_ddbc*", "tests*", "benchmarks*"]
 
 [tool.setuptools.package-data]
 mssql_python = [

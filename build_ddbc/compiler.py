@@ -5,6 +5,7 @@ This module contains the platform detection and build script execution logic.
 """
 
 import os
+import platform
 import sys
 import subprocess
 from pathlib import Path
@@ -34,13 +35,21 @@ def get_platform_info() -> Tuple[str, str]:
             return "x64", "win_amd64"
 
     elif sys.platform.startswith("darwin"):
-        return "universal2", "macosx_15_0_universal2"
+        return "universal2", "macosx_11_0_universal2"
 
     elif sys.platform.startswith("linux"):
-        import platform
         target_arch = os.environ.get("targetArch", platform.machine())
         libc_name, _ = platform.libc_ver()
-        is_musl = libc_name == "" or "musl" in libc_name.lower()
+        # Empty libc_name could indicate detection failure; default to glibc (manylinux)
+        if not libc_name:
+            print(
+                "[build_ddbc] Warning: libc detection failed (platform.libc_ver() "
+                "returned an empty name); defaulting to glibc (manylinux) tags.",
+                file=sys.stderr,
+            )
+            is_musl = False
+        else:
+            is_musl = "musl" in libc_name.lower()
 
         if target_arch == "x86_64":
             return "x86_64", "musllinux_1_2_x86_64" if is_musl else "manylinux_2_28_x86_64"
@@ -86,7 +95,7 @@ def compile_ddbc(
 
     Args:
         arch: Target architecture (Windows only: x64, x86, arm64)
-        coverage: Enable coverage instrumentation (Linux only)
+        coverage: Enable coverage instrumentation (Linux/macOS only)
         verbose: Print build output
 
     Returns:
@@ -128,8 +137,11 @@ def _run_windows_build(pybind_dir: Path, arch: str, verbose: bool) -> bool:
     )
 
     if result.returncode != 0:
-        if not verbose and result.stderr:
-            print(result.stderr.decode(), file=sys.stderr)
+        if not verbose:
+            if result.stdout:
+                print(result.stdout.decode(), file=sys.stderr)
+            if result.stderr:
+                print(result.stderr.decode(), file=sys.stderr)
         raise RuntimeError(f"build.bat failed with exit code {result.returncode}")
 
     if verbose:
@@ -163,8 +175,11 @@ def _run_unix_build(pybind_dir: Path, coverage: bool, verbose: bool) -> bool:
     )
 
     if result.returncode != 0:
-        if not verbose and result.stderr:
-            print(result.stderr.decode(), file=sys.stderr)
+        if not verbose:
+            if result.stdout:
+                print(result.stdout.decode(), file=sys.stderr)
+            if result.stderr:
+                print(result.stderr.decode(), file=sys.stderr)
         raise RuntimeError(f"build.sh failed with exit code {result.returncode}")
 
     if verbose:
