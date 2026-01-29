@@ -15,14 +15,25 @@ import decimal
 import uuid
 import datetime
 import warnings
-from typing import List, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING
+from typing import List, Union, Any, Optional, Tuple, Sequence, TYPE_CHECKING, Iterable
 from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error
 from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
-from mssql_python.exceptions import InterfaceError, NotSupportedError, ProgrammingError
+from mssql_python.exceptions import (
+    InterfaceError,
+    NotSupportedError,
+    ProgrammingError,
+    OperationalError,
+    DatabaseError,
+)
 from mssql_python.row import Row
 from mssql_python import get_settings
+from mssql_python.parameter_helper import (
+    detect_and_convert_parameters,
+    parse_pyformat_params,
+    convert_pyformat_to_qmark,
+)
 
 if TYPE_CHECKING:
     from mssql_python.connection import Connection
@@ -284,6 +295,80 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         numeric_data.val = bytes(byte_array)
         return numeric_data
+
+    def _get_encoding_settings(self):
+        """
+        Get the encoding settings from the connection.
+
+        Returns:
+            dict: A dictionary with 'encoding' and 'ctype' keys, or default settings if not available
+
+        Raises:
+            OperationalError, DatabaseError: If there are unexpected database connection issues
+            that indicate a broken connection state. These should not be silently ignored
+            as they can lead to data corruption or inconsistent behavior.
+        """
+        if hasattr(self._connection, "getencoding"):
+            try:
+                return self._connection.getencoding()
+            except (OperationalError, DatabaseError) as db_error:
+                # Log the error for debugging but re-raise for fail-fast behavior
+                # Silently returning defaults can lead to data corruption and hard-to-debug issues
+                logger.error(
+                    "Failed to get encoding settings from connection due to database error: %s. "
+                    "This indicates a broken connection state that should not be ignored.",
+                    db_error,
+                )
+                # Re-raise to fail fast - users should know their connection is broken
+                raise
+            except Exception as unexpected_error:
+                # Handle other unexpected errors (connection closed, programming errors, etc.)
+                logger.error("Unexpected error getting encoding settings: %s", unexpected_error)
+                # Re-raise unexpected errors as well
+                raise
+
+        # Return default encoding settings if getencoding is not available
+        # This is the only case where defaults are appropriate (method doesn't exist)
+        return {"encoding": "utf-16le", "ctype": ddbc_sql_const.SQL_WCHAR.value}
+
+    def _get_decoding_settings(self, sql_type):
+        """
+        Get decoding settings for a specific SQL type.
+
+        Args:
+            sql_type: SQL type constant (SQL_CHAR, SQL_WCHAR, etc.)
+
+        Returns:
+            Dictionary containing the decoding settings.
+
+        Raises:
+            OperationalError, DatabaseError: If there are unexpected database connection issues
+            that indicate a broken connection state. These should not be silently ignored
+            as they can lead to data corruption or inconsistent behavior.
+        """
+        try:
+            # Get decoding settings from connection for this SQL type
+            return self._connection.getdecoding(sql_type)
+        except (OperationalError, DatabaseError) as db_error:
+            # Log the error for debugging but re-raise for fail-fast behavior
+            # Silently returning defaults can lead to data corruption and hard-to-debug issues
+            logger.error(
+                "Failed to get decoding settings for SQL type %s due to database error: %s. "
+                "This indicates a broken connection state that should not be ignored.",
+                sql_type,
+                db_error,
+            )
+            # Re-raise to fail fast - users should know their connection is broken
+            raise
+        except Exception as unexpected_error:
+            # Handle other unexpected errors (connection closed, programming errors, etc.)
+            logger.error(
+                "Unexpected error getting decoding settings for SQL type %s: %s",
+                sql_type,
+                unexpected_error,
+            )
+            # Re-raise unexpected errors as well
+            raise
 
     def _map_sql_type(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-return-statements,too-many-branches
         self,
@@ -601,12 +686,33 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Initialize the DDBC statement handle.
         """
         self._allocate_statement_handle()
+        self._set_timeout()
 
     def _allocate_statement_handle(self) -> None:
         """
         Allocate the DDBC statement handle.
         """
         self.hstmt = self._connection._conn.alloc_statement_handle()
+
+    def _set_timeout(self) -> None:
+        """
+        Set the query timeout attribute on the statement handle.
+        This is called once when the cursor is created and after any handle reallocation.
+        Following pyodbc's approach for better performance.
+        """
+        if self._timeout > 0:
+            logger.debug("_set_timeout: Setting query timeout=%d seconds", self._timeout)
+            try:
+                timeout_value = int(self._timeout)
+                ret = ddbc_bindings.DDBCSQLSetStmtAttr(
+                    self.hstmt,
+                    ddbc_sql_const.SQL_ATTR_QUERY_TIMEOUT.value,
+                    timeout_value,
+                )
+                check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
+                logger.debug("Query timeout set to %d seconds", timeout_value)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.warning("Failed to set query timeout: %s", str(e))
 
     def _reset_cursor(self) -> None:
         """
@@ -1132,30 +1238,60 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Clear any previous messages
         self.messages = []
 
-        # Apply timeout if set (non-zero)
-        if self._timeout > 0:
-            logger.debug("execute: Setting query timeout=%d seconds", self._timeout)
-            try:
-                timeout_value = int(self._timeout)
-                ret = ddbc_bindings.DDBCSQLSetStmtAttr(
-                    self.hstmt,
-                    ddbc_sql_const.SQL_ATTR_QUERY_TIMEOUT.value,
-                    timeout_value,
-                )
-                check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
-                logger.debug("Set query timeout to %d seconds", timeout_value)
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                logger.warning("Failed to set query timeout: %s", str(e))
+        # Auto-detect and convert parameter style if needed
+        # Supports both qmark (?) and pyformat (%(name)s)
+        # Note: parameters is always a tuple due to *parameters in method signature
+        #
+        # Parameter Passing Rules (handling ambiguity):
+        #
+        # 1. Single value:
+        #    cursor.execute("SELECT ?", 42)
+        #    → parameters = (42,)
+        #    → Wrapped as single parameter
+        #
+        # 2. Multiple values (two equivalent ways):
+        #    cursor.execute("SELECT ?, ?", 1, 2)        # Varargs
+        #    cursor.execute("SELECT ?, ?", (1, 2))      # Tuple
+        #    → Both result in parameters = (1, 2) or ((1, 2),)
+        #    → If single tuple/list/dict arg, it's unwrapped
+        #
+        # 3. Dict for named parameters:
+        #    cursor.execute("SELECT %(id)s", {"id": 42})
+        #    → parameters = ({"id": 42},)
+        #    → Unwrapped to {"id": 42}, then converted to qmark style
+        #
+        # Important: If you pass a tuple/list/dict as the ONLY argument,
+        # it will be unwrapped for parameter binding. This means you cannot
+        # pass a tuple as a single parameter value (but SQL Server doesn't
+        # support tuple types as parameter values anyway).
+        if parameters:
+            # Check if single parameter is a nested container that should be unwrapped
+            # e.g., execute("SELECT ?", (value,)) vs execute("SELECT ?, ?", ((1, 2),))
+            if isinstance(parameters, tuple) and len(parameters) == 1:
+                # Could be either (value,) for single param or ((tuple),) for nested
+                # Check if it's a nested container
+                if isinstance(parameters[0], (tuple, list, dict)):
+                    actual_params = parameters[0]
+                else:
+                    actual_params = parameters
+            else:
+                actual_params = parameters
 
+            # Convert parameters based on detected style
+            operation, converted_params = detect_and_convert_parameters(operation, actual_params)
+
+            # Convert back to list format expected by the binding code
+            parameters = list(converted_params)
+        else:
+            parameters = []
+
+        # Getting encoding setting
+        encoding_settings = self._get_encoding_settings()
+
+        # Apply timeout if set (non-zero)
         logger.debug("execute: Creating parameter type list")
         param_info = ddbc_bindings.ParamInfo
         parameters_type = []
-
-        # Flatten parameters if a single tuple or list is passed
-        if len(parameters) == 1 and isinstance(parameters[0], (tuple, list)):
-            parameters = parameters[0]
-
-        parameters = list(parameters)
 
         # Validate that inputsizes matches parameter count if both are present
         if parameters and self._inputsizes:
@@ -1202,6 +1338,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             parameters_type,
             self.is_stmt_prepared,
             use_prepare,
+            encoding_settings,
         )
         # Check return code
         try:
@@ -1842,6 +1979,40 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.rowcount = 0
             return
 
+        # Auto-detect and convert parameter style for executemany
+        # Check first row to determine if we need to convert from pyformat to qmark
+        first_row = (
+            seq_of_parameters[0]
+            if hasattr(seq_of_parameters, "__getitem__")
+            else next(iter(seq_of_parameters))
+        )
+
+        if isinstance(first_row, dict):
+            # pyformat style - convert all rows
+            # Parse parameter names from SQL (determines order for all rows)
+            param_names = parse_pyformat_params(operation)
+
+            if param_names:
+                # Convert SQL to qmark style
+                operation, _ = convert_pyformat_to_qmark(operation, first_row)
+
+                # Convert all parameter dicts to tuples in the same order
+                converted_params = []
+                for param_dict in seq_of_parameters:
+                    if not isinstance(param_dict, dict):
+                        raise TypeError(
+                            f"Mixed parameter types in executemany: first row is dict, "
+                            f"but row has {type(param_dict).__name__}"
+                        )
+                    # Build tuple in the order determined by param_names
+                    row_tuple = tuple(param_dict[name] for name in param_names)
+                    converted_params.append(row_tuple)
+
+                seq_of_parameters = converted_params
+                logger.debug(
+                    "executemany: Converted %d rows from pyformat to qmark", len(seq_of_parameters)
+                )
+
         # Apply timeout if set (non-zero)
         if self._timeout > 0:
             try:
@@ -2027,6 +2198,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         # Now transpose the processed parameters
         columnwise_params, row_count = self._transpose_rowwise_to_columnwise(processed_parameters)
 
+        # Get encoding settings
+        encoding_settings = self._get_encoding_settings()
+
         # Add debug logging
         logger.debug(
             "Executing batch query with %d parameter sets:\n%s",
@@ -2038,7 +2212,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         )
 
         ret = ddbc_bindings.SQLExecuteMany(
-            self.hstmt, operation, columnwise_params, parameters_type, row_count
+            self.hstmt, operation, columnwise_params, parameters_type, row_count, encoding_settings
         )
 
         # Capture any diagnostic messages after execution
@@ -2070,10 +2244,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         self._check_closed()  # Check if the cursor is closed
 
+        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
+        wchar_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value)
+
         # Fetch raw data
         row_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchOne(self.hstmt, row_data)
+            ret = ddbc_bindings.DDBCSQLFetchOne(
+                self.hstmt,
+                row_data,
+                char_decoding.get("encoding", "utf-8"),
+                wchar_decoding.get("encoding", "utf-16le"),
+            )
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
@@ -2121,10 +2303,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if size <= 0:
             return []
 
+        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
+        wchar_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value)
+
         # Fetch raw data
         rows_data = []
         try:
-            _ = ddbc_bindings.DDBCSQLFetchMany(self.hstmt, rows_data, size)
+            ret = ddbc_bindings.DDBCSQLFetchMany(
+                self.hstmt,
+                rows_data,
+                size,
+                char_decoding.get("encoding", "utf-8"),
+                wchar_decoding.get("encoding", "utf-16le"),
+            )
 
             if self.hstmt:
                 self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
@@ -2164,10 +2355,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         if not self._has_result_set and self.description:
             self._reset_rownumber()
 
+        char_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_CHAR.value)
+        wchar_decoding = self._get_decoding_settings(ddbc_sql_const.SQL_WCHAR.value)
+
         # Fetch raw data
         rows_data = []
         try:
-            ret = ddbc_bindings.DDBCSQLFetchAll(self.hstmt, rows_data)
+            ret = ddbc_bindings.DDBCSQLFetchAll(
+                self.hstmt,
+                rows_data,
+                char_decoding.get("encoding", "utf-8"),
+                wchar_decoding.get("encoding", "utf-16le"),
+            )
 
             # Check for errors
             check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
@@ -2251,6 +2450,190 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             len(self.description) if self.description else 0,
         )
         return True
+
+    def _bulkcopy(
+        self, table_name: str, data: Iterable[Union[Tuple, List]], **kwargs
+    ):  # pragma: no cover
+        """
+        Perform bulk copy operation for high-performance data loading.
+
+        Args:
+            table_name: Target table name (can include schema, e.g., 'dbo.MyTable').
+                The table must exist and the user must have INSERT permissions.
+
+            data: Iterable of tuples or lists containing row data to be inserted.
+
+                Data Format Requirements:
+                - Each element in the iterable represents one row
+                - Each row should be a tuple or list of column values
+                - Column order must match the target table's column order (by ordinal
+                  position), unless column_mappings is specified
+                - The number of values in each row must match the number of columns
+                  in the target table
+
+            **kwargs: Additional bulk copy options.
+
+                column_mappings (List[Tuple[int, str]], optional):
+                    Maps source data column indices to target table column names.
+                    Each tuple is (source_index, target_column_name) where:
+                    - source_index: 0-based index of the column in the source data
+                    - target_column_name: Name of the target column in the database table
+
+                    When omitted: Columns are mapped by ordinal position (first data
+                    column → first table column, second → second, etc.)
+
+                    When specified: Only the mapped columns are inserted; unmapped
+                    source columns are ignored, and unmapped target columns must
+                    have default values or allow NULL.
+
+        Returns:
+            Dictionary with bulk copy results including:
+                - rows_copied: Number of rows successfully copied
+                - batch_count: Number of batches processed
+                - elapsed_time: Time taken for the operation
+
+        Raises:
+            ImportError: If mssql_py_core library is not installed
+            TypeError: If data is None, not iterable, or is a string/bytes
+            ValueError: If table_name is empty or parameters are invalid
+            RuntimeError: If connection string is not available
+        """
+        try:
+            import mssql_py_core
+        except ImportError as exc:
+            raise ImportError(
+                "Bulk copy requires the mssql_py_core library which is not installed. "
+                "To install, run: pip install mssql_py_core "
+            ) from exc
+
+        # Validate inputs
+        if not table_name or not isinstance(table_name, str):
+            raise ValueError("table_name must be a non-empty string")
+
+        # Validate that data is iterable (but not a string or bytes, which are technically iterable)
+        if data is None:
+            raise TypeError("data must be an iterable of tuples or lists, got None")
+        if isinstance(data, (str, bytes)):
+            raise TypeError(
+                f"data must be an iterable of tuples or lists, got {type(data).__name__}. "
+                "Strings and bytes are not valid row collections."
+            )
+        if not hasattr(data, "__iter__"):
+            raise TypeError(
+                f"data must be an iterable of tuples or lists, got non-iterable {type(data).__name__}"
+            )
+
+        # Extract and validate kwargs with defaults
+        batch_size = kwargs.get("batch_size", None)
+        timeout = kwargs.get("timeout", 30)
+
+        # Validate batch_size type and value (only if explicitly provided)
+        if batch_size is not None:
+            if not isinstance(batch_size, (int, float)):
+                raise TypeError(
+                    f"batch_size must be a positive integer, got {type(batch_size).__name__}"
+                )
+            if batch_size <= 0:
+                raise ValueError(f"batch_size must be positive, got {batch_size}")
+
+        # Validate timeout type and value
+        if not isinstance(timeout, (int, float)):
+            raise TypeError(f"timeout must be a positive number, got {type(timeout).__name__}")
+        if timeout <= 0:
+            raise ValueError(f"timeout must be positive, got {timeout}")
+
+        # Get and parse connection string
+        if not hasattr(self.connection, "connection_str"):
+            raise RuntimeError("Connection string not available for bulk copy")
+
+        # Use the proper connection string parser that handles braced values
+        from mssql_python.connection_string_parser import _ConnectionStringParser
+
+        parser = _ConnectionStringParser(validate_keywords=False)
+        params = parser._parse(self.connection.connection_str)
+
+        if not params.get("server"):
+            raise ValueError("SERVER parameter is required in connection string")
+
+        if not params.get("database"):
+            raise ValueError(
+                "DATABASE parameter is required in connection string for bulk copy. "
+                "Specify the target database explicitly to avoid accidentally writing to system databases."
+            )
+
+        # Build connection context for bulk copy library
+        # Note: Password is extracted separately to avoid storing it in the main context
+        # dict that could be accidentally logged or exposed in error messages.
+        trust_cert = params.get("trustservercertificate", "yes").lower() in ("yes", "true")
+
+        # Parse encryption setting from connection string
+        encrypt_param = params.get("encrypt")
+        if encrypt_param is not None:
+            encrypt_value = encrypt_param.strip().lower()
+            if encrypt_value in ("yes", "true", "mandatory", "required"):
+                encryption = "Required"
+            elif encrypt_value in ("no", "false", "optional"):
+                encryption = "Optional"
+            else:
+                # Pass through unrecognized values (e.g., "Strict") to the underlying driver
+                encryption = encrypt_param
+        else:
+            encryption = "Optional"
+
+        context = {
+            "server": params.get("server"),
+            "database": params.get("database"),
+            "user_name": params.get("uid", ""),
+            "trust_server_certificate": trust_cert,
+            "encryption": encryption,
+        }
+
+        # Extract password separately to avoid storing it in generic context that may be logged
+        password = params.get("pwd", "")
+        pycore_context = dict(context)
+        pycore_context["password"] = password
+
+        pycore_connection = None
+        pycore_cursor = None
+        try:
+            pycore_connection = mssql_py_core.PyCoreConnection(pycore_context)
+            pycore_cursor = pycore_connection.cursor()
+
+            result = pycore_cursor.bulkcopy(table_name, iter(data), **kwargs)
+
+            return result
+
+        except Exception as e:
+            # Log the error for debugging (without exposing credentials)
+            logger.debug(
+                "Bulk copy operation failed for table '%s': %s: %s",
+                table_name,
+                type(e).__name__,
+                str(e),
+            )
+            # Re-raise without exposing connection context in the error chain
+            # to prevent credential leakage in stack traces
+            raise type(e)(str(e)) from None
+
+        finally:
+            # Clear sensitive data to minimize memory exposure
+            password = ""
+            if pycore_context:
+                pycore_context["password"] = ""
+                pycore_context["user_name"] = ""
+            # Clean up bulk copy resources
+            for resource in (pycore_cursor, pycore_connection):
+                if resource and hasattr(resource, "close"):
+                    try:
+                        resource.close()
+                    except Exception as cleanup_error:
+                        # Log cleanup errors at debug level to aid troubleshooting
+                        # without masking the original exception
+                        logger.debug(
+                            "Failed to close bulk copy resource %s: %s",
+                            type(resource).__name__,
+                            cleanup_error,
+                        )
 
     def __enter__(self):
         """

@@ -4,15 +4,18 @@ Licensed under the MIT license.
 This module initializes the mssql_python package.
 """
 
+import atexit
 import sys
+import threading
 import types
+import weakref
 from typing import Dict
 
 # Import settings from helpers to avoid circular imports
 from .helpers import Settings, get_settings, _settings, _settings_lock
 
 # Driver version
-__version__ = "1.0.0"
+__version__ = "1.2.0"
 
 # Exceptions
 # https://www.python.org/dev/peps/pep-0249/#exceptions
@@ -67,10 +70,53 @@ from .constants import ConstantsDDBC, GetInfoConstants
 # Pooling
 from .pooling import PoolingManager
 
+# Global registry for tracking active connections (using weak references)
+_active_connections = weakref.WeakSet()
+_connections_lock = threading.Lock()
+
+
+def _register_connection(conn):
+    """Register a connection for cleanup before shutdown."""
+    with _connections_lock:
+        _active_connections.add(conn)
+
+
+def _cleanup_connections():
+    """
+    Cleanup function called by atexit to close all active connections.
+
+    This prevents resource leaks during interpreter shutdown by ensuring
+    all ODBC handles are freed in the correct order before Python finalizes.
+    """
+    # Make a copy of the connections to avoid modification during iteration
+    with _connections_lock:
+        connections_to_close = list(_active_connections)
+
+    for conn in connections_to_close:
+        try:
+            # Check if connection is still valid and not closed
+            if hasattr(conn, "_closed") and not conn._closed:
+                # Close will handle both cursors and the connection
+                conn.close()
+        except Exception as e:
+            # Log errors during shutdown cleanup for debugging
+            # We're prioritizing crash prevention over error propagation
+            try:
+                driver_logger.error(
+                    f"Error during connection cleanup at shutdown: {type(e).__name__}: {e}"
+                )
+            except Exception:
+                # If logging fails during shutdown, silently ignore
+                pass
+
+
+# Register cleanup function to run before Python exits
+atexit.register(_cleanup_connections)
+
 # GLOBALS
 # Read-Only
 apilevel: str = "2.0"
-paramstyle: str = "qmark"
+paramstyle: str = "pyformat"
 threadsafety: int = 1
 
 # Set the initial decimal separator in C++

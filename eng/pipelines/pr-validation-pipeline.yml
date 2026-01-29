@@ -11,7 +11,7 @@ jobs:
   displayName: 'CodeQL Security Analysis'
   pool:
     vmImage: 'ubuntu-latest'
-  
+
   steps:
   - script: |
       sudo apt-get update
@@ -45,19 +45,23 @@ jobs:
     condition: always()
     displayName: 'Finalize CodeQL'
 
-- job: PytestOnWindows
+- job: pytestonwindows
   displayName: 'Windows x64'
   pool:
     vmImage: 'windows-latest'
+  variables:
+    # Enable CodeQL for this job to update the old stale snapshot (build_jobname=pytestonwindows)
+    # This can be removed once the old CodeQL issue SM02986 is cleared
+    Codeql.Enabled: true
   
   strategy:
     matrix:
-      LocalDB:
-        sqlVersion: 'LocalDB'
-        pythonVersion: '3.13'
       SQLServer2022:
         sqlVersion: 'SQL2022'
         pythonVersion: '3.13'
+      SQLServer2025:
+        sqlVersion: 'SQL2025'
+        pythonVersion: '3.14'
       LocalDB_Python314:
         sqlVersion: 'LocalDB'
         pythonVersion: '3.14'
@@ -98,7 +102,7 @@ jobs:
       Write-Host "Downloading SQL Server 2022 Express..."
       # Download SQL Server 2022 Express installer
       $ProgressPreference = 'SilentlyContinue'
-      Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?linkid=2216019" -OutFile "SQL2022-SSEI-Expr.exe"
+      Invoke-WebRequest -Uri "https://download.microsoft.com/download/5/1/4/5145fe04-4d30-4b85-b0d1-39533663a2f1/SQL2022-SSEI-Expr.exe" -OutFile "SQL2022-SSEI-Expr.exe"
       
       Write-Host "Installing SQL Server 2022 Express..."
       # Install SQL Server 2022 Express with basic features
@@ -159,10 +163,87 @@ jobs:
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
+  # Install SQL Server 2025 (for SQL2025 matrix)
+  - powershell: |
+      Write-Host "Downloading SQL Server 2025 Express..."
+      # Download SQL Server 2025 Express installer
+      $ProgressPreference = 'SilentlyContinue'
+      Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?linkid=2216019&clcid=0x409&culture=en-us&country=us" -OutFile "SQL2025-SSEI-Expr.exe"
+      
+      Write-Host "Installing SQL Server 2025 Express..."
+      # Install SQL Server 2025 Express with basic features
+      Start-Process -FilePath "SQL2025-SSEI-Expr.exe" -ArgumentList "/Action=Download","/MediaPath=$env:TEMP","/MediaType=Core","/Quiet" -Wait
+      
+      # Find the downloaded setup file
+      $setupFile = Get-ChildItem -Path $env:TEMP -Filter "SQLEXPR_x64_ENU.exe" -Recurse | Select-Object -First 1
+      
+      if ($setupFile) {
+        Write-Host "Extracting SQL Server setup files..."
+        Start-Process -FilePath $setupFile.FullName -ArgumentList "/x:$env:TEMP\SQL2025Setup","/u" -Wait
+        
+        Write-Host "Running SQL Server setup..."
+        Start-Process -FilePath "$env:TEMP\SQL2025Setup\setup.exe" -ArgumentList "/Q","/ACTION=Install","/FEATURES=SQLEngine","/INSTANCENAME=MSSQLSERVER","/SQLSVCACCOUNT=`"NT AUTHORITY\SYSTEM`"","/SQLSYSADMINACCOUNTS=`"BUILTIN\Administrators`"","/TCPENABLED=1","/SECURITYMODE=SQL","/SAPWD=$(DB_PASSWORD)","/IACCEPTSQLSERVERLICENSETERMS" -Wait
+      } else {
+        Write-Error "Failed to download SQL Server setup file"
+        exit 1
+      }
+      
+      Write-Host "SQL Server 2025 installation completed"
+    displayName: 'Install SQL Server 2025 Express'
+    condition: eq(variables['sqlVersion'], 'SQL2025')
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  # Create database for SQL Server 2025
+  - powershell: |
+      # Wait for SQL Server to start
+      $maxAttempts = 30
+      $attempt = 0
+      $connected = $false
+      
+      Write-Host "Waiting for SQL Server 2025 to start..."
+      while (-not $connected -and $attempt -lt $maxAttempts) {
+        try {
+          sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "SELECT 1" -C
+          $connected = $true
+          Write-Host "SQL Server is ready!"
+        } catch {
+          $attempt++
+          Write-Host "Waiting... ($attempt/$maxAttempts)"
+          Start-Sleep -Seconds 2
+        }
+      }
+      
+      if (-not $connected) {
+        Write-Error "Failed to connect to SQL Server after $maxAttempts attempts"
+        exit 1
+      }
+      
+      # Create database and user
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE DATABASE TestDB" -C
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -Q "CREATE LOGIN testuser WITH PASSWORD = '$(DB_PASSWORD)'" -C
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "CREATE USER testuser FOR LOGIN testuser" -C
+      sqlcmd -S "localhost" -U "sa" -P "$(DB_PASSWORD)" -d TestDB -Q "ALTER ROLE db_owner ADD MEMBER testuser" -C
+    displayName: 'Setup database and user for SQL Server 2025'
+    condition: eq(variables['sqlVersion'], 'SQL2025')
+    env:
+      DB_PASSWORD: $(DB_PASSWORD)
+
+  # ============== CodeQL Init (temporary - remove after SM02986 is cleared) ==============
+  - task: CodeQL3000Init@0
+    inputs:
+      Enabled: true
+    displayName: 'Initialize CodeQL (temporary)'
+
   - script: |
       cd mssql_python\pybind
       build.bat x64
     displayName: 'Build .pyd file'
+
+  # ============== CodeQL Finalize (temporary - remove after SM02986 is cleared) ==============
+  - task: CodeQL3000Finalize@0
+    condition: always()
+    displayName: 'Finalize CodeQL (temporary)'
 
   # Run tests for LocalDB
   - script: |
@@ -177,6 +258,14 @@ jobs:
       python -m pytest -v --junitxml=test-results-sql2022.xml --cov=. --cov-report=xml:coverage-sql2022.xml --capture=tee-sys --cache-clear
     displayName: 'Run tests with coverage on SQL Server 2022'
     condition: eq(variables['sqlVersion'], 'SQL2022')
+    env:
+      DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
+
+  # Run tests for SQL Server 2025
+  - script: |
+      python -m pytest -v --junitxml=test-results-sql2025.xml --cov=. --cov-report=xml:coverage-sql2025.xml --capture=tee-sys --cache-clear
+    displayName: 'Run tests with coverage on SQL Server 2025'
+    condition: eq(variables['sqlVersion'], 'SQL2025')
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
@@ -214,7 +303,7 @@ jobs:
         exit 1
       }
     displayName: 'Download and restore AdventureWorks2022 database'
-    condition: eq(variables['sqlVersion'], 'SQL2022')
+    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -306,8 +395,8 @@ jobs:
       
       Write-Host "`nRunning performance benchmarks..."
       python benchmarks/perf-benchmarking.py
-    displayName: 'Run performance benchmarks on SQL Server 2022'
-    condition: eq(variables['sqlVersion'], 'SQL2022')
+    displayName: 'Run performance benchmarks on SQL Server 2022/2025'
+    condition: or(eq(variables['sqlVersion'], 'SQL2022'), eq(variables['sqlVersion'], 'SQL2025'))
     continueOnError: true
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=AdventureWorks2022;Uid=sa;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
@@ -350,6 +439,15 @@ jobs:
   pool:
     vmImage: 'macos-latest'
 
+  strategy:
+    matrix:
+      SQL2022:
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
+        sqlVersion: 'SQL2022'
+      SQL2025:
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
+        sqlVersion: 'SQL2025'
+
   steps:
   - task: UsePythonVersion@0
     inputs:
@@ -382,13 +480,13 @@ jobs:
 
   - script: |
       # Pull and run SQL Server container
-      docker pull mcr.microsoft.com/mssql/server:2022-latest
+      docker pull $(sqlServerImage)
       docker run \
         --name sqlserver \
         -e ACCEPT_EULA=Y \
         -e MSSQL_SA_PASSWORD="${DB_PASSWORD}" \
         -p 1433:1433 \
-        -d mcr.microsoft.com/mssql/server:2022-latest
+        -d $(sqlServerImage)
 
       # Starting SQL Server container…
       for i in {1..30}; do
@@ -426,7 +524,7 @@ jobs:
     condition: succeededOrFailed()
     inputs:
       testResultsFiles: '**/test-results.xml'
-      testRunTitle: 'Publish pytest results on macOS'
+      testRunTitle: 'Publish pytest results on macOS $(sqlVersion)'
 
 - job: PytestOnLinux
   displayName: 'Linux x86_64'
@@ -455,6 +553,11 @@ jobs:
         dockerImage: 'debian:12'
         distroName: 'Debian'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
+        useAzureSQL: 'false'
+      Debian_SQL2025:
+        dockerImage: 'debian:12'
+        distroName: 'Debian-SQL2025'
+        sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         useAzureSQL: 'false'
 
   steps:
@@ -894,6 +997,7 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in $(distroName) ARM64 container'
+    retryCountOnTaskFailure: 2
 
   - script: |
       # Uninstall ODBC Driver before running tests
@@ -1013,18 +1117,17 @@ jobs:
         dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
         subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms || dnf config-manager --set-enabled ubi-9-codeready-builder
         
-        # Install Python 3.9 (available in RHEL 9 UBI) and development tools
-        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 glibc-devel kernel-headers
-        dnf install -y python3-libs python3-debug
-        dnf install -y gcc gcc-c++ make binutils
-        dnf install -y cmake
+        # Install Python 3.12 (available in RHEL 9.4+) and development tools
+        # Note: curl and wget omitted to avoid conflicts with curl-minimal
+        dnf install -y python3.12 python3.12-pip python3.12-devel python3.12-libs gnupg2 glibc-devel kernel-headers
+        dnf install -y gcc gcc-c++ make binutils cmake
         # If that doesn't work, try installing from different repositories
         if ! which gcc; then
           echo 'Trying alternative gcc installation...'
           dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
         fi
         # Verify installation
-        python3 --version
+        python3.12 --version
         which gcc && which g++
         gcc --version
         g++ --version
@@ -1076,8 +1179,8 @@ jobs:
   - script: |
       # Install Python dependencies in the container using virtual environment
       docker exec test-container-rhel9 bash -c "
-        # Create a virtual environment with Python 3.9
-        python3 -m venv myvenv
+        # Create a virtual environment with Python 3.12
+        python3.12 -m venv myvenv
         source myvenv/bin/activate
 
         # Install dependencies in the virtual environment
@@ -1093,7 +1196,7 @@ jobs:
       # Build pybind bindings in the container
       docker exec test-container-rhel9 bash -c "
         source myvenv/bin/activate
-        ls /usr/include/python3.9
+        ls /usr/include/python3.12
         # Set compiler environment variables
         export CC=/usr/bin/gcc
         export CXX=/usr/bin/g++
@@ -1229,18 +1332,17 @@ jobs:
         dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
         subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms || dnf config-manager --set-enabled ubi-9-codeready-builder
         
-        # Install Python 3.9 (available in RHEL 9 UBI) and development tools
-        dnf install -y python3 python3-pip python3-devel cmake curl wget gnupg2 glibc-devel kernel-headers
-        dnf install -y python3-libs python3-debug
-        dnf install -y gcc gcc-c++ make binutils
-        dnf install -y cmake
+        # Install Python 3.12 (available in RHEL 9.4+) and development tools
+        # Note: curl and wget omitted to avoid conflicts with curl-minimal
+        dnf install -y python3.12 python3.12-pip python3.12-devel python3.12-libs gnupg2 glibc-devel kernel-headers
+        dnf install -y gcc gcc-c++ make binutils cmake
         # If that doesn't work, try installing from different repositories
         if ! which gcc; then
           echo 'Trying alternative gcc installation...'
           dnf --enablerepo=ubi-9-codeready-builder install -y gcc gcc-c++
         fi
         # Verify installation and architecture
-        python3 --version
+        python3.12 --version
         which gcc && which g++
         gcc --version
         g++ --version
@@ -1295,8 +1397,8 @@ jobs:
   - script: |
       # Install Python dependencies in the container using virtual environment
       docker exec test-container-rhel9-arm64 bash -c "
-        # Create a virtual environment with Python 3.9
-        python3 -m venv myvenv
+        # Create a virtual environment with Python 3.12
+        python3.12 -m venv myvenv
         source myvenv/bin/activate
 
         # Install dependencies in the virtual environment
@@ -1312,7 +1414,7 @@ jobs:
       # Build pybind bindings in the ARM64 container
       docker exec test-container-rhel9-arm64 bash -c "
         source myvenv/bin/activate
-        ls /usr/include/python3.9
+        ls /usr/include/python3.12
         # Set compiler environment variables
         export CC=/usr/bin/gcc
         export CXX=/usr/bin/g++
@@ -1322,6 +1424,7 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in RHEL 9 ARM64 container'
+    retryCountOnTaskFailure: 2
 
   - script: |
       # Uninstall ODBC Driver before running tests
@@ -1395,14 +1498,12 @@ jobs:
 
   - script: |
       # Create a Docker container for testing on x86_64
-      # TODO(AB#40901): Temporary pin to 3.22 due to msodbcsql ARM64 package arch mismatch
-      # Revert to alpine:latest once ODBC team releases fixed ARM64 package
       docker run -d --name test-container-alpine \
         --platform linux/amd64 \
         -v $(Build.SourcesDirectory):/workspace \
         -w /workspace \
         --network bridge \
-        alpine:3.22 \
+        alpine:latest \
         tail -f /dev/null
     displayName: 'Create Alpine x86_64 container'
 
@@ -1795,6 +1896,7 @@ jobs:
         ./build.sh
       "
     displayName: 'Build pybind bindings (.so) in Alpine ARM64 container'
+    retryCountOnTaskFailure: 2
 
   - script: |
       # Uninstall ODBC Driver before running tests to use bundled libraries
