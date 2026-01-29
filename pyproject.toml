@@ -62,7 +62,6 @@ dev = [
 lint = [
     "black",
     "autopep8",
-    "flake8",
     "pylint",
     "cpplint",
     "mypy",
