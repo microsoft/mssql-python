@@ -110,9 +110,9 @@ setup(
             "py.typed",  # Marker file for PEP 561 typing support
             "ddbc_bindings.cp*.pyd",  # Include all PYD files
             "ddbc_bindings.cp*.so",  # Include all SO files
-            "libs/*", 
-            "libs/**/*", 
-            "*.dll"
+            "libs/*",
+            "libs/**/*",
+            "*.dll",
         ]
     },
     include_package_data=True,
