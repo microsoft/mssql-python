@@ -35,7 +35,7 @@ def get_platform_info() -> Tuple[str, str]:
             return "x64", "win_amd64"
 
     elif sys.platform.startswith("darwin"):
-        return "universal2", "macosx_11_0_universal2"
+        return "universal2", "macosx_15_0_universal2"
 
     elif sys.platform.startswith("linux"):
         target_arch = os.environ.get("targetArch", platform.machine())
