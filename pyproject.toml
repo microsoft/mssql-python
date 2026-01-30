@@ -2,7 +2,7 @@
 # Build System Configuration
 # =============================================================================
 [build-system]
-requires = ["setuptools>=61.0", "wheel", "pybind11"]
+requires = ["setuptools>=64.0.0", "wheel", "pybind11"]
 build-backend = "build_ddbc.build_backend"
 backend-path = ["."]
 
@@ -129,25 +129,6 @@ markers = [
     "stress: marks tests as stress tests (long-running, resource-intensive)",
 ]
 addopts = "-m 'not stress'"
-
-# =============================================================================
-# Coverage Configuration
-# =============================================================================
-[tool.coverage.run]
-source = ["mssql_python"]
-omit = [
-    "*/tests/*",
-    "*/__pycache__/*",
-    "*/pybind/*",
-]
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "def __repr__",
-    "raise NotImplementedError",
-    "if __name__ == .__main__.:",
-]
 
 # =============================================================================
 # Code Formatting - Black
