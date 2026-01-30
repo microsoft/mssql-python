@@ -195,13 +195,16 @@ def test_multiple_connections_concurrent_invalidation(conn_str):
 
         for cursor_num in range(3):
             cursor = conn.cursor()
-            cursor.execute(f"SELECT {conn_num} AS conn, {cursor_num} AS cursor")
+            cursor.execute(f"SELECT {conn_num} AS conn, {cursor_num} AS cursor_num")
             cursor.fetchone()
             all_cursors.append(cursor)
 
     # Close all connections
     for conn in connections:
         conn.close()
+
+    # Verify we have cursors alive (keep them referenced until after connection close)
+    assert len(all_cursors) == 15  # 5 connections * 3 cursors each
 
     # Clear references and force GC
     connections = None
@@ -240,17 +243,17 @@ def test_connection_invalidation_with_prepared_statements(conn_str):
     assert True
 
 
-def test_verify_markImplicitlyFreed_method_exists():
+def test_verify_mark_implicitly_freed_method_exists():
     """
-    Verify that the markImplicitlyFreed method exists on SqlHandle.
+    Verify that the mark_implicitly_freed method exists on SqlHandle.
     This is the core of the segfault fix.
     """
     from mssql_python import ddbc_bindings
 
     # Verify the method exists
     assert hasattr(
-        ddbc_bindings.SqlHandle, "markImplicitlyFreed"
-    ), "SqlHandle should have markImplicitlyFreed method"
+        ddbc_bindings.SqlHandle, "mark_implicitly_freed"
+    ), "SqlHandle should have mark_implicitly_freed method"
 
     # Verify free method also exists
     assert hasattr(ddbc_bindings.SqlHandle, "free"), "SqlHandle should have free method"
@@ -305,47 +308,3 @@ def test_nested_connection_cursor_cleanup(conn_str):
     # Final cleanup
     gc.collect()
     assert True
-
-
-if __name__ == "__main__":
-    # Allow running this test file directly for quick verification
-    import sys
-
-    if len(sys.argv) > 1:
-        conn_str = sys.argv[1]
-        print("Running connection invalidation segfault tests...")
-
-        test_connection_invalidation_with_multiple_cursors(conn_str)
-        print("✓ test_connection_invalidation_with_multiple_cursors passed")
-
-        test_connection_invalidation_without_cursor_close(conn_str)
-        print("✓ test_connection_invalidation_without_cursor_close passed")
-
-        test_repeated_connection_invalidation_cycles(conn_str)
-        print("✓ test_repeated_connection_invalidation_cycles passed")
-
-        test_connection_close_with_uncommitted_transaction(conn_str)
-        print("✓ test_connection_close_with_uncommitted_transaction passed")
-
-        test_cursor_after_connection_invalidation_raises_error(conn_str)
-        print("✓ test_cursor_after_connection_invalidation_raises_error passed")
-
-        test_multiple_connections_concurrent_invalidation(conn_str)
-        print("✓ test_multiple_connections_concurrent_invalidation passed")
-
-        test_connection_invalidation_with_prepared_statements(conn_str)
-        print("✓ test_connection_invalidation_with_prepared_statements passed")
-
-        test_verify_markImplicitlyFreed_method_exists()
-        print("✓ test_verify_markImplicitlyFreed_method_exists passed")
-
-        test_connection_invalidation_with_fetchall(conn_str)
-        print("✓ test_connection_invalidation_with_fetchall passed")
-
-        test_nested_connection_cursor_cleanup(conn_str)
-        print("✓ test_nested_connection_cursor_cleanup passed")
-
-        print("\n✓✓✓ All connection invalidation segfault tests passed! ✓✓✓")
-    else:
-        print("Usage: python test_016_connection_invalidation_segfault.py <connection_string>")
-        print("Or run with pytest: pytest test_016_connection_invalidation_segfault.py")

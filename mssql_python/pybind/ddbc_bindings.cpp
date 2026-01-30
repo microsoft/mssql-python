@@ -4365,7 +4365,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
 
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
         .def("free", &SqlHandle::free, "Free the handle")
-        .def("markImplicitlyFreed", &SqlHandle::markImplicitlyFreed,
+        .def("mark_implicitly_freed", &SqlHandle::markImplicitlyFreed,
              "Mark handle as implicitly freed by parent handle");
 
     py::class_<ConnectionHandle>(m, "Connection")
