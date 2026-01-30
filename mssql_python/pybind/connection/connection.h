@@ -5,10 +5,19 @@
 #include "../ddbc_bindings.h"
 #include <memory>
 #include <string>
+#include <mutex>
 
 // Represents a single ODBC database connection.
 // Manages connection handles.
 // Note: This class does NOT implement pooling logic directly.
+//
+// THREADING MODEL (per DB-API 2.0 threadsafety=1):
+// - Connections should NOT be shared between threads in normal usage
+// - However, _childStatementHandles is mutex-protected because:
+//   1. Python GC/finalizers can run from any thread
+//   2. Native code may release GIL during blocking ODBC calls
+//   3. Provides safety if user accidentally shares connection
+// - All accesses to _childStatementHandles are guarded by _childHandlesMutex
 
 class Connection {
   public:
@@ -64,12 +73,19 @@ class Connection {
 
     // Track child statement handles to mark them as implicitly freed when connection closes
     // Uses weak_ptr to avoid circular references and allow normal cleanup
+    // THREAD-SAFETY: All accesses must be guarded by _childHandlesMutex
     std::vector<std::weak_ptr<SqlHandle>> _childStatementHandles;
     
     // Counter for periodic compaction of expired weak_ptrs
     // Compact every N allocations to avoid O(n²) overhead in hot path
+    // THREAD-SAFETY: Protected by _childHandlesMutex
     size_t _allocationsSinceCompaction = 0;
     static constexpr size_t COMPACTION_INTERVAL = 100;
+    
+    // Mutex protecting _childStatementHandles and _allocationsSinceCompaction
+    // Prevents data races between allocStatementHandle() and disconnect(),
+    // or concurrent GC finalizers running from different threads
+    mutable std::mutex _childHandlesMutex;
 };
 
 class ConnectionHandle {
