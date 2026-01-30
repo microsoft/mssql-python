@@ -5,6 +5,7 @@
 #include "../ddbc_bindings.h"
 #include <memory>
 #include <string>
+#include <vector>
 
 // Represents a single ODBC database connection.
 // Manages connection handles.
