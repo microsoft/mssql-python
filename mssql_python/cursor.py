@@ -2452,7 +2452,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         return True
 
     def _bulkcopy(
-        self, table_name: str, data: Iterable[Union[Tuple, List]], **kwargs
+        self,
+        table_name: str,
+        data: Iterable[Union[Tuple, List]],
+        batch_size: Optional[int] = None,
+        timeout: Optional[int] = 30,
+        column_mappings: Optional[List[Tuple[Union[str, int], str]]] = None,
+        keep_identity: Optional[bool] = None,
+        check_constraints: Optional[bool] = None,
+        table_lock: Optional[bool] = None,
+        keep_nulls: Optional[bool] = None,
+        fire_triggers: Optional[bool] = None,
+        use_internal_transaction: Optional[bool] = None,
     ):  # pragma: no cover
         """
         Perform bulk copy operation for high-performance data loading.
@@ -2471,20 +2482,33 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 - The number of values in each row must match the number of columns
                   in the target table
 
-            **kwargs: Additional bulk copy options.
+            batch_size: Number of rows to send per batch. Default uses server optimal.
 
-                column_mappings (List[Tuple[int, str]], optional):
-                    Maps source data column indices to target table column names.
-                    Each tuple is (source_index, target_column_name) where:
-                    - source_index: 0-based index of the column in the source data
-                    - target_column_name: Name of the target column in the database table
+            timeout: Operation timeout in seconds. Default is 30.
 
-                    When omitted: Columns are mapped by ordinal position (first data
-                    column → first table column, second → second, etc.)
+            column_mappings: Maps source data columns to target table column names.
+                Each tuple is (source, target_column_name) where:
+                - source: Column name (str) or 0-based index (int) in the source data
+                - target_column_name: Name of the target column in the database table
 
-                    When specified: Only the mapped columns are inserted; unmapped
-                    source columns are ignored, and unmapped target columns must
-                    have default values or allow NULL.
+                When omitted: Columns are mapped by ordinal position (first data
+                column → first table column, second → second, etc.)
+
+                When specified: Only the mapped columns are inserted; unmapped
+                source columns are ignored, and unmapped target columns must
+                have default values or allow NULL.
+
+            keep_identity: Preserve identity values from source data.
+
+            check_constraints: Check constraints during bulk copy.
+
+            table_lock: Use table-level lock instead of row-level locks.
+
+            keep_nulls: Preserve null values instead of using default values.
+
+            fire_triggers: Fire insert triggers on the target table.
+
+            use_internal_transaction: Use an internal transaction for each batch.
 
         Returns:
             Dictionary with bulk copy results including:
@@ -2522,10 +2546,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             raise TypeError(
                 f"data must be an iterable of tuples or lists, got non-iterable {type(data).__name__}"
             )
-
-        # Extract and validate kwargs with defaults
-        batch_size = kwargs.get("batch_size", None)
-        timeout = kwargs.get("timeout", 30)
 
         # Validate batch_size type and value (only if explicitly provided)
         if batch_size is not None:
@@ -2599,7 +2619,19 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             pycore_connection = mssql_py_core.PyCoreConnection(pycore_context)
             pycore_cursor = pycore_connection.cursor()
 
-            result = pycore_cursor.bulkcopy(table_name, iter(data), **kwargs)
+            result = pycore_cursor.bulkcopy(
+                table_name,
+                iter(data),
+                batch_size=batch_size,
+                timeout=timeout,
+                column_mappings=column_mappings,
+                keep_identity=keep_identity,
+                check_constraints=check_constraints,
+                table_lock=table_lock,
+                keep_nulls=keep_nulls,
+                fire_triggers=fire_triggers,
+                use_internal_transaction=use_internal_transaction,
+            )
 
             return result
 
