@@ -65,6 +65,11 @@ class Connection {
     // Track child statement handles to mark them as implicitly freed when connection closes
     // Uses weak_ptr to avoid circular references and allow normal cleanup
     std::vector<std::weak_ptr<SqlHandle>> _childStatementHandles;
+    
+    // Counter for periodic compaction of expired weak_ptrs
+    // Compact every N allocations to avoid O(n²) overhead in hot path
+    size_t _allocationsSinceCompaction = 0;
+    static constexpr size_t COMPACTION_INTERVAL = 100;
 };
 
 class ConnectionHandle {

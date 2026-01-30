@@ -99,6 +99,18 @@ void Connection::disconnect() {
         // When we free the DBC handle below, the ODBC driver will automatically free
         // all child STMT handles. We need to tell the SqlHandle objects about this
         // so they don't try to free the handles again during their destruction.
+        
+        // First compact: remove expired weak_ptrs (they're already destroyed)
+        size_t originalSize = _childStatementHandles.size();
+        _childStatementHandles.erase(
+            std::remove_if(_childStatementHandles.begin(), _childStatementHandles.end(),
+                           [](const std::weak_ptr<SqlHandle>& wp) { return wp.expired(); }),
+            _childStatementHandles.end());
+        
+        LOG("Compacted child handles: %zu -> %zu (removed %zu expired)",
+            originalSize, _childStatementHandles.size(),
+            originalSize - _childStatementHandles.size());
+        
         LOG("Marking %zu child statement handles as implicitly freed",
             _childStatementHandles.size());
         for (auto& weakHandle : _childStatementHandles) {
@@ -107,6 +119,7 @@ void Connection::disconnect() {
             }
         }
         _childStatementHandles.clear();
+        _allocationsSinceCompaction = 0;
 
         SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
         checkError(ret);
@@ -192,13 +205,22 @@ SqlHandlePtr Connection::allocStatementHandle() {
     // Track this child handle so we can mark it as implicitly freed when connection closes
     // Use weak_ptr to avoid circular references and allow normal cleanup
     _childStatementHandles.push_back(stmtHandle);
+    _allocationsSinceCompaction++;
 
-    // Clean up expired weak_ptrs periodically to avoid unbounded growth
-    // Remove entries where the weak_ptr is expired (object was already destroyed)
-    _childStatementHandles.erase(
-        std::remove_if(_childStatementHandles.begin(), _childStatementHandles.end(),
-                       [](const std::weak_ptr<SqlHandle>& wp) { return wp.expired(); }),
-        _childStatementHandles.end());
+    // Compact expired weak_ptrs only periodically to avoid O(n²) overhead
+    // This keeps allocation fast (O(1) amortized) while preventing unbounded growth
+    // disconnect() also compacts, so this is just for long-lived connections with many cursors
+    if (_allocationsSinceCompaction >= COMPACTION_INTERVAL) {
+        size_t originalSize = _childStatementHandles.size();
+        _childStatementHandles.erase(
+            std::remove_if(_childStatementHandles.begin(), _childStatementHandles.end(),
+                           [](const std::weak_ptr<SqlHandle>& wp) { return wp.expired(); }),
+            _childStatementHandles.end());
+        _allocationsSinceCompaction = 0;
+        LOG("Periodic compaction: %zu -> %zu handles (removed %zu expired)",
+            originalSize, _childStatementHandles.size(),
+            originalSize - _childStatementHandles.size());
+    }
 
     return stmtHandle;
 }
