@@ -94,6 +94,47 @@ void Connection::connect(const py::dict& attrs_before) {
 void Connection::disconnect() {
     if (_dbcHandle) {
         LOG("Disconnecting from database");
+
+        // CRITICAL FIX: Mark all child statement handles as implicitly freed
+        // When we free the DBC handle below, the ODBC driver will automatically free
+        // all child STMT handles. We need to tell the SqlHandle objects about this
+        // so they don't try to free the handles again during their destruction.
+        
+        // THREAD-SAFETY: Lock mutex to safely access _childStatementHandles
+        // This protects against concurrent allocStatementHandle() calls or GC finalizers
+        {
+            std::lock_guard<std::mutex> lock(_childHandlesMutex);
+            
+            // First compact: remove expired weak_ptrs (they're already destroyed)
+            size_t originalSize = _childStatementHandles.size();
+            _childStatementHandles.erase(
+                std::remove_if(_childStatementHandles.begin(), _childStatementHandles.end(),
+                               [](const std::weak_ptr<SqlHandle>& wp) { return wp.expired(); }),
+                _childStatementHandles.end());
+            
+            LOG("Compacted child handles: %zu -> %zu (removed %zu expired)",
+                originalSize, _childStatementHandles.size(),
+                originalSize - _childStatementHandles.size());
+            
+            LOG("Marking %zu child statement handles as implicitly freed",
+                _childStatementHandles.size());
+            for (auto& weakHandle : _childStatementHandles) {
+                if (auto handle = weakHandle.lock()) {
+                    // SAFETY ASSERTION: Only STMT handles should be in this vector
+                    // This is guaranteed by allocStatementHandle() which only creates STMT handles
+                    // If this assertion fails, it indicates a serious bug in handle tracking
+                    if (handle->type() != SQL_HANDLE_STMT) {
+                        LOG_ERROR("CRITICAL: Non-STMT handle (type=%d) found in _childStatementHandles. "
+                                  "This will cause a handle leak!", handle->type());
+                        continue;  // Skip marking to prevent leak
+                    }
+                    handle->markImplicitlyFreed();
+                }
+            }
+            _childStatementHandles.clear();
+            _allocationsSinceCompaction = 0;
+        }  // Release lock before potentially slow SQLDisconnect call
+
         SQLRETURN ret = SQLDisconnect_ptr(_dbcHandle->get());
         checkError(ret);
         // triggers SQLFreeHandle via destructor, if last owner
@@ -173,7 +214,36 @@ SqlHandlePtr Connection::allocStatementHandle() {
     SQLHANDLE stmt = nullptr;
     SQLRETURN ret = SQLAllocHandle_ptr(SQL_HANDLE_STMT, _dbcHandle->get(), &stmt);
     checkError(ret);
-    return std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT), stmt);
+    auto stmtHandle = std::make_shared<SqlHandle>(static_cast<SQLSMALLINT>(SQL_HANDLE_STMT), stmt);
+
+    // THREAD-SAFETY: Lock mutex before modifying _childStatementHandles
+    // This protects against concurrent disconnect() or allocStatementHandle() calls,
+    // or GC finalizers running from different threads
+    {
+        std::lock_guard<std::mutex> lock(_childHandlesMutex);
+        
+        // Track this child handle so we can mark it as implicitly freed when connection closes
+        // Use weak_ptr to avoid circular references and allow normal cleanup
+        _childStatementHandles.push_back(stmtHandle);
+        _allocationsSinceCompaction++;
+
+        // Compact expired weak_ptrs only periodically to avoid O(n²) overhead
+        // This keeps allocation fast (O(1) amortized) while preventing unbounded growth
+        // disconnect() also compacts, so this is just for long-lived connections with many cursors
+        if (_allocationsSinceCompaction >= COMPACTION_INTERVAL) {
+            size_t originalSize = _childStatementHandles.size();
+            _childStatementHandles.erase(
+                std::remove_if(_childStatementHandles.begin(), _childStatementHandles.end(),
+                               [](const std::weak_ptr<SqlHandle>& wp) { return wp.expired(); }),
+                _childStatementHandles.end());
+            _allocationsSinceCompaction = 0;
+            LOG("Periodic compaction: %zu -> %zu handles (removed %zu expired)",
+                originalSize, _childStatementHandles.size(),
+                originalSize - _childStatementHandles.size());
+        }
+    }  // Release lock
+
+    return stmtHandle;
 }
 
 SQLRETURN Connection::setAttribute(SQLINTEGER attribute, py::object value) {
@@ -308,7 +378,7 @@ bool Connection::reset() {
         disconnect();
         return false;
     }
-    
+
     // SQL_ATTR_RESET_CONNECTION does NOT reset the transaction isolation level.
     // Explicitly reset it to the default (SQL_TXN_READ_COMMITTED) to prevent
     // isolation level settings from leaking between pooled connection usages.
@@ -320,7 +390,7 @@ bool Connection::reset() {
         disconnect();
         return false;
     }
-    
+
     updateLastUsed();
     return true;
 }
