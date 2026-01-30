@@ -35,27 +35,11 @@ PyBind11 provides:
 - Memory-safe bindings
 - Clean and Pythonic API, while performance-critical logic remains in robust, maintainable C++.
  
-## What's new in v1.2.0
-
-### Enhancements
-
-- **Connection.closed Property** - Added `Connection.closed` property to check if a connection is closed, improving connection state management.
-
-- **Parameter as Dictionary** - Added support for passing parameters as dictionaries, providing more flexible query parameterization.
-
-- **Copilot Prompts** - Introduced Copilot prompts for AI-assisted development, enhancing developer productivity.
+## What's new in v1.3.0
 
 ### Bug Fixes
 
-- **FetchMany with LOB Columns** - Fixed `fetchmany(n)` ignoring batch size when working with LOB (Large Object) columns.
-
-- **Non-ASCII Path Resolution** - Fixed path resolution for files with non-ASCII characters on Windows.
-
-### CI/Infrastructure
-
-- **SQL Server 2025 Test Support** - Added support for testing against SQL Server 2025 across Windows, macOS, and Linux CI pipelines, ensuring driver compatibility with the upcoming SQL Server release.
-
-- **Forked PR Coverage Workflow** - Implemented coverage comment workflow for pull requests from forked repositories, improving the contribution experience for external contributors.
+- **Segmentation Fault Fix** - Fixed segmentation fault in libmsodbcsql-18.5 during SQLFreeHandle() (#415).
  
 For more information, please visit the project link on Github: https://github.com/microsoft/mssql-python
  
