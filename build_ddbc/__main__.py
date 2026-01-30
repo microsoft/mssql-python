@@ -11,6 +11,7 @@ Usage:
 import argparse
 import sys
 
+from . import __version__
 from .compiler import compile_ddbc, get_platform_info
 
 
@@ -50,7 +51,7 @@ Examples:
     parser.add_argument(
         "--version", "-V",
         action="version",
-        version="%(prog)s 1.0.0",
+        version=f"%(prog)s {__version__}",
     )
 
     args = parser.parse_args()

@@ -15,4 +15,4 @@ Usage:
 from .compiler import compile_ddbc, get_platform_info
 
 __all__ = ["compile_ddbc", "get_platform_info"]
-__version__ = "1.0.0"
+__version__ = "1.2.0"

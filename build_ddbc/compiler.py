@@ -4,6 +4,7 @@ Core compiler logic for ddbc_bindings.
 This module contains the platform detection and build script execution logic.
 """
 
+import glob
 import os
 import platform
 import sys
@@ -40,14 +41,16 @@ def get_platform_info() -> Tuple[str, str]:
     elif sys.platform.startswith("linux"):
         target_arch = os.environ.get("targetArch", platform.machine())
         libc_name, _ = platform.libc_ver()
-        # Empty libc_name could indicate detection failure; default to glibc (manylinux)
+
         if not libc_name:
-            print(
-                "[build_ddbc] Warning: libc detection failed (platform.libc_ver() "
-                "returned an empty name); defaulting to glibc (manylinux) tags.",
-                file=sys.stderr,
-            )
-            is_musl = False
+            # Fallback: check for musl linker (Alpine Linux)
+            # platform.libc_ver() returns empty string on Alpine
+            is_musl = bool(glob.glob("/lib/ld-musl*"))
+            if not is_musl:
+                print(
+                    "[build_ddbc] Warning: libc detection failed; defaulting to glibc.",
+                    file=sys.stderr,
+                )
         else:
             is_musl = "musl" in libc_name.lower()
 
@@ -131,7 +134,6 @@ def _run_windows_build(pybind_dir: Path, arch: str, verbose: bool) -> bool:
     result = subprocess.run(
         cmd,
         cwd=pybind_dir,
-        shell=True,
         check=False,
         capture_output=not verbose,
     )
