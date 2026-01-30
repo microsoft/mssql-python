@@ -115,6 +115,14 @@ void Connection::disconnect() {
             _childStatementHandles.size());
         for (auto& weakHandle : _childStatementHandles) {
             if (auto handle = weakHandle.lock()) {
+                // SAFETY ASSERTION: Only STMT handles should be in this vector
+                // This is guaranteed by allocStatementHandle() which only creates STMT handles
+                // If this assertion fails, it indicates a serious bug in handle tracking
+                if (handle->type() != SQL_HANDLE_STMT) {
+                    LOG_ERROR("CRITICAL: Non-STMT handle (type=%d) found in _childStatementHandles. "
+                              "This will cause a handle leak!", handle->type());
+                    continue;  // Skip marking to prevent leak
+                }
                 handle->markImplicitlyFreed();
             }
         }

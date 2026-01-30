@@ -1145,6 +1145,17 @@ SQLSMALLINT SqlHandle::type() const {
 }
 
 void SqlHandle::markImplicitlyFreed() {
+    // SAFETY: Only STMT handles should be marked as implicitly freed.
+    // When a DBC handle is freed, the ODBC driver automatically frees all child STMT handles.
+    // Other handle types (ENV, DBC, DESC) are NOT automatically freed by parents.
+    // Calling this on wrong handle types will cause silent handle leaks.
+    if (_type != SQL_HANDLE_STMT) {
+        // Log error but don't throw - we're likely in cleanup/destructor path
+        LOG_ERROR("SAFETY VIOLATION: Attempted to mark non-STMT handle as implicitly freed. "
+                  "Handle type=%d. This will cause handle leak. Only STMT handles are "
+                  "automatically freed by parent DBC handles.", _type);
+        return;  // Refuse to mark - let normal free() handle it
+    }
     _implicitly_freed = true;
 }
 

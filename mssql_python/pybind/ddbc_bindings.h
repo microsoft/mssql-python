@@ -382,6 +382,15 @@ class SqlHandle {
     // Mark this handle as implicitly freed (freed by parent handle)
     // This prevents double-free attempts when the ODBC driver automatically
     // frees child handles (e.g., STMT handles when DBC handle is freed)
+    //
+    // SAFETY CONSTRAINTS:
+    // - ONLY call this on SQL_HANDLE_STMT handles
+    // - ONLY call this when the parent DBC handle is about to be freed
+    // - Calling on other handle types (ENV, DBC, DESC) will cause HANDLE LEAKS
+    // - The ODBC spec only guarantees automatic freeing of STMT handles by DBC parents
+    //
+    // Current usage: Connection::disconnect() marks all tracked STMT handles
+    // before freeing the DBC handle.
     void markImplicitlyFreed();
 
   private:
