@@ -243,19 +243,14 @@ def test_connection_invalidation_with_prepared_statements(conn_str):
     assert True
 
 
-def test_verify_mark_implicitly_freed_method_exists():
+def test_verify_sqlhandle_free_method_exists():
     """
-    Verify that the mark_implicitly_freed method exists on SqlHandle.
-    This is the core of the segfault fix.
+    Verify that the free method exists on SqlHandle.
+    The segfault fix uses markImplicitlyFreed internally in C++ (not exposed to Python).
     """
     from mssql_python import ddbc_bindings
 
-    # Verify the method exists
-    assert hasattr(
-        ddbc_bindings.SqlHandle, "mark_implicitly_freed"
-    ), "SqlHandle should have mark_implicitly_freed method"
-
-    # Verify free method also exists
+    # Verify free method exists
     assert hasattr(ddbc_bindings.SqlHandle, "free"), "SqlHandle should have free method"
 
 

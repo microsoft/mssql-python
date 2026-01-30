@@ -4364,9 +4364,7 @@ PYBIND11_MODULE(ddbc_bindings, m) {
         .def_readwrite("ddbcErrorMsg", &ErrorInfo::ddbcErrorMsg);
 
     py::class_<SqlHandle, SqlHandlePtr>(m, "SqlHandle")
-        .def("free", &SqlHandle::free, "Free the handle")
-        .def("mark_implicitly_freed", &SqlHandle::markImplicitlyFreed,
-             "Mark handle as implicitly freed by parent handle");
+        .def("free", &SqlHandle::free, "Free the handle");
 
     py::class_<ConnectionHandle>(m, "Connection")
         .def(py::init<const std::string&, bool, const py::dict&>(), py::arg("conn_str"),
