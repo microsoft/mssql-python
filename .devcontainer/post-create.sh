@@ -28,33 +28,27 @@ sudo apt-get install -y \
 export TZ=UTC
 ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# Install Microsoft ODBC Driver for SQL Server (required for mssql connectivity)
-echo "🗄️ Installing Microsoft ODBC Driver for SQL Server..."
-curl -sSL -O https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
-sudo dpkg -i packages-microsoft-prod.deb || true
-rm packages-microsoft-prod.deb
-
-sudo apt-get update
-# Install the driver
-ACCEPT_EULA=Y sudo apt-get install -y msodbcsql18
-# optional: for bcp and sqlcmd
-ACCEPT_EULA=Y sudo apt-get install -y mssql-tools18
-# optional: for unixODBC development headers
-sudo apt-get install -y unixodbc-dev
+# Note: ODBC Driver is already installed in the Dockerfile
 
 # Create a Python virtual environment
 echo "🐍 Creating Python virtual environment..."
-python3 -m venv /workspaces/mssql-python/opt/venv
-source /workspaces/mssql-python/opt/venv/bin/activate
+python3 -m venv /workspaces/mssql-python/.venv
+source /workspaces/mssql-python/.venv/bin/activate
 
 python -m pip install --upgrade pip
 
 # Make the virtual environment globally available
-echo 'source /workspaces/mssql-python/opt/venv/bin/activate' >> ~/.bashrc
+echo 'source /workspaces/mssql-python/.venv/bin/activate' >> ~/.bashrc
 
 # Install project dependencies
 echo "📚 Installing project dependencies..."
 pip install -r requirements.txt
+
+# Build the native extension
+echo "🔨 Building native extension..."
+cd /workspaces/mssql-python/mssql_python/pybind
+./build.sh
+cd /workspaces/mssql-python
 
 # Create useful aliases
 echo "⚡ Setting up aliases..."
