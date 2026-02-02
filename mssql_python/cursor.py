@@ -2619,18 +2619,32 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             pycore_connection = mssql_py_core.PyCoreConnection(pycore_context)
             pycore_cursor = pycore_connection.cursor()
 
+            # Build kwargs dynamically - only pass non-None values
+            # This lets PyO3/Rust use its defined defaults for unspecified params
+            bulkcopy_kwargs = {}
+            if batch_size is not None:
+                bulkcopy_kwargs["batch_size"] = batch_size
+            if timeout is not None:
+                bulkcopy_kwargs["timeout"] = timeout
+            if column_mappings is not None:
+                bulkcopy_kwargs["column_mappings"] = column_mappings
+            if keep_identity is not None:
+                bulkcopy_kwargs["keep_identity"] = keep_identity
+            if check_constraints is not None:
+                bulkcopy_kwargs["check_constraints"] = check_constraints
+            if table_lock is not None:
+                bulkcopy_kwargs["table_lock"] = table_lock
+            if keep_nulls is not None:
+                bulkcopy_kwargs["keep_nulls"] = keep_nulls
+            if fire_triggers is not None:
+                bulkcopy_kwargs["fire_triggers"] = fire_triggers
+            if use_internal_transaction is not None:
+                bulkcopy_kwargs["use_internal_transaction"] = use_internal_transaction
+
             result = pycore_cursor.bulkcopy(
                 table_name,
                 iter(data),
-                batch_size=batch_size,
-                timeout=timeout,
-                column_mappings=column_mappings,
-                keep_identity=keep_identity,
-                check_constraints=check_constraints,
-                table_lock=table_lock,
-                keep_nulls=keep_nulls,
-                fire_triggers=fire_triggers,
-                use_internal_transaction=use_internal_transaction,
+                **bulkcopy_kwargs,
             )
 
             return result
