@@ -2455,15 +2455,15 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self,
         table_name: str,
         data: Iterable[Union[Tuple, List]],
-        batch_size: Optional[int] = None,
-        timeout: Optional[int] = 30,
-        column_mappings: Optional[List[Tuple[Union[str, int], str]]] = None,
-        keep_identity: Optional[bool] = None,
-        check_constraints: Optional[bool] = None,
-        table_lock: Optional[bool] = None,
-        keep_nulls: Optional[bool] = None,
-        fire_triggers: Optional[bool] = None,
-        use_internal_transaction: Optional[bool] = None,
+        batch_size: int = 0,
+        timeout: int = 30,
+        column_mappings: Optional[Union[List[str], List[Tuple[int, str]]]] = None,
+        keep_identity: bool = False,
+        check_constraints: bool = False,
+        table_lock: bool = False,
+        keep_nulls: bool = False,
+        fire_triggers: bool = False,
+        use_internal_transaction: bool = False,
     ):  # pragma: no cover
         """
         Perform bulk copy operation for high-performance data loading.
@@ -2482,21 +2482,26 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 - The number of values in each row must match the number of columns
                   in the target table
 
-            batch_size: Number of rows to send per batch. Default uses server optimal.
+            batch_size: Number of rows to send per batch. Default 0 uses server optimal.
 
             timeout: Operation timeout in seconds. Default is 30.
 
             column_mappings: Maps source data columns to target table column names.
-                Each tuple is (source, target_column_name) where:
-                - source: Column name (str) or 0-based index (int) in the source data
-                - target_column_name: Name of the target column in the database table
+                Two formats supported:
+
+                Simple Format - List[str]:
+                    List of destination column names in order. Position in list = source index.
+                    Example: ['UserID', 'FirstName', 'Email']
+                    Maps: index 0 → UserID, index 1 → FirstName, index 2 → Email
+
+                Advanced Format - List[Tuple[int, str]]:
+                    Explicit index mapping. Allows skipping or reordering columns.
+                    Each tuple is (source_index, target_column_name).
+                    Example: [(0, 'UserID'), (1, 'FirstName'), (3, 'Email')]
+                    Maps: index 0 → UserID, index 1 → FirstName, index 3 → Email (skips index 2)
 
                 When omitted: Columns are mapped by ordinal position (first data
                 column → first table column, second → second, etc.)
-
-                When specified: Only the mapped columns are inserted; unmapped
-                source columns are ignored, and unmapped target columns must
-                have default values or allow NULL.
 
             keep_identity: Preserve identity values from source data.
 
@@ -2547,18 +2552,17 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 f"data must be an iterable of tuples or lists, got non-iterable {type(data).__name__}"
             )
 
-        # Validate batch_size type and value (only if explicitly provided)
-        if batch_size is not None:
-            if not isinstance(batch_size, (int, float)):
-                raise TypeError(
-                    f"batch_size must be a positive integer, got {type(batch_size).__name__}"
-                )
-            if batch_size <= 0:
-                raise ValueError(f"batch_size must be positive, got {batch_size}")
+        # Validate batch_size type and value (0 means server optimal)
+        if not isinstance(batch_size, int):
+            raise TypeError(
+                f"batch_size must be a non-negative integer, got {type(batch_size).__name__}"
+            )
+        if batch_size < 0:
+            raise ValueError(f"batch_size must be non-negative, got {batch_size}")
 
         # Validate timeout type and value
-        if not isinstance(timeout, (int, float)):
-            raise TypeError(f"timeout must be a positive number, got {type(timeout).__name__}")
+        if not isinstance(timeout, int):
+            raise TypeError(f"timeout must be a positive integer, got {type(timeout).__name__}")
         if timeout <= 0:
             raise ValueError(f"timeout must be positive, got {timeout}")
 
@@ -2619,32 +2623,18 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             pycore_connection = mssql_py_core.PyCoreConnection(pycore_context)
             pycore_cursor = pycore_connection.cursor()
 
-            # Build kwargs dynamically - only pass non-None values
-            # This lets PyO3/Rust use its defined defaults for unspecified params
-            bulkcopy_kwargs = {}
-            if batch_size is not None:
-                bulkcopy_kwargs["batch_size"] = batch_size
-            if timeout is not None:
-                bulkcopy_kwargs["timeout"] = timeout
-            if column_mappings is not None:
-                bulkcopy_kwargs["column_mappings"] = column_mappings
-            if keep_identity is not None:
-                bulkcopy_kwargs["keep_identity"] = keep_identity
-            if check_constraints is not None:
-                bulkcopy_kwargs["check_constraints"] = check_constraints
-            if table_lock is not None:
-                bulkcopy_kwargs["table_lock"] = table_lock
-            if keep_nulls is not None:
-                bulkcopy_kwargs["keep_nulls"] = keep_nulls
-            if fire_triggers is not None:
-                bulkcopy_kwargs["fire_triggers"] = fire_triggers
-            if use_internal_transaction is not None:
-                bulkcopy_kwargs["use_internal_transaction"] = use_internal_transaction
-
             result = pycore_cursor.bulkcopy(
                 table_name,
                 iter(data),
-                **bulkcopy_kwargs,
+                batch_size=batch_size,
+                timeout=timeout,
+                column_mappings=column_mappings,
+                keep_identity=keep_identity,
+                check_constraints=check_constraints,
+                table_lock=table_lock,
+                keep_nulls=keep_nulls,
+                fire_triggers=fire_triggers,
+                use_internal_transaction=use_internal_transaction,
             )
 
             return result
