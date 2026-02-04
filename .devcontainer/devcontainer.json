@@ -4,25 +4,30 @@
     "dockerfile": "Dockerfile",
     "context": "."
   },
-  // Configure tool-specific properties.
   "customizations": {
-    // Configure properties specific to VS Code.
     "vscode": {
-      // Set *default* container specific settings.json values on container create.
       "settings": {
-        "python.defaultInterpreterPath": "/workspaces/mssql-python/.venv/bin/python",
-        "python.terminal.activateEnvironment": true,
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.terminal.activateEnvironment": false,
         "editor.formatOnSave": true,
         "[python]": {
           "editor.defaultFormatter": "ms-python.black-formatter"
         },
-        "cmake.configureOnOpen": false
+        "cmake.configureOnOpen": false,
+        "cmake.configureOnEdit": false,
+        "cmake.automaticReconfigure": false,
+        "files.exclude": {
+          "**/__pycache__": true,
+          "**/*.pyc": true,
+          "**/.pytest_cache": true,
+          "**/build": true
+        }
       },
-      // Add the IDs of extensions you want installed when the container is created.
       "extensions": [
         "ms-python.python",
         "ms-python.vscode-pylance",
         "ms-python.pylint",
+        "ms-python.black-formatter",
         "ms-toolsai.jupyter",
         "ms-vscode.cmake-tools",
         "ms-vscode.cpptools",
@@ -36,7 +41,6 @@
       ]
     }
   },
-  // Features to add to the dev container. More info: https://containers.dev/features.
   "features": {
     "ghcr.io/devcontainers/features/git:1": {},
     "ghcr.io/devcontainers/features/github-cli:1": {},
@@ -51,20 +55,19 @@
       "userGid": "automatic"
     }
   },
-  // Use 'forwardPorts' to make a list of ports inside the container available locally.
-  "forwardPorts": [],
-  // Use 'postCreateCommand' to run commands after the container is created.
+  "forwardPorts": [1433],
+  "portsAttributes": {
+    "1433": {
+      "label": "SQL Server",
+      "onAutoForward": "notify"
+    }
+  },
   "postCreateCommand": "bash .devcontainer/post-create.sh",
-  // Use 'postStartCommand' to run commands after the container starts.
-  "postStartCommand": "",
-  // Configure tool-specific properties.
   "remoteUser": "vscode",
-  // Set container environment variables
   "containerEnv": {
     "PYTHONPATH": "/workspaces/mssql-python",
     "CMAKE_BUILD_TYPE": "Debug"
   },
-  // Mount the project directory
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/mssql-python,type=bind,consistency=cached",
   "workspaceFolder": "/workspaces/mssql-python"
 }

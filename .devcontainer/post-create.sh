@@ -5,75 +5,99 @@ set -e
 
 echo "🚀 Setting up MSSQL Python Driver development environment..."
 
-# Update package lists
-echo "📦 Updating package lists..."
-sudo apt-get update
-
-# Install system dependencies required for the project
-echo "🔧 Installing system dependencies..."
-sudo apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-venv \
-    python3-full \
-    cmake \
-    curl \
-    wget \
-    gnupg \
-    software-properties-common \
-    build-essential \
-    python3-dev \
-    pybind11-dev
-
-export TZ=UTC
-ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-
-# Note: ODBC Driver is already installed in the Dockerfile
-
-# Create a Python virtual environment
-echo "🐍 Creating Python virtual environment..."
-python3 -m venv /workspaces/mssql-python/.venv
-source /workspaces/mssql-python/.venv/bin/activate
-
-python -m pip install --upgrade pip
-
-# Make the virtual environment globally available
-echo 'source /workspaces/mssql-python/.venv/bin/activate' >> ~/.bashrc
-
-# Install project dependencies
-echo "📚 Installing project dependencies..."
+# Install Python packages from requirements.txt
+echo "📦 Installing Python packages..."
+pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 
-# Build the native extension
-echo "🔨 Building native extension..."
-cd /workspaces/mssql-python/mssql_python/pybind
-./build.sh
-cd /workspaces/mssql-python
+# Create symlink for 'python' command (build.sh expects it)
+echo "🔗 Creating python symlink..."
+sudo ln -sf $(which python3) /usr/local/bin/python
 
-# Create useful aliases
+# Set up useful bash aliases
 echo "⚡ Setting up aliases..."
-cat >> ~/.bashrc << 'EOF'
-
-# MSSQL Python Driver aliases
-alias ll='ls -alF'
-alias la='ls -A'
-alias l='ls -CF'
-alias clean='find . -type f -name "*.pyc" -delete && find . -type d -name "__pycache__" -delete'
-
+cat > ~/.bash_aliases << 'EOF'
+# MSSQL Python Driver development aliases
+alias build='cd mssql_python/pybind && ./build.sh && cd ../..'
+alias test='python -m pytest -v'
 EOF
 
-# Set up git configuration (if not already configured)
-echo "🔧 Configuring git..."
-if [ -z "$(git config --global user.name)" ]; then
-    echo "Git user name not set. You may want to configure it with:"
-    echo "  git config --global user.name 'Your Name'"
-fi
-if [ -z "$(git config --global user.email)" ]; then
-    echo "Git user email not set. You may want to configure it with:"
-    echo "  git config --global user.email 'your.email@example.com'"
+# Ensure .bash_aliases is sourced
+grep -qxF 'source ~/.bash_aliases' ~/.bashrc || echo 'source ~/.bash_aliases' >> ~/.bashrc
+
+# Verify environment
+echo ""
+echo "🔍 Verifying environment..."
+python --version
+pip --version
+cmake --version
+if command -v sqlcmd &> /dev/null; then
+    echo "✅ sqlcmd available"
+else
+    echo "❌ sqlcmd not found"
 fi
 
-# Display information about the environment
+# Build the C++ extension
+echo ""
+echo "🔨 Building C++ extension..."
+if cd mssql_python/pybind && ./build.sh && cd ../..; then
+    echo "✅ C++ extension built successfully"
+else
+    echo "❌ C++ extension build failed!"
+    exit 1
+fi
+
+# Generate random password for SQL Server
+echo ""
+echo "Generating SQL Server password..."
+SA_PASSWORD="$(openssl rand -base64 16 | tr -dc 'A-Za-z0-9' | head -c 16)Aa1!"
+echo "$SA_PASSWORD" > /tmp/.sqlserver_sa_password
+chmod 600 /tmp/.sqlserver_sa_password
+
+# Start SQL Server container (use Azure SQL Edge for ARM64 compatibility)
+# This is optional - if Docker-in-Docker fails, the devcontainer still works
+echo ""
+echo "Starting SQL Server container (optional)..."
+
+ARCH=$(uname -m)
+if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
+    echo "Detected ARM64 - using Azure SQL Edge..."
+    docker run -e 'ACCEPT_EULA=Y' -e "MSSQL_SA_PASSWORD=$SA_PASSWORD" \
+        -p 1433:1433 --name sqlserver \
+        -d mcr.microsoft.com/azure-sql-edge:latest && SQL_STARTED=true || SQL_STARTED=false
+else
+    echo "Detected x86_64 - using SQL Server 2025..."
+    docker run -e 'ACCEPT_EULA=Y' -e "MSSQL_SA_PASSWORD=$SA_PASSWORD" \
+        -p 1433:1433 --name sqlserver \
+        -d mcr.microsoft.com/mssql/server:2025-latest && SQL_STARTED=true || SQL_STARTED=false
+fi
+
+if [ "$SQL_STARTED" = "true" ]; then
+    echo "Waiting for SQL Server to start..."
+    sleep 15
+else
+    echo "WARNING: SQL Server container failed to start (Docker issue)"
+    echo "  You can start it manually later with:"
+    echo "  docker run -e 'ACCEPT_EULA=Y' -e 'MSSQL_SA_PASSWORD=YourPassword123!' -p 1433:1433 --name sqlserver -d mcr.microsoft.com/azure-sql-edge:latest"
+fi
+
+# Set DB_CONNECTION_STRING environment variable
+DB_CONNECTION_STRING="Server=localhost,1433;Database=master;User Id=sa;Password=$SA_PASSWORD;TrustServerCertificate=True"
+echo "$DB_CONNECTION_STRING" > /tmp/.sqlserver_connection_string
+chmod 600 /tmp/.sqlserver_connection_string
+echo "export DB_CONNECTION_STRING=\"$DB_CONNECTION_STRING\"" >> ~/.bashrc
+export DB_CONNECTION_STRING
+
+# Display completion message and next steps
 echo ""
 echo "✅ Development environment setup complete!"
-
+echo ""
+echo "📋 Next steps:"
+echo "  1. Run tests: test"
+echo "  2. Start coding!"
+echo ""
+echo "💡 Tips:"
+echo "  - Use 'build' alias to rebuild C++ extension after changes"
+echo "  - SA password stored in: /tmp/.sqlserver_sa_password"
+echo "  - Connection string in: /tmp/.sqlserver_connection_string"
+echo ""

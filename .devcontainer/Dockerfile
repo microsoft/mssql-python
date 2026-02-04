@@ -6,14 +6,26 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONPATH=/workspaces/mssql-python
 ENV CMAKE_BUILD_TYPE=Debug
 
-# Install system dependencies
+# Set timezone (configurable via build arg)
+ARG TZ=UTC
+ENV TZ=$TZ
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone
+
+# Install all system dependencies in one layer
 RUN apt-get update && apt-get install -y \
     # Build tools
     build-essential \
     cmake \
     pkg-config \
     ninja-build \
-    # Additional tools
+    python3-dev \
+    pybind11-dev \
+    # ODBC prerequisites (unixodbc-dev provides sql.h headers for compilation)
+    unixodbc-dev \
+    gnupg \
+    software-properties-common \
+    # Utilities
     curl \
     wget \
     git \
@@ -27,9 +39,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Microsoft ODBC Driver for SQL Server
-RUN curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
-    && curl https://packages.microsoft.com/config/debian/12/prod.list > /etc/apt/sources.list.d/mssql-release.list \
-    && sed -i 's/^deb /deb [signed-by=\/usr\/share\/keyrings\/microsoft-prod.gpg] /' /etc/apt/sources.list.d/mssql-release.list \
+RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && echo "deb [arch=arm64,amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list \
     && apt-get update \
     && ACCEPT_EULA=Y apt-get install -y msodbcsql18 \
     && ACCEPT_EULA=Y apt-get install -y mssql-tools18 \
@@ -39,32 +50,11 @@ RUN curl https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /u
 # Add mssql-tools to PATH
 ENV PATH="$PATH:/opt/mssql-tools18/bin"
 
-# Upgrade pip and install common Python development tools
-RUN python -m pip install --upgrade pip setuptools wheel \
-    && pip install \
-    black \
-    flake8 \
-    mypy \
-    isort \
-    pre-commit \
-    twine \
-    build \
-    wheel \
-    "pybind11[global]" \
-    pytest-xdist \
-    pytest-mock \
-    "coverage[toml]"
-
 # Set the default user to vscode (created by the base image)
 USER vscode
 
 # Set the working directory
 WORKDIR /workspaces/mssql-python
-
-# Add helpful aliases to .bashrc
-RUN echo 'alias ll="ls -alF"' >> ~/.bashrc \
-    && echo 'alias la="ls -A"' >> ~/.bashrc \
-    && echo 'alias l="ls -CF"' >> ~/.bashrc 
 
 # Default command
 CMD ["/bin/bash"]
