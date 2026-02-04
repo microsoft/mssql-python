@@ -14,16 +14,17 @@ pip install -r requirements.txt
 echo "🔗 Creating python symlink..."
 sudo ln -sf $(which python3) /usr/local/bin/python
 
-# Set up useful bash aliases
+# Set up useful shell aliases (for both bash and zsh)
 echo "⚡ Setting up aliases..."
-cat > ~/.bash_aliases << 'EOF'
+cat > ~/.shell_aliases << 'EOF'
 # MSSQL Python Driver development aliases
-alias build='cd mssql_python/pybind && ./build.sh && cd ../..'
+alias build='cd /workspaces/mssql-python/mssql_python/pybind && ./build.sh && cd /workspaces/mssql-python'
 alias test='python -m pytest -v'
 EOF
 
-# Ensure .bash_aliases is sourced
-grep -qxF 'source ~/.bash_aliases' ~/.bashrc || echo 'source ~/.bash_aliases' >> ~/.bashrc
+# Ensure aliases are sourced in both shells
+grep -qxF 'source ~/.shell_aliases' ~/.bashrc 2>/dev/null || echo 'source ~/.shell_aliases' >> ~/.bashrc
+grep -qxF 'source ~/.shell_aliases' ~/.zshrc 2>/dev/null || echo 'source ~/.shell_aliases' >> ~/.zshrc
 
 # Verify environment
 echo ""
@@ -81,23 +82,34 @@ else
     echo "  docker run -e 'ACCEPT_EULA=Y' -e 'MSSQL_SA_PASSWORD=YourPassword123!' -p 1433:1433 --name sqlserver -d mcr.microsoft.com/azure-sql-edge:latest"
 fi
 
-# Set DB_CONNECTION_STRING environment variable
-DB_CONNECTION_STRING="Server=localhost,1433;Database=master;User Id=sa;Password=$SA_PASSWORD;TrustServerCertificate=True"
-echo "$DB_CONNECTION_STRING" > /tmp/.sqlserver_connection_string
-chmod 600 /tmp/.sqlserver_connection_string
+# Set DB_CONNECTION_STRING environment variable (persist across all terminals)
+DB_CONNECTION_STRING="Server=localhost,1433;Database=master;UID=sa;PWD=$SA_PASSWORD;TrustServerCertificate=Yes;Encrypt=Yes"
+
+# Write to /etc/environment for system-wide persistence
+echo "DB_CONNECTION_STRING=\"$DB_CONNECTION_STRING\"" | sudo tee -a /etc/environment > /dev/null
+
+# Also add to shell rc files for immediate availability in new terminals
 echo "export DB_CONNECTION_STRING=\"$DB_CONNECTION_STRING\"" >> ~/.bashrc
+echo "export DB_CONNECTION_STRING=\"$DB_CONNECTION_STRING\"" >> ~/.zshrc
+
+# Export for current session
 export DB_CONNECTION_STRING
 
 # Display completion message and next steps
 echo ""
-echo "✅ Development environment setup complete!"
+echo "=============================================="
+echo "🎉 Dev environment setup complete!"
+echo "=============================================="
 echo ""
-echo "📋 Next steps:"
-echo "  1. Run tests: test"
-echo "  2. Start coding!"
+echo "📦 What's ready:"
+echo "  ✅ C++ extension built"
+echo "  ✅ SQL Server running (localhost:1433)"
+echo "  ✅ DB_CONNECTION_STRING set in environment"
 echo ""
-echo "💡 Tips:"
-echo "  - Use 'build' alias to rebuild C++ extension after changes"
-echo "  - SA password stored in: /tmp/.sqlserver_sa_password"
-echo "  - Connection string in: /tmp/.sqlserver_connection_string"
+echo "🚀 Quick start - just type these commands:"
+echo "  python main.py  → Test the connection"
+echo "  test            → Run all pytest tests"
+echo "  build           → Rebuild C++ extension"
+echo ""
+echo "=============================================="
 echo ""
