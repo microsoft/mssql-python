@@ -8,6 +8,7 @@
 #include "connection/connection.h"
 #include "connection/connection_pool.h"
 #include "logger_bridge.hpp"
+#include "performance_counter.hpp"
 
 #include <cctype>
 #include <cstdint>
@@ -5852,6 +5853,19 @@ PYBIND11_MODULE(ddbc_bindings, m) {
              const py::object& table, const py::object& column) {
               return SQLColumns_wrap(StatementHandle, catalog, schema, table, column);
           });
+
+    // Add profiling submodule
+    auto profiling = m.def_submodule("profiling", "Performance profiling");
+    profiling.def("enable", []() { mssql_profiling::PerformanceCounter::instance().enable(); }, 
+                  "Enable performance profiling");
+    profiling.def("disable", []() { mssql_profiling::PerformanceCounter::instance().disable(); }, 
+                  "Disable performance profiling");
+    profiling.def("get_stats", []() { return mssql_profiling::PerformanceCounter::instance().get_stats(); }, 
+                  "Get profiling statistics");
+    profiling.def("reset", []() { mssql_profiling::PerformanceCounter::instance().reset(); }, 
+                  "Reset profiling statistics");
+    profiling.def("is_enabled", []() { return mssql_profiling::PerformanceCounter::instance().is_enabled(); }, 
+                  "Check if profiling is enabled");
 
     // Add a version attribute
     m.attr("__version__") = "1.0.0";
