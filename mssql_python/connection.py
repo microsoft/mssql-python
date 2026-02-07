@@ -45,6 +45,8 @@ from mssql_python.connection_string_parser import _ConnectionStringParser
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
 from mssql_python.constants import _RESERVED_PARAMETERS
 
+from mssql_python.type_code import SqlTypeCode
+
 if TYPE_CHECKING:
     from mssql_python.row import Row
 
@@ -923,7 +925,9 @@ class Connection:
         logger.debug("cursor: Cursor created successfully - total_cursors=%d", len(self._cursors))
         return cursor
 
-    def add_output_converter(self, sqltype: int, func: Callable[[Any], Any]) -> None:
+    def add_output_converter(
+        self, sqltype: Union[int, SqlTypeCode, type], func: Callable[[Any], Any]
+    ) -> None:
         """
         Register an output converter function that will be called whenever a value
         with the given SQL type is read from the database.
@@ -936,32 +940,39 @@ class Connection:
         vulnerabilities. This API should never be exposed to untrusted or external input.
 
         Args:
-            sqltype (int): The integer SQL type value to convert, which can be one of the
-                          defined standard constants (e.g. SQL_VARCHAR) or a database-specific
-                          value (e.g. -151 for the SQL Server 2008 geometry data type).
+            sqltype (int, SqlTypeCode, or type): The SQL type value to convert.
+                Also accepts SqlTypeCode objects or Python types for backward compatibility.
             func (callable): The converter function which will be called with a single parameter,
                             the value, and should return the converted value. If the value is NULL
-                            then the parameter passed to the function will be None, otherwise it
-                            will be a bytes object.
+                            then the parameter passed to the function will be None. For string/binary
+                            columns, the value will be bytes (UTF-16LE encoded for strings). For other
+                            types (int, decimal.Decimal, datetime, etc.), the value will be the native
+                            Python object.
 
         Returns:
             None
         """
+        if isinstance(sqltype, SqlTypeCode):
+            sqltype = sqltype.type_code
         with self._converters_lock:
             self._output_converters[sqltype] = func
             # Pass to the underlying connection if native implementation supports it
-            if hasattr(self._conn, "add_output_converter"):
+            # Only forward int type codes to native layer; Python type keys are handled
+            # only in our Python-side dictionary
+            if isinstance(sqltype, int) and hasattr(self._conn, "add_output_converter"):
                 self._conn.add_output_converter(sqltype, func)
         logger.info(f"Added output converter for SQL type {sqltype}")
 
-    def get_output_converter(self, sqltype: Union[int, type]) -> Optional[Callable[[Any], Any]]:
+    def get_output_converter(
+        self, sqltype: Union[int, SqlTypeCode, type]
+    ) -> Optional[Callable[[Any], Any]]:
         """
         Get the output converter function for the specified SQL type.
 
         Thread-safe implementation that protects the converters dictionary with a lock.
 
         Args:
-            sqltype (int or type): The SQL type value or Python type to get the converter for
+            sqltype (int, SqlTypeCode, or type): The SQL type value to get the converter for.
 
         Returns:
             callable or None: The converter function or None if no converter is registered
@@ -970,27 +981,43 @@ class Connection:
             ⚠️ The returned converter function will be executed on database values. Only use
             converters from trusted sources.
         """
+        original_sqltype = sqltype
+        if isinstance(sqltype, SqlTypeCode):
+            sqltype = sqltype.type_code
         with self._converters_lock:
-            return self._output_converters.get(sqltype)
+            result = self._output_converters.get(sqltype)
+            # Fallback: try python_type key for backward compatibility
+            if result is None and isinstance(original_sqltype, SqlTypeCode):
+                result = self._output_converters.get(original_sqltype.python_type)
+            return result
 
-    def remove_output_converter(self, sqltype: Union[int, type]) -> None:
+    def remove_output_converter(self, sqltype: Union[int, SqlTypeCode, type]) -> None:
         """
         Remove the output converter function for the specified SQL type.
 
         Thread-safe implementation that protects the converters dictionary with a lock.
 
         Args:
-            sqltype (int or type): The SQL type value to remove the converter for
+            sqltype (int, SqlTypeCode, or type): The SQL type value to remove the converter for.
 
         Returns:
             None
         """
+        python_type_key = None
+        if isinstance(sqltype, SqlTypeCode):
+            python_type_key = sqltype.python_type
+            sqltype = sqltype.type_code
         with self._converters_lock:
             if sqltype in self._output_converters:
                 del self._output_converters[sqltype]
                 # Pass to the underlying connection if native implementation supports it
-                if hasattr(self._conn, "remove_output_converter"):
+                # Only forward int type codes to native layer; Python type keys are handled
+                # only in our Python-side dictionary
+                if isinstance(sqltype, int) and hasattr(self._conn, "remove_output_converter"):
                     self._conn.remove_output_converter(sqltype)
+            # Symmetric with get_output_converter: also remove python_type key if present
+            if python_type_key is not None and python_type_key in self._output_converters:
+                del self._output_converters[python_type_key]
         logger.info(f"Removed output converter for SQL type {sqltype}")
 
     def clear_output_converters(self) -> None:

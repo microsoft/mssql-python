@@ -27,6 +27,15 @@
 #define MAX_DIGITS_IN_NUMERIC 64
 #define SQL_MAX_NUMERIC_LEN 16
 #define SQL_SS_XML (-152)
+#ifndef SQL_SS_UDT
+#define SQL_SS_UDT (-151)  // SQL Server User-Defined Types (geometry, geography, hierarchyid)
+#endif
+#ifndef SQL_DATETIME2
+#define SQL_DATETIME2 (42)
+#endif
+#ifndef SQL_SMALLDATETIME
+#define SQL_SMALLDATETIME (58)
+#endif
 
 #define STRINGIFY_FOR_CASE(x)                                                                      \
     case x:                                                                                        \

@@ -16,7 +16,6 @@ import decimal
 from contextlib import closing
 import mssql_python
 import uuid
-import re
 from conftest import is_azure_sql_connection
 
 # Setup test table
@@ -1197,7 +1196,7 @@ def test_fetchall(cursor):
 
 
 def test_fetchall_lob(cursor):
-    """Test fetching all rows"""
+    """Test fetching all rows with LOB columns"""
     cursor.execute("SELECT * FROM #pytest_all_data_types")
     rows = cursor.fetchall()
     assert isinstance(rows, list), "fetchall should return a list"
@@ -2382,16 +2381,123 @@ def test_drop_tables_for_join(cursor, db_connection):
 
 
 def test_cursor_description(cursor):
-    """Test cursor description"""
+    """Test cursor description with SqlTypeCode for backwards compatibility."""
     cursor.execute("SELECT database_id, name FROM sys.databases;")
     desc = cursor.description
-    expected_description = [
-        ("database_id", int, None, 10, 10, 0, False),
-        ("name", str, None, 128, 128, 0, False),
-    ]
-    assert len(desc) == len(expected_description), "Description length mismatch"
-    for desc, expected in zip(desc, expected_description):
-        assert desc == expected, f"Description mismatch: {desc} != {expected}"
+
+    from mssql_python.constants import ConstantsDDBC as ddbc_sql_const
+
+    # Verify length
+    assert len(desc) == 2, "Description should have 2 columns"
+
+    # Test 1: DB-API 2.0 compliant - compare with SQL type codes (integers)
+    assert desc[0][1] == ddbc_sql_const.SQL_INTEGER.value, "database_id should be SQL_INTEGER (4)"
+    assert desc[1][1] == ddbc_sql_const.SQL_WVARCHAR.value, "name should be SQL_WVARCHAR (-9)"
+
+    # Test 2: Backwards compatible - compare with Python types (for pandas, etc.)
+    assert desc[0][1] == int, "database_id should also compare equal to Python int"
+    assert desc[1][1] == str, "name should also compare equal to Python str"
+
+    # Test 3: Can convert to int to get raw SQL code
+    assert int(desc[0][1]) == 4, "int(type_code) should return SQL_INTEGER (4)"
+    assert int(desc[1][1]) == -9, "int(type_code) should return SQL_WVARCHAR (-9)"
+
+    # Test 4: Verify other tuple elements
+    assert desc[0][0] == "database_id", "First column name should be database_id"
+    assert desc[1][0] == "name", "Second column name should be name"
+
+
+def test_cursor_description_pandas_compatibility(cursor):
+    """
+    Test that cursor.description type_code works with pandas-style type checking.
+
+    Pandas and other libraries check `cursor.description[i][1] == str` to determine
+    column types. This test ensures SqlTypeCode maintains backwards compatibility.
+    """
+    cursor.execute("SELECT database_id, name FROM sys.databases;")
+    desc = cursor.description
+
+    # Simulate what pandas does internally when reading SQL results
+    # pandas checks: if description[i][1] == str: treat as string column
+    type_map = {}
+    for col_desc in desc:
+        col_name = col_desc[0]
+        type_code = col_desc[1]
+
+        # This is how pandas-like code typically checks types
+        if type_code == str:
+            type_map[col_name] = "string"
+        elif type_code == int:
+            type_map[col_name] = "integer"
+        elif type_code == float:
+            type_map[col_name] = "float"
+        elif type_code == bytes:
+            type_map[col_name] = "bytes"
+        else:
+            type_map[col_name] = "other"
+
+    assert type_map["database_id"] == "integer", "database_id should be detected as integer"
+    assert type_map["name"] == "string", "name should be detected as string"
+
+
+def test_cursor_description_datetime_types(cursor, db_connection):
+    """
+    Regression test for Issue #352: Ensure DATE/datetime columns return correct ODBC type codes.
+
+    This test verifies that cursor.description properly handles date/time columns,
+    returning the correct ODBC 3.x type codes while maintaining backwards compatibility
+    with Python datetime types for pandas-style comparisons.
+    """
+    from mssql_python.constants import ConstantsDDBC
+
+    try:
+        # Create a table with various date/time types
+        cursor.execute("""
+            CREATE TABLE #pytest_datetime_desc (
+                id INT PRIMARY KEY,
+                date_col DATE,
+                time_col TIME,
+                datetime_col DATETIME,
+                datetime2_col DATETIME2
+            );
+        """)
+        db_connection.commit()
+
+        cursor.execute(
+            "SELECT id, date_col, time_col, datetime_col, datetime2_col FROM #pytest_datetime_desc;"
+        )
+        desc = cursor.description
+
+        assert len(desc) == 5, "Should have 5 columns in description"
+
+        # Verify column names
+        assert desc[0][0] == "id", "First column should be 'id'"
+        assert desc[1][0] == "date_col", "Second column should be 'date_col'"
+        assert desc[2][0] == "time_col", "Third column should be 'time_col'"
+        assert desc[3][0] == "datetime_col", "Fourth column should be 'datetime_col'"
+        assert desc[4][0] == "datetime2_col", "Fifth column should be 'datetime2_col'"
+
+        # Test 1: DB-API 2.0 compliant - verify SQL type codes as integers
+        # DATE should be SQL_TYPE_DATE (91)
+        assert (
+            int(desc[1][1]) == ConstantsDDBC.SQL_TYPE_DATE.value
+        ), f"DATE column should have SQL_TYPE_DATE type code ({ConstantsDDBC.SQL_TYPE_DATE.value})"
+        # TIME should be SQL_SS_TIME2 (-154) or SQL_TYPE_TIME (92)
+        time_type_code = int(desc[2][1])
+        assert time_type_code in (
+            ConstantsDDBC.SQL_SS_TIME2.value,
+            ConstantsDDBC.SQL_TYPE_TIME.value,
+        ), f"TIME column should have SQL_SS_TIME2 or SQL_TYPE_TIME type code, got {time_type_code}"
+
+        # Test 2: Backwards compatible - compare with Python types (for pandas, etc.)
+        assert desc[1][1] == date, "DATE should compare equal to datetime.date"
+        assert desc[2][1] == time, "TIME should compare equal to datetime.time"
+        assert desc[3][1] == datetime, "DATETIME should compare equal to datetime.datetime"
+        assert desc[4][1] == datetime, "DATETIME2 should compare equal to datetime.datetime"
+
+    finally:
+        cursor.execute("DROP TABLE IF EXISTS #pytest_datetime_desc;")
+        db_connection.commit()
 
 
 def test_parse_datetime(cursor, db_connection):
@@ -8986,11 +9092,8 @@ def test_decimal_separator_fetch_regression(cursor, db_connection):
     finally:
         # Reset separator to default just in case
         mssql_python.setDecimalSeparator(".")
-        try:
-            cursor.execute("DROP TABLE IF EXISTS #TestDecimal")
-            db_connection.commit()
-        except Exception:
-            pass
+        cursor.execute("DROP TABLE IF EXISTS #TestDecimal")
+        db_connection.commit()
 
 
 def test_datetimeoffset_read_write(cursor, db_connection):
@@ -13405,11 +13508,8 @@ def test_decimal_scientific_notation_to_varchar(cursor, db_connection, values, d
             ), f"{description}: Row {i} mismatch - expected {expected_val}, got {stored_val}"
 
     finally:
-        try:
-            cursor.execute(f"DROP TABLE {table_name}")
-            db_connection.commit()
-        except:
-            pass
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        db_connection.commit()
 
 
 SMALL_XML = "<root><item>1</item></root>"
@@ -13511,11 +13611,184 @@ def test_xml_malformed_input(cursor, db_connection):
         )
         db_connection.commit()
 
-        with pytest.raises(Exception):
+        with pytest.raises(mssql_python.Error):
             cursor.execute("INSERT INTO #pytest_xml_invalid (xml_col) VALUES (?);", INVALID_XML)
     finally:
         cursor.execute("DROP TABLE IF EXISTS #pytest_xml_invalid;")
         db_connection.commit()
+
+
+def test_column_metadata_thread_safety_concurrent_cursors(db_connection, conn_str):
+    """Test thread safety of _column_metadata with concurrent cursors across threads."""
+    import threading
+    from mssql_python import connect
+
+    # Track results and errors from each thread
+    results = {}
+    errors = []
+    lock = threading.Lock()
+
+    def worker(thread_id, table_suffix):
+        # Each thread uses its own independent connection
+        thread_conn = None
+        cursor = None
+        try:
+            thread_conn = connect(conn_str)
+            cursor = thread_conn.cursor()
+
+            try:
+                # Create a unique temp table for this thread
+                table_name = f"#pytest_thread_meta_{table_suffix}"
+                cursor.execute(f"DROP TABLE IF EXISTS {table_name};")
+
+                # Create table with distinct column structure for this thread
+                cursor.execute(f"""
+                    CREATE TABLE {table_name} (
+                        thread_id INT,
+                        col_{table_suffix}_a NVARCHAR(100),
+                        col_{table_suffix}_b INT,
+                        col_{table_suffix}_c FLOAT
+                    );
+                """)
+                thread_conn.commit()
+
+                # Insert test data
+                cursor.execute(f"""
+                    INSERT INTO {table_name} VALUES 
+                    ({thread_id}, 'data_{thread_id}_1', {thread_id * 100}, {thread_id * 1.5}),
+                    ({thread_id}, 'data_{thread_id}_2', {thread_id * 200}, {thread_id * 2.5});
+                """)
+                thread_conn.commit()
+
+                # Execute SELECT and verify description metadata is correct
+                cursor.execute(f"SELECT * FROM {table_name} ORDER BY col_{table_suffix}_b;")
+
+                # Verify cursor has correct description for THIS query
+                desc = cursor.description
+                assert desc is not None, f"Thread {thread_id}: description should not be None"
+                assert len(desc) == 4, f"Thread {thread_id}: should have 4 columns"
+
+                # Verify column names are correct for this thread's table
+                col_names = [d[0].lower() for d in desc]
+                expected_names = [
+                    "thread_id",
+                    f"col_{table_suffix}_a",
+                    f"col_{table_suffix}_b",
+                    f"col_{table_suffix}_c",
+                ]
+                assert col_names == expected_names, f"Thread {thread_id}: column names should match"
+
+                # Fetch all rows and verify data
+                rows = cursor.fetchall()
+                assert len(rows) == 2, f"Thread {thread_id}: should have 2 rows"
+                assert rows[0][0] == thread_id, f"Thread {thread_id}: thread_id column should match"
+
+                # Verify _column_metadata is set (internal attribute)
+                assert (
+                    cursor._column_metadata is not None
+                ), f"Thread {thread_id}: _column_metadata should be set"
+
+                # Clean up
+                cursor.execute(f"DROP TABLE IF EXISTS {table_name};")
+                thread_conn.commit()
+
+                with lock:
+                    results[thread_id] = {
+                        "success": True,
+                        "col_count": len(desc),
+                        "row_count": len(rows),
+                    }
+
+            finally:
+                if cursor:
+                    cursor.close()
+                if thread_conn:
+                    thread_conn.close()
+
+        except Exception as e:
+            with lock:
+                errors.append((thread_id, str(e)))
+
+    # Create and start multiple threads
+    num_threads = 5
+    threads = []
+
+    for i in range(num_threads):
+        t = threading.Thread(target=worker, args=(i, f"t{i}"), daemon=True)
+        threads.append(t)
+
+    # Start all threads at roughly the same time
+    for t in threads:
+        t.start()
+
+    # Wait for all threads to complete
+    for t in threads:
+        t.join(timeout=30)  # 30 second timeout per thread
+
+    # Verify threads actually finished (not just timed out)
+    hung_threads = [t for t in threads if t.is_alive()]
+    assert len(hung_threads) == 0, f"{len(hung_threads)} thread(s) still running after timeout"
+
+    # Verify no errors occurred
+    assert len(errors) == 0, f"Thread errors occurred: {errors}"
+
+    # Verify all threads completed successfully
+    assert len(results) == num_threads, f"Expected {num_threads} results, got {len(results)}"
+
+    for thread_id, result in results.items():
+        assert result["success"], f"Thread {thread_id} did not succeed"
+        assert result["col_count"] == 4, f"Thread {thread_id} had wrong column count"
+        assert result["row_count"] == 2, f"Thread {thread_id} had wrong row count"
+
+
+def test_column_metadata_isolation_sequential_queries(cursor, db_connection):
+    """
+    Test that _column_metadata is correctly updated between sequential queries.
+
+    Verifies that each execute() call properly replaces the previous metadata,
+    ensuring no stale data leaks between queries.
+    """
+    try:
+        # Query 1: Simple 2-column query
+        cursor.execute("SELECT 1 as col_a, 'hello' as col_b;")
+        desc1 = cursor.description
+        meta1 = cursor._column_metadata
+        cursor.fetchall()
+
+        assert len(desc1) == 2, "First query should have 2 columns"
+        assert meta1 is not None, "_column_metadata should be set"
+
+        # Query 2: Different structure - 4 columns
+        cursor.execute("SELECT 1 as x, 2 as y, 3 as z, 4 as w;")
+        desc2 = cursor.description
+        meta2 = cursor._column_metadata
+        cursor.fetchall()
+
+        assert len(desc2) == 4, "Second query should have 4 columns"
+        assert meta2 is not None, "_column_metadata should be set"
+
+        # Verify the metadata was replaced, not appended
+        assert len(meta2) == 4, "_column_metadata should have 4 entries"
+        assert meta1 is not meta2, "_column_metadata should be a new object"
+
+        # Query 3: Back to 2 columns with different names
+        cursor.execute("SELECT 'test' as different_name, 42.5 as another_col;")
+        desc3 = cursor.description
+        meta3 = cursor._column_metadata
+        cursor.fetchall()
+
+        assert len(desc3) == 2, "Third query should have 2 columns"
+        assert len(meta3) == 2, "_column_metadata should have 2 entries"
+
+        # Verify column names are from the new query
+        col_names = [d[0].lower() for d in desc3]
+        assert col_names == [
+            "different_name",
+            "another_col",
+        ], "Column names should be from third query"
+
+    except Exception as e:
+        pytest.fail(f"Column metadata isolation test failed: {e}")
 
 
 # ==================== CODE COVERAGE TEST CASES ====================
@@ -14030,7 +14303,8 @@ def test_row_output_converter_general_exception(cursor, db_connection):
 
         # Create a custom output converter that will raise a general exception
         def failing_converter(value):
-            if value == "test_value":
+            # Driver passes string values as UTF-16LE encoded bytes to output converters
+            if value == "test_value".encode("utf-16-le"):
                 raise RuntimeError("Custom converter error for testing")
             return value
 
