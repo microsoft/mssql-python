@@ -1,0 +1,256 @@
+# mssql-python
+
+mssql-python is the official Microsoft Python driver for SQL Server and Azure SQL databases. It provides DB API 2.0 compliant database access with Direct Database Connectivity (DDBC) - no external ODBC driver manager required.
+
+## Installation
+
+```bash
+pip install mssql-python
+```
+
+Or using uv (recommended for faster installs):
+```bash
+uv pip install mssql-python
+```
+
+## Quick Start
+
+> **Security Note**: The examples below use `TrustServerCertificate=yes` for local development with self-signed certificates. For production or remote connections, remove this option to ensure proper TLS certificate validation.
+
+```python
+import mssql_python
+
+conn = mssql_python.connect(
+    "SERVER=localhost;DATABASE=mydb;Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=yes"
+)
+cursor = conn.cursor()
+cursor.execute("SELECT * FROM users WHERE id = ?", (42,))
+rows = cursor.fetchall()
+cursor.close()
+conn.close()
+```
+
+## Connection String Formats
+
+### Windows Authentication (Trusted Connection)
+```python
+conn = mssql_python.connect(
+    "SERVER=localhost;DATABASE=mydb;Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=yes"
+)
+```
+
+### SQL Server Authentication
+```python
+conn = mssql_python.connect(
+    "SERVER=localhost;DATABASE=mydb;UID=myuser;PWD=mypassword;Encrypt=yes;TrustServerCertificate=yes"
+)
+```
+
+### Azure SQL with Entra ID (Interactive)
+```python
+conn = mssql_python.connect(
+    "SERVER=myserver.database.windows.net;DATABASE=mydb;Authentication=ActiveDirectoryInteractive;Encrypt=yes"
+)
+```
+
+### Azure SQL with Managed Identity
+```python
+conn = mssql_python.connect(
+    "SERVER=myserver.database.windows.net;DATABASE=mydb;Authentication=ActiveDirectoryMSI;Encrypt=yes"
+)
+```
+
+### Azure SQL with Service Principal
+```python
+conn = mssql_python.connect(
+    "SERVER=myserver.database.windows.net;DATABASE=mydb;"
+    "Authentication=ActiveDirectoryServicePrincipal;"
+    "UID=<client-id>;PWD=<client-secret>;Encrypt=yes"
+)
+```
+
+## Context Manager Usage (Recommended)
+
+```python
+import mssql_python
+
+with mssql_python.connect(connection_string) as conn:
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT @@VERSION")
+        version = cursor.fetchone()
+        print(version[0])
+```
+
+## Query Patterns
+
+### Parameterized Queries (Prevent SQL Injection)
+```python
+cursor.execute("SELECT * FROM users WHERE email = ? AND active = ?", (email, True))
+
+# Named parameters (pyformat style)
+cursor.execute("SELECT * FROM users WHERE email = %(email)s", {"email": email})
+```
+
+### Fetch Results
+```python
+row = cursor.fetchone()
+rows = cursor.fetchmany(size=100)
+all_rows = cursor.fetchall()
+```
+
+### Insert Data
+```python
+cursor.execute(
+    "INSERT INTO users (name, email) VALUES (?, ?)",
+    ("John Doe", "john@example.com")
+)
+conn.commit()  # Don't forget to commit!
+```
+
+### Insert Multiple Rows (executemany)
+```python
+users = [
+    ("Alice", "alice@example.com"),
+    ("Bob", "bob@example.com"),
+    ("Charlie", "charlie@example.com"),
+]
+cursor.executemany("INSERT INTO users (name, email) VALUES (?, ?)", users)
+conn.commit()
+```
+
+### Update Data
+```python
+cursor.execute("UPDATE users SET active = ? WHERE id = ?", (False, user_id))
+conn.commit()
+print(f"Rows affected: {cursor.rowcount}")
+```
+
+### Delete Data
+```python
+cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+conn.commit()
+```
+
+## Transaction Management
+
+```python
+from mssql_python import DatabaseError
+
+try:
+    cursor.execute("INSERT INTO orders (customer_id, total) VALUES (?, ?)", (1, 99.99))
+    cursor.execute("UPDATE inventory SET quantity = quantity - 1 WHERE product_id = ?", (42,))
+    conn.commit()  # Commit both changes
+except DatabaseError:
+    conn.rollback()  # Rollback on error
+    raise
+```
+
+### Autocommit Mode
+```python
+conn = mssql_python.connect(connection_string)
+conn.autocommit = True  # Each statement commits immediately
+```
+
+## Working with Results
+
+### Get Column Metadata
+```python
+cursor.execute("SELECT id, name, email FROM users")
+for column in cursor.description:
+    print(f"Column: {column[0]}, Type: {column[1]}")
+```
+
+## Stored Procedures
+
+```python
+# Call a stored procedure
+cursor.execute("EXEC GetUserById ?", (user_id,))
+result = cursor.fetchone()
+
+# OUTPUT parameters: use DECLARE/EXEC/SELECT pattern
+# (callproc() is not supported; use execute() with anonymous code blocks)
+cursor.execute("""
+    DECLARE @count INT;
+    EXEC CountActiveUsers @count OUTPUT;
+    SELECT @count;
+""")
+count = cursor.fetchone()[0]
+```
+
+## Error Handling
+
+```python
+from mssql_python import (
+    DatabaseError,
+    IntegrityError,
+    ProgrammingError,
+    OperationalError,
+)
+
+try:
+    cursor.execute("INSERT INTO users (id, name) VALUES (?, ?)", (1, "John"))
+    conn.commit()
+except IntegrityError as e:
+    # Constraint violation (duplicate key, foreign key, etc.)
+    print(f"Constraint error: {e}")
+except ProgrammingError as e:
+    # SQL syntax error or invalid query
+    print(f"SQL error: {e}")
+except OperationalError as e:
+    # Connection issues, timeouts, etc.
+    print(f"Operational error: {e}")
+except DatabaseError as e:
+    # General database error
+    print(f"Database error: {e}")
+```
+
+## Connection Pooling
+
+Connection pooling is enabled by default:
+
+```python
+# Pooling is automatic - connections are reused
+conn1 = mssql_python.connect(connection_string)
+conn1.close()  # Returns to pool
+
+conn2 = mssql_python.connect(connection_string)  # Reuses pooled connection
+```
+
+## Comparison to pyodbc
+
+| Feature | mssql-python | pyodbc |
+|---------|-------------|--------|
+| Driver | Ships bundled | Requires separate ODBC driver |
+| Installation | `pip install` only | pip install + ODBC driver setup |
+| Azure Entra ID | Native Python API | Via ODBC driver connection keywords |
+| Connection Pooling | Built-in | Via ODBC Driver Manager |
+| DB API 2.0 | ✅ Compliant | ✅ Compliant |
+
+### Migration from pyodbc
+```python
+# pyodbc
+import pyodbc
+conn = pyodbc.connect("DRIVER={ODBC Driver 18 for SQL Server};SERVER=...;DATABASE=...")
+
+# mssql-python (no DRIVER needed)
+import mssql_python
+conn = mssql_python.connect("SERVER=...;DATABASE=...")
+```
+
+## Supported Platforms
+
+- Windows (x64, ARM64)
+- macOS (ARM64, x86_64)
+- Linux (x86_64, ARM64): Debian, Ubuntu, RHEL, Alpine (musl)
+- Linux (x86_64 only): SUSE
+
+## Supported Python Versions
+
+- Python 3.10+
+
+## Links
+
+- Documentation: https://github.com/microsoft/mssql-python/wiki
+- PyPI: https://pypi.org/project/mssql-python/
+- GitHub: https://github.com/microsoft/mssql-python
+- Issues: https://github.com/microsoft/mssql-python/issues
