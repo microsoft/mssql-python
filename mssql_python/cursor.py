@@ -20,6 +20,7 @@ from mssql_python.constants import ConstantsDDBC as ddbc_sql_const, SQLTypes
 from mssql_python.helpers import check_error
 from mssql_python.logging import logger
 from mssql_python import ddbc_bindings
+from mssql_python.type_code import SqlTypeCode
 from mssql_python.exceptions import (
     InterfaceError,
     NotSupportedError,
@@ -141,6 +142,9 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             False  # Track if we need to skip incrementing the row index
         )
         self.messages = []  # Store diagnostic messages
+
+        # Store raw column metadata for converter lookups
+        self._column_metadata = None
 
     def _is_unicode_string(self, param: str) -> bool:
         """
@@ -724,6 +728,14 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             logger.debug("SQLFreeHandle succeeded")
 
         self._clear_rownumber()
+        self._column_metadata = None
+        self.description = None
+
+        # Clear any result-set-specific caches to avoid stale mappings
+        if hasattr(self, "_cached_column_map"):
+            self._cached_column_map = None
+        if hasattr(self, "_cached_converter_map"):
+            self._cached_converter_map = None
 
         # Reinitialize the statement handle
         self._initialize_cursor()
@@ -756,6 +768,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self.hstmt = None
             logger.debug("SQLFreeHandle succeeded")
         self._clear_rownumber()
+        self._column_metadata = None  # Clear metadata to prevent memory leaks
         self.closed = True
 
     def _check_closed(self) -> None:
@@ -942,7 +955,11 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """Initialize the description attribute from column metadata."""
         if not column_metadata:
             self.description = None
+            self._column_metadata = None  # Clear metadata too
             return
+
+        # Store raw metadata for converter map building
+        self._column_metadata = column_metadata
 
         description = []
         for _, col in enumerate(column_metadata):
@@ -954,10 +971,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 column_name = column_name.lower()
 
             # Add to description tuple (7 elements as per PEP-249)
+            # Use SqlTypeCode for backwards-compatible type_code that works with both
+            # `desc[1] == str` (pandas) and `desc[1] == -9` (DB-API 2.0)
+            sql_type = col["DataType"]
             description.append(
                 (
                     column_name,  # name
-                    self._map_data_type(col["DataType"]),  # type_code
+                    SqlTypeCode(sql_type),  # type_code - dual compatible
                     None,  # display_size
                     col["ColumnSize"],  # internal_size
                     col["ColumnSize"],  # precision - should match ColumnSize
@@ -975,6 +995,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         """
         if (
             not self.description
+            or not self._column_metadata
             or not hasattr(self.connection, "_output_converters")
             or not self.connection._output_converters
         ):
@@ -982,17 +1003,20 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
         converter_map = []
 
-        for desc in self.description:
-            if desc is None:
-                converter_map.append(None)
-                continue
-            sql_type = desc[1]
+        for col_meta in self._column_metadata:
+            # Use the raw SQL type code from metadata, not the mapped Python type
+            sql_type = col_meta["DataType"]
+            python_type = SqlTypeCode._get_python_type(sql_type)
             converter = self.connection.get_output_converter(sql_type)
-            # If no converter found for the SQL type, try the WVARCHAR converter as a fallback
-            if converter is None:
-                from mssql_python.constants import ConstantsDDBC
 
-                converter = self.connection.get_output_converter(ConstantsDDBC.SQL_WVARCHAR.value)
+            # Fallback: If no converter found for SQL type code, try the mapped Python type.
+            # This provides backward compatibility for code that registered converters by Python type.
+            if converter is None:
+                converter = self.connection.get_output_converter(python_type)
+
+            # Fallback: try SQL_WVARCHAR converter for str/bytes columns
+            if converter is None and python_type in (str, bytes):
+                converter = self.connection.get_output_converter(ddbc_sql_const.SQL_WVARCHAR.value)
 
             converter_map.append(converter)
 
@@ -1021,41 +1045,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         converter_map = getattr(self, "_cached_converter_map", None)
 
         return column_map, converter_map
-
-    def _map_data_type(self, sql_type):
-        """
-        Map SQL data type to Python data type.
-
-        Args:
-            sql_type: SQL data type.
-
-        Returns:
-            Corresponding Python data type.
-        """
-        sql_to_python_type = {
-            ddbc_sql_const.SQL_INTEGER.value: int,
-            ddbc_sql_const.SQL_VARCHAR.value: str,
-            ddbc_sql_const.SQL_WVARCHAR.value: str,
-            ddbc_sql_const.SQL_CHAR.value: str,
-            ddbc_sql_const.SQL_WCHAR.value: str,
-            ddbc_sql_const.SQL_FLOAT.value: float,
-            ddbc_sql_const.SQL_DOUBLE.value: float,
-            ddbc_sql_const.SQL_DECIMAL.value: decimal.Decimal,
-            ddbc_sql_const.SQL_NUMERIC.value: decimal.Decimal,
-            ddbc_sql_const.SQL_DATE.value: datetime.date,
-            ddbc_sql_const.SQL_TIMESTAMP.value: datetime.datetime,
-            ddbc_sql_const.SQL_TIME.value: datetime.time,
-            ddbc_sql_const.SQL_BIT.value: bool,
-            ddbc_sql_const.SQL_TINYINT.value: int,
-            ddbc_sql_const.SQL_SMALLINT.value: int,
-            ddbc_sql_const.SQL_BIGINT.value: int,
-            ddbc_sql_const.SQL_BINARY.value: bytes,
-            ddbc_sql_const.SQL_VARBINARY.value: bytes,
-            ddbc_sql_const.SQL_LONGVARBINARY.value: bytes,
-            ddbc_sql_const.SQL_GUID.value: uuid.UUID,
-            # Add more mappings as needed
-        }
-        return sql_to_python_type.get(sql_type, str)
 
     @property
     def rownumber(self) -> int:
@@ -1369,6 +1358,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         except Exception as e:  # pylint: disable=broad-exception-caught
             # If describe fails, it's likely there are no results (e.g., for INSERT)
             self.description = None
+            self._column_metadata = None
 
         # Reset rownumber for new result set (only for SELECT statements)
         if self.description:  # If we have column descriptions, it's likely a SELECT
@@ -1384,15 +1374,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             self._clear_rownumber()
             self._cached_column_map = None
             self._cached_converter_map = None
-
-        # After successful execution, initialize description if there are results
-        column_metadata = []
-        try:
-            ddbc_bindings.DDBCSQLDescribeCol(self.hstmt, column_metadata)
-            self._initialize_description(column_metadata)
-        except Exception as e:
-            # If describe fails, it's likely there are no results (e.g., for INSERT)
-            self.description = None
 
         self._reset_inputsizes()  # Reset input sizes after execution
         # Return self for method chaining
@@ -2425,6 +2406,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             logger.debug("nextset: No more result sets available")
             self._clear_rownumber()
             self.description = None
+            self._column_metadata = None
             return False
 
         self._reset_rownumber()
@@ -2444,6 +2426,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         except Exception as e:  # pylint: disable=broad-exception-caught
             # If describe fails, there might be no results in this result set
             self.description = None
+            self._column_metadata = None
 
         logger.debug(
             "nextset: Moved to next result set - column_count=%d",
@@ -2788,12 +2771,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         self._connection.rollback()
 
     def __del__(self):
-        """
-        Destructor to ensure the cursor is closed when it is no longer needed.
-        This is a safety net to ensure resources are cleaned up
-        even if close() was not called explicitly.
-        If the cursor is already closed, it will not raise an exception during cleanup.
-        """
+        """Safety net to close cursor if close() was not called explicitly."""
         if "closed" not in self.__dict__ or not self.closed:
             try:
                 self.close()

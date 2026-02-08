@@ -60,6 +60,7 @@ from .connection_string_builder import _ConnectionStringBuilder
 
 # Cursor Objects
 from .cursor import Cursor
+from .type_code import SqlTypeCode
 
 # Logging Configuration (Simplified single-level DEBUG system)
 from .logging import logger, setup_logging, driver_logger
