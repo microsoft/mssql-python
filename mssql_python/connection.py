@@ -263,6 +263,11 @@ class Connection:
             },
         }
 
+        # Auth type for acquiring fresh tokens at bulk copy time.
+        # We intentionally do NOT cache the token — a fresh one is acquired
+        # each time bulkcopy() is called to avoid expired-token errors.
+        self._auth_type = None
+
         # Check if the connection string contains authentication parameters
         # This is important for processing the connection string correctly.
         # If authentication is specified, it will be processed to handle
@@ -272,6 +277,8 @@ class Connection:
             self.connection_str = connection_result[0]
             if connection_result[1]:
                 self._attrs_before.update(connection_result[1])
+            # Store auth type so bulkcopy() can acquire a fresh token later
+            self._auth_type = connection_result[2]
 
         self._closed = False
         self._timeout = timeout

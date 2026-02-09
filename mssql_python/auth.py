@@ -30,7 +30,25 @@ class AADAuth:
 
     @staticmethod
     def get_token(auth_type: str) -> bytes:
-        """Get token using the specified authentication type"""
+        """Get ODBC token struct for the specified authentication type."""
+        token_struct, _ = AADAuth._acquire_token(auth_type)
+        return token_struct
+
+    @staticmethod
+    def get_raw_token(auth_type: str) -> str:
+        """Acquire a fresh raw JWT for the Rust TDS connection (bulk copy).
+
+        This deliberately does NOT cache the token — each call goes through
+        Azure Identity, which has its own internal cache on the credential
+        object.  A fresh acquisition avoids expired-token errors when
+        bulkcopy() is called long after the original ODBC connect().
+        """
+        _, raw_token = AADAuth._acquire_token(auth_type)
+        return raw_token
+
+    @staticmethod
+    def _acquire_token(auth_type: str) -> Tuple[bytes, str]:
+        """Internal: acquire token and return (odbc_struct, raw_jwt)."""
         # Import Azure libraries inside method to support test mocking
         # pylint: disable=import-outside-toplevel
         try:
@@ -61,22 +79,15 @@ class AADAuth:
         )
 
         try:
-            logger.debug(
-                "get_token: Creating credential instance - credential_class=%s",
-                credential_class.__name__,
-            )
             credential = credential_class()
-            logger.debug(
-                "get_token: Requesting token from Azure AD - scope=https://database.windows.net/.default"
-            )
-            token = credential.get_token("https://database.windows.net/.default").token
+            raw_token = credential.get_token("https://database.windows.net/.default").token
             logger.info(
                 "get_token: Azure AD token acquired successfully - token_length=%d chars",
-                len(token),
+                len(raw_token),
             )
-            return AADAuth.get_token_struct(token)
+            token_struct = AADAuth.get_token_struct(raw_token)
+            return token_struct, raw_token
         except ClientAuthenticationError as e:
-            # Re-raise with more specific context about Azure AD authentication failure
             logger.error(
                 "get_token: Azure AD authentication failed - credential_class=%s, error=%s",
                 credential_class.__name__,
@@ -88,7 +99,6 @@ class AADAuth:
                 f"user cancellation, network issues, or unsupported configuration."
             ) from e
         except Exception as e:
-            # Catch any other unexpected exceptions
             logger.error(
                 "get_token: Unexpected error during credential creation - credential_class=%s, error=%s",
                 credential_class.__name__,
@@ -180,7 +190,7 @@ def remove_sensitive_params(parameters: List[str]) -> List[str]:
 
 
 def get_auth_token(auth_type: str) -> Optional[bytes]:
-    """Get authentication token based on auth type"""
+    """Get ODBC authentication token struct based on auth type."""
     logger.debug("get_auth_token: Starting - auth_type=%s", auth_type)
     if not auth_type:
         logger.debug("get_auth_token: No auth_type specified, returning None")
@@ -204,7 +214,7 @@ def get_auth_token(auth_type: str) -> Optional[bytes]:
 
 def process_connection_string(
     connection_string: str,
-) -> Tuple[str, Optional[Dict[int, bytes]]]:
+) -> Tuple[str, Optional[Dict[int, bytes]], Optional[str]]:
     """
     Process connection string and handle authentication.
 
@@ -212,7 +222,8 @@ def process_connection_string(
         connection_string: The connection string to process
 
     Returns:
-        Tuple[str, Optional[Dict]]: Processed connection string and attrs_before dict if needed
+        Tuple[str, Optional[Dict], Optional[str]]: Processed connection string,
+            attrs_before dict if needed, and auth_type string for bulk copy token acquisition
 
     Raises:
         ValueError: If the connection string is invalid or empty
@@ -259,7 +270,7 @@ def process_connection_string(
                 "process_connection_string: Token authentication configured successfully - auth_type=%s",
                 auth_type,
             )
-            return ";".join(modified_parameters) + ";", {1256: token_struct}
+            return ";".join(modified_parameters) + ";", {1256: token_struct}, auth_type
         else:
             logger.warning(
                 "process_connection_string: Token acquisition failed, proceeding without token"
@@ -269,4 +280,4 @@ def process_connection_string(
         "process_connection_string: Connection string processing complete - has_auth=%s",
         bool(auth_type),
     )
-    return ";".join(modified_parameters) + ";", None
+    return ";".join(modified_parameters) + ";", None, None
