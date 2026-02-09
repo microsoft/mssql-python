@@ -15332,3 +15332,44 @@ def test_arrow_long_string(cursor: mssql_python.Cursor):
     assert batch.num_rows == 1
     assert batch.num_columns == 1
     assert batch.column(0).to_pylist() == [long_string]
+
+
+@pytest.mark.skipif(pa is None, reason="pyarrow is not installed")
+def test_rownumber_arrow_batch_interleaved_fetchmany(cursor: mssql_python.Cursor):
+    """Verify that arrow_batch and fetchmany can be interleaved
+    on the same result set with correct rownumber tracking and values."""
+    N = 20
+    unions = " union all ".join(f"select {i} as val" for i in range(1, N + 1))
+    cursor.execute(f"select val from ({unions}) t order by val")
+
+    collected = []
+
+    batch = cursor.arrow_batch(3)
+    assert batch.num_rows == 3
+    vals = batch.column(0).to_pylist()
+    assert vals == [1, 2, 3]
+    assert cursor.rownumber == 2  # 0-based: last row index = 2
+    collected.extend(vals)
+
+    rows = cursor.fetchmany(5)
+    assert len(rows) == 5
+    vals = [r[0] for r in rows]
+    assert vals == [4, 5, 6, 7, 8]
+    assert cursor.rownumber == 7
+    collected.extend(vals)
+
+    batch = cursor.arrow_batch(4)
+    assert batch.num_rows == 4
+    vals = batch.column(0).to_pylist()
+    assert vals == [9, 10, 11, 12]
+    assert cursor.rownumber == 11
+    collected.extend(vals)
+
+    batch = cursor.arrow_batch(100)
+    assert batch.num_rows == 8
+    vals = batch.column(0).to_pylist()
+    assert vals == [13, 14, 15, 16, 17, 18, 19, 20]
+    assert cursor.rownumber == 19
+    collected.extend(vals)
+
+    assert collected == list(range(1, N + 1))

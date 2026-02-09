@@ -2412,8 +2412,6 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             A pyarrow RecordBatch object containing up to batch_size rows.
         """
         self._check_closed()  # Check if the cursor is closed
-        if not self._has_result_set and self.description:
-            self._reset_rownumber()
 
         try:
             import pyarrow
@@ -2422,11 +2420,30 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 "pyarrow is required for arrow_batch(). Please install pyarrow."
             ) from e
 
+        if not self._has_result_set and self.description:
+            self._reset_rownumber()
+
         capsules = []
         ret = ddbc_bindings.DDBCSQLFetchArrowBatch(self.hstmt, capsules, max(batch_size, 0))
         check_error(ddbc_sql_const.SQL_HANDLE_STMT.value, self.hstmt, ret)
 
         batch = pyarrow.RecordBatch._import_from_c_capsule(*capsules)
+
+        if self.hstmt:
+            self.messages.extend(ddbc_bindings.DDBCSQLGetAllDiagRecords(self.hstmt))
+
+        # Update rownumber for the number of rows actually fetched
+        num_fetched = batch.num_rows
+        if num_fetched > 0 and self._has_result_set:
+            self._next_row_index += num_fetched
+            self._rownumber = self._next_row_index - 1
+
+        # Centralize rowcount assignment after fetch
+        if num_fetched == 0 and self._next_row_index == 0:
+            self.rowcount = 0
+        else:
+            self.rowcount = self._next_row_index
+
         return batch
 
     def arrow(self, batch_size: int = 8192) -> "pyarrow.Table":
