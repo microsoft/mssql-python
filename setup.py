@@ -20,7 +20,7 @@ from setuptools import setup, find_packages
 from setuptools.dist import Distribution
 from wheel.bdist_wheel import bdist_wheel
 
-from build_ddbc.compiler import get_platform_info
+from mssql_python.platform_utils import get_platform_info
 
 
 # =============================================================================
