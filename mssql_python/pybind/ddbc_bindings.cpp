@@ -211,7 +211,7 @@ struct ArrowArrayPrivateData {
     std::unique_ptr<double[]> float64Val;
     std::unique_ptr<float[]> float32Val;
     std::unique_ptr<uint8_t[]> bitVal;
-    std::unique_ptr<uint32_t[]> varVal;
+    std::unique_ptr<uint64_t[]> varVal;
     std::unique_ptr<int32_t[]> dateVal;
     std::unique_ptr<int64_t[]> tsMicroVal;
     std::unique_ptr<int32_t[]> timeSecondVal;
@@ -4398,8 +4398,8 @@ SQLRETURN FetchArrowBatch_wrap(
             case SQL_WVARCHAR:
             case SQL_WLONGVARCHAR:
             case SQL_GUID:
-                format = "u";
-                arrowColumnProducer->varVal = std::make_unique<uint32_t[]>(arrowBatchSize + 1);
+                format = "U";
+                arrowColumnProducer->varVal = std::make_unique<uint64_t[]>(arrowBatchSize + 1);
                 arrowColumnProducer->varData.resize(arrowBatchSize * 42);
                 columnVarLen[i] = true;
                 // start at offset 0
@@ -4409,8 +4409,8 @@ SQLRETURN FetchArrowBatch_wrap(
             case SQL_BINARY:
             case SQL_VARBINARY:
             case SQL_LONGVARBINARY:
-                format = "z";
-                arrowColumnProducer->varVal = std::make_unique<uint32_t[]>(arrowBatchSize + 1);
+                format = "Z";
+                arrowColumnProducer->varVal = std::make_unique<uint64_t[]>(arrowBatchSize + 1);
                 arrowColumnProducer->varData.resize(arrowBatchSize * 42);
                 columnVarLen[i] = true;
                 // start at offset 0
@@ -4856,7 +4856,7 @@ SQLRETURN FetchArrowBatch_wrap(
                     LOG("Unexpected negative data length. Column ID - {}, SQL Type - {}, Data Length - {}", idxCol + 1, dataType, indicator);
                     ThrowStdException("Unexpected negative data length.");
                 }
-                auto dataLen = static_cast<uint32_t>(indicator);
+                auto dataLen = static_cast<uint64_t>(indicator);
 
                 switch (dataType) {
                     case SQL_BINARY:

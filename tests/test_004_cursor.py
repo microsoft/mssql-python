@@ -15076,10 +15076,10 @@ def get_arrow_test_data(include_lobs: bool, batch_length: int):
             ],
         ),
         (pa.bool_(), "bit", [True, None, False]),
-        (pa.binary(), "binary(9)", [b"asdfghjkl", None, b"lkjhgfdsa"]),
-        (pa.string(), "varchar(100)", ["asdfghjkl", None, "lkjhgfdsa"]),
-        (pa.string(), "nvarchar(100)", ["asdfghjkl", None, "lkjhgfdsa"]),
-        (pa.string(), "uniqueidentifier", ["58185E0D-3A91-44D8-BC46-7107217E0A6D", None]),
+        (pa.large_binary(), "binary(9)", [b"asdfghjkl", None, b"lkjhgfdsa"]),
+        (pa.large_string(), "varchar(100)", ["asdfghjkl", None, "lkjhgfdsa"]),
+        (pa.large_string(), "nvarchar(100)", ["asdfghjkl", None, "lkjhgfdsa"]),
+        (pa.large_string(), "uniqueidentifier", ["58185E0D-3A91-44D8-BC46-7107217E0A6D", None]),
         (
             pa.date32(),
             "date",
@@ -15133,9 +15133,9 @@ def get_arrow_test_data(include_lobs: bool, batch_length: int):
 
     if include_lobs:
         arrow_test_data += [
-            (pa.string(), "nvarchar(max)", ["hey", None, "ho"]),
-            (pa.string(), "varchar(max)", ["hey", None, "ho"]),
-            (pa.binary(), "varbinary(max)", [b"hey", None, b"ho"]),
+            (pa.large_string(), "nvarchar(max)", ["hey", None, "ho"]),
+            (pa.large_string(), "varchar(max)", ["hey", None, "ho"]),
+            (pa.large_binary(), "varbinary(max)", [b"hey", None, b"ho"]),
         ]
 
     for ix in range(len(arrow_test_data)):
