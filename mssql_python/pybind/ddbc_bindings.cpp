@@ -209,6 +209,7 @@ struct ArrowArrayPrivateData {
     std::unique_ptr<int32_t[]> int32Val;
     std::unique_ptr<int64_t[]> int64Val;
     std::unique_ptr<double[]> float64Val;
+    std::unique_ptr<float[]> float32Val;
     std::unique_ptr<uint8_t[]> bitVal;
     std::unique_ptr<uint32_t[]> varVal;
     std::unique_ptr<int32_t[]> dateVal;
@@ -4437,6 +4438,10 @@ SQLRETURN FetchArrowBatch_wrap(
                 arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->int64Val.get();
                 break;
             case SQL_REAL:
+                format = "f";
+                arrowColumnProducer->float32Val = std::make_unique<float[]>(arrowBatchSize);
+                arrowColumnProducer->ptrValueBuffer = arrowColumnProducer->float32Val.get();
+                break;
             case SQL_FLOAT:
             case SQL_DOUBLE:
                 format = "g";
@@ -4952,6 +4957,8 @@ SQLRETURN FetchArrowBatch_wrap(
                         arrowColumnProducer->int64Val[idxRowArrow] = buffers.bigIntBuffers[idxCol][idxRowSql];
                         break;
                     case SQL_REAL:
+                        arrowColumnProducer->float32Val[idxRowArrow] = buffers.realBuffers[idxCol][idxRowSql];
+                        break;
                     case SQL_FLOAT:
                     case SQL_DOUBLE:
                         arrowColumnProducer->float64Val[idxRowArrow] = buffers.doubleBuffers[idxCol][idxRowSql];

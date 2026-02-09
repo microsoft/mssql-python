@@ -15035,6 +15035,7 @@ def get_arrow_test_data(include_lobs: bool, batch_length: int):
         (pa.int32(), "int", [1, 2, None, 4, 5, 0, -(2**31), 2**31 - 1]),
         (pa.int64(), "bigint", [1, 2, None, 4, 5, 0, -(2**63), 2**63 - 1]),
         (pa.float64(), "float", [1.0, 2.5, None, 4.25, 5.125]),
+        (pa.float32(), "real", [1.0, 2.5, None, 4.25, 5.125]),
         (
             pa.decimal128(precision=10, scale=2),
             "decimal(10, 2)",
