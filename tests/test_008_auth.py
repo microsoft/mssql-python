@@ -326,7 +326,7 @@ class TestRemoveSensitiveParams:
 class TestProcessConnectionString:
     def test_process_connection_string_with_default_auth(self):
         conn_str = "Server=test;Authentication=ActiveDirectoryDefault;Database=testdb"
-        result_str, attrs = process_connection_string(conn_str)
+        result_str, attrs, auth_type = process_connection_string(conn_str)
 
         assert "Server=test" in result_str
         assert "Database=testdb" in result_str
@@ -336,7 +336,7 @@ class TestProcessConnectionString:
 
     def test_process_connection_string_no_auth(self):
         conn_str = "Server=test;Database=testdb;UID=user;PWD=password"
-        result_str, attrs = process_connection_string(conn_str)
+        result_str, attrs, auth_type = process_connection_string(conn_str)
 
         assert "Server=test" in result_str
         assert "Database=testdb" in result_str
@@ -347,7 +347,7 @@ class TestProcessConnectionString:
     def test_process_connection_string_interactive_non_windows(self, monkeypatch):
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
         conn_str = "Server=test;Authentication=ActiveDirectoryInteractive;Database=testdb"
-        result_str, attrs = process_connection_string(conn_str)
+        result_str, attrs, auth_type = process_connection_string(conn_str)
 
         assert "Server=test" in result_str
         assert "Database=testdb" in result_str
