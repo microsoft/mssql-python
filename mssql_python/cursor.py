@@ -2456,6 +2456,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Returns:
             A pyarrow Table containing all remaining rows from the result set.
         """
+        self._check_closed()  # Check if the cursor is closed
+
         try:
             import pyarrow
         except ImportError as e:
@@ -2483,6 +2485,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         Returns:
             A pyarrow RecordBatchReader for the result set.
         """
+        self._check_closed()  # Check if the cursor is closed
+
         try:
             import pyarrow
         except ImportError as e:
