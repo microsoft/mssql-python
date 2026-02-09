@@ -11,7 +11,6 @@ import shutil
 from mssql_python import connect
 from mssql_python.logging import setup_logging, logger
 
-
 # Skip all tests if no database connection string available
 pytestmark = pytest.mark.skipif(
     not os.getenv("DB_CONNECTION_STRING"), reason="Database connection string not provided"

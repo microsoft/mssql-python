@@ -96,7 +96,7 @@ elif sys.platform.startswith("linux"):
 
 setup(
     name="mssql-python",
-    version="1.1.0",
+    version="1.3.0",
     description="A Python library for interacting with Microsoft SQL Server",
     long_description=open("PyPI_Description.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
@@ -107,6 +107,7 @@ setup(
     package_data={
         # Include PYD and DLL files inside mssql_python, exclude YML files
         "mssql_python": [
+            "py.typed",  # Marker file for PEP 561 typing support
             "ddbc_bindings.cp*.pyd",  # Include all PYD files
             "ddbc_bindings.cp*.so",  # Include all SO files
             "libs/*",

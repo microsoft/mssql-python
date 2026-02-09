@@ -379,9 +379,24 @@ class SqlHandle {
     SQLSMALLINT type() const;
     void free();
 
+    // Mark this handle as implicitly freed (freed by parent handle)
+    // This prevents double-free attempts when the ODBC driver automatically
+    // frees child handles (e.g., STMT handles when DBC handle is freed)
+    //
+    // SAFETY CONSTRAINTS:
+    // - ONLY call this on SQL_HANDLE_STMT handles
+    // - ONLY call this when the parent DBC handle is about to be freed
+    // - Calling on other handle types (ENV, DBC, DESC) will cause HANDLE LEAKS
+    // - The ODBC spec only guarantees automatic freeing of STMT handles by DBC parents
+    //
+    // Current usage: Connection::disconnect() marks all tracked STMT handles
+    // before freeing the DBC handle.
+    void markImplicitlyFreed();
+
   private:
     SQLSMALLINT _type;
     SQLHANDLE _handle;
+    bool _implicitly_freed = false;  // Tracks if handle was freed by parent
 };
 using SqlHandlePtr = std::shared_ptr<SqlHandle>;
 

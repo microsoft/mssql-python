@@ -53,15 +53,13 @@ def test_exception_mid_batch_no_corrupt_data(cursor, db_connection):
         drop_table_if_exists(cursor, "#pytest_mid_batch_exception")
 
         # Create simple table to test batch processing integrity
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #pytest_mid_batch_exception (
                 id INT,
                 value NVARCHAR(50),
                 amount FLOAT
             )
-        """
-        )
+        """)
         db_connection.commit()
 
         # Insert 1000 rows using individual inserts to avoid executemany complications
@@ -121,16 +119,14 @@ def test_python_c_api_null_handling_memory_pressure(cursor, db_connection):
         drop_table_if_exists(cursor, "#pytest_memory_pressure")
 
         # Create table with various string types
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #pytest_memory_pressure (
                 id INT,
                 varchar_col VARCHAR(1000),
                 nvarchar_col NVARCHAR(1000),
                 varbinary_col VARBINARY(1000)
             )
-        """
-        )
+        """)
         db_connection.commit()
 
         # Insert test data
@@ -192,16 +188,14 @@ def test_thousands_of_empty_strings_allocation_stress(cursor, db_connection):
     try:
         drop_table_if_exists(cursor, "#pytest_empty_stress")
 
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #pytest_empty_stress (
                 id INT,
                 empty_varchar VARCHAR(100),
                 empty_nvarchar NVARCHAR(100),
                 empty_varbinary VARBINARY(100)
             )
-        """
-        )
+        """)
         db_connection.commit()
 
         # Insert 10,000 rows with empty strings
@@ -277,16 +271,14 @@ def test_large_result_set_100k_rows_no_overflow(cursor, db_connection):
     try:
         drop_table_if_exists(cursor, "#pytest_100k_rows")
 
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #pytest_100k_rows (
                 id INT,
                 varchar_col VARCHAR(50),
                 nvarchar_col NVARCHAR(50),
                 int_col INT
             )
-        """
-        )
+        """)
         db_connection.commit()
 
         # Insert 100,000 rows with sequential IDs and predictable data
@@ -375,16 +367,14 @@ def test_very_large_lob_10mb_data_integrity(cursor, db_connection):
     try:
         drop_table_if_exists(cursor, "#pytest_10mb_lob")
 
-        cursor.execute(
-            """
+        cursor.execute("""
             CREATE TABLE #pytest_10mb_lob (
                 id INT,
                 varchar_lob VARCHAR(MAX),
                 nvarchar_lob NVARCHAR(MAX),
                 varbinary_lob VARBINARY(MAX)
             )
-        """
-        )
+        """)
         db_connection.commit()
 
         # Create 10MB+ data
@@ -494,15 +484,13 @@ def test_concurrent_fetch_data_integrity_no_corruption(db_connection, conn_str):
             table_name = f"#pytest_concurrent_t{thread_id}"
             drop_table_if_exists(cursor, table_name)
 
-            cursor.execute(
-                f"""
+            cursor.execute(f"""
                 CREATE TABLE {table_name} (
                     id INT,
                     thread_id INT,
                     data VARCHAR(100)
                 )
-            """
-            )
+            """)
             conn.commit()
 
             # Insert thread-specific data

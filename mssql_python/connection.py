@@ -20,7 +20,6 @@ import threading
 import mssql_python
 from mssql_python.cursor import Cursor
 from mssql_python.helpers import (
-    add_driver_to_connection_str,
     sanitize_connection_string,
     sanitize_user_input,
     validate_attribute_value,
@@ -444,6 +443,22 @@ class Connection:
         """
         self.setautocommit(value)
         logger.info("Autocommit mode set to %s.", value)
+
+    @property
+    def closed(self) -> bool:
+        """
+        Returns True if the connection is closed, False otherwise.
+
+        This property indicates whether close() was explicitly called on
+        the connection. Note that this does not indicate whether the
+        connection is healthy/alive - if a timeout or network issue breaks
+        the connection, closed would still be False until close() is
+        explicitly called.
+
+        Returns:
+            bool: True if the connection is closed, False otherwise.
+        """
+        return self._closed
 
     def setautocommit(self, value: bool = False) -> None:
         """
