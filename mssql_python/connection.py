@@ -39,7 +39,7 @@ from mssql_python.exceptions import (
     ProgrammingError,
     NotSupportedError,
 )
-from mssql_python.auth import process_connection_string
+from mssql_python.auth import extract_auth_type, process_connection_string
 from mssql_python.constants import ConstantsDDBC, GetInfoConstants
 from mssql_python.connection_string_parser import _ConnectionStringParser
 from mssql_python.connection_string_builder import _ConnectionStringBuilder
@@ -277,8 +277,10 @@ class Connection:
             self.connection_str = connection_result[0]
             if connection_result[1]:
                 self._attrs_before.update(connection_result[1])
-            # Store auth type so bulkcopy() can acquire a fresh token later
-            self._auth_type = connection_result[2]
+            # Store auth type so bulkcopy() can acquire a fresh token later.
+            # On Windows Interactive, process_connection_string returns None
+            # (DDBC handles auth natively), so fall back to the connection string.
+            self._auth_type = connection_result[2] or extract_auth_type(self.connection_str)
 
         self._closed = False
         self._timeout = timeout

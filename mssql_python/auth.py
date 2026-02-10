@@ -38,10 +38,10 @@ class AADAuth:
     def get_raw_token(auth_type: str) -> str:
         """Acquire a fresh raw JWT for the mssql-py-core connection (bulk copy).
 
-        This deliberately does NOT cache the token — each call goes through
-        Azure Identity, which has its own internal cache on the credential
-        object.  A fresh acquisition avoids expired-token errors when
-        bulkcopy() is called long after the original DDBC connect().
+        This deliberately does NOT cache the credential or token — each call
+        creates a new Azure Identity credential instance and requests a token.
+        A fresh acquisition avoids expired-token errors when bulkcopy() is
+        called long after the original DDBC connect().
         """
         _, raw_token = AADAuth._acquire_token(auth_type)
         return raw_token
@@ -212,6 +212,25 @@ def get_auth_token(auth_type: str) -> Optional[bytes]:
         return None
 
 
+def extract_auth_type(connection_string: str) -> Optional[str]:
+    """Extract Entra ID auth type from a connection string.
+
+    Used as a fallback when process_connection_string does not propagate
+    auth_type (e.g. Windows Interactive where DDBC handles auth natively).
+    Bulkcopy still needs the auth type to acquire a token via Azure Identity.
+    """
+    auth_map = {
+        AuthType.INTERACTIVE.value: "interactive",
+        AuthType.DEVICE_CODE.value: "devicecode",
+        AuthType.DEFAULT.value: "default",
+    }
+    for part in connection_string.split(";"):
+        part = part.strip()
+        if part.lower().startswith("authentication="):
+            return auth_map.get(part.split("=", 1)[1].strip().lower())
+    return None
+
+
 def process_connection_string(
     connection_string: str,
 ) -> Tuple[str, Optional[Dict[int, bytes]], Optional[str]]:
@@ -280,4 +299,4 @@ def process_connection_string(
         "process_connection_string: Connection string processing complete - has_auth=%s",
         bool(auth_type),
     )
-    return ";".join(modified_parameters) + ";", None, None
+    return ";".join(modified_parameters) + ";", None, auth_type
