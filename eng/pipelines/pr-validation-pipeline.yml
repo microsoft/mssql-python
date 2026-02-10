@@ -70,6 +70,10 @@ jobs:
       LocalDB_Python314:
         sqlVersion: 'LocalDB'
         pythonVersion: '3.14'
+      ${{ if ne(variables['AZURE_CONNECTION_STRING'], '') }}:
+        AzureSQL:
+          sqlVersion: 'AzureSQL'
+          pythonVersion: '3.13'
 
   steps:
   - task: UsePythonVersion@0
@@ -274,6 +278,14 @@ jobs:
     env:
       DB_CONNECTION_STRING: 'Server=localhost;Database=TestDB;Uid=testuser;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
 
+  # Run tests for Azure SQL Database
+  - script: |
+      python -m pytest -v --junitxml=test-results-azuresql.xml --cov=. --cov-report=xml:coverage-azuresql.xml --capture=tee-sys --cache-clear
+    displayName: 'Run tests with coverage on Azure SQL Database'
+    condition: eq(variables['sqlVersion'], 'AzureSQL')
+    env:
+      DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
+
   # Download and restore AdventureWorks2022 database for benchmarking
   - powershell: |
       Write-Host "Downloading AdventureWorks2022.bak..."
@@ -449,9 +461,16 @@ jobs:
       SQL2022:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2022-latest'
         sqlVersion: 'SQL2022'
+        useAzureSQL: 'false'
       SQL2025:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         sqlVersion: 'SQL2025'
+        useAzureSQL: 'false'
+      ${{ if ne(variables['AZURE_CONNECTION_STRING'], '') }}:
+        AzureSQL:
+          sqlServerImage: ''
+          sqlVersion: 'AzureSQL'
+          useAzureSQL: 'true'
 
   steps:
   - task: UsePythonVersion@0
@@ -482,6 +501,7 @@ jobs:
       docker version
       docker ps
     displayName: 'Install and start Colima-based Docker'
+    condition: eq(variables['useAzureSQL'], 'false')
 
   - script: |
       # Pull and run SQL Server container
@@ -504,6 +524,7 @@ jobs:
         sleep 2
       done
     displayName: 'Pull & start SQL Server (Docker)'
+    condition: eq(variables['useAzureSQL'], 'false')
     env:
       DB_PASSWORD: $(DB_PASSWORD)
 
@@ -521,9 +542,18 @@ jobs:
       echo "Build successful, running tests now"
       python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
     displayName: 'Run pytest with coverage'
+    condition: eq(variables['useAzureSQL'], 'false')
     env:
       DB_CONNECTION_STRING: 'Server=tcp:127.0.0.1,1433;Database=master;Uid=SA;Pwd=$(DB_PASSWORD);TrustServerCertificate=yes'
       DB_PASSWORD: $(DB_PASSWORD)
+
+  - script: |
+      echo "Build successful, running tests now against Azure SQL Database"
+      python -m pytest -v --junitxml=test-results.xml --cov=. --cov-report=xml --capture=tee-sys --cache-clear
+    displayName: 'Run pytest with coverage on Azure SQL Database'
+    condition: eq(variables['useAzureSQL'], 'true')
+    env:
+      DB_CONNECTION_STRING: $(AZURE_CONNECTION_STRING)
 
   - task: PublishTestResults@2
     condition: succeededOrFailed()
@@ -552,6 +582,11 @@ jobs:
         Ubuntu_AzureSQL:
           dockerImage: 'ubuntu:22.04'
           distroName: 'Ubuntu-AzureSQL'
+          sqlServerImage: ''
+          useAzureSQL: 'true'
+        Debian_AzureSQL:
+          dockerImage: 'debian:12'
+          distroName: 'Debian-AzureSQL'
           sqlServerImage: ''
           useAzureSQL: 'true'
       Debian:
