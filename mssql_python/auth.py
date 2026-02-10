@@ -71,7 +71,11 @@ class AADAuth:
             "interactive": InteractiveBrowserCredential,
         }
 
-        credential_class = credential_map[auth_type]
+        credential_class = credential_map.get(auth_type)
+        if not credential_class:
+            raise ValueError(
+                f"Unsupported auth_type '{auth_type}'. " f"Supported: {', '.join(credential_map)}"
+            )
         logger.info(
             "get_token: Starting Azure AD authentication - auth_type=%s, credential_class=%s",
             auth_type,
