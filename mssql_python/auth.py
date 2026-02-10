@@ -229,9 +229,9 @@ def extract_auth_type(connection_string: str) -> Optional[str]:
         AuthType.DEFAULT.value: "default",
     }
     for part in connection_string.split(";"):
-        part = part.strip()
-        if part.lower().startswith("authentication="):
-            return auth_map.get(part.split("=", 1)[1].strip().lower())
+        key, _, value = part.strip().partition("=")
+        if key.strip().lower() == "authentication":
+            return auth_map.get(value.strip().lower())
     return None
 
 
