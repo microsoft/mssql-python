@@ -7,6 +7,7 @@ Tests for the auth module.
 import pytest
 import platform
 import sys
+from unittest.mock import patch, MagicMock
 from mssql_python.auth import (
     AADAuth,
     process_auth_parameters,
@@ -81,6 +82,11 @@ class TestAADAuth:
         token_struct = AADAuth.get_token_struct(SAMPLE_TOKEN)
         assert isinstance(token_struct, bytes)
         assert len(token_struct) > 4
+
+    def test_get_raw_token_default(self):
+        raw_token = AADAuth.get_raw_token("default")
+        assert isinstance(raw_token, str)
+        assert raw_token == SAMPLE_TOKEN
 
     def test_get_token_default(self):
         token_struct = AADAuth.get_token("default")
@@ -333,6 +339,7 @@ class TestProcessConnectionString:
         assert attrs is not None
         assert 1256 in attrs
         assert isinstance(attrs[1256], bytes)
+        assert auth_type == "default"
 
     def test_process_connection_string_no_auth(self):
         conn_str = "Server=test;Database=testdb;UID=user;PWD=password"
@@ -343,6 +350,7 @@ class TestProcessConnectionString:
         assert "UID=user" in result_str
         assert "PWD=password" in result_str
         assert attrs is None
+        assert auth_type is None
 
     def test_process_connection_string_interactive_non_windows(self, monkeypatch):
         monkeypatch.setattr(platform, "system", lambda: "Darwin")
@@ -354,6 +362,7 @@ class TestProcessConnectionString:
         assert attrs is not None
         assert 1256 in attrs
         assert isinstance(attrs[1256], bytes)
+        assert auth_type == "interactive"
 
 
 def test_error_handling():
@@ -368,3 +377,14 @@ def test_error_handling():
     # Test non-string input
     with pytest.raises(ValueError, match="Connection string must be a string"):
         process_connection_string(None)
+
+
+class TestConnectionAuthType:
+    @patch("mssql_python.connection.ddbc_bindings.Connection")
+    def test_auth_type_stored_on_connection(self, mock_ddbc_conn):
+        mock_ddbc_conn.return_value = MagicMock()
+        from mssql_python import connect
+
+        conn = connect("Server=test;Database=testdb;Authentication=ActiveDirectoryDefault")
+        assert conn._auth_type == "default"
+        conn.close()
