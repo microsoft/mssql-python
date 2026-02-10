@@ -14,6 +14,7 @@ from mssql_python.auth import (
     remove_sensitive_params,
     get_auth_token,
     process_connection_string,
+    extract_auth_type,
 )
 from mssql_python.constants import AuthType
 import secrets
@@ -377,6 +378,34 @@ def test_error_handling():
     # Test non-string input
     with pytest.raises(ValueError, match="Connection string must be a string"):
         process_connection_string(None)
+
+
+class TestExtractAuthType:
+    def test_interactive(self):
+        assert (
+            extract_auth_type("Server=test;Authentication=ActiveDirectoryInteractive;")
+            == "interactive"
+        )
+
+    def test_default(self):
+        assert extract_auth_type("Server=test;Authentication=ActiveDirectoryDefault;") == "default"
+
+    def test_devicecode(self):
+        assert (
+            extract_auth_type("Server=test;Authentication=ActiveDirectoryDeviceCode;")
+            == "devicecode"
+        )
+
+    def test_no_auth(self):
+        assert extract_auth_type("Server=test;Database=db;") is None
+
+    def test_unsupported_auth(self):
+        assert extract_auth_type("Server=test;Authentication=SqlPassword;") is None
+
+
+def test_acquire_token_unsupported_auth_type():
+    with pytest.raises(ValueError, match="Unsupported auth_type 'bogus'"):
+        AADAuth._acquire_token("bogus")
 
 
 class TestConnectionAuthType:
