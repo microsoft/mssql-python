@@ -6,6 +6,12 @@ trigger:
     include:
       - main
 
+parameters:
+  - name: enableAzureSQL
+    displayName: 'Enable Azure SQL Database testing'
+    type: boolean
+    default: false
+
 jobs:
 - job: CodeQLAnalysis
   displayName: 'CodeQL Security Analysis'
@@ -70,7 +76,7 @@ jobs:
       LocalDB_Python314:
         sqlVersion: 'LocalDB'
         pythonVersion: '3.14'
-      ${{ if eq(variables['ENABLE_AZURE_SQL'], 'true') }}:
+      ${{ if eq(parameters.enableAzureSQL, true) }}:
         AzureSQL:
           sqlVersion: 'AzureSQL'
           pythonVersion: '3.13'
@@ -466,7 +472,7 @@ jobs:
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         sqlVersion: 'SQL2025'
         useAzureSQL: 'false'
-      ${{ if eq(variables['ENABLE_AZURE_SQL'], 'true') }}:
+      ${{ if eq(parameters.enableAzureSQL, true) }}:
         AzureSQL:
           sqlServerImage: ''
           sqlVersion: 'AzureSQL'
@@ -578,7 +584,7 @@ jobs:
         distroName: 'Ubuntu-SQL2025'
         sqlServerImage: 'mcr.microsoft.com/mssql/server:2025-latest'
         useAzureSQL: 'false'
-      ${{ if eq(variables['ENABLE_AZURE_SQL'], 'true') }}:
+      ${{ if eq(parameters.enableAzureSQL, true) }}:
         Ubuntu_AzureSQL:
           dockerImage: 'ubuntu:22.04'
           distroName: 'Ubuntu-AzureSQL'
