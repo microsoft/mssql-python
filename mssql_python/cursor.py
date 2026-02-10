@@ -2618,7 +2618,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
         pycore_context = dict(context)
 
         if self.connection._auth_type:
-            # Fresh token acquisition for Rust TDS connection
+            # Fresh token acquisition for mssql-py-core connection
             from mssql_python.auth import AADAuth
 
             raw_token = AADAuth.get_raw_token(self.connection._auth_type)

@@ -30,25 +30,25 @@ class AADAuth:
 
     @staticmethod
     def get_token(auth_type: str) -> bytes:
-        """Get ODBC token struct for the specified authentication type."""
+        """Get DDBC token struct for the specified authentication type."""
         token_struct, _ = AADAuth._acquire_token(auth_type)
         return token_struct
 
     @staticmethod
     def get_raw_token(auth_type: str) -> str:
-        """Acquire a fresh raw JWT for the Rust TDS connection (bulk copy).
+        """Acquire a fresh raw JWT for the mssql-py-core connection (bulk copy).
 
         This deliberately does NOT cache the token — each call goes through
         Azure Identity, which has its own internal cache on the credential
         object.  A fresh acquisition avoids expired-token errors when
-        bulkcopy() is called long after the original ODBC connect().
+        bulkcopy() is called long after the original DDBC connect().
         """
         _, raw_token = AADAuth._acquire_token(auth_type)
         return raw_token
 
     @staticmethod
     def _acquire_token(auth_type: str) -> Tuple[bytes, str]:
-        """Internal: acquire token and return (odbc_struct, raw_jwt)."""
+        """Internal: acquire token and return (ddbc_struct, raw_jwt)."""
         # Import Azure libraries inside method to support test mocking
         # pylint: disable=import-outside-toplevel
         try:
@@ -190,7 +190,7 @@ def remove_sensitive_params(parameters: List[str]) -> List[str]:
 
 
 def get_auth_token(auth_type: str) -> Optional[bytes]:
-    """Get ODBC authentication token struct based on auth type."""
+    """Get DDBC authentication token struct based on auth type."""
     logger.debug("get_auth_token: Starting - auth_type=%s", auth_type)
     if not auth_type:
         logger.debug("get_auth_token: No auth_type specified, returning None")
