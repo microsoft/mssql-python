@@ -304,14 +304,15 @@ def test_geography_output_converter(cursor, db_connection):
             return None
         return b"CONVERTED:" + value
 
-    db_connection.add_output_converter(bytes, geography_converter)
+    SQL_SS_UDT = -151
+    db_connection.add_output_converter(SQL_SS_UDT, geography_converter)
 
     try:
         row = cursor.execute("SELECT geo_col FROM #geo_converter;").fetchone()
         assert isinstance(row[0], bytes)
         assert row[0].startswith(b"CONVERTED:")
     finally:
-        db_connection.remove_output_converter(bytes)
+        db_connection.remove_output_converter(SQL_SS_UDT)
 
 
 def test_geography_description_metadata(cursor, db_connection):
