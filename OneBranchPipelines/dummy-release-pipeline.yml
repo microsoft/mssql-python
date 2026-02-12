@@ -97,7 +97,8 @@ extends:
               type: windows
               isCustom: true
               name: Django-1ES-pool
-              vmImage: WIN22-SQL22
+              demands:
+              - imageOverride -equals WIN22-SQL22
             
             variables:
               ob_outputDirectory: '$(Build.ArtifactStagingDirectory)'
