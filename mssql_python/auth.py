@@ -9,7 +9,7 @@ import struct
 from typing import Tuple, Dict, Optional, List
 
 from mssql_python.logging import logger
-from mssql_python.constants import AuthType
+from mssql_python.constants import AuthType, ConstantsDDBC
 
 
 class AADAuth:
@@ -293,7 +293,11 @@ def process_connection_string(
                 "process_connection_string: Token authentication configured successfully - auth_type=%s",
                 auth_type,
             )
-            return ";".join(modified_parameters) + ";", {1256: token_struct}, auth_type
+            return (
+                ";".join(modified_parameters) + ";",
+                {ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value: token_struct},
+                auth_type,
+            )
         else:
             logger.warning(
                 "process_connection_string: Token acquisition failed, proceeding without token"

@@ -16,7 +16,7 @@ from mssql_python.auth import (
     process_connection_string,
     extract_auth_type,
 )
-from mssql_python.constants import AuthType
+from mssql_python.constants import AuthType, ConstantsDDBC
 import secrets
 
 SAMPLE_TOKEN = secrets.token_hex(44)
@@ -338,8 +338,8 @@ class TestProcessConnectionString:
         assert "Server=test" in result_str
         assert "Database=testdb" in result_str
         assert attrs is not None
-        assert 1256 in attrs
-        assert isinstance(attrs[1256], bytes)
+        assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in attrs
+        assert isinstance(attrs[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value], bytes)
         assert auth_type == "default"
 
     def test_process_connection_string_no_auth(self):
@@ -361,8 +361,8 @@ class TestProcessConnectionString:
         assert "Server=test" in result_str
         assert "Database=testdb" in result_str
         assert attrs is not None
-        assert 1256 in attrs
-        assert isinstance(attrs[1256], bytes)
+        assert ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value in attrs
+        assert isinstance(attrs[ConstantsDDBC.SQL_COPT_SS_ACCESS_TOKEN.value], bytes)
         assert auth_type == "interactive"
 
 
