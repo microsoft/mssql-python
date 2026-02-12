@@ -2623,7 +2623,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
 
             try:
                 raw_token = AADAuth.get_raw_token(self.connection._auth_type)
-            except RuntimeError as e:
+            except (RuntimeError, ValueError) as e:
                 raise RuntimeError(
                     f"Bulk copy failed: unable to acquire Azure AD token "
                     f"for auth_type '{self.connection._auth_type}': {e}"
