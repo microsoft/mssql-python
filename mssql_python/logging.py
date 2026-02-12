@@ -145,15 +145,20 @@ class MSSQLLogger:
         # Custom formatter to extract source from message and format as CSV
         class CSVFormatter(logging.Formatter):
             def format(self, record):
-                # Extract source from message (e.g., [Python] or [DDBC])
-                msg = record.getMessage()
-                if msg.startswith("[") and "]" in msg:
-                    end_bracket = msg.index("]")
-                    source = msg[1:end_bracket]
-                    message = msg[end_bracket + 2 :].strip()  # Skip '] '
+                # Check if this is from Rust (via rust_log method)
+                if hasattr(record, 'funcName') and record.funcName == "rust":
+                    source = "Rust"
+                    message = record.getMessage()
                 else:
-                    source = "Unknown"
-                    message = msg
+                    # Extract source from message (e.g., [Python] or [DDBC])
+                    msg = record.getMessage()
+                    if msg.startswith("[") and "]" in msg:
+                        end_bracket = msg.index("]")
+                        source = msg[1:end_bracket]
+                        message = msg[end_bracket + 2 :].strip()  # Skip '] '
+                    else:
+                        source = "Unknown"
+                        message = msg
 
                 # Format timestamp with milliseconds using period separator
                 timestamp = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
@@ -325,6 +330,41 @@ class MSSQLLogger:
             except:
                 pass  # Even stderr notification failed
             # Don't crash - logging continues without header
+
+    def rust_log(self, level: int, msg: str, filename: str = "cursor.rs", lineno: int = 0):
+        """
+        Logging method for Rust code with custom source location.
+        
+        Args:
+            level: Log level (DEBUG, INFO, WARNING, ERROR)
+            msg: Message string (already formatted)
+            filename: Source filename (e.g., 'cursor.rs')
+            lineno: Line number in source file
+        """
+        try:
+            if not self._logger.isEnabledFor(level):
+                return
+            
+            # Create a custom LogRecord with Rust source location
+            import logging as log_module
+            record = log_module.LogRecord(
+                name=self._logger.name,
+                level=level,
+                pathname=filename,
+                lineno=lineno,
+                msg=msg,
+                args=(),
+                exc_info=None,
+                func="rust",
+                sinfo=None
+            )
+            self._logger.handle(record)
+        except Exception:
+            # Fallback - use regular logging
+            try:
+                self._logger.log(level, msg)
+            except:
+                pass
 
     def _log(self, level: int, msg: str, add_prefix: bool = True, *args, **kwargs):
         """

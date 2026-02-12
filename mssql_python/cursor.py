@@ -2623,6 +2623,8 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             pycore_connection = mssql_py_core.PyCoreConnection(pycore_context)
             pycore_cursor = pycore_connection.cursor()
 
+            # Call bulkcopy with explicit keyword arguments
+            # The API signature: bulkcopy(table_name, data_source, batch_size=0, timeout=30, ...)
             result = pycore_cursor.bulkcopy(
                 table_name,
                 iter(data),
@@ -2635,6 +2637,7 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
                 keep_nulls=keep_nulls,
                 fire_triggers=fire_triggers,
                 use_internal_transaction=use_internal_transaction,
+                python_logger=logger,  # Pass Python logger handle to pycore
             )
 
             return result
