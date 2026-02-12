@@ -12,8 +12,7 @@ Usage:
     python -m build                   # Compile + create wheel (automatic)
 """
 
-from .compiler import compile_ddbc
-from mssql_python.platform_utils import get_platform_info
+from .compiler import compile_ddbc, get_platform_info
 
 __all__ = ["compile_ddbc", "get_platform_info"]
 __version__ = "1.3.0"

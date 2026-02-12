@@ -1,8 +1,7 @@
-"""
-Core compiler logic for ddbc_bindings.
+"""Core compiler logic for ddbc_bindings.
 
-This module contains the build script execution logic.
-Platform detection is provided by mssql_python.platform_utils.
+Locates and runs the platform-specific build script
+(``build.sh`` / ``build.bat``) in ``mssql_python/pybind/``.
 """
 
 import sys
@@ -10,7 +9,14 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from mssql_python.platform_utils import get_platform_info
+# Import platform_utils directly without going through mssql_python.__init__
+# (which loads the native ddbc_bindings .so).
+_mssql_dir = str(Path(__file__).resolve().parent.parent / "mssql_python")
+sys.path.insert(0, _mssql_dir)
+import platform_utils as _platform_utils  # noqa: E402
+sys.path.remove(_mssql_dir)
+
+get_platform_info = _platform_utils.get_platform_info
 
 
 def find_pybind_dir() -> Path:
