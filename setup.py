@@ -22,7 +22,6 @@ from wheel.bdist_wheel import bdist_wheel
 
 from mssql_python.platform_utils import get_platform_info
 
-
 # =============================================================================
 # Platform-Specific Package Discovery
 # =============================================================================
@@ -30,7 +29,7 @@ from mssql_python.platform_utils import get_platform_info
 
 def get_platform_packages():
     """Get platform-specific package list."""
-    packages = find_packages()
+    packages = find_packages(include=["mssql_python", "mssql_python.*"])
     arch, _ = get_platform_info()
 
     if sys.platform.startswith("win"):

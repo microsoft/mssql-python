@@ -23,6 +23,19 @@ from setuptools.build_meta import (
 from .compiler import compile_ddbc
 
 
+def _is_truthy(value):
+    """Convert a config_settings value to a boolean.
+
+    PEP 517 frontends pass config_settings values as strings (e.g., "true"),
+    not Python booleans. This helper normalises them.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() in ("true", "1", "yes")
+    return bool(value)
+
+
 # =============================================================================
 # PEP 517 Required Hooks
 # =============================================================================
@@ -55,7 +68,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
     # Check if we should skip compilation (e.g., for sdist-only builds)
     skip_compile = False
     if config_settings:
-        skip_compile = config_settings.get("--skip-ddbc-compile", False)
+        skip_compile = _is_truthy(config_settings.get("--skip-ddbc-compile", False))
 
     if not skip_compile:
         # Extract build options from config_settings
@@ -64,7 +77,7 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
 
         if config_settings:
             arch = config_settings.get("--arch")
-            coverage = config_settings.get("--coverage", False)
+            coverage = _is_truthy(config_settings.get("--coverage", False))
 
         print("[build_backend] Compiling ddbc_bindings...")
         try:

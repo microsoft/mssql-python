@@ -781,27 +781,13 @@ class TestPlatformUtils:
     def test_windows_x64_detection(self):
         """Test Windows x64 platform detection."""
         from unittest.mock import patch
+        from mssql_python import platform_utils
 
-        with (
-            patch("mssql_python.platform_utils.sys") as mock_sys,
-            patch("mssql_python.platform_utils.os") as mock_os,
-        ):
-            mock_sys.platform = "win32"
-            mock_os.environ.get.return_value = "x64"
-
-            from mssql_python import platform_utils
-
-            # Force reimport to pick up mocked values
-            import importlib
-
-            importlib.reload(platform_utils)
-
-            # Restore for actual test
-            with patch.object(platform_utils.sys, "platform", "win32"):
-                with patch.object(platform_utils.os.environ, "get", return_value="x64"):
-                    arch, tag = platform_utils.get_platform_info()
-                    assert arch == "x64"
-                    assert tag == "win_amd64"
+        with patch.object(platform_utils.sys, "platform", "win32"):
+            with patch.object(platform_utils.os.environ, "get", return_value="x64"):
+                arch, tag = platform_utils.get_platform_info()
+                assert arch == "x64"
+                assert tag == "win_amd64"
 
     def test_windows_x86_detection(self):
         """Test Windows x86 platform detection."""
