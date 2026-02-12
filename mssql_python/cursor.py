@@ -2621,7 +2621,13 @@ class Cursor:  # pylint: disable=too-many-instance-attributes,too-many-public-me
             # Fresh token acquisition for mssql-py-core connection
             from mssql_python.auth import AADAuth
 
-            raw_token = AADAuth.get_raw_token(self.connection._auth_type)
+            try:
+                raw_token = AADAuth.get_raw_token(self.connection._auth_type)
+            except RuntimeError as e:
+                raise RuntimeError(
+                    f"Bulk copy failed: unable to acquire Azure AD token "
+                    f"for auth_type '{self.connection._auth_type}': {e}"
+                ) from e
             pycore_context["access_token"] = raw_token
             logger.debug(
                 "Bulk copy: acquired fresh Azure AD token for auth_type=%s",
